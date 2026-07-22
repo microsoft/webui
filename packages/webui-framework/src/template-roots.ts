@@ -5,10 +5,9 @@
  * Template root metadata helpers.
  *
  * The compiler emits component-level template roots (`tr`), observed host
- * attributes (`ta`, index-aligned with `tr`), and exact static-host ownership
- * (`th`) directly into `TemplateMeta`. The browser runtime only normalizes those compact arrays into
- * lookup tables; it no longer scans every binding to rediscover metadata the
- * compiler already knew at build time.
+ * attributes (`ta`, index-aligned with `tr`), and exact dormant-host ownership
+ * (`th`) directly into `TemplateMeta`. The browser runtime only normalizes
+ * those compact fields instead of rediscovering them from bindings.
  */
 
 import type { TemplateMeta } from './template.js';
@@ -34,24 +33,7 @@ export function templateRootForAttribute(meta: TemplateMeta, attrName: string): 
   return undefined;
 }
 
-/**
- * Return the observed host attribute for one template root.
- *
- * Static hosts use this during SSR state seeding to let explicit host
- * attributes win over server state without importing the decorator attr-name
- * conversion code into the HTML-only runtime.
- */
-export function templateAttributeForRoot(meta: TemplateMeta, root: string): string | undefined {
-  const roots = meta.tr;
-  const attrs = meta.ta;
-  if (!roots || !attrs) return undefined;
-  for (let i = 0; i < roots.length && i < attrs.length; i++) {
-    if (roots[i] === root) return attrs[i];
-  }
-  return undefined;
-}
-
-/** Return true when the compiler owns a static TemplateElement host for this tag. */
+/** Return true when the compiler owns a dormant TemplateElement host. */
 export function templateNeedsStaticHost(meta: TemplateMeta): boolean {
   return !!meta.th;
 }

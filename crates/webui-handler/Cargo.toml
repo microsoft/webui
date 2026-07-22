@@ -30,5 +30,9 @@ criterion = { workspace = true }
 name = "handler_bench"
 harness = false
 
+[[bench]]
+name = "bootstrap_state_bench"
+harness = false
+
 [lints]
 workspace = true

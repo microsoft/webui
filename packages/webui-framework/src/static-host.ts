@@ -2,17 +2,18 @@
 // Licensed under the MIT license.
 
 /**
- * Static TemplateElement host runtime.
+ * Compiler-owned TemplateElement host runtime.
  *
- * The compiler marks exact HTML-only templates that need host attribute or
- * router state reactivity but have no authored `.ts` / `.js` implementation.
- * The framework root installs this module once; it defines missing static hosts
- * only for compiler-owned templates. Authored custom elements always win.
+ * Scriptless templates are registered as custom elements so the router can
+ * create them without empty authored modules. SSR instances remain dormant:
+ * they do not walk DOM, consume bootstrap state, or install bindings until a
+ * browser state write actually needs them. Client-created instances mount
+ * immediately because they have no server-rendered DOM to preserve.
  */
 
 import { TemplateElement } from './template-element.js';
 import { getTemplateRegistry } from './template.js';
-import { templateAttributeForRoot, templateNeedsStaticHost } from './template-roots.js';
+import { templateNeedsStaticHost } from './template-roots.js';
 import {
   TEMPLATES_REGISTERED_EVENT,
   templateRegistrationDetail,
@@ -21,7 +22,7 @@ import type { TemplateMeta } from './template.js';
 
 let runtimeInstalled = false;
 
-/** Define the smallest hydrating element for a compiler-owned static template. */
+/** Define the smallest client-rendering element for a compiler-owned template. */
 function defineTemplateHost(tag: string, meta: TemplateMeta): void {
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
@@ -29,23 +30,31 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
   if (!w.__webui.templates[tag]) w.__webui.templates[tag] = meta;
 
   class StaticTemplateHost extends TemplateElement {
-    protected $shouldApplyTemplateStateFromSSR(key: string): boolean {
-      const attr = templateAttributeForRoot(meta, key);
-      return attr === undefined || !this.hasAttribute(attr);
+    protected $afterExternalStateWrite(applied: boolean): void {
+      if (applied) this.$activateDeferredSSR();
+    }
+
+    protected $shouldDeferSSRHydration(): boolean {
+      return true;
+    }
+
+    protected $shouldApplySSRBootstrapState(): boolean {
+      return false;
     }
   }
 
   StaticTemplateHost.define(tag);
 }
 
-/**
- * Define a hydrating static host for one compiled template tag when safe.
- *
- * Developer-authored custom elements take precedence: when a tag is already
- * registered, this function leaves it untouched and reports no work.
- */
+/** Define a dormant host for one compiler-owned template tag when safe. */
 function defineMissingTemplateHost(tag: string, meta: TemplateMeta): void {
-  if (!templateNeedsStaticHost(meta) || customElements.get(tag)) return;
+  if (
+    !templateNeedsStaticHost(meta) ||
+    window.__webui?.templateHostExclusions?.has(tag) ||
+    customElements.get(tag)
+  ) {
+    return;
+  }
   defineTemplateHost(tag, meta);
 }
 
@@ -61,10 +70,9 @@ function defineTemplateHosts(templates = getTemplateRegistry()): void {
 }
 
 /**
- * Install the runtime for compiler-owned static template hosts.
+ * Install the runtime for compiler-owned dormant template hosts.
  *
- * Called once by the framework root. The compiler decides ownership per
- * component through `th`, so apps do not need a separate static-host bootstrap.
+ * Called once by the framework root. Authored custom elements always win.
  */
 export function installTemplateElementRuntime(): void {
   if (runtimeInstalled) {
@@ -76,8 +84,8 @@ export function installTemplateElementRuntime(): void {
 
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
     const detail = templateRegistrationDetail(event);
-    if (!detail) return;
-    if (detail.templates) defineTemplateHosts(detail.templates);
+    if (!detail?.templates) return;
+    defineTemplateHosts(detail.templates);
   });
 
   if (document.readyState === 'loading') {

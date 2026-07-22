@@ -52,9 +52,84 @@ with avatars, metadata, and action buttons.
 | 100 contacts    | 4.94 ms     | 56 KB HTML  |
 | 1,000 contacts  | 57.5 ms     | 363 KB HTML |
 
-Hydration plugin overhead is minimal: ~2–3% (59.5 ms vs 57.5 ms at 1,000
-contacts). The cost of embedding hydration markers is negligible compared to
-the rendering work itself.
+Hydration marker overhead is small in this fixture. Browser state is a separate
+cost: serializing a large server state object can dominate a small render.
+WebUI sends only the state needed by authored components on the active route.
+
+## Hydration Startup and Protocol Reuse
+
+With a validated projection manifest, the initial page contains only top-level
+`@observable` and `@attr` values needed by reachable authored components.
+Template-only values and inactive routes do not enlarge startup state. Without
+a manifest, WebUI preserves full state.
+
+Representative final release-mode Criterion results on a 1 MiB state object:
+
+| Workload | Before | After | Improvement |
+|----------|-------:|------:|------------:|
+| Initial render, full state vs three exact keys | 1.9034 ms | 1.6724 us | 1,138x |
+| Partial route, legacy parse/materialize/reserialize vs borrowed projection | 6.6751 ms | 658.17 us | 10.14x |
+| Partial route, borrowed full JSON vs borrowed projection | 1.0191 ms | 658.17 us | 35.4% less CPU |
+
+The initial-state benchmark starts from an already parsed Rust value. Hosts
+that accept JSON strings still pay JSON parsing cost. Loading `protocol.bin`
+into a `Protocol` once avoids repeated protocol decoding, not state parsing.
+
+The same current Contact Book protocol and state isolate payload impact:
+
+| Initial route | Full strategy | Projected strategy | Reduction |
+|---------------|--------------:|-------------------:|----------:|
+| Contact Book home | 12,116 bytes | 37 bytes | 99.69% |
+| Contact Book contacts | 12,116 bytes | 37 bytes | 99.69% |
+
+The live Contact Book API omits an empty `searchQuery`, so its projected
+`/contacts` response carries only `{"totalFavorites":5}` (20 bytes). Projection
+never synthesizes keys that the request state did not provide.
+
+Projection adds build-time work, not browser bundle code:
+
+| Paired Contact Book build | Without adapter | With adapter | Cost |
+|---------------------------|----------------:|-------------:|-----:|
+| Clean esbuild build, median of 6 alternating pairs | 90.9 ms | 131.8 ms | +40.9 ms |
+| No-change rebuild, median of 10 alternating pairs | 30.6 ms | 63.4 ms | +32.8 ms |
+| Emitted browser files | 398,341 bytes | 398,341 bytes | byte-identical |
+
+The production manifest was 9,753 bytes and added 450 bytes (1.62%) to the
+27,804-byte protocol. A profiled docs build hashed all 50 graph modules but
+parsed only 10 semantic modules; the complete adapter phase was 122 ms median.
+These numbers are hardware-specific, but they bound the tradeoff: tens of
+milliseconds during client builds in exchange for removing large-state
+serialization from every request.
+
+Every host should load `protocol.bin` once at startup:
+
+- Rust: construct `Protocol`
+- C: use `webui_protocol_create` and pass the handle to every protocol operation
+- .NET: construct `Protocol` and reuse it with the handler
+- WASM: construct the exported `Protocol`
+- Node: construct `Protocol` with the bytes and plugin, then release or reuse
+  the source `Buffer`
+
+The dedicated FFI startup benchmark isolates protobuf decoding and index
+construction from application rendering:
+
+| Protocol size | Full prepare/request | Full reused | Partial prepare/request | Partial reused |
+|---------------|---------------------:|------------:|------------------------:|---------------:|
+| 100 components | 77.390 us | 0.522 us | 72.673 us | 1.214 us |
+| 1,000 components | 716.67 us | 1.023 us | 790.70 us | 1.310 us |
+
+Protocol reuse removes 98.3% to 99.86% of the isolated protocol startup cost.
+The relative impact on a real request is smaller when template rendering or
+state serialization dominates, but repeatedly decoding immutable protocol
+bytes remains avoidable work.
+
+Do not construct a new Node `Protocol` for every request. Keep one loaded
+instance for the server lifetime.
+
+::: warning Browser state is client-facing
+Never put credentials, private tokens, or other secrets in state rendered to
+the browser.
+:::
 
 ## Why WebUI is Fast
 
@@ -66,10 +141,15 @@ Each layer of the architecture contributes to the overall performance profile:
   state interpolation against a pre-compiled binary protocol - no syntax
   parsing, no AST walking.
 
-- **Protocol Buffers.** The handler deserializes a compact binary payload
-  instead of parsing template syntax on every request. Protocol Buffer
-  deserialization is an order of magnitude faster than JSON parsing for
-  equivalent payloads.
+- **Bundler-proven state projection.** The application bundler records exact
+  decorated state ownership and emitted chunk membership. WebUI validates that
+  sidecar once, stores compact surfaces in `protocol.bin`, and projects request
+  state without running TypeScript analysis in Rust.
+
+- **Protocol Buffers.** The handler consumes a compact binary payload instead
+  of parsing template syntax. Host `Protocol` APIs decode the protocol and
+  build deterministic indices once at startup rather than repeating that work
+  per request.
 
 - **Streaming output with backpressure.** The `webui::streaming::StreamingWriter`
   coalesces handler writes into ~4 KB chunks and pushes them through a
@@ -147,6 +227,8 @@ consistent performance:
   character.
 - **No per-request template re-parsing** - load the compiled protocol once at
   startup and reuse it for every request.
+- **No per-request protocol decoding** - construct one `Protocol` and share it
+  across renders.
 
 ## Running Benchmarks
 
@@ -162,6 +244,12 @@ cargo xtask bench handler
 cargo xtask bench expressions
 cargo xtask bench protocol
 cargo xtask bench state
+
+# Hydration-state projection and partial-state serialization
+cargo bench -p microsoft-webui-handler --bench bootstrap_state_bench
+
+# Loaded versus per-request FFI protocol startup cost
+cargo bench -p microsoft-webui-ffi --bench protocol_bench
 
 # Contact book end-to-end benchmark
 cargo bench -p microsoft-webui --bench contact_book_bench

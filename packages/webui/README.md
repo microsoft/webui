@@ -15,13 +15,14 @@ The package automatically installs the correct platform-specific native binary f
 ## Quick start
 
 ```js
-import { build, render } from "@microsoft/webui";
+import { build, Protocol } from "@microsoft/webui";
 
 // Build templates into a protocol
 const result = build({ appDir: "./src" });
 
-// Render with state data
-const html = render(result.protocol, { name: "World", items: ["a", "b"] });
+// Decode and index once, then render repeatedly
+const protocol = new Protocol(result.protocol, { plugin: "webui" });
+const html = protocol.render({ name: "World", items: ["a", "b"] });
 console.log(html);
 ```
 
@@ -58,30 +59,88 @@ usage with a literal fallback (e.g. `var(--brand, #000)`) is exempt. Missing
 required tokens fail the build with a structured `missing-theme-token` error.
 Misspelled literal-fallback tokens are returned as non-fatal warnings.
 
-### `render(protocol: Buffer, state: object | string): string`
+### Optional state projection
 
-Renders a compiled protocol with state data and returns the full HTML string.
+The build-only `@microsoft/webui/projection.js` subpath exposes the
+bundler-neutral projection compiler and the supported esbuild adapter. esbuild
+and TypeScript are optional peer dependencies, so applications that do not use
+projection do not install or load them:
 
-```js
-const html = render(protocol, { title: "Hello", show: true });
+```bash
+npm install -D esbuild typescript
 ```
 
-### `renderStream(protocol: Buffer, state: object | string, onChunk: (html: string) => void): void`
-
-Renders with streaming output - each HTML fragment is passed to the callback as it is produced.
-
 ```js
-renderStream(protocol, state, (chunk) => {
-  response.write(chunk);
+import * as esbuild from "esbuild";
+import { esbuildProjection } from "@microsoft/webui/projection.js";
+
+await esbuild.build({
+  entryPoints: ["src/index.ts"],
+  outdir: "dist",
+  bundle: true,
+  splitting: true,
+  format: "esm",
+  plugins: [esbuildProjection()],
+});
+
+const result = build({
+  appDir: "./src",
+  plugin: "webui",
+  projectionManifests: ["./dist/webui-projection.json"],
 });
 ```
 
-### `buildAndRender(options: BuildOptions, state: object | string): string`
+esbuild runs once and emits both browser chunks and
+`webui-projection.json`; WebUI then embeds the exact initial/navigation
+surfaces into `protocol.bin`. The adapter uses esbuild's resolved graph and
+emitted output membership, so code splitting, dynamic imports, output hashes,
+and external bundles remain application-owned.
 
-Convenience function that builds and renders in a single call.
+Other bundler adapters can use the exported `AdapterContext`,
+`compileProjection()`, and conformance fixtures without importing esbuild. The
+package currently ships and supports `esbuildProjection()` as its official
+adapter.
+
+With no manifest, WebUI performs no JavaScript analysis and preserves full
+state. Once any manifest is supplied, coverage is strict: every scripted
+component compiled into the protocol must have exactly one entry. Shared
+controls built as external bundles should emit their own manifest fragment,
+then all fragments should be passed through `projectionManifests`.
+
+Manifest keys are exact JavaScript `@observable` and `@attr` property names.
+During hydration, an existing SSR host attribute wins over projected `@attr`
+state. Runtime hosts never load TypeScript, esbuild, or the manifest.
+
+### `new Protocol(protocol: Buffer, options?: ProtocolOptions)`
+
+Decodes and indexes a compiled protocol once. Keep this object for the server
+lifetime and use it for all runtime operations.
 
 ```js
-const html = buildAndRender({ appDir: "./src" }, { name: "WebUI" });
+const protocol = new Protocol(protocolBytes, { plugin: "webui" });
+```
+
+`Protocol` owns its decoded native state. The package does not keep a hidden
+`WeakMap`, copy the source `Buffer`, or expose byte-per-request render
+functions.
+
+### `protocol.render(state: object | string, options?: RenderOptions): string`
+
+Renders state and returns the full HTML string.
+
+```js
+const html = protocol.render({ title: "Hello", show: true });
+```
+
+### `protocol.renderStream(state, onChunk, options?): void`
+
+Renders with streaming output. Internal handler writes are coalesced around a
+16 KiB target before the callback crosses into JavaScript.
+
+```js
+protocol.renderStream(state, (chunk) => {
+  response.write(chunk);
+});
 ```
 
 ### `inspect(protocol: Buffer): string`
@@ -93,16 +152,16 @@ const json = inspect(protocol);
 console.log(JSON.parse(json));
 ```
 
-### `renderPartial(protocol: Buffer, stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string`
+### `protocol.renderPartial(state, entryId, requestPath, inventoryHex): string`
 
 Produces a JSON partial response for client-side navigation, including state, template metadata, condition closures, and route chain.
 
-### `renderComponentTemplates(protocol: Buffer, componentTags: string[], inventoryHex: string): string`
+### `protocol.renderComponentTemplates(componentTags, inventoryHex): string`
 
 Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `templateStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
 
 ```js
-const json = renderComponentTemplates(protocol, ["settings-dialog"], inventoryHex);
+const json = protocol.renderComponentTemplates(["settings-dialog"], inventoryHex);
 const { templates, templateFunctions, templateStyles, inventory } = JSON.parse(json);
 ```
 

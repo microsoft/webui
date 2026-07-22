@@ -16,12 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
 use webui::streaming::StreamingWriter;
-use webui::{Diagnostic, WebUIHandler};
+use webui::{Diagnostic, Protocol, WebUIHandler};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{encode_safe, RenderOptions, ResponseWriter};
+#[cfg(test)]
 use webui_protocol::WebUIProtocol;
 
 use super::common::*;
@@ -191,7 +192,7 @@ struct SharedState {
     /// In-memory static component assets (`<tag>.webui.js`) emitted by
     /// `--emit-component-assets`, served from memory like generated CSS.
     component_assets: HashMap<String, String>,
-    protocol: Option<WebUIProtocol>,
+    protocol: Option<Arc<Protocol>>,
     state_data: Option<Value>,
     token_css: Option<HashMap<String, String>>,
     rebuild_error: Option<String>,
@@ -345,6 +346,7 @@ fn run(args: &ServeArgs) -> Result<()> {
 
         let handle = start_file_watcher(WatcherConfig {
             watch_paths: watch_paths_list,
+            projection_manifests: args.app_args.projection_manifests.clone(),
             state: Arc::clone(&state),
             render_config,
             livereload: active_lr.clone(),
@@ -459,7 +461,7 @@ struct BuildRenderResult {
     css_files: HashMap<String, String>,
     /// Static component assets (`<tag>.webui.js`) keyed by filename.
     component_assets: HashMap<String, String>,
-    protocol: WebUIProtocol,
+    protocol: Arc<Protocol>,
     state_data: Value,
     token_css: Option<HashMap<String, String>>,
     /// Non-fatal build advisories (warning-severity diagnostics) to frame under
@@ -512,11 +514,13 @@ fn build_and_render(
         map.insert("basePath".into(), Value::String(bp));
     }
 
+    let protocol = Arc::new(Protocol::new(build_result.protocol));
+
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = create_handler(config.app_args.plugin);
-    handler.handle(
-        &build_result.protocol,
+    handler.render(
+        &protocol,
         &state,
         &RenderOptions::new(&config.app_args.entry, "/"),
         &mut writer,
@@ -538,7 +542,7 @@ fn build_and_render(
         html,
         css_files: css_map,
         component_assets,
-        protocol: build_result.protocol,
+        protocol,
         state_data: state,
         token_css,
         warnings: build_result.warnings,
@@ -749,12 +753,8 @@ async fn render_page_response(
 
     // Inject route params (nested) into state for SSR
     if let Value::Object(ref mut map) = state {
-        let nested_params = webui_handler::route_handler::collect_nested_route_params(
-            &proto,
-            &entry,
-            route_path,
-            &mut webui_handler::route_matcher::CompiledRouteCache::new(),
-        );
+        let nested_params =
+            webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
         for (k, v) in &nested_params {
             map.insert(k.clone(), Value::String(v.clone()));
         }
@@ -791,22 +791,16 @@ async fn render_page_response(
             None => opts_owner,
         };
         let handler = create_handler(plugin);
-        if let Err(e) = handler.handle(&proto, &state, &opts, &mut writer) {
+        if let Err(e) = handler.render(&proto, &state, &opts, &mut writer) {
             // Status 200 + headers are already on the wire — we cannot
             // return an HTTP error. Log the detail so ops sees it;
             // emit a fixed HTML comment so an attacker-controlled
             // error message cannot break out of the comment via `-->`.
             log::error!("render failed for {route_path_for_log}: {e}");
             let _ = ResponseWriter::write(&mut writer, "<!-- webui: render error -->");
-        }
-        // `end()` now returns the typed error from the final flush
-        // (`ClientDisconnected` / `StreamTimeout`) rather than
-        // silently swallowing it. Log truncated-response cases at
-        // debug so they're visible to operators without spamming
-        // production logs — these are normal "browser navigated away
-        // during a long-tail render" events.
-        if let Err(e) = ResponseWriter::end(&mut writer) {
-            log::debug!("render stream truncated for {route_path_for_log}: {e}");
+            if let Err(flush_error) = ResponseWriter::end(&mut writer) {
+                log::debug!("render stream truncated for {route_path_for_log}: {flush_error}");
+            }
         }
     });
 
@@ -884,11 +878,7 @@ async fn handle_component_templates(
             .content_type("application/json")
             .body(r#"{"error":"no protocol"}"#);
     };
-    // Per-request index — see ProtocolIndex doc for caching guidance.
-    let mut index = webui_handler::route_handler::ProtocolIndex::new(protocol);
-    let result = match webui_handler::route_handler::render_component_templates(
-        protocol, &tags, &inv, &mut index,
-    ) {
+    let result = match protocol.render_component_templates(&tags, &inv) {
         Ok(v) => v,
         Err(e) => {
             return HttpResponse::InternalServerError()
@@ -1021,7 +1011,6 @@ async fn handle_json_partial(
                 proto,
                 &entry,
                 &paths.route_path,
-                &mut webui_handler::route_matcher::CompiledRouteCache::new(),
             );
             for (k, v) in &nested_params {
                 map.insert(k.clone(), Value::String(v.clone()));
@@ -1039,33 +1028,31 @@ async fn handle_json_partial(
 
     // Build the complete partial response (templateStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        // Per-request index — ideally cached alongside protocol for server lifetime.
-        let mut index = webui_handler::route_handler::ProtocolIndex::new(proto);
-        let mut p = match webui_handler::route_handler::render_partial(
-            proto,
-            &entry,
-            &paths.route_path,
-            &client_inv_hex,
-            &mut index,
-        ) {
-            Ok(v) => v,
+        let state_json = match serde_json::to_string(&state_data) {
+            Ok(value) => value,
+            Err(error) => {
+                return HttpResponse::InternalServerError()
+                    .content_type("application/json")
+                    .body(format!(
+                        r#"{{"error":"state serialization failed: {error}"}}"#
+                    ));
+            }
+        };
+        match proto.render_partial(&state_json, &entry, &paths.route_path, &client_inv_hex) {
+            Ok(value) => value,
             Err(e) => {
                 return HttpResponse::InternalServerError()
                     .content_type("application/json")
                     .body(format!(r#"{{"error":"{}"}}"#, e));
             }
-        };
-        if let Some(obj) = p.as_object_mut() {
-            obj.insert("state".into(), state_data);
         }
-        p
     } else {
-        Value::Object(serde_json::Map::new())
+        "{}".to_string()
     };
 
     HttpResponse::Ok()
         .content_type("application/json")
-        .json(partial)
+        .body(partial)
 }
 
 #[cfg(test)]
@@ -1075,15 +1062,20 @@ fn collect_needed_template_names(
     request_path: &str,
     inventory_hex: &str,
 ) -> (Vec<String>, String) {
-    let component_index = webui_handler::route_handler::build_component_index(protocol);
-    webui_handler::route_handler::get_needed_components_for_request(
-        protocol,
-        entry_fragment_id,
-        request_path,
-        inventory_hex,
-        &component_index,
-    )
-    .unwrap()
+    let protocol = Protocol::new(protocol.clone());
+    let json = protocol
+        .render_partial("{}", entry_fragment_id, request_path, inventory_hex)
+        .unwrap();
+    let response: Value = serde_json::from_str(&json).unwrap();
+    let names = response["templates"]
+        .as_object()
+        .map(|templates| templates.keys().cloned().collect())
+        .unwrap_or_default();
+    let inventory = response["inventory"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    (names, inventory)
 }
 
 /// Forward requests under `/api/*` to the user's API server.
@@ -1157,6 +1149,7 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 /// Configuration for the file watcher.
 struct WatcherConfig {
     watch_paths: Vec<PathBuf>,
+    projection_manifests: Vec<PathBuf>,
     state: Arc<Mutex<SharedState>>,
     render_config: RenderConfig,
     livereload: LiveReload,
@@ -1172,6 +1165,7 @@ struct WatcherConfig {
 fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::WatcherHandle> {
     let WatcherConfig {
         watch_paths,
+        projection_manifests,
         state,
         render_config,
         livereload,
@@ -1212,6 +1206,7 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     spawn_watcher(
         WatchConfig {
             paths: watch_paths,
+            explicit_files: projection_manifests,
             ignore,
             debounce: WATCH_DEBOUNCE,
             retry_unchanged_when: Some(retry_unchanged_when),
@@ -1352,6 +1347,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1381,6 +1377,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1416,6 +1413,7 @@ mod tests {
                     dom: DomStrategy::Shadow,
                     plugin,
                     components: Vec::new(),
+                    projection_manifests: Vec::new(),
                     asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                     css_public_base: None,
                     legal_comments: LegalComments::Inline,
@@ -1465,6 +1463,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1504,6 +1503,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1530,6 +1530,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1555,6 +1556,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1593,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_needed_template_names_follows_active_route_chain() {
+    fn test_collect_needed_template_names_returns_active_route_payloads() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -1668,12 +1670,8 @@ mod tests {
         let (needed, inventory) =
             collect_needed_template_names(&protocol, "index.html", "/search/shirts", "");
 
-        assert!(needed.contains(&"mp-app".to_string()));
-        assert!(needed.contains(&"mp-page-search".to_string()));
-        assert!(needed.contains(&"mp-product-grid".to_string()));
-        assert!(needed.contains(&"mp-category-nav".to_string()));
+        assert_eq!(needed, vec!["mp-page-search".to_string()]);
         assert!(!needed.contains(&"mp-page-product".to_string()));
-        assert!(!needed.contains(&"mp-product-detail".to_string()));
         assert!(!inventory.is_empty());
     }
 
@@ -1723,6 +1721,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1771,6 +1770,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2067,6 +2067,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2103,6 +2104,17 @@ mod tests {
         // The error demands the missing `--token-c`, not the locally-defined
         // `--token-a` (which appears in the source snippet only as context).
         assert!(!error.contains("add --token-a"), "error: {error}");
+
+        std::fs::write(
+            app.path().join("my-card.css"),
+            ":host { --foo-bar: var(--token-b); }",
+        )
+        .unwrap();
+        assert!(
+            rebuild_and_update_state(&config, &livereload, &state).is_ok(),
+            "a later valid synchronization file must recover the rebuild loop"
+        );
+        assert!(state.lock().unwrap().rebuild_error.is_none());
     }
 
     #[test]
@@ -2123,6 +2135,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2186,6 +2199,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2221,6 +2235,7 @@ mod tests {
             ("app-shell.html", "<div></div>"),
             ("lazy-panel.html", "<p>{{title}}</p>"),
             ("lazy-panel.css", ":host { color: red; }"),
+            ("lazy-panel.ts", "export {};"),
         ]);
         let config = RenderConfig {
             app_args: AppArgs {
@@ -2230,6 +2245,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2274,6 +2290,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,

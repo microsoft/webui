@@ -85,13 +85,13 @@ containing `@license` or `@preserve`, or starting with `/*!` or `//!`. Use
 ### Render
 
 ```rust
-use webui::{WebUIHandler, WebUIProtocol, ResponseWriter, RenderOptions};
+use webui::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
-let protocol = WebUIProtocol::from_protobuf(&protocol_bytes)?;
+let protocol = Protocol::from_protobuf(&protocol_bytes)?;
 let state: serde_json::Value = serde_json::json!({"name": "WebUI"});
 
 let handler = WebUIHandler::new();
-handler.handle(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut writer)?;
+handler.render(&protocol, &state, &RenderOptions::new("index.html", "/"), &mut writer)?;
 ```
 
 With a hydration plugin enabled (the `webui` plugin shown here; see the WebUI documentation for the available plugin identifiers):
@@ -120,11 +120,9 @@ let json = inspect_bytes(&protocol_bytes)?;
 For servers handling client-side navigation, produce a complete JSON partial:
 
 ```rust
-use webui_handler::route_handler;
-
-let partial = route_handler::render_partial(
-    &protocol, state, "index.html", "/users/42", inventory_hex,
-);
+let partial = protocol.render_partial(
+    state_json, "index.html", "/users/42", inventory_hex,
+)?;
 // Returns: { state, templates, inventory, path, chain }
 ```
 
@@ -135,7 +133,7 @@ let partial = route_handler::render_partial(
 | `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, css_public_base) |
 | `BuildResult` | Build output (protocol, css_files, component_templates with metadata/closures, stats) |
 | `BuildStats` | Build metrics (duration, fragment_count, protocol_size_bytes) |
-| `WebUIProtocol` | Compiled protocol (from protobuf binary) |
+| `Protocol` | Loaded immutable runtime protocol with reusable indices |
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |
 | `RenderOptions` | Render configuration (entry_id, request_path) |
 | `ResponseWriter` | Trait for streaming rendered output |

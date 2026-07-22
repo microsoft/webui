@@ -165,7 +165,28 @@ pub fn run_app_builds() -> Result<(), String> {
 
 pub fn run_example_builds() -> Result<(), String> {
     run_integration_builds()?;
+    ensure_example_wasm()?;
     run_app_builds()
+}
+
+/// Build the WASM bundles once, before the parallel app builds, when they are
+/// not already present.
+///
+/// Some example apps (e.g. `service-worker`) copy the compiled handler bundle
+/// during their own build and otherwise spawn a nested `cargo xtask build-wasm`.
+/// Running that nested build inside the parallel app builds races the other
+/// apps for the Cargo target-directory lock and fails in CI, where no earlier
+/// step has produced the bundle. Building it here first keeps `build-examples`
+/// self-contained. Locally the gate builds WASM in an earlier phase, so this
+/// check is a no-op and adds no cost.
+fn ensure_example_wasm() -> Result<(), String> {
+    let handler_dir = Path::new(crate::build_wasm::WASM_OUTPUT_DIR).join("handler");
+    let js = handler_dir.join("webui_wasm_handler.js");
+    let wasm = handler_dir.join("webui_wasm_handler_bg.wasm");
+    if js.is_file() && wasm.is_file() {
+        return Ok(());
+    }
+    crate::build_wasm::run()
 }
 
 fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
@@ -183,6 +204,7 @@ fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
             if let Ok(s) = String::from_utf8(output.stdout) {
                 msg.push_str(&s);
             }
+
             if let Ok(s) = String::from_utf8(output.stderr) {
                 msg.push_str(&s);
             }

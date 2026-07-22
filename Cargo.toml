@@ -21,7 +21,7 @@ homepage = "https://microsoft.github.io/webui"
 
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.150"
+serde_json = { version = "1.0.150", features = ["raw_value"] }
 thiserror = "2.0.18"
 anyhow = "1.0.103"
 log = "0.4.33"

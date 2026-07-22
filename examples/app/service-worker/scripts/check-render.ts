@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { sanitizePayload } from "../src/payload.js";
-import initWasm, { render } from "../public/wasm/handler/webui_wasm_handler.js";
+import initWasm, { Protocol } from "../public/wasm/handler/webui_wasm_handler.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const exampleRoot = resolve(here, "..");
@@ -18,7 +18,10 @@ const baseUrl = new URL("http://localhost:4175/");
 
 await initWasm({ module_or_path: await readFile(wasmPath) });
 
-const protocol = new Uint8Array(await readFile(protocolPath));
+const protocol = new Protocol(
+  new Uint8Array(await readFile(protocolPath)),
+  "webui",
+);
 
 for (const name of apiFiles) {
   const payload = JSON.parse(
@@ -29,11 +32,10 @@ for (const name of apiFiles) {
   const onChunk = (chunk: string): void => {
     html += chunk;
   };
-  render(
-    protocol,
+  protocol.renderStream(
     JSON.stringify(sanitized.state),
     onChunk,
-    { entry: sanitized.entry, requestPath: "/", plugin: "webui" },
+    { entry: sanitized.entry, requestPath: "/" },
   );
   if (!html.includes("card")) {
     throw new Error(`Rendered ${sanitized.entry} did not include expected card markup`);

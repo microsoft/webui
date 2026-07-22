@@ -16,15 +16,13 @@ export const LOADER_FAILED: unique symbol = Symbol('LOADER_FAILED');
 const NOOP_SIGNAL = new AbortController().signal;
 
 /**
- * Ensure a component's JS module is loaded. If a lazy loader is
- * configured for this tag, invoke the loader before consulting the registry.
- * This gives authored lazy components precedence over compiler-marked
- * static hosts if template metadata is conservative or stale. The promise is
+ * Ensure a component's JS module is loaded. If a lazy loader is configured for
+ * this tag, invoke it before consulting the registry. This gives authored lazy
+ * components precedence over compiler-owned dormant hosts. The promise is
  * cached so each loader runs at most once.
  *
- * When no loader exists, the router leaves registration to the app's selected
- * runtime tier. HTML-only WebUI components are claimed by the framework static
- * host tier; authored components register themselves.
+ * When no loader exists, HTML-only components are claimed by the framework's
+ * dormant host tier and authored components register themselves.
  */
 export async function ensureComponentLoaded(
   tag: string,

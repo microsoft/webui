@@ -63,10 +63,18 @@ Router.start();
 
 The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
 
-The router never imports framework code. If route components are HTML-only but
-need server or route state, make sure the browser entry imports
-`@microsoft/webui-framework` somewhere so compiler-owned route tags can be
-claimed by the framework static host runtime.
+The router never imports framework code. Authored route components use their
+registered classes. When the application also loads
+`@microsoft/webui-framework`, HTML-only route templates can mount during soft
+navigation without empty TypeScript modules. The router falls back to a full
+document request only when no runtime registers the destination tag.
+
+When the View Transitions API is available, client-side route commits
+use `document.startViewTransition()`. While active, the router installs a
+nonce-bearing `@view-transition { navigation: none; }` override. This disables
+automatic cross-document transitions because they conflict with intercepted
+routes that may need the document fallback. `Router.destroy()` removes the
+override.
 
 ## Nested Routes
 
@@ -222,19 +230,23 @@ The router provides four mechanisms for controlling how state flows to your comp
 
 | Need | Mechanism | What happens |
 |------|-----------|-------------|
-| **Server provides all state** | Default (no changes) | Fresh route state is applied when the component mounts. HTML-only route components do not need empty classes; import `@microsoft/webui-framework` when compiler-owned stateful templates are present |
+| **Server provides state to authored code** | Authored route component | Fresh route state is applied when the component mounts |
+| **Template-only soft navigation** | Omit sibling `.ts` / `.js`, load the framework once | The framework mounts the compiled route template |
 | **I fetch my own data** | `static loader()` on component | Loader runs before the route commits and supplies route data |
 | **Preserve local state** | `keep-alive` on route | Params/query attrs update while local state is preserved |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
 
 ```typescript
-// Express example — render_partial returns chain + templates (no state).
-// Caller adds state to the response.
+// Express example - the npm helper returns a complete JSON partial.
 app.get('*', async (req, res) => {
   const state = await db.getPageState(req.path);
-  const partial = handler.renderPartial(protocol, index, req.path, invHex);
-  partial.state = state;
-  res.json(partial);
+  const partialJson = protocol.renderPartial(
+    state,
+    'index.html',
+    req.path,
+    invHex,
+  );
+  res.type('json').send(partialJson);
 });
 ```
 
@@ -442,6 +454,15 @@ At startup, the router uses the SSR route chain, route indexes, template
 inventory, and style list emitted by the server. That keeps hydration direct and
 avoids DOM walking or route-pattern recomputation on first load.
 
+The `state` field is **projected** to the hydratable surface rather than
+carrying your entire application state. At build time WebUI records which
+properties each component actually hydrates — its template state roots plus any
+`@observable`/`@attr` fields — and at render time the server emits only those
+keys, dropping everything else (including server-only data). This keeps the
+bootstrap block small even when the underlying render state is large; the client
+hydrates exactly as before, since it only ever reads the properties a component
+observes.
+
 #### SSR Fresh / Loaders
 
 By default, `Router.start({ ssrFresh: true })` skips running route loaders on the initial SSR-bootstrapped navigation. The server-rendered state is considered authoritative, so there is no redundant client-side fetch on first load.
@@ -606,15 +627,13 @@ Router.start({
 });
 ```
 
-On the server, handle the template endpoint with `renderComponentTemplates`:
+On the server, use the loaded protocol's `renderComponentTemplates` method:
 
 ```javascript
-import { renderComponentTemplates } from '@microsoft/webui';
-
 app.get('/_webui/templates', (req, res) => {
   const tags = (req.query.t ?? '').split(',').filter(Boolean);
   const inv = req.get('X-WebUI-Inventory') ?? '';
-  res.type('json').send(renderComponentTemplates(protocol, tags, inv));
+  res.type('json').send(protocol.renderComponentTemplates(tags, inv));
 });
 ```
 
@@ -651,9 +670,9 @@ When `Accept: application/json` or `application/x-ndjson`:
   "inventory": "04000400...",
   "path": "/users/42",
   "chain": [
-    { "component": "app-shell", "path": "/" },
+    { "component": "app-shell", "client": true, "path": "/" },
     {
-      "component": "user-detail", "path": "users/:id",
+      "component": "user-detail", "client": true, "path": "users/:id",
       "params": { "id": "42" }, "exact": true, "keepAlive": true,
       "pendingComponent": "loading-skeleton",
       "errorComponent": "error-page",
@@ -667,7 +686,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 
 | Field | Description |
 |-------|-------------|
-| `state` | Application state (added by the caller, not by `render_partial`) |
+| `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
 | `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
@@ -676,7 +695,10 @@ When `Accept: application/json` or `application/x-ndjson`:
 | `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
 | `cacheControl` | Optional per-response cache overrides |
 
-Each `chain` entry can include: `component`, `path`, `params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`, `errorComponent`, and `invalidates`.
+Each `chain` entry includes `component` and `path`. It can also include
+`params`, `exact`, `keepAlive`, `allowedQuery`, `pendingComponent`,
+`errorComponent`, and `invalidates`. Component capability is determined by
+custom-element registration, not by a server `client` flag.
 
 **Request headers the router sends:**
 
@@ -693,50 +715,71 @@ bootstrap.
 
 ### Partial Navigation
 
-The partial response format is unchanged. Use `render_partial()` (Rust) or `webui_render_partial()` (FFI) to get the partial response - chain, templateStyles, templates, inventory, path, and cacheTags. The caller adds application state to the result.
+Rust `Protocol::render_partial()` and every host binding return the complete
+response, including the state needed by active-route components. Raw state
+input is validated in full while unneeded values are skipped without
+constructing a duplicate JSON tree.
 
-`render_partial()` now requires a `ProtocolIndex` parameter - a pre-computed index that caches expensive lookups (component bit-index maps, compiled route templates, and component closures). Build it once per protocol at startup and reuse it across requests:
+For repeated Rust requests, load one `Protocol`:
 
 ```rust
-// Rust - build the index once, reuse across requests
-let mut index = ProtocolIndex::new(&protocol);
-
-let mut partial = route_handler::render_partial(&protocol, &entry, &path, &inventory_hex, &mut index);
-// Caller adds state to the response
-if let Some(obj) = partial.as_object_mut() {
-    obj.insert("state".into(), state);
-}
+let protocol = Protocol::from_protobuf(&protocol_bytes)?;
+let json = protocol.render_partial(
+    state_json,
+    "index.html",
+    request_path,
+    inventory_hex,
+)?;
 ```
 
 ```csharp
 // C#
-string partialJson = handler.RenderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller merges state into the JSON before sending
+string partialJson = protocol.RenderPartial(
+    stateJson,
+    entryId,
+    requestPath,
+    inventoryHex);
 ```
 
 ```javascript
 // Node.js
-const partialJson = webui.renderPartial(protocol, index, entryId, requestPath, inventoryHex);
-// Caller adds state before sending
+const partialJson = protocol.renderPartial(
+  state,
+  entryId,
+  requestPath,
+  inventoryHex,
+);
 ```
 
 ### Express Example
 
 ```javascript
-// Build index once at startup
-const index = webui.createIndex(protocol);
+import { Protocol } from '@microsoft/webui';
+import { readFileSync } from 'node:fs';
+
+const protocol = new Protocol(
+  readFileSync('./dist/protocol.bin'),
+  { plugin: 'webui' },
+);
 
 app.get('/users/:id', (req, res) => {
   const state = { name: getUser(req.params.id).name };
 
   if (req.accepts('json')) {
-    // renderPartial() returns chain + templates; caller adds state
     const inv = req.get('X-WebUI-Inventory') ?? '';
-    const partial = JSON.parse(webui.renderPartial(protocol, index, 'index.html', req.path, inv));
-    partial.state = state;
-    res.type('json').send(JSON.stringify(partial));
+    const partialJson = protocol.renderPartial(
+      state,
+      'index.html',
+      req.path,
+      inv,
+    );
+    res.type('json').send(partialJson);
   } else {
-    res.type('html').send(handler.render(protocol, state, 'index.html', req.path));
+    const html = protocol.render(state, {
+      entry: 'index.html',
+      requestPath: req.path,
+    });
+    res.type('html').send(html);
   }
 });
 ```

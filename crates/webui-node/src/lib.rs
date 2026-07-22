@@ -6,9 +6,8 @@
 //! Provides high-performance server-side rendering by compiling the Rust
 //! WebUI handler directly into a `.node` native addon — no C ABI intermediary.
 //!
-//! The `render` function accepts pre-compiled protobuf protocol data (from
-//! `webui build`) and streams rendered HTML fragments via a callback, enabling
-//! true streaming SSR without buffering the entire response.
+//! The `Protocol` class decodes pre-compiled protobuf data from `webui build`
+//! once and provides buffered and streaming render methods.
 //!
 //! ## Usage (from Node.js)
 //!
@@ -18,14 +17,14 @@
 //! // Load the native addon
 //! const mod = { exports: {} };
 //! process.dlopen(mod, './target/release/libwebui_node.dylib');
-//! const { render } = mod.exports;
+//! const { Protocol } = mod.exports;
 //!
 //! // Read pre-compiled protocol (from `webui build`)
-//! const protocol = fs.readFileSync('./dist/protocol.bin');
+//! const protocol = new Protocol(fs.readFileSync('./dist/protocol.bin'), 'webui');
 //! const state = '{"name": "WebUI"}';
 //!
 //! // Stream rendered fragments
-//! render(protocol, state, (chunk) => process.stdout.write(chunk));
+//! protocol.renderStream(state, 'index.html', '/', (chunk) => process.stdout.write(chunk));
 //! ```
 
 use napi::bindgen_prelude::{Buffer, Function};
@@ -35,8 +34,11 @@ use serde_json::Value;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler};
+#[cfg(test)]
 use webui_protocol::WebUIProtocol;
+
+const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
 /// Build statistics returned from the build function.
 #[napi(object)]
@@ -71,6 +73,15 @@ pub struct JsBuildResult {
     pub stats: JsBuildStats,
 }
 
+/// Inline projection manifest transported through N-API.
+#[napi(object)]
+pub struct JsProjectionManifest {
+    /// Logical manifest path used to resolve `root` and stale file checks.
+    pub path: String,
+    /// Canonical manifest JSON.
+    pub json: String,
+}
+
 /// Build options for the webui build API.
 #[napi(object)]
 pub struct JsBuildOptions {
@@ -96,6 +107,10 @@ pub struct JsBuildOptions {
     pub legal_comments: Option<String>,
     /// Design token theme: a JSON file path or npm package name.
     pub theme: Option<String>,
+    /// Projection manifest paths.
+    pub projection_manifests: Option<Vec<String>>,
+    /// Inline manifest objects with their logical paths.
+    pub projection_manifest_objects: Option<Vec<JsProjectionManifest>>,
 }
 
 /// Build a WebUI application from an app directory.
@@ -137,6 +152,23 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         .as_deref()
         .map(|theme| load_theme(theme, &app_dir))
         .transpose()?;
+    let mut projection_manifests: Vec<webui::ProjectionManifestSource> = options
+        .projection_manifests
+        .unwrap_or_default()
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .map(Into::into)
+        .collect();
+    projection_manifests.extend(
+        options
+            .projection_manifest_objects
+            .unwrap_or_default()
+            .into_iter()
+            .map(|manifest| webui::ProjectionManifestSource::Inline {
+                manifest_path: std::path::PathBuf::from(manifest.path),
+                json: manifest.json,
+            }),
+    );
 
     let build_options = webui::BuildOptions {
         app_dir,
@@ -152,6 +184,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         css_public_base: options.css_public_base,
         legal_comments,
         theme,
+        projection_manifests,
     };
 
     let result = webui::build(build_options)
@@ -201,156 +234,109 @@ pub fn inspect(protocol_data: Buffer) -> napi::Result<String> {
         .map_err(|e| NapiError::from_reason(format!("Inspect error: {e}")))
 }
 
-/// Produce a complete JSON partial response for client-side navigation.
+/// A decoded protocol and its reusable deterministic indices.
 ///
-/// Combines application state, route templates, inventory, request path, and
-/// matched route chain into a single JSON string:
-/// `{"state":{...},"templates":[...],"inventory":"...","path":"...","chain":[...]}`.
-///
-/// Host servers return this directly — no assembly required.
+/// Create this once when a Node server loads `protocol.bin`, then reuse it for
+/// full renders, partial navigation, component loading, and token queries. The
+/// selected hydration plugin is bound once at construction.
 #[napi]
-pub fn render_partial(
-    protocol_data: Buffer,
-    state_json: String,
-    entry_id: String,
-    request_path: String,
-    inventory_hex: String,
-) -> napi::Result<String> {
-    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
-        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
-
-    let state: serde_json::Value = serde_json::from_str(&state_json)
-        .map_err(|e| NapiError::from_reason(format!("invalid state JSON: {e}")))?;
-
-    // TODO: ProtocolIndex is created per-request here because the Node binding
-    // receives the protocol fresh each call. Ideally the host should cache it
-    // alongside the protocol for the lifetime of the server — it's deterministic
-    // per protocol and avoids rebuilding the component index + route cache.
-    let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
-
-    let mut result = webui_handler::route_handler::render_partial(
-        &protocol,
-        &entry_id,
-        &request_path,
-        &inventory_hex,
-        &mut index,
-    )
-    .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))?;
-    if let Some(obj) = result.as_object_mut() {
-        obj.insert("state".into(), state);
-    }
-
-    serde_json::to_string(&result)
-        .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
+pub struct Protocol {
+    inner: HandlerProtocol,
+    handler: WebUIHandler,
 }
 
 #[napi]
-pub fn render_component_templates(
-    protocol_data: Buffer,
-    component_tags_json: String,
-    inventory_hex: String,
-) -> napi::Result<String> {
-    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
-        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
+impl Protocol {
+    /// Decode a protocol and bind its render plugin for repeated rendering.
+    #[napi(constructor)]
+    pub fn new(protocol_data: Buffer, plugin: Option<String>) -> napi::Result<Self> {
+        let inner = decode_protocol(&protocol_data)?;
+        let handler = create_handler(plugin)?;
+        Ok(Self { inner, handler })
+    }
 
-    let tags: Vec<String> = serde_json::from_str(&component_tags_json)
-        .map_err(|e| NapiError::from_reason(format!("invalid tags JSON: {e}")))?;
-    let tag_refs: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
+    /// Render from an existing JSON string.
+    #[napi]
+    pub fn render(
+        &self,
+        state_json: String,
+        entry: String,
+        request_path: String,
+    ) -> napi::Result<String> {
+        let state = parse_state_json(&state_json)?;
+        let options = RenderOptions::new(&entry, &request_path);
+        render_to_string(&self.handler, &self.inner, &state, &options)
+    }
 
-    // Per-request index — see ProtocolIndex doc for caching guidance.
-    let mut index = webui_handler::route_handler::ProtocolIndex::new(&protocol);
+    /// Stream an existing JSON string in bounded chunks.
+    #[napi]
+    pub fn render_stream(
+        &self,
+        state_json: String,
+        entry: String,
+        request_path: String,
+        on_chunk: Function<String, ()>,
+    ) -> napi::Result<()> {
+        let state = parse_state_json(&state_json)?;
+        let options = RenderOptions::new(&entry, &request_path);
+        render_to_callback(&self.handler, &self.inner, &state, &options, &on_chunk)
+    }
 
-    let result = webui_handler::route_handler::render_component_templates(
-        &protocol,
-        &tag_refs,
-        &inventory_hex,
-        &mut index,
-    )
-    .map_err(|e| NapiError::from_reason(format!("render_component_templates failed: {e}")))?;
+    /// Produce a complete partial-navigation response.
+    #[napi]
+    pub fn render_partial(
+        &self,
+        state_json: String,
+        entry_id: String,
+        request_path: String,
+        inventory_hex: String,
+    ) -> napi::Result<String> {
+        self.inner
+            .render_partial(&state_json, &entry_id, &request_path, &inventory_hex)
+            .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))
+    }
 
-    serde_json::to_string(&result)
-        .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
-}
+    /// Render component templates and styles for on-demand loading.
+    #[napi]
+    pub fn render_component_templates(
+        &self,
+        component_tags: Vec<String>,
+        inventory_hex: String,
+    ) -> napi::Result<String> {
+        let tag_refs: Vec<&str> = component_tags.iter().map(String::as_str).collect();
+        let result = self
+            .inner
+            .render_component_templates(&tag_refs, &inventory_hex)
+            .map_err(|e| {
+                NapiError::from_reason(format!("render_component_templates failed: {e}"))
+            })?;
+        serde_json::to_string(&result)
+            .map_err(|e| NapiError::from_reason(format!("JSON serialize error: {e}")))
+    }
 
-/// Extract the CSS token name list from a compiled protocol.
-///
-/// Returns the tokens as a JavaScript string array, preserving the original
-/// order from the build step.
-#[napi]
-pub fn protocol_tokens(protocol_data: Buffer) -> napi::Result<Vec<String>> {
-    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
-        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
-
-    Ok(protocol.tokens)
-}
-
-/// A writer that streams each rendered fragment to a JS callback.
-struct CallbackWriter<'a, 'env> {
-    callback: &'a Function<'env, String, ()>,
-    error: Option<String>,
-}
-
-impl<'a, 'env> CallbackWriter<'a, 'env> {
-    fn new(callback: &'a Function<'env, String, ()>) -> Self {
-        Self {
-            callback,
-            error: None,
-        }
+    /// Return CSS token names in build order.
+    #[napi]
+    pub fn tokens(&self) -> Vec<String> {
+        self.inner.tokens().to_vec()
     }
 }
 
-impl ResponseWriter for CallbackWriter<'_, '_> {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        if self.error.is_some() {
-            return Ok(());
-        }
-        if let Err(e) = self.callback.call(content.to_owned()) {
-            // Ignore "Value is not undefined" errors from callbacks that
-            // return non-void (e.g. res.write() returns a boolean).
-            let msg = format!("{e}");
-            if !msg.contains("Value is not undefined") {
-                self.error = Some(msg);
-            }
-        }
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
+fn decode_protocol(protocol_data: &[u8]) -> napi::Result<HandlerProtocol> {
+    HandlerProtocol::from_protobuf(protocol_data)
+        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))
 }
 
-/// Render a pre-compiled WebUI protocol with JSON state, streaming each
-/// fragment to the provided callback.
-///
-/// # Arguments
-///
-/// * `protocol_data` — Protobuf binary from `webui build` (zero-copy Buffer).
-/// * `state_json` — JSON string with the render state.
-/// * `on_chunk` — Called with each rendered HTML fragment as it is produced.
-/// * `plugin` — Optional plugin identifier (see crate documentation for available identifiers).
-#[napi]
-#[allow(clippy::too_many_arguments)]
-pub fn render(
-    protocol_data: Buffer,
-    state_json: String,
-    entry: String,
-    request_path: String,
-    on_chunk: Function<String, ()>,
-    plugin: Option<String>,
-) -> napi::Result<()> {
-    let protocol = WebUIProtocol::from_protobuf(&protocol_data)
-        .map_err(|e| NapiError::from_reason(format!("Protocol decode error: {e}")))?;
+fn parse_state_json(state_json: &str) -> napi::Result<Value> {
+    serde_json::from_str(state_json)
+        .map_err(|e| NapiError::from_reason(format!("State JSON error: {e}")))
+}
 
-    let state: Value = serde_json::from_str(&state_json)
-        .map_err(|e| NapiError::from_reason(format!("State JSON error: {e}")))?;
-
-    let mut writer = CallbackWriter::new(&on_chunk);
+fn create_handler(plugin: Option<String>) -> napi::Result<WebUIHandler> {
     let plugin = plugin
-        .map(|s| s.parse::<webui::Plugin>())
+        .map(|value| value.parse::<webui::Plugin>())
         .transpose()
         .map_err(NapiError::from_reason)?;
-    let handler = match plugin {
+    Ok(match plugin {
         Some(webui::Plugin::Fast | webui::Plugin::FastV2) => {
             WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()))
         }
@@ -361,27 +347,124 @@ pub fn render(
             WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()))
         }
         None => WebUIHandler::new(),
-    };
-    handler
-        .render(
-            &protocol,
-            &state,
-            &RenderOptions::new(&entry, &request_path),
-            &mut writer,
-        )
-        .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
+    })
+}
 
-    if let Some(err) = writer.error {
-        return Err(NapiError::from_reason(format!("Callback error: {err}")));
+struct BufferedWriter {
+    output: String,
+}
+
+impl BufferedWriter {
+    fn new() -> Self {
+        Self {
+            output: String::with_capacity(4096),
+        }
+    }
+}
+
+impl ResponseWriter for BufferedWriter {
+    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+        self.output.push_str(content);
+        Ok(())
     }
 
+    fn end(&mut self) -> webui_handler::Result<()> {
+        Ok(())
+    }
+}
+
+fn render_to_string(
+    handler: &WebUIHandler,
+    protocol: &HandlerProtocol,
+    state: &Value,
+    options: &RenderOptions<'_>,
+) -> napi::Result<String> {
+    let mut writer = BufferedWriter::new();
+    handler
+        .render(protocol, state, options, &mut writer)
+        .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
+    Ok(writer.output)
+}
+
+/// A writer that batches rendered fragments before crossing into JavaScript.
+struct CallbackWriter<'a, 'env> {
+    callback: &'a Function<'env, String, ()>,
+    buffer: String,
+    error: Option<String>,
+}
+
+impl<'a, 'env> CallbackWriter<'a, 'env> {
+    fn new(callback: &'a Function<'env, String, ()>) -> Self {
+        Self {
+            callback,
+            buffer: String::with_capacity(STREAM_CHUNK_SIZE),
+            error: None,
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.buffer.is_empty() || self.error.is_some() {
+            return;
+        }
+
+        let chunk = std::mem::replace(&mut self.buffer, String::with_capacity(STREAM_CHUNK_SIZE));
+        if let Err(error) = self.callback.call(chunk) {
+            // Ignore errors from callbacks that return non-void
+            // (for example, Node's response.write() returns a boolean).
+            let message = error.to_string();
+            if !message.contains("Value is not undefined") {
+                self.error = Some(message);
+            }
+        }
+    }
+}
+
+impl ResponseWriter for CallbackWriter<'_, '_> {
+    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+        if self.error.is_some() {
+            return Ok(());
+        }
+        self.buffer.push_str(content);
+        if self.buffer.len() >= STREAM_CHUNK_SIZE {
+            self.flush();
+        }
+        Ok(())
+    }
+
+    fn end(&mut self) -> webui_handler::Result<()> {
+        self.flush();
+        Ok(())
+    }
+}
+
+fn render_to_callback(
+    handler: &WebUIHandler,
+    protocol: &HandlerProtocol,
+    state: &Value,
+    options: &RenderOptions<'_>,
+    on_chunk: &Function<String, ()>,
+) -> napi::Result<()> {
+    let mut writer = CallbackWriter::new(on_chunk);
+    handler
+        .render(protocol, state, options, &mut writer)
+        .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
+    writer.flush();
+
+    if let Some(error) = writer.error {
+        return Err(NapiError::from_reason(format!("Callback error: {error}")));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
     use webui_parser::HtmlParser;
+    use webui_protocol::projection_manifest::{
+        ProjectionAdapter, ProjectionComponent, ProjectionManifest, ProjectionProducer,
+        PRODUCER_NAME, SCHEMA_ID,
+    };
 
     /// Helper: parse HTML into protobuf bytes for testing.
     fn build_protocol(html: &str) -> Vec<u8> {
@@ -394,7 +477,7 @@ mod tests {
 
     /// Helper: render protocol bytes + state, collecting output into a String.
     fn render_to_string(protocol_bytes: &[u8], state_json: &str) -> Result<String, String> {
-        let protocol = WebUIProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
+        let protocol = HandlerProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
         let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
 
         let mut output = String::with_capacity(1024);
@@ -439,6 +522,30 @@ mod tests {
         let proto = build_protocol("Hello, {{name}}!");
         let result = render_to_string(&proto, r#"{"name": "WebUI"}"#);
         assert_eq!(result.as_deref(), Ok("Hello, WebUI!"));
+    }
+
+    #[test]
+    fn protocol_reuses_decoded_protocol_for_json_state() {
+        let proto = build_protocol("Hello, {{name}}!");
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
+
+        let first = protocol
+            .render(
+                r#"{"name":"First"}"#.to_string(),
+                "index.html".to_string(),
+                "/".to_string(),
+            )
+            .expect("first render should succeed");
+        let second = protocol
+            .render(
+                r#"{"name":"Second"}"#.to_string(),
+                "index.html".to_string(),
+                "/".to_string(),
+            )
+            .expect("second render should succeed");
+
+        assert_eq!(first, "Hello, First!");
+        assert_eq!(second, "Hello, Second!");
     }
 
     #[test]
@@ -508,7 +615,182 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Parse `html`, attach a sorted hydration `schema`, and encode to protobuf.
+    fn build_projected_protocol(html: &str, schema: &[&str]) -> Vec<u8> {
+        let mut parser = HtmlParser::new();
+        parser.parse("index.html", html).expect("parse failed");
+        let tokens = parser.take_tokens();
+        let mut protocol = WebUIProtocol::with_tokens(parser.into_fragment_records(), tokens);
+        protocol.fragments.insert(
+            "client-card".to_string(),
+            webui_protocol::FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::raw("<p>client</p>")],
+            },
+        );
+        protocol
+            .fragments
+            .get_mut("index.html")
+            .expect("index fragment should exist")
+            .fragments
+            .insert(1, webui_protocol::WebUIFragment::component("client-card"));
+        protocol.initial_state_strategy = webui_protocol::InitialStateStrategy::Components as i32;
+        protocol.components.insert(
+            "client-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                hydration_keys: schema.iter().map(|key| (*key).to_string()).collect(),
+                ..Default::default()
+            },
+        );
+        protocol.to_protobuf().expect("protobuf encode failed")
+    }
+
+    /// Render protocol bytes with the WebUI hydration plugin so the `#webui-data`
+    /// bootstrap block (and its projected state) is emitted — this mirrors the
+    /// production `render(..., plugin = "webui")` path.
+    fn render_with_webui_plugin(protocol_bytes: &[u8], state_json: &str) -> Result<String, String> {
+        let protocol = HandlerProtocol::from_protobuf(protocol_bytes).map_err(|e| e.to_string())?;
+        let state: Value = serde_json::from_str(state_json).map_err(|e| e.to_string())?;
+
+        let mut output = String::with_capacity(1024);
+        struct StringWriter<'a> {
+            output: &'a mut String,
+        }
+        impl ResponseWriter for StringWriter<'_> {
+            fn write(&mut self, content: &str) -> webui_handler::Result<()> {
+                self.output.push_str(content);
+                Ok(())
+            }
+            fn end(&mut self) -> webui_handler::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = StringWriter {
+            output: &mut output,
+        };
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        handler
+            .render(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(output)
+    }
+
+    #[test]
+    fn render_projects_state_to_component_hydration_keys() {
+        // Full document so the parser emits a `body_end` signal, which makes the
+        // WebUI plugin emit the #webui-data bootstrap block.
+        let bytes =
+            build_projected_protocol("<html><body><p>{{kept}}</p></body></html>", &["kept"]);
+        let out =
+            render_with_webui_plugin(&bytes, r#"{"kept":"KEPT_VALUE","dropped":"DROPPED_VALUE"}"#)
+                .expect("render should succeed");
+
+        // Only the hydratable key reaches the bootstrap state block...
+        assert!(
+            out.contains(r#""kept":"KEPT_VALUE""#),
+            "hydratable key missing from bootstrap state: {out}"
+        );
+        // ...the non-hydratable key is projected out entirely.
+        assert!(
+            !out.contains("DROPPED_VALUE"),
+            "server-only value leaked: {out}"
+        );
+        assert!(
+            !out.contains("dropped"),
+            "server-only key name leaked: {out}"
+        );
+    }
+
     // ── Tests for build() and inspect() napi exports ─────────────────
+
+    fn projection_manifest_json() -> String {
+        const EMPTY_SHA256: &str =
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let mut manifest = ProjectionManifest {
+            schema: SCHEMA_ID.to_string(),
+            producer: ProjectionProducer {
+                name: PRODUCER_NAME.to_string(),
+                version: "0.0.18".to_string(),
+            },
+            adapter: ProjectionAdapter {
+                name: "test".to_string(),
+                bundler: "test@1.0.0".to_string(),
+            },
+            root: ".".to_string(),
+            analysis_hash: format!("sha256:{}", "1".repeat(64)),
+            build_id: String::new(),
+            inputs: BTreeMap::from([("demo-card.ts".to_string(), EMPTY_SHA256.to_string())]),
+            outputs: BTreeMap::from([("bundle.js".to_string(), EMPTY_SHA256.to_string())]),
+            components: BTreeMap::from([(
+                "demo-card".to_string(),
+                ProjectionComponent {
+                    module: "demo-card.ts".to_string(),
+                    outputs: vec!["bundle.js".to_string()],
+                    hydration_keys: vec!["name".to_string()],
+                    navigation_keys: vec!["label".to_string(), "name".to_string()],
+                },
+            )]),
+        };
+        manifest.build_id = manifest.compute_build_id();
+        serde_json::to_string(&manifest).unwrap()
+    }
+
+    fn projection_build_options(app_dir: &std::path::Path) -> JsBuildOptions {
+        JsBuildOptions {
+            app_dir: app_dir.to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: None,
+            plugin: Some("webui".to_string()),
+            components: None,
+            component_asset_roots: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: None,
+            theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
+        }
+    }
+
+    #[test]
+    fn test_build_accepts_projection_paths_and_inline_objects() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<demo-card></demo-card>").unwrap();
+        std::fs::write(dir.path().join("demo-card.html"), "<p>{{name}}</p>").unwrap();
+        std::fs::write(dir.path().join("demo-card.ts"), "").unwrap();
+        std::fs::write(dir.path().join("bundle.js"), "").unwrap();
+        let manifest_path = dir.path().join("projection.json");
+        let json = projection_manifest_json();
+        std::fs::write(&manifest_path, &json).unwrap();
+
+        let mut path_options = projection_build_options(dir.path());
+        path_options.projection_manifests = Some(vec![manifest_path.to_string_lossy().to_string()]);
+        let path_result = build(path_options).unwrap();
+        let path_protocol = WebUIProtocol::from_protobuf(&path_result.protocol).unwrap();
+        assert_eq!(
+            path_protocol.components["demo-card"].hydration_keys,
+            ["name"]
+        );
+
+        std::fs::remove_file(&manifest_path).unwrap();
+        let mut inline_options = projection_build_options(dir.path());
+        inline_options.projection_manifest_objects = Some(vec![JsProjectionManifest {
+            path: manifest_path.to_string_lossy().to_string(),
+            json,
+        }]);
+        let inline_result = build(inline_options).unwrap();
+        let inline_protocol = WebUIProtocol::from_protobuf(&inline_result.protocol).unwrap();
+        assert_eq!(
+            inline_protocol.components["demo-card"].navigation_keys,
+            ["label", "name"]
+        );
+    }
 
     #[test]
     fn test_build_simple_app() {
@@ -527,6 +809,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -553,6 +837,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -573,6 +859,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -596,6 +884,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -621,6 +911,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -656,6 +948,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: Some(theme_path.to_string_lossy().to_string()),
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let Err(err) = build(options) else {
@@ -672,6 +966,7 @@ mod tests {
         std::fs::write(dir.path().join("index.html"), "<app-shell></app-shell>").unwrap();
         std::fs::write(dir.path().join("app-shell.html"), "<div></div>").unwrap();
         std::fs::write(dir.path().join("lazy-panel.html"), "<p>{{title}}</p>").unwrap();
+        std::fs::write(dir.path().join("lazy-panel.ts"), "export {};").unwrap();
 
         let options = JsBuildOptions {
             app_dir: dir.path().to_string_lossy().to_string(),
@@ -685,6 +980,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -718,6 +1015,8 @@ mod tests {
             css_public_base: None,
             legal_comments: Some("none".to_string()),
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -741,6 +1040,8 @@ mod tests {
             css_public_base: None,
             legal_comments: Some("linked".to_string()),
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -765,6 +1066,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -793,6 +1096,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options).unwrap();
@@ -820,6 +1125,8 @@ mod tests {
             css_public_base: None,
             legal_comments: None,
             theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
         };
 
         let result = build(options);
@@ -840,12 +1147,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Tests for protocol_tokens napi export ────────────────────────
-
     #[test]
     fn test_protocol_tokens_empty() {
         let proto = build_protocol("<p>Hello</p>");
-        let tokens = protocol_tokens(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        let protocol = Protocol::new(Buffer::from(proto), None).unwrap();
+        let tokens = protocol.tokens();
         assert!(tokens.is_empty());
     }
 
@@ -862,13 +1168,14 @@ mod tests {
             ],
         );
         let proto = protocol.to_protobuf().expect("encode");
-        let tokens = protocol_tokens(napi::bindgen_prelude::Buffer::from(proto)).unwrap();
+        let protocol = Protocol::new(Buffer::from(proto), None).unwrap();
+        let tokens = protocol.tokens();
         assert_eq!(tokens, vec!["colorBrandBackground", "fontSizeBase300"]);
     }
 
     #[test]
     fn test_protocol_tokens_invalid_protobuf() {
-        let result = protocol_tokens(napi::bindgen_prelude::Buffer::from(vec![0xFF, 0xFF]));
+        let result = Protocol::new(Buffer::from(vec![0xFF, 0xFF]), None);
         assert!(result.is_err());
     }
 }

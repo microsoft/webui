@@ -10,9 +10,8 @@
  * indices from the compiled template HTML.
  *
  * This module deliberately excludes decorator, event, ref, and custom-event
- * emitter code. HTML-only static hosts import only this file, so scriptless
- * components pay for compiled-template hydration and DOM updates without
- * pulling authored interactivity into the bundle.
+ * emitter code so authored components can use compiled-template hydration
+ * without paying for features they do not use.
  *
  * ## SSR hydration markers
  *
@@ -264,16 +263,16 @@ function hasAuthoredMember(instance: object, key: string): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  TemplateElement - static rendering core (no decorators / events / refs / emit)
+//  TemplateElement - compiled rendering core (no decorators / events / refs / emit)
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Static WebUI rendering core.
+ * Compiled WebUI rendering core.
  *
  * This class hydrates SSR output, creates client-side template instances, keeps
  * template-only state for omitted `@observable` / `@attr` fields, and updates
  * DOM bindings. It deliberately contains no decorator, event, ref, or
- * custom-event emitter code so HTML-only static hosts have the smallest
+ * custom-event emitter code so authored components have the smallest
  * reachable runtime.
  */
 export class TemplateElement extends HTMLElement {
@@ -281,6 +280,13 @@ export class TemplateElement extends HTMLElement {
   private $meta?: TemplateMeta;
   private $ready = false;
   private $hydrated = false;
+  private $deferredSSR = false;
+  private $activatingDeferredSSR = false;
+  /** True once a repeat produced an SSR item scope whose collection state is
+   *  absent on the client. Only these instances need the per-binding
+   *  scope-known walk in `$updateBindings`; authored components never set this,
+   *  so their update loop skips the walk entirely. */
+  private $hasUnknownScopes = false;
   private $templateState: Record<string, unknown> | null = null;
   private $dirtyPaths: Set<string> | null = null;
   private $pendingFlush = false;
@@ -308,15 +314,16 @@ export class TemplateElement extends HTMLElement {
 
   /** Internal single-key state hook used by compiled parent-to-child bindings. */
   [WEBUI_SET_STATE_KEY](key: string, value: unknown): boolean {
-    return this.$setStateKey(key, value);
+    const wasDeferred = this.$deferredSSR;
+    this.$beforeExternalStateWrite();
+    const owned = this.$setStateKey(key, value);
+    this.$afterExternalStateWrite(owned);
+    if (owned && wasDeferred && !this.$deferredSSR) this.$update(key);
+    return owned;
   }
 
   /**
    * Register this constructor for a tag and install template-derived observers.
-   *
-   * Authored components call this directly. Static hosts also use it so
-   * scriptless templates observe only the host attributes referenced by their
-   * bindings.
    */
   static define(tagName: string): void {
     installTemplateObservedAttributes(this as TemplateObservedConstructor, tagName);
@@ -327,6 +334,11 @@ export class TemplateElement extends HTMLElement {
 
   connectedCallback(): void {
     const tag = this.tagName.toLowerCase();
+
+    if (this.$deferredSSR) {
+      this.$ready = true;
+      return;
+    }
 
     if (this.$hydrated && this.$root) {
       hydrationStart();
@@ -349,17 +361,16 @@ export class TemplateElement extends HTMLElement {
     // opening tag, connectedCallback fires BEFORE children are parsed.
     // If the document is still loading, defer to let the parser finish.
     if (document.readyState === 'loading') {
-      runWhenDomReady(() => this.$mount(meta));
+      runWhenDomReady(() => this.$mount(meta, false));
     } else {
       // Document is already parsed — children are available
-      this.$mount(meta);
+      this.$mount(meta, false);
     }
   }
 
   /** Mount the component after children are available. */
-  private $mount(meta: TemplateMeta): void {
+  private $mount(meta: TemplateMeta, forceSSR: boolean): void {
     if (this.$hydrated) return;
-    hydrationStart();
 
     // Auto-detect shadow vs light DOM
     const hasShadow = !!this.shadowRoot;
@@ -392,13 +403,22 @@ export class TemplateElement extends HTMLElement {
       isSSR = false;
     }
 
+    if (isSSR && !forceSSR && this.$shouldDeferSSRHydration()) {
+      this.$meta = meta;
+      this.$deferredSSR = true;
+      this.$ready = true;
+      return;
+    }
+
+    hydrationStart();
+
     // Inject CSS module stylesheet after root is determined
     if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
 
     if (isSSR) {
-      // Apply the same state that was used for SSR rendering
-      // so client observables match the server-rendered DOM.
-      this.$applySSRState();
+      // Seed explicit authored state. Template-only roots already exist in the
+      // trusted SSR DOM and arrive later only when navigation updates them.
+      if (this.$shouldApplySSRBootstrapState()) this.$applySSRState();
       this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
     } else {
@@ -450,7 +470,12 @@ export class TemplateElement extends HTMLElement {
    * elements handle theirs via their own `disconnectedCallback`.
    */
   $destroy(): void {
-    if (!this.$root) return;
+    if (!this.$root) {
+      this.$deferredSSR = false;
+      this.$ready = false;
+      this.$hasUnknownScopes = false;
+      return;
+    }
     this.$teardown(this.$root);
     this.$root = null;
     this.$pathIndex = undefined;
@@ -459,6 +484,7 @@ export class TemplateElement extends HTMLElement {
     this.$pendingFlush = false;
     this.$preReadyWrites = null;
     this.$ready = false;
+    this.$hasUnknownScopes = false;
   }
 
   /** Break all DOM references held by a binding instance and its nested blocks. */
@@ -496,10 +522,15 @@ export class TemplateElement extends HTMLElement {
     newValue: string | null,
   ): void {
     if (Object.is(oldValue, newValue)) return;
+    const wasDeferred = this.$deferredSSR;
+    this.$beforeExternalStateWrite();
     const property = this.$templateRootForAttribute(name);
+    let changed = false;
     if (property && this.$usesTemplateState(property)) {
-      this.$setTemplateState(property, newValue);
+      changed = this.$setTemplateState(property, newValue);
     }
+    this.$afterExternalStateWrite(changed);
+    if (changed && property && wasDeferred && !this.$deferredSSR) this.$update(property);
   }
 
   /** Populate component state from server or router state.
@@ -509,16 +540,60 @@ export class TemplateElement extends HTMLElement {
    * `@observable` fields just to receive server state.
    */
   setState(state: Record<string, unknown>): void {
+    const wasDeferred = this.$deferredSSR;
+    this.$beforeExternalStateWrite();
     const keys = Object.keys(state);
+    let owned = false;
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
-      this.$setStateKey(key, state[key]);
+      owned = this.$setStateKey(key, state[key]) || owned;
+    }
+    this.$afterExternalStateWrite(owned);
+    if (owned && wasDeferred && !this.$deferredSSR) {
+      for (let i = 0; i < keys.length; i++) this.$update(keys[i]);
     }
     this.$flushUpdates();
   }
 
   protected $observableNames(): Set<string> {
     return EMPTY_SET;
+  }
+
+  /** Prepare a dormant template host before an external state write. */
+  protected $beforeExternalStateWrite(): void {
+  }
+
+  /**
+   * Finish preparing a dormant template host after an external state write.
+   *
+   * `applied` is true when the write reached this component's state — an owned
+   * key (`setState` / parent binding) or a changed template attribute.
+   */
+  protected $afterExternalStateWrite(_applied: boolean): void {
+  }
+
+  /** Decide whether an SSR instance should remain dormant until client use. */
+  protected $shouldDeferSSRHydration(): boolean {
+    return false;
+  }
+
+  /** Activate a previously deferred SSR instance. */
+  protected $activateDeferredSSR(): void {
+    if (!this.$deferredSSR || !this.$meta) return;
+    this.$deferredSSR = false;
+    this.$ready = false;
+    this.$preReadyWrites = null;
+    this.$activatingDeferredSSR = true;
+    try {
+      this.$mount(this.$meta, true);
+    } finally {
+      this.$activatingDeferredSSR = false;
+    }
+  }
+
+  /** Decide whether this component consumes the global SSR bootstrap state. */
+  protected $shouldApplySSRBootstrapState(): boolean {
+    return true;
   }
 
   /** Decide whether a decorated property should be initialized from SSR state. */
@@ -536,10 +611,12 @@ export class TemplateElement extends HTMLElement {
   }
 
   /** Write hidden template state and update bindings that read this root. */
-  protected $setTemplateState(key: string, value: unknown): void {
-    if (this.$writeTemplateState(key, value)) {
+  protected $setTemplateState(key: string, value: unknown): boolean {
+    const changed = this.$writeTemplateState(key, value);
+    if (changed) {
       this.$update(key);
     }
+    return changed;
   }
 
   private $writeTemplateState(key: string, value: unknown): boolean {
@@ -569,7 +646,16 @@ export class TemplateElement extends HTMLElement {
     return !!meta && templateHasRoot(meta, key) && !hasAuthoredMember(this, key);
   }
 
-  /** Route one external state key to an authored observable or hidden template state. */
+  /**
+   * Route one external state key to an authored observable or hidden template
+   * state, returning whether this component *owns* the key.
+   *
+   * The return is "owned", NOT "value changed": it stays `true` for an owned
+   * key even when the write is a no-op. `$patchAttr`'s complex-binding fallback
+   * relies on this — a `false` return makes the parent assign a plain DOM
+   * property (`el[name] = v`) that would shadow owned template state. Do not
+   * "optimize" this to real change-detection.
+   */
   private $setStateKey(key: string, value: unknown): boolean {
     if (this.$observableNames().has(key)) {
       (this as Record<string, unknown>)[key] = value;
@@ -586,9 +672,10 @@ export class TemplateElement extends HTMLElement {
    * Apply SSR state from `window.__webui.state`.
    *
    * The handler emits all SSR metadata in a single consolidated
-   * `window.__webui` script block. State lives at `.state` — the same
-   * props passed to the server render so observables match the DOM.
-   * Only observable properties are set — unknown keys are ignored.
+   * `window.__webui` script block. State lives at `.state`; the build-time
+   * hydration keys contain only explicit `@observable`/`@attr` properties.
+   * Template-only roots remain absent because their initial values are already
+   * represented by the trusted SSR DOM.
    *
    * Writes directly to the backing field (`_prop`) to avoid triggering
    * reactive updates before bindings are wired.
@@ -1067,7 +1154,6 @@ export class TemplateElement extends HTMLElement {
         const [parentPath] = slotMeta;
         const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
-        const shown = (condition as CompiledCondition)[0](this.$resolver, scope);
         let condInstance: TemplateInstance | null = null;
 
         // Reset cursor when parent changes between iterations
@@ -1090,18 +1176,12 @@ export class TemplateElement extends HTMLElement {
         }
         if (marker) lastCondMarker = marker;
 
-        // SSR hydration: if the marker exists, the server rendered this
-        // conditional — hydrate its content regardless of the current
-        // condition value.  Complex properties from parent bindings may
-        // not have arrived yet (the parent hydrates after children), so
-        // the condition could evaluate to false even though the server
-        // rendered it as true.  Trust the SSR DOM and wire it up; the
-        // condition will re-evaluate correctly once all data is set.
-        const ssrContentPresent = marker && blockMeta && this.$hasContentAfterMarker(condAnchor, MARKER_COND_END);
-        if (blockMeta && (shown || ssrContentPresent)) {
-          if (marker) {
-            condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
-          }
+        // Trust the SSR marker range regardless of the current condition.
+        // Parent bindings may not have arrived yet, so the client value can
+        // temporarily disagree with SSR. An empty range must stay empty rather
+        // than claiming the first static sibling after <!--/wc-->.
+        if (marker && blockMeta) {
+          condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
         }
 
         // Collect <!--/wc--> end marker for deferred removal.
@@ -1162,6 +1242,7 @@ export class TemplateElement extends HTMLElement {
         lastRepMarker = anchor;
 
         const repeatInsts: RepeatItemInstance[] = [];
+        const hasCollectionState = this.$hasStateRoot(collection, scope);
         const itemsArr = this.$resolveValue(collection, scope);
         const items = Array.isArray(itemsArr) ? itemsArr as unknown[] : [];
 
@@ -1170,16 +1251,26 @@ export class TemplateElement extends HTMLElement {
           ? collectItemMarkers(anchor)
           : { items: [] as Comment[], end: null as Comment | null };
 
-        if (blockMeta && blockTplDom && items.length > 0 && anchor.parentNode && itemMarkers.length > 0) {
-          if (itemMarkers.length !== items.length) {
+        if (blockMeta && blockTplDom && anchor.parentNode && itemMarkers.length > 0) {
+          if (
+            !this.$activatingDeferredSSR
+            && hasCollectionState
+            && itemMarkers.length !== items.length
+          ) {
             console.warn(
               `[webui] hydration: repeat marker count (${itemMarkers.length}) ≠ data length (${items.length}) for "${collection}"`,
             );
           }
-          const limit = Math.min(itemMarkers.length, items.length);
-          for (let j = 0; j < limit; j++) {
+          for (let j = 0; j < itemMarkers.length; j++) {
             const itemValue = items[j];
-            const itemScope: ScopeFrame = { name: itemVar, value: itemValue, parent: scope };
+            const known = hasCollectionState && j < items.length;
+            if (!known) this.$hasUnknownScopes = true;
+            const itemScope: ScopeFrame = {
+              name: itemVar,
+              value: itemValue,
+              parent: scope,
+              known,
+            };
 
             if (rootTag) {
               const itemEl = nextElement(itemMarkers[j]);
@@ -1208,7 +1299,11 @@ export class TemplateElement extends HTMLElement {
                 itemParent?.insertBefore(node, afterNode.nextSibling);
                 afterNode = node;
               }
-              const key = keyPath ? String(dotWalk(itemValue, keyPath, 0) ?? '') : null;
+              const key = keyPath
+                ? (j < items.length
+                  ? String(dotWalk(itemValue, keyPath, 0) ?? '')
+                  : `\u0000ssr:${j}`)
+                : null;
               repeatInsts.push({ key, value: itemValue, instance: inst });
             }
           }
@@ -1228,7 +1323,9 @@ export class TemplateElement extends HTMLElement {
           container: (anchor.parentNode ?? ssrRoot) as ParentNode & Node,
           start: anchor, end: null,
           scope, owner: instance, instances: repeatInsts, rootTag,
-          keyAttribute, keyPath, synced: true,
+          keyAttribute,
+          keyPath,
+          synced: hasCollectionState,
         });
       }
     }
@@ -1249,16 +1346,40 @@ export class TemplateElement extends HTMLElement {
 
   // ── SSR helpers ───────────────────────────────────────────────
 
-  /** Collect sibling nodes between a start marker and an end marker comment. */
-  private $collectBetween(start: Comment, endData: string): Node[] {
+  /** Collect a conditional range through its matching closing marker. */
+  private $collectConditionalRange(start: Comment): Node[] {
     const nodes: Node[] = [];
+    let depth = 0;
     let node: Node | null = start.nextSibling;
     while (node) {
-      if (node.nodeType === 8 && (node as Comment).data === endData) break;
+      if (node.nodeType === 8) {
+        const data = (node as Comment).data;
+        if (data === MARKER_COND_START) {
+          depth++;
+        } else if (data === MARKER_COND_END) {
+          if (depth === 0) break;
+          depth--;
+        }
+      }
       nodes.push(node);
       node = node.nextSibling;
     }
     return nodes;
+  }
+
+  /** Return whether a compiled block has structural slots beside its root element. */
+  private $hasRootStructuralSlot(meta: TemplateBlockMeta): boolean {
+    if (meta.c) {
+      for (let i = 0; i < meta.c.length; i++) {
+        if (meta.c[i][2][0].length === 0) return true;
+      }
+    }
+    if (meta.r) {
+      for (let i = 0; i < meta.r.length; i++) {
+        if (meta.r[i][3][0].length === 0) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1272,7 +1393,7 @@ export class TemplateElement extends HTMLElement {
   ): TemplateInstance | null {
     const rootTag = this.$rootTag(blockMeta);
     const tplDom = getTemplateDom(blockMeta);
-    if (rootTag && tplDom.children.length === 1) {
+    if (rootTag && tplDom.children.length === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
       if (el) {
@@ -1285,8 +1406,8 @@ export class TemplateElement extends HTMLElement {
       }
       return null;
     }
-    // Multi-root or text-only conditional: collect nodes between <!--wc--> and <!--/wc-->
-    const condNodes = this.$collectBetween(condAnchor, MARKER_COND_END);
+    // Multi-root, text-only, or root-level structural content needs the full range.
+    const condNodes = this.$collectConditionalRange(condAnchor);
     if (condNodes.length === 0) return null;
     const wrapper = document.createElement('div');
     for (let cn = 0; cn < condNodes.length; cn++) wrapper.appendChild(condNodes[cn]);
@@ -1314,24 +1435,6 @@ export class TemplateElement extends HTMLElement {
       child = child.nextSibling;
     }
     return null;
-  }
-
-  /**
-   * Check whether there is non-marker content between a conditional
-   * start anchor and its closing marker.  Used during SSR hydration to
-   * detect server-rendered conditional content even when the runtime
-   * condition value has not been set yet (e.g. complex property from a
-   * parent repeat binding that hydrates after its children).
-   */
-  private $hasContentAfterMarker(anchor: Comment, endData: string): boolean {
-    let sibling = anchor.nextSibling;
-    while (sibling) {
-      if (sibling.nodeType === 8 && (sibling as Comment).data === endData) {
-        return false; // reached end marker with no content in between
-      }
-      return true; // any non-end-marker node = content present
-    }
-    return false;
   }
 
   /**
@@ -1423,10 +1526,9 @@ export class TemplateElement extends HTMLElement {
   }
 
   /**
-   * Hook for wiring interactivity (events + refs). The static rendering core
+   * Hook for wiring interactivity (events + refs). This template-only base class
    * does nothing here; the interactive {@link WebUIElement} subclass overrides
-   * it. Static hosts - which can never carry event handlers - use this empty
-   * core hook and tree-shake every event/ref helper away.
+   * it.
    */
   protected $finalize(
     _instance: TemplateInstance,
@@ -1581,12 +1683,34 @@ export class TemplateElement extends HTMLElement {
     texts: TextBinding[], attrs: AttrBinding[],
     conds: CondBinding[], repeats: RepeatBinding[],
   ): void {
-    for (let i = 0; i < texts.length; i++) this.$patchText(texts[i]);
-    for (let i = 0; i < attrs.length; i++) this.$patchAttr(attrs[i]);
-    for (let i = 0; i < conds.length; i++) this.$toggleCond(conds[i]);
-    for (let i = 0; i < repeats.length; i++) {
-      syncRepeat(this, repeats[i]);
+    // Fast path: with no client-absent SSR scopes (every authored component and
+    // every fully-hydrated host) the walk is unnecessary, so skip it per binding.
+    const gated = this.$hasUnknownScopes;
+    for (let i = 0; i < texts.length; i++) {
+      const binding = texts[i];
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchText(binding);
     }
+    for (let i = 0; i < attrs.length; i++) {
+      const binding = attrs[i];
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchAttr(binding);
+    }
+    for (let i = 0; i < conds.length; i++) {
+      const binding = conds[i];
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$toggleCond(binding);
+    }
+    for (let i = 0; i < repeats.length; i++) {
+      const binding = repeats[i];
+      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) syncRepeat(this, binding);
+    }
+  }
+
+  private $scopeIsKnown(scope: ScopeFrame): boolean {
+    let frame: ScopeFrame | undefined = scope;
+    while (frame) {
+      if (frame.known === false) return false;
+      frame = frame.parent;
+    }
+    return true;
   }
 
   $updateInstance(instance: TemplateInstance): void {
@@ -1694,6 +1818,26 @@ export class TemplateElement extends HTMLElement {
     const dot = path.indexOf('.');
     if (dot === -1) return this.$resolveComponentRoot(path);
     return dotWalk(this.$resolveComponentRoot(path.substring(0, dot)), path, dot + 1);
+  }
+
+  /** Return whether a deferred host received the root needed by a repeat. */
+  $hasStateRoot(path: string, scope?: ScopeFrame): boolean {
+    let frame = scope;
+    while (frame) {
+      if (path === frame.name
+        || (path.length > frame.name.length
+          && path.charCodeAt(frame.name.length) === 46
+          && path.startsWith(frame.name))) {
+        return frame.value !== undefined;
+      }
+      frame = frame.parent;
+    }
+
+    const dot = path.indexOf('.');
+    const root = dot === -1 ? path : path.substring(0, dot);
+    return hasAuthoredMember(this, root)
+      || (this.$templateState !== null
+        && Object.prototype.hasOwnProperty.call(this.$templateState, root));
   }
 
   private $resolveComponentRoot(root: string): unknown {

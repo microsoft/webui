@@ -18,11 +18,10 @@
  * - `re` — root events on the host element
  * - `tr` — state roots referenced by the compiled template
  * - `ta` — observed host attributes index-aligned with `tr`
- * - `th` — internal static TemplateElement host ownership flag
+ * - `th` — compiler-owned dormant TemplateElement host flag
  *
- * Template registration also notifies optional runtimes so dynamically loaded
- * route templates can be claimed without coupling the router package to the
- * framework package.
+ * Template registration notifies optional runtimes so dynamically loaded route
+ * templates can be claimed without coupling the router to the framework.
  */
 
 export type {
@@ -44,6 +43,7 @@ export type {
   TemplateNodePath,
   TemplateSlotPath,
 } from './template-types.js';
+import { dispatchTemplatesRegistered } from './template-events.js';
 
 import type {
   CompiledConditionFn,
@@ -52,7 +52,6 @@ import type {
   TemplateCondition,
   TemplateMeta,
 } from './template-types.js';
-import { dispatchTemplatesRegistered } from './template-events.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
@@ -65,6 +64,7 @@ declare global {
       state?: Record<string, unknown>;
       templates?: Record<string, TemplateMeta>;
       templateFns?: Record<string, CompiledConditionFn[]>;
+      templateHostExclusions?: Set<string>;
       [key: string]: unknown;
     };
   }
@@ -95,8 +95,8 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
 /**
  * Register template metadata and optional condition closures at runtime.
  *
- * Used by component assets and tests. After registration, a DOM event is
- * dispatched so static hosts can claim newly available scriptless templates.
+ * Used by component assets and tests. Registration also lets the dormant-host
+ * runtime claim newly available scriptless templates.
  */
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,

@@ -37,6 +37,10 @@ pub struct AppArgs {
     #[arg(long, value_name = "SOURCE")]
     pub components: Vec<String>,
 
+    /// Bundler projection manifest fragment (repeatable)
+    #[arg(long = "projection-manifest", value_name = "PATH")]
+    pub projection_manifests: Vec<PathBuf>,
+
     /// Emitted asset filename template using [name], [hash], [ext]
     #[arg(long, default_value = DEFAULT_ASSET_FILE_NAME_TEMPLATE)]
     pub asset_file_name_template: String,
@@ -65,6 +69,12 @@ impl AppArgs {
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,
             theme: None,
+            projection_manifests: self
+                .projection_manifests
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
         }
     }
 }
@@ -90,6 +100,10 @@ mod tests {
             dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
+            projection_manifests: vec![
+                std::path::PathBuf::from("app-projection.json"),
+                std::path::PathBuf::from("shared-projection.json"),
+            ],
             asset_file_name_template: "[name]-[hash].[ext]".to_string(),
             css_public_base: Some("https://cdn.example.com/assets".to_string()),
             legal_comments: LegalComments::None,
@@ -103,6 +117,12 @@ mod tests {
         );
         assert!(options.component_asset_roots.is_empty());
         assert_eq!(options.legal_comments, LegalComments::None);
+        assert_eq!(options.projection_manifests.len(), 2);
+        assert!(matches!(
+            &options.projection_manifests[0],
+            webui::ProjectionManifestSource::Path(path)
+                if path == std::path::Path::new("app-projection.json")
+        ));
     }
 
     #[test]

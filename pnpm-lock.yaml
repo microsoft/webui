@@ -71,6 +71,9 @@ importers:
 
   crates/webui-press:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../packages/webui
       '@playwright/test':
         specifier: 'catalog:'
         version: 1.61.1
@@ -104,6 +107,9 @@ importers:
       '@codemirror/view':
         specifier: 'catalog:'
         version: 6.43.6
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../packages/webui
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../packages/webui-framework
@@ -113,6 +119,9 @@ importers:
 
   examples/app/calculator:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
@@ -131,6 +140,9 @@ importers:
 
   examples/app/commerce:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
@@ -152,6 +164,9 @@ importers:
 
   examples/app/component-assets:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme
@@ -180,6 +195,9 @@ importers:
         specifier: ^5.2.1
         version: 5.2.1
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme
@@ -225,6 +243,9 @@ importers:
 
   examples/app/routes:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
@@ -262,6 +283,9 @@ importers:
 
   examples/app/service-worker:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-examples-theme':
         specifier: workspace:*
         version: link:../../../packages/webui-examples-theme
@@ -301,6 +325,9 @@ importers:
 
   examples/app/todo-webui:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../../packages/webui-framework
@@ -319,6 +346,9 @@ importers:
 
   examples/demo:
     devDependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../packages/webui
       '@microsoft/webui-framework':
         specifier: workspace:*
         version: link:../../packages/webui-framework
@@ -371,6 +401,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 26.1.0
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

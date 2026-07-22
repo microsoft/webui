@@ -4,12 +4,12 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "pnpm run build:deps && pnpm run build:protocol && pnpm run build:client",
-    "build:deps": "pnpm --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
-    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --out ./dist",
-    "build:client": "esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap",
-    "start:client": "pnpm run build:deps && esbuild src/index.ts --bundle --outdir=dist --splitting --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --plugin=webui --servedir ./dist --port 3003 --api-port 3013 --watch",
+    "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:protocol",
+    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework --filter @microsoft/webui-router run build",
+    "build:protocol": "cargo run -p microsoft-webui-cli -- build ./src --plugin=webui --projection-manifest ./dist/webui-projection.json --out ./dist",
+    "build:client": "node ../../build-client.mjs",
+    "start:client": "pnpm run build:deps && node ../../build-client.mjs --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --theme=@microsoft/webui-examples-theme --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --port 3003 --api-port 3013 --watch",
     "start:api": "esbuild server/api.ts --bundle --platform=node --format=esm --outfile=dist/api.js --packages=external && node dist/api.js",
     "start": "cargo xtask dev contact-book-manager",
     "test": "playwright test",
@@ -28,6 +28,7 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
+    "@microsoft/webui": "workspace:*",
     "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "@microsoft/webui-router": "workspace:*",

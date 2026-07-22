@@ -158,6 +158,14 @@ describe('nextElement', () => {
     assert.strictEqual(result, null);
   });
 
+  test('returns null when hitting <!--/wc--> before an element', () => {
+    const marker = { nodeType: COMMENT, data: 'wc', nextSibling: null } as MockNode;
+    const wcEnd = { nodeType: COMMENT, data: '/wc', nextSibling: null } as MockNode;
+    marker.nextSibling = wcEnd;
+
+    assert.strictEqual(nextElement(marker as unknown as Comment), null);
+  });
+
   test('returns null when hitting next <!--wi--> before an element', () => {
     const marker = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
     const wi2 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;

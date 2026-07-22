@@ -87,16 +87,21 @@ Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--
 <counter-card label="Taps"></counter-card>
 ```
 
-### HTML-only components
+### HTML-only dormant components
 
 If a component has no event handlers, custom lifecycle code, or client-only
 methods, it can ship only `component.html` and optional `component.css`.
 
-When HTML-only components receive server or route state, import
-`@microsoft/webui-framework` somewhere in the browser entry. The framework root
-installs the static host runtime, which only claims compiler-owned HTML-only
-components whose templates need hidden state or observed host attributes. Fully
-static HTML-only components stay as plain SSR DOM.
+The sibling `.ts` or `.js` file is the authored behavior boundary. With
+manifest-enabled projection, only `@observable` and `@attr` fields opt into
+initial state hydration; template-only roots stay in the trusted SSR DOM.
+Without a module, template bindings render on the server and the component
+contributes no projected keys. Without projection metadata, the server
+preserves full state. The compiler still emits template metadata for scriptless
+components. When the framework is loaded, it can activate that template when
+browser state or client-side creation needs it.
+If that first write omits a repeat collection, the host preserves the existing
+SSR items until the collection is explicitly supplied.
 
 Create a custom element only for an Interactive Island: event handlers, custom
 lifecycle code, imperative methods, or state that TypeScript code reads or
@@ -111,9 +116,15 @@ cargo run -p microsoft-webui-cli -- build ./src --out ./dist --plugin=webui
 
 The WebUI plugin prepares component templates for the browser. Bundle your
 source browser entry directly. Import `@microsoft/webui-framework` from authored
-component modules, or once from the browser entry when the app has no authored
-components but still uses HTML-only components that receive server or route
-state.
+component modules. An app that stays static after SSR needs no framework
+browser import. Import the framework once when HTML-only components must accept
+browser state or participate in soft navigation.
+
+The plugin alone preserves full server state. To emit exact `@observable` and
+`@attr` state surfaces, run the application's bundler first with
+`@microsoft/webui/projection.js`, then pass its manifest to `webui build` with
+`--projection-manifest`. The manifest tooling is build-only; this runtime
+package does not depend on esbuild or TypeScript.
 
 ### Property binding lifecycle
 
@@ -240,6 +251,7 @@ Notes:
 
 - default attribute names use kebab-case
 - attribute values arrive as strings
+- during SSR hydration, an existing host attribute wins over projected state
 - use `@observable` for state that client code reads or mutates
 
 ### `@volatile`
@@ -269,7 +281,8 @@ The WebUI plugin supports these template features:
 - repeats: `<for each="item in items">`
 
 Components that use `@event` must have authored `.ts` or `.js` code that
-defines a `WebUIElement` for the tag; HTML-only components are declarative only.
+defines a `WebUIElement` for the tag. HTML-only components do not provide
+application event handlers.
 
 Example from `examples/app/todo-webui`:
 
@@ -302,8 +315,10 @@ Root-level events (e.g. `@toggle-item="{onToggleItem(e)}"`) can be declared on t
 - Use `w-ref` for true DOM-only concerns like focus or reading input values.
 - Omit `@observable` for values that are only read by the template and seeded
   externally after construction.
-- Omit the TypeScript class for HTML-only components that only need template
-  bindings and router/server state.
+- Omit the TypeScript class when compiled template behavior is sufficient,
+  including browser-applied state, route updates, and client-created instances.
+  Add a same-named module only for authored events, lifecycle, decorators, or
+  imperative APIs.
 
 Avoid imperative DOM mutation for application state that can be represented by reactive properties.
 
@@ -484,7 +499,7 @@ sequenceDiagram
     CE->>CE: attributeChangedCallback (pre-existing attrs)
     CE->>FW: connectedCallback() → $mount()
     FW->>FW: SSR DOM detected (shadow root or children exist)
-    FW->>FW: $applySSRState() — seed decorated + template state
+    FW->>FW: $applySSRState() — seed decorated state
     FW->>FW: $hydrate() — template-parallel path resolution
     FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
     FW->>FW: $wireEvents() + $wireRefs()
@@ -538,7 +553,8 @@ interface TemplateMeta {
   sa?: string;                         // Adopted stylesheet specifier
   sd?: boolean;                        // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
-  th?: 1;                               // Compiler-owned static host
+  tr?: string[];                       // Template state roots
+  ta?: string[];                       // Host attributes aligned with tr
 }
 ```
 
@@ -635,24 +651,30 @@ sees `42` in the DOM before the component's JavaScript state exists. Without
 seeding, the first `$update()` would overwrite the SSR content with the wrong
 value.
 
-State seeding uses `window.__webui.state` — a JSON object loaded from the
-server-emitted `#webui-data` block.  Like Preact's props, this delivers the
-same data used for SSR rendering to the client. During `$mount()`,
-`$applySSRState()` writes matching decorated keys directly to observable backing
-fields and stores undecorated template roots in hidden framework state before
-any bindings are wired:
+State seeding uses `window.__webui.state` loaded from the server-emitted
+`#webui-data` block. When the protocol contains projection metadata, only
+`@observable` and `@attr` keys from reachable authored components select
+initial state; HTML-only dormant components and authored template-only roots
+contribute no startup keys. Without projection metadata, the server preserves
+full state. During `$mount()`, `$applySSRState()` writes matching decorated keys
+directly to observable backing fields before any bindings are wired:
 
 ```mermaid
 flowchart LR
-    SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42, title: 'Hello' } }"] --> APPLY["$applySSRState()"]
-    APPLY --> SEED["Write decorated fields + hidden template state"]
+    SCRIPT["&lt;script type='application/json' id='webui-data'&gt;<br/>{ state: { count: 42 } }"] --> APPLY["$applySSRState()"]
+    APPLY --> SEED["Write decorated backing fields"]
     SEED --> HYDRATE["$hydrate() — bindings match<br/>server-rendered DOM"]
 ```
 
-`$applySSRState()` only accepts keys that are decorated properties or compiled
-template roots. Unknown keys are ignored. Decorated writes go to the backing
-field (`_prop`) directly, and undecorated template roots stay internal, avoiding
-reactive updates before bindings are wired.
+Decorated writes go to the backing field (`_prop`) directly, avoiding reactive
+updates before bindings are wired. For `@attr`, an existing SSR host attribute
+takes precedence and the projected value is skipped. Template-only values
+remain represented by the SSR DOM until browser state explicitly changes them.
+Later `setState()` calls, including router partials, accept both decorated
+properties and compiled template roots; undecorated roots are stored in hidden
+framework state. The first write to a dormant HTML-only host replays only the
+roots present in that write, preserving omitted SSR text, attributes,
+conditions, and repeats.
 
 ---
 

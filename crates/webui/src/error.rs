@@ -51,6 +51,17 @@ pub enum WebUIError {
     /// Invalid build-option configuration.
     #[error("Invalid build options: {0}")]
     InvalidBuildOptions(String),
+
+    /// Bundler-neutral state projection manifest failure: malformed schema,
+    /// stale/missing input or output file, build-ID mismatch, conflicting or
+    /// duplicate fragment ownership, missing scripted-component coverage, or
+    /// an incompatible plugin. Carries a structured, color-free [`Diagnostic`]
+    /// with a stable `PROJ-*` code (see `webui::projection::codes`).
+    ///
+    /// The diagnostic is boxed so this cold error path does not enlarge
+    /// `Result<_, WebUIError>` on the common success path.
+    #[error("{0}")]
+    Projection(Box<webui_parser::Diagnostic>),
 }
 
 impl WebUIError {

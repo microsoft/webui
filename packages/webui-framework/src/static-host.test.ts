@@ -10,11 +10,10 @@ const windowListeners = new Map<string, Array<(event: Event) => void>>();
 
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class HTMLElement {
+    tagName = '';
     isConnected = false;
-
-    get title(): string {
-      return 'native title';
-    }
+    childNodes: unknown[] = [];
+    shadowRoot = null;
 
     hasAttribute(_name: string): boolean {
       return false;
@@ -78,159 +77,86 @@ Object.defineProperty(globalThis, 'window', {
   configurable: true,
 });
 
-const {
-  installTemplateElementRuntime,
-} = await import('./static-host.js');
+const { installTemplateElementRuntime } = await import('./static-host.js');
 
-type ObservedElementConstructor = CustomElementConstructor & {
-  readonly observedAttributes: readonly string[];
-};
-
-function textTemplate(path: string, staticHost = true): TemplateMeta {
-  const attr = path.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`);
-  return {
-    h: '<p></p>',
-    th: staticHost ? 1 : undefined,
-    tr: [path],
-    ta: [attr],
-    tx: [[
-      [[], 0],
-      [[path]],
-    ]],
-  };
-}
-
-function registerUnitTemplate(tag: string, meta: TemplateMeta): TemplateMeta {
+function registerTemplate(tag: string, meta: TemplateMeta): TemplateMeta {
   const webui = window.__webui ?? (window.__webui = {});
   const templates = webui.templates ?? (webui.templates = {});
   templates[tag] = meta;
   return meta;
 }
 
-describe('static template host runtime', () => {
-  test('installTemplateElementRuntime registers a TemplateElement fallback for metadata roots', async () => {
-    const tag = `auto-unit-${Date.now()}`;
+describe('dormant template host runtime', () => {
+  test('defines compiler-owned hosts without authored stubs', () => {
+    const tag = `dormant-unit-${Date.now()}`;
+    registerTemplate(tag, {
+      h: '<p></p>',
+      th: 1,
+      tr: ['message'],
+      ta: ['message'],
+    });
 
-    registerUnitTemplate(tag, textTemplate('displayValue'));
     installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
 
     const ctor = registry.get(tag);
     assert.ok(ctor);
-    assert.deepEqual((ctor as ObservedElementConstructor).observedAttributes, ['display-value']);
-
     const instance = new ctor() as HTMLElement & {
-      displayValue?: unknown;
+      $shouldDeferSSRHydration(): boolean;
+      $shouldApplySSRBootstrapState(): boolean;
       setState(state: Record<string, unknown>): void;
-      attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void;
-      $emit?: (name: string, detail?: unknown) => boolean;
     };
-    instance.setState({ displayValue: 'Loaded' });
-    assert.equal(instance.displayValue, undefined);
-
-    instance.attributeChangedCallback('display-value', 'Loaded', 'From attribute');
-    assert.equal(instance.displayValue, undefined);
-    // Static hosts extend TemplateElement, so interactive helpers like $emit are
-    // tree-shaken away - an HTML-only fallback never needs them.
-    assert.equal(typeof instance.$emit, 'undefined');
+    assert.equal(instance.$shouldDeferSSRHydration(), true);
+    assert.equal(instance.$shouldApplySSRBootstrapState(), false);
+    assert.equal(typeof instance.setState, 'function');
   });
 
-  test('template state handles roots that match native HTMLElement properties', async () => {
-    const tag = `auto-native-title-${Date.now()}`;
+  test('defines fully static templates for client-created navigation', () => {
+    const tag = `static-unit-${Date.now()}`;
+    registerTemplate(tag, { h: '<p>Static</p>', th: 1 });
 
-    registerUnitTemplate(tag, textTemplate('title'));
     installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
 
-    const ctor = registry.get(tag);
-    assert.ok(ctor);
-
-    const instance = new ctor() as HTMLElement & {
-      setState(state: Record<string, unknown>): void;
-      attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void;
-      $resolveValue(path: string): unknown;
-    };
-
-    instance.setState({ title: 'Loaded from state' });
-    assert.equal(instance.$resolveValue('title'), 'Loaded from state');
-
-    instance.attributeChangedCallback('title', 'Loaded from state', 'Loaded from attr');
-    assert.equal(instance.$resolveValue('title'), 'Loaded from attr');
+    assert.ok(registry.get(tag));
   });
 
-  test('installTemplateElementRuntime does not overwrite an existing custom element', async () => {
-    const tag = `existing-unit-${Date.now()}`;
+  test('does not claim authored or already registered elements', () => {
+    const authoredTag = `authored-unit-${Date.now()}`;
+    const existingTag = `existing-unit-${Date.now()}`;
     const existing = class ExistingElement extends HTMLElement {};
-    customElements.define(tag, existing);
+    customElements.define(existingTag, existing);
 
-    registerUnitTemplate(tag, textTemplate('title'));
+    registerTemplate(authoredTag, { h: '<p></p>', tr: ['message'] });
+    registerTemplate(existingTag, { h: '<p></p>', th: 1 });
+
     installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
-    assert.equal(customElements.get(tag), existing);
+
+    assert.equal(customElements.get(authoredTag), undefined);
+    assert.equal(customElements.get(existingTag), existing);
   });
 
-  test('installTemplateElementRuntime only claims compiler-owned static hosts', async () => {
-    const tag = `interactive-unit-${Date.now()}`;
+  test('claims templates registered after startup', () => {
+    const tag = `event-unit-${Date.now()}`;
+    const meta = registerTemplate(tag, { h: '<p></p>', th: 1 });
 
-    registerUnitTemplate(tag, {
-      h: '<button></button>',
-      eg: [['click', [['onClick', [], [0]]]]],
-    });
-    installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
-    assert.equal(customElements.get(tag), undefined);
-  });
-
-  test('installTemplateElementRuntime registers each missing template', async () => {
-    const first = `auto-all-a-${Date.now()}`;
-    const second = `auto-all-b-${Date.now()}`;
-
-    registerUnitTemplate(first, textTemplate('title'));
-    registerUnitTemplate(second, textTemplate('itemCount'));
-    installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
-
-    assert.ok(customElements.get(first));
-    assert.ok(customElements.get(second));
-  });
-
-  test('installTemplateElementRuntime only claims compiler-marked static hosts', async () => {
-    const allowed = `runtime-allowed-${Date.now()}`;
-    const skipped = `runtime-skipped-${Date.now()}`;
-    registerUnitTemplate(allowed, textTemplate('title'));
-    registerUnitTemplate(skipped, textTemplate('title', false));
-
-    installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
-
-    assert.ok(customElements.get(allowed));
-    assert.equal(customElements.get(skipped), undefined);
-  });
-
-  test('installTemplateElementRuntime skips fully static scriptless templates', async () => {
-    const tag = `static-only-${Date.now()}`;
-    registerUnitTemplate(tag, {
-      h: '<p>Static content</p>',
-    });
-
-    installTemplateElementRuntime();
-    await new Promise<void>(resolve => queueMicrotask(resolve));
-
-    assert.equal(customElements.get(tag), undefined);
-  });
-
-  test('template registration event claims compiler-owned static hosts', async () => {
-    const tag = `event-owned-${Date.now()}`;
-    const meta = registerUnitTemplate(tag, textTemplate('message'));
-
-    installTemplateElementRuntime();
     window.dispatchEvent(new CustomEvent('webui:templates-registered', {
-      detail: {
-        templates: { [tag]: meta },
-      },
+      detail: { templates: { [tag]: meta } },
     }));
-    await new Promise<void>(resolve => queueMicrotask(resolve));
 
     assert.ok(customElements.get(tag));
+  });
+
+  test('does not claim tags reserved for authored lazy loaders', () => {
+    const tag = `loader-unit-${Date.now()}`;
+    const meta = registerTemplate(tag, { h: '<p></p>', th: 1 });
+    window.__webui!.templateHostExclusions = new Set([tag]);
+
+    window.dispatchEvent(new CustomEvent('webui:templates-registered', {
+      detail: { templates: { [tag]: meta } },
+    }));
+
+    assert.equal(customElements.get(tag), undefined);
+    const authored = class AuthoredLazyElement extends HTMLElement {};
+    customElements.define(tag, authored);
+    assert.equal(customElements.get(tag), authored);
   });
 });

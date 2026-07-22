@@ -40,6 +40,8 @@ pub struct WebUIProtocol {
     pub css_strategy: CssStrategy,
     /// Build-wide DOM encapsulation strategy (Shadow or Light).
     pub dom_strategy: DomStrategy,
+    /// Full initial state or WebUI per-component projection.
+    pub initial_state_strategy: InitialStateStrategy,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -65,6 +67,25 @@ pub struct ComponentData {
     pub template_json: String,
     /// WebUI plugin component-local JavaScript condition closure array.
     pub template_functions: String,
+    /// Sorted, deduplicated keys used when `hydration_mode` is `Keys`.
+    pub hydration_keys: Vec<String>,
+    /// Sorted, deduplicated keys used when `navigation_mode` is `Keys`.
+    pub navigation_keys: Vec<String>,
+    /// `None`, `Keys`, or correctness-safe `All` initial hydration state.
+    pub hydration_mode: StateProjectionMode,
+    /// `None`, `Keys`, or correctness-safe `All` partial-navigation state.
+    pub navigation_mode: StateProjectionMode,
+}
+
+pub enum InitialStateStrategy {
+    Full = 0,
+    Components = 1,
+}
+
+pub enum StateProjectionMode {
+    None = 0,
+    Keys = 1,
+    All = 2,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -306,6 +327,23 @@ lazily parse and remove `#webui-data` into `window.__webui` when metadata is nee
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones.
 
+`initial_state_strategy` controls the `state` field. Default and non-WebUI
+plugin builds use `Full` and serialize the complete state object. WebUI builds
+use `Components`: the handler walks components reachable from the active entry
+and request route and combines their explicit `hydration_mode` values.
+`All` immediately selects complete state, `Keys` contributes its sorted key
+list, and `None` contributes nothing. Unknown numeric enum values also select
+complete state. Components behind active-route `<if>` and `<for>` branches
+remain conservatively reachable; inactive sibling routes are excluded. If every
+reachable WebUI component is exactly `None`, the handler writes `"state":{}`
+without serializing the state value.
+
+Projection keeps startup cost proportional to the active proven hydration
+surface. It is a payload boundary, not a secrecy boundary: any state sent for
+initial hydration or partial navigation is client-facing. Hosts must never put
+secrets in browser render state. See
+[Hydration keys and state projection](#hydration-keys-and-state-projection).
+
 Plugins can still emit executable side-channel data after the inert block. The WebUI framework
 plugin uses that extension point to install component-local
 `window.__webui.templateFns[tagName]` closure arrays, paired with JSON-safe `templates` in
@@ -318,21 +356,29 @@ emit WebUI `templates` or `templateFns`.
 - `<webui-outlet>` — light DOM custom element, marks insertion point for child route content
 
 **Client-side navigation:**
-1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking.
+1. On initial load, the router reads `window.__webui` for the SSR chain, inventory, and nonce. It hydrates matched `<webui-route>` elements using the `data-ri` attribute for O(1) indexed lookup instead of DOM walking. While active, it installs a nonce-bearing `@view-transition { navigation: none; }` override and removes it on `destroy()`. This disables automatic cross-document transitions without affecting explicit same-document `document.startViewTransition()` commits.
 2. `RouterConfig` supports `ssrFresh?: boolean` (default `true`) — when set, the router skips the initial loader replay because SSR state is authoritative. Components can opt into loader replay at startup by declaring `static ssrLoader = true`.
 3. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server.
-4. The server returns the matched route chain — the client does NOT perform route matching.
-5. Reconciles old vs new chain — finds first changed level.
-6. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
-7. Parent components and their state are preserved.
+4. The server returns the matched route chain; the client does NOT perform route matching.
+5. Newly received templates are registered and published through `webui:templates-registered`, allowing the framework to define compiler-owned hosts before commit.
+6. Configured authored loaders run. If the destination tag is still unregistered, the router performs document navigation.
+7. Otherwise, the router reconciles old vs new chain — finds first changed level.
+8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
+9. Parent components and their state are preserved.
 
-**Partial response:** `render_partial()` returns `{ templateStyles, templates, templateFunctions, inventory, path, chain, cacheTags, cacheControl }`. The caller adds application state to the response (e.g. as a top-level `state` field for non-streaming, or as an NDJSON Chunk 2 for streaming):
-- `state`: (added by caller) route-scoped application data — the router applies it to components via `setState()`
+**Partial response:** `Protocol::render_partial()` returns the complete response
+with projected top-level `state`. Raw-state input is validated
+with a streaming serde visitor that enforces `serde_json::Value` numeric limits,
+skips unselected values without materializing them, and borrows selected raw
+values into the response. FFI, Node, WASM, and .NET expose only the complete
+`renderPartial` contract.
+
+- `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
 - `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before installing template closure arrays so adopted stylesheets are available
-- `templates`: JSON-safe client template metadata keyed by component tag, filtered by inventory bitmask
+- `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
 - `inventory`: updated hex bitmask of loaded templates
-- `chain`: matched route chain array — each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
+- `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
 **NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately for instant navigation commit. Chunk 2 (per-component states) arrives when the backend data is ready. The router reads Chunk 1, commits navigation, then applies Chunk 2 states in the background.
@@ -424,12 +470,10 @@ overlap with the invalidated tags.
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
 | `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
 
-The `chain` field is produced by `render_partial()` in the handler, which walks the
-fragment graph and matches routes at each nesting level using a `ProtocolIndex` for
-cached route matching (see [ProtocolIndex](#protocolindex)). The function returns
-chain + templates without state — the caller adds state to the response. Host servers
-call this once per partial response. Available via FFI as `webui_render_partial()` for
-C/.NET/Node hosts.
+The `chain` field is produced by `Protocol::render_partial()`, which walks the
+fragment graph and matches routes at each nesting level using request-local
+route state and the protocol's startup-built component index. All host
+`renderPartial` surfaces return the complete JSON response.
 
 **Partial-template selection:** During client navigation, servers derive template names from the
 normal render fragment graph starting at the persistent entry fragment. The traversal is
@@ -599,11 +643,11 @@ impl<'a> RenderOptions<'a> {
 
 impl WebUIHandler {
     pub fn new() -> Self;
-    pub fn with_plugin(plugin: Box<dyn HandlerPlugin>) -> Self;
+    pub fn with_plugin(factory: fn() -> Box<dyn HandlerPlugin>) -> Self;
 
-    pub fn handle(
-        &mut self,
-        protocol: &WebUIProtocol,
+    pub fn render(
+        &self,
+        protocol: &Protocol,
         state: &Value,
         options: &RenderOptions<'_>,
         writer: &mut dyn ResponseWriter,
@@ -611,73 +655,66 @@ impl WebUIHandler {
 }
 ```
 
-#### ProtocolIndex
+#### Runtime Protocol
 
-`ProtocolIndex` is a pre-computed index over a `WebUIProtocol` that accelerates
-repeated render and partial operations. It is built once from a protocol and
-reused across requests:
+`Protocol` is the one public runtime protocol type. It owns a decoded
+`WebUIProtocol`, a deterministic component index, and a lazily populated
+template-metadata cache. Construct it once when the server loads
+`protocol.bin`, then share it across full renders, partial navigation,
+component-template requests, and token queries.
+
+The wire/build model and runtime model remain separate:
+
+- `WebUIProtocol` is the mutable protobuf wire/build model. Builders populate
+  it, `prost` serializes it, tests compare it, and callers may construct one
+  directly before encoding `protocol.bin`.
+- `Protocol` is the immutable runtime wrapper. Its component index,
+  locks, and lazy JSON caches are process-local implementation details that must
+  never be serialized into the protobuf or rebuilt for every request.
+
+Putting runtime caches on `WebUIProtocol` would make the generated wire type
+non-serializable and introduce locks into build-time mutation. Removing the
+wrapper would force byte-oriented hosts to decode the protobuf and rebuild
+indices on each request. `Protocol` therefore contains, rather than replaces,
+`WebUIProtocol`.
 
 ```rust
-pub struct ProtocolIndex {
-    /// Maps component tag name → bit position in the inventory bitmask.
-    pub component_index: HashMap<String, u32>,
-    /// Pre-compiled route segment patterns for O(1) route matching.
-    pub route_cache: CompiledRouteCache,
+pub struct Protocol {
+    /* decoded protocol + component index + RwLock<template metadata> */
 }
 
-impl ProtocolIndex {
-    pub fn new(protocol: &WebUIProtocol) -> Self;
+impl Protocol {
+    pub fn from_protobuf(bytes: &[u8]) -> Result<Self, ProtocolError>;
+    pub fn new(protocol: WebUIProtocol) -> Self;
+    pub fn protocol(&self) -> &WebUIProtocol;
+    pub fn tokens(&self) -> &[String];
+    pub fn render_partial(
+        &self,
+        state_json: &str,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<String, HandlerError>;
+    pub fn render_component_templates(
+        &self,
+        component_tags: &[&str],
+        inventory_hex: &str,
+    ) -> Result<Value, HandlerError>;
 }
 ```
 
-`CompiledRouteCache` stores pre-compiled route segment patterns extracted from
-the protocol's `WebUIFragmentRoute` tree. Route matching via `match_route_cached()`
-uses these compiled patterns instead of re-parsing path templates on every request:
+Full renders borrow the immutable protocol without locking. Every authored
+route pattern is compiled when `Protocol` is loaded. Absolute routes match from
+the request root; relative routes reuse a compiled suffix after the parent
+route's consumed request segments, so parameter values never become cache
+keys. Parsed template metadata uses a read-write lock limited to individual
+cache lookups. `Protocol` is `Send + Sync`.
 
-```rust
-pub struct CompiledRouteCache { /* internal */ }
-
-/// Match a request path against compiled route patterns. Returns the matched
-/// route and extracted path parameters, or `None` if no route matches.
-pub fn match_route_cached(
-    routes: &[WebUIFragmentRoute],
-    request_path: &str,
-    cache: &CompiledRouteCache,
-) -> Option<RouteMatch>;
-```
-
-#### Partial and Action Response Functions
-
-```rust
-/// Produce a JSON partial response for client-side navigation.
-/// `protocol_index` provides cached route matching and component indices.
-pub fn render_partial(
-    handler: &mut WebUIHandler,
-    protocol: &WebUIProtocol,
-    protocol_index: &mut ProtocolIndex,
-    options: &RenderOptions<'_>,
-    inventory_hex: &str,
-) -> Result<PartialResponse, HandlerError>;
-
-/// Produce a response for a mutation action (POST).
-/// `protocol_index` provides cached route matching and component indices.
-pub fn render_action_response(
-    handler: &mut WebUIHandler,
-    protocol: &WebUIProtocol,
-    protocol_index: &mut ProtocolIndex,
-    options: &RenderOptions<'_>,
-    inventory_hex: &str,
-) -> Result<ActionResponse, HandlerError>;
-
-/// Emit client template metadata, closure arrays, styles, and inventory.
-/// `protocol_index` provides the component index for inventory tracking.
-pub fn render_component_templates(
-    handler: &WebUIHandler,
-    protocol: &WebUIProtocol,
-    protocol_index: &ProtocolIndex,
-    components: &[String],
-) -> serde_json::Value;
-```
+There are no public raw-`WebUIProtocol` rendering alternatives and no
+`ProtocolIndex` lifecycle API. This prevents callers from accidentally
+decoding or rebuilding the deterministic index per request. Request-specific
+route-pattern caches do not exist: the immutable protocol-owned route index is
+shared by full renders, partial navigation, and route-parameter extraction.
 
 #### Component Inventory Functions
 
@@ -796,11 +833,11 @@ actix_web::rt::task::spawn_blocking(move || {
     let opts = RenderOptions::new(&entry, &request_path)
         .with_head_inject(preload_html)   // optional
         .with_body_inject(livereload_html); // optional
-    if let Err(e) = handler.handle(&proto, &state, &opts, &mut writer) {
+    if let Err(e) = handler.render(&proto, &state, &opts, &mut writer) {
         log::error!("render failed: {e}");
         let _ = ResponseWriter::write(&mut writer, "<!-- webui: render error -->");
+        let _ = ResponseWriter::end(&mut writer);
     }
-    let _ = ResponseWriter::end(&mut writer);
 });
 let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
     .map(Ok::<bytes::Bytes, actix_web::Error>);
@@ -872,7 +909,7 @@ hydration markers and attributes; WebUI itself does not interpret them.
 **Usage:**
 ```rust
 let handler = WebUIHandler::with_plugin(|| Box::new(MyHydrationPlugin::new()));
-handler.handle(&protocol, &state, &options, &mut writer)?;
+handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 ### Fragment Processing
 - **Raw fragments:** Write value directly to output
@@ -932,14 +969,15 @@ pub struct Component {
     pub css_definitions: Vec<String>,
     /// CSS `var()` fallback chains from this component's CSS.
     pub css_fallback_chains: Vec<CssFallbackChain>,
-    /// Whether this component has an authored client script.
-    pub has_script: bool,
+    /// Whether authored browser code owns this custom element. This can be true
+    /// for external packages whose source is not available to the parser.
+    pub is_client_owned: bool,
 }
 ```
 
 #### Registration Methods
 ```rust
-pub fn register_component(&mut self, name: &str, html: &str, css: Option<&str>, has_script: bool) -> Result<(), ParserError>
+pub fn register_component(&mut self, registration: ComponentRegistration<'_>) -> Result<(), ParserError>
 pub fn register_directory(&mut self, directory: &Path) -> Result<(), ParserError>
 pub fn contains(&self, name: &str) -> bool
 pub fn get(&self, name: &str) -> Option<&Component>
@@ -978,7 +1016,8 @@ pub struct DiscoveredComponent {
     pub tag_name: String,
     pub html_content: String,
     pub css_content: Option<String>,
-    pub has_script: bool,
+    /// Whether authored browser code owns this custom element.
+    pub is_client_owned: bool,
     pub source: String,
 }
 ```
@@ -992,15 +1031,17 @@ pub struct DiscoveredComponent {
    - `customElements` → path to Custom Elements Manifest
    - root JS entry (`exports["."]`, `main`, `module`, or `browser`) → authored component ownership
 4. Parse the Custom Elements Manifest for `modules[].declarations[].tagName`
-5. Return `DiscoveredComponent` structs with `has_script` set from source metadata (callers handle registration)
+5. Return `DiscoveredComponent` structs with `is_client_owned` set from source metadata (callers handle registration)
 
 Conditional exports are resolved with deterministic priority: `default` → `import` → `require`.
 
 Script ownership is metadata-only: discovery never scans package JavaScript to find
 `customElements.define()` calls. Packages without a root JS entry are treated as
-HTML-only component libraries, so dynamic templates can use compiler-owned static
-hosts. Packages with a root JS entry own their custom elements and do not receive
-static-host metadata.
+compiler-owned template libraries. Packages with a root JS entry own their custom
+elements and are never replaced by compiler-owned hosts. Package source is not
+scanned by Rust. If the package is bundled with the application, the bundler
+projection adapter analyzes its source and includes it in the application
+manifest; external/separately built packages provide their own fragment.
 
 #### Security
 - **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
@@ -1017,8 +1058,8 @@ static-host metadata.
 #### Local Path Resolution
 Local paths use the same sibling-file rule as app components: `my-card.html`
 paired with `my-card.ts` or `my-card.js` is authored/interactive; otherwise it is
-HTML-only and eligible for compiler-owned static hosts when the template has
-dynamic roots.
+SSR-only. Scriptless templates may contain server-rendered bindings,
+conditionals, and repeats, but they emit no client metadata or state.
 Local paths perform a recursive WalkDir scan for HTML files with hyphenated names, pairing matching CSS files — the same convention used by the parser's `ComponentRegistry`.
 
 ### HTML Parser
@@ -1107,7 +1148,7 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean.
+- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1464,9 +1505,9 @@ update hot paths still call the function directly.
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
-| `th`  | `1`                               | Internal static TemplateElement host ownership flag for compiler-owned HTML-only components |
+| `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
 
-All arrays are optional — omitted from the output when empty to minimize payload.
+All arrays are optional and omitted from the output when empty to minimize payload.
 
 `ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 
@@ -1488,9 +1529,86 @@ Logical operators also match the protocol enum values:
 every binding at startup to rediscover roots or observed attributes. `ta` is
 index-aligned with `tr`: `ta[i]` is the host attribute observed for template
 root `tr[i]`. Metadata generated by `--plugin=webui` must include these fields
-when applicable; runtimes treat missing fields as empty. `th` is emitted only
-when the compiler owns a missing static host for an HTML-only component; fully
-static HTML-only components and authored interactive components omit it.
+when applicable; runtimes treat missing fields as empty. Authored components
+emit normal metadata. Scriptless components retain the same compiled template
+metadata with `th: 1`, allowing the framework to register a compiler-owned
+dormant host without requiring an empty authored module.
+
+#### Hydration keys and state projection
+
+Deriving a component's initial hydration surface is a build-time decision, and
+Rust never performs JavaScript/TypeScript analysis to make it. Default and
+FAST builds always set `InitialStateStrategy::Full`. The WebUI plugin sets
+`InitialStateStrategy::Components` only when one or more
+`--projection-manifest` fragments were supplied, loaded, and merged
+successfully (see "Bundler-Neutral State Projection Compiler" below); absent
+any manifest, WebUI builds also use `InitialStateStrategy::Full`.
+
+The WebUI parser plugin represents both initial hydration and partial
+navigation with an explicit `StateSurface`:
+
+- `None`: the complete surface is known to be empty.
+- `Keys(Vec<String>)`: the complete surface is known and the sorted,
+  deduplicated keys are authoritative.
+- `All`: the complete surface cannot be proven, so correctness requires full
+  state.
+
+Client ownership and source availability are distinct. Scriptless components
+use initial `None` and navigation template roots — this is Rust-derived and
+does not depend on manifests. Authored (scripted) modules default to `All`
+for both surfaces until a merged projection manifest proves an exact key set
+for that component's tag; opaque external modules always use `All` for both
+surfaces and cannot be replaced by compiler-owned hosts.
+
+When a manifest covers a scripted component, its initial surface is exactly
+`ComponentEntry.hydrationKeys`: proven `@observable + @attr` property names.
+For `@attr`, an existing SSR host attribute wins; bootstrap state fills the
+property only when that attribute was not materialized on the host.
+The navigation surface is the union of
+`ComponentEntry.navigationKeys` (`@observable + @attr`) and compiled template
+roots (`tr`). A proven empty array is a valid `Keys([])`, distinct from
+`None`. If a
+scripted component has no manifest coverage, its initial and navigation
+surfaces are both `All` — but this is a build error under strict coverage
+whenever any manifest is supplied at all (`PROJ-B001`); `All` for an uncovered
+scripted component is only reachable when no manifest was supplied for the
+build at all.
+`ComponentData::{hydration_mode,navigation_mode}` encode the surface and the
+corresponding key vectors are populated only for `Keys`.
+For protocol binaries created before the mode fields existed, a default
+`None` mode paired with a non-empty legacy key vector is interpreted as
+`Keys`; current builders never emit that combination.
+
+At initial render, `InitialStateStrategy::Full` bypasses component-key
+collection. `Components` finds components reachable from the active entry and
+request route, then combines their hydration surfaces: any `All` selects full
+state, `Keys` contributes keys, and `None` contributes nothing. Inactive sibling
+routes are excluded. Components behind active-route conditionals, loops, and
+attribute-template edges remain conservatively reachable because reachability
+is state-agnostic. Unknown protocol enum values are treated as `All`.
+
+Projection iterates whichever side is smaller:
+
+- schema keys plus direct object lookup for sparse schemas over wide state maps
+- state entries plus binary-search membership for compact state maps
+
+The projected object is serialized into the existing buffered script-safe JSON
+path. The handler does not stream serde tokens directly to `ResponseWriter`;
+that alternative regressed the equal-byte 1 MB benchmark.
+
+**Security boundary.** Hydration projection reduces payload and CPU cost. It is
+not a secrecy boundary. Any state selected by exact metadata or preserved by a
+full fallback is client-facing. Hosts must not place secrets in browser render
+state.
+
+**Partial state.** `Protocol::render_partial()` accepts raw JSON and applies the
+active route's navigation surfaces with the same `None` / `Keys` / `All`
+rules. On `Keys`, a streaming JSON visitor validates the complete object,
+skips unselected values without materializing them, and borrows selected raw
+values into the response. On `All`, raw APIs validate and preserve the borrowed
+JSON object without materializing it. Scriptless routes therefore receive only
+template roots needed for the destination; uncertain routes receive complete
+state.
 
 `a[]` uses compact tuple forms to avoid runtime parsing:
 
@@ -1526,6 +1644,1052 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
 
 **Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), scriptless components that contain `@event` bindings, non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each` or `scriptless-event-handler`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
+
+---
+
+## Bundler-Neutral State Projection Compiler
+
+This section is the authoritative specification for the projection compiler,
+manifest schema, adapter SPI, Rust consumer contract, diagnostic codes, and
+conformance fixtures. It is precise enough for the TypeScript compiler/esbuild
+adapter and the Rust manifest consumer to be implemented concurrently by
+independent agents without semantic drift.
+
+### Canonical build order
+
+State projection requires exactly one bundler run followed by one WebUI build
+invocation. There is no second bundler pass and no in-process analysis.
+
+```text
+Step 1 — Bundler (esbuild or compatible adapter)
+  Input:  application entry points, TypeScript/JavaScript sources
+  Output: dist/index.js (+ split chunks)
+          dist/webui-projection.json   ← projection manifest
+
+Step 2 — WebUI build
+  webui build ./src \
+    --plugin webui \
+    --projection-manifest ./dist/webui-projection.json \
+    --out ./dist
+  Input:  HTML/CSS templates, projection manifest(s)
+  Output: dist/protocol.bin
+
+Step 3 — Runtime handler
+  Input:  protocol.bin, request state
+  Output: HTML response
+  Never reads: manifest, JavaScript, TypeScript, or bundler output
+```
+
+The manifest is a build-time handoff artifact. It is not deployed as a handler
+runtime dependency.
+
+An optional `buildWebUI()` convenience helper may run steps 1 and 2
+sequentially, but it must be orchestration sugar over the same manifest contract
+and must not create a second projection architecture.
+
+### Package architecture
+
+No new npm package is created. The existing `@microsoft/webui` package gains
+one build-only subpath:
+
+```typescript
+import { compileProjection, esbuildProjection } from '@microsoft/webui/projection.js';
+```
+
+The root `@microsoft/webui` entry does **not** import or re-export the
+projection subpath so that render/build consumers do not load compiler or
+adapter code.
+
+Internal source organization:
+
+```text
+packages/webui/src/projection/
+  index.ts          — public subpath barrel
+  compiler.ts       — TypeScript AST analysis and symbol graph
+  graph.ts          — normalized module graph types and adapter SPI
+  manifest.ts       — manifest schema types and serialization
+  diagnostics.ts    — stable diagnostic codes and error types
+  adapters/
+    esbuild.ts      — esbuild adapter (first supported adapter)
+    vite.ts         — future
+    rollup.ts       — future
+    rolldown.ts     — future
+    webpack.ts      — future
+    rspack.ts       — future
+  fixtures/
+    conformance.ts  — adapter conformance test helpers and reference cases
+```
+
+The canonical TypeScript type definitions live in `packages/webui/src/projection/`
+and are the machine-readable specification that both the TypeScript compiler
+implementation and the Rust manifest consumer must satisfy.
+
+### Optional peer dependency policy
+
+`typescript` and each officially supported bundler are optional peer
+dependencies of `@microsoft/webui`. The first supported bundler is esbuild:
+
+```json
+{
+  "peerDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
+  },
+  "peerDependenciesMeta": {
+    "esbuild": { "optional": true },
+    "typescript": { "optional": true }
+  }
+}
+```
+
+**`esbuild` must not be a direct dependency and must not be bundled into
+`@microsoft/webui`.** The application owns the esbuild installation and version.
+Importing or invoking `@microsoft/webui/projection.js` without the required
+peer produces an actionable diagnostic (`PROJ-P001`/`PROJ-P002`; see
+[Diagnostic codes](#projection-diagnostic-codes)).
+
+Both peers are optional so users importing only the root build/render API do
+not receive dependency warnings for compiler tooling they do not use.
+
+Bundler adapters use local structural interfaces and do **not** statically
+import their bundler packages at module load time. Future supported adapters
+add their bundlers as optional peers under the same policy.
+
+### Normalized module graph and adapter SPI
+
+The adapter SPI is defined in `packages/webui/src/projection/graph.ts`. It
+isolates bundler-specific semantics behind a stable interface so the projection
+compiler never depends on a particular bundler.
+
+```typescript
+export type ModuleKind = "file" | "virtual";
+
+export interface ResolvedImport {
+  /** Specifier exactly as authored. */
+  readonly specifier: string;
+  /** Exact bundler-resolved module ID; absent only for external edges. */
+  readonly resolvedId: string | undefined;
+  readonly external: boolean;
+  readonly kind: "static" | "dynamic";
+  /** Owning package identity, when the adapter can prove it. */
+  readonly packageName?: string;
+}
+
+/** A single resolved module in the build graph. */
+export interface ModuleNode {
+  /** Canonical absolute path on disk, or a virtual ID beginning with NUL. */
+  readonly id: string;
+  readonly kind: ModuleKind;
+  /** Owning package identity, when proven by the adapter. */
+  readonly packageName?: string;
+  /** Raw UTF-8 source text. Required for file modules. */
+  readonly source: string | undefined;
+  /** Authored specifiers paired with exact bundler-resolved targets. */
+  readonly imports: ReadonlyArray<ResolvedImport>;
+}
+
+/** The resolved input module graph as seen by the bundler. */
+export interface ModuleGraph {
+  /** All modules reachable from the entry set, keyed by canonical ID. */
+  readonly modules: ReadonlyMap<string, ModuleNode>;
+  /** Canonical entry module IDs. */
+  readonly entries: ReadonlyArray<string>;
+}
+
+/** Maps each emitted output path to the input module IDs that contribute to it. */
+export interface OutputMembership {
+  /**
+   * Key: canonical absolute output ID, or a virtual ID beginning with NUL.
+   * Value: set of canonical input module IDs whose code appears in this output.
+   */
+  readonly outputs: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/** Context passed from the bundler adapter to the projection compiler. */
+export interface AdapterContext {
+  readonly graph: ModuleGraph;
+  readonly membership: OutputMembership;
+  /** Absolute build root containing every physical input/output/manifest. */
+  readonly rootDir: string;
+  /**
+   * Manifest output path as an absolute disk path.
+   * The serialized `root` field is relative from this path's directory to
+   * `rootDir`; all physical manifest keys are root-relative.
+   */
+  readonly manifestPath: string;
+  /** Bundler name, e.g. "esbuild". */
+  readonly bundlerName: string;
+  /** Bundler version string, e.g. "0.28.1". */
+  readonly bundlerVersion: string;
+  /** Exact bytes for every physical emitted output, keyed by output ID. */
+  readonly outputContents: ReadonlyMap<string, string | Uint8Array>;
+}
+```
+
+**Canonicalization rules:**
+
+- `ModuleNode.id`, physical output IDs, `rootDir`, and `manifestPath` are
+  canonical absolute paths. Virtual IDs begin with `\0`.
+- Every authored import/re-export retains its authored `specifier` **and** the
+  adapter-resolved `resolvedId`. The compiler never joins paths, substitutes
+  extensions, reads package exports, or performs filesystem resolution.
+- `packageName` carries semantic package identity independently of path layout.
+  A specifier is treated as WebUI framework semantics only when the adapter
+  proves `packageName: "@microsoft/webui-framework"`. Literal source text does
+  not override adapter resolution.
+- Every physical module has raw source and every physical output has exact
+  bytes. Disk outputs can never be represented as `"virtual"` to skip stale
+  validation.
+- `rootDir` contains the manifest and every physical input/output. The compiler
+  rejects graph members outside it.
+
+The compiler parses source lazily. It seeds modules containing a supported
+literal `.define(...)`/`customElements.define(...)` candidate (or a framework
+edge needed to diagnose a dynamic tag), then loads imported/re-exported/base
+modules only when symbol resolution follows them. Behavior-only dependency
+graphs such as CodeMirror are hashed for staleness and membership but are not
+parsed as projection semantics.
+
+**Adapter responsibilities:**
+
+1. Enable metafile/stats collection in the underlying bundler.
+2. Populate `ModuleGraph`, retaining specifier-to-resolved-target edges.
+3. Populate `OutputMembership` from the bundler's emitted output→input map.
+4. Provide raw source text and exact emitted output bytes.
+5. Invoke `compileProjection(ctx)` (see below).
+6. Write the returned `ProjectionManifest` atomically to `manifestPath`.
+
+**Compiler responsibilities (not adapter responsibilities):**
+
+- TypeScript AST parsing.
+- Symbol resolution.
+- Decorator key extraction.
+- `define()` association.
+- Manifest serialization.
+- Diagnostic reporting.
+
+### TypeScript AST semantic rules
+
+The compiler in `compiler.ts` processes all source files in the `ModuleGraph`
+whose extension matches `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`,
+or `.cjs`.
+
+#### Symbol graph construction
+
+The compiler builds a per-file symbol map from adapter-resolved edges rather
+than re-running module resolution. For each `ModuleNode`:
+
+1. Parse with the TypeScript compiler API (`ts.createSourceFile`) with
+   `ScriptTarget.Latest` and `ScriptKind` inferred from the extension.
+2. For each top-level import declaration, use the adapter's resolved graph to
+   map the module specifier to a `ModuleNode.id` instead of resolving the path.
+3. Record bound names: default import, named imports, namespace imports,
+   re-exports. Build a `SymbolRef` for each: `{ moduleId, localName }`.
+4. For each export: record the exported name and the `SymbolRef` it resolves to.
+
+A `SymbolRef` tracks the ultimate origin of a binding through any number of
+re-export hops. Resolution is iterative (no recursion); cycles in the import
+graph are detected and produce diagnostic `PROJ-C012`.
+
+#### Class analysis
+
+For each class declaration or expression that is exported or associated with a
+`define()` call:
+
+1. Collect all own property declarations that carry a decorator.
+2. For each decorator:
+   - Resolve the decorator identifier through the symbol graph back to its
+     export in the defining module.
+   - If the resolved export is `observable` from `@microsoft/webui-framework`,
+     record the property name in both `hydrationKeys` and `navigationKeys`.
+   - If the resolved export is `attr` from `@microsoft/webui-framework`,
+     record the **JavaScript property name** in both surfaces.
+     `@attr({ attribute: "display-value" }) displayValue` therefore emits
+     `displayValue`: framework state addresses the property registry, while an
+     existing `display-value` host attribute takes precedence during SSR
+     hydration.
+3. Walk the class `extends` clause. Resolve the base class through the symbol
+   graph. Collect the base class's keys recursively (iterative: push unresolved
+   bases onto a stack). Stop at `WebUIElement` or any class from
+   `@microsoft/webui-framework` whose own keys are already fully resolved.
+4. Each final surface is own keys ∪ inherited keys (sorted, deduplicated,
+   case-sensitive), and navigation is validated as a hydration superset.
+
+**Supported import forms.** The compiler resolves keys through all of the
+following:
+
+| Source form | Resolution |
+|---|---|
+| `import { observable, attr } from '...'` | Direct named import |
+| `import { observable as obs } from '...'` | Aliased named import |
+| `import * as webui from '...'` | Namespace; `webui.observable` resolved |
+| `export { observable } from '...'` | Re-export chain |
+| `export { observable as obs } from '...'` | Aliased re-export |
+| `export * from '...'` | Star re-export (all public names forwarded) |
+| `export * as ns from '...'` | Namespaced star re-export |
+
+Decorators proven to be non-framework local/imported symbols are irrelevant to
+projection and are ignored. A decorator on a proven WebUI class whose identity
+cannot be resolved through the adapter graph could be an aliased WebUI
+decorator; that uncertainty produces `PROJ-C004` (hard diagnostic).
+
+#### `define()` association
+
+The compiler recognizes exactly two `define()` forms for associating a class
+with a custom-element tag name:
+
+```typescript
+// Form 1: static class method
+ContactCard.define("contact-card");
+
+// Form 2: customElements.define
+customElements.define("contact-card", ContactCard);
+```
+
+Rules:
+
+- A call is considered a WebUI definition only after its class is proven to
+  inherit from the adapter-identified `WebUIElement`, or it uses a proven WebUI
+  decorator and inheritance proof fails. This prevents unrelated libraries
+  with a `.define()` API from producing false diagnostics.
+- A locally shadowed `customElements` binding is not the browser registry and
+  is ignored.
+- The tag-name argument must be a **string literal** at analysis time. Dynamic
+  tags on a proven WebUI class produce `PROJ-C008`.
+- An unrelated or unresolvable `.define()` receiver is ignored by the compiler.
+  If it was actually a scripted WebUI component, Rust strict coverage later
+  fails with `PROJ-B001`; the compiler never guesses based on capitalization or
+  method names.
+- The same tag defined more than once (within one adapter context) produces
+  `PROJ-C010` (duplicate tag, hard diagnostic).
+- A class associated with no `define()` call is not included in the manifest.
+  It may be a base class or utility class; the compiler does not warn.
+
+#### Exact-only semantics
+
+The compiler operates in exact-only mode. There are no best-effort or partial
+outputs:
+
+- `hydrationKeys: []` and `navigationKeys: []` are valid proven-empty results.
+  Both contain inherited/local `@observable + @attr`; `navigationKeys` remains
+  a validated hydration superset for future channel-specific extensions.
+- Any condition that prevents proving the exact key set is a **hard diagnostic**
+  that fails the build. There is no fallback `All` entry in the manifest.
+
+Conditions that produce hard diagnostics (cannot prove exact keys):
+
+| Condition | Code |
+|---|---|
+| Unresolvable decorator identity | `PROJ-C004` |
+| Unresolvable base class | `PROJ-C005` |
+| Circular import in resolution | `PROJ-C012` |
+| Module source unavailable (external/virtual) for a class that uses decorators | `PROJ-C006` |
+| Unsupported decorator form (computed, call-chain, etc.) | `PROJ-C007` |
+
+#### Output membership filter
+
+After deriving exact candidates, the shared compiler applies the
+adapter-provided output membership filter:
+
+1. For each candidate class, find the `ModuleNode.id` that defines it.
+2. Check whether that module ID appears in at least one `OutputMembership`
+   output's contributing set.
+3. If yes: the component is shipped and enters the manifest.
+4. If no: the component was tree-shaken and is silently excluded from the
+   manifest. No diagnostic is emitted for excluded components.
+
+This ensures that a tree-shaken component does not appear in the manifest and
+does not trigger a coverage requirement in `webui build`.
+
+### Manifest schema
+
+The manifest is a versioned deterministic UTF-8 JSON file. One bundler
+invocation produces one manifest fragment. Multiple fragments may be merged
+by `webui build` (see [Fragment merge](#projection-fragment-merge)).
+
+#### Top-level structure
+
+```typescript
+export interface ProjectionManifest {
+  /** Schema identifier — always "webui.state-projection/v1". */
+  readonly schema: "webui.state-projection/v1";
+
+  /** Producer identity. */
+  readonly producer: {
+    readonly name: "@microsoft/webui/projection.js";
+    readonly version: string;
+  };
+
+  /** Bundler adapter identity. */
+  readonly adapter: {
+    /** Adapter name, e.g. "esbuild". */
+    readonly name: string;
+    /** Bundler name@version string, e.g. "esbuild@0.28.1". */
+    readonly bundler: string;
+  };
+
+  /**
+   * Build root relative to the manifest directory: ".", "..", "../..", etc.
+   * Every physical path below is relative to this root.
+   */
+  readonly root: string;
+
+  /**
+   * SHA-256 of normalized entry IDs, module/source identities, exact resolved
+   * import edges, and output membership.
+   */
+  readonly analysisHash: string;
+
+  /**
+   * Deterministic build identifier covering inputs, graph, config, outputs, and
+   * version. Format: "sha256:<64-hex-chars>".
+   */
+  readonly buildId: string;
+
+  /**
+   * Emitted output files.
+   * Key: canonical build-root-relative path, or `virtual:<hex-id>`.
+   * Value: exact file-byte SHA-256, or "virtual" only for a virtual key.
+   */
+  readonly outputs: Record<string, string>;
+
+  /**
+   * Every module in the adapter graph, including tree-shaken modules.
+   * Key: canonical build-root-relative path, or `virtual:<hex-id>`.
+   * Value: exact UTF-8 source SHA-256, or "virtual" only for a virtual key.
+   */
+  readonly inputs: Record<string, string>;
+
+  /**
+   * Component entries keyed by custom-element tag name.
+   */
+  readonly components: Record<string, ComponentEntry>;
+}
+
+export interface ComponentEntry {
+  /** Canonical build-root-relative physical defining module. */
+  readonly module: string;
+  /** Canonical output keys that include this component. */
+  readonly outputs: readonly string[];
+  /** Sorted exact @observable + @attr property keys used by initial bootstrap. */
+  readonly hydrationKeys: readonly string[];
+  /** Sorted exact @observable + @attr property keys used by navigation. */
+  readonly navigationKeys: readonly string[];
+}
+```
+
+#### Ordering and determinism rules
+
+The manifest must be reproducible byte-for-byte given the same inputs,
+graph, configuration, and tool versions:
+
+1. **No timestamps.** No `builtAt`, `date`, `time`, or any time-derived field.
+2. **Sorted object keys.** `outputs`, `inputs`, and `components` are sorted
+   lexicographically by raw UTF-8 bytes, ascending.
+3. **Sorted arrays.** `ComponentEntry.outputs`, `hydrationKeys`, and
+   `navigationKeys` are sorted and deduplicated by raw UTF-8 bytes.
+   `navigationKeys` must contain every `hydrationKeys` entry.
+4. **Normalized paths.** All paths use forward slashes. No leading `./`.
+   Physical keys are relative to `root`, never the manifest directory.
+5. **Compact JSON serialization.** No trailing newlines, no pretty-printing
+   (for the canonical form that participates in hashing). The written file
+   may be pretty-printed for readability, but hashing uses compact form.
+6. **Stable enum values.** No booleans substituted for integers in future
+   versions; new optional fields are added with `undefined` (absent, not `null`).
+
+#### Path normalization algorithm
+
+The adapter supplies absolute `rootDir`, `manifestPath`, module IDs, and output
+IDs:
+
+1. `manifestPath` and every physical input/output must be within `rootDir`.
+2. Serialize `root = relative(dirname(manifestPath), rootDir)` using forward
+   slashes. It must be `"."` or only parent segments (`".."`, `"../.."`, up to
+   32 segments). A common layout is manifest `project/dist/...` and
+   `root: ".."`.
+3. Serialize each physical file as `relative(rootDir, absoluteFile)`, replacing
+   separators with `/`. File keys must be non-empty and contain no `.`, `..`,
+   absolute prefix, backslash, or control-character segment.
+4. Serialize virtual IDs as `virtual:` plus lowercase hexadecimal UTF-8 bytes
+   of the ID after its leading NUL.
+5. A `"virtual"` hash is valid only for a `virtual:` key. A physical output
+   must always carry exact bytes and a SHA-256 hash.
+6. Consumers canonicalize `root` and every physical file and verify the
+   resulting path remains below the canonical root (including symlink checks).
+
+### Hash and build-ID algorithm
+
+All hashes use **SHA-256** over exact bytes. Source text supplied as a string is
+encoded as UTF-8 exactly as supplied (including a BOM code point when present);
+output adapters should pass emitted bytes directly. Hash values are lowercase
+hexadecimal prefixed with `"sha256:"`.
+
+#### File content hash
+
+For a file-backed module or output file:
+
+```
+hash = "sha256:" + hex(sha256(utf8_bytes_of_file))
+```
+
+For virtual modules: `"virtual"` (literal string, not a hash).
+
+#### Analysis hash
+
+`analysisHash` is SHA-256 over length-prefixed canonical records for:
+
+- sorted entry IDs;
+- every sorted module ID, kind, source hash, and sorted import edge
+  (`specifier`, resolved ID, external/internal, static/dynamic, package name);
+- every sorted output ID and its sorted contributing module IDs.
+
+It proves the semantic graph and final output membership without requiring the
+Rust consumer to reproduce bundler resolution.
+
+#### Build ID
+
+The build ID covers producer/adapter versions, `root`, `analysisHash`, every
+input/output hash, and every component's defining module, exact output
+membership, and exact keys.
+
+Canonical records use this unambiguous encoding:
+
+```text
+<record-label><utf8-byte-length>:<field><utf8-byte-length>:<field>...\n
+```
+
+The record sequence is:
+
+```text
+schema(schema-id)
+producer(name, version)
+adapter(adapter-name, bundler-name@version)
+root(root)
+analysis(analysisHash)
+inputs(count)
+input(path, hash) ... sorted by UTF-8 path bytes
+outputs(count)
+output(path, hash) ... sorted by UTF-8 path bytes
+components(count)
+component(
+  tag,
+  module,
+  output-count,
+  outputs...,
+  hydration-key-count,
+  hydration-keys...,
+  navigation-key-count,
+  navigation-keys...
+)
+  ... sorted by UTF-8 tag bytes
+```
+
+Each record ends in exactly one LF. Decimal lengths count UTF-8 bytes, not
+UTF-16 code units. The final identifier is:
+
+```text
+"sha256:" + hex(sha256(canonical_record_bytes))
+```
+
+Cross-language golden vector:
+
+```text
+producer = @microsoft/webui/projection.js@0.0.18
+adapter = esbuild / esbuild@0.28.1
+root = ..
+analysisHash = sha256:1111111111111111111111111111111111111111111111111111111111111111
+input = src/a.ts / sha256:2222222222222222222222222222222222222222222222222222222222222222
+output = dist/a.js / sha256:3333333333333333333333333333333333333333333333333333333333333333
+component = a-card / src/a.ts / [dist/a.js]
+            / hydration [displayValue]
+            / navigation [displayValue, é]
+buildId = sha256:8319202a060626c39cce76df50197c92dee27aab29d601161183c188204d7c18
+```
+
+#### Stale validation
+
+`webui build` re-hashes declared input and output files to detect staleness:
+
+1. Resolve and canonicalize `root`.
+2. For each physical `inputs` entry: read the root-relative file and compare
+   the computed SHA-256 against the manifest value. Mismatch → `PROJ-M003`.
+3. For each physical `outputs` entry: read the root-relative file and compare
+   the computed SHA-256 against the manifest value. Mismatch → `PROJ-M004`.
+4. Validate virtual/hash pairing, component references, sorted/deduplicated
+   arrays, and `analysisHash` format.
+5. Re-derive the build ID from current hashes and compare against
+   `manifest.buildId`. Mismatch → `PROJ-M005`.
+
+All three checks must pass before any manifest data is consumed. A partially
+written manifest (missing declared files) → `PROJ-M001`.
+
+### Fragment merge semantics
+
+`webui build` accepts a repeatable `--projection-manifest` option:
+
+```bash
+webui build ./src \
+  --plugin webui \
+  --components @microsoft/shared-controls \
+  --projection-manifest ./dist/app-projection.json \
+  --projection-manifest ./shared-controls/dist/control-projection.json \
+  --out ./dist
+```
+
+Each argument path must point to a valid, non-stale manifest file. Manifests
+are loaded and merged by component tag:
+
+1. **Schema compatibility.** Every manifest must have `schema:
+   "webui.state-projection/v1"`. An unsupported schema version produces
+   `PROJ-M002`.
+2. **Duplicate ownership.** The same component tag appearing in two or more
+   manifests produces `PROJ-M006` (duplicate tag ownership, hard error).
+3. **Conflicting keys.** Not applicable after deduplication by rule 2; each
+   tag is owned by exactly one manifest.
+4. **Merged result.** The merged component map contains every entry from all
+   manifests. File identity is the canonical absolute path obtained from each
+   fragment's own `root`; identical relative names under different roots do
+   not conflict. If two individually validated fragments refer to the same
+   canonical file with different hashes (for example due to a concurrent
+   rewrite race), merging produces `PROJ-M007`.
+
+After merging, the merged map is used for strict coverage validation.
+
+### Strict WebUI build validation
+
+After loading and merging all manifests, `webui build` validates strict coverage:
+
+1. Determine the **compiled scripted components**: every component tag that
+   appears in the protocol's compiled fragment graph **and** has a sibling
+   client module (non-scriptless). This includes:
+   - Route component roots.
+   - Components reachable via component-asset closure roots.
+   - Any component compiled into the protocol whose tag is not marked scriptless.
+2. For each compiled scripted component, exactly one manifest entry must be
+   present. Missing entry → `PROJ-B001`.
+3. Manifest entries for components that exist in the template tree but are
+   unused (not compiled into the protocol, not in any route or asset closure)
+   do **not** trigger an error. They are silently ignored.
+4. The merged manifest may contain components that WebUI has no template for.
+   This is permitted (external controls, future components). No warning.
+
+After coverage validation, `webui build`:
+
+1. For each matched scripted component, reads
+   `ComponentEntry.hydrationKeys` and `ComponentEntry.navigationKeys`.
+2. Sets `ComponentData::hydration_mode = StateProjectionMode::Keys` and
+   `ComponentData::hydration_keys = entry.hydrationKeys`.
+3. Sets `ComponentData::navigation_mode = StateProjectionMode::Keys` and
+   `ComponentData::navigation_keys =
+   union(entry.navigationKeys, template_roots(tag))`.
+4. Sets `WebUIProtocol::initial_state_strategy = InitialStateStrategy::Components`.
+5. Scriptless components continue to use `StateProjectionMode::None` for
+   hydration and their template roots for navigation.
+
+### Rust responsibilities and integration
+
+Rust (`webui build`, `webui serve`, `webui-parser`, `webui` crate) owns:
+
+- Template root extraction (`tr` field from compiled template metadata).
+- Scriptless component detection and compiler-owned host emission.
+- Navigation union: `navigation_keys = union(manifest_keys, template_roots)`.
+- `InitialStateStrategy` and `StateProjectionMode` protocol encoding.
+- Route closure and component-asset closure reachability.
+- Strict coverage validation (every compiled scripted component must be in merged manifest).
+- Manifest loading, path normalization, stale validation, and fragment merge.
+- Projection-enabled vs. disabled mode selection.
+
+Default and FAST plugin builds continue to use `InitialStateStrategy::Full`.
+Passing `--projection-manifest` with a non-WebUI plugin is a hard error
+(`PROJ-B002`): only the WebUI plugin produces protocol fields compatible with
+per-component key encoding.
+
+The Rust `BuildOptions` struct accepts composable path and inline sources:
+
+```rust
+pub enum ProjectionManifestSource {
+    Path(PathBuf),
+    Inline {
+        /// Logical location anchoring root and stale file validation.
+        manifest_path: PathBuf,
+        json: String,
+    },
+}
+
+/// Empty means projection is disabled.
+pub projection_manifests: Vec<ProjectionManifestSource>,
+```
+
+Schema parsing, canonical ordering/reference validation, and build-ID
+recomputation live in `webui-protocol::projection_manifest` so native and WASM
+hosts share one contract. `webui` adds filesystem root, symlink, and stale
+input/output validation for path and inline native sources.
+
+The handler runtime never reads manifest files. Protocol fields are the sole
+runtime source of projection metadata.
+
+### CLI, Node, and WASM input shape
+
+#### CLI
+
+```text
+webui build ./src --plugin webui --projection-manifest <PATH> [--projection-manifest <PATH>] ...
+webui serve ./src --plugin webui --projection-manifest <PATH> [--projection-manifest <PATH>] ...
+```
+
+`--projection-manifest` is repeatable and corresponds to
+`BuildOptions::projection_manifests`. In watch mode, the server watches manifest
+files for changes; a new valid manifest triggers a protocol rebuild. A stale or
+invalid manifest produces a structured build error that is displayed and held
+until the next valid manifest update.
+
+Manifest files are registered as explicit watcher files through their parent
+directories. They bypass the normal `dist/` ignore rule, while sibling bundle
+chunks and adapter temporary files remain ignored. This makes the adapter's
+atomic rename of the final manifest the sole client-build synchronization
+event. The existing rebuild worker stays alive after an error and clears the
+stored error on the next successful manifest-triggered rebuild.
+
+#### Node
+
+`@microsoft/webui` accepts manifest paths and already-transported objects:
+
+```typescript
+import { build } from '@microsoft/webui';
+await build({
+  appDir: './src',
+  projectionManifests: ['./dist/webui-projection.json'],
+  projectionManifestObjects: [{
+    path: './dist/other-projection.json',
+    manifest: otherManifest,
+  }],
+});
+```
+
+The package serializes inline objects once at the NAPI boundary. NAPI receives
+paths plus `{path, json}` records and performs all validation on the Rust side;
+it never depends on compiler or esbuild packages. The CLI fallback supports
+paths and rejects inline objects with an actionable message rather than
+silently writing files.
+
+#### WASM
+
+The WASM parser export accepts an optional third argument containing an array
+of manifest objects:
+
+```typescript
+buildProtocol(files, entry, projectionManifests?)
+```
+
+Without manifests, initial state is full and scripted navigation surfaces stay
+`All`. With manifests, WASM uses the shared structural/build-ID validator,
+merges tags, enforces strict compiled-scripted coverage, and encodes the same
+protocol fields. It cannot perform filesystem stale checks and never analyzes
+JavaScript.
+
+### Projection diagnostic codes
+
+All codes are stable and machine-readable. They appear in the `code` field of
+a `Diagnostic` object alongside `title`, `location`, `snippet`, and `help`.
+No color in diagnostic data; color is added only by `webui-cli` output layer.
+
+#### Compiler diagnostics (PROJ-C*)
+
+| Code | Severity | Condition |
+|------|----------|-----------|
+| `PROJ-C001` | error | TypeScript parse error in source file |
+| `PROJ-C002` | error | Import specifier does not resolve to any module in the graph |
+| `PROJ-C003` | error | Named import not found in the resolved module's exports |
+| `PROJ-C004` | error | Decorator cannot be resolved to `observable` or `attr` from `@microsoft/webui-framework`; cannot prove exact keys |
+| `PROJ-C005` | error | Base class cannot be resolved to a class declaration in the graph; cannot prove exact inherited keys |
+| `PROJ-C006` | error | Class uses `@observable`/`@attr` decorators but its module source is unavailable (external/virtual) |
+| `PROJ-C007` | error | Unsupported decorator form (computed property key, call-chain decorator, reflection-based) |
+| `PROJ-C008` | error | `define()` tag argument is not a string literal |
+| `PROJ-C009` | error | Reserved for an adapter that explicitly claims a WebUI class target but cannot supply its declaration |
+| `PROJ-C010` | error | Duplicate `define()` for the same tag within one adapter context |
+| `PROJ-C011` | error | `Class.define(...)` called with wrong argument count |
+| `PROJ-C012` | error | Circular import detected during symbol resolution |
+| `PROJ-C013` | error | Adapter graph is incomplete/inconsistent (unknown entry/member, missing resolved edge/source, path outside root) |
+| `PROJ-C014` | error | Adapter omitted exact bytes for a physical emitted output |
+
+#### Peer dependency diagnostics (PROJ-P*)
+
+| Code | Severity | Condition |
+|------|----------|-----------|
+| `PROJ-P001` | error | Required peer `typescript` is absent or below the supported range |
+| `PROJ-P002` | error | Required peer `esbuild` is absent or below the supported range (esbuild adapter only) |
+| `PROJ-P003` | warning | Peer is present but above the tested range; results may differ |
+
+#### Manifest diagnostics (PROJ-M*)
+
+| Code | Severity | Condition |
+|------|----------|-----------|
+| `PROJ-M001` | error | Manifest file is missing or unreadable |
+| `PROJ-M002` | error | Manifest schema version is not `webui.state-projection/v1` |
+| `PROJ-M003` | error | Declared input file hash does not match current file content (stale manifest) |
+| `PROJ-M004` | error | Declared output file hash does not match current file content (stale manifest) |
+| `PROJ-M005` | error | Manifest `buildId` does not match recomputed build ID |
+| `PROJ-M006` | error | Same component tag owned by two or more manifests (duplicate ownership) |
+| `PROJ-M007` | error | Same path key in merged `inputs` or `outputs` has conflicting hashes |
+| `PROJ-M008` | error | Manifest JSON is syntactically invalid |
+| `PROJ-M009` | error | Required manifest field is missing or has wrong type |
+
+#### Build validation diagnostics (PROJ-B*)
+
+| Code | Severity | Condition |
+|------|----------|-----------|
+| `PROJ-B001` | error | Compiled scripted component has no manifest entry (missing coverage) |
+| `PROJ-B002` | error | `--projection-manifest` supplied with a non-WebUI plugin |
+
+#### Security and resource diagnostics (PROJ-S*)
+
+| Code | Severity | Condition |
+|------|----------|-----------|
+| `PROJ-S001` | error | Manifest file exceeds the 16 MiB size limit |
+| `PROJ-S002` | error | Manifest `components` count exceeds 65,535 |
+| `PROJ-S003` | error | Normalized path traverses outside the project root (path traversal attempt) |
+| `PROJ-S004` | error | Hash format is invalid (not `"sha256:<64-hex>"` or `"virtual"`) |
+
+### Security and resource constraints
+
+The Rust manifest consumer enforces the following before parsing manifest JSON:
+
+1. **Size limit.** Reject any manifest file exceeding **16 MiB** (`PROJ-S001`).
+2. **Component count.** Reject manifests with more than **65,535** component
+   entries (`PROJ-S002`).
+3. **Root/path validation.** `root` is `"."` or at most 32 parent segments.
+   Every physical key is root-relative and contains no absolute prefix,
+   backslash, control character, `.`, or `..` segment. Canonicalized files
+   (including symlink resolution) must remain within the canonical root
+   (`PROJ-S003`).
+4. **Hash validation.** A hash is exactly `sha256:` plus 64 lowercase
+   hexadecimal bytes, checked by an explicit byte scanner. `"virtual"` is
+   accepted only for a `virtual:` key; physical disk outputs can never use it
+   (`PROJ-S004`).
+5. **No code execution.** The Rust consumer never evaluates JavaScript or
+   invokes TypeScript APIs. Manifests are pure data files.
+6. **Atomic writes.** The TypeScript adapter must write the manifest
+   atomically (write to a temporary path in the same directory, then rename)
+   to ensure `webui build` never reads a partially written manifest.
+
+### Adapter conformance fixtures and test contract
+
+The canonical conformance test helpers and reference cases live in
+`packages/webui/src/projection/fixtures/conformance.ts`.
+
+#### Required fixture scenarios
+
+An adapter implementation is conformant if it produces manifests that match the
+expected output for all of the following scenarios. Reference input TypeScript
+sources and expected manifests are co-located with the conformance helpers.
+
+| Fixture ID | Scenario |
+|---|---|
+| `basic-single-entry` | Single entry; `@observable` and `@attr` property names enter both exact client surfaces |
+| `empty-keys` | Component with no reactive properties; both key arrays are empty |
+| `aliased-decorator` | `@observable` imported under a local alias |
+| `namespace-decorator` | `@observable` accessed through a namespace import (`import * as webui`) |
+| `re-export-chain` | `observable` re-exported through multiple barrel files |
+| `inheritance-single` | Class inherits keys from a single base class |
+| `inheritance-multi` | Class inherits keys through a two-level chain |
+| `code-splitting` | Two entries, split chunks; component appears only in the chunk, not the main bundle |
+| `tree-shaking` | Component class present in source but tree-shaken from all outputs; must not appear in manifest |
+| `shared-component` | Component imported by multiple entries and deduplicated in a shared chunk |
+| `external-bundle` | Two manifests merged for a shared control built separately |
+| `virtual-source` | Module with no physical file (`source: undefined`); valid if no decorators |
+| `duplicate-tag-error` | Two `define()` calls for the same tag; must produce `PROJ-C010` |
+| `unresolvable-base-error` | Base class cannot be found in graph; must produce `PROJ-C005` |
+| `dynamic-tag-error` | `define()` with a non-literal tag; must produce `PROJ-C008` |
+| `stale-input-error` | Manifest input hash mismatches file on disk; must produce `PROJ-M003` |
+| `missing-coverage-error` | WebUI build with compiled scripted component absent from manifest; must produce `PROJ-B001` |
+
+#### Conformance test helper interface
+
+```typescript
+export interface ConformanceCase {
+  /** Unique fixture identifier, e.g. "basic-single-entry". */
+  readonly id: string;
+  /** Human-readable description of the scenario. */
+  readonly description: string;
+  /** Compiler fixtures run in JS; Rust fixtures are skipped by this runner. */
+  readonly scope: "compiler" | "rust";
+  /** Input module graph (adapter-resolved). */
+  readonly graph: ModuleGraph;
+  /** Input output membership. */
+  readonly membership: OutputMembership;
+  /** Exact bytes for physical fixture outputs. */
+  readonly outputContents: ReadonlyMap<string, string | Uint8Array>;
+  /** Expected component entries, or null for a diagnostic fixture. */
+  readonly expectedComponents: Readonly<Record<string, ComponentEntry>> | null;
+  /** Expected diagnostic codes when expectedComponents is null. */
+  readonly expectedDiagnosticCodes: readonly string[];
+}
+
+/**
+ * Runs all conformance cases against the provided adapter factory.
+ * Returns a report of passed, failed, and skipped cases.
+ */
+export function runConformanceSuite(
+  adapterFactory: (ctx: AdapterContext) => Promise<ProjectionManifest>,
+  options?: { filter?: (c: ConformanceCase) => boolean }
+): Promise<ConformanceReport>;
+
+export interface ConformanceReport {
+  readonly passed: readonly string[];
+  readonly failed: readonly ConformanceFailure[];
+  readonly skipped: readonly string[];
+}
+
+export interface ConformanceFailure {
+  readonly id: string;
+  readonly reason: string;
+  readonly expected: unknown;
+  readonly actual: unknown;
+}
+```
+
+#### Determinism test
+
+For every non-error fixture, running the adapter twice with identical inputs
+must produce byte-for-byte identical manifest JSON. This verifies:
+
+- No timestamps in output.
+- Deterministic key ordering.
+- Deterministic path normalization.
+- Deterministic build ID.
+
+#### Merge contract test
+
+The `external-bundle` fixture provides two manifests for merging. The
+test verifies:
+
+1. No `PROJ-M006` when tags are disjoint.
+2. Merged `components` contains entries from both manifests.
+3. Merged `outputs` and `inputs` contain the union.
+4. `PROJ-M006` is produced when the same tag appears in both manifests.
+
+#### Coverage contract test
+
+The `missing-coverage-error` fixture provides a partial manifest (missing one
+compiled scripted component). The test verifies that `webui build`'s validation
+step produces exactly `PROJ-B001` for the missing tag and fails the build.
+
+### esbuild adapter specification
+
+The esbuild adapter is implemented in `packages/webui/src/projection/adapters/esbuild.ts`.
+
+```typescript
+import type { Plugin } from 'esbuild';
+
+export interface EsbuildProjectionOptions {
+  /**
+   * Absolute or CWD-relative path where the manifest will be written.
+   * Defaults to `<outdir>/webui-projection.json`.
+   */
+  manifest?: string;
+}
+
+/**
+ * Returns an esbuild plugin that compiles the projection manifest.
+ * The plugin enables metafile, reads the resolved graph, applies the
+ * projection compiler, and writes the manifest atomically on build success.
+ *
+ * The adapter imports esbuild types only. The application-owned esbuild
+ * instance invokes the plugin and exposes its runtime/version through
+ * PluginBuild.esbuild.
+ */
+export function esbuildProjection(options?: EsbuildProjectionOptions): Plugin;
+```
+
+The esbuild adapter:
+
+1. Enables `metafile` on the existing build; it never invokes esbuild again.
+2. Validates `PluginBuild.esbuild.version` against the supported `^0.28.1`
+   range (`PROJ-P002`).
+3. Reads `metafile.inputs[*].imports[*].original` for the authored specifier
+   and `.path` for esbuild's resolved target. This directly populates
+   `ResolvedImport`; no path/extension reconstruction occurs.
+4. Determines semantic package identity from the resolved physical target's
+   nearest `package.json`, so esbuild aliases are honored. Literal package text
+   never overrides the resolved target.
+5. Reads `metafile.outputs[*].inputs` for final output membership and
+   `output.entryPoint` for normalized graph entries.
+6. Reads exact file source bytes/text for physical inputs. Non-file namespace
+   inputs are represented as virtual graph nodes; a WebUI component whose
+   defining source is unavailable fails strict coverage instead of being
+   guessed.
+7. Hashes exact `result.outputFiles` bytes for `write: false`, or reads emitted
+   files during `onEnd` for `write: true` (esbuild has completed writes before
+   `onEnd`).
+8. Chooses the common ancestor of the manifest, physical inputs, and outputs
+   as `rootDir`, constructs `AdapterContext`, and calls the shared compiler.
+9. Writes canonical compact JSON to a same-directory temporary file, flushes
+   it, and atomically renames it over the manifest.
+10. If the build or projection compiler has errors, the manifest is **not**
+   written. An existing stale
+   manifest from a prior run is left in place (not deleted).
+
+The adapter does **not** search output text for decorator syntax. The final
+emitted outputs determine membership; the source AST determines semantics.
+
+A single `esbuild.build()` call with `metafile: true` and code splitting is
+fully supported. External components are absent from the application fragment
+and produce their own fragment when built separately with the same adapter.
+The adapter handles all outputs in one `onEnd` pass.
+
+### webui-press integration
+
+`webui-press` invokes esbuild's JavaScript API once through
+`@microsoft/webui/projection.js`, then validates the generated manifest once.
+The resulting `PreparedProjectionManifests` is reused by every page and the 404
+build; page builds never re-open or re-hash bundle files. The prepared handle
+is an `Arc`-backed immutable snapshot containing both component surfaces and
+canonical artifact identities. A page using one prepared source clones only
+the `Arc`; mixed prepared/fresh sources retain artifact identities so
+conflicting hashes still fail with `PROJ-M007`.
+
+To preserve build throughput without exposing a public compile/finalize split,
+press uses a hidden orchestration barrier:
+
+1. Start the one esbuild/projection build on a worker thread.
+2. Start parallel page `webui::build()` calls immediately.
+3. Each build performs template discovery/parsing while esbuild runs.
+4. At the internal projection-finalization point, builds wait for the prepared
+   manifest proof, apply exact surfaces, then render.
+
+External bundle fragments can be listed in
+`bundler.projectionManifests` (paths relative to `config.json`) and are merged
+with the generated application fragment before the barrier completes.
+
+On the 33-page documentation site, an initial strictly sequential
+implementation regressed warm build wall time by 49.0%. Precise component
+seeding, lazy AST parsing, compiler preloading, one-time manifest preparation,
+and the projection barrier reduced the controlled interleaved regression to
+11.8% (1.225 s → 1.370 s). The eight emitted browser JavaScript files changed
+from 529,140 to 529,136 bytes (−4 bytes, effectively unchanged).
+
+### Official esbuild examples
+
+Official WebUI examples use small JavaScript-API build scripts instead of the
+esbuild CLI so the projection adapter participates in the application's one
+client build:
+
+```text
+build workspace dependencies
+esbuild + esbuildProjection() → JS chunks + webui-projection.json
+webui build --projection-manifest ... → protocol.bin
+```
+
+`examples/build-webui-client.mjs` centralizes watch/color/plugin wiring while
+each app retains its own esbuild entry/output/splitting options. `cargo xtask
+dev` starts the client watcher first, removes stale manifests, waits for every
+repeated manifest path to appear atomically, and only then starts the server.
+
+The component-assets example also builds an `external-panel` bundle separately,
+passes a second manifest alongside the application manifest, and emits the
+external control as a component asset. Its projection-contract check
+deliberately omits the external fragment and requires `PROJ-B001`, covering the
+strict missing-fragment failure.
 
 **Machine-readable diagnostics.** `webui-cli` accepts a global `--format <human|json>` flag. In `json` mode the colorized terminal output is suppressed and each error is emitted as a single JSON object on **stdout** (`{severity, code, message, file, line, column, snippet, help, chain}`), so editors, CI, and AI assistants consume diagnostics without scraping ANSI text. The process exit code follows BSD `sysexits.h` so callers can branch on the cause: `65` (`EX_DATAERR`) for a template/authoring error, `66` (`EX_NOINPUT`) for a missing app folder / state file / serve dir / entry, `69` (`EX_UNAVAILABLE`) for an occupied port, `74` (`EX_IOERR`) for other I/O failures, `2` for argument/usage errors (clap), and `1` otherwise.
 
@@ -1568,7 +2732,7 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 ### Runtime contract
 
-`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, and only interactive Web Components hydrate on the client — leaving static content untouched.
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
 
 - SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
@@ -1612,33 +2776,36 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   even when its only caller folds away. `webui-press build` injects
   `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
   apps that bundle their own client define the flag as `false` for production.
-- Missing HTML-only custom elements that need host attribute or router state
-  reactivity are marked in compiled template metadata with `th: 1`. Importing
-  `@microsoft/webui-framework` installs the static host runtime; the router
-  remains framework-independent and never imports framework code. The runtime installs a static
-  `TemplateElement` subclass only for compiler-owned `th` tags that are not
-  already registered. Fully static scriptless templates remain plain SSR DOM and
-  are not upgraded.
-  `TemplateElement` is the static rendering core (hydration, template state,
-  bindings, repeats, conditionals, attribute reflection); the interactive
-  `WebUIElement` superset adds event wiring, `w-ref` wiring, and `$emit` on top.
-  The fallback uses compiler-emitted `tr` and `ta` metadata to determine
-  reactive roots and observed host attributes. It seeds non-attribute state from
-  `window.__webui.state` and supports router state updates without
-  developer-authored `@observable` / `@attr` stubs. Developer-authored classes,
-  lazy loaders, and templates with event handlers own their custom element
-  definitions.
+- Scriptless components receive compiled `template_json` with `th: 1` but no
+  `hydration_keys` or initial bootstrap state. The framework registers a
+  compiler-owned `TemplateElement` host for each such tag. Existing SSR DOM is
+  not walked and bindings are not installed on startup. The host activates only
+  after `setState`, a compiled parent property write, or a later observed
+  attribute change. Activation wires the existing SSR markers against the new
+  state and replays only the roots supplied by the triggering write. Omitted
+  text, attribute, condition, and repeat roots keep their trusted SSR DOM until
+  explicitly supplied; an explicit empty collection removes repeat items.
+  Client-created instances mount immediately from the cached template.
+  `WebUIElement` remains the authored layer for events, `w-ref`, lifecycle code,
+  decorators, and `$emit`.
 - Developer-authored `WebUIElement` classes also treat compiled template roots
-  as stateful. `setState()` and SSR seeding store any undecorated
-  template-bound roots in hidden framework state, so `@observable` is only
-  required when TypeScript code reads or mutates the property directly.
-- Template producers that bootstrap initial SSR metadata or load metadata after
-  initial SSR, including `@microsoft/webui-router`, synchronously publish
-  `webui:templates-registered` with `{ templates }` in `detail`. The static
-  host tier claims compiler-owned template-backed HTML-only tags when the event
-  fires. The router does not install no-op fallback elements; missing component
-  registrations indicate that the app omitted the required runtime tier or lazy
-  loader.
+  as navigation state. `setState()` stores undecorated template-bound roots in
+  hidden framework state, so `@observable` is only required when TypeScript
+  reads or mutates the property directly. Initial SSR projection includes
+  explicit `@observable + @attr`; existing host attributes override matching
+  bootstrap keys, while absent attributes use state. Template-only values stay
+  out because they already exist in the trusted SSR DOM. Navigation carries
+  `@observable + @attr + template roots`.
+- The router publishes initial and partial template registrations through
+  `webui:templates-registered`. This lets the framework claim scriptless route
+  tags before the router commits a partial, preserving soft navigation without
+  empty modules. Tags owned by configured lazy loaders are reserved in
+  `window.__webui.templateHostExclusions`; the framework defers its initial
+  registry claim by one task and never defines compiler-owned hosts for those
+  tags. This keeps `customElements.define()` available to the authored module.
+  After configured lazy loaders run, document navigation is used only when
+  neither authored code nor the compiler-owned host runtime registers the
+  destination tag. Route chain JSON has no `client` capability flag.
 - Events are resolved from compiler-grouped `eg[]` metadata entries using path
   indices. The compiler groups element events by event name and marks handlers
   that receive `e`, so the runtime installs one delegated listener per event
@@ -1710,33 +2877,34 @@ webui-cli ──────► webui (library) ◄────── webui-node
                     └── webui-discovery
 
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
-                  webui-parser       ┌──── webui-wasm (parser feature)
-                  webui-protocol     └──── webui-wasm (all/default feature)
+     └──────────► webui-protocol   ┌──── webui-wasm (parser feature)
+                                   └──── webui-wasm (all/default feature)
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
-It re-exports `WebUIHandler`, `ResponseWriter`, and `WebUIProtocol` from their
-respective crates and provides `build()`, `build_to_disk()`, and `inspect()`
-functions with `BuildStats` (duration, fragment/component/CSS counts, protocol size).
+It re-exports `WebUIHandler`, `Protocol`, `ResponseWriter`, and
+`WebUIProtocol` from their respective crates and provides `build()`,
+`build_to_disk()`, and `inspect()` functions with `BuildStats` (duration,
+fragment/component/CSS counts, protocol size).
 
 ### WASM Distribution
 
 The `microsoft-webui-wasm` crate exposes feature-gated browser bindings so
 consumers only ship the parser and/or handler code they need:
 
-- `handler` builds `webui_wasm_handler.js` and exports `render`,
-  `render_partial`, `protocol_tokens`, and `render_component_templates`. It
-  accepts protobuf protocol bytes and depends on `webui-handler` and
-  `webui-protocol`, not `webui-parser`. `render(protocolBytes, stateJson,
-  onChunk, options)` uses the same `ResponseWriter` callback shape as the
-  Node binding: each handler write calls `onChunk(html)`, while callers that
-  need a full string concatenate chunks in JavaScript.
+- `handler` builds `webui_wasm_handler.js` and exports `Protocol`. It accepts
+  protobuf protocol bytes and depends on `webui-handler` and `webui-protocol`,
+  not `webui-parser`. `Protocol` decodes and indexes once, binds the selected
+  plugin at construction, and provides `render`, `renderStream`,
+  `renderPartial`, `renderComponentTemplates`, and `tokens`. Callback rendering
+  coalesces handler fragments with a
+  16 KiB target before crossing the WASM-to-JavaScript boundary.
 - `parser` builds `webui_wasm_parser.js` and exports `build_protocol`. It
   returns protobuf protocol bytes and depends on `webui-parser` and
   `webui-protocol`, not `webui-handler`.
 - `all` is the default feature, builds `webui_wasm_all.js`, and exports the
   parser plus handler surfaces for playground-style live preview. Callers
-  compose `build_protocol()` and callback-based `render()` explicitly.
+  compose `build_protocol()` with a loaded `Protocol`.
 
 `cargo xtask build-wasm` builds all three variants into
 `docs/.webui-press/public/wasm/{all,handler,parser}/` with stable `wasm-pack`
@@ -1746,12 +2914,28 @@ output names.
 
 The `@microsoft/webui` npm package follows the esbuild single-package model:
 - `bin: { "webui": "bin/webui" }` — CLI binary via platform-specific `optionalDependencies`
-- `main: "lib/main.js"` — Programmatic API that loads the `.node` native addon directly
-- WASM fallback for render when native addon is unavailable (one-time warning logged)
+- `exports["."]` points to the compiled `dist/index.js` programmatic API, which
+  loads the platform native addon directly
+- `Protocol` is the only runtime rendering API; construction decodes and
+  indexes a protocol `Buffer` once and binds the selected plugin
+- callers own the lifecycle explicitly, so the package has no hidden
+  `WeakMap`, no protocol-sized mutation snapshot, and no byte-per-call render
+  functions
+- `Protocol.render()` returns the buffered-string result;
+  `Protocol.renderStream()` batches callbacks with a 16 KiB target instead of
+  crossing into JavaScript for every internal handler fragment
+- render currently requires the native addon; no WASM render fallback is wired
 
 ### .NET / NuGet Distribution
 
 The `Microsoft.WebUI` package is the managed .NET binding for `webui-ffi`. It targets `net8.0` and `net9.0`, packs `dotnet/src/Microsoft.WebUI/README.md`, and publishes XML documentation generated from public API comments.
+
+`Protocol` is a public `IDisposable` type backed by a native
+`SafeHandle`. Applications create one from `protocol.bin` at startup and pass it
+to `WebUIHandler.Render`. Partial navigation, component-template loading, and
+token queries are protocol-owned operations exposed as `RenderPartial`,
+`RenderComponentTemplates`, and `Tokens`. The type is thread-safe and releases
+both decoded protocol data and reusable indices on dispose.
 
 Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
@@ -1776,14 +2960,26 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 
 | Function | Description |
 |----------|-------------|
-| `webui_render(html, data_json)` | Parse + render in one call (requires `parser` feature; returns `NULL` when absent). Returns heap-allocated string (caller frees with `webui_free`). |
 | `webui_handler_create()` | Create a reusable handler (no plugin). |
 | `webui_handler_create_with_plugin(plugin_id)` | Create a handler with a named plugin. Returns `NULL` on error. Refer to the CLI/crate docs for the current list of plugin identifiers. |
-| `webui_handler_render(handler, data, len, json, entry_id, request_path)` | Render a pre-compiled protocol with route matching. `request_path` controls which route is active. Returns heap-allocated string. |
-| `webui_render_partial(protocol_data, len, entry_id, request_path, inventory_hex)` | Produce a JSON partial response (templateStyles, templates, inventory, path, matched route chain, cacheTags, cacheControl) in a single call. Uses an internal `ProtocolIndex` for cached route matching. Caller adds state. Returns heap-allocated JSON string. |
+| `webui_protocol_create(data, len)` | Decode and index a protocol once. Returns a thread-safe opaque handle. |
+| `webui_protocol_destroy(protocol)` | Destroy a loaded protocol handle. `NULL` is a safe no-op. |
+| `webui_handler_render(handler, protocol, json, entry_id, request_path)` | Render a loaded protocol with route matching. `request_path` controls which route is active. Returns a heap-allocated string. |
+| `webui_protocol_render_partial(protocol, state_json, entry_id, request_path, inventory_hex)` | Produce a complete JSON partial response with active-route projected state. |
+| `webui_protocol_render_component_templates(protocol, tags_json, inventory_hex)` | Return requested component template payloads and updated inventory. |
+| `webui_protocol_tokens(protocol)` | Return newline-delimited CSS token names. |
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |
+
+The C ABI uses a typed opaque `webui_protocol_t *` with explicit
+`webui_protocol_create` / `webui_protocol_destroy` ownership because C has no
+portable object constructor or RAII lifetime. Automatically caching raw
+`(pointer, length)` inputs would be unsound: the caller may mutate, move, or
+free the bytes, pointer identity is not content identity, hashing on every
+request is O(protocol size), and a global copied cache would require arbitrary
+memory and eviction policy. Higher-level bindings wrap this native lifetime in
+their normal `Protocol` object (`IDisposable` / garbage-collected class).
 
 ### Error Model
 Thread-local error storage following the POSIX `dlerror()` pattern. After any

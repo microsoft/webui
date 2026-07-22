@@ -10,10 +10,13 @@ Uses the [Navigation API](https://developer.mozilla.org/en-US/docs/Web/API/Navig
 
 1. **Server renders the full page** - the matched route chain is SSR'd with declarative shadow roots. The page is interactive before JavaScript loads.
 2. **Hydration completes** - WebUI Framework hydrates shell components.
-3. **Router starts** - reads the SSR route bootstrap data and intercepts link clicks via the Navigation API. The router never imports framework code; apps with compiler-owned HTML-only route components import `@microsoft/webui-framework` somewhere in their browser entry graph.
+3. **Router starts** - reads the SSR route bootstrap data and intercepts link clicks via the Navigation API. The router never imports framework code.
 4. **Client-side navigation** - fetches a JSON partial from the server, which includes the matched route chain. The client diffs old vs new chain and mounts only the changed component. Parent components stay mounted.
 
-No full page reloads. The shell stays in place. Only route content changes.
+Authored route components use their registered classes. Scriptless route
+components also navigate without a full page reload when the application loads
+`@microsoft/webui-framework`, which mounts the templates published by the
+router.
 
 ## Installation
 
@@ -68,6 +71,7 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 **3. Start the router after hydration:**
 
 ```typescript
+import '@microsoft/webui-framework';
 import { Router } from '@microsoft/webui-router';
 
 import './app-shell.js';
@@ -84,13 +88,11 @@ window.addEventListener('webui:hydration-complete', () => {
 ```
 
 Components in `loaders` are lazy-loaded on first navigation. Components not
-listed are assumed eagerly loaded when already registered. Route components can
-be HTML-only when they do not need interactivity; create a custom element only
-for event handlers, custom lifecycle code, imperative methods, or
-JavaScript-owned state. When route templates include compiler-marked HTML-only
-state roots, import `@microsoft/webui-framework` somewhere in the browser entry
-graph so the static-host runtime is installed before the router starts applying
-server state.
+listed are assumed eagerly loaded when already registered. Scriptless route
+templates can accept server-provided partial state through the framework
+without empty `.ts` files. Add a same-named module only when a route owns
+events, lifecycle code, decorators, or imperative APIs. If no runtime registers a destination tag, the router safely
+falls back to a full document request.
 
 ## Nested Routes
 
@@ -287,7 +289,8 @@ The error component receives `{ error, status, path }` as state. It can call `Ro
 
 | Need | Mechanism |
 |------|-----------|
-| **Server provides all state** (default) | No changes needed once the app imports `@microsoft/webui-framework`; HTML-only stateful routes use framework static hosts instead of empty classes |
+| **Server state for authored code** | Authored route component with a sibling `.ts` or `.js` module |
+| **Template-only soft navigation** | Omit the client module and load the framework once |
 | **I fetch my own data** | `static loader()` on component class |
 | **Preserve local state** | `keep-alive` on route |
 | **Preserve DOM, refresh data** | `keep-alive` + `static loader()` |
@@ -311,6 +314,10 @@ Start the router. Call after hydration completes.
 | `actions` | `boolean` | Intercept same-origin POST forms and call component `static action()` handlers |
 | `ssrFresh` | `boolean` | Skip initial loader replay on SSR bootstrap (default: `true`). Components with `static ssrLoader = true` still run their loader. |
 | `cache` | `CacheConfig` | Tagged navigation cache: `{ staleTime, gcTime, maxEntries }` |
+
+Loader-owned tags are reserved before the framework claims compiler-owned
+HTML-only templates. This guarantees the dynamic module retains ownership of
+`customElements.define()` even when template metadata is already available.
 
 ### `Router.navigate(path)`
 
@@ -347,6 +354,12 @@ directly to the route path, the component renders normally in the outlet.
 The router automatically uses the [View Transitions API](https://developer.mozilla.org/en-US/docs/Web/API/Document/startViewTransition) when available. On each client-side navigation, the DOM swap is wrapped in `document.startViewTransition()`, giving you a CSS-driven cross-fade between old and new route content with zero extra code.
 
 **Do NOT wrap `Router.navigate()` in your own `startViewTransition()`** — the router already does this internally.
+
+While active, the router installs a nonce-bearing
+`@view-transition { navigation: none; }` override. This disables automatic
+cross-document transitions because they conflict with intercepted routes that
+must fall back to SSR document requests. Explicit client-side transitions still
+use `document.startViewTransition()`. `Router.destroy()` removes the override.
 
 To customize the animation, use `view-transition-name` on specific elements and target them in CSS:
 
@@ -503,10 +516,13 @@ X-WebUI-Inventory: <hex bitmask>
 The server should return:
 
 - **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }` — `state` is added by the caller; `render_partial()` returns everything else
+- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `Protocol::render_partial()` returns this complete response
 - **Otherwise** → Full SSR'd HTML page
 
-The `chain` field contains the matched route chain with `component`, `path`, `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`. The `cacheTags` array contains resolved cache tags from the full chain. The optional `cacheControl` object can override `staleTime` per-response.
+The `chain` field contains the matched route chain with `component`, `path`,
+`params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and
+`invalidates`. The `cacheTags` array contains resolved cache tags from the full
+chain. The optional `cacheControl` object can override `staleTime` per-response.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 

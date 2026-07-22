@@ -54,6 +54,7 @@ export { parseQuery, filterQuery, WebUIRouteElement };
 
 const SSR_PRELOAD_SELECTOR = 'link[data-webui-ssr-preload]';
 const WEBUI_DATA_ID = 'webui-data';
+const DISABLE_DOCUMENT_VIEW_TRANSITION = '@view-transition { navigation: none; }';
 let webuiDataLoaded = false;
 
 export class WebUIRouter {
@@ -83,6 +84,7 @@ export class WebUIRouter {
   private excludePaths: string[] = [];
   private loadPromises = new Map<string, Promise<void>>();
   private ssrPreloadsCleared = false;
+  private documentNavigationUrl: string | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -155,6 +157,13 @@ export class WebUIRouter {
     if (!meta.css) meta.css = [];
     if (!meta.styles) meta.styles = [];
     if (!meta.templates) meta.templates = {};
+    if (!meta.templateHostExclusions) meta.templateHostExclusions = new Set();
+    const loaderTags = Object.keys(this.loaders);
+    for (let i = 0; i < loaderTags.length; i++) {
+      meta.templateHostExclusions.add(loaderTags[i]);
+    }
+
+    this.installDocumentTransitionOverride();
 
     // Build O(1) lookup Sets from the global arrays, then free the arrays —
     // they were one-shot SSR data; the Sets are the live lookup structure.
@@ -165,6 +174,10 @@ export class WebUIRouter {
 
     const nav = window.navigation;
     const handler = (event: NavigateEvent) => {
+      if (this.documentNavigationUrl === event.destination.url) {
+        this.documentNavigationUrl = null;
+        return;
+      }
       if (!event.canIntercept || event.hashChange) return;
       const url = new URL(event.destination.url);
       if (url.origin !== location.origin) return;
@@ -317,6 +330,7 @@ export class WebUIRouter {
     this.cleanupFns = [];
     this.started = false;
     this.ssrPreloadsCleared = false;
+    this.documentNavigationUrl = null;
     this.cssSet.clear();
     this.stylesSet.clear();
 
@@ -472,7 +486,7 @@ export class WebUIRouter {
 
     if (!contentType.includes('json') && !contentType.includes('ndjson')) {
       if (speculative || signal?.aborted) return null;
-      window.location.href = prependBasePath(requestPath, this.basePath);
+      this.navigateDocument(requestPath);
       return null;
     }
 
@@ -624,6 +638,27 @@ export class WebUIRouter {
     window.__webui!.inventory = serverInventory;
   }
 
+  private navigateDocument(requestPath: string): void {
+    const href = prependBasePath(requestPath, this.basePath);
+    this.documentNavigationUrl = new URL(href, window.location.href).href;
+    if (window.location.href === this.documentNavigationUrl) {
+      window.location.reload();
+    } else {
+      window.location.href = href;
+    }
+  }
+
+  private installDocumentTransitionOverride(): void {
+    if (typeof document.startViewTransition !== 'function') return;
+
+    const style = document.createElement('style');
+    style.textContent = DISABLE_DOCUMENT_VIEW_TRANSITION;
+    const nonce = window.__webui?.nonce;
+    if (nonce) style.nonce = nonce;
+    document.head.appendChild(style);
+    this.cleanupFns.push(() => style.remove());
+  }
+
   private startInitialNavigation(templates: Record<string, unknown>): void {
     notifyTemplatesRegistered(templates);
     this.handleNavigation(this.currentTarget());
@@ -655,7 +690,7 @@ export class WebUIRouter {
 
     if (newChain.length === 0) {
       console.warn(`[Router] No route matched for path: ${requestPath}`);
-      window.location.href = prependBasePath(requestPath, this.basePath);
+      this.navigateDocument(requestPath);
       return;
     }
 
@@ -676,6 +711,13 @@ export class WebUIRouter {
       await preload;
     }
     if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+
+    // A component claimed by neither an authored module nor the framework's
+    // dormant template-host runtime cannot be mounted safely.
+    if (newChain.some(entry => entry.component && !customElements.get(entry.component))) {
+      this.navigateDocument(requestPath);
+      return;
+    }
 
     // Resolve static loader() methods on component constructors (pre-commit).
     // Loader results replace server state for those components.

@@ -39,6 +39,31 @@ internal static class NativeBindings
         }
     }
 
+    /// <summary>
+    /// SafeHandle wrapper for a loaded native WebUI protocol.
+    /// </summary>
+    internal sealed class WebUIProtocolSafeHandle : SafeHandle
+    {
+        internal WebUIProtocolSafeHandle()
+            : base(IntPtr.Zero, ownsHandle: true)
+        {
+        }
+
+        internal WebUIProtocolSafeHandle(IntPtr handle)
+            : this()
+        {
+            SetHandle(handle);
+        }
+
+        public override bool IsInvalid => handle == IntPtr.Zero;
+
+        protected override bool ReleaseHandle()
+        {
+            webui_protocol_destroy_raw(handle);
+            return true;
+        }
+    }
+
     static NativeBindings()
     {
         NativeLibrary.SetDllImportResolver(
@@ -83,28 +108,39 @@ internal static class NativeBindings
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_handler_destroy")]
     private static extern void webui_handler_destroy_raw(IntPtr handlerPtr);
 
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_protocol_create")]
+    private static extern IntPtr webui_protocol_create_raw(
+        byte[] protocolData,
+        nuint protocolLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_protocol_destroy")]
+    private static extern void webui_protocol_destroy_raw(IntPtr protocolPtr);
+
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_handler_render(
         WebUIHandlerSafeHandle handlerPtr,
-        byte[] protocolData,
-        nuint protocolLen,
+        WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_render(
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string html,
-        [MarshalAs(UnmanagedType.LPUTF8Str)] string dataJson);
-
-    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern IntPtr webui_render_partial(
-        byte[] protocolData,
-        nuint protocolLen,
+    internal static extern IntPtr webui_protocol_render_partial(
+        WebUIProtocolSafeHandle protocolPtr,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_render_component_templates(
+        WebUIProtocolSafeHandle protocolPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string componentTagsJson,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string inventoryHex);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_protocol_tokens(
+        WebUIProtocolSafeHandle protocolPtr);
 
     internal static WebUIHandlerSafeHandle CreateHandler(string? pluginId)
     {
@@ -112,6 +148,12 @@ internal static class NativeBindings
             ? webui_handler_create_raw()
             : webui_handler_create_with_plugin_raw(pluginId);
         return new WebUIHandlerSafeHandle(handle);
+    }
+
+    internal static WebUIProtocolSafeHandle CreateProtocol(byte[] protocolData)
+    {
+        IntPtr handle = webui_protocol_create_raw(protocolData, (nuint)protocolData.Length);
+        return new WebUIProtocolSafeHandle(handle);
     }
 
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]

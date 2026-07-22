@@ -13,14 +13,17 @@
   },
   "files": [
     "bin/",
-    "dist/",
+    "dist/index.*",
+    "dist/install.*",
+    "dist/platform.*",
+    "dist/projection/",
     "wasm/"
   ],
   "scripts": {
     "build": "tsc",
     "postbuild": "node dist/install.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js"
+    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js dist/test/projection-cli-fallback.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -37,6 +40,12 @@
         "types": "./dist/platform.d.ts",
         "default": "./dist/platform.js"
       }
+    },
+    "./projection.js": {
+      "import": {
+        "types": "./dist/projection/index.d.ts",
+        "default": "./dist/projection/index.js"
+      }
     }
   },
   "optionalDependencies": {
@@ -47,8 +56,21 @@
     "@microsoft/webui-win32-arm64": "workspace:*",
     "@microsoft/webui-win32-x64": "workspace:*"
   },
-   "devDependencies": {
+  "peerDependencies": {
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
+  },
+  "peerDependenciesMeta": {
+    "esbuild": {
+      "optional": true
+    },
+    "typescript": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
     "@types/node": "catalog:",
+    "esbuild": "catalog:",
     "typescript": "catalog:"
   }
 }

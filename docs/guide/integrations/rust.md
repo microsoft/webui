@@ -22,7 +22,7 @@ The crate is published as `microsoft-webui` on crates.io; the bare `webui` name 
 
 ```rust
 use actix_web::{web, App, HttpServer, HttpRequest, HttpResponse};
-use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
+use webui::{Protocol, WebUIHandler, RenderOptions, ResponseWriter};
 use serde_json::json;
 use std::fs;
 
@@ -39,18 +39,18 @@ impl ResponseWriter for StringWriter {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let protocol_bytes = fs::read("./dist/protocol.bin").unwrap();
-    let protocol = WebUIProtocol::from_protobuf(&protocol_bytes).unwrap();
+    let protocol = Protocol::from_protobuf(&protocol_bytes).unwrap();
     let protocol = web::Data::new(protocol);
 
     HttpServer::new(move || {
         App::new()
             .app_data(protocol.clone())
-            .route("/{path:.*}", web::get().to(|proto: web::Data<WebUIProtocol>, req: HttpRequest| async move {
+            .route("/{path:.*}", web::get().to(|proto: web::Data<Protocol>, req: HttpRequest| async move {
                 let state = json!({ "title": "Home" });
                 let mut writer = StringWriter(String::new());
-                let mut handler = WebUIHandler::new();
+                let handler = WebUIHandler::new();
                 let options = RenderOptions::new("index.html", req.path());
-                handler.handle(&proto, &state, &options, &mut writer).unwrap();
+                handler.render(proto.get_ref(), &state, &options, &mut writer).unwrap();
                 HttpResponse::Ok().content_type("text/html").body(writer.0)
             }))
     })
@@ -65,7 +65,7 @@ async fn main() -> std::io::Result<()> {
 
 ```rust
 use axum::{routing::get, Router, extract::{State, Request}};
-use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
+use webui::{Protocol, WebUIHandler, RenderOptions, ResponseWriter};
 use serde_json::json;
 use std::{fs, sync::Arc};
 
@@ -82,15 +82,15 @@ impl ResponseWriter for StringWriter {
 #[tokio::main]
 async fn main() {
     let protocol_bytes = fs::read("./dist/protocol.bin").unwrap();
-    let protocol = Arc::new(WebUIProtocol::from_protobuf(&protocol_bytes).unwrap());
+    let protocol = Arc::new(Protocol::from_protobuf(&protocol_bytes).unwrap());
 
     let app = Router::new()
-        .route("/{*path}", get(|State(proto): State<Arc<WebUIProtocol>>, req: Request| async move {
+        .route("/{*path}", get(|State(proto): State<Arc<Protocol>>, req: Request| async move {
             let state = json!({ "title": "Home" });
             let mut writer = StringWriter(String::new());
-            let mut handler = WebUIHandler::new();
+            let handler = WebUIHandler::new();
             let options = RenderOptions::new("index.html", req.uri().path());
-            handler.handle(&proto, &state, &options, &mut writer).unwrap();
+            handler.render(proto.as_ref(), &state, &options, &mut writer).unwrap();
             axum::response::Html(writer.0)
         }))
         .with_state(protocol);
@@ -107,7 +107,7 @@ async fn main() {
 use hyper::{server::conn::http1, service::service_fn, body::Bytes, Request, Response};
 use hyper_util::rt::TokioIo;
 use http_body_util::Full;
-use webui::{WebUIHandler, RenderOptions, ResponseWriter, WebUIProtocol};
+use webui::{Protocol, WebUIHandler, RenderOptions, ResponseWriter};
 use serde_json::json;
 use std::{fs, sync::Arc};
 
@@ -124,7 +124,7 @@ impl ResponseWriter for StringWriter {
 #[tokio::main]
 async fn main() {
     let protocol_bytes = fs::read("./dist/protocol.bin").unwrap();
-    let protocol = Arc::new(WebUIProtocol::from_protobuf(&protocol_bytes).unwrap());
+    let protocol = Arc::new(Protocol::from_protobuf(&protocol_bytes).unwrap());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
     loop {
@@ -137,9 +137,9 @@ async fn main() {
                     async move {
                         let state = json!({ "title": "Home" });
                         let mut writer = StringWriter(String::new());
-                        let mut handler = WebUIHandler::new();
+                        let handler = WebUIHandler::new();
                         let options = RenderOptions::new("index.html", req.uri().path());
-                        handler.handle(&proto, &state, &options, &mut writer).unwrap();
+                        handler.render(proto.as_ref(), &state, &options, &mut writer).unwrap();
                         Ok::<_, hyper::Error>(Response::new(Full::new(Bytes::from(writer.0))))
                     }
                 }))
@@ -185,11 +185,11 @@ actix_web::rt::task::spawn_blocking({
         let options = RenderOptions::new("index.html", &request_path)
             .with_nonce(&csp_nonce)
             .with_body_inject(&livereload_script); // per-request inject
-        if let Err(e) = handler.handle(&proto, &state, &options, &mut writer) {
+        if let Err(e) = handler.render(&proto, &state, &options, &mut writer) {
             log::error!("render failed: {e}");
-        }
-        if let Err(e) = ResponseWriter::end(&mut writer) {
-            log::debug!("stream truncated: {e}");
+            if let Err(flush_error) = ResponseWriter::end(&mut writer) {
+                log::debug!("stream truncated: {flush_error}");
+            }
         }
     }
 });
@@ -229,6 +229,7 @@ HttpResponse::Ok()
 | `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
+| `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Disk, inline, or prepared projection fragments; empty preserves full state |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
@@ -244,6 +245,13 @@ before the protocol is returned. Tokens used only with a literal `var()`
 fallback (e.g. `var(--brand, #000)`) are exempt; if such a token is also absent
 from every theme it is reported as a non-fatal advisory in
 `BuildResult::warnings` (a likely typo) instead of failing the build.
+
+Use `ProjectionManifestSource::Path` for normal builds. Orchestrators that build
+many protocols against one client bundle can call
+`prepare_projection_manifests()` once and reuse
+`ProjectionManifestSource::Prepared`. Every non-empty source set is
+hash-validated, merged by tag, and required to cover every compiled scripted
+component.
 
 ### BuildStats
 
