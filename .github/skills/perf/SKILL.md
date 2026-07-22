@@ -1,6 +1,6 @@
 ---
 name: perf
-description: Speed and memory performance rules for Rust crates, webui-framework, and webui-router.
+description: Speed and memory performance rules for Rust crates, the Node addon, webui-framework, and webui-router.
 ---
 
 # Performance
@@ -13,7 +13,7 @@ Use this skill when modifying any performance-sensitive code across the stack.
 
 ## Rust - speed rules
 
-These apply to `webui-handler`, `webui-state`, `webui-expressions`, `webui-parser`, `webui-protocol`, and `webui-ffi`.
+These apply to `webui-handler`, `webui-state`, `webui-expressions`, `webui-parser`, `webui-protocol`, `webui-ffi`, and `webui-node`.
 
 1. **No `format!()` in writer output.** Use sequential `writer.write()` calls. `format!` allocates a temporary `String` every invocation.
 2. **No `.to_string()` on `Cow`.** Write `Cow<str>` directly to avoid defeating zero-copy.
@@ -90,15 +90,18 @@ These apply to `packages/webui-router` (the client-side SPA router).
 
 ## Measuring
 
-### Rust benchmarks
+### Server benchmarks
 
 ```bash
 cargo bench -p microsoft-webui --bench contact_book_bench          # full run
 cargo bench -p microsoft-webui --bench contact_book_bench -- --test # quick validation
-cargo xtask bench all                                               # all crates
+cargo xtask bench all                                               # all Rust crates
+cargo xtask bench node-addon                                        # Node/V8/N-API boundary
 ```
 
-Compare **Render/1000 P50** before and after. Verify output **Bytes** is unchanged (same HTML = correct behavior).
+Compare **Render/1000 P50** before and after. For Node changes, save with
+`--save-baseline before` and compare with `--baseline before`. Verify output
+**Bytes** is unchanged (same HTML = correct behavior).
 
 ### Client performance
 

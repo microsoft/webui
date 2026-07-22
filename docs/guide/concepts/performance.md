@@ -235,7 +235,7 @@ consistent performance:
 Use the built-in benchmark suite to measure performance on your own hardware:
 
 ```bash
-# Full benchmark suite (recommended)
+# All Rust Criterion benchmarks
 cargo xtask bench all
 
 # Individual crate benchmarks via xtask
@@ -254,13 +254,18 @@ cargo bench -p microsoft-webui-ffi --bench protocol_bench
 # Contact book end-to-end benchmark
 cargo bench -p microsoft-webui --bench contact_book_bench
 
+# Public Node API across the real V8/N-API boundary
+cargo xtask bench node-addon
+
 # Results with HTML reports
 ls target/criterion/report/index.html
 ```
 
-Each benchmark uses [Criterion.rs](https://github.com/bheisler/criterion.rs)
-for statistical rigor - results include confidence intervals, outlier
-detection, and comparison against previous runs.
+Rust microbenchmarks use
+[Criterion.rs](https://github.com/bheisler/criterion.rs) for confidence
+intervals, outlier detection, and comparison against previous runs. The Node
+addon benchmark uses `process.hrtime.bigint()` inside a real Node process and
+supports the same named before/after baseline workflow through `cargo xtask`.
 
 ## Measuring Hydration Performance
 
@@ -286,4 +291,5 @@ slow components and optimize them individually.
 
 - [SSR showdown source](https://github.com/microsoft/webui/tree/main/examples/integration/ssr-performance-showdown) - full benchmark harness and reproduction steps
 - [Contact book benchmark](https://github.com/microsoft/webui/tree/main/crates/webui/benches) - real-world application benchmark
+- [Node addon benchmark](https://github.com/microsoft/webui/tree/main/examples/integration/node-addon-bench) - V8/N-API boundary benchmark
 - [DESIGN.md](https://github.com/microsoft/webui/blob/main/DESIGN.md) - architectural performance principles

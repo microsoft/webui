@@ -15,6 +15,7 @@ how to compare results.
 | `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
+| `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
@@ -40,6 +41,7 @@ Baselines are stored at `target/bench-baselines/`:
 * `streaming-resource-<name>.json`  — alloc + RSS + CPU table
 * `e2e-ttfb-<name>.json`            — HTTP TTFB/TTLB table
 * `browser-<name>.json`             — browser metrics table
+* `node-addon-<name>.json`          — Node/V8/N-API latency table
 * `target/criterion/<bench>/<name>` — criterion's native baseline
                                        directory tree
 
@@ -55,6 +57,7 @@ improvement; positive = regression.
 | streaming-resource (bytes, CPU) | < ±2% | > ±5% |
 | streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
 | streaming-browser (real Chromium) | < ±5% | > ±15% |
+| node-addon P50 (V8/N-API) | < ±5% | > ±10% |
 
 ## Anatomy of each bench
 
@@ -130,6 +133,28 @@ render scenario, streaming TTFB must be ≥5× lower than buffered
 TTFB. If that ever fails, something is fundamentally wrong with the
 implementation.
 
+### `node-addon` (Node.js + N-API)
+
+`examples/integration/node-addon-bench/` is a separate pnpm package
+that loads the release `microsoft-webui-node` artifact through the
+public `@microsoft/webui` API. Unlike a Rust benchmark, it includes
+V8/N-API string and callback crossings:
+
+- **Protocol construction** — Node `Buffer` to protobuf decode/index after the addon is loaded
+- **JSON-string render** — N-API conversion, JSON parse, Rust render,
+  and the returned JavaScript string
+- **Object render** — the same path plus public-wrapper
+  `JSON.stringify`
+- **Streaming first callback** — state conversion and JSON parse,
+  followed by rendering until JavaScript receives the first 16 KiB chunk
+- **Streaming total** — all callback crossings and complete render
+
+It uses the same Contact Book fixture and 10/100/1000 scales as the
+Rust end-to-end benchmark, rendering `/contacts` so output grows with
+the workload. The first-callback metric is in-process; it is not HTTP
+TTFB. The runner verifies buffered, object-state, and
+streamed output are byte-identical before collecting samples.
+
 ## Recommended PR workflow
 
 For any change touching `crates/webui/src/streaming.rs` or its
@@ -156,6 +181,19 @@ cargo xtask bench all --save-baseline before
 cargo xtask bench all --baseline before
 ```
 
+For changes touching `crates/webui-node/` or `packages/webui/` runtime
+render methods:
+
+```bash
+cargo xtask bench node-addon --save-baseline before
+# … change …
+cargo xtask bench node-addon --baseline before
+```
+
+Run both phases on the same machine and Node major version. Paste the
+P50 comparison table into the PR description; use P95/P99 to diagnose
+tail behavior rather than as a hard gate.
+
 The criterion `--baseline` flag emits the per-bench `change:` lines
 inline (e.g. `Performance has improved` / `regressed` / `within
 noise threshold`).
@@ -175,6 +213,8 @@ Each layer measures a different thing. A change can:
 - improve allocation count but regress wall-clock (allocator changes)
 - improve micro-bench wall-clock but regress browser FCP (chunk-size
   changes that hurt parser progressive rendering)
+- leave Rust render time unchanged but regress Node throughput through
+  extra N-API string copies or callback crossings
 - improve TTFB but introduce a memory leak (no cleanup of pool
   buffers on error paths)
 
@@ -208,6 +248,10 @@ benchmark. The bar:
 3. **Playwright** if the metric is browser-perceived (paint, layout,
    hydration time). Mirror the structure of
    `examples/integration/streaming-browser-bench/`.
+4. **External runtime package** if the boundary itself is under test
+   (Node/V8/N-API, a VM, or another host runtime). Mirror
+   `examples/integration/node-addon-bench/` and keep smoke validation
+   separate from release performance results.
 
 Wire it into `cargo xtask bench` so the standard before/after
 workflow works without users needing to know per-bench invocation

@@ -36,6 +36,15 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
         run_commands: &[],
     },
     IntegrationBuild {
+        name: "node-addon-bench",
+        commands: &[BuildCommand {
+            cmd: "node",
+            args: &["--check", "bench.mjs"],
+            cwd: Some("examples/integration/node-addon-bench"),
+        }],
+        run_commands: &[],
+    },
+    IntegrationBuild {
         name: "electron",
         commands: &[BuildCommand {
             cmd: "pnpm",

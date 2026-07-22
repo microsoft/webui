@@ -384,6 +384,12 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/webui
 
+  examples/integration/node-addon-bench:
+    dependencies:
+      '@microsoft/webui':
+        specifier: workspace:*
+        version: link:../../../packages/webui
+
   examples/integration/streaming-browser-bench:
     devDependencies:
       '@playwright/test':
