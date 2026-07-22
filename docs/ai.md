@@ -744,12 +744,16 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); watched explicitly with `--watch` |
-| `--api-port <PORT>` | none | Proxy route requests to API server |
+| `--api-port <PORT>` | none | Proxy route requests with encoded paths and queries preserved |
 | `--theme <PACKAGE>` | none | Design token theme; missing unresolved tokens fail the build (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
+
+With `--api-port`, backend state requests and `/api/*` forwarding preserve the
+incoming encoded path and query. Applications must not double-encode route
+parameters for development; `%2F` remains within one route segment.
 
 ### Inspect
 

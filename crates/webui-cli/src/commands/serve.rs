@@ -50,7 +50,8 @@ pub struct ServeArgs {
     #[arg(long)]
     pub watch: bool,
 
-    /// Port of the user's API server to proxy route requests to
+    /// Port of the user's API server to proxy route requests to. Encoded path
+    /// and query bytes are forwarded unchanged.
     #[arg(long)]
     pub api_port: Option<u16>,
 
@@ -652,6 +653,18 @@ fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
     }
 }
 
+fn request_paths(req: &HttpRequest) -> RequestPaths {
+    let uri = req.uri();
+    let route_path = uri.path().to_string();
+    let request_path = uri
+        .path_and_query()
+        .map_or_else(|| route_path.clone(), |value| value.as_str().to_string());
+    RequestPaths {
+        route_path,
+        request_path,
+    }
+}
+
 /// Fetch state from the user's API server for a given request path, including query parameters.
 async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
     let client = awc::Client::new();
@@ -819,7 +832,8 @@ async fn render_page_response(
 async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
     // JSON partial render for client-side navigation
     if wants_json(&req) {
-        return handle_json_partial(&req, &context, "").await;
+        let paths = build_request_paths("", req.query_string());
+        return handle_json_partial(&req, &context, paths).await;
     }
 
     // With API proxy, render on-the-fly with fresh state
@@ -960,18 +974,20 @@ fn wants_json(req: &HttpRequest) -> bool {
 async fn spa_fallback(
     req: &HttpRequest,
     context: &web::Data<ServerContext>,
-    relative: &str,
+    decoded_relative: &str,
 ) -> HttpResponse {
     // Only serve fallback for paths without file extensions (likely route paths)
-    if relative.contains('.') {
+    if decoded_relative.contains('.') {
         return HttpResponse::NotFound().body("Not Found");
     }
 
-    let paths = build_request_paths(relative, req.query_string());
+    // Actix decodes `web::Path` values. Route matching and backend state
+    // requests must instead receive the original encoded request target.
+    let paths = request_paths(req);
 
     // JSON partial render: return { state, templates } for client-side navigation
     if wants_json(req) {
-        return handle_json_partial(req, context, relative).await;
+        return handle_json_partial(req, context, paths).await;
     }
 
     render_page_response(context, &paths.route_path, &paths.request_path).await
@@ -985,10 +1001,8 @@ async fn spa_fallback(
 async fn handle_json_partial(
     req: &HttpRequest,
     context: &web::Data<ServerContext>,
-    relative: &str,
+    paths: RequestPaths,
 ) -> HttpResponse {
-    let paths = build_request_paths(relative, req.query_string());
-
     // Clone protocol from shared state (release lock quickly)
     let (protocol, entry) = match context.state.lock() {
         Ok(s) => {
@@ -1081,7 +1095,6 @@ fn collect_needed_template_names(
 /// Forward requests under `/api/*` to the user's API server.
 async fn handle_api_proxy(
     req: HttpRequest,
-    path: web::Path<String>,
     body: web::Bytes,
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
@@ -1089,20 +1102,11 @@ async fn handle_api_proxy(
         return HttpResponse::NotFound().body("Not Found");
     };
 
-    let tail = path.into_inner();
-    let query = req.query_string();
-    let url = if query.is_empty() {
-        format!("http://127.0.0.1:{api_port}/api/{tail}")
-    } else {
-        let mut u = String::with_capacity(30 + tail.len() + query.len());
-        u.push_str("http://127.0.0.1:");
-        u.push_str(&api_port.to_string());
-        u.push_str("/api/");
-        u.push_str(&tail);
-        u.push('?');
-        u.push_str(query);
-        u
-    };
+    let uri = req.uri();
+    let path_and_query = uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str());
+    let url = format!("http://127.0.0.1:{api_port}{path_and_query}");
 
     let client = awc::Client::new();
     let mut proxy_req = client.request(req.method().clone(), &url);
@@ -1294,6 +1298,60 @@ mod tests {
             fs::write(&path, content).unwrap();
         }
         dir
+    }
+
+    fn test_server_context(api_port: u16) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: "<html><body>ok</body></html>".to_string(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: None,
+                state_data: None,
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: Some(api_port),
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    fn start_request_target_server() -> (u16, actix_web::dev::ServerHandle, Arc<Mutex<Vec<String>>>)
+    {
+        let request_targets = Arc::new(Mutex::new(Vec::new()));
+        let server_targets = Arc::clone(&request_targets);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(move || {
+            let request_targets = Arc::clone(&server_targets);
+            App::new().default_service(web::to(move |req: HttpRequest| {
+                let request_targets = Arc::clone(&request_targets);
+                async move {
+                    let request_target = req.uri().path_and_query().map_or_else(
+                        || req.path().to_string(),
+                        |value| value.as_str().to_string(),
+                    );
+                    request_targets.lock().unwrap().push(request_target.clone());
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "state": { "requestTarget": request_target }
+                    }))
+                }
+            }))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        (port, handle, request_targets)
     }
 
     #[test]
@@ -1707,6 +1765,77 @@ mod tests {
         assert_eq!(state["query"], "shirt");
         assert_eq!(state["sort"], "price-desc");
 
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_route_state_fetch_preserves_encoded_request_target() {
+        let request_targets = [
+            "/projects/WebUI%20Fidelity%20Fixture?filter=space%20value",
+            "/reviews/WebUI/ceo%2Fbranch?filter=slash%2Fvalue",
+            "/discount/100%25?filter=percent%25value",
+            "/city/Montr%C3%A9al?filter=unicode%C3%A9",
+        ];
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        for request_target in request_targets {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri(request_target)
+                    .insert_header(("accept", "application/json"))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let expected: Vec<String> = request_targets
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(*captured_targets.lock().unwrap(), expected);
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_api_proxy_preserves_encoded_request_target() {
+        let request_targets = [
+            "/api/projects/WebUI%20Fidelity%20Fixture?filter=space%20value",
+            "/api/reviews/WebUI/ceo%2Fbranch?filter=slash%2Fvalue",
+            "/api/discount/100%25?filter=percent%25value",
+            "/api/city/Montr%C3%A9al?filter=unicode%C3%A9",
+        ];
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/api/{tail:.*}", web::route().to(handle_api_proxy)),
+        )
+        .await;
+
+        for request_target in request_targets {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri(request_target)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let expected: Vec<String> = request_targets
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(*captured_targets.lock().unwrap(), expected);
         handle.stop(true).await;
     }
 

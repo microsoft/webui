@@ -1186,6 +1186,13 @@ webui serve ./templates --state ./data/state.json --plugin=webui --emit-componen
 fails before the initial build if that port is already in use, returning an
 actionable message so stale dev processes can be stopped explicitly.
 
+With `webui serve --api-port`, route state requests and `/api/*` forwarding
+preserve the incoming URI's encoded path and query exactly. The development
+server does not decode or re-encode percent escapes before sending the request
+to the backend. Encoded slashes such as `%2F` therefore remain inside one route
+segment, and encoded spaces, percent signs, and UTF-8 bytes reach development
+backends with the same representation used by production clients.
+
 In `webui serve --watch`, the file watcher is **content-aware**: it hashes each
 changed file and drops events whose bytes are unchanged, so a no-op save
 (repeated Ctrl+S that rewrites identical content) triggers no rebuild in the

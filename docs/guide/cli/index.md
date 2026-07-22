@@ -247,7 +247,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
-| `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
+| `--api-port <PORT>` | Proxy route requests to your API server on this port. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
@@ -264,6 +264,11 @@ The `APP` directory should contain your entry HTML and component files.
 4. If `--watch` is enabled, watches app, state, asset, and explicit projection manifest files for changes
 5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
 6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+
+When `--api-port` is set, backend state requests and `/api/*` forwarding use
+the encoded path and query exactly as received. Do not double-encode route
+parameters for development. For example, `%2F` remains part of one parameter
+instead of becoming a path separator.
 
 **Examples:**
 
