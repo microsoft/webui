@@ -51,7 +51,8 @@ pub struct ServeArgs {
     pub watch: bool,
 
     /// Port of the user's API server to proxy route requests to. Encoded path
-    /// and query bytes are forwarded unchanged.
+    /// and query bytes are forwarded unchanged, except the entry route: `/` and
+    /// `/index.html` both resolve backend state at `/` (query preserved).
     #[arg(long)]
     pub api_port: Option<u16>,
 
