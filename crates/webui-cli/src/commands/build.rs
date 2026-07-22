@@ -1011,6 +1011,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
