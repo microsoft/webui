@@ -1106,7 +1106,13 @@ async fn handle_api_proxy(
     let path_and_query = uri
         .path_and_query()
         .map_or(uri.path(), |value| value.as_str());
-    let url = format!("http://127.0.0.1:{api_port}{path_and_query}");
+    const API_URL_PREFIX: &str = "http://127.0.0.1:";
+    const MAX_PORT_DIGITS: usize = 5;
+    let mut url =
+        String::with_capacity(API_URL_PREFIX.len() + MAX_PORT_DIGITS + path_and_query.len());
+    url.push_str(API_URL_PREFIX);
+    url.push_str(&api_port.to_string());
+    url.push_str(path_and_query);
 
     let client = awc::Client::new();
     let mut proxy_req = client.request(req.method().clone(), &url);
