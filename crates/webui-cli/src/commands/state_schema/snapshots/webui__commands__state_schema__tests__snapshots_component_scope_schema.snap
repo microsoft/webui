@@ -1,0 +1,79 @@
+---
+source: crates/webui-cli/src/commands/state_schema/tests.rs
+expression: "SchemaDocument::new(&schema)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "alignment": {
+      "type": "string"
+    },
+    "globalLabel": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "x-webui": {
+        "preferredType": "string"
+      }
+    },
+    "pageTitle": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "x-webui": {
+        "preferredType": "string"
+      }
+    },
+    "payload": {},
+    "remainingCount": {
+      "type": [
+        "string",
+        "number",
+        "boolean"
+      ],
+      "x-webui": {
+        "preferredType": "string"
+      }
+    },
+    "trustedHtml": {
+      "type": "string"
+    },
+    "user": {
+      "properties": {
+        "active": {
+          "x-webui": {
+            "preferredType": "boolean"
+          }
+        },
+        "name": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "globalLabel",
+    "pageTitle",
+    "payload",
+    "remainingCount",
+    "trustedHtml",
+    "user"
+  ],
+  "title": "ComponentScopeState",
+  "type": "object"
+}

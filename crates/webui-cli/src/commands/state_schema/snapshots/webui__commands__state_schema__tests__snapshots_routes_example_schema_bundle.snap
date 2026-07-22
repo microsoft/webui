@@ -1,0 +1,828 @@
+---
+source: crates/webui-cli/src/commands/state_schema/tests.rs
+expression: "SchemaDocument::new(&schema)"
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "route": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "sections",
+        "textdirection",
+        "title"
+      ],
+      "title": "RoutesState (/)",
+      "type": "object"
+    },
+    "route.sections.:sectionId": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionIcon": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topicId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topics": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "sectionIcon",
+        "sectionId",
+        "sectionName",
+        "sections",
+        "textdirection",
+        "title",
+        "topics"
+      ],
+      "title": "RoutesState (/sections/:sectionId)",
+      "type": "object"
+    },
+    "route.sections.:sectionId.topics.:topicId": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "lessonId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "lessons": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sectionIcon": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topicId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topicName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topics": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "lessons",
+        "sectionIcon",
+        "sectionId",
+        "sectionName",
+        "sections",
+        "textdirection",
+        "title",
+        "topicId",
+        "topicName",
+        "topics"
+      ],
+      "title": "RoutesState (/sections/:sectionId/topics/:topicId)",
+      "type": "object"
+    },
+    "route.sections.:sectionId.topics.:topicId.lessons.:lessonId": {
+      "properties": {
+        "appTitle": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "basePath": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "language": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "lessonContent": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "lessonId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "lessonName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "lessons": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "sectionIcon": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sectionName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "sections": {
+          "items": {
+            "properties": {
+              "icon": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "icon",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "textdirection": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "title": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topicId": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topicName": {
+          "type": [
+            "string",
+            "number",
+            "boolean"
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
+        },
+        "topics": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              },
+              "name": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean"
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "appTitle",
+        "basePath",
+        "language",
+        "lessonContent",
+        "lessonName",
+        "lessons",
+        "sectionIcon",
+        "sectionId",
+        "sectionName",
+        "sections",
+        "textdirection",
+        "title",
+        "topicId",
+        "topicName",
+        "topics"
+      ],
+      "title": "RoutesState (/sections/:sectionId/topics/:topicId/lessons/:lessonId)",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/route"
+    },
+    {
+      "$ref": "#/$defs/route.sections.:sectionId"
+    },
+    {
+      "$ref": "#/$defs/route.sections.:sectionId.topics.:topicId"
+    },
+    {
+      "$ref": "#/$defs/route.sections.:sectionId.topics.:topicId.lessons.:lessonId"
+    }
+  ],
+  "title": "RoutesState",
+  "x-webui-routes": {
+    "/": "#/$defs/route",
+    "/sections/:sectionId": "#/$defs/route.sections.:sectionId",
+    "/sections/:sectionId/topics/:topicId": "#/$defs/route.sections.:sectionId.topics.:topicId",
+    "/sections/:sectionId/topics/:topicId/lessons/:lessonId": "#/$defs/route.sections.:sectionId.topics.:topicId.lessons.:lessonId"
+  }
+}

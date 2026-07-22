@@ -25,6 +25,7 @@ microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.18" 
 clap = { workspace = true }
 anyhow = { workspace = true }
 console = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 actix-web = { workspace = true }
 awc = { workspace = true }
@@ -36,6 +37,7 @@ tokio-stream = { workspace = true }
 log = { workspace = true }
 
 [dev-dependencies]
+insta = { workspace = true }
 tempfile = { workspace = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.18" }
 
