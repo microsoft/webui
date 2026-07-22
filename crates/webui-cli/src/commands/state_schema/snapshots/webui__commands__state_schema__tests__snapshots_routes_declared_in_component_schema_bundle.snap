@@ -12,14 +12,20 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "shellTitle": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         }
       },
       "required": [
@@ -36,21 +42,30 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "homeTitle": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "shellTitle": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         }
       },
       "required": [
@@ -68,21 +83,30 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "settingsTitle": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "shellTitle": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         }
       },
       "required": [

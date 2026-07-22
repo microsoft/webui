@@ -11,7 +11,10 @@ use webui_protocol::{
     ComparisonOperator, ConditionExpr, WebUIFragment, WebUIFragmentAttribute, WebUIProtocol,
 };
 
-use super::model::{add_array_path, add_resolved_path, node_to_schema, InferredKind, Node};
+use super::model::{
+    add_array_path, add_resolved_path, node_to_schema, resolved_kind, InferredKind, Node,
+    PreferredKind,
+};
 use super::scope::{array_item_path, has_component_scope, resolve_path, BindingOrigin, Scope};
 
 struct WalkFrame<'a> {
@@ -44,6 +47,28 @@ enum Requirement {
     Optional,
     Scoped,
     Required,
+}
+
+#[derive(Clone, Copy)]
+struct TypeEvidence {
+    kind: InferredKind,
+    preferred: Option<PreferredKind>,
+}
+
+impl TypeEvidence {
+    fn exact(kind: InferredKind) -> Self {
+        Self {
+            kind,
+            preferred: None,
+        }
+    }
+
+    fn preferred(kind: InferredKind, preferred: PreferredKind) -> Self {
+        Self {
+            kind,
+            preferred: Some(preferred),
+        }
+    }
 }
 
 pub(super) struct SchemaInference<'a> {
@@ -155,9 +180,9 @@ impl<'a> SchemaInference<'a> {
                         &frame.scope,
                         &signal.value,
                         if signal.raw {
-                            InferredKind::String
+                            TypeEvidence::exact(InferredKind::String)
                         } else {
-                            InferredKind::Scalar
+                            TypeEvidence::preferred(InferredKind::Scalar, PreferredKind::String)
                         },
                         frame.binding_requirement,
                     );
@@ -244,9 +269,9 @@ impl<'a> SchemaInference<'a> {
                 &frame.scope,
                 &attribute.value,
                 if attribute.complex {
-                    InferredKind::Any
+                    TypeEvidence::exact(InferredKind::Any)
                 } else {
-                    InferredKind::Scalar
+                    TypeEvidence::preferred(InferredKind::Scalar, PreferredKind::String)
                 },
                 Requirement::Scoped,
             );
@@ -293,7 +318,7 @@ fn add_condition_paths(root: &mut Node, scope: &Rc<Scope>, condition: &Condition
                     root,
                     scope,
                     &identifier.value,
-                    InferredKind::Any,
+                    TypeEvidence::preferred(InferredKind::Any, PreferredKind::Boolean),
                     Requirement::Optional,
                 );
             }
@@ -331,7 +356,7 @@ fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_pro
                 root,
                 scope,
                 &predicate.left,
-                InferredKind::Number,
+                TypeEvidence::exact(InferredKind::Number),
                 Requirement::Optional,
             );
             if right_literal.is_none() {
@@ -339,26 +364,33 @@ fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_pro
                     root,
                     scope,
                     &predicate.right,
-                    InferredKind::Number,
+                    TypeEvidence::exact(InferredKind::Number),
                     Requirement::Optional,
                 );
             }
         }
         _ => match right_literal {
-            Some(kind) => add_path(root, scope, &predicate.left, kind, Requirement::Optional),
+            Some(kind) => add_path(
+                root,
+                scope,
+                &predicate.left,
+                TypeEvidence::exact(kind),
+                Requirement::Optional,
+            ),
             None => {
+                let evidence = predicate_path_evidence(root, scope, predicate);
                 add_path(
                     root,
                     scope,
                     &predicate.left,
-                    InferredKind::Scalar,
+                    evidence,
                     Requirement::Optional,
                 );
                 add_path(
                     root,
                     scope,
                     &predicate.right,
-                    InferredKind::Scalar,
+                    evidence,
                     Requirement::Optional,
                 );
             }
@@ -369,6 +401,9 @@ fn add_predicate_paths(root: &mut Node, scope: &Rc<Scope>, predicate: &webui_pro
 fn literal_kind(value: &str) -> Option<InferredKind> {
     if value == "true" || value == "false" {
         return Some(InferredKind::Boolean);
+    }
+    if value.parse::<i64>().is_ok() || value.parse::<u64>().is_ok() {
+        return Some(InferredKind::Integer);
     }
     if value.parse::<f64>().is_ok() {
         return Some(InferredKind::Number);
@@ -381,11 +416,33 @@ fn literal_kind(value: &str) -> Option<InferredKind> {
     None
 }
 
+fn predicate_path_evidence(
+    root: &Node,
+    scope: &Rc<Scope>,
+    predicate: &webui_protocol::Predicate,
+) -> TypeEvidence {
+    for path in [&predicate.left, &predicate.right] {
+        let BindingOrigin::RootPath { path, .. } = resolve_path(scope, path) else {
+            continue;
+        };
+        if let Some(
+            kind @ (InferredKind::String
+            | InferredKind::Boolean
+            | InferredKind::Integer
+            | InferredKind::Number),
+        ) = resolved_kind(root, &path)
+        {
+            return TypeEvidence::exact(kind);
+        }
+    }
+    TypeEvidence::preferred(InferredKind::Scalar, PreferredKind::String)
+}
+
 fn add_path(
     root: &mut Node,
     scope: &Rc<Scope>,
     path: &str,
-    kind: InferredKind,
+    evidence: TypeEvidence,
     requirement: Requirement,
 ) {
     if path.is_empty() {
@@ -401,7 +458,7 @@ fn add_path(
             Requirement::Scoped => scope_required,
             Requirement::Required => true,
         };
-        add_resolved_path(root, &resolved, kind, required);
+        add_resolved_path(root, &resolved, evidence.kind, evidence.preferred, required);
     }
 }
 

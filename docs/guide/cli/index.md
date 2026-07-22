@@ -244,6 +244,11 @@ paths remain optional because missing condition values evaluate false.
 Terminal `.length` access accepts strings, arrays, or objects with a `length`
 property, matching runtime state lookup.
 
+Broad scalar and condition schemas may include a non-validating
+`x-webui.preferredType` hint. Plain rendered values prefer `string`, conditions
+prefer `boolean`, and integer literals produce the standard JSON Schema
+`integer` type. Known types propagate across path-to-path equality.
+
 Component-local attributes are resolved back to the parent state paths that
 populate them. Static attributes do not become root state properties. The
 parser's internal `head_end`, `body_start`, and `body_end` signals are excluded.

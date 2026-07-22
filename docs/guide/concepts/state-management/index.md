@@ -229,6 +229,10 @@ Plain bindings accept JSON strings, numbers, or booleans. Dotted paths and
 loops infer nested objects and arrays. Values used only by conditions are
 optional because missing condition state evaluates false.
 
+Broad values may include `x-webui.preferredType` as a non-validating hint for
+host-language type generation. Integer literals infer `integer`, and known
+types propagate across path-to-path equality.
+
 Routed applications produce one named schema per complete route chain. The
 `x-webui-routes` mapping connects each route pattern to its state definition,
 allowing build-time tools to generate route-specific types without adding

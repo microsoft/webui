@@ -12,28 +12,40 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "basePath": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "language": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sections": {
           "items": {
@@ -43,21 +55,30 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "id": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -74,14 +95,20 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "title": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         }
       },
       "required": [
@@ -102,42 +129,60 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "basePath": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "language": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionIcon": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionName": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sections": {
           "items": {
@@ -147,21 +192,30 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "id": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -178,21 +232,30 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "title": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topicId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topics": {
           "items": {
@@ -202,14 +265,20 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -243,28 +312,40 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "basePath": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "language": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "lessonId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "lessons": {
           "items": {
@@ -274,14 +355,20 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -297,21 +384,30 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionName": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sections": {
           "items": {
@@ -321,21 +417,30 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "id": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -352,28 +457,40 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "title": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topicId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topicName": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topics": {
           "items": {
@@ -383,14 +500,20 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -427,42 +550,60 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "basePath": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "language": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "lessonContent": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "lessonId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "lessonName": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "lessons": {
           "items": {
@@ -472,14 +613,20 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -495,21 +642,30 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sectionName": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "sections": {
           "items": {
@@ -519,21 +675,30 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "id": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [
@@ -550,28 +715,40 @@ expression: "SchemaDocument::new(&schema)"
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "title": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topicId": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topicName": {
           "type": [
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "topics": {
           "items": {
@@ -581,14 +758,20 @@ expression: "SchemaDocument::new(&schema)"
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               },
               "name": {
                 "type": [
                   "string",
                   "number",
                   "boolean"
-                ]
+                ],
+                "x-webui": {
+                  "preferredType": "string"
+                }
               }
             },
             "required": [

@@ -690,6 +690,10 @@ schemas are build-time contracts; WebUI does not validate them during rendering.
 Use `webui build --emit-schema` to create the protocol and its paired schema in
 one build.
 
+Broad scalar and condition schemas may include a non-validating
+`x-webui.preferredType` hint. Integer literals infer `integer`, and known types
+propagate across path-to-path equality.
+
 ## Build Diagnostics & Error Output
 
 Authoring mistakes fail `webui build` with a structured, actionable diagnostic

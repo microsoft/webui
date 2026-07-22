@@ -97,6 +97,8 @@ webui schema ./dist/protocol.bin \
 Plain bindings accept string, number, or boolean values. Loops and dotted paths
 produce array and object schemas. Routed entries produce separate definitions
 for each route chain plus an `x-webui-routes` path-to-schema mapping.
+Broad values may include `x-webui.preferredType` as a non-validating hint for
+future host-language type generation.
 
 ## App Layout
 

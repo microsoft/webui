@@ -260,6 +260,51 @@ fn literal_looking_binding_names_remain_state_paths() {
 }
 
 #[test]
+fn integer_literal_type_propagates_across_path_equality() {
+    let protocol = WebUIProtocol::new(std::collections::HashMap::from([
+        (
+            "index.html".to_string(),
+            webui_protocol::FragmentList {
+                fragments: vec![
+                    webui_protocol::WebUIFragment::if_cond(
+                        webui_protocol::ConditionExpr::predicate(
+                            "currentDisplay",
+                            webui_protocol::ComparisonOperator::Equal,
+                            "1",
+                        ),
+                        "first-condition",
+                    ),
+                    webui_protocol::WebUIFragment::if_cond(
+                        webui_protocol::ConditionExpr::predicate(
+                            "currentDisplay",
+                            webui_protocol::ComparisonOperator::Equal,
+                            "totalApps",
+                        ),
+                        "second-condition",
+                    ),
+                ],
+            },
+        ),
+        (
+            "first-condition".to_string(),
+            webui_protocol::FragmentList {
+                fragments: Vec::new(),
+            },
+        ),
+        (
+            "second-condition".to_string(),
+            webui_protocol::FragmentList {
+                fragments: Vec::new(),
+            },
+        ),
+    ]));
+
+    let schema = generate_schema(&protocol, "index.html", "CounterState").unwrap();
+    assert_eq!(schema["properties"]["currentDisplay"]["type"], "integer");
+    assert_eq!(schema["properties"]["totalApps"]["type"], "integer");
+}
+
+#[test]
 fn example_state_files_match_generated_schemas() {
     let workspace = workspace_root();
     assert_all_state_examples_are_covered(&workspace);

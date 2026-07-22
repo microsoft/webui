@@ -1,6 +1,6 @@
 ---
 source: crates/webui-cli/src/commands/state_schema/tests.rs
-expression: schema
+expression: "SchemaDocument::new(&schema)"
 ---
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -45,7 +45,10 @@ expression: schema
                     "string",
                     "number",
                     "boolean"
-                  ]
+                  ],
+                  "x-webui": {
+                    "preferredType": "string"
+                  }
                 }
               },
               "required": [
@@ -61,7 +64,10 @@ expression: schema
               "string",
               "number",
               "boolean"
-            ]
+            ],
+            "x-webui": {
+              "preferredType": "string"
+            }
           }
         },
         "required": [
@@ -82,7 +88,10 @@ expression: schema
             "string",
             "number",
             "boolean"
-          ]
+          ],
+          "x-webui": {
+            "preferredType": "string"
+          }
         },
         "type": "array"
       },

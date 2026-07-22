@@ -1811,13 +1811,18 @@ uses the following rules:
 - Plain text and normal attribute values accept JSON scalars: `string`,
   `number`, or `boolean`. Complex `:property` bindings remain unconstrained
   until child-template usage provides stronger structural evidence.
+- Broad scalar and truthiness schemas can carry non-validating generation
+  metadata under `x-webui.preferredType`. Plain rendered values prefer
+  `string`; condition identifiers prefer `boolean`. Validators continue to use
+  the standard `type`/`anyOf` contract.
 - Raw signals are strings.
 - Dotted paths create nested objects.
 - A terminal `.length` accepts the runtime's three valid forms: a string, an
   array, or an object with a `length` property.
 - `<for>` collections create arrays; loop-item paths define the item schema.
 - Ordered predicates infer numbers. Equality predicates infer the type of a
-  literal operand.
+  literal operand; integer literals produce `integer`, and known types propagate
+  across path-to-path equality.
 - Condition-only paths are optional because a missing condition value evaluates
   false. A path referenced by rendered output or a collection remains required.
 - Normal component-attribute source paths are recorded as scalars, but
