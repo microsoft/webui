@@ -971,28 +971,63 @@ async fn handle_asset(
         .body(body)
 }
 
+fn accept_media_q(params: &str) -> f32 {
+    for raw_param in params.split(';') {
+        let Some((key, value)) = raw_param.trim().split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("q") {
+            return value
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|q| q.is_finite())
+                .unwrap_or(1.0);
+        }
+    }
+    1.0
+}
+
+/// Select the SPA fallback response explicitly accepted by the request.
+///
+/// `q=0` disables that media type, and malformed q values are treated as
+/// absent with the default q of 1.0. When HTML and JSON have the same highest
+/// acceptable q value, JSON wins because it is only sent by clients opting into
+/// partial render.
 fn spa_fallback_kind(req: &HttpRequest) -> SpaFallbackKind {
     let Some(accept) = req.headers().get("accept").and_then(|v| v.to_str().ok()) else {
         return SpaFallbackKind::None;
     };
 
-    let mut accepts_html = false;
+    let mut html_q = 0.0;
+    let mut json_q = 0.0;
     for raw_media in accept.split(',') {
-        let media = raw_media
+        let (media, params) = raw_media
             .split_once(';')
-            .map_or(raw_media, |(value, _)| value)
-            .trim();
-        if media.eq_ignore_ascii_case("application/json") {
-            return SpaFallbackKind::Json;
+            .map_or((raw_media, ""), |(value, params)| (value, params));
+        let q = accept_media_q(params);
+        if q <= 0.0 {
+            continue;
         }
-        accepts_html |= media.eq_ignore_ascii_case("text/html")
-            || media.eq_ignore_ascii_case("application/xhtml+xml");
+
+        let media = media.trim();
+        if media.eq_ignore_ascii_case("text/html")
+            || media.eq_ignore_ascii_case("application/xhtml+xml")
+        {
+            if q > html_q {
+                html_q = q;
+            }
+        } else if media.eq_ignore_ascii_case("application/json") && q > json_q {
+            json_q = q;
+        }
     }
 
-    if accepts_html {
-        SpaFallbackKind::Html
-    } else {
+    if html_q <= 0.0 && json_q <= 0.0 {
         SpaFallbackKind::None
+    } else if json_q >= html_q {
+        SpaFallbackKind::Json
+    } else {
+        SpaFallbackKind::Html
     }
 }
 
@@ -1886,6 +1921,41 @@ mod tests {
             .collect();
         assert_eq!(*captured_targets.lock().unwrap(), expected);
         handle.stop(true).await;
+    }
+
+    fn fallback_kind_for_accept(accept: &str) -> SpaFallbackKind {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("accept", accept))
+            .to_http_request();
+        spa_fallback_kind(&req)
+    }
+
+    #[test]
+    fn test_spa_fallback_kind_honors_q_weights() {
+        let cases = [
+            ("application/json;q=0", SpaFallbackKind::None),
+            ("text/html;q=0", SpaFallbackKind::None),
+            (
+                "text/html;q=0.8, application/json;q=0.9",
+                SpaFallbackKind::Json,
+            ),
+            (
+                "text/html;q=0.9, application/json;q=0.8",
+                SpaFallbackKind::Html,
+            ),
+            ("text/html;q=1, application/json;q=1", SpaFallbackKind::Json),
+            ("application/json", SpaFallbackKind::Json),
+            (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                SpaFallbackKind::Html,
+            ),
+            ("APPLICATION/JSON ; Q=0.5", SpaFallbackKind::Json),
+            ("application/json;q=not-a-number", SpaFallbackKind::Json),
+        ];
+
+        for (accept, expected) in cases {
+            assert_eq!(fallback_kind_for_accept(accept), expected, "{accept}");
+        }
     }
 
     #[actix_web::test]

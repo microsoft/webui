@@ -1200,8 +1200,10 @@ After generated assets and `--servedir` files miss, `webui serve` uses request
 intent rather than path punctuation to decide whether to run the SPA route
 fallback. Fallback runs only when `Accept` explicitly includes `text/html` or
 `application/xhtml+xml` for document navigation, or `application/json` for a
-WebUI JSON partial render. Missing, invalid, or wildcard-only `Accept` headers
-return 404, as do JS, CSS, image, and other non-HTML/non-JSON asset requests.
+WebUI JSON partial render. `q=0` disables that media type; when HTML and JSON
+are both acceptable, the higher `q` wins and exact ties prefer JSON. Missing,
+invalid, or wildcard-only `Accept` headers return 404, as do JS, CSS, image, and
+other non-HTML/non-JSON asset requests.
 Literal dots in route segments, such as `/docs/v2.1`, are valid and do not block
 route matching or fallback.
 

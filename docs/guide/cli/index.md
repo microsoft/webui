@@ -276,8 +276,10 @@ instead of becoming a path separator.
 After generated assets and `--servedir` files miss, route fallback is based on
 the `Accept` header. Requests that explicitly accept `text/html` or
 `application/xhtml+xml` receive the SSR document, and requests that explicitly
-accept `application/json` receive the JSON partial response. Missing, invalid,
-or wildcard-only `Accept` headers return 404, as do JS, CSS, image, and other
+accept `application/json` receive the JSON partial response. `q=0` disables
+that media type; when HTML and JSON are both acceptable, the higher `q` wins and
+exact ties prefer JSON. Missing, invalid, or wildcard-only `Accept` headers
+return 404, as do JS, CSS, image, and other
 non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
 such as `/docs/v2.1` can still fall back to the route renderer.
 
@@ -346,7 +348,7 @@ successful rebuild clears the error and reloads connected browsers.
 | `/` or `/index.html` | Rendered HTML with live-reload script |
 | `/<tag>.webui.js` | In-memory static component assets emitted by `--emit-component-assets` (served as JS modules) |
 | `/*` | Static files from `--servedir` (when provided) |
-| `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` after asset misses | SPA route fallback |
+| `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
 | Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
