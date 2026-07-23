@@ -549,7 +549,7 @@ import { WebUIElement } from '@microsoft/webui-framework';
 import './app-shell/app-shell.js';
 import './user-card/user-card.js';
 
-// Fires once after initial parsing and all initially registered hydrations.
+// Optional: listen for hydration completion
 window.addEventListener('webui:hydration-complete', () => {
   const total = performance.getEntriesByName('webui:hydrate:total', 'measure')[0];
   console.log(`Hydration: ${total?.duration.toFixed(1)}ms`);

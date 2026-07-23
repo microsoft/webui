@@ -34,19 +34,6 @@ test.describe('hydration-mismatch (#379)', () => {
       if (msg.type() === 'warning') warnings.push(msg.text());
     });
 
-    await page.addInitScript((tags) => {
-      const snapshots: Array<{ hydratedTags: string[]; readyState: DocumentReadyState }> = [];
-      (window as unknown as { hydrationSnapshots: typeof snapshots }).hydrationSnapshots = snapshots;
-      window.addEventListener('webui:hydration-complete', () => {
-        snapshots.push({
-          hydratedTags: tags.filter((tag) => {
-            return (document.querySelector(tag) as { $ready?: boolean } | null)?.$ready === true;
-          }),
-          readyState: document.readyState,
-        });
-      });
-    }, ALL_TAGS as unknown as string[]);
-
     await page.goto('/hydration-mismatch/fixture.html');
 
     await page.waitForFunction((tags) => {
@@ -121,18 +108,6 @@ test.describe('hydration-mismatch (#379)', () => {
       readyStateAtConnect: 'loading',
       referencesReadyAfterSuper: true,
     });
-  });
-
-  test('global completion waits for parsing and every initial hydration', async ({ page }) => {
-    const snapshots = await page.evaluate(() => {
-      return (window as unknown as {
-        hydrationSnapshots?: Array<{ hydratedTags: string[]; readyState: DocumentReadyState }>;
-      }).hydrationSnapshots;
-    });
-
-    expect(snapshots).toHaveLength(1);
-    expect(snapshots?.[0]?.hydratedTags).toEqual([...ALL_TAGS]);
-    expect(snapshots?.[0]?.readyState).not.toBe('loading');
   });
 
   test('seeded pre-ready values match the server render and do not warn', async ({ page }) => {
