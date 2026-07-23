@@ -626,6 +626,13 @@ struct RequestPaths {
     request_path: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpaFallbackKind {
+    None,
+    Html,
+    Json,
+}
+
 fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
     let route_path = if relative.is_empty() {
         "/".to_string()
@@ -932,7 +939,8 @@ async fn handle_asset(
     }
 
     let Some(assets_dir) = &context.assets_dir else {
-        // No assets dir — try SPA fallback for paths without file extensions
+        // No assets dir: let the Accept header decide whether this was a route
+        // navigation/partial request or a missing asset fetch.
         return spa_fallback(&req, &context).await;
     };
 
@@ -941,7 +949,8 @@ async fn handle_asset(
     let canonical = match asset_path.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // File not found — SPA fallback for paths without file extensions
+            // File not found: let the Accept header decide whether this was a
+            // route navigation/partial request or a missing asset fetch.
             return spa_fallback(&req, &context).await;
         }
     };
@@ -962,30 +971,50 @@ async fn handle_asset(
         .body(body)
 }
 
-/// Check if the request accepts JSON (for partial render).
+fn spa_fallback_kind(req: &HttpRequest) -> SpaFallbackKind {
+    let Some(accept) = req.headers().get("accept").and_then(|v| v.to_str().ok()) else {
+        return SpaFallbackKind::None;
+    };
+
+    let mut accepts_html = false;
+    for raw_media in accept.split(',') {
+        let media = raw_media
+            .split_once(';')
+            .map_or(raw_media, |(value, _)| value)
+            .trim();
+        if media.eq_ignore_ascii_case("application/json") {
+            return SpaFallbackKind::Json;
+        }
+        accepts_html |= media.eq_ignore_ascii_case("text/html")
+            || media.eq_ignore_ascii_case("application/xhtml+xml");
+    }
+
+    if accepts_html {
+        SpaFallbackKind::Html
+    } else {
+        SpaFallbackKind::None
+    }
+}
+
+/// Check if the request explicitly accepts JSON (for partial render).
 fn wants_json(req: &HttpRequest) -> bool {
-    req.headers()
-        .get("accept")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.contains("application/json"))
+    spa_fallback_kind(req) == SpaFallbackKind::Json
 }
 
 /// SPA fallback: serve HTML or JSON partial depending on Accept header.
-/// Activates for paths that look like route paths (no file extension).
+/// Activates for explicit document navigation or JSON partial requests.
 async fn spa_fallback(req: &HttpRequest, context: &web::Data<ServerContext>) -> HttpResponse {
+    let kind = spa_fallback_kind(req);
+    if kind == SpaFallbackKind::None {
+        return HttpResponse::NotFound().body("Not Found");
+    }
+
     // Actix decodes `web::Path` values. Route matching and backend state
     // requests must instead receive the original encoded request target.
     let paths = request_paths(req);
 
-    // Only serve fallback for paths without a file extension (likely route
-    // paths). Test the *encoded* path so an encoded dot (`%2E`) inside a
-    // route parameter is not misread as a literal extension separator.
-    if paths.route_path.contains('.') {
-        return HttpResponse::NotFound().body("Not Found");
-    }
-
-    // JSON partial render: return { state, templates } for client-side navigation
-    if wants_json(req) {
+    // JSON partial render: return { state, templates } for client-side navigation.
+    if kind == SpaFallbackKind::Json {
         return handle_json_partial(req, context, paths).await;
     }
 
@@ -1327,6 +1356,56 @@ mod tests {
                 StreamingWriter::CHUNK_TARGET + 1024,
             )),
         })
+    }
+
+    fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: "<html><body>ok</body></html>".to_string(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: Some(protocol),
+                state_data: Some(Value::Object(serde_json::Map::new())),
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: None,
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    fn dotted_route_protocol() -> Arc<Protocol> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/docs/:version".to_string(),
+                    fragment_id: "docs-page".to_string(),
+                    exact: true,
+                    keep_alive: false,
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "docs-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<main>docs</main>")],
+            },
+        );
+        Arc::new(Protocol::new(WebUIProtocol::with_tokens(
+            fragments,
+            Vec::new(),
+        )))
     }
 
     fn start_request_target_server() -> (u16, actix_web::dev::ServerHandle, Arc<Mutex<Vec<String>>>)
@@ -1830,22 +1909,72 @@ mod tests {
         .await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        let response = actix_test::call_service(
-            &app,
-            actix_test::TestRequest::get()
-                .uri("/missing.css")
-                .insert_header(("accept", "application/json"))
-                .to_request(),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
         let captured = match captured_targets.lock() {
             Ok(targets) => targets.clone(),
             Err(error) => panic!("captured targets mutex poisoned: {error}"),
         };
         assert_eq!(captured, vec![request_target.to_string()]);
         handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_allows_literal_dot_html_route() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_route_context(dotted_route_protocol()))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/docs/v2.1")
+                .insert_header(("accept", "text/html,application/xhtml+xml"))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_rejects_missing_asset_intent() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_route_context(dotted_route_protocol()))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/missing.js")
+                .insert_header(("accept", "text/javascript,*/*;q=0.1"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/users/john.doe")
+                .insert_header(("accept", "*/*"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/docs/v2.1")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[actix_web::test]

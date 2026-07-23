@@ -758,6 +758,14 @@ while still preserving the query string. All other request paths forward their
 encoded path and query unchanged. Applications must not double-encode route
 parameters for development; `%2F` remains within one route segment.
 
+After generated assets and `--servedir` files miss, route fallback is based on
+the `Accept` header. Requests that explicitly accept `text/html` or
+`application/xhtml+xml` receive the SSR document, and requests that explicitly
+accept `application/json` receive the JSON partial response. Missing, invalid,
+or wildcard-only `Accept` headers return 404, as do JS, CSS, image, and other
+non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
+such as `/docs/v2.1` can still fall back to the route renderer.
+
 ### Inspect
 
 ```bash

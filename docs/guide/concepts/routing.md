@@ -63,6 +63,13 @@ Router.start();
 
 The server SSRs the matched route on first load. The router handles clicks on `<a>` tags for subsequent navigations - no full page reloads.
 
+Route segments may contain literal dots, such as `/docs/v2.1` or
+`/users/john.doe`. In `webui serve`, a missed asset lookup falls back to route
+rendering only for requests that explicitly accept `text/html`,
+`application/xhtml+xml`, or `application/json`. Missing, invalid, or
+wildcard-only `Accept` headers return 404, as do JS, CSS, image, and other
+non-HTML/non-JSON asset requests.
+
 The router never imports framework code. Authored route components use their
 registered classes. When the application also loads
 `@microsoft/webui-framework`, HTML-only route templates can mount during soft
