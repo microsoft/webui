@@ -92,6 +92,24 @@ test.describe('hydration-mismatch (#379)', () => {
     }
   });
 
+  test('super.connectedCallback hydrates synchronously while the document is loading', async ({ page }) => {
+    const lifecycle = await page.evaluate(() => {
+      const el = document.querySelector('mismatch-after-super') as {
+        readyStateAtConnect?: string;
+        referencesReadyAfterSuper?: boolean;
+      } | null;
+      return {
+        readyStateAtConnect: el?.readyStateAtConnect,
+        referencesReadyAfterSuper: el?.referencesReadyAfterSuper,
+      };
+    });
+
+    expect(lifecycle).toEqual({
+      readyStateAtConnect: 'loading',
+      referencesReadyAfterSuper: true,
+    });
+  });
+
   test('seeded pre-ready values match the server render and do not warn', async ({ page }) => {
     await expect(page.locator('mismatch-seeded .content')).toHaveText('CONTENT');
     expect(await page.locator('mismatch-seeded .box').getAttribute('data-value')).toBe('3');

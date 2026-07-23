@@ -46,6 +46,12 @@ not need to enter browser state just because the component has an event handler,
 An authored component with no decorators can therefore wire its behavior
 without adding any startup state.
 
+Load authored component definitions with a non-async ES module script, or place
+a classic script after the component markup it defines. This guarantees that
+the component subtree exists before upgrade. WebUI then hydrates synchronously
+inside `super.connectedCallback()`; when it returns, bindings, events, and
+`w-ref` references are ready.
+
 Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.

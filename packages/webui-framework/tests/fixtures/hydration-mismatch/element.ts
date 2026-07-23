@@ -51,13 +51,21 @@ export class MismatchBeforeSuper extends WebUIElement {
 }
 MismatchBeforeSuper.define('mismatch-before-super');
 
-/** Assigns after `super.connectedCallback()`. No warning; the DOM updates. */
+/**
+ * Assigns after `super.connectedCallback()`. No warning; the DOM updates.
+ * Also covers synchronous hydration during parsing for issue #393.
+ */
 export class MismatchAfterSuper extends WebUIElement {
   @observable show = false;
   @observable value = '';
+  box!: HTMLDivElement;
+  readyStateAtConnect = '';
+  referencesReadyAfterSuper = false;
 
   connectedCallback(): void {
+    this.readyStateAtConnect = document.readyState;
     super.connectedCallback();
+    this.referencesReadyAfterSuper = this.box instanceof HTMLDivElement;
     this.show = true;
     this.value = '3';
   }

@@ -559,6 +559,13 @@ Follow one rule to stay correct:
 - **A value that must appear in the first render belongs in the SSR state.** Provide it in the JSON state so the server renders it; the client then hydrates against a matching DOM.
 - **Assign anything else after `super.connectedCallback()`**, where `@observable` writes flow through live bindings.
 
+WebUI treats `super.connectedCallback()` as a synchronous hydration boundary.
+When it returns, that component's bindings, events, and `w-ref` references are
+wired. This relies on the WebUI loading contract: load authored component code
+with a non-async ES module script, or place a classic script after the component
+markup it defines. Do not run a parser-blocking definition script before the
+component's closing tag.
+
 ```ts
 export class MyCounter extends WebUIElement {
   @observable count = 0;
