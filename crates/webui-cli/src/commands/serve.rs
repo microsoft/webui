@@ -1177,7 +1177,10 @@ async fn handle_api_proxy(
     let mut url =
         String::with_capacity(API_URL_PREFIX.len() + MAX_PORT_DIGITS + path_and_query.len());
     url.push_str(API_URL_PREFIX);
-    url.push_str(&api_port.to_string());
+    // Write the port digits straight into the reserved capacity instead of
+    // allocating a temporary `String` via `to_string()` on the proxy hot path.
+    use std::fmt::Write as _;
+    let _ = write!(url, "{api_port}");
     url.push_str(path_and_query);
 
     let client = awc::Client::new();
