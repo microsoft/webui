@@ -1067,7 +1067,14 @@ The handler resolves `tokens.light` from the state, outputting:
     `super.connectedCallback()` cannot reach the DOM — the write is dropped and
     the runtime logs a `[WebUI] Hydration mismatch` warning. If the value must
     appear in the first render, put it in the SSR state JSON; otherwise assign it
-    after `super.connectedCallback()`. The warning is development-only — it is
+    after `super.connectedCallback()`. The call is a synchronous hydration
+    boundary: when it returns, that component's bindings, events, and `w-ref`
+    references are wired. Load definitions through a parser-inserted, non-async
+    ES module script or a classic `defer` script. A blocking classic script must
+    follow every SSR instance it may upgrade. Descendants must not structurally
+    mutate a containing WebUI component's SSR subtree before it hydrates, because
+    node insertion, removal, or reordering shifts compiled paths. The warning is
+    development-only — it is
     stripped from production bundles via the `__WEBUI_DEV__` compile-time flag
     (`webui-press build` sets `__WEBUI_DEV__=false` automatically; self-bundled
     apps add the define for production).

@@ -151,31 +151,10 @@ const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
-let domReadyQueue: Array<() => void> | null = null;
 
 type TemplateObservedConstructor = CustomElementConstructor & {
   readonly observedAttributes?: readonly string[];
 };
-
-function runWhenDomReady(callback: () => void): void {
-  if (document.readyState !== 'loading') {
-    callback();
-    return;
-  }
-  if (domReadyQueue) {
-    domReadyQueue.push(callback);
-    return;
-  }
-  domReadyQueue = [callback];
-  document.addEventListener('DOMContentLoaded', flushDomReadyQueue, { once: true });
-}
-
-function flushDomReadyQueue(): void {
-  const queue = domReadyQueue;
-  domReadyQueue = null;
-  if (!queue) return;
-  for (let i = 0; i < queue.length; i++) queue[i]();
-}
 
 // ── Helper: snapshot child nodes into a pre-allocated array ──────
 
@@ -357,15 +336,10 @@ export class TemplateElement extends HTMLElement {
       return;
     }
     this.$meta = meta;
-    // Custom element upgrade timing: when the HTML parser encounters the
-    // opening tag, connectedCallback fires BEFORE children are parsed.
-    // If the document is still loading, defer to let the parser finish.
-    if (document.readyState === 'loading') {
-      runWhenDomReady(() => this.$mount(meta, false));
-    } else {
-      // Document is already parsed — children are available
-      this.$mount(meta, false);
-    }
+    // Under WebUI's loading contract, deferred scripts run after parsing and
+    // blocking scripts follow every component instance they may upgrade.
+    // Mount synchronously so super.connectedCallback() is the hydration boundary.
+    this.$mount(meta, false);
   }
 
   /** Mount the component after children are available. */

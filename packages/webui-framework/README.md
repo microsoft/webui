@@ -151,6 +151,13 @@ development-only and is dead-code-eliminated from production bundles via the
 `false`). See the
 [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity#setting-observable-state-during-setup).
 
+`super.connectedCallback()` is the synchronous hydration boundary for an
+authored component. When it returns, bindings, events, and `w-ref` references
+are wired. Use a parser-inserted, non-async ES module script or a classic
+`defer` script. A blocking classic script must follow every SSR instance it may
+upgrade. Descendants must not structurally mutate a containing component's SSR
+subtree before it hydrates, because hydration relies on stable compiled paths.
+
 ### DOM strategy (`--dom`)
 
 The `--dom` flag controls how the server renders component content:
