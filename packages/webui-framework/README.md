@@ -153,8 +153,10 @@ development-only and is dead-code-eliminated from production bundles via the
 
 `super.connectedCallback()` is the synchronous hydration boundary for an
 authored component. When it returns, bindings, events, and `w-ref` references
-are wired. Load component definitions with a non-async ES module script, or
-place a classic script after the component markup it defines.
+are wired. Use a parser-inserted, non-async ES module script or a classic
+`defer` script. A blocking classic script must follow every SSR instance it may
+upgrade. Descendants must not structurally mutate a containing component's SSR
+subtree before it hydrates, because hydration relies on stable compiled paths.
 
 ### DOM strategy (`--dom`)
 

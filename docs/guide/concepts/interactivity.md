@@ -562,9 +562,13 @@ Follow one rule to stay correct:
 WebUI treats `super.connectedCallback()` as a synchronous hydration boundary.
 When it returns, that component's bindings, events, and `w-ref` references are
 wired. This relies on the WebUI loading contract: load authored component code
-with a non-async ES module script, or place a classic script after the component
-markup it defines. Do not run a parser-blocking definition script before the
-component's closing tag.
+with a parser-inserted, non-async ES module script or a classic `defer` script.
+If a classic script blocks parsing, place it after every SSR instance it may
+upgrade.
+
+Descendants must not structurally mutate a containing WebUI component's SSR
+subtree before that component hydrates. Inserting, removing, or reordering nodes
+can shift compiled paths before WebUI wires them.
 
 ```ts
 export class MyCounter extends WebUIElement {

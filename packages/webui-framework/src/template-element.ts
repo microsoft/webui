@@ -336,8 +336,8 @@ export class TemplateElement extends HTMLElement {
       return;
     }
     this.$meta = meta;
-    // Under WebUI's loading contract, browser entries execute after their
-    // component markup is parsed.
+    // Under WebUI's loading contract, deferred scripts run after parsing and
+    // blocking scripts follow every component instance they may upgrade.
     // Mount synchronously so super.connectedCallback() is the hydration boundary.
     this.$mount(meta, false);
   }

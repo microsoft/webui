@@ -46,11 +46,16 @@ not need to enter browser state just because the component has an event handler,
 An authored component with no decorators can therefore wire its behavior
 without adding any startup state.
 
-Load authored component definitions with a non-async ES module script, or place
-a classic script after the component markup it defines. This guarantees that
-the component subtree exists before upgrade. WebUI then hydrates synchronously
-inside `super.connectedCallback()`; when it returns, bindings, events, and
-`w-ref` references are ready.
+Load authored component definitions with a parser-inserted, non-async ES module
+script or a classic `defer` script. If a classic script blocks parsing, place it
+after every SSR instance it may upgrade. This guarantees that each component
+subtree exists before upgrade. WebUI then hydrates synchronously inside
+`super.connectedCallback()`; when it returns, bindings, events, and `w-ref`
+references are ready.
+
+Until a containing WebUI component hydrates, descendants must not insert,
+remove, or reorder nodes in its SSR subtree. Hydration resolves compiled paths
+against the trusted server DOM and cannot recover after those paths shift.
 
 Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
