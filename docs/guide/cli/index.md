@@ -277,9 +277,10 @@ After generated assets and `--servedir` files miss, route fallback is based on
 the `Accept` header. Requests that explicitly accept `text/html` or
 `application/xhtml+xml` receive the SSR document, and requests that explicitly
 accept `application/json` receive the JSON partial response. `q=0` disables
-that media type; when HTML and JSON are both acceptable, the higher `q` wins and
-exact ties prefer JSON. Missing, invalid, or wildcard-only `Accept` headers
-return 404, as do JS, CSS, image, and other
+that media type, while a malformed or out-of-range `q` value falls back to
+`q=1.0`; when HTML and JSON are both acceptable, the higher `q` wins and exact
+ties prefer JSON. Missing or wildcard-only `Accept` headers return 404, as do JS,
+CSS, image, and other
 non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
 such as `/docs/v2.1` can still fall back to the route renderer.
 

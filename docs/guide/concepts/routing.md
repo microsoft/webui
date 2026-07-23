@@ -66,9 +66,10 @@ The server SSRs the matched route on first load. The router handles clicks on `<
 Route segments may contain literal dots, such as `/docs/v2.1` or
 `/users/john.doe`. In `webui serve`, a missed asset lookup falls back to route
 rendering only for requests that explicitly accept `text/html`,
-`application/xhtml+xml`, or `application/json`. `q=0` disables that media type;
-when HTML and JSON are both acceptable, the higher `q` wins and exact ties
-prefer JSON. Missing, invalid, or wildcard-only `Accept` headers return 404, as
+`application/xhtml+xml`, or `application/json`. `q=0` disables that media type,
+while a malformed or out-of-range `q` value falls back to `q=1.0`; when HTML and
+JSON are both acceptable, the higher `q` wins and exact ties prefer JSON. Missing
+or wildcard-only `Accept` headers return 404, as
 do JS, CSS, image, and other
 non-HTML/non-JSON asset requests.
 
