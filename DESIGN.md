@@ -2768,6 +2768,12 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   structurally mutate its SSR subtree. Hydration resolves compiled node paths
   against the trusted server DOM and does not recover from pre-hydration node
   insertion, removal, or reordering.
+- The one-shot `webui:hydration-complete` window event represents initial
+  document hydration under this loading contract. It is queued only after
+  `DOMContentLoaded` and after the active hydration count reaches zero, so
+  sequential custom-element upgrades cannot publish completion after only the
+  first component. Registrations made after this initial boundary are not part
+  of the event.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
   upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
   embedded in `c` / `r`, and event target paths directly, then applies the first binding pass before

@@ -811,13 +811,17 @@ The runtime exposes hydration timing via the Performance API:
 
 - Per component: `webui:hydrate:<tag>:start` / `webui:hydrate:<tag>:end`
 - Global: `webui:hydrate:total:start` / `webui:hydrate:total:end`
-- Window event: `webui:hydration-complete`
+- Window event: `webui:hydration-complete`, dispatched once after initial
+  parsing and all components registered under the loading contract hydrate
 
 ```ts
 window.addEventListener('webui:hydration-complete', () => {
   console.log('All initial framework components are hydrated.');
 });
 ```
+
+Components registered after this initial boundary are not included in the
+event.
 
 ---
 

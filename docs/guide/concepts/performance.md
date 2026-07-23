@@ -269,9 +269,10 @@ supports the same named before/after baseline workflow through `cargo xtask`.
 
 ## Measuring Hydration Performance
 
-WebUI emits a `webui:hydration-complete` event after all components have been
-hydrated on the client. Use the Performance API to inspect per-component
-timing:
+WebUI emits the one-shot `webui:hydration-complete` event after the initial
+document is parsed and all components registered under the loading contract
+have hydrated. Components registered after this initial boundary are not
+included. Use the Performance API to inspect per-component timing:
 
 ```typescript
 window.addEventListener('webui:hydration-complete', () => {
