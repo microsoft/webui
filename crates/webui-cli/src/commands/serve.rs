@@ -977,11 +977,14 @@ fn accept_media_q(params: &str) -> f32 {
             continue;
         };
         if key.trim().eq_ignore_ascii_case("q") {
+            // HTTP qvalues are finite and within 0..=1. Anything outside that
+            // range is malformed and falls back to the default of 1.0 so an
+            // invalid header cannot force a 404 or skew tie-breaking.
             return value
                 .trim()
                 .parse::<f32>()
                 .ok()
-                .filter(|q| q.is_finite())
+                .filter(|q| (0.0..=1.0).contains(q))
                 .unwrap_or(1.0);
         }
     }
@@ -990,10 +993,10 @@ fn accept_media_q(params: &str) -> f32 {
 
 /// Select the SPA fallback response explicitly accepted by the request.
 ///
-/// `q=0` disables that media type, and malformed q values are treated as
-/// absent with the default q of 1.0. When HTML and JSON have the same highest
-/// acceptable q value, JSON wins because it is only sent by clients opting into
-/// partial render.
+/// `q=0` disables that media type, while malformed or out-of-range q values
+/// (outside `0..=1`) are treated as absent with the default q of 1.0. When HTML
+/// and JSON have the same highest acceptable q value, JSON wins because it is
+/// only sent by clients opting into partial render.
 fn spa_fallback_kind(req: &HttpRequest) -> SpaFallbackKind {
     let Some(accept) = req.headers().get("accept").and_then(|v| v.to_str().ok()) else {
         return SpaFallbackKind::None;
@@ -1951,6 +1954,10 @@ mod tests {
             ),
             ("APPLICATION/JSON ; Q=0.5", SpaFallbackKind::Json),
             ("application/json;q=not-a-number", SpaFallbackKind::Json),
+            // Out-of-range q is malformed and falls back to the default 1.0, so
+            // it neither wins tie-breaking nor disables the media type.
+            ("text/html;q=2, application/json;q=1", SpaFallbackKind::Json),
+            ("text/html;q=-1", SpaFallbackKind::Html),
         ];
 
         for (accept, expected) in cases {
