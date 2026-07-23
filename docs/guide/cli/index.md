@@ -247,7 +247,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
-| `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
+| `--api-port <PORT>` | Proxy route requests to your API server on this port. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
@@ -264,6 +264,25 @@ The `APP` directory should contain your entry HTML and component files.
 4. If `--watch` is enabled, watches app, state, asset, and explicit projection manifest files for changes
 5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
 6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+
+When `--api-port` is set, backend state requests and `/api/*` forwarding use
+the encoded path and query exactly as received except for the entry route alias.
+`/` and `/index.html` both resolve backend state at `/` (the entry path is
+normalized), while still preserving the query string. All other request paths
+forward their encoded path and query unchanged. Do not double-encode route
+parameters for development. For example, `%2F` remains part of one parameter
+instead of becoming a path separator.
+
+After generated assets and `--servedir` files miss, route fallback is based on
+the `Accept` header. Requests that explicitly accept `text/html` or
+`application/xhtml+xml` receive the SSR document, and requests that explicitly
+accept `application/json` receive the JSON partial response. `q=0` disables
+that media type, while a malformed or out-of-range `q` value falls back to
+`q=1.0`; when HTML and JSON are both acceptable, the higher `q` wins and exact
+ties prefer JSON. Missing or wildcard-only `Accept` headers return 404, as do JS,
+CSS, image, and other
+non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
+such as `/docs/v2.1` can still fall back to the route renderer.
 
 **Examples:**
 
@@ -330,6 +349,8 @@ successful rebuild clears the error and reloads connected browsers.
 | `/` or `/index.html` | Rendered HTML with live-reload script |
 | `/<tag>.webui.js` | In-memory static component assets emitted by `--emit-component-assets` (served as JS modules) |
 | `/*` | Static files from `--servedir` (when provided) |
+| `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
+| Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
 ## Error output and exit codes

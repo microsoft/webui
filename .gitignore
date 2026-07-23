@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-test/
+*.tsbuildinfo
 bin/
 obj/
 target/

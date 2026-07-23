@@ -744,12 +744,30 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
 | `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); watched explicitly with `--watch` |
-| `--api-port <PORT>` | none | Proxy route requests to API server |
+| `--api-port <PORT>` | none | Proxy route requests with encoded paths and queries preserved |
 | `--theme <PACKAGE>` | none | Design token theme; missing unresolved tokens fail the build (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
+
+With `--api-port`, backend state requests and `/api/*` forwarding preserve the
+incoming encoded path and query except for the entry route alias. `/` and
+`/index.html` both resolve backend state at `/` (the entry path is normalized),
+while still preserving the query string. All other request paths forward their
+encoded path and query unchanged. Applications must not double-encode route
+parameters for development; `%2F` remains within one route segment.
+
+After generated assets and `--servedir` files miss, route fallback is based on
+the `Accept` header. Requests that explicitly accept `text/html` or
+`application/xhtml+xml` receive the SSR document, and requests that explicitly
+accept `application/json` receive the JSON partial response. `q=0` disables
+that media type, while a malformed or out-of-range `q` value falls back to
+`q=1.0`; when HTML and JSON are both acceptable, the higher `q` wins and exact
+ties prefer JSON. Missing or wildcard-only `Accept` headers return 404, as do JS,
+CSS, image, and other
+non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
+such as `/docs/v2.1` can still fall back to the route renderer.
 
 ### Inspect
 

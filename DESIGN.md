@@ -1186,6 +1186,28 @@ webui serve ./templates --state ./data/state.json --plugin=webui --emit-componen
 fails before the initial build if that port is already in use, returning an
 actionable message so stale dev processes can be stopped explicitly.
 
+With `webui serve --api-port`, route state requests and `/api/*` forwarding
+preserve the incoming URI's encoded path and query exactly except for the entry
+route alias. The development server does not decode or re-encode percent escapes
+before sending non-entry request paths to the backend. `/` and `/index.html`
+both resolve backend state at `/` (the entry path is normalized), while still
+preserving the query string. All other request paths forward their encoded path
+and query unchanged. Encoded slashes such as `%2F` therefore remain inside one
+route segment, and encoded spaces, percent signs, and UTF-8 bytes reach
+development backends with the same representation used by production clients.
+
+After generated assets and `--servedir` files miss, `webui serve` uses request
+intent rather than path punctuation to decide whether to run the SPA route
+fallback. Fallback runs only when `Accept` explicitly includes `text/html` or
+`application/xhtml+xml` for document navigation, or `application/json` for a
+WebUI JSON partial render. `q=0` disables that media type, while a malformed or
+out-of-range `q` value falls back to `q=1.0`; when HTML and JSON are both
+acceptable, the higher `q` wins and exact ties prefer JSON. Missing or
+wildcard-only `Accept` headers return 404, as do JS, CSS, image, and other
+non-HTML/non-JSON asset requests.
+Literal dots in route segments, such as `/docs/v2.1`, are valid and do not block
+route matching or fallback.
+
 In `webui serve --watch`, the file watcher is **content-aware**: it hashes each
 changed file and drops events whose bytes are unchanged, so a no-op save
 (repeated Ctrl+S that rewrites identical content) triggers no rebuild in the

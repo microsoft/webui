@@ -175,7 +175,42 @@ pub fn run_app_builds() -> Result<(), String> {
 pub fn run_example_builds() -> Result<(), String> {
     run_integration_builds()?;
     ensure_example_wasm()?;
+    ensure_example_deps()?;
     run_app_builds()
+}
+
+/// Build the shared workspace JS packages once, before the parallel app builds.
+///
+/// Every example app's `build:deps` step compiles the shared packages
+/// (`@microsoft/webui`, `@microsoft/webui-framework`, `@microsoft/webui-router`)
+/// with `tsc` into their `dist/` directories. Building the apps in parallel
+/// makes those `tsc` invocations race for the shared output: one app reads
+/// `packages/webui/dist/projection/adapters/esbuild.js` while another app's
+/// `tsc` is mid-rewrite of the sibling `loader.js`, surfacing in CI as
+/// `does not provide an export named 'compileProjection'`.
+///
+/// Building the shared packages once here seeds their outputs and the
+/// incremental `.tsbuildinfo` (the shared tsconfigs set `"incremental": true`),
+/// so each per-app `build:deps` becomes a no-op emit that never rewrites the
+/// shared files concurrently. Mirrors `ensure_example_wasm`: one up-front build
+/// keeps `build-examples` self-contained. This is strictly less work than the
+/// status quo, which ran the same shared build once per app in parallel.
+fn ensure_example_deps() -> Result<(), String> {
+    run_command_quiet(
+        "pnpm",
+        &[
+            "--filter",
+            "@microsoft/webui",
+            "--filter",
+            "@microsoft/webui-framework",
+            "--filter",
+            "@microsoft/webui-router",
+            "run",
+            "build",
+        ],
+        None,
+    )
+    .map_err(|message| format!("shared example dependency build failed: {message}"))
 }
 
 /// Build the WASM bundles once, before the parallel app builds, when they are
