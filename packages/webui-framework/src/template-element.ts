@@ -336,7 +336,8 @@ export class TemplateElement extends HTMLElement {
       return;
     }
     this.$meta = meta;
-    // WebUI browser entries execute after their component markup is parsed.
+    // Under WebUI's loading contract, browser entries execute after their
+    // component markup is parsed.
     // Mount synchronously so super.connectedCallback() is the hydration boundary.
     this.$mount(meta, false);
   }
