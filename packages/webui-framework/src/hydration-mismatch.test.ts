@@ -33,8 +33,15 @@ import {
 // The comparators only read getAttribute/hasAttribute, Text.data,
 // Element.innerHTML, and instance counts, so plain objects suffice — no DOM.
 
-function fakeEl(attrs: Record<string, string> = {}, innerHTML = ''): Element {
+function fakeEl(
+  attrs: Record<string, string> = {},
+  innerHTML = '',
+  localName = 'div',
+  properties: Record<string, unknown> = {},
+): Element {
   return {
+    localName,
+    ...properties,
     getAttribute: (n: string) => (n in attrs ? attrs[n] : null),
     hasAttribute: (n: string) => n in attrs,
     innerHTML,
@@ -143,13 +150,31 @@ describe('attrDiffersFromDom', () => {
     assert.equal(attrDiffersFromDom(differ, makeCtx({ value: '3' })), true);
   });
 
-  test('form-control value/checked/selected are skipped', () => {
-    for (const name of ['value', 'checked', 'selected']) {
+  test('native form-control value/checked/selected properties are skipped', () => {
+    const cases = [
+      ['value', 'input', ''],
+      ['checked', 'input', false],
+      ['selected', 'option', false],
+    ] as const;
+    for (const [name, localName, property] of cases) {
       const b: AttrBinding = {
-        element: fakeEl({}), name, kind: ATTR_KIND_ATTRIBUTE, path: 'v',
+        element: fakeEl({}, '', localName, { [name]: property }),
+        name,
+        kind: ATTR_KIND_ATTRIBUTE,
+        path: 'v',
       };
       assert.equal(attrDiffersFromDom(b, makeCtx({ v: 'x' })), false, name);
     }
+  });
+
+  test('custom-element value attributes are compared even when a property exists', () => {
+    const b: AttrBinding = {
+      element: fakeEl({ value: 'old' }, '', 'test-price', { value: 'new' }),
+      name: 'value',
+      kind: ATTR_KIND_ATTRIBUTE,
+      path: 'v',
+    };
+    assert.equal(attrDiffersFromDom(b, makeCtx({ v: 'new' })), true);
   });
 });
 

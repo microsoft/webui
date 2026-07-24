@@ -45,6 +45,16 @@ export const ATTR_KIND_COMPLEX = 1;
 export const ATTR_KIND_BOOLEAN = 2;
 export const ATTR_KIND_TEMPLATE = 3;
 
+/**
+ * Return whether an attribute binding must update a native live DOM property.
+ *
+ * Autonomous custom elements contain a hyphen and use attribute semantics
+ * unless the template explicitly opts into a `:property` binding.
+ */
+export function hasNativeLiveProperty(element: Element, name: string): boolean {
+  return element.localName.indexOf('-') === -1 && name in element;
+}
+
 /** Direct reference to an attribute binding. */
 export interface AttrBinding {
   element: Element;

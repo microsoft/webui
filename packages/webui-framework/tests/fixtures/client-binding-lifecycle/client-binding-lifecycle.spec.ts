@@ -76,7 +76,7 @@ function readPositionalNestedSequence(page: Page, selector: string): Promise<str
   }, selector);
 }
 
-test.describe('client binding lifecycle: CSR-created children', () => {
+test.describe('client binding lifecycle', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/client-binding-lifecycle/fixture.html');
     await page.waitForFunction(() => {
@@ -188,6 +188,29 @@ test.describe('client binding lifecycle: CSR-created children', () => {
       fallbackApplied: 'yes',
       valueText: 'set-by-child',
     });
+  });
+
+  test('positional repeat updates value attributes on scriptless custom elements', async ({ page }) => {
+    const child = page.locator(
+      '#ssr-value-repeat-seed test-lifecycle-value-child',
+    );
+    await expect(child).toHaveAttribute('value', 'seed');
+    await expect(child.locator('.value')).toHaveText('seed');
+
+    await page.evaluate(() => {
+      const parent = document.querySelector('#ssr-value-repeat-seed') as HTMLElement & {
+        setValues(values: Array<{ value: string }>): void;
+      };
+      parent.setValues([{ value: 'updated' }]);
+    });
+
+    await expect(child).toHaveAttribute('value', 'updated');
+    await expect(child.locator('.value')).toHaveText('updated');
+    expect(
+      await child.evaluate((element) => (
+        Object.prototype.hasOwnProperty.call(element, 'value')
+      )),
+    ).toBe(false);
   });
 
   test('conditional-created nested repeat children are inserted after detached first update', async ({ page }) => {

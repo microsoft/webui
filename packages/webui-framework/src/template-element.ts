@@ -75,6 +75,7 @@ import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
   ATTR_KIND_TEMPLATE,
+  hasNativeLiveProperty,
 } from './element/types.js';
 import { templateHasRoot, templateRootForAttribute } from './template-roots.js';
 import type {
@@ -1736,7 +1737,10 @@ export class TemplateElement extends HTMLElement {
         if (show) el.setAttribute(b.name, '');
         else el.removeAttribute(b.name);
         // Form control properties must be set via DOM property, not attribute
-        if (b.name === 'checked' || b.name === 'selected' || b.name === 'disabled') {
+        if (
+          (b.name === 'checked' || b.name === 'selected' || b.name === 'disabled')
+          && hasNativeLiveProperty(el, b.name)
+        ) {
           (el as unknown as Record<string, unknown>)[b.name] = show;
         }
         break;
@@ -1750,10 +1754,14 @@ export class TemplateElement extends HTMLElement {
         const v = this.$resolveValue(b.path!, b.scope);
         const s = v == null ? '' : String(v);
         // Form control properties diverge from attributes after user interaction
-        if (b.name === 'checked' || b.name === 'selected') {
+        if (
+          (b.name === 'checked' || b.name === 'selected')
+          && hasNativeLiveProperty(el, b.name)
+        ) {
           (el as unknown as Record<string, unknown>)[b.name] = !!v && v !== 'false' && v !== '0';
-        } else if (b.name === 'value') {
-          if ((el as HTMLInputElement).value !== s) (el as HTMLInputElement).value = s;
+        } else if (b.name === 'value' && hasNativeLiveProperty(el, b.name)) {
+          const target = el as Element & { value: unknown };
+          if (target.value !== s) target.value = s;
         } else {
           if (el.getAttribute(b.name) !== s) el.setAttribute(b.name, s);
         }

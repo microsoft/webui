@@ -31,6 +31,7 @@ import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
   ATTR_KIND_TEMPLATE,
+  hasNativeLiveProperty,
   type AttrBinding,
   type CondBinding,
   type RepeatBinding,
@@ -132,7 +133,10 @@ export function attrDiffersFromDom(b: AttrBinding, ctx: MismatchContext): boolea
     default: {
       // Form-control properties diverge from their attribute after user
       // interaction, so an attribute comparison would be misleading.
-      if (b.name === 'value' || b.name === 'checked' || b.name === 'selected') return false;
+      if (
+        (b.name === 'value' || b.name === 'checked' || b.name === 'selected')
+        && hasNativeLiveProperty(el, b.name)
+      ) return false;
       const v = ctx.resolveValue(b.path!, b.scope);
       return (el.getAttribute(b.name) ?? '') !== (v == null ? '' : String(v));
     }

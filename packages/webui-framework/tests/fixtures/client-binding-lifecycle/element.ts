@@ -45,6 +45,14 @@ export class TestLifecycleRepeatParent extends WebUIElement {
   }
 }
 
+export class TestLifecycleValueRepeatParent extends WebUIElement {
+  @observable values: Array<{ value: string }> = [];
+
+  setValues(values: Array<{ value: string }>): void {
+    this.values = values;
+  }
+}
+
 export class TestLifecycleConditionalRepeatParent extends WebUIElement {
   @observable show = false;
   @observable items: Array<{ id: string; value?: string }> = [];
@@ -99,6 +107,7 @@ TestLifecycleChild.define('test-lifecycle-child');
 TestLifecycleParent.define('test-lifecycle-parent');
 TestLifecycleConditionalParent.define('test-lifecycle-conditional-parent');
 TestLifecycleRepeatParent.define('test-lifecycle-repeat-parent');
+TestLifecycleValueRepeatParent.define('test-lifecycle-value-repeat-parent');
 TestLifecycleConditionalRepeatParent.define('test-lifecycle-conditional-repeat-parent');
 TestLifecycleNestedRepeatParent.define('test-lifecycle-nested-repeat-parent');
 TestLifecyclePositionalNestedRepeatParent.define(
