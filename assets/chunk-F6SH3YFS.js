@@ -1,0 +1,1 @@
+var A=Object.defineProperty;var N=Object.getOwnPropertyDescriptor;var c=(t,o,e,r)=>{for(var T=r>1?void 0:r?N(o,e):o,n=t.length-1,_;n>=0;n--)(_=t[n])&&(T=(r?_(o,e,T):_(T))||T);return r&&T&&A(o,e,T),T};function x(t,o){return t.localName.indexOf("-")===-1&&o in t}export{c as a,x as b};
