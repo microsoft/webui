@@ -532,7 +532,7 @@ impl ConditionFunctionEmitter {
 /// | `:config="{{settings}}"`              | `a[]` + `ag[]`             | element kept marker-free          |
 /// | `<if condition="…">body</if>`         | `c[]` + `cl[]` + `b[]`     | block removed; anchor slot stored |
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
-/// | first-child `key="{{v.id}}"`          | optional fifth `r[]` field | relative repeat key path stored   |
+/// | first concrete `key="{{v.id}}"`       | optional fifth `r[]` field | relative repeat key path stored   |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
 /// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
 /// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
@@ -542,7 +542,7 @@ impl ConditionFunctionEmitter {
 /// # Errors
 ///
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
-/// `@event` handler, non-braced `w-ref`, or invalid first-child repeat key.
+/// `@event` handler, non-braced `w-ref`, or invalid concrete-child repeat key.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
     Ok(generate_compiled_template_with_root_source(
         tag_name,
@@ -2462,6 +2462,23 @@ fn relative_repeat_key<'a>(item_var: &str, key: &'a str) -> Option<&'a str> {
     (!relative.is_empty() && is_valid_event_path(relative)).then_some(relative)
 }
 
+fn skip_repeat_key_trivia<'a>(mut input: &'a str, offset: &mut usize) -> Option<&'a str> {
+    loop {
+        let trimmed = input.trim_start();
+        *offset += input.len().saturating_sub(trimmed.len());
+        input = trimmed;
+        let consumed = if input.starts_with("<!--") {
+            input.find("-->")? + 3
+        } else if input.starts_with("<!") {
+            find_tag_close(input)? + 1
+        } else {
+            return Some(input);
+        };
+        *offset += consumed;
+        input = &input[consumed..];
+    }
+}
+
 fn first_child_repeat_key(
     component: &str,
     item_var: &str,
@@ -2470,51 +2487,50 @@ fn first_child_repeat_key(
     let mut remaining = body;
     let mut offset = 0usize;
     loop {
-        let trimmed = remaining.trim_start();
-        offset += remaining.len().saturating_sub(trimmed.len());
+        let Some(trimmed) = skip_repeat_key_trivia(remaining, &mut offset) else {
+            return Ok(None);
+        };
         remaining = trimmed;
-        if remaining.starts_with("<!--") {
-            let Some(close) = remaining.find("-->") else {
-                return Ok(None);
-            };
-            offset += close + 3;
-            remaining = &remaining[close + 3..];
-            continue;
+        let Some(tag) = parse_tag(remaining) else {
+            return Ok(None);
+        };
+        if tag.closing {
+            return Ok(None);
         }
-        if remaining.starts_with("<!") {
-            let Some(close) = find_tag_close(remaining) else {
-                return Ok(None);
-            };
-            offset += close + 1;
-            remaining = &remaining[close + 1..];
-            continue;
+        let mut key_attr = None;
+        for attr in tag.attrs() {
+            if attr.name != "key" {
+                continue;
+            }
+            if key_attr.is_some() {
+                return Err(invalid_repeat_key_placement(component, tag.name).into());
+            }
+            key_attr = Some(attr);
         }
-        break;
-    }
-    let Some(tag) = parse_tag(remaining) else {
-        return Ok(None);
-    };
-    if tag.closing {
-        return Ok(None);
-    }
-    let mut key_attr = None;
-    for attr in tag.attrs() {
-        if attr.name != "key" {
-            continue;
-        }
-        if key_attr.is_some() {
+        if matches!(tag.name, "if" | "for" | "outlet") && key_attr.is_some() {
             return Err(invalid_repeat_key_placement(component, tag.name).into());
         }
-        key_attr = Some(attr);
+        if tag.name == "if" {
+            let body_start = tag.close + 1;
+            let Some(body_end) = find_matching_block_end(remaining, "if") else {
+                return Ok(None);
+            };
+            offset += body_start;
+            remaining = &remaining[body_start..body_end];
+            continue;
+        }
+        if matches!(tag.name, "for" | "outlet") {
+            return Ok(None);
+        }
+        let Some(attr) = key_attr else {
+            return Ok(None);
+        };
+        let path = parse_repeat_key(component, item_var, attr.value.unwrap_or_default())?;
+        return Ok(Some(ParsedRepeatKey {
+            path,
+            attr_range: (offset + attr.raw_range.start)..(offset + attr.raw_range.end),
+        }));
     }
-    let Some(attr) = key_attr else {
-        return Ok(None);
-    };
-    let path = parse_repeat_key(component, item_var, attr.value.unwrap_or_default())?;
-    Ok(Some(ParsedRepeatKey {
-        path,
-        attr_range: (offset + attr.raw_range.start)..(offset + attr.raw_range.end),
-    }))
 }
 
 fn parse_repeat_key(component: &str, item_var: &str, raw: &str) -> Result<String> {
@@ -2541,7 +2557,7 @@ fn invalid_repeat_key(component: &str, item_var: &str, key: &str) -> Diagnostic 
         .component(component)
         .snippet(key)
         .help(format!(
-            "use key=\"{{{{{item_var}}}}}\" or key=\"{{{{{item_var}.id}}}}\" on the first child of <for>"
+            "use key=\"{{{{{item_var}}}}}\" or key=\"{{{{{item_var}.id}}}}\" on the first concrete element inside <for>"
         ))
 }
 
@@ -2553,7 +2569,9 @@ fn invalid_repeat_key_placement(component: &str, element: &str) -> Diagnostic {
         .component(component)
         .element(element)
         .snippet("key")
-        .help("use key=\"{{item.id}}\" only on the first child of <for>")
+        .help(
+            "place key=\"{{item.id}}\" on the first concrete element rendered by <for>, not on <if>, <for>, or <outlet>",
+        )
 }
 
 /// Build a [`Diagnostic`] for an invalid `@event` handler.
@@ -3448,6 +3466,46 @@ mod tests {
         assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
         assert!(!result.contains("key="));
         assert!(!result.contains(r#""a":[["key","#));
+    }
+
+    #[test]
+    fn test_metadata_emits_key_from_first_element_inside_if() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><if condition="item.visible"><span key="{{item.id}}">{{item.name}}</span></if></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(!result.contains("key="));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_on_repeat_child_directive() {
+        let templates = [
+            r#"<for each="item in items"><if key="{{item.id}}" condition="item.visible"><span>{{item.name}}</span></if></for>"#,
+            r#"<for each="item in items"><for key="{{item.id}}" each="child in item.children"><span>{{child}}</span></for></for>"#,
+            r#"<for each="item in items"><outlet key="{{item.id}}" /></for>"#,
+        ];
+
+        for template in templates {
+            let err = super::generate_compiled_template("my-comp", template)
+                .expect_err("key on a directive must fail compilation");
+            let crate::ParserError::Template(diag) = err else {
+                panic!("expected template diagnostic");
+            };
+            assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+        }
+    }
+
+    #[test]
+    fn test_metadata_leaves_nested_for_key_with_nested_repeat() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="group in groups"><for each="item in group.items"><span key="{{item.id}}">{{item.name}}</span></for></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["groups","group",0,[[],0]]]"#));
+        assert!(result.contains(r#""r":[["group.items","item",1,[[],0],"id"]]"#));
     }
 
     #[test]

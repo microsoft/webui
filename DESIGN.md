@@ -1673,7 +1673,10 @@ repeated-root attributes, so duplicate values and attributes are safe and
 attribute order has no reconciliation semantics.
 
 Authors may opt into logical identity by adding `key="{{item.id}}"` to the first
-child inside `<for>`. Primitive arrays use `key="{{item}}"`. Under the WebUI
+concrete element inside `<for>`. Leading `<if>` wrappers are transparent, so the
+key belongs on the first concrete element inside the conditional, not on the
+directive. A nested `<for>` owns its own child key. `key` on `<if>`, `<for>`, or
+`<outlet>` is invalid. Primitive arrays use `key="{{item}}"`. Under the WebUI
 plugin, `key` is compiler-only structural metadata: the compiler validates this
 restricted item-rooted path grammar, removes the attribute from SSR and client
 HTML, and emits only the relative path as the optional fifth `r[]` tuple field

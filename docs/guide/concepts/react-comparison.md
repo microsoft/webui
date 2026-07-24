@@ -152,10 +152,11 @@ function TodoList({ items }) {
 
 **What changed:** `Array.map()` with JSX becomes a declarative `<for>`
 directive. Like React, reorderable lists can declare stable identity by placing
-the compiler-only `key` attribute on the first repeated child. Simple loops may
-omit it and reconcile by position. `data-key` and other attributes never act as
-implicit keys. This runs on the server and produces static HTML - no JavaScript
-array iteration in the browser.
+the compiler-only `key` attribute on the first concrete repeated child. Leading
+`<if>` wrappers are transparent, but directives cannot carry the key. Simple
+loops may omit it and reconcile by position. `data-key` and other attributes
+never act as implicit keys. This runs on the server and produces static HTML -
+no JavaScript array iteration in the browser.
 
 ## Event Handling
 

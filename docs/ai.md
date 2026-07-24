@@ -176,7 +176,7 @@ Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 - Nested loops are supported; outer loop variables remain accessible
 - Repeats reconcile by array position by default; item attributes never act as keys
 - Duplicate item values and attributes do not create duplicate DOM
-- Add compiler-only `key="{{item.id}}"` to the first child to preserve logical DOM/component identity across reorder; it is not rendered
+- Add compiler-only `key="{{item.id}}"` to the first concrete child to preserve logical DOM/component identity across reorder; leading `<if>` wrappers are transparent, while `key` directly on `<if>`, `<for>`, or `<outlet>` is invalid
 - `data-key` is an ordinary application attribute and does not control repeat identity
 - `key="{{item}}"` supports arrays of unique string or finite-number primitives
 - Key paths must be rooted at the loop variable; invalid paths fail with `invalid-for-key`

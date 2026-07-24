@@ -67,7 +67,7 @@ pub mod codes {
     pub const INVALID_FOR_EACH: &str = "invalid-for-each";
     /// `<for each>` item or collection name uses disallowed characters.
     pub const INVALID_FOR_IDENTIFIER: &str = "invalid-for-identifier";
-    /// An explicit repeat key is malformed or used on a non-root element.
+    /// An explicit repeat key is malformed or used on an invalid element.
     pub const INVALID_FOR_KEY: &str = "invalid-for-key";
     /// `<if>` element is missing its required `condition` attribute.
     pub const MISSING_IF_CONDITION: &str = "missing-if-condition";

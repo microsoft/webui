@@ -107,12 +107,16 @@ For an array of unique strings or finite numbers, key the item itself:
 </for>
 ```
 
-The `key` attribute must be on the first child inside `<for>`. Its value must
-be a single binding to the loop variable or a dot-separated property path
-rooted at it. Calls, brackets, operators, static values, empty paths, and
-unrelated variables fail the build with `invalid-for-key`. A `key` on another
-regular element produces the same diagnostic. Attributes on directives remain
-governed by each directive's own contract and do not provide repeat identity.
+The `key` attribute must be on the first concrete element inside `<for>`. If
+that element is wrapped by one or more leading `<if>` directives, put `key` on
+the concrete element inside the conditional. A nested `<for>` owns its own
+child key. Putting `key` directly on `<if>`, `<for>`, or `<outlet>` fails with
+`invalid-for-key`.
+
+The value must be a single binding to the loop variable or a dot-separated
+property path rooted at it. Calls, brackets, operators, static values, empty
+paths, unrelated variables, and `key` on another regular element fail with the
+same diagnostic.
 
 `key` is compiler-only metadata: it does not render into SSR or browser-created
 HTML and does not become a reactive attribute binding. `data-key` remains a
