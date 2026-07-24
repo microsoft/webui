@@ -14,5 +14,33 @@
         { "value": "M", "disabled": false }
       ]
     }
+  ],
+  "keyedGroups": [
+    {
+      "id": "g1",
+      "sections": [
+        {
+          "id": "s1",
+          "visible": true,
+          "items": [
+            { "id": "a", "label": "G1 A" },
+            { "id": "b", "label": "G1 B" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "g2",
+      "sections": [
+        {
+          "id": "s2",
+          "visible": true,
+          "items": [
+            { "id": "a", "label": "G2 A" },
+            { "id": "c", "label": "G2 C" }
+          ]
+        }
+      ]
+    }
   ]
 }
