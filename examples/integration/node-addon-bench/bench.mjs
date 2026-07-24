@@ -576,6 +576,13 @@ async function main() {
       expected,
       `object and JSON-string render differ at ${contactCount} contacts`,
     );
+    const buffer = protocol.renderBuffer(stateJson, RENDER_OPTIONS);
+    assert.ok(Buffer.isBuffer(buffer), "renderBuffer did not return a Node.js buffer");
+    assert.equal(
+      buffer.toString("utf8"),
+      expected,
+      `buffer and string render differ at ${contactCount} contacts`,
+    );
     const chunks = [];
     protocol.renderStream(
       stateJson,
@@ -624,6 +631,17 @@ async function main() {
         "total",
         collectSyncSamples(
           () => protocol.render(fixture.stateJson, RENDER_OPTIONS),
+          config,
+        ),
+        details,
+      ),
+    );
+    results.push(
+      makeResult(
+        `render-buffer/json-string/${fixture.contactCount}`,
+        "total",
+        collectSyncSamples(
+          () => protocol.renderBuffer(fixture.stateJson, RENDER_OPTIONS),
           config,
         ),
         details,

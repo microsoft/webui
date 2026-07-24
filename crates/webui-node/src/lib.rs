@@ -245,6 +245,19 @@ pub struct Protocol {
     handler: WebUIHandler,
 }
 
+impl Protocol {
+    fn render_json_to_string(
+        &self,
+        state_json: &str,
+        entry: &str,
+        request_path: &str,
+    ) -> napi::Result<String> {
+        let state = parse_state_json(state_json)?;
+        let options = RenderOptions::new(entry, request_path);
+        render_to_string(&self.handler, &self.inner, &state, &options)
+    }
+}
+
 #[napi]
 impl Protocol {
     /// Decode a protocol and bind its render plugin for repeated rendering.
@@ -263,9 +276,21 @@ impl Protocol {
         entry: String,
         request_path: String,
     ) -> napi::Result<String> {
-        let state = parse_state_json(&state_json)?;
-        let options = RenderOptions::new(&entry, &request_path);
-        render_to_string(&self.handler, &self.inner, &state, &options)
+        self.render_json_to_string(&state_json, &entry, &request_path)
+    }
+
+    /// Render from an existing JSON string into a UTF-8 Node.js buffer.
+    #[napi]
+    pub fn render_buffer(
+        &self,
+        state_json: String,
+        entry: String,
+        request_path: String,
+    ) -> napi::Result<Buffer> {
+        let html = self.render_json_to_string(&state_json, &entry, &request_path)?;
+        // Do not shrink the allocation here: that may copy the complete HTML.
+        // napi-rs can expose the existing Vec as an external Buffer on Node.
+        Ok(Buffer::from(html.into_bytes()))
     }
 
     /// Stream an existing JSON string in bounded chunks.
@@ -546,6 +571,22 @@ mod tests {
 
         assert_eq!(first, "Hello, First!");
         assert_eq!(second, "Hello, Second!");
+    }
+
+    #[test]
+    fn protocol_buffer_render_matches_string_render() {
+        let proto = build_protocol("Hello, {{name}}!");
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
+        let state = r#"{"name":"世界"}"#.to_string();
+
+        let string = protocol
+            .render(state.clone(), "index.html".to_string(), "/".to_string())
+            .expect("string render should succeed");
+        let buffer = protocol
+            .render_buffer(state, "index.html".to_string(), "/".to_string())
+            .expect("buffer render should succeed");
+
+        assert_eq!(buffer.as_ref(), string.as_bytes());
     }
 
     #[test]

@@ -15,7 +15,7 @@ how to compare results.
 | `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
-| `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
+| `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, string/buffer render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
@@ -143,6 +143,8 @@ V8/N-API string and callback crossings:
 - **Protocol construction** — Node `Buffer` to protobuf decode/index after the addon is loaded
 - **JSON-string render** — N-API conversion, JSON parse, Rust render,
   and the returned JavaScript string
+- **UTF-8 buffer render** — the same render path with the Rust allocation
+  transferred to a Node `Buffer` instead of copied into a JavaScript string
 - **Object render** — the same path plus public-wrapper
   `JSON.stringify`
 - **Streaming first callback** — state conversion and JSON parse,
@@ -152,8 +154,8 @@ V8/N-API string and callback crossings:
 It uses the same Contact Book fixture and 10/100/1000 scales as the
 Rust end-to-end benchmark, rendering `/contacts` so output grows with
 the workload. The first-callback metric is in-process; it is not HTTP
-TTFB. The runner verifies buffered, object-state, and
-streamed output are byte-identical before collecting samples.
+TTFB. The runner verifies string, buffer, object-state, and streamed output
+are byte-identical before collecting samples.
 
 ## Recommended PR workflow
 

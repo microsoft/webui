@@ -121,8 +121,8 @@ const protocol = new Protocol(protocolBytes, { plugin: "webui" });
 ```
 
 `Protocol` owns its decoded native state. The package does not keep a hidden
-`WeakMap`, copy the source `Buffer`, or expose byte-per-request render
-functions.
+`WeakMap`, copy the source `Buffer`, or expose render functions that accept
+protocol bytes on every request.
 
 ### `protocol.render(state: object | string, options?: RenderOptions): string`
 
@@ -130,6 +130,16 @@ Renders state and returns the full HTML string.
 
 ```js
 const html = protocol.render({ title: "Hello", show: true });
+```
+
+### `protocol.renderBuffer(state: object | string, options?: RenderOptions): Buffer`
+
+Renders state into a UTF-8 Node.js `Buffer`. This avoids creating a JavaScript
+string and is the preferred buffered path when writing directly to an HTTP
+response:
+
+```js
+response.end(protocol.renderBuffer({ title: "Hello" }));
 ```
 
 ### `protocol.renderStream(state, onChunk, options?): void`
