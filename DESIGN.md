@@ -1519,7 +1519,7 @@ update hot paths still call the function directly.
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
 | `ag`  | `[elementPath, start, count][]`   | Attribute-target groups for `a[]`                  |
 | `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
-| `r`   | `[collection, itemVar, blockIndex, slot][]` | Repeat blocks                            |
+| `r`   | `[collection, itemVar, blockIndex, slot, keyPath?][]` | Repeat blocks; `keyPath` is relative to the item variable |
 | `eg`  | `[event, [[handler, argSpecs, targetPath, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
 | `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
@@ -1660,12 +1660,48 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `:config="{{settings}}"`, `:value="{{searchQuery}}"` | `a[]` + `ag[]` | element kept marker-free |
 | `<if condition="expr">body</if>`     | `c[]` + `b[]`          | block removed; anchor slot stored |
 | `<for each="v in coll">body</for>`   | `r[]` + `b[]`          | block removed; anchor slot stored |
+| `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
 
-**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), scriptless components that contain `@event` bindings, non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each` or `scriptless-event-handler`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
+Repeat identity is positional by default. At runtime, the existing block at
+index `i` receives the current collection item at index `i`; only tail growth
+or shrinkage creates or removes blocks. The runtime never infers identity from
+repeated-root attributes, so duplicate values and attributes are safe and
+attribute order has no reconciliation semantics.
+
+Authors may opt into logical identity by adding `key="{{item.id}}"` to the first
+child inside `<for>`. Primitive arrays use `key="{{item}}"`. Under the WebUI
+plugin, `key` is compiler-only structural metadata: the compiler validates this
+restricted item-rooted path grammar, removes the attribute from SSR and client
+HTML, and emits only the relative path as the optional fifth `r[]` tuple field
+(`""` for the item itself). It is not included in `a[]` or `ag[]`. Unkeyed
+repeats retain the four-field tuple. `data-key` remains an ordinary application
+attribute and has no identity semantics. Only `key` on the first repeated child
+is consumed as identity metadata. A `key` on another regular element produces
+an `invalid-for-key` build diagnostic; directive attributes remain governed by
+their own contracts. Keyed repeats accept unique
+strings and finite numbers, preserve number/string type identity, and use a
+stable-order positional fast path. A changed order uses a reusable key map to
+move existing block instances, preserving browser-owned and local component
+state with the logical item. Invalid or duplicate runtime key values clear
+established identity, warn once, and reconcile positionally for that update; a
+later valid update establishes identity again. Validation completes before DOM,
+scope, or instance mutation.
+
+SSR repeat markers do not serialize separate key values. When the bootstrap
+collection is present and its length matches the hydrated SSR instance count,
+the runtime derives typed keys by index from that collection and establishes
+identity immediately, so the first later reorder can move existing SSR blocks.
+Missing state, a count mismatch, or invalid keys leave identity unestablished
+and the next valid update reconciles positionally once. This relies on the
+existing hydration invariant that SSR HTML and bootstrap state represent the
+same render. FAST v2/v3 do not reserve `key` and do not emit WebUI key metadata
+into `<f-repeat>` markup.
+
+**Authoring validation.** Build-time authoring mistakes are returned as a structured `ParserError::Template(Box<Diagnostic>)`, never panicked. This covers invalid `@event` handlers (e.g. `@click="e.preventDefault()"`, or a bare `@click="{closeMenu}"`), scriptless components that contain `@event` bindings, non-braced `w-ref` (`w-ref="name"` instead of `w-ref="{name}"`), core-parser mistakes — an invalid `<for each>` expression, a malformed or misplaced first-child repeat key (`invalid-for-key`), a missing/invalid `<if condition>`, an unknown component tag, a recursive template reference — malformed CSS in a `<style>` block, and structural HTML well-formedness errors (unclosed/malformed tags, unterminated comments/declarations, unexpected closing tags, excessive nesting), so every build error renders identically. The `Diagnostic` is plain, actionable data — a **stable machine-readable `code`** (e.g. `invalid-for-each` or `scriptless-event-handler`; see `diagnostic::codes`), title, source location (rendered rustc-style as `--> owner:line:column` when the offending byte offset is known, otherwise `in component <c> · element <e>`), offending snippet, and a `help:` fix — and carries **no color**: `webui-cli` styles it with `console`, while Node/FFI/WASM forward the plain `Display` text through their native error channel. Where a fix is likely a typo, the `help:` offers a **"did you mean …?" suggestion** via an iterative Levenshtein match (`suggest::closest_match`): a misspelled directive attribute (`eahc` → `each`), or an unregistered custom-element tag that closely matches a registered component **in the same namespace** (`<mp-buton>` → `<mp-button>`; cross-namespace tags like `<md-button>` still pass through as genuine custom elements).
 
 ---
 

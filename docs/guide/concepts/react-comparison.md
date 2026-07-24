@@ -139,7 +139,7 @@ function TodoList({ items }) {
 ```html
 <ul>
   <for each="item in items">
-    <li>
+    <li key="{{item.id}}">
       <span>{{item.title}}</span>
       <span class="status {{item.state}}">{{item.state}}</span>
     </li>
@@ -150,7 +150,12 @@ function TodoList({ items }) {
 </div>
 </code-comparison>
 
-**What changed:** `Array.map()` with JSX becomes a declarative `<for>` directive. The `key` prop is replaced by the first attribute on the repeated element. This runs on the server and produces static HTML - no JavaScript array iteration in the browser.
+**What changed:** `Array.map()` with JSX becomes a declarative `<for>`
+directive. Like React, reorderable lists can declare stable identity by placing
+the compiler-only `key` attribute on the first repeated child. Simple loops may
+omit it and reconcile by position. `data-key` and other attributes never act as
+implicit keys. This runs on the server and produces static HTML - no JavaScript
+array iteration in the browser.
 
 ## Event Handling
 

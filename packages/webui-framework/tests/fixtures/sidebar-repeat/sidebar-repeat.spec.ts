@@ -19,7 +19,7 @@ test.describe('sidebar repeat fixture', () => {
     await expect(active).toHaveAttribute('data-nav', nav);
   }
 
-  test('keeps SSR repeated anchors in the correct section when syncing groups', async ({ page }) => {
+  test('duplicate item attributes do not duplicate SSR entries', async ({ page }) => {
     const sections = page.locator('test-sidebar-repeat .nav-section');
 
     await expect(sections.nth(0).locator('.nav-item')).toHaveText([
