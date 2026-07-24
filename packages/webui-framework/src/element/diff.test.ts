@@ -90,8 +90,7 @@ function repeatHost(
     $removeInstance: (instance: TemplateInstance) => {
       removed.push(instance);
     },
-    $compactInstanceNodes: () => {},
-    $invalidatePathIndex: () => {},
+    $changeStructure: () => {},
     $insertInstanceAfter: (
       cursor: Node | null,
       _container: ParentNode & Node,
@@ -129,7 +128,6 @@ function keyedRepeatBinding(
 ): RepeatBinding {
   const repeat = repeatBinding(items, instances);
   const keyState = createRepeatKeyState(path);
-  keyState.established = true;
   keyState.keys = keys;
   repeat.keyState = keyState;
   return repeat;
@@ -248,7 +246,7 @@ describe('syncRepeat', () => {
       'id',
       ['a', 'b'],
     );
-    const scratch = repeat.keyState?.nextInstances;
+    const instances = repeat.instances;
     const host = repeatHost(
       newItems,
       created,
@@ -263,7 +261,7 @@ describe('syncRepeat', () => {
     assert.deepEqual(updated, oldInstances);
     assert.deepEqual(created, []);
     assert.deepEqual(removed, []);
-    assert.equal(repeat.keyState?.nextInstances, scratch);
+    assert.equal(repeat.instances, instances);
   });
 
   test('reuses surviving keys and replaces removed keys', () => {
@@ -319,13 +317,11 @@ describe('syncRepeat', () => {
     try {
       syncRepeat(host, repeat);
       assert.deepEqual(repeat.instances, oldInstances);
-      assert.equal(repeat.keyState?.established, false);
       assert.deepEqual(repeat.keyState?.keys, []);
       assert.equal(warningCount, 1);
 
       currentItems = [{ id: 4 }, { id: 5 }];
       syncRepeat(host, repeat);
-      assert.equal(repeat.keyState?.established, true);
       assert.deepEqual(repeat.keyState?.keys, [4, 5]);
 
       currentItems = [{ id: 5 }, { id: 4 }];
@@ -359,7 +355,6 @@ describe('syncRepeat', () => {
 
     seedHydratedRepeatKeys(repeat, items);
 
-    assert.equal(repeat.keyState.established, true);
     assert.deepEqual(repeat.keyState.keys, [1, 2]);
   });
 
@@ -371,7 +366,6 @@ describe('syncRepeat', () => {
 
     seedHydratedRepeatKeys(repeat, items);
 
-    assert.equal(repeat.keyState.established, false);
     assert.deepEqual(repeat.keyState.keys, []);
   });
 });

@@ -96,12 +96,10 @@ export type RepeatKey = string | number;
 
 export interface RepeatKeyState {
   path: string;
-  established: boolean;
   warned: boolean;
   keys: RepeatKey[];
   nextKeys: RepeatKey[];
-  nextInstances: TemplateInstance[];
-  map: Map<RepeatKey, TemplateInstance | undefined>;
+  map: Map<RepeatKey, TemplateInstance | null>;
 }
 
 /** Repeat block tracking. */
@@ -140,7 +138,6 @@ export interface RepeatHost {
   ): TemplateInstance | null;
   $updateInstance(instance: TemplateInstance): void;
   $removeInstance(instance: TemplateInstance): void;
-  $compactInstanceNodes(instance: TemplateInstance): void;
-  $invalidatePathIndex(): void;
+  $changeStructure(removedFrom?: TemplateInstance): void;
   $insertInstanceAfter(cursor: Node | null, container: ParentNode & Node, instance: TemplateInstance): Node | null;
 }

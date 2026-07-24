@@ -424,7 +424,7 @@ export class TemplateElement extends HTMLElement {
       this.$updateInstance(this.$root);
       if (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0) {
         this.$root.nodes = childNodesArray(clientRoot);
-        this.$releaseStagingRepeatContainers(
+        this.$replaceInstanceContainer(
           this.$root,
           clientRoot,
           root as ParentNode & Node,
@@ -459,7 +459,7 @@ export class TemplateElement extends HTMLElement {
       this.$hasUnknownScopes = false;
       return;
     }
-    this.$teardown(this.$root);
+    this.$disposeInstance(this.$root, false);
     this.$root = null;
     this.$pathIndex = undefined;
     this.$wildcardBindings = undefined;
@@ -468,20 +468,6 @@ export class TemplateElement extends HTMLElement {
     this.$preReadyWrites = null;
     this.$ready = false;
     this.$hasUnknownScopes = false;
-  }
-
-  /** Break all DOM references held by a binding instance and its nested blocks. */
-  private $teardown(instance: TemplateInstance): void {
-    this.$teardownInstanceCleanups(instance);
-    for (const c of instance.conds) {
-      if (c.instance) this.$teardown(c.instance);
-      c.instance = null;
-    }
-    for (const r of instance.repeats) {
-      for (const item of r.instances) this.$teardown(item);
-      this.$clearRepeatBinding(r);
-    }
-    this.$clearInstance(instance);
   }
 
   private $clearRepeatBinding(repeat: RepeatBinding): void {
@@ -493,7 +479,6 @@ export class TemplateElement extends HTMLElement {
     if (state) {
       state.keys.length = 0;
       state.nextKeys.length = 0;
-      state.nextInstances.length = 0;
       state.map.clear();
     }
   }
@@ -507,14 +492,6 @@ export class TemplateElement extends HTMLElement {
     instance.attrs.length = 0;
     instance.conds.length = 0;
     instance.repeats.length = 0;
-  }
-
-  /** Run listener cleanup attached directly to one template instance. */
-  private $teardownInstanceCleanups(instance: TemplateInstance): void {
-    const cleanups = instance.cleanups;
-    if (!cleanups) return;
-    for (let i = 0; i < cleanups.length; i++) cleanups[i]();
-    cleanups.length = 0;
   }
 
   attributeChangedCallback(
@@ -943,36 +920,10 @@ export class TemplateElement extends HTMLElement {
     root.appendChild(fragment);
   }
 
-  private $releaseStagingRepeatContainers(
-    instance: TemplateInstance | null,
-    stagingRoot: Node | null,
-    target?: ParentNode & Node,
-  ): void {
-    if (!instance || !stagingRoot) return;
-    if (instance.repeats.length === 0 && instance.conds.length === 0) return;
-    const stack: TemplateInstance[] = [instance];
-    while (stack.length > 0) {
-      const current = stack.pop();
-      if (!current) continue;
-      if (target && current.container === stagingRoot) current.container = target;
-      for (let i = 0; i < current.repeats.length; i++) {
-        const repeat = current.repeats[i];
-        if (repeat.container === stagingRoot) repeat.container = target ?? null;
-        for (let j = 0; j < repeat.instances.length; j++) {
-          stack.push(repeat.instances[j]);
-        }
-      }
-      for (let i = 0; i < current.conds.length; i++) {
-        const child = current.conds[i].instance;
-        if (child) stack.push(child);
-      }
-    }
-  }
-
   private $replaceInstanceContainer(
     instance: TemplateInstance,
     previous: (ParentNode & Node) | null,
-    next: ParentNode & Node,
+    next: (ParentNode & Node) | null,
   ): void {
     if (previous === next) return;
     const stack: TemplateInstance[] = [instance];
@@ -1829,13 +1780,12 @@ export class TemplateElement extends HTMLElement {
       }
       if (c.instance && container) {
         this.$insertInstanceAfter(c.anchor, container, c.instance);
-        if (created) this.$invalidatePathIndex();
+        if (created) this.$changeStructure();
       }
     } else if (c.instance) {
       this.$removeInstance(c.instance);
       c.instance = null;
-      this.$compactInstanceNodes(c.owner);
-      this.$invalidatePathIndex();
+      this.$changeStructure(c.owner);
     }
   }
 
@@ -1922,29 +1872,40 @@ export class TemplateElement extends HTMLElement {
     this.$updateInstance(inst);
     if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
       inst.nodes = childNodesArray(wrapper);
-      this.$releaseStagingRepeatContainers(inst, wrapper, container);
+      this.$replaceInstanceContainer(inst, wrapper, container ?? null);
+    } else if (container) {
+      inst.container = container;
     }
-    if (container) inst.container = container;
     return inst;
   }
 
   $removeInstance(instance: TemplateInstance): void {
-    this.$teardownInstanceCleanups(instance);
-    for (let i = 0; i < instance.nodes.length; i++) {
-      const node = instance.nodes[i];
-      node.parentNode?.removeChild(node);
-    }
-    for (const c of instance.conds) {
-      if (c.instance) {
-        this.$removeInstance(c.instance);
-        c.instance = null;
+    this.$disposeInstance(instance, true);
+  }
+
+  private $disposeInstance(root: TemplateInstance, removeNodes: boolean): void {
+    const stack: TemplateInstance[] = [root];
+    while (stack.length > 0) {
+      const instance = stack.pop();
+      if (!instance) continue;
+      const cleanups = instance.cleanups;
+      if (cleanups) {
+        for (const cleanup of cleanups) cleanup();
+        cleanups.length = 0;
       }
+      if (removeNodes) {
+        for (const node of instance.nodes) node.parentNode?.removeChild(node);
+      }
+      for (const binding of instance.conds) {
+        if (binding.instance) stack.push(binding.instance);
+        binding.instance = null;
+      }
+      for (const repeat of instance.repeats) {
+        for (const child of repeat.instances) stack.push(child);
+        this.$clearRepeatBinding(repeat);
+      }
+      this.$clearInstance(instance);
     }
-    for (const r of instance.repeats) {
-      for (const item of r.instances) this.$removeInstance(item);
-      this.$clearRepeatBinding(r);
-    }
-    this.$clearInstance(instance);
   }
 
   private $compactNodeArray(instance: TemplateInstance): void {
@@ -1962,15 +1923,14 @@ export class TemplateElement extends HTMLElement {
     nodes.length = write;
   }
 
-  $compactInstanceNodes(instance: TemplateInstance): void {
-    let current: TemplateInstance | undefined = instance;
-    while (current) {
-      this.$compactNodeArray(current);
-      current = current.parent;
+  $changeStructure(removedFrom?: TemplateInstance): void {
+    if (removedFrom) {
+      let current: TemplateInstance | undefined = removedFrom;
+      while (current) {
+        this.$compactNodeArray(current);
+        current = current.parent;
+      }
     }
-  }
-
-  $invalidatePathIndex(): void {
     this.$pathIndex = undefined;
     this.$wildcardBindings = undefined;
   }
@@ -1981,9 +1941,7 @@ export class TemplateElement extends HTMLElement {
     if (nodes.length === 0) return cursor;
     const ref = cursor ? cursor.nextSibling : container.firstChild;
     if (nodes[0] === ref) return nodes[nodes.length - 1];
-    const frag = document.createDocumentFragment();
-    for (let i = 0; i < nodes.length; i++) frag.appendChild(nodes[i]);
-    container.insertBefore(frag, ref);
+    for (let i = 0; i < nodes.length; i++) container.insertBefore(nodes[i], ref);
     return nodes[nodes.length - 1];
   }
 

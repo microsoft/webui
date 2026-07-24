@@ -14,11 +14,6 @@ import type {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-function asParent(node: Node | null): (ParentNode & Node) | null {
-  if (!node) return null;
-  return 'childNodes' in node ? (node as ParentNode & Node) : null;
-}
-
 /** Resolve a dotted path from a start offset without allocating. */
 export function dotWalk(cursor: unknown, path: string, from: number): unknown {
   let start = from;
@@ -41,11 +36,9 @@ function itemScope(rep: RepeatBinding, item: unknown): ScopeFrame {
 export function createRepeatKeyState(path: string): RepeatKeyState {
   return {
     path,
-    established: false,
     warned: false,
     keys: [],
     nextKeys: [],
-    nextInstances: [],
     map: new Map(),
   };
 }
@@ -100,7 +93,6 @@ function syncPositional(
   }
   instances.length = nextCount;
   const removed = oldLength > reuseCount;
-  if (removed) host.$compactInstanceNodes(rep.owner);
 
   let cursor: Node | null = rep.start;
   for (let i = 0; i < instances.length; i += 1) {
@@ -109,7 +101,7 @@ function syncPositional(
   for (let i = 0; i < reuseCount; i += 1) {
     host.$updateInstance(instances[i]);
   }
-  if (created || removed) host.$invalidatePathIndex();
+  if (created || removed) host.$changeStructure(removed ? rep.owner : undefined);
 }
 
 function readRepeatKey(item: unknown, path: string): unknown {
@@ -145,17 +137,9 @@ function collectRepeatKeys(items: unknown[], state: RepeatKeyState): boolean {
       return false;
     }
     keys[i] = value;
-    seen.set(value, undefined);
+    seen.set(value, null);
   }
   seen.clear();
-  return true;
-}
-
-function keysShareOrder(current: RepeatKey[], next: RepeatKey[]): boolean {
-  const sharedLength = Math.min(current.length, next.length);
-  for (let i = 0; i < sharedLength; i += 1) {
-    if (current[i] !== next[i]) return false;
-  }
   return true;
 }
 
@@ -164,14 +148,11 @@ function commitKeyIdentity(state: RepeatKeyState): void {
   state.keys = state.nextKeys;
   state.nextKeys = oldKeys;
   state.nextKeys.length = 0;
-  state.established = true;
 }
 
 function clearKeyIdentity(state: RepeatKeyState): void {
-  state.established = false;
   state.keys.length = 0;
   state.nextKeys.length = 0;
-  state.nextInstances.length = 0;
   state.map.clear();
 }
 
@@ -186,23 +167,6 @@ function warnKeyFallback(rep: RepeatBinding, state: RepeatKeyState): void {
   );
 }
 
-function buildOldKeyMap(
-  state: RepeatKeyState,
-  instances: TemplateInstance[],
-): boolean {
-  const map = state.map;
-  map.clear();
-  for (let i = 0; i < state.keys.length; i += 1) {
-    const key = state.keys[i];
-    if (map.has(key)) {
-      map.clear();
-      return false;
-    }
-    map.set(key, instances[i]);
-  }
-  return true;
-}
-
 function reconcileByKey(
   host: RepeatHost,
   rep: RepeatBinding,
@@ -210,19 +174,17 @@ function reconcileByKey(
   container: ParentNode & Node,
   state: RepeatKeyState,
 ): void {
-  const oldInstances = rep.instances;
-  const nextInstances = state.nextInstances;
+  const instances = rep.instances;
   const map = state.map;
   let nextCount = 0;
   let created = false;
   let removed = false;
-  nextInstances.length = 0;
 
   for (let i = 0; i < items.length; i += 1) {
     const key = state.nextKeys[i];
     let instance = map.get(key);
     if (instance) {
-      map.set(key, undefined);
+      map.set(key, null);
       setItemScope(instance, items[i]);
     } else {
       instance = host.$createBlockInstance(
@@ -234,7 +196,7 @@ function reconcileByKey(
       if (instance) created = true;
     }
     if (instance) {
-      nextInstances[nextCount] = instance;
+      instances[nextCount] = instance;
       state.nextKeys[nextCount] = key;
       nextCount += 1;
     }
@@ -247,25 +209,20 @@ function reconcileByKey(
       removed = true;
     }
   }
-  if (removed) host.$compactInstanceNodes(rep.owner);
-
   let cursor: Node | null = rep.start;
   for (let i = 0; i < nextCount; i += 1) {
-    cursor = host.$insertInstanceAfter(cursor, container, nextInstances[i]);
+    cursor = host.$insertInstanceAfter(cursor, container, instances[i]);
   }
   for (let i = 0; i < nextCount; i += 1) {
-    const key = state.nextKeys[i];
-    if (map.has(key) && map.get(key) === undefined) {
-      host.$updateInstance(nextInstances[i]);
+    if (map.get(state.nextKeys[i]) === null) {
+      host.$updateInstance(instances[i]);
     }
   }
   map.clear();
 
-  rep.instances = nextInstances;
-  state.nextInstances = oldInstances;
-  state.nextInstances.length = 0;
+  instances.length = nextCount;
   commitKeyIdentity(state);
-  if (created || removed) host.$invalidatePathIndex();
+  if (created || removed) host.$changeStructure(removed ? rep.owner : undefined);
 }
 
 function syncKeyed(
@@ -282,11 +239,12 @@ function syncKeyed(
     return;
   }
 
-  if (
-    !state.established ||
-    state.keys.length !== rep.instances.length ||
-    keysShareOrder(state.keys, state.nextKeys)
-  ) {
+  let sharedOrder = true;
+  const sharedLength = Math.min(state.keys.length, state.nextKeys.length);
+  for (let i = 0; sharedOrder && i < sharedLength; i += 1) {
+    sharedOrder = state.keys[i] === state.nextKeys[i];
+  }
+  if (state.keys.length !== rep.instances.length || sharedOrder) {
     syncPositional(host, rep, items, container);
     if (rep.instances.length === items.length) {
       commitKeyIdentity(state);
@@ -296,13 +254,8 @@ function syncKeyed(
     return;
   }
 
-  if (!buildOldKeyMap(state, rep.instances)) {
-    warnKeyFallback(rep, state);
-    state.established = false;
-    state.keys.length = 0;
-    syncPositional(host, rep, items, container);
-    if (rep.instances.length === items.length) commitKeyIdentity(state);
-    return;
+  for (let i = 0; i < state.keys.length; i += 1) {
+    state.map.set(state.keys[i], rep.instances[i]);
   }
   reconcileByKey(host, rep, items, container, state);
 }
@@ -323,9 +276,9 @@ export function syncRepeat(
   const items = Array.isArray(resolved) ? resolved : [];
 
   // Locate the container once and cache it.
-  let container = rep.container
-    ?? (rep.start ? asParent(rep.start.parentNode) : null)
-    ?? (rep.owner.nodes[0] ? asParent(rep.owner.nodes[0].parentNode) : null);
+  const container = (rep.container
+    ?? rep.start?.parentNode
+    ?? rep.owner.nodes[0]?.parentNode) as (ParentNode & Node) | null;
   if (!container) return;
   rep.container = container;
 
@@ -346,13 +299,9 @@ export function syncRepeat(
       host.$removeInstance(rep.instances[i]);
     }
     rep.instances.length = 0;
-    if (hadInstances) {
-      host.$compactInstanceNodes(rep.owner);
-      host.$invalidatePathIndex();
-    }
+    if (hadInstances) host.$changeStructure(rep.owner);
     if (rep.keyState) {
       clearKeyIdentity(rep.keyState);
-      rep.keyState.established = true;
     }
     return;
   }
