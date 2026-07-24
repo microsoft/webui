@@ -2420,6 +2420,9 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
     let Some(tag) = parse_tag(input) else {
         return Ok(None);
     };
+    if tag.has_attr("key") {
+        return Err(invalid_repeat_key_placement(component, tag.name).into());
+    }
     let Some(each_val) = tag.attr("each") else {
         return Ok(None);
     };
@@ -2570,7 +2573,7 @@ fn invalid_repeat_key_placement(component: &str, element: &str) -> Diagnostic {
         .element(element)
         .snippet("key")
         .help(
-            "place key=\"{{item.id}}\" on the first concrete element rendered by <for>, not on <if>, <for>, or <outlet>",
+            "place the key attribute on the first concrete element rendered by <for>, not on <if>, <for>, or <outlet>",
         )
 }
 
@@ -3480,6 +3483,20 @@ mod tests {
     }
 
     #[test]
+    fn test_metadata_rejects_key_on_for_directive() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items" key="{{item.id}}"><span>{{item.name}}</span></for>"#,
+        )
+        .expect_err("key on <for> must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
     fn test_metadata_rejects_key_on_repeat_child_directive() {
         let templates = [
             r#"<for each="item in items"><if key="{{item.id}}" condition="item.visible"><span>{{item.name}}</span></if></for>"#,
@@ -3583,16 +3600,20 @@ mod tests {
 
     #[test]
     fn test_metadata_rejects_key_outside_repeat() {
-        let err = super::generate_compiled_template(
-            "my-comp",
-            r#"<p key="{{item.id}}">{{item.name}}</p>"#,
-        )
-        .expect_err("key outside a repeat must fail compilation");
+        let err =
+            super::generate_compiled_template("my-comp", r#"<p key="{{row.id}}">{{row.name}}</p>"#)
+                .expect_err("key outside a repeat must fail compilation");
 
         let crate::ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
         assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+        assert_eq!(
+            diag.help_text(),
+            Some(
+                "place the key attribute on the first concrete element rendered by <for>, not on <if>, <for>, or <outlet>"
+            )
+        );
     }
 
     #[test]
