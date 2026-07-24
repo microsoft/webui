@@ -3509,6 +3509,19 @@ mod tests {
     }
 
     #[test]
+    fn test_metadata_scopes_key_through_nested_for_if_for_chain() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="group in groups"><for each="section in group.sections"><if condition="section.visible"><for each="item in section.items"><span key="{{item.id}}">{{item.name}}</span></for></if></for></for>"#,
+        );
+
+        assert!(result.contains(r#"["groups","group",0,[[],0]]"#));
+        assert!(result.contains(r#"["group.sections","section",1,[[],0]]"#));
+        assert!(result.contains(r#"["section.items","item",3,[[],0],"id"]"#));
+        assert!(!result.contains("key="));
+    }
+
+    #[test]
     fn test_metadata_treats_data_key_as_ordinary_attribute() {
         let result = generate_compiled_template(
             "my-comp",
