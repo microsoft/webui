@@ -63,10 +63,34 @@ export class TestLifecycleNestedRepeatParent extends WebUIElement {
   }
 }
 
+export class TestLifecyclePositionalNestedRepeatParent extends WebUIElement {
+  @observable groups: Array<{ id: string; items: Array<{ id: string; value?: string }> }> = [];
+
+  setGroups(groups: Array<{ id: string; items: Array<{ id: string; value?: string }> }>): void {
+    this.groups = groups;
+  }
+}
+
 export class TestLifecycleKeyedNestedRepeatParent extends WebUIElement {
   @observable groups: Array<{ id: string; items: Array<{ id: string; value?: string }> }> = [];
 
   setGroups(groups: Array<{ id: string; items: Array<{ id: string; value?: string }> }>): void {
+    this.groups = groups;
+  }
+}
+
+type DeepGroup = {
+  id: string;
+  sections: Array<{
+    id: string;
+    items: Array<{ id: string; value?: string }>;
+  }>;
+};
+
+export class TestLifecycleDeepKeyedNestedRepeatParent extends WebUIElement {
+  @observable groups: DeepGroup[] = [];
+
+  setGroups(groups: DeepGroup[]): void {
     this.groups = groups;
   }
 }
@@ -77,4 +101,12 @@ TestLifecycleConditionalParent.define('test-lifecycle-conditional-parent');
 TestLifecycleRepeatParent.define('test-lifecycle-repeat-parent');
 TestLifecycleConditionalRepeatParent.define('test-lifecycle-conditional-repeat-parent');
 TestLifecycleNestedRepeatParent.define('test-lifecycle-nested-repeat-parent');
-TestLifecycleKeyedNestedRepeatParent.define('test-lifecycle-keyed-nested-repeat-parent');
+TestLifecyclePositionalNestedRepeatParent.define(
+  'test-lifecycle-positional-nested-repeat-parent',
+);
+TestLifecycleKeyedNestedRepeatParent.define(
+  'test-lifecycle-keyed-nested-repeat-parent',
+);
+TestLifecycleDeepKeyedNestedRepeatParent.define(
+  'test-lifecycle-deep-keyed-nested-repeat-parent',
+);

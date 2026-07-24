@@ -159,22 +159,22 @@ describe('condDiffersFromDom', () => {
   const instance = {} as unknown as TemplateInstance;
 
   test('rendered block with a true condition does not differ', () => {
-    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, instance };
+    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx()), false);
   });
 
   test('absent block with a false condition does not differ', () => {
-    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, instance: null };
+    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, owner: instance, instance: null };
     assert.equal(condDiffersFromDom(c, makeCtx()), false);
   });
 
   test('absent block with a true condition differs (server dropped it)', () => {
-    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, instance: null };
+    const c: CondBinding = { condition: cond(() => true), blockIndex: 0, anchor: {} as Comment, owner: instance, instance: null };
     assert.equal(condDiffersFromDom(c, makeCtx()), true);
   });
 
   test('rendered block with a false condition differs', () => {
-    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, instance };
+    const c: CondBinding = { condition: cond(() => false), blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx()), true);
   });
 
@@ -182,7 +182,7 @@ describe('condDiffersFromDom', () => {
     // count 5 -> 3 both satisfy `count > 0`; the block stays rendered, so a
     // value-only comparison would false-positive but a presence check must not.
     const gtZero = cond((r) => (r('count') as number) > 0);
-    const c: CondBinding = { condition: gtZero, blockIndex: 0, anchor: {} as Comment, instance };
+    const c: CondBinding = { condition: gtZero, blockIndex: 0, anchor: {} as Comment, owner: instance, instance };
     assert.equal(condDiffersFromDom(c, makeCtx({ count: 3 })), false);
   });
 });
@@ -195,7 +195,6 @@ function repeat(collection: string, instanceCount: number): RepeatBinding {
     container: null, start: null, end: null,
     owner: {} as unknown as TemplateInstance,
     instances: Array.from({ length: instanceCount }, () => ({})) as unknown as RepeatBinding['instances'],
-    rootTag: null,
   };
 }
 

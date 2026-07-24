@@ -66,10 +66,11 @@ use super::{
 use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
-use crate::html_parser::{find_tag_close, style_element_bounds};
+use crate::html_parser::{find_tag_close, parse_tag, style_element_bounds};
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
 use std::fmt::Write;
+use std::ops::Range;
 use webui_protocol::{condition_expr, ConditionExpr, WebUIElementData};
 
 /// A component whose plugin-facing template HTML has been captured for compilation.
@@ -245,6 +246,9 @@ impl ParserPlugin for WebUIParserPlugin {
             self.element_events.set(self.element_events.get() + 1);
             return AttributeAction::Skip;
         }
+        if attr_name == "key" {
+            return AttributeAction::Skip;
+        }
         AttributeAction::Keep
     }
 
@@ -332,8 +336,8 @@ struct TemplateSectionMeta {
     conditionals: Vec<(ConditionExpr, usize)>,
     /// Client conditional anchor slots aligned to `conditionals`.
     condition_slots: Vec<SlotLocator>,
-    /// For-loop blocks: `(collection_path, item_variable, block_index)`.
-    repeats: Vec<(String, String, usize)>,
+    /// For-loop blocks and their optional first-child key paths.
+    repeats: Vec<CompiledRepeat>,
     /// Client repeat anchor slots aligned to `repeats`.
     repeat_slots: Vec<SlotLocator>,
     /// Body-level events: `(event_name, handler_method, argument_specs)`.
@@ -347,6 +351,26 @@ struct SlotLocator {
     parent_path: Vec<usize>,
     before_index: usize,
     order: usize,
+}
+
+struct CompiledRepeat {
+    collection: String,
+    item_var: String,
+    block_index: usize,
+    key_path: Option<String>,
+}
+
+struct ParsedForBlock {
+    collection: String,
+    item_var: String,
+    key_path: Option<String>,
+    body: String,
+    consumed: usize,
+}
+
+struct ParsedRepeatKey {
+    path: String,
+    attr_range: Range<usize>,
 }
 
 /// Collected metadata produced by [`compile_to_metadata`].
@@ -508,6 +532,7 @@ impl ConditionFunctionEmitter {
 /// | `:config="{{settings}}"`              | `a[]` + `ag[]`             | element kept marker-free          |
 /// | `<if condition="…">body</if>`         | `c[]` + `cl[]` + `b[]`     | block removed; anchor slot stored |
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
+/// | first-child `key="{{v.id}}"`          | optional fifth `r[]` field | relative repeat key path stored   |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
 /// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
 /// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
@@ -517,7 +542,7 @@ impl ConditionFunctionEmitter {
 /// # Errors
 ///
 /// Returns [`crate::ParserError::Template`] if the template contains an invalid
-/// `@event` handler or a non-braced `w-ref` binding.
+/// `@event` handler, non-braced `w-ref`, or invalid first-child repeat key.
 pub fn generate_compiled_template(tag_name: &str, html_content: &str) -> Result<String> {
     Ok(generate_compiled_template_with_root_source(
         tag_name,
@@ -867,12 +892,12 @@ fn collect_template_build_metadata(meta: &TemplateMeta) -> TemplateBuildMetadata
             }
         }
 
-        for (collection, item_var, block_index) in &block.repeats {
-            add_root(&mut roots, collection, &scopes, visit.scope);
-            if let Some(child) = meta.blocks.get(*block_index) {
+        for repeat in &block.repeats {
+            add_root(&mut roots, &repeat.collection, &scopes, visit.scope);
+            if let Some(child) = meta.blocks.get(repeat.block_index) {
                 let scope = scopes.len();
                 scopes.push(RootScope {
-                    name: item_var,
+                    name: &repeat.item_var,
                     parent: visit.scope,
                 });
                 stack.push(RootVisit {
@@ -1256,7 +1281,7 @@ fn emit_json_template_section(
 
     if !meta.repeats.is_empty() {
         out.push_str(",\"r\":[");
-        for (i, ((collection, item_var, block_index), slot)) in meta
+        for (i, (repeat, slot)) in meta
             .repeats
             .iter()
             .zip(meta.repeat_slots.iter())
@@ -1266,13 +1291,17 @@ fn emit_json_template_section(
                 out.push(',');
             }
             out.push('[');
-            emit_js_string(collection, out);
+            emit_js_string(&repeat.collection, out);
             out.push(',');
-            emit_js_string(item_var, out);
+            emit_js_string(&repeat.item_var, out);
             out.push(',');
-            let _ = write!(out, "{}", block_index);
+            let _ = write!(out, "{}", repeat.block_index);
             out.push(',');
             emit_js_slot(slot, out);
+            if let Some(key_path) = &repeat.key_path {
+                out.push(',');
+                emit_js_string(key_path, out);
+            }
             out.push(']');
         }
         out.push(']');
@@ -1381,15 +1410,20 @@ fn compile_section(
 
             // <for each="item in collection">...</for> → marker + repeat
             if remaining.starts_with("<for ") || remaining.starts_with("<for\n") {
-                if let Some((collection, item_var, body, consumed)) = parse_for_block(remaining) {
+                if let Some(repeat) = parse_for_block(component, remaining)? {
                     let block_index = blocks.len();
                     blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, &body, blocks)?;
+                    let block = compile_section(component, &repeat.body, blocks)?;
                     blocks[block_index] = block;
                     let idx = meta.repeats.len();
-                    meta.repeats.push((collection, item_var, block_index));
+                    meta.repeats.push(CompiledRepeat {
+                        collection: repeat.collection,
+                        item_var: repeat.item_var,
+                        block_index,
+                        key_path: repeat.key_path,
+                    });
                     meta.html.push_str(&format!("<!--r:{idx}-->"));
-                    i += consumed;
+                    i += repeat.consumed;
                     continue;
                 }
             }
@@ -2373,33 +2407,153 @@ fn compile_condition_expr(input: &str) -> ConditionExpr {
     }
 }
 
-/// Parse `<for each="item in collection">BODY</for>` → `(collection, item_var, body, consumed)`.
+/// Parse a `<for>` block and the optional key on its first child.
 ///
 /// The `each` attribute must follow the `"item in collection"` pattern.
 /// The body template retains `{{expr}}` mustaches — they are resolved by the
 /// client runtime during reconciliation.
-fn parse_for_block(input: &str) -> Option<(String, String, String, usize)> {
+fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock>> {
     let close_tag = "</for>";
-    let end_pos = find_matching_block_end(input, "for")?;
-    let tag_content = &input[..end_pos];
+    let Some(end_pos) = find_matching_block_end(input, "for") else {
+        return Ok(None);
+    };
+    let Some(tag) = parse_tag(input) else {
+        return Ok(None);
+    };
+    let Some(each_val) = tag.attr("each") else {
+        return Ok(None);
+    };
 
-    // Extract each="item in collection"
-    let each_start = tag_content.find("each=\"")? + "each=\"".len();
-    let each_end = tag_content[each_start..].find('"')? + each_start;
-    let each_val = &tag_content[each_start..each_end];
+    let mut parts = each_val.split_whitespace();
+    let (Some(item_var), Some("in"), Some(collection), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Ok(None);
+    };
+    let body_source = input[tag.close + 1..end_pos].trim();
+    let repeat_key = first_child_repeat_key(component, item_var, body_source)?;
+    let (key_path, body) = if let Some(repeat_key) = repeat_key {
+        let mut body = String::with_capacity(
+            body_source
+                .len()
+                .saturating_sub(repeat_key.attr_range.len()),
+        );
+        body.push_str(&body_source[..repeat_key.attr_range.start]);
+        body.push_str(&body_source[repeat_key.attr_range.end..]);
+        (Some(repeat_key.path), body)
+    } else {
+        (None, body_source.to_string())
+    };
 
-    let parts: Vec<&str> = each_val.splitn(3, ' ').collect();
-    if parts.len() != 3 || parts[1] != "in" {
-        return None;
+    Ok(Some(ParsedForBlock {
+        collection: collection.to_string(),
+        item_var: item_var.to_string(),
+        key_path,
+        body,
+        consumed: end_pos + close_tag.len(),
+    }))
+}
+
+fn relative_repeat_key<'a>(item_var: &str, key: &'a str) -> Option<&'a str> {
+    if key == item_var {
+        return Some("");
     }
-    let item_var = parts[0].to_string();
-    let collection = parts[2].to_string();
+    let relative = key.strip_prefix(item_var)?.strip_prefix('.')?;
+    (!relative.is_empty() && is_valid_event_path(relative)).then_some(relative)
+}
 
-    // Extract body
-    let body_start = find_tag_close(tag_content)? + 1;
-    let body = tag_content[body_start..].trim().to_string();
+fn first_child_repeat_key(
+    component: &str,
+    item_var: &str,
+    body: &str,
+) -> Result<Option<ParsedRepeatKey>> {
+    let mut remaining = body;
+    let mut offset = 0usize;
+    loop {
+        let trimmed = remaining.trim_start();
+        offset += remaining.len().saturating_sub(trimmed.len());
+        remaining = trimmed;
+        if remaining.starts_with("<!--") {
+            let Some(close) = remaining.find("-->") else {
+                return Ok(None);
+            };
+            offset += close + 3;
+            remaining = &remaining[close + 3..];
+            continue;
+        }
+        if remaining.starts_with("<!") {
+            let Some(close) = find_tag_close(remaining) else {
+                return Ok(None);
+            };
+            offset += close + 1;
+            remaining = &remaining[close + 1..];
+            continue;
+        }
+        break;
+    }
+    let Some(tag) = parse_tag(remaining) else {
+        return Ok(None);
+    };
+    if tag.closing {
+        return Ok(None);
+    }
+    let mut key_attr = None;
+    for attr in tag.attrs() {
+        if attr.name != "key" {
+            continue;
+        }
+        if key_attr.is_some() {
+            return Err(invalid_repeat_key_placement(component, tag.name).into());
+        }
+        key_attr = Some(attr);
+    }
+    let Some(attr) = key_attr else {
+        return Ok(None);
+    };
+    let path = parse_repeat_key(component, item_var, attr.value.unwrap_or_default())?;
+    Ok(Some(ParsedRepeatKey {
+        path,
+        attr_range: (offset + attr.raw_range.start)..(offset + attr.raw_range.end),
+    }))
+}
 
-    Some((collection, item_var, body, end_pos + close_tag.len()))
+fn parse_repeat_key(component: &str, item_var: &str, raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    let key = trimmed
+        .strip_prefix("{{")
+        .and_then(|value| value.strip_suffix("}}"))
+        .filter(|value| !value.starts_with('{') && !value.ends_with('}'))
+        .map(str::trim);
+    let Some(key) = key else {
+        return Err(invalid_repeat_key(component, item_var, raw).into());
+    };
+    let Some(relative) = relative_repeat_key(item_var, key) else {
+        return Err(invalid_repeat_key(component, item_var, raw).into());
+    };
+    Ok(relative.to_string())
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_repeat_key(component: &str, item_var: &str, key: &str) -> Diagnostic {
+    Diagnostic::error("invalid repeat key expression")
+        .code(codes::INVALID_FOR_KEY)
+        .component(component)
+        .snippet(key)
+        .help(format!(
+            "use key=\"{{{{{item_var}}}}}\" or key=\"{{{{{item_var}.id}}}}\" on the first child of <for>"
+        ))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_repeat_key_placement(component: &str, element: &str) -> Diagnostic {
+    Diagnostic::error("invalid repeat key placement")
+        .code(codes::INVALID_FOR_KEY)
+        .component(component)
+        .element(element)
+        .snippet("key")
+        .help("use key=\"{{item.id}}\" only on the first child of <for>")
 }
 
 /// Build a [`Diagnostic`] for an invalid `@event` handler.
@@ -2606,6 +2760,10 @@ fn parse_regular_tag(
         let raw_attr = tag_body[attr_start..cursor].trim();
         if raw_attr.is_empty() {
             continue;
+        }
+
+        if name == "key" {
+            return Err(invalid_repeat_key_placement(component, tag_name).into());
         }
 
         if let Some(event_name) = name.strip_prefix('@') {
@@ -3094,6 +3252,8 @@ mod tests {
         let mut plugin = WebUIParserPlugin::new();
         assert_eq!(plugin.classify_attribute("@click"), AttributeAction::Skip);
         assert_eq!(plugin.classify_attribute("@keydown"), AttributeAction::Skip);
+        assert_eq!(plugin.classify_attribute("key"), AttributeAction::Skip);
+        assert_eq!(plugin.classify_attribute("data-key"), AttributeAction::Keep);
         assert_eq!(plugin.classify_attribute("w-ref"), AttributeAction::Keep);
         assert_eq!(plugin.classify_attribute("class"), AttributeAction::Keep);
     }
@@ -3274,20 +3434,122 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"items\""));
         assert!(result.contains("\"item\""));
+        assert!(result.contains(r#""r":[["items","item",0,[[],0]]]"#));
         assert!(!result.contains("<for"));
+    }
+
+    #[test]
+    fn test_metadata_emits_first_child_key_path() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p class="row" key="{{item.id}}">{{item.name}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(!result.contains("key="));
+        assert!(!result.contains(r#""a":[["key","#));
+    }
+
+    #[test]
+    fn test_metadata_treats_data_key_as_ordinary_attribute() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p data-key="{{item.id}}">{{item.name}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[[],0]]]"#));
+        assert!(result.contains(r#""a":[["data-key",0,"item.id"]]"#));
+    }
+
+    #[test]
+    fn test_metadata_emits_empty_path_for_primitive_child_key() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p key="{{item}}">{{item}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[[],0],""]]"#));
+    }
+
+    #[test]
+    fn test_metadata_rejects_invalid_first_child_key_path() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p key="{{item[0]}}">{{item}}</p></for>"#,
+        )
+        .expect_err("invalid explicit key must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
+    fn test_metadata_keeps_data_key_alongside_structural_key() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><p key="{{item.id}}" data-key="{{item.label}}">{{item}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(result.contains(r#""a":[["data-key",0,"item.label"]]"#));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_on_later_repeat_child() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><span>{{item.name}}</span><p key="{{item.id}}">{{item.name}}</p></for>"#,
+        )
+        .expect_err("key on a later child must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
+    fn test_metadata_rejects_key_outside_repeat() {
+        let err = super::generate_compiled_template(
+            "my-comp",
+            r#"<p key="{{item.id}}">{{item.name}}</p>"#,
+        )
+        .expect_err("key outside a repeat must fail compilation");
+
+        let crate::ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FOR_KEY));
+    }
+
+    #[test]
+    fn test_metadata_finds_key_after_leading_comment() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<for each="item in items"><!-- row --><p key="{{item.id}}">{{item.name}}</p></for>"#,
+        );
+
+        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(!result.contains("key="));
     }
 
     #[test]
     fn test_parse_for_block_ignores_open_marker_inside_attr_value() {
         let input =
             r#"<for each="item in items"><div data-note="<for fake>">{{item.name}}</div></for>"#;
-        let (collection, item_var, body, consumed) =
-            parse_for_block(input).expect("for block should parse");
+        let parsed = parse_for_block("my-comp", input)
+            .expect("for block should be valid")
+            .expect("for block should parse");
 
-        assert_eq!(collection, "items");
-        assert_eq!(item_var, "item");
-        assert_eq!(body, r#"<div data-note="<for fake>">{{item.name}}</div>"#);
-        assert_eq!(consumed, input.len());
+        assert_eq!(parsed.collection, "items");
+        assert_eq!(parsed.item_var, "item");
+        assert_eq!(
+            parsed.body,
+            r#"<div data-note="<for fake>">{{item.name}}</div>"#
+        );
+        assert_eq!(parsed.consumed, input.len());
     }
 
     #[test]

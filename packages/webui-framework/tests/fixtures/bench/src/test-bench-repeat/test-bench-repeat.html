@@ -1,1 +1,1 @@
-<button class="run-repeat" @click="{runRepeatBench()}"></button><ul class="list"><for each="item in items"><li class="bench-item"><span class="label">{{item.label}}</span> — <span class="value">{{item.value}}</span></li></for></ul>
+<button class="run-repeat" @click="{runRepeatBench()}"></button><ul class="list"><for each="item in items"><li class="bench-item" key="{{item.id}}"><span class="label">{{item.label}}</span> — <span class="value">{{item.value}}</span></li></for></ul>

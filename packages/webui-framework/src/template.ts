@@ -10,7 +10,7 @@
  * - `a`  — attribute binding metadata
  * - `ag` — attribute target groups `[path, startIndex, count]`
  * - `c`  — conditional blocks `[conditionRef, blockIndex, slot]`
- * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot]`
+ * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot, keyPath?]`
  * - `eg` — grouped element events `[eventName, [[handlerName, argSpecs, targetPath, usesEvent?]]]`
  * - `b`  — nested compiled block metadata
  * - `sa` — adopted stylesheet specifier for CSS module strategy

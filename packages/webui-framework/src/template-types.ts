@@ -44,7 +44,13 @@ export type CompiledAttrMeta =
   | [name: string, kind: 2, condition: TemplateCondition]
   | [name: string, kind: 3, parts: CompiledAttrPart[]];
 
-export type CompiledRepeatMeta = [collection: string, itemVar: string, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledRepeatMeta = [
+  collection: string,
+  itemVar: string,
+  blockIndex: number,
+  slot: TemplateSlotPath,
+  keyPath?: string,
+];
 export type CompiledEventArg =
   | ['e']
   | ['p', string]

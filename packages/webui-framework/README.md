@@ -459,7 +459,7 @@ flowchart LR
 graph TD
     EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>$resolveSSR, $applySSRState,<br/>$update, events, cleanup"]
 
-    DIFF["element/diff.ts (~130 lines)<br/><i>List Reconciliation</i><br/>keyed/sequential diffing<br/>for @for repeat blocks"]
+    DIFF["element/diff.ts<br/><i>List Reconciliation</i><br/>positional + explicit-key diffing<br/>for &lt;for&gt; repeat blocks"]
 
     COND["element/conditions.ts<br/><i>Condition Evaluation</i><br/>evaluateCondition (iterative),<br/>conditionUsesPath"]
 
@@ -687,38 +687,24 @@ conditions, and repeats.
 
 ## Repeat Reconciliation
 
-`@for(item of items)` blocks support two reconciliation strategies,
-implemented in `element/diff.ts` (~130 lines):
+`<for>` blocks reconcile by array position by default. The existing block at
+index `i` receives the current item at index `i`; only a new or removed tail
+creates or removes blocks.
 
-### Keyed Reconciliation
+Duplicate values and attributes are safe because dynamic attributes never act
+as hidden keys. Reordering rebinds existing blocks in place, so local
+browser-owned or component state remains associated with positions rather than
+logical items.
 
-When the repeat block's root element has attribute bindings (e.g.
-`<todo-item id="{{item.id}}">`), the framework uses the first attribute as a
-key.  This preserves DOM nodes across reorders:
-
-```mermaid
-flowchart TD
-    subgraph Before ["Before: items = [A, B, C]"]
-        A1["&lt;todo-item&gt; key=A"]
-        B1["&lt;todo-item&gt; key=B"]
-        C1["&lt;todo-item&gt; key=C"]
-    end
-
-    subgraph After ["After: items = [C, A]"]
-        C2["&lt;todo-item&gt; key=C ← reused"]
-        A2["&lt;todo-item&gt; key=A ← reused"]
-        B2["key=B ← removed"]
-    end
-
-    A1 -.->|"moved"| A2
-    C1 -.->|"moved"| C2
-    B1 -.->|"destroyed"| B2
-```
-
-### Sequential Reconciliation
-
-When no keying attributes exist, items are matched by position.  Excess items
-are removed; new items are appended.
+For reorderable or stateful lists, author `key="{{item.id}}"` on the first
+child inside `<for>` to move existing blocks with their logical items.
+`key="{{item}}"` supports arrays of unique string or finite-number primitives.
+`key` is compiler-only metadata and is removed from SSR and client HTML;
+`data-key` remains an ordinary attribute with no identity semantics. Key paths
+are compiler-validated and stored only for explicitly keyed repeats, so
+unkeyed bindings carry no key state or map allocation. Duplicate or invalid
+runtime keys warn once, clear identity, and use positional reconciliation until
+valid identity is re-established.
 
 ### SSR State Reading
 
@@ -792,7 +778,7 @@ This template-parallel traversal eliminates the need for any marker comments,
 | Initial hydration | O(bindings) | Single pass over compiled path mappings |
 | Reactive update | O(affected) | Per-path index skips unrelated bindings |
 | Conditional toggle | O(block size) | Create/destroy a block instance |
-| Repeat reconciliation | O(items) | Keyed map lookup or sequential scan |
+| Repeat reconciliation | O(items) | Positional scan; explicit keys use a reusable map only when order changes |
 | Event wiring | O(events) | One-time during hydration |
 
 ### What the framework does NOT do

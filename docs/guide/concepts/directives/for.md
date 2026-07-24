@@ -64,39 +64,61 @@ Where:
 
 ## Repeat Reconciliation
 
-When an `@observable` array changes on the client, the `<for>` block uses
-cursor-based reconciliation (similar to Preact) that minimizes DOM mutations:
+When an `@observable` array changes on the client, the `<for>` block reconciles
+by array position by default. The existing block at index `i` receives the
+current item at index `i`; new tail items are appended and excess tail blocks
+are removed.
 
-| Operation | DOM Cost | Description |
-|-----------|----------|-------------|
-| Append | O(1) | Only the new node is inserted |
-| Prepend | O(1) | Only the new node is inserted; existing nodes untouched |
-| Remove | O(1) | Only the removed node is detached |
-| Reorder | O(moved) | Only nodes that changed position are moved |
+| Collection change | Runtime behavior |
+|-------------------|------------------|
+| Append | Reuse existing blocks and create the new tail |
+| Truncate | Reuse the shared prefix and remove the excess tail |
+| Replace or reorder | Rebind existing blocks at each position |
 
-### Keyed Reconciliation
-
-The first attribute in the repeat block template serves as the key:
+Duplicate values and duplicate attributes are safe. Dynamic attributes never
+act as hidden keys, so changing their order cannot change reconciliation.
 
 ```html
-<for each="item in items">
-  <todo-item id="{{item.id}}" title="{{item.title}}"></todo-item>
+<for each="tag in tags">
+  <span class="{{tag.className}}">{{tag.label}}</span>
 </for>
 ```
 
-Here, `item.id` (from the `id` attribute) is used as the key. Keyed
-reconciliation correctly handles reordering, insertion, and removal.
+Because identity is positional, reordering items does not move their existing
+subtrees by logical item. Browser-owned state such as focus or an uncontrolled
+input value remains associated with its position.
 
-### Unkeyed Reconciliation
+### Explicit keys
 
-Without a key attribute, items are matched by index. This is suitable for
-append-only lists but not for reordering or arbitrary insertion.
+Use an explicit key when reordered, prepended, or removed items must retain
+their existing DOM and component-local state:
 
-### Key Collision Warning
+```html
+<for each="item in items">
+  <todo-row key="{{item.id}}" title="{{item.title}}"></todo-row>
+</for>
+```
 
-Repeat item keys must be unique across the entire collection. If the server
-generates items 1–1000 and the client starts at id=1000, keys collide and
-the diff recreates all items - causing a visible flash.
+For an array of unique strings or finite numbers, key the item itself:
 
-**Best practice:** Use server-provided `nextId` in the state, UUIDs, or
-start client IDs at `max(server_ids) + 1`.
+```html
+<for each="tag in tags">
+  <span key="{{tag}}">{{tag}}</span>
+</for>
+```
+
+The `key` attribute must be on the first child inside `<for>`. Its value must
+be a single binding to the loop variable or a dot-separated property path
+rooted at it. Calls, brackets, operators, static values, empty paths, and
+unrelated variables fail the build with `invalid-for-key`. A `key` on another
+regular element produces the same diagnostic. Attributes on directives remain
+governed by each directive's own contract and do not provide repeat identity.
+
+`key` is compiler-only metadata: it does not render into SSR or browser-created
+HTML and does not become a reactive attribute binding. `data-key` remains a
+normal application-visible attribute and does not control repeat identity.
+
+Key values must be unique strings or finite numbers. If an update produces a
+duplicate or invalid value, WebUI warns once and safely uses positional
+reconciliation for that update. A later valid update re-establishes keyed
+identity.
