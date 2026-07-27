@@ -14,16 +14,25 @@
 
 ## FAST plugin authored templates
 
-The built-in FAST plugins (`fast`, `fast-v2`, and `fast-v3`) support component
-HTML authored as a single wrapping `<f-template>`. A `name` attribute on that
-wrapper overrides the filename-derived component tag; multiple `<f-template>`
-blocks in one component source are invalid. For build-time SSR, WebUI converts
-the inner FAST declarative template to WebUI syntax by rewriting `<f-repeat>` to
-`<for>`, rewriting `<f-when>` to `<if>`, unwrapping directive values, and
-removing client-only directives such as `@event`, `:prop`, `f-ref`,
-`f-slotted`, `f-children`, and similar attributes. The authored FAST template is
-preserved as the client artifact, and preserved artifacts still receive normal
-template processing, normalization, and CSS injection.
+The `fast`, `fast_v2`, and `fast_v3` integrations (CLI names `fast`, `fast-v2`,
+and `fast-v3`) automatically detect component HTML authored as a single
+`<f-template>`. A non-empty `name` replaces the component tag derived from the
+filename; an absent or whitespace-only name keeps the filename-derived tag. The
+wrapper must contain exactly one inner `<template>`. Unsupported FAST syntax and
+multiple `<f-template>` blocks fail the build with an authoring diagnostic.
+
+For build-time SSR, WebUI adapts the source for `microsoft-fast-convert` and its
+`webui-prerelease` target, supplying a converter-only name when the authored
+name is absent or empty. The converter rewrites supported `<f-repeat>` and
+`<f-when>` directives to WebUI `<for>` and `<if>` directives while preserving
+text interpolation and boolean bindings. WebUI then removes client-only
+`@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` attributes from the
+SSR view while retaining their binding counts for FAST hydration. The authored
+inner template, including its client bindings, is retained for the emitted
+`<f-template>` instead of being regenerated from the SSR conversion. It still
+receives normal wrapper normalization, legal comment processing, and CSS
+injection for the selected strategy. Component HTML without an `<f-template>`
+continues through the normal WebUI template path.
 
 ## Install
 

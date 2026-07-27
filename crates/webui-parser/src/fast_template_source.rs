@@ -4,9 +4,13 @@
 use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{self as html, Event, Walker};
 use crate::{ParserError, Result};
+use microsoft_fast_convert::{convert_template, ConvertError};
+use std::borrow::Cow;
 use std::ops::Range;
 
 pub(crate) const INTERNAL_FAST_BINDING_ATTR: &str = "data-webui-internal-fast-binding";
+const CONVERTER_FALLBACK_NAME: &str = "webui-fallback";
+const WEBUI_CONVERTER_SYNTAX: &str = "webui-prerelease";
 
 pub(crate) struct PreparedComponentTemplate {
     pub(crate) tag_name: String,
@@ -17,6 +21,7 @@ pub(crate) struct PreparedComponentTemplate {
 
 struct FTemplateSource {
     name: Option<String>,
+    start: usize,
     inner: Range<usize>,
 }
 
@@ -24,7 +29,7 @@ pub(crate) fn prepare_component_template(
     tag_name: &str,
     html_content: &str,
 ) -> Result<PreparedComponentTemplate> {
-    let Some(source) = find_f_template_source(html_content)? else {
+    let Some(source) = find_f_template_source(html_content) else {
         return Ok(PreparedComponentTemplate {
             tag_name: tag_name.to_string(),
             html_content: html_content.to_string(),
@@ -34,9 +39,12 @@ pub(crate) fn prepare_component_template(
     };
 
     let resolved_tag = source.name.as_deref().unwrap_or(tag_name).to_string();
+    let converter_input = converter_input(html_content, &source);
+    let converted = convert_template(&converter_input, WEBUI_CONVERTER_SYNTAX)
+        .map_err(|error| converter_error(html_content, source.start, error))?;
     let template_content = html_content[source.inner].trim();
-    let html_content = convert_fast_template_to_webui(template_content, false);
-    let plugin_parse_content = convert_fast_template_to_webui(template_content, true);
+    let html_content = strip_fast_client_attributes(&converted, false);
+    let plugin_parse_content = strip_fast_client_attributes(&converted, true);
     let plugin_parse_content =
         (plugin_parse_content != html_content).then_some(plugin_parse_content);
     Ok(PreparedComponentTemplate {
@@ -47,8 +55,7 @@ pub(crate) fn prepare_component_template(
     })
 }
 
-fn find_f_template_source(html_content: &str) -> Result<Option<FTemplateSource>> {
-    let mut found: Option<FTemplateSource> = None;
+fn find_f_template_source(html_content: &str) -> Option<FTemplateSource> {
     let mut stack = Vec::with_capacity(1);
     stack.push(0..html_content.len());
 
@@ -59,18 +66,13 @@ fn find_f_template_source(html_content: &str) -> Result<Option<FTemplateSource>>
             };
 
             if element.name().eq_ignore_ascii_case("f-template") {
-                if found.is_some() {
-                    return Err(multiple_f_templates_error(html_content, element.start));
-                }
-                if !element.self_closing() && element.close_end() == element.content_end() {
-                    return Err(unclosed_f_template_error(html_content, element.start));
-                }
-                found = Some(FTemplateSource {
+                return Some(FTemplateSource {
                     name: element
                         .attr("name")
                         .map(str::trim)
                         .filter(|name| !name.is_empty())
                         .map(str::to_string),
+                    start: element.start,
                     inner: element.inner(),
                 });
             }
@@ -81,34 +83,80 @@ fn find_f_template_source(html_content: &str) -> Result<Option<FTemplateSource>>
         }
     }
 
-    Ok(found)
+    None
+}
+
+fn converter_input<'a>(html_content: &'a str, source: &FTemplateSource) -> Cow<'a, str> {
+    if source.name.is_some() {
+        return Cow::Borrowed(html_content);
+    }
+
+    let mut normalized =
+        String::with_capacity(html_content.len() + CONVERTER_FALLBACK_NAME.len() + 20);
+    normalized.push_str(&html_content[..source.start]);
+    normalized.push_str("<f-template name=\"");
+    normalized.push_str(CONVERTER_FALLBACK_NAME);
+    normalized.push_str("\">");
+    normalized.push_str(&html_content[source.inner.start..]);
+    Cow::Owned(normalized)
 }
 
 #[cold]
 #[inline(never)]
-fn multiple_f_templates_error(source: &str, offset: usize) -> ParserError {
-    Diagnostic::error("multiple <f-template> elements are not supported")
-        .code(codes::UNSUPPORTED_MULTIPLE_F_TEMPLATES)
+fn converter_error(source: &str, offset: usize, error: ConvertError) -> ParserError {
+    if matches!(error, ConvertError::MultipleFTemplates { .. }) {
+        return Diagnostic::error("multiple <f-template> elements are not supported")
+            .code(codes::UNSUPPORTED_MULTIPLE_F_TEMPLATES)
+            .at_offset(source, offset)
+            .snippet("<f-template>")
+            .help(
+                "keep only one <f-template> per component file; multiple f-template blocks are not currently supported",
+            )
+            .into();
+    }
+
+    let help = match &error {
+        ConvertError::MissingFTemplateName | ConvertError::EmptyFTemplateName => {
+            "add a non-empty name attribute to <f-template>, for example <f-template name=\"my-component\">"
+        }
+        ConvertError::MissingInnerTemplate | ConvertError::MultipleInnerTemplates { .. } => {
+            "keep exactly one inner <template> element inside <f-template>"
+        }
+        ConvertError::MissingValueAttribute { .. }
+        | ConvertError::InvalidDirectiveValue { .. } => {
+            "add the required value=\"{{expression}}\" attribute to the FAST directive"
+        }
+        ConvertError::InvalidRepeatExpression { .. } => {
+            "use an f-repeat expression in \"item in items\" form"
+        }
+        ConvertError::UnclosedElement { .. } | ConvertError::UnclosedTag { .. } => {
+            "close the reported FAST template element or opening tag"
+        }
+        ConvertError::UnsupportedFAttribute { .. }
+        | ConvertError::UnsupportedFElement { .. } => {
+            "remove the unsupported FAST construct or replace it with supported declarative syntax"
+        }
+        _ => "fix the reported FAST declarative template syntax",
+    };
+
+    let code = if matches!(
+        error,
+        ConvertError::UnclosedElement { .. } | ConvertError::UnclosedTag { .. }
+    ) {
+        codes::UNCLOSED_HTML_TAG
+    } else {
+        codes::INVALID_FAST_TEMPLATE
+    };
+
+    Diagnostic::error(format!("invalid FAST template: {error}"))
+        .code(code)
         .at_offset(source, offset)
         .snippet("<f-template>")
-        .help(
-            "keep only one <f-template> per component file; multiple f-template blocks are not currently supported",
-        )
+        .help(help)
         .into()
 }
 
-#[cold]
-#[inline(never)]
-fn unclosed_f_template_error(source: &str, offset: usize) -> ParserError {
-    Diagnostic::error("unclosed <f-template> tag")
-        .code(codes::UNCLOSED_HTML_TAG)
-        .at_offset(source, offset)
-        .snippet("<f-template>")
-        .help("add the matching </f-template> closing tag")
-        .into()
-}
-
-fn convert_fast_template_to_webui(input: &str, include_binding_markers: bool) -> String {
+fn strip_fast_client_attributes(input: &str, include_binding_markers: bool) -> String {
     let mut result = String::with_capacity(input.len());
     let bytes = input.as_bytes();
     let len = bytes.len();
@@ -117,7 +165,7 @@ fn convert_fast_template_to_webui(input: &str, include_binding_markers: bool) ->
     while index < len {
         if bytes[index] == b'<' {
             if let Some(consumed) =
-                try_convert_fast_tag(input, index, &mut result, include_binding_markers)
+                try_strip_fast_attributes(input, index, &mut result, include_binding_markers)
             {
                 index += consumed;
                 continue;
@@ -129,7 +177,7 @@ fn convert_fast_template_to_webui(input: &str, include_binding_markers: bool) ->
     result
 }
 
-fn try_convert_fast_tag(
+fn try_strip_fast_attributes(
     input: &str,
     pos: usize,
     result: &mut String,
@@ -139,67 +187,15 @@ fn try_convert_fast_tag(
     let tag = html::parse_tag(remaining)?;
 
     if tag.closing {
-        if tag.name.eq_ignore_ascii_case("f-repeat") {
-            result.push_str("</for>");
-            return Some(tag.close + 1);
-        }
-        if tag.name.eq_ignore_ascii_case("f-when") {
-            result.push_str("</if>");
-            return Some(tag.close + 1);
-        }
         return None;
     }
 
-    if tag.name.eq_ignore_ascii_case("f-repeat") {
-        push_webui_directive_tag("for", "each", tag.attr("value"), tag.self_closing, result);
-        return Some(tag.close + 1);
-    }
-    if tag.name.eq_ignore_ascii_case("f-when") {
-        push_webui_directive_tag(
-            "if",
-            "condition",
-            tag.attr("value"),
-            tag.self_closing,
-            result,
-        );
-        return Some(tag.close + 1);
-    }
-
-    if !tag.attrs().any(|attr| {
-        is_fast_client_only_attr(attr.name) || attr.value.and_then(single_braced_value).is_some()
-    }) {
+    if !tag.attrs().any(|attr| is_fast_client_only_attr(attr.name)) {
         return None;
     }
 
     push_webui_opening_tag(&tag, result, include_binding_markers);
     Some(tag.close + 1)
-}
-
-fn push_webui_directive_tag(
-    tag_name: &str,
-    attr_name: &str,
-    value: Option<&str>,
-    self_closing: bool,
-    result: &mut String,
-) {
-    result.push('<');
-    result.push_str(tag_name);
-    if let Some(expr) = value.map(strip_fast_value_expression) {
-        if !expr.is_empty() {
-            result.push(' ');
-            result.push_str(attr_name);
-            result.push_str("=\"");
-            result.push_str(expr);
-            result.push('"');
-        }
-    }
-    if self_closing {
-        result.push_str("></");
-        result.push_str(tag_name);
-        result.push('>');
-    } else {
-        result.push('>');
-    }
 }
 
 fn push_webui_opening_tag(tag: &html::Tag<'_>, result: &mut String, include_binding_markers: bool) {
@@ -212,14 +208,7 @@ fn push_webui_opening_tag(tag: &html::Tag<'_>, result: &mut String, include_bind
             continue;
         }
         result.push(' ');
-        if let Some(expr) = attr.value.and_then(single_braced_value) {
-            result.push_str(attr.name);
-            result.push_str("=\"{{");
-            result.push_str(expr);
-            result.push_str("}}\"");
-        } else {
-            result.push_str(attr.raw);
-        }
+        result.push_str(attr.raw);
     }
     if include_binding_markers {
         for _ in 0..stripped_binding_count {
@@ -238,34 +227,6 @@ fn is_fast_client_only_attr(name: &str) -> bool {
     name.starts_with('@')
         || name.starts_with(':')
         || matches!(name, "f-ref" | "f-slotted" | "f-children")
-}
-
-fn strip_fast_value_expression(value: &str) -> &str {
-    double_braced_value(value)
-        .or_else(|| single_braced_value(value))
-        .unwrap_or_else(|| value.trim())
-}
-
-fn double_braced_value(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.starts_with("{{") && trimmed.ends_with("}}") && !trimmed.starts_with("{{{") {
-        let inner = trimmed[2..trimmed.len() - 2].trim();
-        if !inner.is_empty() {
-            return Some(inner);
-        }
-    }
-    None
-}
-
-fn single_braced_value(value: &str) -> Option<&str> {
-    let trimmed = value.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') && !trimmed.starts_with("{{") {
-        let inner = trimmed[1..trimmed.len() - 1].trim();
-        if !inner.is_empty() {
-            return Some(inner);
-        }
-    }
-    None
 }
 
 fn push_char_at(input: &str, pos: usize, out: &mut String) -> usize {

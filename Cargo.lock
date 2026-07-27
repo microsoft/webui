@@ -1778,6 +1778,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
+name = "microsoft-fast-convert"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7343de729e1cd95b7d65814cf1f56ee7ab88f58330e1ef651e545404bccff955"
+dependencies = [
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "microsoft-webui"
 version = "0.0.19"
 dependencies = [
@@ -1920,6 +1929,7 @@ dependencies = [
  "clap",
  "criterion",
  "html-escape",
+ "microsoft-fast-convert",
  "microsoft-webui-protocol",
  "microsoft-webui-test-utils",
  "microsoft-webui-tokens",
