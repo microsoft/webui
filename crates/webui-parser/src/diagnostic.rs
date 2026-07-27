@@ -102,10 +102,6 @@ pub mod codes {
     /// A CSS token used only with a literal `var()` fallback and absent from
     /// every theme — non-fatal, but usually a typo. Severity: warning.
     pub const UNTHEMED_TOKEN: &str = "unthemed-token";
-    /// A component source contains multiple `<f-template>` blocks.
-    pub const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str = "unsupported-multiple-f-templates";
-    /// A FAST declarative template cannot be converted to WebUI syntax.
-    pub const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
 }
 
 /// A build-time template-authoring diagnostic.

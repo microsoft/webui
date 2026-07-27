@@ -7,7 +7,10 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::{
+    AttributeAction, ComponentSourceTransform, ComponentTemplateArtifact, ParserPlugin,
+    ParserPluginArtifacts,
+};
 use crate::component_registry::Component;
 use crate::html_parser::{find_tag_close, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
@@ -83,12 +86,13 @@ impl ParserPlugin for FastV2ParserPlugin {
         Ok(())
     }
 
-    fn uses_fast_template_artifacts(&self) -> bool {
-        true
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> {
+        Some(super::fast_shared::transform_component_source)
     }
 
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
         if attr_name.starts_with('@')
+            || attr_name.starts_with(':')
             || attr_name == "f-ref"
             || attr_name == "f-slotted"
             || attr_name == "f-children"
@@ -731,6 +735,19 @@ mod tests {
     }
 
     #[test]
+    fn skip_property_binding() {
+        let mut plugin = FastV2ParserPlugin::new();
+        assert_eq!(
+            plugin.classify_attribute(":title"),
+            AttributeAction::SkipAndCountBinding
+        );
+        assert_eq!(
+            plugin.classify_attribute(":config"),
+            AttributeAction::SkipAndCountBinding
+        );
+    }
+
+    #[test]
     fn do_not_skip_normal_attributes() {
         let mut plugin = FastV2ParserPlugin::new();
         assert_eq!(plugin.classify_attribute("class"), AttributeAction::Keep);
@@ -739,7 +756,6 @@ mod tests {
             plugin.classify_attribute("data-value"),
             AttributeAction::Keep
         );
-        assert_eq!(plugin.classify_attribute(":title"), AttributeAction::Keep);
         assert_eq!(plugin.classify_attribute("f-other"), AttributeAction::Keep);
     }
 
