@@ -2620,7 +2620,7 @@ mod tests {
         let app = create_app_dir(&[
             (
                 "index.html",
-                "<named-card></named-card><fallback-card></fallback-card>",
+                "<named-card></named-card><fallback-card></fallback-card><plain-card></plain-card>",
             ),
             (
                 "file-card.html",
@@ -2630,6 +2630,10 @@ mod tests {
             (
                 "fallback-card.html",
                 r#"<f-template><template><span>{{label}}</span></template></f-template>"#,
+            ),
+            (
+                "plain-card.html",
+                r#"<template><if condition="visible"><span>{{label}}</span></if></template>"#,
             ),
         ]);
 
@@ -2660,6 +2664,13 @@ mod tests {
                 .template
                 .contains(r#"<f-template name="fallback-card">"#));
             assert!(fallback.template.contains("<span>{{label}}</span>"));
+            let plain = result
+                .protocol
+                .components
+                .get("plain-card")
+                .expect("ordinary WebUI component");
+            assert!(plain.template.contains(r#"<f-template name="plain-card">"#));
+            assert!(plain.template.contains(r#"<f-when value="{{visible}}">"#));
         }
     }
 
