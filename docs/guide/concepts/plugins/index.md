@@ -104,15 +104,16 @@ let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())
 
 ### Using FAST Plugins
 
-The built-in FAST plugins are `fast`, `fast-v2`, and `fast-v3`:
+The Rust FAST integrations are `fast`, `fast_v2`, and `fast_v3`; their CLI
+names are `fast`, `fast-v2`, and `fast-v3`:
 
 ```bash
 webui build ./src --out ./dist --plugin=fast-v3
 webui serve ./src --state ./data/state.json --plugin=fast-v3 --watch
 ```
 
-For FAST builds, a component HTML file may be authored as one wrapping
-`<f-template>`:
+For FAST builds, component discovery automatically recognizes an HTML file
+authored as one wrapping `<f-template>`:
 
 ```html
 <!-- src/components/file-card.html -->
@@ -130,25 +131,34 @@ For FAST builds, a component HTML file may be authored as one wrapping
 ```
 
 `<f-template name="named-card">` registers the component as `named-card` instead
-of deriving `file-card` from the filename. If the `name` attribute is omitted,
-the filename-derived tag is used. Multiple `<f-template>` elements in one
-component source are unsupported and fail the build with an authoring error.
+of deriving `file-card` from the filename. If `name` is absent or contains only
+whitespace, WebUI keeps the filename-derived tag. The wrapper must contain
+exactly one inner `<template>`. Multiple inner templates and unsupported FAST
+syntax fail the build with an authoring error. Multiple `<f-template>` elements
+are not currently supported and have a dedicated authoring diagnostic.
 
 WebUI uses two views of this source:
 
-- **SSR parse view:** the inner FAST declarative template is converted to WebUI
-  syntax for build-time parsing. `<f-repeat value="{{item in items}}">` becomes
-  `<for each="item in items">`; `<f-when value="{{condition}}">` becomes
-  `<if condition="condition">`; directive values are unwrapped; client-only FAST
-  syntax that does not affect server-rendered output is removed, including
-  `@event`, `:prop`, `f-ref`, `f-slotted`, `f-children`, and similar
-  client-only directives. FAST plugins receive parser-only binding markers for
-  those stripped directives so hydration binding indexes remain aligned.
-- **Client artifact view:** the authored FAST template is preserved and emitted
-  as the client `<f-template>` payload. It still goes through normal component
-  processing and normalization, including wrapper handling and CSS injection for
-  the selected CSS strategy. Non-FAST plugins receive the normal WebUI parse
+- **SSR parse view:** WebUI adapts the source for `microsoft-fast-convert` with
+  the `webui-prerelease` target. When the authored name is absent or empty, the
+  adapter supplies a converter-only name without changing the filename-derived
+  component tag. The converter rewrites supported `f-repeat` and `f-when`
+  directives to WebUI `for` and `if` directives and unwraps their `value`
+  expressions. Text interpolation and boolean bindings remain for WebUI
+  parsing. Unsupported `f-*` constructs fail conversion instead of being
+  silently accepted. WebUI removes client-only `@event`, `:property`, `f-ref`,
+  `f-slotted`, and `f-children` attributes from this view. FAST plugins receive
+  parser-only binding markers for those removed attributes so hydration binding
+  indexes remain aligned.
+- **Client artifact view:** WebUI retains the authored inner template, including
+  its client bindings, and emits it inside the resolved `<f-template>` rather
+  than regenerating it from the SSR view. The artifact is normalized and still
+  receives normal wrapper handling, legal comment processing, and CSS injection
+  for the selected strategy. Non-FAST plugins receive the normal WebUI parse
   view instead of FAST artifacts.
+
+The deprecated `fast` selector aliases FAST 2. `fast`, `fast_v2`, and `fast_v3`
+all use this same discovery, conversion, and retained-artifact path.
 
 ## Writing Custom Plugins
 

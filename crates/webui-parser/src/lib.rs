@@ -5964,7 +5964,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "file-card",
-                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" title="{title}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#,
+                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#,
                 Some(".root { color: red; }"),
                 true,
             ))
@@ -5988,7 +5988,7 @@ mod tests {
         assert!(for_fragments.iter().any(|fragment| {
             matches!(
                 fragment.fragment.as_ref(),
-                Some(Fragment::Plugin(data)) if data.data == 3u32.to_le_bytes()
+                Some(Fragment::Plugin(data)) if data.data == 5u32.to_le_bytes()
             )
         }));
         assert!(!for_fragments.iter().any(|fragment| {
@@ -6011,12 +6011,21 @@ mod tests {
         assert!(template.contains(r#"<f-repeat value="{{item in items}}">"#));
         assert!(template.contains(r#"@click="{save()}""#));
         assert!(template.contains(r#":config="{config}""#));
+        assert!(template.contains(r#"?disabled="{{disabled}}""#));
+        assert!(template.contains(r#"f-ref="{button}""#));
+        assert!(template.contains(r#"title="{{title}}""#));
         assert!(!template.contains("file-card"));
     }
 
     #[test]
     fn fast_v2_plugin_uses_authored_f_template_source() {
         assert_f_template_component_source(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn fast_plugin_uses_authored_f_template_source() {
+        assert_f_template_component_source(Box::new(plugin::fast::FastParserPlugin::new()));
     }
 
     #[test]

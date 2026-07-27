@@ -3641,6 +3641,54 @@ mod tests {
     }
 
     #[test]
+    fn all_fast_plugin_variants_build_authored_f_templates() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<named-card></named-card><fallback-card></fallback-card>",
+            ),
+            (
+                "file-card.html",
+                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#,
+            ),
+            ("file-card.css", "/* remove */ .card { color: red; }"),
+            (
+                "fallback-card.html",
+                r#"<f-template><template><span>{{label}}</span></template></f-template>"#,
+            ),
+        ]);
+
+        for plugin in [Plugin::Fast, Plugin::FastV2, Plugin::FastV3] {
+            let mut options = default_options(app.path());
+            options.plugin = Some(plugin);
+            options.css = CssStrategy::Style;
+
+            let result = build(options).unwrap();
+            assert!(result.protocol.fragments.contains_key("named-card"));
+            let component = result
+                .protocol
+                .components
+                .get("named-card")
+                .expect("named FAST component");
+            assert!(component.template.contains("<f-when"));
+            assert!(component.template.contains("<f-repeat"));
+            assert!(component.template.contains(r#"@click="{save()}""#));
+            assert!(component
+                .template
+                .contains("<style>.card { color: red; }</style>"));
+            let fallback = result
+                .protocol
+                .components
+                .get("fallback-card")
+                .expect("file-named FAST component");
+            assert!(fallback
+                .template
+                .contains(r#"<f-template name="fallback-card">"#));
+            assert!(fallback.template.contains("<span>{{label}}</span>"));
+        }
+    }
+
+    #[test]
     fn test_build_to_disk_inline_mode_no_css_files() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),

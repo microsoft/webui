@@ -121,6 +121,8 @@ pub mod codes {
     pub const UNTHEMED_TOKEN: &str = "unthemed-token";
     /// A component source contains multiple `<f-template>` blocks.
     pub const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str = "unsupported-multiple-f-templates";
+    /// A FAST declarative template cannot be converted to WebUI syntax.
+    pub const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
     /// `<boundary>` is missing its required, non-empty `name` attribute.
     pub const MISSING_BOUNDARY_NAME: &str = "missing-boundary-name";
     /// `<boundary name>` is not a static string literal (e.g. it

@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn f_template_name_overrides_file_name_and_converts_for_webui() {
-        let html = r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" title="{title}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#;
+        let html = r#"<f-template name="named-card"><template><f-when value="{{visible && count > 0}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#;
 
         let mut registry = ComponentRegistry::new();
         registry
@@ -949,19 +949,26 @@ mod tests {
         assert_eq!(component.tag_name, "named-card");
         assert_eq!(
             component.html_content,
-            r#"<template><if condition="visible"><for each="item in items"><button title="{{title}}">{{item.label}}</button></for></if></template>"#
+            r#"<template><if condition="visible && count > 0"><for each="item in items"><button ?disabled="{{disabled}}" title="{{title}}">{{item.label}}</button></for></if></template>"#
         );
         let parse_content = registry
             .html_content_for_parse("named-card", true)
             .expect("parse content");
         assert!(parse_content.contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR));
+        assert_eq!(
+            parse_content
+                .match_indices(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR)
+                .count(),
+            3
+        );
+        assert!(parse_content.contains(r#"?disabled="{{disabled}}""#));
         assert!(!component
             .html_content
             .contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR));
         assert_eq!(
             registry.plugin_template_artifact("named-card"),
             Some(
-                r#"<template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" title="{title}">{{item.label}}</button></f-repeat></f-when></template>"#
+                r#"<template><f-when value="{{visible && count > 0}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template>"#
             )
         );
     }
@@ -986,6 +993,72 @@ mod tests {
             Some(codes::UNSUPPORTED_MULTIPLE_F_TEMPLATES)
         );
         assert!(diag.to_string().contains("not currently supported"));
+    }
+
+    #[test]
+    fn invalid_f_template_converter_error_is_a_diagnostic() {
+        let mut registry = ComponentRegistry::new();
+        let err = registry
+            .register_component(ComponentRegistration::new(
+                "invalid-card",
+                r#"<f-template name="invalid-card"><template><f-repeat value="{{items}}"></f-repeat></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect_err("invalid repeat should error");
+
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert!(diag.to_string().contains("item in items"));
+        assert!(diag.help_text().is_some());
+    }
+
+    #[test]
+    fn f_template_without_usable_name_uses_file_name() {
+        for html in [
+            "<f-template><template></template></f-template>",
+            r#"<f-template name=" "><template></template></f-template>"#,
+        ] {
+            let mut registry = ComponentRegistry::new();
+            registry
+                .register_component(ComponentRegistration::new("file-card", html, None, true))
+                .expect("file-derived name should satisfy the converter");
+
+            assert!(registry.contains("file-card"));
+            assert_eq!(
+                registry
+                    .get("file-card")
+                    .map(|component| component.html_content.as_str()),
+                Some("<template></template>")
+            );
+            assert_eq!(
+                registry.plugin_template_artifact("file-card"),
+                Some("<template></template>")
+            );
+        }
+    }
+
+    #[test]
+    fn plain_webui_template_uses_unchanged_fallback() {
+        let html = r#"<template><if condition="visible"><span>{{title}}</span></if></template>"#;
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(ComponentRegistration::new("plain-card", html, None, true))
+            .expect("register");
+
+        assert_eq!(
+            registry
+                .get("plain-card")
+                .map(|component| component.html_content.as_str()),
+            Some(html)
+        );
+        assert_eq!(
+            registry.html_content_for_parse("plain-card", true),
+            Some(html)
+        );
+        assert_eq!(registry.plugin_template_artifact("plain-card"), None);
     }
 
     #[test]
