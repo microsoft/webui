@@ -14,8 +14,11 @@
 
 ## FAST plugin authored templates
 
-The `fast`, `fast_v2`, and `fast_v3` integrations (CLI names `fast`, `fast-v2`,
-and `fast-v3`) automatically detect component HTML authored as a single
+WebUI's parser is framework-neutral by default: with no plugin selected, or
+with the `webui` plugin, `<f-template>` markup is not scanned or interpreted
+and passes through like any other HTML. Selecting the `fast`, `fast_v2`, or
+`fast_v3` integration (CLI names `fast`, `fast-v2`, and `fast-v3`) installs a
+shared plugin hook that detects component HTML authored as a single
 `<f-template>`. A non-empty `name` replaces the component tag derived from the
 filename; an absent or whitespace-only name keeps the filename-derived tag. The
 wrapper must contain exactly one inner `<template>`. Unsupported FAST syntax and

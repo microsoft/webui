@@ -15,7 +15,6 @@ mod css_parser;
 mod css_scan;
 mod diagnostic;
 mod error;
-mod fast_template_source;
 mod handlebars_parser;
 mod html_parser;
 pub mod plugin;
@@ -926,7 +925,7 @@ fn light_dom_slot_error(tag_name: &str, source: &str, offset: usize) -> ParserEr
 struct ComponentTemplateInput<'a> {
     tag_name: &'a str,
     html: &'a str,
-    plugin_html: Option<&'a str>,
+    artifact_html: Option<&'a str>,
     css_content: Option<&'a str>,
     artifact_needed: bool,
 }
@@ -1251,6 +1250,8 @@ impl HtmlParser {
         options: impl Into<ParserOptions>,
     ) -> Self {
         let mut p = Self::with_options(options);
+        p.component_registry
+            .set_component_source_transform(plugin.component_source_transform());
         p.plugin = Some(plugin);
         p.configure_plugin();
         p
@@ -1260,12 +1261,6 @@ impl HtmlParser {
         if let Some(ref mut plugin) = self.plugin {
             plugin.configure(&self.options);
         }
-    }
-
-    fn uses_fast_template_artifacts(&self) -> bool {
-        self.plugin
-            .as_ref()
-            .is_some_and(|plugin| plugin.uses_fast_template_artifacts())
     }
 
     /// Get a mutable reference to the component registry.
@@ -3466,23 +3461,14 @@ impl HtmlParser {
         self.flush_raw_buffer(fragments);
 
         if let Some((html_content, css_content)) = template_source {
-            let uses_fast_template_artifacts = self.uses_fast_template_artifacts();
-            let html_content = self
+            let artifact_html = self
                 .component_registry
-                .html_content_for_parse(element.name(), uses_fast_template_artifacts)
-                .unwrap_or(&html_content)
-                .to_string();
-            let plugin_template_artifact = if uses_fast_template_artifacts {
-                self.component_registry
-                    .plugin_template_artifact(element.name())
-                    .map(str::to_string)
-            } else {
-                None
-            };
+                .component_artifact_source(element.name())
+                .map(str::to_string);
             let built = self.build_component_templates(ComponentTemplateInput {
                 tag_name: element.name(),
                 html: &html_content,
-                plugin_html: plugin_template_artifact.as_deref(),
+                artifact_html: artifact_html.as_deref(),
                 css_content: css_content.as_deref(),
                 artifact_needed: self.plugin.is_some(),
             })?;
@@ -3631,16 +3617,8 @@ impl HtmlParser {
     ) -> Result<u32> {
         let mut first_dynamic_emitted = false;
         let mut binding_count: u32 = 0;
-        let uses_fast_template_artifacts = self.uses_fast_template_artifacts();
         for attr in attrs {
             let attr_name = attr.name;
-
-            if attr_name == ComponentRegistry::INTERNAL_FAST_BINDING_ATTR {
-                if uses_fast_template_artifacts {
-                    binding_count += 1;
-                }
-                continue;
-            }
 
             if let Some(ref mut p) = self.plugin {
                 match p.classify_attribute(attr_name) {
@@ -4359,24 +4337,15 @@ impl HtmlParser {
                 .help(self.unknown_component_help(component))
             })?
             .clone();
-        let uses_fast_template_artifacts = self.uses_fast_template_artifacts();
-        let html_content = self
+        let artifact_html = self
             .component_registry
-            .html_content_for_parse(component, uses_fast_template_artifacts)
-            .unwrap_or(&component_data.html_content)
-            .to_string();
-        let plugin_template_artifact = if uses_fast_template_artifacts {
-            self.component_registry
-                .plugin_template_artifact(component)
-                .map(str::to_string)
-        } else {
-            None
-        };
+            .component_artifact_source(component)
+            .map(str::to_string);
 
         let built = self.build_component_templates(ComponentTemplateInput {
             tag_name: component,
-            html: &html_content,
-            plugin_html: plugin_template_artifact.as_deref(),
+            html: &component_data.html_content,
+            artifact_html: artifact_html.as_deref(),
             css_content: component_data.css_content.as_deref(),
             artifact_needed: self.plugin.is_some(),
         })?;
@@ -4478,8 +4447,13 @@ impl HtmlParser {
             Some((start, end)) => &html[start..end],
             None => html,
         };
-        let artifact_differs =
-            input.artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
+        let artifact_source = if input.artifact_needed {
+            input.artifact_html.or_else(|| {
+                Self::template_has_stripped_runtime_attrs(runtime_attr_source).then_some(html)
+            })
+        } else {
+            None
+        };
         // A `w-render`/`w-hydrate` component authors its policy on a plain
         // `<template>` wrapper. The policy lands on the host element as
         // generated CSS, so the wrapper itself must not survive into a Light
@@ -4491,24 +4465,18 @@ impl HtmlParser {
             dom_analysis,
             policy_wrapper,
         )?;
-        let artifact = if let Some(plugin_html) = input.plugin_html {
-            let plugin_dom_analysis =
-                analyze_component_dom(tag_name, plugin_html, self.options.dom_strategy)?;
-            Some(self.process_component_artifact_template_for_dom(
-                plugin_html,
-                adopted_specifier,
-                plugin_dom_analysis,
-                policy_wrapper,
-            )?)
-        } else if artifact_differs {
-            Some(self.process_component_artifact_template_for_dom(
-                html,
-                adopted_specifier,
-                dom_analysis,
-                policy_wrapper,
-            )?)
-        } else {
-            None
+        let artifact = match artifact_source {
+            Some(source) => {
+                let artifact_dom_analysis =
+                    analyze_component_dom(tag_name, source, self.options.dom_strategy)?;
+                Some(self.process_component_artifact_template_for_dom(
+                    source,
+                    adopted_specifier,
+                    artifact_dom_analysis,
+                    policy_wrapper,
+                )?)
+            }
+            None => None,
         };
         Ok(BuiltComponentTemplate {
             ssr,
@@ -5985,16 +5953,23 @@ mod tests {
         );
         assert_stream!(records, "if-1", [for_loop("item", "items", "for-1"),]);
         let for_fragments = &records["for-1"].fragments;
+        // Binding count is 5: @click, :config, f-ref (FAST client bindings
+        // stripped and counted via classify_attribute) plus ?disabled and
+        // title (WebUI dynamic bindings).
         assert!(for_fragments.iter().any(|fragment| {
             matches!(
                 fragment.fragment.as_ref(),
                 Some(Fragment::Plugin(data)) if data.data == 5u32.to_le_bytes()
             )
         }));
+        // No FAST client attribute leaks into the SSR raw stream.
         assert!(!for_fragments.iter().any(|fragment| {
             matches!(
                 fragment.fragment.as_ref(),
-                Some(Fragment::Raw(raw)) if raw.value.contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR)
+                Some(Fragment::Raw(raw))
+                    if raw.value.contains("@click")
+                        || raw.value.contains(":config")
+                        || raw.value.contains("f-ref")
             )
         }));
 
@@ -6034,33 +6009,163 @@ mod tests {
     }
 
     #[test]
-    fn webui_plugin_does_not_use_fast_template_artifact_path() {
-        let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
+    fn fast_client_attributes_are_counted_in_nested_source_order_without_markers() {
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
-                "file-card",
-                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><button @click="{save()}" :config="{config}" title="{title}">Save</button></f-when></template></f-template>"#,
+                "binding-card",
+                r#"<f-template name="binding-card"><template><div @click="{save()}" :config="{config}" f-ref="{root}" f-slotted="{slot}" f-children="{children}" title="{{title}}"><span @focus="{focus()}" :value="{value}">{{label}}</span></div></template></f-template>"#,
                 None,
                 true,
             ))
             .expect("register component");
 
         parser
-            .parse("index.html", "<named-card></named-card>")
+            .parse("index.html", "<binding-card></binding-card>")
             .expect("parse entry");
-        let artifacts = parser.take_plugin_artifacts().expect("artifacts");
-        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+        let fragments = &parser.fragment_records["binding-card"].fragments;
+        let binding_counts: Vec<u32> = fragments
+            .iter()
+            .filter_map(|fragment| {
+                let Some(Fragment::Plugin(data)) = fragment.fragment.as_ref() else {
+                    return None;
+                };
+                (data.data.len() == 4).then(|| {
+                    u32::from_le_bytes([data.data[0], data.data[1], data.data[2], data.data[3]])
+                })
+            })
+            .collect();
+        assert_eq!(binding_counts, vec![6, 2]);
+
+        for fragment in fragments {
+            if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
+                for client_attr in [
+                    "@click",
+                    ":config",
+                    "f-ref",
+                    "f-slotted",
+                    "f-children",
+                    "@focus",
+                    ":value",
+                    "data-webui-internal-",
+                ] {
+                    assert!(!raw.value.contains(client_attr));
+                }
+            }
+        }
+
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("artifacts")
+        else {
+            panic!("expected component template artifacts");
+        };
+        let template = &templates[0].template;
+        for client_attr in [
+            "@click",
+            ":config",
+            "f-ref",
+            "f-slotted",
+            "f-children",
+            "@focus",
+            ":value",
+        ] {
+            assert!(template.contains(client_attr));
+        }
+        assert!(!template.contains("data-webui-internal-"));
+    }
+
+    #[test]
+    fn route_only_fast_component_uses_retained_authored_source() {
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "route-card",
+                r#"<f-template name="route-card"><template><f-when value="{{visible}}"><span>{{label}}</span></f-when></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        parser
+            .parse(
+                "index.html",
+                r#"<route path="/card" component="route-card" exact />"#,
+            )
+            .expect("parse route");
+        assert!(parser.fragment_records.contains_key("route-card"));
+
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("artifacts")
+        else {
             panic!("expected component template artifacts");
         };
         assert_eq!(templates.len(), 1);
-        assert_eq!(templates[0].tag_name, "named-card");
-        assert!(templates[0].template.is_empty());
-        assert!(!templates[0].template_json.contains("<f-template"));
-        assert!(!templates[0].template_json.contains("@click"));
-        assert!(!templates[0]
-            .template_json
-            .contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR));
+        assert!(templates[0]
+            .template
+            .contains(r#"<f-when value="{{visible}}">"#));
+    }
+
+    #[test]
+    fn webui_plugin_leaves_f_template_shaped_source_inert() {
+        // The WebUI plugin supplies no component-source transform, so
+        // `<f-template>`-shaped markup is stored verbatim under the filename
+        // tag: no rename, no FAST conversion, and no FAST diagnostics.
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        assert!(parser.component_registry.contains("file-card"));
+        assert!(!parser.component_registry.contains("named-card"));
+        assert_eq!(
+            parser
+                .component_registry
+                .get("file-card")
+                .map(|component| component.html_content.as_str()),
+            Some(
+                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#
+            )
+        );
+        assert_eq!(
+            parser
+                .component_registry
+                .component_artifact_source("file-card"),
+            None
+        );
+    }
+
+    #[test]
+    fn default_parser_leaves_f_template_shaped_source_inert() {
+        // With no plugin selected, `<f-template>`-shaped markup is inert too.
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        assert!(parser.component_registry.contains("file-card"));
+        assert!(!parser.component_registry.contains("named-card"));
+        assert_eq!(
+            parser
+                .component_registry
+                .component_artifact_source("file-card"),
+            None
+        );
     }
 
     #[test]
@@ -7880,7 +7985,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-card",
                 html: "<style>.label{color:red}</style><p class=\"label\">content</p>",
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: false,
             })
@@ -7901,7 +8006,7 @@ mod tests {
             let result = parser.build_component_templates(ComponentTemplateInput {
                 tag_name: "my-card",
                 html: &html,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: false,
             });
@@ -7946,7 +8051,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-card",
                 html: "<style>:host{display:block}.label{color:red}</style><p class=\"label\">content</p>",
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: false,
             })
@@ -8158,7 +8263,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-card",
                 html: "<template><div class=\"label\">hi</div></template>",
-                plugin_html: None,
+                artifact_html: None,
                 css_content: Some(".label{color:red}"),
                 artifact_needed: false,
             })
@@ -8174,7 +8279,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-card",
                 html: r#"<template data-purpose="content"><div>hi</div></template>"#,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: false,
             })
@@ -8281,7 +8386,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-comp",
                 html,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8296,7 +8401,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-comp",
                 html,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8309,7 +8414,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-comp",
                 html,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8329,7 +8434,7 @@ mod tests {
             .build_component_templates(ComponentTemplateInput {
                 tag_name: "my-comp",
                 html: shadow_html,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8465,7 +8570,7 @@ mod tests {
             let built = match parser.build_component_templates(ComponentTemplateInput {
                 tag_name: "my-comp",
                 html: r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
-                plugin_html: None,
+                artifact_html: None,
                 css_content: Some(":host { color: red; }"),
                 artifact_needed: true,
             }) {

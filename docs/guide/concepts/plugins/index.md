@@ -112,8 +112,10 @@ webui build ./src --out ./dist --plugin=fast-v3
 webui serve ./src --state ./data/state.json --plugin=fast-v3 --watch
 ```
 
-For FAST builds, component discovery automatically recognizes an HTML file
-authored as one wrapping `<f-template>`:
+When a FAST plugin is selected, it installs a `component_source_transform` that
+recognizes an HTML file authored as one wrapping `<f-template>`. With no
+plugin, or with the `webui` plugin, `<f-template>` markup is not scanned or
+converted and passes through like any other HTML:
 
 ```html
 <!-- src/components/file-card.html -->
@@ -146,19 +148,20 @@ WebUI uses two views of this source:
   directives to WebUI `for` and `if` directives and unwraps their `value`
   expressions. Text interpolation and boolean bindings remain for WebUI
   parsing. Unsupported `f-*` constructs fail conversion instead of being
-  silently accepted. WebUI removes client-only `@event`, `:property`, `f-ref`,
-  `f-slotted`, and `f-children` attributes from this view. FAST plugins receive
-  parser-only binding markers for those removed attributes so hydration binding
-  indexes remain aligned.
+  silently accepted. The FAST plugins' `classify_attribute` skips `@event`,
+  `:property`, `f-ref`, `f-slotted`, and `f-children` and counts each as a
+  binding, so hydration binding indexes stay aligned without any parser-core
+  marker.
 - **Client artifact view:** WebUI retains the authored inner template, including
   its client bindings, and emits it inside the resolved `<f-template>` rather
   than regenerating it from the SSR view. The artifact is normalized and still
   receives normal wrapper handling, legal comment processing, and CSS injection
-  for the selected strategy. Non-FAST plugins receive the normal WebUI parse
-  view instead of FAST artifacts.
+  for the selected strategy. Plugins that return `None` from
+  `component_source_transform` never receive FAST artifacts; they parse the
+  component's HTML unchanged.
 
 The deprecated `fast` selector aliases FAST 2. `fast`, `fast_v2`, and `fast_v3`
-all use this same discovery, conversion, and retained-artifact path.
+all share this same transform, conversion, and retained-artifact path.
 
 ## Writing Custom Plugins
 
@@ -185,9 +188,12 @@ pub trait ParserPlugin {
         context: ComponentTemplateContext,
     ) -> Result<()>;
 
-    /// Return true only for plugins that consume FAST `<f-template>` artifacts.
-    fn uses_fast_template_artifacts(&self) -> bool {
-        false
+    /// Return a stateless transform applied to a component's authored source
+    /// before registry insertion, or `None` to store sources unchanged. Only
+    /// plugins that own an alternate authored-template dialect (such as FAST's
+    /// `<f-template>`) need to implement this.
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> {
+        None
     }
 
     /// Decide how a framework-owned attribute should be handled.

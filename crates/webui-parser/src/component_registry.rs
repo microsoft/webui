@@ -8,7 +8,7 @@
 use crate::component_policy::{
     parse_component_render_policy, validate_policy_client_ownership, ComponentRenderPolicy,
 };
-use crate::fast_template_source::prepare_component_template;
+use crate::plugin::{ComponentSource, ComponentSourceResult, ComponentSourceTransform};
 use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "fs")]
@@ -19,6 +19,16 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 type ProcessedCss = (String, Vec<String>, Vec<CssFallbackChain>);
+
+/// Resolved component source produced by [`ComponentRegistry::resolve_component_source`].
+struct ResolvedSource {
+    /// Resolved registry key.
+    tag_name: String,
+    /// Content stored on the component and consumed by the SSR parser.
+    parser_content: String,
+    /// Optional retained authored client artifact source.
+    artifact_content: Option<String>,
+}
 
 /// Represents a web component in the registry.
 ///
@@ -99,10 +109,13 @@ pub struct ComponentRegistry {
     render_policies: HashMap<String, ComponentRenderPolicy>,
     /// Components whose render policy CSS has been appended.
     policy_css: HashSet<String>,
-    /// FAST-authored templates with parser-only binding markers.
-    plugin_parse_templates: HashMap<String, String>,
-    /// FAST-authored templates preserved for client artifact emission.
-    plugin_template_artifacts: HashMap<String, String>,
+    /// Authored client artifact sources retained by a component-source
+    /// transform, keyed by resolved tag name. Framework-neutral: any plugin
+    /// that owns a distinct client template populates it.
+    component_artifact_sources: HashMap<String, String>,
+    /// Optional plugin-supplied transform applied to each component's authored
+    /// source before insertion. `None` stores sources unchanged.
+    source_transform: Option<ComponentSourceTransform>,
     /// Reusable CSS parser for token extraction during registration.
     css_parser: CssParser,
     /// Legal comment preservation policy for component CSS.
@@ -148,11 +161,53 @@ impl ComponentRegistry {
             components: HashMap::new(),
             render_policies: HashMap::new(),
             policy_css: HashSet::new(),
-            plugin_parse_templates: HashMap::new(),
-            plugin_template_artifacts: HashMap::new(),
+            component_artifact_sources: HashMap::new(),
+            source_transform: None,
             css_parser: CssParser::new(),
             legal_comments,
         }
+    }
+
+    /// Install the component-source transform supplied by the active plugin.
+    ///
+    /// Passing `None` (the default) stores authored sources verbatim, so
+    /// framework-specific markup is inert.
+    pub(crate) fn set_component_source_transform(
+        &mut self,
+        transform: Option<ComponentSourceTransform>,
+    ) {
+        self.source_transform = transform;
+    }
+
+    /// Apply the installed source transform, returning the resolved registry
+    /// key, the parser-facing content, and any retained client artifact source.
+    ///
+    /// When no transform is installed, or it returns
+    /// [`ComponentSourceResult::Unchanged`], the filename-derived tag and the
+    /// authored HTML are preserved without extra allocation.
+    fn resolve_component_source(
+        &self,
+        tag_name: &str,
+        html_content: String,
+    ) -> Result<ResolvedSource> {
+        if let Some(transform) = self.source_transform {
+            if let ComponentSourceResult::Transformed(transformed) = transform(ComponentSource {
+                tag_name,
+                html_content: &html_content,
+            })? {
+                return Ok(ResolvedSource {
+                    tag_name: transformed.tag_name,
+                    parser_content: transformed.parser_content,
+                    artifact_content: transformed.artifact_content,
+                });
+            }
+        }
+
+        Ok(ResolvedSource {
+            tag_name: tag_name.to_string(),
+            parser_content: html_content,
+            artifact_content: None,
+        })
     }
 
     /// Register multiple components from directories recursively.
@@ -211,14 +266,14 @@ impl ComponentRegistry {
             context: format!("Failed to read HTML file: {}", html_path.display()),
             source,
         })?;
-        let prepared = prepare_component_template(tag_name, &html_content)?;
-        Self::validate_component_name(&prepared.tag_name)?;
+        let resolved = self.resolve_component_source(tag_name, html_content)?;
+        Self::validate_component_name(&resolved.tag_name)?;
 
         // Check for duplicate component
-        if self.components.contains_key(&prepared.tag_name) {
+        if self.components.contains_key(&resolved.tag_name) {
             return Err(ParserError::Component(format!(
                 "Component '{}' is already registered",
-                prepared.tag_name
+                resolved.tag_name
             )));
         }
 
@@ -242,18 +297,18 @@ impl ComponentRegistry {
         let is_client_owned = has_component_script(html_path)?;
 
         let render_policy =
-            parse_component_render_policy(&prepared.tag_name, &prepared.html_content)?;
+            parse_component_render_policy(&resolved.tag_name, &resolved.parser_content)?;
         validate_policy_client_ownership(
-            &prepared.tag_name,
-            &prepared.html_content,
+            &resolved.tag_name,
+            &resolved.parser_content,
             &render_policy,
             is_client_owned,
         )?;
 
         // Create and register the component
         let component = Component {
-            tag_name: prepared.tag_name,
-            html_content: prepared.html_content,
+            tag_name: resolved.tag_name,
+            html_content: resolved.parser_content,
             css_content,
             css_definitions,
             css_fallback_chains,
@@ -262,13 +317,9 @@ impl ComponentRegistry {
 
         self.render_policies
             .insert(component.tag_name.clone(), render_policy);
-        if let Some(template) = prepared.plugin_parse_content {
-            self.plugin_parse_templates
-                .insert(component.tag_name.clone(), template);
-        }
-        if let Some(template) = prepared.plugin_template_content {
-            self.plugin_template_artifacts
-                .insert(component.tag_name.clone(), template);
+        if let Some(artifact) = resolved.artifact_content {
+            self.component_artifact_sources
+                .insert(component.tag_name.clone(), artifact);
         }
         self.components
             .insert(component.tag_name.clone(), component);
@@ -287,14 +338,14 @@ impl ComponentRegistry {
             is_client_owned,
         } = registration;
 
-        let prepared = prepare_component_template(tag_name, html_content)?;
-        Self::validate_component_name(&prepared.tag_name)?;
+        let resolved = self.resolve_component_source(tag_name, html_content.to_string())?;
+        Self::validate_component_name(&resolved.tag_name)?;
 
         // Check for duplicate component
-        if self.components.contains_key(&prepared.tag_name) {
+        if self.components.contains_key(&resolved.tag_name) {
             return Err(ParserError::Component(format!(
                 "Component '{}' is already registered",
-                prepared.tag_name
+                resolved.tag_name
             )));
         }
 
@@ -307,16 +358,16 @@ impl ComponentRegistry {
             None => (None, Vec::new(), Vec::new()),
         };
         let render_policy =
-            parse_component_render_policy(&prepared.tag_name, &prepared.html_content)?;
+            parse_component_render_policy(&resolved.tag_name, &resolved.parser_content)?;
         validate_policy_client_ownership(
-            &prepared.tag_name,
-            &prepared.html_content,
+            &resolved.tag_name,
+            &resolved.parser_content,
             &render_policy,
             is_client_owned,
         )?;
         let component: Component = Component {
-            tag_name: prepared.tag_name,
-            html_content: prepared.html_content,
+            tag_name: resolved.tag_name,
+            html_content: resolved.parser_content,
             css_content,
             css_definitions,
             css_fallback_chains,
@@ -326,13 +377,9 @@ impl ComponentRegistry {
         // Register the component
         self.render_policies
             .insert(component.tag_name.clone(), render_policy);
-        if let Some(template) = prepared.plugin_parse_content {
-            self.plugin_parse_templates
-                .insert(component.tag_name.clone(), template);
-        }
-        if let Some(template) = prepared.plugin_template_content {
-            self.plugin_template_artifacts
-                .insert(component.tag_name.clone(), template);
+        if let Some(artifact) = resolved.artifact_content {
+            self.component_artifact_sources
+                .insert(component.tag_name.clone(), artifact);
         }
         self.components
             .insert(component.tag_name.clone(), component);
@@ -349,9 +396,6 @@ impl ComponentRegistry {
             tag_name
         )))
     }
-
-    pub(crate) const INTERNAL_FAST_BINDING_ATTR: &str =
-        crate::fast_template_source::INTERNAL_FAST_BINDING_ATTR;
 
     /// Strip comments and extract CSS definitions/fallback requirements.
     fn process_css_content(&mut self, css_content: &str) -> Result<ProcessedCss> {
@@ -430,25 +474,12 @@ impl ComponentRegistry {
             .and_then(|component| component.css_content.as_deref())
     }
 
-    /// Get the parser-facing HTML for a component.
-    pub(crate) fn html_content_for_parse(
-        &self,
-        tag_name: &str,
-        include_fast_binding_markers: bool,
-    ) -> Option<&str> {
-        if include_fast_binding_markers {
-            if let Some(template) = self.plugin_parse_templates.get(tag_name) {
-                return Some(template);
-            }
-        }
-        self.components
-            .get(tag_name)
-            .map(|component| component.html_content.as_str())
-    }
-
-    /// Get the plugin-facing authored client template artifact for a component.
-    pub(crate) fn plugin_template_artifact(&self, tag_name: &str) -> Option<&str> {
-        self.plugin_template_artifacts
+    /// Get the retained authored client artifact source for a component.
+    ///
+    /// Populated only when a component-source transform returned a distinct
+    /// artifact view; otherwise `None`.
+    pub(crate) fn component_artifact_source(&self, tag_name: &str) -> Option<&str> {
+        self.component_artifact_sources
             .get(tag_name)
             .map(String::as_str)
     }
@@ -508,6 +539,7 @@ impl ComponentRegistry {
 mod tests {
     use super::*;
     use crate::codes;
+    use crate::plugin::TransformedComponentSource;
     use webui_test_utils::TestFileSystem;
 
     #[test]
@@ -533,6 +565,33 @@ mod tests {
         assert_eq!(component.html_content, html_content);
         assert_eq!(component.css_content.as_deref(), Some(css_content));
         assert!(!component.is_client_owned);
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn transform_applies_to_path_registration() {
+        let mut fs = TestFileSystem::new();
+        let html_path = fs.add_file(
+            "components/file-card.html",
+            r#"<mock-template name="renamed-card"><template>x</template></mock-template>"#,
+        );
+
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(Some(mock_rename_transform));
+        registry
+            .register_component_from_paths(&html_path, None::<&str>)
+            .expect("register");
+
+        assert!(!registry.contains("file-card"));
+        let component = registry.get("renamed-card").expect("component");
+        assert_eq!(
+            component.html_content,
+            "<template><span>parser</span></template>"
+        );
+        assert_eq!(
+            registry.component_artifact_source("renamed-card"),
+            Some("<template><span>artifact</span></template>")
+        );
     }
 
     #[test]
@@ -928,137 +987,131 @@ mod tests {
         assert_eq!(component.html_content, html_content1);
     }
 
-    #[test]
-    fn f_template_name_overrides_file_name_and_converts_for_webui() {
-        let html = r#"<f-template name="named-card"><template><f-when value="{{visible && count > 0}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#;
+    fn mock_rename_transform(source: ComponentSource<'_>) -> Result<ComponentSourceResult> {
+        if !source.html_content.contains("<mock-template") {
+            return Ok(ComponentSourceResult::Unchanged);
+        }
+        Ok(ComponentSourceResult::Transformed(
+            TransformedComponentSource {
+                tag_name: "renamed-card".to_string(),
+                parser_content: "<template><span>parser</span></template>".to_string(),
+                artifact_content: Some("<template><span>artifact</span></template>".to_string()),
+            },
+        ))
+    }
 
+    fn mock_failing_transform(_source: ComponentSource<'_>) -> Result<ComponentSourceResult> {
+        Err(ParserError::Component("mock transform failure".to_string()))
+    }
+
+    #[test]
+    fn default_registry_leaves_authored_source_unchanged() {
+        // Without an installed transform, framework-shaped markup is inert:
+        // no renaming, conversion, or extra artifact source.
+        let html = r#"<mock-template name="renamed-card"><template>x</template></mock-template>"#;
         let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(ComponentRegistration::new("file-card", html, None, true))
+            .expect("register");
+
+        assert!(registry.contains("file-card"));
+        assert!(!registry.contains("renamed-card"));
+        assert_eq!(
+            registry
+                .get("file-card")
+                .map(|component| component.html_content.as_str()),
+            Some(html)
+        );
+        assert_eq!(registry.component_artifact_source("file-card"), None);
+    }
+
+    #[test]
+    fn transform_renames_and_provides_parser_and_artifact_views() {
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(Some(mock_rename_transform));
         registry
             .register_component(ComponentRegistration::new(
                 "file-card",
-                html,
+                r#"<mock-template name="renamed-card"><template>x</template></mock-template>"#,
                 Some(".root { color: red; }"),
                 true,
             ))
             .expect("register");
 
         assert!(!registry.contains("file-card"));
-        assert!(registry.contains("named-card"));
-
-        let component = registry.get("named-card").expect("component");
-        assert_eq!(component.tag_name, "named-card");
+        let component = registry.get("renamed-card").expect("component");
+        assert_eq!(component.tag_name, "renamed-card");
         assert_eq!(
             component.html_content,
-            r#"<template><if condition="visible && count > 0"><for each="item in items"><button ?disabled="{{disabled}}" title="{{title}}">{{item.label}}</button></for></if></template>"#
+            "<template><span>parser</span></template>"
         );
-        let parse_content = registry
-            .html_content_for_parse("named-card", true)
-            .expect("parse content");
-        assert!(parse_content.contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR));
         assert_eq!(
-            parse_content
-                .match_indices(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR)
-                .count(),
-            3
-        );
-        assert!(parse_content.contains(r#"?disabled="{{disabled}}""#));
-        assert!(!component
-            .html_content
-            .contains(ComponentRegistry::INTERNAL_FAST_BINDING_ATTR));
-        assert_eq!(
-            registry.plugin_template_artifact("named-card"),
-            Some(
-                r#"<template><f-when value="{{visible && count > 0}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template>"#
-            )
+            registry.component_artifact_source("renamed-card"),
+            Some("<template><span>artifact</span></template>")
         );
     }
 
     #[test]
-    fn multiple_f_templates_are_not_supported() {
+    fn transform_returning_unchanged_preserves_source() {
         let mut registry = ComponentRegistry::new();
-        let err = registry
-            .register_component(ComponentRegistration::new(
-                "multi-card",
-                r#"<f-template name="one"><template></template></f-template><f-template name="two"><template></template></f-template>"#,
-                None,
-                true,
-            ))
-            .expect_err("multiple f-template blocks should error");
-
-        let ParserError::Template(diag) = err else {
-            panic!("expected template diagnostic");
-        };
-        assert_eq!(
-            diag.error_code(),
-            Some(codes::UNSUPPORTED_MULTIPLE_F_TEMPLATES)
-        );
-        assert!(diag.to_string().contains("not currently supported"));
-    }
-
-    #[test]
-    fn invalid_f_template_converter_error_is_a_diagnostic() {
-        let mut registry = ComponentRegistry::new();
-        let err = registry
-            .register_component(ComponentRegistration::new(
-                "invalid-card",
-                r#"<f-template name="invalid-card"><template><f-repeat value="{{items}}"></f-repeat></template></f-template>"#,
-                None,
-                true,
-            ))
-            .expect_err("invalid repeat should error");
-
-        let ParserError::Template(diag) = err else {
-            panic!("expected template diagnostic");
-        };
-        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
-        assert!(diag.to_string().contains("item in items"));
-        assert!(diag.help_text().is_some());
-    }
-
-    #[test]
-    fn f_template_without_usable_name_uses_file_name() {
-        for html in [
-            "<f-template><template></template></f-template>",
-            r#"<f-template name=" "><template></template></f-template>"#,
-        ] {
-            let mut registry = ComponentRegistry::new();
-            registry
-                .register_component(ComponentRegistration::new("file-card", html, None, true))
-                .expect("file-derived name should satisfy the converter");
-
-            assert!(registry.contains("file-card"));
-            assert_eq!(
-                registry
-                    .get("file-card")
-                    .map(|component| component.html_content.as_str()),
-                Some("<template></template>")
-            );
-            assert_eq!(
-                registry.plugin_template_artifact("file-card"),
-                Some("<template></template>")
-            );
-        }
-    }
-
-    #[test]
-    fn plain_webui_template_uses_unchanged_fallback() {
-        let html = r#"<template><if condition="visible"><span>{{title}}</span></if></template>"#;
-        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(Some(mock_rename_transform));
+        let html = r#"<template><span>{{title}}</span></template>"#;
         registry
             .register_component(ComponentRegistration::new("plain-card", html, None, true))
             .expect("register");
 
+        assert!(registry.contains("plain-card"));
         assert_eq!(
             registry
                 .get("plain-card")
                 .map(|component| component.html_content.as_str()),
             Some(html)
         );
-        assert_eq!(
-            registry.html_content_for_parse("plain-card", true),
-            Some(html)
+        assert_eq!(registry.component_artifact_source("plain-card"), None);
+    }
+
+    #[test]
+    fn transform_error_is_transactional() {
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(Some(mock_failing_transform));
+        let err = registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                "<template>x</template>",
+                None,
+                true,
+            ))
+            .expect_err("failing transform should abort registration");
+
+        assert!(matches!(err, ParserError::Component(ref msg) if msg.contains("mock transform")));
+        assert!(!registry.contains("file-card"));
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn transform_duplicate_resolved_name_is_rejected() {
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(Some(mock_rename_transform));
+        registry
+            .register_component(ComponentRegistration::new(
+                "first-card",
+                r#"<mock-template name="renamed-card"><template>x</template></mock-template>"#,
+                None,
+                true,
+            ))
+            .expect("first register");
+        let err = registry
+            .register_component(ComponentRegistration::new(
+                "second-card",
+                r#"<mock-template name="renamed-card"><template>y</template></mock-template>"#,
+                None,
+                true,
+            ))
+            .expect_err("duplicate resolved name should error");
+
+        assert!(
+            matches!(err, ParserError::Component(ref msg) if msg.contains("already registered"))
         );
-        assert_eq!(registry.plugin_template_artifact("plain-card"), None);
     }
 
     #[test]
