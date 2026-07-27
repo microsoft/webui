@@ -220,6 +220,36 @@ By default, signal values are HTML-escaped to prevent XSS:
 
 > ⚠️ Never use triple braces for user input or URL parameters. An attacker could inject `<script>` tags.
 
+## Generating a State Schema
+
+After building an application, generate a JSON Schema for its render state:
+
+```bash
+webui schema ./dist/protocol.bin \
+  --title MyAppState > ./dist/state.schema.json
+```
+
+When building both artifacts together:
+
+```bash
+webui build ./src --out ./dist/app.bin --emit-schema
+```
+
+This writes `app.bin` and `app.state.schema.json`.
+
+Plain bindings accept JSON strings, numbers, or booleans. Dotted paths and
+loops infer nested objects and arrays. Values used only by conditions are
+optional because missing condition state evaluates false.
+
+Broad values may include `x-webui.preferredType` as a non-validating hint for
+host-language type generation. Integer literals infer `integer`, and known
+types propagate across path-to-path equality.
+
+Routed applications produce one named schema per complete route chain. The
+`x-webui-routes` mapping connects each route pattern to its state definition,
+allowing build-time tools to generate route-specific types without adding
+runtime validation overhead.
+
 ## Learn More
 
 - [Signals](/guide/concepts/directives/signals) - Template binding syntax

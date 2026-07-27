@@ -1,6 +1,11 @@
 {
   "storeName": "WebUI Store",
+  "searchQuery": "",
   "cartItemCount": "0",
+  "cartHref": "/?cart=open",
+  "cartCloseHref": "/",
+  "cartOpen": "",
+  "currentPath": "/",
   "navCategories": [
     { "handle": "shirts", "title": "Shirts" },
     { "handle": "stickers", "title": "Stickers" },
@@ -14,7 +19,7 @@
   "featuredProducts": [],
   "carouselProducts": [],
   "cartEmpty": true,
-  "cartSubtotal": "$0.00",
-  "cartTaxes": "$0.00",
+  "subtotal": "$0.00",
+  "taxes": "$0.00",
   "cartItems": []
 }

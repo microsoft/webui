@@ -33,6 +33,7 @@ fn main() {
         Commands::Build(args) => commands::build::execute(args),
         Commands::Inspect(args) => commands::inspect::execute(args),
         Commands::Serve(args) => commands::serve::execute(args),
+        Commands::Schema(args) => commands::state_schema::execute(args),
     };
 
     if let Err(err) = result {

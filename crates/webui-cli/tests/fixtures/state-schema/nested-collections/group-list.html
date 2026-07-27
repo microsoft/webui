@@ -1,0 +1,20 @@
+<for each="group in groups">
+  <h2>{{group.name}}</h2>
+  <for each="item in group.items">
+    <span>{{item.name}}</span>
+    <if condition="item.count > 0">
+      <strong>{{item.count}}</strong>
+    </if>
+  </for>
+</for>
+<span>{{label}}</span>
+<span>{{label.length}}</span>
+<span>{{flexible.length}}</span>
+<for each="row in matrix">
+  <for each="cell in row">
+    <span>{{cell}}</span>
+  </for>
+</for>
+<for each="unused in unobserved">
+  <span>Static item</span>
+</for>

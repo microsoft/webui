@@ -72,6 +72,7 @@ windows-sys = { version = "0.61.2", features = [
 
 # Test dependencies
 criterion = "0.8.2"
+insta = { version = "1.48.0", features = ["json"] }
 tempfile = "3.27.0"
 
 # Build dependencies
