@@ -1397,35 +1397,53 @@ documentation for the current list. Each plugin defines:
 
 **Built-in FAST parser plugins**
 
-The built-in FAST parser plugins (`fast`, `fast-v2`, and `fast-v3`) opt into
-FAST template artifacts and support component source files authored as a single
-wrapping `<f-template>`. Component registration detects that wrapper before
-parsing. The wrapper's `name` attribute overrides the filename-derived component
-tag; if `name` is absent or empty, the filename-derived tag is used. Multiple
-`<f-template>` elements in one component source are unsupported and return a
-structured authoring diagnostic with code `unsupported-multiple-f-templates`.
+The `fast`, `fast_v2`, and `fast_v3` parser implementations (selected as
+`fast`, `fast-v2`, and `fast-v3` by CLI and host string APIs) all opt into the
+same FAST template artifact path. Component registration automatically scans
+discovered HTML sources for an `<f-template>`. A source that has one must contain
+exactly one `<f-template>` with exactly one inner `<template>`. A present,
+non-empty `name` becomes the registered component tag and overrides the
+filename-derived tag. If `name` is absent or trims to empty, registration keeps
+the filename-derived tag. Multiple `<f-template>` elements return
+`unsupported-multiple-f-templates`; multiple inner `<template>` elements are
+also invalid. Sources without an `<f-template>` retain the normal component
+template path.
 
-For build-time SSR parsing, WebUI converts the inner FAST declarative template
-to the WebUI parse view while keeping a separate plugin-facing client artifact:
+For build-time SSR parsing, WebUI adapts the `<f-template>` source for
+`microsoft-fast-convert` with the `webui-prerelease` target. Because the
+converter requires a non-empty name, the adapter supplies an internal name only
+to the converter when the source name is absent or empty. This internal value
+does not replace the filename-derived component tag or appear in the emitted
+client artifact. The returned inner template becomes the WebUI parse view:
 
 - `<f-repeat value="{{item in items}}">` converts to
   `<for each="item in items">`.
 - `<f-when value="{{condition}}">` converts to
   `<if condition="condition">`.
-- Directive values are unwrapped from `{{...}}` or `{...}` when moving to the
-  WebUI parse view.
-- Client-only FAST syntax that does not affect server-rendered output is removed
-  from the SSR parse view, including `@event`, `:prop`, `f-ref`, `f-slotted`,
-  `f-children`, and other client-only property/event directives.
+- The converter unwraps the `value` expression for those directives. Text
+  `{{expression}}` bindings and `?boolean` bindings remain available to the
+  WebUI parser; ordinary attributes are not treated as additional converter
+  syntax.
+- Unsupported `f-*` elements or attributes and malformed directive expressions
+  return structured authoring diagnostics. WebUI does not claim support for
+  FAST constructs that the converter rejects.
+- After conversion, WebUI removes `@event`, `:property`, `f-ref`, `f-slotted`,
+  and `f-children` from the public SSR view because they are client-only. A
+  parser-only view replaces each removed binding with an internal marker so the
+  FAST plugin still emits the correct hydration binding count. Markers never
+  appear in public component HTML or plugin artifacts.
 
-The original authored FAST template remains the client template artifact emitted
-by the FAST plugin. Parser-only markers carry the binding count for stripped
-client-only directives so FAST hydration indexes remain aligned, but those
-markers never appear in public component HTML or non-FAST plugin artifacts. The
-preserved artifact still runs through the normal component-template processing
-path before emission, including template wrapper normalization, selected
-CSS-strategy injection, module stylesheet adoption where applicable,
-legal-comment handling, and plugin artifact normalization.
+WebUI separately retains the authored inner `<template>` from the source for the
+FAST client artifact, including its client-only bindings, rather than rebuilding
+it from the converted SSR view. The FAST plugin wraps that retained source in
+the resolved `<f-template name="...">` for insertion. The artifact is normalized
+rather than preserved byte-for-byte: it passes through normal component
+template processing, including wrapper normalization, selected CSS-strategy
+injection, module stylesheet adoption where applicable, legal-comment handling,
+and plugin artifact normalization. The deprecated `fast` selector aliases the
+FAST 2 implementation, while `fast_v2` and `fast_v3` use their respective
+hydration marker formats; all three share this discovery, conversion, and
+artifact-retention behavior.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)
