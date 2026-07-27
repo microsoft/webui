@@ -1770,6 +1770,38 @@ mod tests {
     }
 
     #[test]
+    fn test_build_with_components_path_overlapping_app_dir() {
+        // Regression: the app lives in a subfolder (`src/foo`) while
+        // `--components` points at its parent (`src`). The app-directory scan
+        // and the components scan both walk `src/foo/bar-baz.html`. The overlap
+        // must be idempotent, not a hard "already registered" error.
+        let root = TempDir::new().unwrap();
+        let src = root.path().join("src");
+        let app_dir = src.join("foo");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::write(app_dir.join("index.html"), "<bar-baz>Hello</bar-baz>").unwrap();
+        fs::write(
+            app_dir.join("bar-baz.html"),
+            "<div class=\"card\"><slot></slot></div>",
+        )
+        .unwrap();
+        fs::write(
+            app_dir.join("bar-baz.css"),
+            ".card { border: 1px solid #ccc; }",
+        )
+        .unwrap();
+
+        let mut options = default_options(&app_dir);
+        options.components = vec![src.to_string_lossy().to_string()];
+
+        let result = build(options).expect("overlapping component path must not error");
+        assert!(result.protocol.fragments.contains_key("index.html"));
+        // The shared component is registered exactly once (its CSS emitted once).
+        assert_eq!(result.css_files.len(), 1);
+        assert!(result.css_files[0].1.contains("border"));
+    }
+
+    #[test]
     fn test_build_with_scriptless_component_path_emits_dormant_template() {
         let app = create_app_dir(&[("index.html", "<ext-card></ext-card>")]);
         let ext_dir = TempDir::new().unwrap();

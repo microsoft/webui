@@ -125,6 +125,36 @@ impl ComponentRegistry {
         }
     }
 
+    /// Decide whether a freshly built [`Component`] should be inserted.
+    ///
+    /// Component registration is **idempotent**: re-registering the same tag
+    /// with identical template content, CSS, and client-ownership returns
+    /// `Ok(false)` (skip) instead of erroring. This happens when the same
+    /// component file is discovered twice — for example when the app-directory
+    /// scan and an overlapping `--components` path both walk `./src/foo`
+    /// (`--components ./src` while the app lives in `./src/foo`). A tag
+    /// re-registered with **different** content is a genuine conflict and
+    /// returns `ParserError::Component`.
+    ///
+    /// `css_definitions` and `css_fallback_chains` are derived deterministically
+    /// from `css_content`, so comparing `css_content` alone is sufficient.
+    fn resolve_duplicate(&self, candidate: &Component) -> Result<bool> {
+        match self.components.get(&candidate.tag_name) {
+            None => Ok(true),
+            Some(existing)
+                if existing.html_content == candidate.html_content
+                    && existing.css_content == candidate.css_content
+                    && existing.is_client_owned == candidate.is_client_owned =>
+            {
+                Ok(false)
+            }
+            Some(_) => Err(ParserError::Component(format!(
+                "Component '{}' is already registered",
+                candidate.tag_name
+            ))),
+        }
+    }
+
     /// Register multiple components from directories recursively.
     #[cfg(feature = "fs")]
     pub fn register_from_paths<P: AsRef<Path>>(&mut self, directories: &[P]) -> Result<&mut Self> {
@@ -184,14 +214,6 @@ impl ComponentRegistry {
             )));
         }
 
-        // Check for duplicate component
-        if self.components.contains_key(tag_name) {
-            return Err(ParserError::Component(format!(
-                "Component '{}' is already registered",
-                tag_name
-            )));
-        }
-
         // Read HTML content
         let html_content = fs::read_to_string(html_path).map_err(|source| ParserError::IO {
             context: format!("Failed to read HTML file: {}", html_path.display()),
@@ -217,7 +239,8 @@ impl ComponentRegistry {
 
         let is_client_owned = has_component_script(html_path)?;
 
-        // Create and register the component
+        // Create and register the component. An identical re-registration
+        // (same file discovered via overlapping scan paths) is a no-op.
         let component = Component {
             tag_name: tag_name.to_string(),
             html_content,
@@ -227,7 +250,9 @@ impl ComponentRegistry {
             is_client_owned,
         };
 
-        self.components.insert(tag_name.to_string(), component);
+        if self.resolve_duplicate(&component)? {
+            self.components.insert(tag_name.to_string(), component);
+        }
         Ok(())
     }
 
@@ -251,14 +276,6 @@ impl ComponentRegistry {
             )));
         }
 
-        // Check for duplicate component
-        if self.components.contains_key(tag_name) {
-            return Err(ParserError::Component(format!(
-                "Component '{}' is already registered",
-                tag_name
-            )));
-        }
-
         // Extract CSS definitions/fallback requirements if CSS content is provided
         let (css_content, css_definitions, css_fallback_chains) = match css_content {
             Some(css) => {
@@ -277,8 +294,11 @@ impl ComponentRegistry {
             is_client_owned,
         };
 
-        // Register the component
-        self.components.insert(tag_name.to_string(), component);
+        // Register the component, treating an identical re-registration as a
+        // no-op (see `resolve_duplicate`).
+        if self.resolve_duplicate(&component)? {
+            self.components.insert(tag_name.to_string(), component);
+        }
         Ok(())
     }
 
@@ -647,6 +667,83 @@ mod tests {
             .get("my-comp")
             .expect("Failed to retrieve registered component");
         assert_eq!(component.html_content, html_content1);
+    }
+
+    #[test]
+    fn test_reregister_identical_component_from_strings_is_idempotent() {
+        let html = "<p>Same content</p>";
+        let css = "p { color: red; }";
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(ComponentRegistration::new(
+                "dupe-component",
+                html,
+                Some(css),
+                true,
+            ))
+            .expect("first registration should succeed");
+
+        // Re-registering the identical tag/content/CSS/ownership is a no-op,
+        // not an error (e.g. the same file discovered via overlapping scans).
+        registry
+            .register_component(ComponentRegistration::new(
+                "dupe-component",
+                html,
+                Some(css),
+                true,
+            ))
+            .expect("identical re-registration should be idempotent");
+
+        assert_eq!(registry.len(), 1);
+        let component = registry
+            .get("dupe-component")
+            .expect("component should still be registered");
+        assert_eq!(component.html_content, html);
+    }
+
+    #[test]
+    fn test_reregister_differing_component_from_strings_still_conflicts() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(ComponentRegistration::new(
+                "dupe-component",
+                "<p>First</p>",
+                None,
+                true,
+            ))
+            .expect("first registration should succeed");
+
+        // Same tag, different HTML content is a genuine conflict.
+        let result = registry.register_component(ComponentRegistration::new(
+            "dupe-component",
+            "<p>Second</p>",
+            None,
+            true,
+        ));
+        assert!(
+            matches!(result, Err(ParserError::Component(ref msg)) if msg.contains("already registered")),
+            "Expected 'already registered' error, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_reregister_identical_component_from_paths_is_idempotent() {
+        // The same physical file discovered twice (app-dir scan plus an
+        // overlapping `--components` path) must not error.
+        let mut fs = TestFileSystem::new();
+        let file_path = fs.add_file("src/foo/bar-baz.html", "<p>Shared</p>");
+
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component_from_paths(&file_path, None::<&str>)
+            .expect("first registration should succeed");
+        registry
+            .register_component_from_paths(&file_path, None::<&str>)
+            .expect("re-registering the same file should be idempotent");
+
+        assert_eq!(registry.len(), 1);
     }
 
     #[test]
