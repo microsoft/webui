@@ -111,5 +111,20 @@ export class TestNestedRepeatKeyedChain extends WebUIElement {
   }
 }
 
+export class TestRepeatSiblings extends WebUIElement {
+  @observable groups: NestedRepeatGroup[] = [];
+  @observable others: string[] = [];
+  @observable selected = 'none';
+
+  select(value: string): void {
+    this.selected = value;
+  }
+
+  replaceOthers(): void {
+    this.others = ['Three', 'Four'];
+  }
+}
+
 TestNestedRepeat.define('test-nested-repeat');
+TestRepeatSiblings.define('test-repeat-siblings');
 TestNestedRepeatKeyedChain.define('test-nested-repeat-keyed-chain');

@@ -1,0 +1,15 @@
+<div class="lists">
+  <for each="group in groups">
+    <span class="group-label">{{group.name}}</span>
+
+    <for each="item in group.values">
+      <span class="inner-value">{{item.value}}</span>
+    </for>
+  </for>
+
+  <for each="other in others">
+    <button class="other" @click="{select(other)}">{{other}}</button>
+  </for>
+
+  <output class="selected">{{selected}}</output>
+</div>

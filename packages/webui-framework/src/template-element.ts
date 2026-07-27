@@ -1249,8 +1249,6 @@ export class TemplateElement extends HTMLElement {
           const insertRef = ssrParent.childNodes[Math.min(beforeIndex ?? staticCount, ssrParent.childNodes.length)] ?? null;
           ssrParent.insertBefore(anchor, insertRef);
         }
-        lastRepMarker = anchor;
-
         const repeatInsts: TemplateInstance[] = [];
         const hasCollectionState = this.$hasStateRoot(collection, scope);
         const itemsArr = this.$resolveValue(collection, scope);
@@ -1260,6 +1258,7 @@ export class TemplateElement extends HTMLElement {
         const { items: itemMarkers, end: endMarker } = marker
           ? collectItemMarkers(anchor)
           : { items: [] as Comment[], end: null as Comment | null };
+        lastRepMarker = endMarker ?? anchor;
 
         if (blockMeta && blockTplDom && anchor.parentNode && itemMarkers.length > 0) {
           if (
