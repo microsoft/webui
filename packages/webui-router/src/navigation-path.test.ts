@@ -16,9 +16,7 @@ describe('navigation-path helpers', () => {
       new URL('https://example.test/store/search?q=shirt&sort=price-desc'),
       '/store',
     );
-
     assert.deepEqual(target, {
-      pathname: '/search',
       requestPath: '/search?q=shirt&sort=price-desc',
     });
   });

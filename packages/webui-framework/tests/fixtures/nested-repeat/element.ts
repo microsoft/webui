@@ -13,6 +13,15 @@ interface NestedRepeatGroup {
   values: NestedRepeatValue[];
 }
 
+interface KeyedChainGroup {
+  id: string;
+  sections: Array<{
+    id: string;
+    visible: boolean;
+    items: Array<{ id: string; label: string }>;
+  }>;
+}
+
 export class TestNestedRepeat extends WebUIElement {
   @observable groups: NestedRepeatGroup[] = [];
 
@@ -82,5 +91,25 @@ export class TestNestedRepeat extends WebUIElement {
   }
 }
 
-TestNestedRepeat.define('test-nested-repeat');
+export class TestNestedRepeatKeyedChain extends WebUIElement {
+  @observable keyedGroups: KeyedChainGroup[] = [];
 
+  reverseItems(): void {
+    this.keyedGroups = this.keyedGroups.map((group) => ({
+      id: group.id,
+      sections: group.sections.map((section) => ({
+        id: section.id,
+        visible: section.visible,
+        items: section.items
+          .map((item) => ({
+            id: item.id,
+            label: `${item.label} updated`,
+          }))
+          .reverse(),
+      })),
+    }));
+  }
+}
+
+TestNestedRepeat.define('test-nested-repeat');
+TestNestedRepeatKeyedChain.define('test-nested-repeat-keyed-chain');

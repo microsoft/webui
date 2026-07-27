@@ -1,0 +1,15 @@
+<for each="group in keyedGroups">
+  <for each="section in group.sections">
+    <if condition="section.visible">
+      <for each="item in section.items">
+        <button
+          class="keyed-chain-item"
+          key="{{item.id}}"
+          data-group="{{group.id}}"
+          data-section="{{section.id}}"
+          data-id="{{item.id}}"
+        >{{item.label}}</button>
+      </for>
+    </if>
+  </for>
+</for>

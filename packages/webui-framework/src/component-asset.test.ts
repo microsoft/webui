@@ -51,7 +51,7 @@ function componentAsset(templates: Record<string, TemplateMeta>): Record<string,
 }
 
 describe('component asset helpers', () => {
-  test('manifest load registers templates and injects nonce importmaps', async () => {
+  test('manifest preload registers templates and injects nonce importmaps', async () => {
     const appended: ScriptMock[] = [];
     const template: TemplateMeta = { h: '<p>Lazy</p>' };
     const previousWindow = setGlobal('window', { __webui: { nonce: 'abc123' } });
@@ -86,7 +86,7 @@ describe('component asset helpers', () => {
           }),
         },
       });
-      await assets.load('lazy-card');
+      await assets.preload('lazy-card').asset;
 
       assert.equal(appended.length, 1);
       assert.equal(appended[0].type, 'importmap');
@@ -102,7 +102,7 @@ describe('component asset helpers', () => {
     }
   });
 
-  test('manifest load registers template functions from the asset module', async () => {
+  test('manifest preload registers template functions from the asset module', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
       baseURI: 'https://example.test/app/',
@@ -127,7 +127,7 @@ describe('component asset helpers', () => {
         },
       });
 
-      await assets.load('fn-card');
+      await assets.preload('fn-card').asset;
 
       const fns = window.__webui?.templateFns?.['fn-card'];
       assert.equal(typeof fns?.[0], 'function');
@@ -182,8 +182,9 @@ describe('component asset helpers', () => {
       const first = assets.preload<{ title: string }>('cached-card');
       const second = assets.preload<{ title: string }>('cached-card');
       assert.equal(first, second);
-      await assets.load('cached-card');
-      const data = await assets.data<{ title: string }>('cached-card');
+      await first.asset;
+      if (first.module) await first.module;
+      const data = first.data ? await first.data : undefined;
 
       assert.equal(moduleCount, 1);
       assert.equal(dataCount, 1);
@@ -348,7 +349,7 @@ describe('component asset helpers', () => {
     }
   });
 
-  test('manifest load skips import when root template is already registered', async () => {
+  test('manifest preload skips import when root template is already registered', async () => {
     const previousWindow = setGlobal('window', {
       __webui: {
         styles: ['already-loaded'],
@@ -368,7 +369,7 @@ describe('component asset helpers', () => {
           asset: 'data:text/javascript,throw%20new%20Error(%22import%20should%20not%20run%22)',
         },
       });
-      await assets.load('already-loaded');
+      await assets.preload('already-loaded').asset;
 
       assert.equal(getTemplate('already-loaded')?.h, '<p>Already loaded</p>');
     } finally {

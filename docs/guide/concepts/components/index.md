@@ -16,13 +16,19 @@ WebUI uses a component discovery system that automatically scans and registers c
 ```
 my-component.html  # Required - component template
 my-component.css   # Optional - component styles
-my-component.js    # Optional - client-side behavior
+my-component.js    # Optional - authored client behavior
 ```
 
 Components must follow these naming conventions:
 
 - **Hyphen required**: All component names must contain at least one hyphen (e.g., `user-card`, `nav-menu`, `data-table`)
 - **File name = component name**: The HTML file name determines the component's tag name
+
+An HTML-only component still receives compiled browser template metadata, but
+it contributes no initial browser state. When the framework runtime is loaded,
+it can activate the component for browser-applied state or soft navigation. Add
+the JavaScript or TypeScript file only for authored events, lifecycle code,
+decorators, or imperative APIs.
 
 ### The `<template>` Tag
 
@@ -217,6 +223,12 @@ The Custom Elements Manifest provides the component's tag name:
 
 **Scoped packages:** When you pass a bare scope like `@reactive-ui`, all sub-packages under `node_modules/@reactive-ui/` are discovered and each is checked for WebUI component exports.
 
+Packages that also expose a root JavaScript entry (`exports["."]`, `main`,
+`module`, or `browser`) are treated as authored custom-element packages. Packages
+with only WebUI template/style exports are treated as HTML-only component
+libraries; dynamic bindings render on the server and remain inactive until the
+framework needs them.
+
 ### Local Paths
 
 You can also point to directories outside your app folder:
@@ -225,7 +237,9 @@ You can also point to directories outside your app folder:
 webui build ./my-app --out ./dist --components ./shared/components
 ```
 
-Local path discovery works identically to app directory scanning - HTML files with hyphenated names are registered as components, with matching CSS files auto-paired.
+Local path discovery works identically to app directory scanning - HTML files with
+hyphenated names are registered as components, matching CSS files are auto-paired,
+and a sibling `.ts` or `.js` file marks that component as authored/interactive.
 
 ### Caching
 

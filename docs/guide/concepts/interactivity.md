@@ -15,7 +15,31 @@ my-counter/
 
 - **HTML** defines what the component renders and where dynamic values appear
 - **CSS** styles the component in isolation - Shadow DOM prevents leaking
-- **TypeScript** defines reactive properties, event handlers, and component logic
+- **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
+
+Components that do not need client-side behavior can omit the TypeScript file:
+
+```
+product-card/
+├── product-card.html
+└── product-card.css
+```
+
+Create a custom element only for an Interactive Island: event handlers, custom
+lifecycle code, imperative methods, or state that TypeScript code reads or
+mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
+to access the value or when the value is part of the component's public API.
+
+The sibling `.ts` or `.js` file is the authored behavior boundary. With
+manifest-enabled projection, only `@observable` and `@attr` fields opt into
+initial state hydration; ordinary template roots remain in the trusted SSR DOM.
+Without a client module, bindings, conditionals, and loops still render on the
+server, but the component contributes no projected keys. If the framework is
+loaded, it can later activate the compiled template for browser-applied state or
+soft navigation. Without any projection manifest, the server preserves full
+state. Add a same-named client module only for events, lifecycle code,
+decorators, or imperative APIs. See
+[Hydration](/guide/concepts/hydration) for the full contract.
 
 ## The Component Class
 
@@ -118,6 +142,11 @@ Use `@attr` for values passed from a parent element via HTML attributes. These a
 <my-button></my-button>
 ```
 
+When build-time projection is enabled, `@attr` property names are included in
+initial state metadata. If SSR already emitted the corresponding host
+attribute, that attribute is authoritative during hydration. Projected state
+fills the property only when the host attribute is absent.
+
 ### `@observable` - Reactive State
 
 Use `@observable` for internal state that changes over time. When an observable value changes, the framework automatically updates any template bindings that reference it.
@@ -129,6 +158,21 @@ Use `@observable` for internal state that changes over time. When an observable 
 ```
 
 Observable changes are **synchronous and targeted** - only the specific DOM nodes bound to the changed property are updated.
+
+You do not need `@observable` for values that are only read by the template.
+Add `@observable` when TypeScript code needs to read or mutate the value, for
+example in an event handler.
+
+### Initial Hydration State
+
+For the initial page, build-time projection can narrow state to top-level
+`@observable` and `@attr` values from authored components. Template bindings
+still render on the server, but they do not automatically become JavaScript
+state. Only components reachable on the active route contribute projected
+values. Without a projection manifest, WebUI intentionally sends full state.
+
+See [Hydration](/guide/concepts/hydration) for HTML-only components, soft
+navigation, and payload behavior.
 
 ### Derived State
 
@@ -179,6 +223,10 @@ Attach event handlers with `@event` syntax:
   Hover me
 </div>
 ```
+
+Components that use `@event` must have authored `.ts` or `.js` code that
+defines a `WebUIElement` for the tag. HTML-only components do not provide
+application event handlers.
 
 Event handlers use method-call syntax only. Arguments can be:
 
@@ -361,9 +409,8 @@ webui build ./src --out ./dist --plugin=webui \
 ```
 
 Each requested root writes one ESM module such as `<tag>.webui.js` next to
-`protocol.bin`. The module carries template/style data, compiled condition
-functions, and the dependency closure for the root component; it does not contain
-inventory state.
+`protocol.bin`. The module carries the component's template, styles, and
+dependency closure; it does not contain route inventory state.
 
 During development, pass the same flag to `webui serve` so these roots are
 validated and served without a separate build step:
@@ -373,10 +420,10 @@ webui serve ./src --state ./data/state.json --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread --watch
 ```
 
-The dev server parses and validates each root on every build — HTML and
+The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
-skipped because it is outside the SSR tree — and serves the compiled
-`<tag>.webui.js` from memory, rebuilding it on change.
+missed because the component is outside the initial route tree. The dev server
+serves `<tag>.webui.js` from memory and rebuilds it on change.
 
 Load the asset before creating or revealing the component:
 
@@ -407,15 +454,12 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` imports the asset module, registers template metadata,
-and applies the current page CSP nonce to CSS module importmaps when needed.
-Components can then fetch their own data in their class code and attach it
-through observables or `setState()`. The loader skips importing when the root
-template is already present in `window.__webui.templates`, shares concurrent
-requests for the same URL, and dedupes CSS module styles against
-`window.__webui.styles`. `create(tag)` creates the element after template/module
-work is ready, then applies loaded data with `setState()` when the data promise
-resolves, matching the router state handoff model. Use
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`.
+`preload(tag)` starts the component's template, styles, JavaScript module, and
+optional data together. Components can then fetch their own data in their class
+code and expose it through `@observable` fields when JavaScript needs to read or
+mutate it. Concurrent requests for the same asset share one in-flight load.
+`create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
 fastest path: it lets the shell start the template asset, JS chunk, and data
@@ -492,11 +536,67 @@ The framework detects the existing Declarative Shadow DOM roots and upgrades ele
 - Bindings are wired to class properties
 - Event handlers are attached
 - `@observable` properties become reactive
+- Existing host attributes take precedence over projected `@attr` state
 - The component is now interactive
 
 ### 4. User interacts
 
 From this point on, interactions are handled entirely on the client. Changes to `@observable` properties trigger targeted DOM updates without a server round-trip.
+
+### Setting observable state during setup
+
+The server owns the first paint, and the framework **trusts** the HTML it produced — hydration wires bindings to the existing DOM instead of re-rendering it. A value you write *before hydration finishes* — in an `@observable` field initializer, the `constructor`, or before you call `super.connectedCallback()` — updates the property's backing field but cannot touch the DOM yet, so it is dropped. Your element's state then silently disagrees with what is on screen.
+
+When the framework detects this it logs a development warning naming the properties, so the mismatch is never silent:
+
+```
+[WebUI] Hydration mismatch on <my-counter>: "count" changed at or before
+super.connectedCallback() to a value that differs from the server-rendered DOM…
+```
+
+Follow one rule to stay correct:
+
+- **A value that must appear in the first render belongs in the SSR state.** Provide it in the JSON state so the server renders it; the client then hydrates against a matching DOM.
+- **Assign anything else after `super.connectedCallback()`**, where `@observable` writes flow through live bindings.
+
+WebUI treats `super.connectedCallback()` as a synchronous hydration boundary.
+When it returns, that component's bindings, events, and `w-ref` references are
+wired. This relies on the WebUI loading contract: load authored component code
+with a parser-inserted, non-async ES module script or a classic `defer` script.
+If a classic script blocks parsing, place it after every SSR instance it may
+upgrade.
+
+Descendants must not structurally mutate a containing WebUI component's SSR
+subtree before that component hydrates. Inserting, removing, or reordering nodes
+can shift compiled paths before WebUI wires them.
+
+```ts
+export class MyCounter extends WebUIElement {
+  @observable count = 0;
+
+  connectedCallback(): void {
+    // ✗ Wrong: runs before hydration — dropped, and warns.
+    // this.count = 3;
+
+    super.connectedCallback();
+
+    // ✓ Correct: runs after hydration — updates the DOM reactively.
+    this.count = 3;
+  }
+}
+```
+
+If `count` should already read `3` in the server-rendered HTML, seed it in the SSR state instead of assigning it on the client at all.
+
+#### Development warning
+
+The mismatch warning is removed from `webui-press` production builds. If you
+bundle the framework yourself, define `__WEBUI_DEV__` as `false` in production:
+
+```bash
+esbuild app.ts --bundle --minify --define:__WEBUI_DEV__=false
+```
+
 
 ## When NOT to Hydrate
 

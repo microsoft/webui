@@ -153,4 +153,53 @@ test.describe('nested repeat SSR hydration', () => {
   test('outer scope text bindings hydrate correctly', async ({ page }) => {
     await expect(page.locator('test-nested-repeat h2')).toHaveText(['Color', 'Size']);
   });
+
+  test('innermost keyed repeat hydrates and reorders through nested directives', async ({ page }) => {
+    await page.waitForFunction(() => {
+      const element = document.querySelector('test-nested-repeat-keyed-chain');
+      return element && (element as any).$ready === true;
+    });
+
+    const items = page.locator('test-nested-repeat-keyed-chain .keyed-chain-item');
+    await expect(items).toHaveCount(4);
+    await expect(items).toHaveText(['G1 A', 'G1 B', 'G2 A', 'G2 C']);
+
+    await page.evaluate(() => {
+      const parent = document.querySelector(
+        'test-nested-repeat-keyed-chain',
+      ) as HTMLElement & { reverseItems(): void };
+      const elements = parent.shadowRoot?.querySelectorAll('.keyed-chain-item');
+      const nodes = new Map<string, Element>();
+      elements?.forEach((element) => {
+        nodes.set(
+          `${element.getAttribute('data-group')}:${element.getAttribute('data-id')}`,
+          element,
+        );
+      });
+      (window as unknown as { __keyedChainNodes?: Map<string, Element> })
+        .__keyedChainNodes = nodes;
+      parent.reverseItems();
+    });
+
+    await expect(items).toHaveText([
+      'G1 B updated',
+      'G1 A updated',
+      'G2 C updated',
+      'G2 A updated',
+    ]);
+    const preserved = await page.evaluate(() => {
+      const parent = document.querySelector('test-nested-repeat-keyed-chain');
+      const elements = parent?.shadowRoot?.querySelectorAll('.keyed-chain-item');
+      const nodes = (window as unknown as {
+        __keyedChainNodes?: Map<string, Element>;
+      }).__keyedChainNodes;
+      return Array.from(elements ?? []).every((element) => (
+        nodes?.get(
+          `${element.getAttribute('data-group')}:${element.getAttribute('data-id')}`,
+        ) === element
+      ));
+    });
+
+    expect(preserved).toBe(true);
+  });
 });

@@ -4,7 +4,7 @@
 /// <reference lib="webworker" />
 
 import { API_CHUNKS, sanitizePayload, type ApiChunk, type ApiPayload } from './payload.js';
-import initWasm, { render } from './wasm/handler/webui_wasm_handler.js';
+import initWasm, { Protocol } from './wasm/handler/webui_wasm_handler.js';
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -13,7 +13,7 @@ const protocolUrl = new URL("protocol.bin", baseUrl);
 const themeCssUrl = new URL("theme.css", baseUrl);
 const encoder = new TextEncoder();
 let wasmReady: Promise<unknown> | undefined;
-let protocolReady: Promise<Uint8Array> | undefined;
+let protocolReady: Promise<Protocol> | undefined;
 let themeCssReady: Promise<string> | undefined;
 
 self.addEventListener("install", () => {
@@ -79,7 +79,7 @@ async function loadThemeCss(): Promise<string> {
   return themeCssReady;
 }
 
-async function loadProtocol(): Promise<Uint8Array> {
+async function loadProtocol(): Promise<Protocol> {
   if (!protocolReady) {
     protocolReady = (async () => {
       await loadWasm();
@@ -87,7 +87,8 @@ async function loadProtocol(): Promise<Uint8Array> {
       if (!response.ok) {
         throw new Error(`Failed to load ${protocolUrl.pathname}: ${response.status}`);
       }
-      return new Uint8Array(await response.arrayBuffer());
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return new Protocol(bytes, 'webui');
     })().catch((error) => {
       protocolReady = undefined;
       throw error;
@@ -110,7 +111,7 @@ function loadWasm(): Promise<unknown> {
 
 async function streamChunksAsReady(
   controller: ReadableStreamDefaultController<Uint8Array>,
-  protocol: Uint8Array,
+  protocol: Protocol,
 ): Promise<void> {
   const pending = API_CHUNKS.map((chunk) =>
     fetchChunk(chunk).then((payload) => ({ chunk, payload })),
@@ -126,14 +127,12 @@ async function streamChunksAsReady(
     controller.enqueue(
       encode(`<div class="stream-chunk" data-chunk="${result.chunk.label}">\n`),
     );
-    render(
-      protocol,
+    protocol.renderStream(
       JSON.stringify(result.payload.state),
       (chunk: string) => controller.enqueue(encode(chunk)),
       {
         entry: result.payload.entry,
         requestPath: '/',
-        plugin: 'webui',
       },
     );
     controller.enqueue(encode("\n</div>\n"));

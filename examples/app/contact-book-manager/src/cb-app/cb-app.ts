@@ -7,19 +7,14 @@ import { api } from '#api';
 
 // Child components used in cb-app.html
 import '#organisms/cb-header/cb-header.js';
-import '#organisms/cb-sidebar/cb-sidebar.js';
 
 type SearchChangeEvent = CustomEvent<{ value: string }>;
 type ContactEvent = CustomEvent<{ id: string }>;
 type FormSaveEvent = CustomEvent<Record<string, string>>;
 
 export class CbApp extends WebUIElement {
-  @observable page = '';
   @observable searchQuery = '';
-  @observable activeGroup = 'all';
-  @observable totalContacts = '0';
   @observable totalFavorites = '0';
-  @observable groups: string[] = [];
 
   onSearch(e: SearchChangeEvent): void {
     this.searchQuery = e.detail.value;

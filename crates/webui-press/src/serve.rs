@@ -149,6 +149,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         spawn_watcher(
             WatchConfig {
                 paths: watched,
+                explicit_files: Vec::new(),
                 ignore,
                 debounce: DEBOUNCE_DURATION,
                 retry_unchanged_when: None,

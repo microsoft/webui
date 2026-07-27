@@ -11,9 +11,9 @@ The browser loads only static assets:
 - a service worker that streams the navigation response
 
 No application server is required. The service worker fetches public API state,
-renders the matching WebUI fragment with `webui_wasm_handler.render()`, and
-enqueues each rendered section into a `ReadableStream` as soon as that API
-response resolves.
+constructs one `webui_wasm_handler.Protocol`, renders matching fragments with
+`Protocol.renderStream()`, and enqueues each section into a `ReadableStream` as
+soon as that API response resolves.
 
 Because the example renders public API data, the service worker validates URL
 fields before calling the handler. Keep that boundary in copied code so

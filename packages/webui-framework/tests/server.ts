@@ -13,17 +13,29 @@ const outDir = resolve(fixturesRoot, 'dist');
 const tsconfig = resolve(here, '..', 'tsconfig.test.json');
 const port = Number(process.env.PORT ?? 39101);
 
-// Build and render fixtures that have real WebUI templates (src/index.html).
-// The rendered HTML includes template metadata, condition closures, hydration markers, and inventory.
-const rendered = renderFixtures({ fixturesRoot });
-
 // Bundle element.ts entrypoints (component class definitions) for client-side.
-await buildFixtureEntries({
+const projectionManifest = await buildFixtureEntries({
   fixturesRoot,
   entryFileName: 'element.ts',
   outDir,
   tsconfig,
   emptyMessage: `No fixture entry points found in ${fixturesRoot}`,
+  extraBuilds: [{
+    entryPoints: [resolve(here, 'static-host.ts')],
+    bundle: true,
+    format: 'iife',
+    outfile: resolve(outDir, 'static-host.js'),
+    platform: 'browser',
+    target: 'es2022',
+    supported: { 'import-attributes': true },
+    tsconfig,
+  }],
+});
+
+// Render only after the client bundle has produced exact projection metadata.
+const rendered = renderFixtures({
+  fixturesRoot,
+  projectionManifest,
 });
 
 startFixtureServer({
@@ -47,7 +59,7 @@ startFixtureServer({
       }
     }
 
-    // Fall back to static files (bundled JS, legacy fixtures, etc.)
+    // Serve static files for bundled JS, authored fixture HTML, and assets.
     return serveStatic(url.pathname);
   },
 });

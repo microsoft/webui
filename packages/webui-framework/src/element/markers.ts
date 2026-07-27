@@ -34,12 +34,22 @@ const MARKER_REPEAT_ITEM = 'wi';
 export function collectItemMarkers(repeatStart: Comment): { items: Comment[]; end: Comment | null } {
   const items: Comment[] = [];
   let end: Comment | null = null;
+  let depth = 1;
   let node: Node | null = repeatStart.nextSibling;
   while (node) {
     if (node.nodeType === 8 /* COMMENT_NODE */) {
       const data = (node as Comment).data;
-      if (data === MARKER_REPEAT_END) { end = node as Comment; break; }
-      if (data === MARKER_REPEAT_ITEM) items.push(node as Comment);
+      if (data === MARKER_REPEAT_START) {
+        depth++;
+      } else if (data === MARKER_REPEAT_END) {
+        depth--;
+        if (depth === 0) {
+          end = node as Comment;
+          break;
+        }
+      } else if (data === MARKER_REPEAT_ITEM && depth === 1) {
+        items.push(node as Comment);
+      }
     }
     node = node.nextSibling;
   }
@@ -56,7 +66,7 @@ export function nextElement(marker: Comment): Element | null {
     if (node.nodeType === 1 /* ELEMENT_NODE */) return node as Element;
     if (node.nodeType === 8 /* COMMENT_NODE */) {
       const data = (node as Comment).data;
-      if (data === MARKER_REPEAT_END || data === MARKER_REPEAT_ITEM) return null;
+      if (data === MARKER_REPEAT_END || data === MARKER_REPEAT_ITEM || data === MARKER_COND_END) return null;
     }
     node = node.nextSibling;
   }

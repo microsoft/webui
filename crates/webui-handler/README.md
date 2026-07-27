@@ -8,22 +8,22 @@ High-performance template renderer for the [WebUI](https://github.com/microsoft/
 
 ## Key Functions
 
-### `route_handler::render_partial`
-Renders a JSON partial response for client-side navigation. Returns state, templates, CSS, inventory, and the matched route chain.
+### `Protocol::render_partial`
+Returns a complete client-navigation response with active-route projected
+state.
 
-### `route_handler::render_component_templates`
+### `Protocol::render_component_templates`
 Returns compiled templates and CSS for specific components by tag name. Used for on-demand loading of components not in the route tree (dialogs, overlays). Supports inventory-based deduplication.
 
 ```rust
-let result = route_handler::render_component_templates(
-    &protocol,
+let result = protocol.render_component_templates(
     &["settings-dialog", "notification-panel"],
     &inventory_hex,
 );
 // Returns: { templates: [...], templateStyles: [...], inventory: "..." }
 ```
 
-Available via all bindings: Rust (direct), Node (`renderComponentTemplates`), WASM (`render_component_templates`), FFI (`webui_render_component_templates`), npm (`@microsoft/webui` — `renderComponentTemplates`).
+Available via all bindings: Rust (`Protocol::render_component_templates`), Node/WASM/npm (`Protocol.renderComponentTemplates`), and FFI (`webui_protocol_render_component_templates`).
 
 ## Documentation
 

@@ -11,9 +11,19 @@
  * files and manual TemplateMeta construction.
  */
 
-import { existsSync, readFileSync, readdirSync, writeFileSync, watch } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+  watch,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { build, render } from '@microsoft/webui';
+import { build, Protocol } from '@microsoft/webui';
 
 export interface RenderedFixture {
   /** Fixture directory name (e.g. "counter"). */
@@ -29,10 +39,16 @@ export interface RenderFixturesOptions {
   writeFiles?: boolean;
   /** Watch src/ dirs for changes and re-render automatically (default: false). */
   watchMode?: boolean;
+  /** Bundler projection manifest shared by authored fixture entries. */
+  projectionManifest?: string;
 }
 
 /** Build and render a single fixture from its src/ directory. */
-function renderOne(fixturePath: string, name: string): RenderedFixture | null {
+function renderOne(
+  fixturePath: string,
+  name: string,
+  projectionManifest?: string,
+): RenderedFixture | null {
   const srcDir = resolve(fixturePath, 'src');
   if (!existsSync(resolve(srcDir, 'index.html'))) {
     return null;
@@ -48,12 +64,36 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     ? JSON.parse(readFileSync(configFile, 'utf-8'))
     : {};
 
-  const buildOptions: Parameters<typeof build>[0] = { appDir: srcDir, plugin: 'webui' };
+  const authoredEntryPath = resolve(fixturePath, 'element.ts');
+  const hasAuthoredEntry = existsSync(authoredEntryPath);
+  const authoredEntrySource = hasAuthoredEntry
+    ? readFileSync(authoredEntryPath, 'utf-8')
+    : '';
+  const authoredTags = hasAuthoredEntry
+    ? collectDefinedTags(authoredEntrySource)
+    : new Set<string>();
+  const authoredSource = hasAuthoredEntry
+    ? createAuthoredSourceMirror(srcDir, authoredTags, authoredEntrySource)
+    : null;
+  const buildOptions: Parameters<typeof build>[0] = hasAuthoredEntry
+    ? { appDir: authoredSource?.fixturePath ?? fixturePath, entry: 'src/index.html', plugin: 'webui' }
+    : { appDir: srcDir, plugin: 'webui' };
   if (fixtureConfig.css === 'link' || fixtureConfig.css === 'style' || fixtureConfig.css === 'module') {
     buildOptions.css = fixtureConfig.css;
   }
+  if (projectionManifest) {
+    buildOptions.projectionManifests = [projectionManifest];
+  }
 
-  const result = build(buildOptions);
+  const result = (() => {
+    try {
+      return build(buildOptions);
+    } finally {
+      if (authoredSource) {
+        rmSync(authoredSource.rootPath, { recursive: true, force: true });
+      }
+    }
+  })();
 
   if (!result.protocol || result.protocol.length === 0) {
     throw new Error(
@@ -62,17 +102,117 @@ function renderOne(fixturePath: string, name: string): RenderedFixture | null {
     );
   }
 
-  let html = render(result.protocol, state, { plugin: 'webui' });
+  const renderEntry = hasAuthoredEntry ? 'src/index.html' : 'index.html';
+  const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+  let html = protocol.render(state, { entry: renderEntry }).toString('utf8');
 
-  const scriptTag = `<script src="/dist/${name}/element.js"></script>`;
-  const bodyEnd = html.lastIndexOf('</body>');
-  if (bodyEnd !== -1) {
-    html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
-  } else {
-    html += scriptTag;
+  {
+    const scriptPath = hasAuthoredEntry
+      ? `/dist/${name}/element.js`
+      : '/dist/static-host.js';
+    // Real WebUI apps load client islands as ES modules (`<script type="module">`),
+    // which are deferred until after the document is parsed. Fixtures can opt into
+    // that production-faithful timing with `"script": "module"` in webui.config.json;
+    // otherwise a classic (parser-blocking) script is injected for back-compat.
+    const scriptType = hasAuthoredEntry && fixtureConfig.script === 'module'
+      ? ' type="module"'
+      : '';
+    const scriptTag = `<script${scriptType} src="${scriptPath}"></script>`;
+    const bodyEnd = html.lastIndexOf('</body>');
+    if (bodyEnd !== -1) {
+      html = html.slice(0, bodyEnd) + scriptTag + html.slice(bodyEnd);
+    } else {
+      html += scriptTag;
+    }
   }
 
   return { name, html };
+}
+
+interface AuthoredSourceMirror {
+  rootPath: string;
+  fixturePath: string;
+}
+
+function createAuthoredSourceMirror(
+  srcDir: string,
+  authoredTags: Set<string>,
+  authoredEntrySource: string,
+): AuthoredSourceMirror {
+  const rootPath = mkdtempSync(resolve(tmpdir(), 'webui-fixture-'));
+  const fixturePath = resolve(rootPath, 'fixture');
+  const mirroredSrcDir = resolve(fixturePath, 'src');
+  cpSync(srcDir, mirroredSrcDir, { recursive: true });
+  writeAuthoredComponentMarkers(mirroredSrcDir, authoredTags, authoredEntrySource);
+  return { rootPath, fixturePath };
+}
+
+function collectDefinedTags(source: string): Set<string> {
+  const tags = new Set<string>();
+  let cursor = 0;
+  while (cursor < source.length) {
+    const defineIndex = source.indexOf('.define(', cursor);
+    if (defineIndex === -1) {
+      break;
+    }
+    let valueStart = defineIndex + '.define('.length;
+    while (valueStart < source.length && source[valueStart] === ' ') {
+      valueStart++;
+    }
+    const quote = source[valueStart];
+    if (quote !== '\'' && quote !== '"' && quote !== '`') {
+      cursor = valueStart + 1;
+      continue;
+    }
+    const valueEnd = source.indexOf(quote, valueStart + 1);
+    if (valueEnd === -1) {
+      break;
+    }
+    const tagName = source.slice(valueStart + 1, valueEnd);
+    if (tagName.includes('-')) {
+      tags.add(tagName);
+    }
+    cursor = valueEnd + 1;
+  }
+  return tags;
+}
+
+function writeAuthoredComponentMarkers(
+  srcDir: string,
+  authoredTags: Set<string>,
+  authoredEntrySource: string,
+): void {
+  const stack = [srcDir];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    if (!dir) {
+      continue;
+    }
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(path);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.html')) {
+        continue;
+      }
+      const tagName = entry.name.slice(0, -'.html'.length);
+      if (!authoredTags.has(tagName)) {
+        continue;
+      }
+      const tsPath = resolve(dir, `${tagName}.ts`);
+      const jsPath = resolve(dir, `${tagName}.js`);
+      if (!existsSync(tsPath) && !existsSync(jsPath)) {
+        // Fixtures bundle one shared element.ts entry. Mirror that source beside
+        // each authored template so build-time decorator projection sees the
+        // same JavaScript-owned state as the browser bundle.
+        writeFileSync(tsPath, authoredEntrySource, 'utf-8');
+      }
+    }
+  }
 }
 
 /**
@@ -86,6 +226,7 @@ export function renderFixtures({
   fixturesRoot,
   writeFiles = false,
   watchMode = false,
+  projectionManifest,
 }: RenderFixturesOptions): Map<string, RenderedFixture> {
   const results = new Map<string, RenderedFixture>();
 
@@ -94,7 +235,7 @@ export function renderFixtures({
 
   for (const dir of dirs) {
     const fixturePath = resolve(fixturesRoot, dir.name);
-    const fixture = renderOne(fixturePath, dir.name);
+    const fixture = renderOne(fixturePath, dir.name, projectionManifest);
     if (!fixture) continue;
 
     results.set(dir.name, fixture);
@@ -112,7 +253,11 @@ export function renderFixtures({
       watch(srcDir, { recursive: true }, (_event, _filename) => {
         try {
           const fixturePath = resolve(fixturesRoot, dir.name);
-          const fixture = renderOne(fixturePath, dir.name);
+          const fixture = renderOne(
+            fixturePath,
+            dir.name,
+            projectionManifest,
+          );
           if (fixture) {
             results.set(dir.name, fixture);
             console.log(`  [watch] re-rendered ${dir.name}`);

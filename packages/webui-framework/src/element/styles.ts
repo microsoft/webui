@@ -60,10 +60,7 @@ export function injectModuleStyle(
     // browser registered.
     import(specifier, { with: { type: 'css' } }).then(
       (mod: { default: CSSStyleSheet }) => {
-        shadowRoot.adoptedStyleSheets = [
-          ...shadowRoot.adoptedStyleSheets,
-          mod.default,
-        ];
+        shadowRoot.adoptedStyleSheets.push(mod.default);
       },
       () => {
         // Specifier not registered — component has no CSS module definition.
@@ -74,14 +71,7 @@ export function injectModuleStyle(
     headInjected.add(specifier);
     import(specifier, { with: { type: 'css' } }).then(
       (mod: { default: CSSStyleSheet }) => {
-        const style = document.createElement('style');
-        const rules = mod.default.cssRules;
-        let cssText = '';
-        for (let i = 0; i < rules.length; i++) {
-          cssText += rules[i].cssText;
-        }
-        style.textContent = cssText;
-        document.head.appendChild(style);
+        document.adoptedStyleSheets.push(mod.default);
       },
       () => {},
     );

@@ -12,6 +12,16 @@ interface BenchResult {
   allPropsPerUpdate: number;
 }
 
+interface RepeatBenchResult {
+  itemCount: number;
+  updateIterations: number;
+  createMs: number;
+  create2Ms: number;
+  updateMs: number;
+  updatePerIterationMs: number;
+  clearMs: number;
+}
+
 test.describe('bench fixture', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/bench/fixture.html');
@@ -51,5 +61,37 @@ test.describe('bench fixture', () => {
     // After Phase 5, single-prop should be ~10x faster.
     //
     // We don't assert this ratio yet — this test captures the baseline.
+  });
+
+  test('measures repeat reconciliation performance', async ({ page }) => {
+    await page.locator('test-bench-repeat .run-repeat').click();
+
+    await page.waitForFunction(
+      () =>
+        (window as unknown as Record<string, unknown>).__repeatBenchResult !=
+        null,
+    );
+
+    const result = await page.evaluate(
+      () =>
+        (window as unknown as Record<string, unknown>)
+          .__repeatBenchResult as RepeatBenchResult,
+    );
+
+    console.log('\n=== WebUI Framework Repeat Benchmark ===');
+    console.log(`Items: ${result.itemCount}`);
+    console.log(`Iterations: ${result.updateIterations}`);
+    console.log(`Create: ${result.createMs}ms`);
+    console.log(`Cached create: ${result.create2Ms}ms`);
+    console.log(
+      `Update: ${result.updateMs}ms total, ${result.updatePerIterationMs}ms/iteration`,
+    );
+    console.log(`Clear: ${result.clearMs}ms`);
+    console.log('=========================================\n');
+
+    expect(result.itemCount).toBe(200);
+    expect(result.updateIterations).toBe(200);
+    expect(result.updateMs).toBeGreaterThan(0);
+    expect(result.updatePerIterationMs).toBeGreaterThan(0);
   });
 });

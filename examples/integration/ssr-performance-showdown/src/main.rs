@@ -18,8 +18,7 @@
 use actix_web::{web, App, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use std::path::Path;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
-use webui_protocol::WebUIProtocol;
+use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
 
 // ── Spiral parameters (match ssr-performance-showdown) ──────────────────
 
@@ -95,7 +94,7 @@ fn compute_tiles() -> Vec<serde_json::Value> {
 
 // ── Route handler ───────────────────────────────────────────────────────
 
-async fn handle_index(protocol: web::Data<WebUIProtocol>) -> HttpResponse {
+async fn handle_index(protocol: web::Data<Protocol>) -> HttpResponse {
     let tiles_value = serde_json::Value::Array(compute_tiles());
     let mut state_map = serde_json::Map::with_capacity(1);
     state_map.insert("tiles".to_owned(), tiles_value);
@@ -104,7 +103,7 @@ async fn handle_index(protocol: web::Data<WebUIProtocol>) -> HttpResponse {
     let mut writer = MemoryWriter::with_capacity(256 * 1024);
     let handler = WebUIHandler::new();
 
-    if let Err(e) = handler.handle(
+    if let Err(e) = handler.render(
         &protocol,
         &state,
         &RenderOptions::new("index.html", "/"),
@@ -128,8 +127,10 @@ fn main() -> Result<()> {
         .unwrap_or(3000);
 
     let protocol_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("dist/protocol.bin");
-    let protocol = WebUIProtocol::from_protobuf_file(&protocol_path)
+    let protocol_bytes = std::fs::read(&protocol_path)
         .with_context(|| format!("Failed to load {}", protocol_path.display()))?;
+    let protocol = Protocol::from_protobuf(&protocol_bytes)
+        .with_context(|| format!("Failed to decode {}", protocol_path.display()))?;
     let protocol_data = web::Data::new(protocol);
 
     println!("Listening on http://localhost:{port}");

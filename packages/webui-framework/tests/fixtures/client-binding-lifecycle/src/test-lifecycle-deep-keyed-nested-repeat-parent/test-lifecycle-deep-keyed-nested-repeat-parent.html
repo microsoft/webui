@@ -1,0 +1,9 @@
+<for each="group in groups">
+  <span class="group-label" key="{{group.id}}">{{group.id}}</span>
+  <for each="section in group.sections">
+    <span class="section-label" key="{{section.id}}">{{section.id}}</span>
+    <for each="item in section.items">
+      <test-lifecycle-child key="{{item.id}}" :value="{{item.value}}"></test-lifecycle-child>
+    </for>
+  </for>
+</for>

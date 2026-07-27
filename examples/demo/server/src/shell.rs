@@ -13,17 +13,16 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use webui::{build, BuildOptions, Plugin};
+use webui::{build, BuildOptions, Plugin, Protocol};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
-use webui_protocol::WebUIProtocol;
 
 use crate::registry::AppEntry;
 
 /// Shared state for the shell renderer: the compiled protocol and the
 /// directory containing client-side assets (`dist/`).
 pub(crate) struct ShellState {
-    pub(crate) protocol: WebUIProtocol,
+    pub(crate) protocol: Protocol,
     pub(crate) assets_dir: PathBuf,
 }
 
@@ -57,7 +56,7 @@ impl ShellState {
         );
 
         Ok(Arc::new(Self {
-            protocol: result.protocol,
+            protocol: Protocol::new(result.protocol),
             assets_dir,
         }))
     }
@@ -143,7 +142,7 @@ pub(crate) async fn shell_page(
     let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
     let opts = RenderOptions::new("index.html", "/");
 
-    if let Err(e) = handler.handle(&shell.protocol, &state, &opts, &mut writer) {
+    if let Err(e) = handler.render(&shell.protocol, &state, &opts, &mut writer) {
         log::error!("Shell render failed: {e}");
         return HttpResponse::InternalServerError().body(format!("Shell render failed: {e}"));
     }

@@ -17,6 +17,9 @@ use thiserror::Error;
 /// Plugin-specific protocol helpers for framework hydration metadata.
 pub mod plugin;
 
+/// Bundler-neutral state-projection manifest contract.
+pub mod projection_manifest;
+
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.
 pub mod attrs;
 
@@ -325,6 +328,7 @@ impl WebUiProtocol {
             components: HashMap::new(),
             css_strategy: 0,
             dom_strategy: 0,
+            initial_state_strategy: InitialStateStrategy::Full as i32,
         }
     }
 
@@ -336,6 +340,7 @@ impl WebUiProtocol {
             components: HashMap::new(),
             css_strategy: 0,
             dom_strategy: 0,
+            initial_state_strategy: InitialStateStrategy::Full as i32,
         }
     }
 }
@@ -743,6 +748,37 @@ mod tests {
         let protocol = WebUIProtocol::new(HashMap::new());
         assert!(protocol.tokens.is_empty());
         assert!(protocol.fragments.is_empty());
+        assert_eq!(
+            protocol.initial_state_strategy,
+            InitialStateStrategy::Full as i32
+        );
+    }
+
+    #[test]
+    fn test_projection_metadata_roundtrips() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        protocol.components.insert(
+            "my-card".to_string(),
+            ComponentData {
+                hydration_keys: vec!["name".to_string()],
+                hydration_mode: StateProjectionMode::Keys as i32,
+                navigation_mode: StateProjectionMode::All as i32,
+                ..Default::default()
+            },
+        );
+
+        let bytes = protocol.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert_eq!(
+            decoded.initial_state_strategy,
+            InitialStateStrategy::Components as i32
+        );
+        let component = &decoded.components["my-card"];
+        assert_eq!(component.hydration_mode, StateProjectionMode::Keys as i32);
+        assert_eq!(component.hydration_keys, ["name"]);
+        assert_eq!(component.navigation_mode, StateProjectionMode::All as i32);
+        assert!(component.navigation_keys.is_empty());
     }
 
     #[test]

@@ -5,17 +5,7 @@ import { WebUIElement, observable } from '@microsoft/webui-framework';
 
 export class CbContactDetail extends WebUIElement {
   @observable id!: string;
-  @observable firstName!: string;
-  @observable lastName!: string;
-  @observable email!: string;
-  @observable phone!: string;
-  @observable company!: string;
-  @observable group!: string;
   @observable favorite!: boolean;
-  @observable initials!: string;
-  @observable avatarColor!: string;
-  @observable notes!: string;
-  @observable address!: string;
 
   onEdit(): void {
     this.$emit('edit-contact', { id: this.id });

@@ -7,13 +7,15 @@ export default function init(
   },
 ): Promise<unknown>;
 
-export function render(
-  protocolBytes: Uint8Array,
-  stateJson: string,
-  onChunk: (html: string) => void,
-  options?: {
-    entry?: string;
-    requestPath?: string;
-    plugin?: string;
-  },
-): void;
+export class Protocol {
+  constructor(protocolBytes: Uint8Array, plugin?: string | null);
+
+  renderStream(
+    stateJson: string,
+    onChunk: (html: string) => void,
+    options?: {
+      entry?: string;
+      requestPath?: string;
+    },
+  ): void;
+}

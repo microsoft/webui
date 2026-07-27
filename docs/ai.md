@@ -49,8 +49,16 @@ webui build         + JSON state          hydrate as islands
 3. **The server is the source of truth for the initial render.** The client
    takes over after hydration for user interactions.
 
-4. **Static content never ships JavaScript.** Only components with event
-   handlers, reactive state, or user input need client-side code.
+4. **Scriptless components are dormant, not dead.** Their bindings render on the
+   server and contribute no initial bootstrap state. When the framework is
+   loaded, compiler-owned hosts can activate for browser-applied state, parent
+   property writes, or soft navigation. Events, lifecycle code, decorators, and
+   imperative APIs need a same-named `.ts` or `.js` module.
+
+5. **Hydration state is client-facing.** Initial `#webui-data.state` is
+   projected to hydration keys for components reachable on the active route.
+   This reduces CPU and bytes, but it is not a secrecy boundary. Never put
+   credentials or private tokens in browser render state.
 
 ## Project Structure
 
@@ -67,15 +75,25 @@ my-app/
 │       ├── other-widget.html
 │       ├── other-widget.css
 │       └── other-widget.ts
+├── build-client.mjs           ← Application-owned browser bundle + manifest
 ├── data/
 │   └── state.json              ← Server state for dev
+├── dist/
+│   ├── index.js                ← Browser entry/chunks
+│   └── webui-projection.json   ← Build-time state projection sidecar
 └── package.json
 ```
 
 **Component discovery rules:**
 - HTML files with a hyphen in the name are components (`my-card.html` → `<my-card>`)
 - CSS files with the same name are auto-paired (`my-card.css`)
-- TypeScript files provide client-side behavior (`my-card.ts`)
+- A same-named TypeScript or JavaScript file opts the component into authored
+  behavior (`my-card.ts`)
+- With a validated projection manifest, only exact `@observable` / `@attr`
+  fields opt into initial state hydration; without a manifest, state remains
+  full
+- Scriptless components retain compiler-owned browser templates but contribute
+  no keys to initial bootstrap state
 - Discovery is recursive through subdirectories
 
 ## The `<template>` Tag
@@ -148,10 +166,21 @@ Supported operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 <for each="item in items">
   <div>{{item.name}} - {{item.price}}</div>
 </for>
+
+<for each="item in reorderableItems">
+  <todo-row key="{{item.id}}" title="{{item.title}}"></todo-row>
+</for>
 ```
 
 - The collection must be a JSON array
 - Nested loops are supported; outer loop variables remain accessible
+- Repeats reconcile by array position by default; item attributes never act as keys
+- Duplicate item values and attributes do not create duplicate DOM
+- Add compiler-only `key="{{item.id}}"` to the first concrete child to preserve logical DOM/component identity across reorder; leading `<if>` wrappers are transparent, while `key` directly on `<if>`, `<for>`, or `<outlet>` is invalid
+- `data-key` is an ordinary application attribute and does not control repeat identity
+- `key="{{item}}"` supports arrays of unique string or finite-number primitives
+- Key paths must be rooted at the loop variable; invalid paths fail with `invalid-for-key`
+- Duplicate or invalid runtime keys warn once and safely fall back to positions
 - Components inside loops do NOT inherit loop variables. Pass data via attributes:
   ```html
   <for each="contact in contacts">
@@ -242,14 +271,17 @@ In the TypeScript class: `searchInput!: HTMLInputElement;`
 All attributes are validated at build time. Referencing a non-existent `pending` or `error` component is a compile error.
 
 **State flow:**
-- `keep-alive` — preserves DOM and local state. On reactivation, only param/query attrs are updated - `setState()` is NOT called
+- Scriptless route components use compiler-owned hosts when the framework is
+  loaded, so partial navigation applies only their template-root state
+- `keep-alive` preserves DOM and local state. On reactivation, only param/query attrs are updated
 - Route loaders: `static loader({ params, query, signal })` on component class - fetches custom data instead of server state. Runs pre-commit. Falls back to server state on failure
-- Keep-alive + loader: DOM preserved, loader provides fresh data via `setState()` on reactivation
-- Route actions: `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
+- Keep-alive + loader: DOM preserved, loader refreshes data on reactivation
+- Route actions: `Router.start({ actions: true })` enables `static action({ formData, params, signal })` on component class - handles `<form method="post">`. Returns `{ invalidateTags?, state? }`. Auto-invalidates cache with merged tags
 
 **Cache & preload:**
 - Preload on hover: `Router.start({ preload: true })` - speculatively fetches on link hover
 - Tagged cache: `Router.start({ cache: { staleTime, gcTime, maxEntries } })` - responses cached by path, tagged with `cacheTags`
+- Cache/preload are optional runtime tiers; default `Router.start()` does not load the cache module
 - `Router.invalidateTags(tags)` - evict cache entries by tag
 - `Router.invalidate(path?)` - evict by path or all
 
@@ -317,13 +349,23 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
+Components can omit the `.ts` file when server-rendered output is final. The
+sibling module is the authored behavior boundary: without it, WebUI emits no
+bootstrap state for that component, but retains its compiled template for later
+browser rendering. Create a custom element for events, custom lifecycle code,
+imperative methods, or JavaScript-owned state.
+
+`@observable` and `@attr` are optional. Use them when TypeScript code reads or
+mutates the value directly, or when the value is part of the component's public
+API.
+
 ### Decorator reference
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |-----------|---------|------|---------------------|
-| `@attr` | HTML attribute reflection | Yes (from JSON state) | Yes |
-| `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes | Yes |
-| `@observable` | Reactive internal state | Yes (from JSON state) | Yes |
+| `@attr` | HTML attribute reflection | Yes; an existing SSR host attribute wins | Yes |
+| `@attr({ mode: 'boolean' })` | Boolean attribute (present/absent) | Yes; host presence wins | Yes |
+| `@observable` | Reactive state used by TypeScript code | Yes (from JSON state) | Yes |
 
 
 ### Component API
@@ -333,9 +375,8 @@ MyComponent.define('my-component');
 | `this.$emit(name, detail?)` | Dispatch a CustomEvent that bubbles up |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
-| `setState(state)` | Populate from router navigation state |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Define lazy component assets and load asset/module/data work in parallel |
+| `defineComponentAssets(manifest)` | Define lazy component assets with `preload(tag)` and `create(tag)` |
 
 ### Emitting custom events
 
@@ -358,15 +399,15 @@ onItemSelected(e: CustomEvent): void {
 
 ### Dynamic Component Loading
 
-Components like dialogs, overlays, and drawers are declared as routes but
-loaded on demand — not during initial navigation. Declare them in the route
-tree so the build compiles them into the protocol:
+Components like dialogs, overlays, and drawers are declared as routes but loaded
+on demand, not during initial navigation. Declare them in the route tree so they
+can be loaded dynamically:
 
 ```html
 <route path="/" component="app-shell">
   <route path="" component="home-page" exact />
   <route path="users/:id" component="user-detail" exact />
-  <!-- Compiled into protocol, but only loaded when needed -->
+  <!-- Available for dynamic loading, but only loaded when needed -->
   <route path="settings" component="settings-dialog" exact />
 </route>
 ```
@@ -374,7 +415,7 @@ tree so the build compiles them into the protocol:
 Then load on demand with `Router.ensureLoaded` before creating the element:
 
 ```typescript
-// Fetches template + CSS from /_webui/templates — no FOUC
+// Fetches template + CSS from /_webui/templates before showing UI.
 await Router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 
@@ -383,11 +424,10 @@ await Router.ensureLoaded('modal-a', 'modal-b', 'drawer-c');
 ```
 
 The component's template is **not** sent during initial SSR or partial
-navigation — `collect_inventoryable_components` only walks the matched
-route, not siblings. Zero cost until requested.
+navigation. It has zero client cost until requested.
 
 If a user navigates directly to `/settings` (deep link), the component
-renders normally in the outlet — it works both ways.
+renders normally in the outlet. It works both ways.
 
 Configure a custom endpoint if needed:
 
@@ -397,6 +437,12 @@ Router.start({
   loaders: { ... },
 });
 ```
+
+Every route intended for partial navigation must register a custom element.
+Authored routes register eagerly or through `loaders`. Scriptless templates are
+registered by the framework's compiler-owned host runtime. If a route remains
+unregistered after template publication and loader resolution, the router
+navigates the document to let the server render the component.
 
 Without `@microsoft/webui-router`, prebuild static assets and load them from a
 CDN or the app's static folder:
@@ -412,11 +458,11 @@ are returned in `BuildResult::component_asset_files` and written by
 `componentAssetFiles` (`[filename, content, ...]`) from `build()`.
 
 `webui serve` accepts the same `--emit-component-assets` flag and validates each
-root on every dev build — so HTML and theme-token errors in lazily loaded
-components (which are not part of the SSR tree) fail the build instead of being
-silently skipped — then serves the compiled `<tag>.webui.js` from memory,
-rebuilding it on change under `--watch`. No separate `webui build`/`--out` step
-is needed during development.
+root on every dev build. HTML and theme-token errors in lazily loaded components
+fail the build instead of being missed because the component is outside the
+initial route tree. The dev server serves `<tag>.webui.js` from memory and
+rebuilds it on change under `--watch`. No separate `webui build`/`--out` step is
+needed during development.
 
 ```typescript
 import { settingsAssets } from './lazy-assets.js';
@@ -440,17 +486,14 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` uses the current page nonce from `window.__webui.nonce`
-or `<meta name="webui-nonce">` when it needs to append CSS module importmaps.
-The `.webui.js` asset is a browser-native ESM module that default-exports
-template/style metadata and compiled condition functions in one request. If the
-root template is already in `window.__webui.templates`, the loader skips
-importing. Concurrent calls for the same URL share one in-flight request, and
-CSS module styles are deduped against `window.__webui.styles`.
+`defineComponentAssets()` uses the current page CSP nonce when it needs to append
+CSS module importmaps. The `.webui.js` asset is a browser-native ESM module that
+carries the component template and style payload in one request. Concurrent calls
+for the same URL share one in-flight request, and CSS module styles are deduped.
 The manifest helper lets the shell start the template asset, JS chunk, and data
-fetch in parallel as soon as the user expresses intent; `create(tag)` waits for
-only the template asset and JS module by default, creates the element, then
-applies data later with `setState()`. Use
+fetch in parallel as soon as the user expresses intent via `preload(tag)`;
+`create(tag)` waits for only the template asset and JS module by default, then
+creates the element. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
 must wait briefly for state before mounting.
 
@@ -524,6 +567,56 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
+## Build-Time State Projection
+
+Rust never analyzes JavaScript or TypeScript. Bundle browser code first and emit
+projection metadata from the same resolved graph:
+
+```bash
+npm install -D esbuild typescript
+```
+
+```javascript
+// build-client.mjs
+import * as esbuild from 'esbuild';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
+
+await esbuild.build({
+  entryPoints: ['src/index.ts'],
+  outdir: 'dist',
+  bundle: true,
+  splitting: true,
+  format: 'esm',
+  plugins: [esbuildProjection()],
+});
+```
+
+```bash
+node build-client.mjs
+webui build ./src --out ./dist --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json
+```
+
+Rules:
+
+- `@microsoft/webui/projection.js` is build-only. `esbuild` and `typescript` are
+  optional peers and are not imported by the root `@microsoft/webui` runtime.
+- The compiler contract is bundler-neutral; the package currently includes the
+  supported esbuild adapter.
+- esbuild runs once. The adapter observes that run and writes
+  `webui-projection.json` atomically after successful output.
+- No manifest means full state and no JavaScript inference.
+- Any supplied manifest enables strict coverage. Every scripted component in
+  the protocol, including components discovered through `--components`, must
+  have exactly one entry or the build fails with `PROJ-B001`.
+- Code-split and external bundles remain application-owned. Build external
+  shared controls separately and repeat `--projection-manifest` for each
+  fragment.
+- The manifest uses JavaScript property names for `@observable` and `@attr`.
+  Existing SSR host attributes take precedence over projected `@attr` values.
+- WebUI validates input/output hashes and embeds compact metadata in
+  `protocol.bin`. Runtime handlers never open the manifest.
+
 ## Hydration with Router
 
 ```typescript
@@ -547,6 +640,12 @@ Router.start({
 The router wraps every client-side navigation in `document.startViewTransition()`
 automatically. **Do not** wrap `Router.navigate()` in your own `startViewTransition()`
 — that would double-transition.
+
+While active, the router installs a nonce-bearing
+`@view-transition { navigation: none; }` override. Automatic cross-document
+transitions would conflict with intercepted routes that fall back to SSR
+document requests. Explicit client-side transitions still use
+`document.startViewTransition()`, and `Router.destroy()` removes the override.
 
 To customize the animation, assign `view-transition-name` to elements in your CSS
 and target them with `::view-transition-old()` / `::view-transition-new()`:
@@ -578,6 +677,7 @@ webui build ./src --out ./dist --plugin=webui
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
+| `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); requires `--plugin=webui` |
 | `--emit-component-assets <TAGS>` | none | Comma-separated root component tags emitted as static `.webui.js` ESM assets in `--out` |
 | `--theme <PACKAGE>` | none | Design token theme to validate against (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
@@ -589,6 +689,16 @@ With `--css module`, WebUI appends
 `shadowrootadoptedstylesheets="<component-name>"` to component `<template>`
 wrappers when needed. If you author the wrapper yourself for root events, keep
 your attributes there; WebUI preserves them for client/plugin templates.
+
+For framework apps that bundle browser code, bundle your source browser entry
+directly. Import `@microsoft/webui-framework` from authored component modules.
+An app that stays static after SSR needs no framework browser runtime. Import
+the framework once when scriptless components need browser state or soft
+navigation.
+
+For exact state projection, run the browser bundler first and pass its completed
+manifest to `webui build`. Repeat `--projection-manifest` for separately built
+external component bundles. Omitting the flag preserves full state.
 
 For CDN/browser caching in `link` mode, prefer:
 
@@ -611,11 +721,10 @@ webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets mail-thread,compose-page
 ```
 
-This writes `mail-thread.webui.js`. Requested roots are compiled through
-synthetic non-entry fragments, so they are not part of initial SSR unless the
-entry template also references them. The asset is standard ESM that carries
-template/style data and compiled condition functions with no inventory field.
-Load it with `defineComponentAssets()` before mounting the component. Use
+This writes `mail-thread.webui.js`. Requested roots stay outside initial SSR
+unless the entry template also references them. The asset is standard ESM that
+carries the component template and styles. Load it with
+`defineComponentAssets()` before mounting the component. Use
 `--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable filenames.
 Do not reference the lazy component tag from an SSR-reachable template unless you
 intentionally want it eligible for initial SSR.
@@ -645,12 +754,31 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 | `--dom <MODE>` | `shadow` | `shadow` or `light` |
 | `--plugin <NAME>` | none | Plugin identifier (e.g. `webui`) |
 | `--components <PACKAGE>` | none | Extra component sources (repeatable) |
-| `--api-port <PORT>` | none | Proxy route requests to API server |
+| `--projection-manifest <PATH>` | none | Bundler projection fragment (repeatable); watched explicitly with `--watch` |
+| `--api-port <PORT>` | none | Proxy route requests with encoded paths and queries preserved |
 | `--theme <PACKAGE>` | none | Design token theme; missing unresolved tokens fail the build (see below) |
 | `--asset-file-name-template <TEMPLATE>` | `[name].[ext]` | Emitted asset filename template |
 | `--css-public-base <BASE>` | none | Public URL/path prefix for Link-mode CSS hrefs |
 | `--legal-comments <MODE>` | `inline` | `inline` preserves legal CSS comments, `none` strips all comments |
 | `--format <FORMAT>` | `human` | `human` (colorized) or `json` (machine-readable diagnostics on stdout) |
+
+With `--api-port`, backend state requests and `/api/*` forwarding preserve the
+incoming encoded path and query except for the entry route alias. `/` and
+`/index.html` both resolve backend state at `/` (the entry path is normalized),
+while still preserving the query string. All other request paths forward their
+encoded path and query unchanged. Applications must not double-encode route
+parameters for development; `%2F` remains within one route segment.
+
+After generated assets and `--servedir` files miss, route fallback is based on
+the `Accept` header. Requests that explicitly accept `text/html` or
+`application/xhtml+xml` receive the SSR document, and requests that explicitly
+accept `application/json` receive the JSON partial response. `q=0` disables
+that media type, while a malformed or out-of-range `q` value falls back to
+`q=1.0`; when HTML and JSON are both acceptable, the higher `q` wins and exact
+ties prefer JSON. Missing or wildcard-only `Accept` headers return 404, as do JS,
+CSS, image, and other
+non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
+such as `/docs/v2.1` can still fall back to the route renderer.
 
 ### Inspect
 
@@ -713,7 +841,9 @@ apply to a given error are `null`.
 `unclosed-html-tag`,
 `malformed-html-tag`, `unexpected-closing-tag`, `unterminated-html-comment`,
 `unterminated-html-declaration`, `excessive-nesting`, `recursive-template`,
-`invalid-css`.
+`invalid-css`, `PROJ-P001`, `PROJ-P002`, `PROJ-B001`, `PROJ-B002`,
+`PROJ-M001`, `PROJ-M003`, `PROJ-M004`, `PROJ-M006`, `PROJ-M007`,
+`PROJ-M009`, `PROJ-S001`, `PROJ-S003`, `PROJ-S004`.
 
 ### Exit codes
 
@@ -757,9 +887,16 @@ The package's `package.json` must have:
 | `exports["./styles.css"]` | No | Component CSS |
 | `customElements` | Yes | Path to Custom Elements Manifest (provides tag name) |
 
+Packages with a root JavaScript entry (`exports["."]`, `main`, `module`, or
+`browser`) are authored custom-element packages. Packages with only WebUI
+template/style exports are compiler-owned template libraries. Their dynamic
+templates render on the server and can activate in the browser when the
+framework runtime is loaded.
+
 **Local path scanning** works like app directory scanning: HTML files with
 hyphenated names are registered as components, matching CSS files are
-auto-paired.
+auto-paired. A sibling `.ts` or `.js` file marks the component as authored and
+interactive.
 
 **Caching:** npm results are cached at `~/.webui/cache/components/` and
 invalidated when `package.json` changes. Local paths are always re-scanned.
@@ -923,7 +1060,7 @@ The handler resolves `tokens.light` from the state, outputting:
 
 7. **No computed getters for SSR state.** If a value appears in the
    template, it must be in the server state JSON. Use `@observable`
-   with explicit updates in event handlers.
+   only when event handlers or other TypeScript code read or change it.
 
 8. **Components inside `<for>` loops do NOT inherit loop variables.**
    Pass data explicitly via attributes.
@@ -931,9 +1068,27 @@ The handler resolves `tokens.light` from the state, outputting:
 9. **No `import` or `require` in templates.** Components are discovered
    by file naming convention, not imports.
 
-10. **No `this.querySelector()` for reactive state.** Use `@observable` and
-    template bindings. Use `w-ref` only for imperative DOM access (focus,
-    scroll, etc.).
+10. **No `this.querySelector()` for reactive state.** Use `@observable` for
+    state your TypeScript changes, and use template bindings for DOM output.
+    Use `w-ref` only for imperative DOM access (focus, scroll, etc.).
+
+11. **No `@observable` writes before `super.connectedCallback()`.** During SSR
+    hydration the server-rendered DOM is trusted and not re-rendered, so a value
+    set in a field initializer, the `constructor`, or before
+    `super.connectedCallback()` cannot reach the DOM — the write is dropped and
+    the runtime logs a `[WebUI] Hydration mismatch` warning. If the value must
+    appear in the first render, put it in the SSR state JSON; otherwise assign it
+    after `super.connectedCallback()`. The call is a synchronous hydration
+    boundary: when it returns, that component's bindings, events, and `w-ref`
+    references are wired. Load definitions through a parser-inserted, non-async
+    ES module script or a classic `defer` script. A blocking classic script must
+    follow every SSR instance it may upgrade. Descendants must not structurally
+    mutate a containing WebUI component's SSR subtree before it hydrates, because
+    node insertion, removal, or reordering shifts compiled paths. The warning is
+    development-only — it is
+    stripped from production bundles via the `__WEBUI_DEV__` compile-time flag
+    (`webui-press build` sets `__WEBUI_DEV__=false` automatically; self-bundled
+    apps add the define for production).
 
 ## Common Patterns
 
@@ -985,7 +1140,7 @@ button:not([data-active]) { background: transparent; }
 Declare the component as a route (so it's compiled), then load dynamically:
 
 ```html
-<!-- index.html — settings-dialog is in the protocol but not navigated to -->
+<!-- index.html - settings-dialog is available but not navigated to -->
 <route path="/" component="app-shell">
   <route path="" component="home-page" exact />
   <route path="settings" component="settings-dialog" exact />
@@ -993,7 +1148,7 @@ Declare the component as a route (so it's compiled), then load dynamically:
 ```
 
 ```typescript
-// Shell component — load template + CSS on demand
+// Shell component - load template + CSS on demand
 async onOpenSettings(): Promise<void> {
   await Router.ensureLoaded('settings-dialog');
   await import('./settings-dialog/settings-dialog.js');
@@ -1002,7 +1157,7 @@ async onOpenSettings(): Promise<void> {
 ```
 
 ```html
-<!-- Shell template — create the element dynamically -->
+<!-- Shell template - create the element dynamically -->
 <if condition="showSettings">
   <settings-dialog @close="{onCloseSettings()}"></settings-dialog>
 </if>
@@ -1064,8 +1219,10 @@ Each route handler should return only the state that route's component needs:
 ```json
 {
   "scripts": {
-    "build": "webui build ./src --out ./dist --plugin=webui",
-    "dev": "webui serve ./src --state ./data/state.json --plugin=webui --watch"
+    "build:client": "node build-client.mjs",
+    "build:protocol": "webui build ./src --out ./dist --plugin=webui --projection-manifest ./dist/webui-projection.json",
+    "build": "npm run build:client && npm run build:protocol",
+    "dev:server": "webui serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --watch"
   },
   "dependencies": {
     "@microsoft/webui": "latest",
@@ -1075,19 +1232,24 @@ Each route handler should return only the state that route's component needs:
 ```
 
 Add `@microsoft/webui-router` if using client-side navigation.
+Run the client bundler in watch mode alongside `dev:server`; the dev server
+rebuilds when the adapter atomically replaces the manifest.
 
 ## Language Integration (Server Side)
 
-WebUI renders from **any** backend. The server loads `protocol.bin` once
-and renders with JSON state per request.
+WebUI renders from **any** backend. The server loads `protocol.bin` into one
+`Protocol`, then renders with JSON state per request. Projection
+manifests are consumed only while producing `protocol.bin`; runtime rendering
+does not load projection tooling. In Node, `Protocol.render()` returns a UTF-8
+`Buffer`; call `.toString('utf8')` only when string operations are required.
 
 ### Rust
 
 ```rust
-let protocol = WebUIProtocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
+let protocol = Protocol::from_protobuf(&fs::read("dist/protocol.bin")?)?;
 let state = json!({ "title": "Home", "items": items_vec });
-let mut handler = WebUIHandler::new();
-handler.handle(&protocol, &state, &options, &mut writer)?;
+let handler = WebUIHandler::new();
+handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 
 **Streaming SSR (production).** Use `webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a process-wide `ChunkPool` for bounded backpressure + zero per-flush allocation. Configure `.with_flush_timeout(Duration::from_secs(30))` to bound slow-loris DoS. Use `RenderOptions::with_head_inject(html)` / `with_body_inject(html)` for per-request HTML splicing at parser-synthesized `head_end` / `body_end` boundaries (no byte-scanner, cannot mis-fire on literals in comments / srcdoc). `HandlerError::ClientDisconnected` and `StreamTimeout` are returned from both `write()` and `end()` for telemetry. Pre-escape untrusted inject content with `webui_handler::encode_safe`.
@@ -1095,9 +1257,19 @@ handler.handle(&protocol, &state, &options, &mut writer)?;
 ### Node.js
 
 ```javascript
-import { render } from '@microsoft/webui';
-const protocol = readFileSync('./dist/protocol.bin');
-const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
+import { build, Protocol } from '@microsoft/webui';
+
+const result = build({
+  appDir: './src',
+  plugin: 'webui',
+  projectionManifests: ['./dist/webui-projection.json'],
+});
+
+const protocol = new Protocol(result.protocol, { plugin: 'webui' });
+const html = protocol.render(state, {
+  entry: 'index.html',
+  requestPath: req.url,
+});
 ```
 
 ### WebAssembly
@@ -1105,19 +1277,24 @@ const html = render(protocol, JSON.stringify(state), 'index.html', req.url);
 Use the split WASM bundles when rendering or parsing in the browser:
 
 ```javascript
-import initHandler, { render } from './wasm/handler/webui_wasm_handler.js';
+import initHandler, { Protocol } from './wasm/handler/webui_wasm_handler.js';
 await initHandler();
 const protocolBytes = new Uint8Array(await (await fetch('/protocol.bin')).arrayBuffer());
-let html = '';
-render(protocolBytes, JSON.stringify(state), (chunk) => {
-  html += chunk;
-}, { entry: 'index.html', requestPath: '/', plugin: 'webui' });
+const protocol = new Protocol(protocolBytes, 'webui');
+const html = protocol.render(
+  JSON.stringify(state),
+  { entry: 'index.html', requestPath: '/' },
+);
 ```
 
 ```javascript
 import initParser, { build_protocol } from './wasm/parser/webui_wasm_parser.js';
 await initParser();
-const protocolBytes = build_protocol({ 'index.html': '<h1>{{title}}</h1>' }, 'index.html');
+const protocolBytes = build_protocol(
+  { 'index.html': '<h1>{{title}}</h1>' },
+  'index.html',
+  [projectionManifest],
+);
 ```
 
 Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed in one module, such as a playground.
@@ -1125,25 +1302,44 @@ Use `wasm/all/webui_wasm_all.js` when both parser and handler exports are needed
 ### Python (FFI)
 
 ```python
-ptr = lib.webui_render(html_bytes, json_bytes)
+protocol_bytes = Path("dist/protocol.bin").read_bytes()
+buffer = (ctypes.c_uint8 * len(protocol_bytes)).from_buffer_copy(protocol_bytes)
+protocol = lib.webui_protocol_create(buffer, len(protocol_bytes))
+handler = lib.webui_handler_create()
+ptr = lib.webui_handler_render(
+    handler, protocol, data_json, b"index.html", request_path
+)
 result = ctypes.cast(ptr, c_char_p).value.decode("utf-8")
 lib.webui_free(ptr)
+lib.webui_protocol_destroy(protocol)
+lib.webui_handler_destroy(handler)
 ```
+
+Create the protocol and handler once at startup, then pass both handles to
+`webui_handler_render` on every request.
 
 ### Go (cgo)
 
 ```go
-ptr := C.webui_render(cHTML, cJSON)
+protocol := C.webui_protocol_create(
+    (*C.uint8_t)(unsafe.Pointer(&protocolBytes[0])),
+    C.uintptr_t(len(protocolBytes)),
+)
+handler := C.webui_handler_create()
+ptr := C.webui_handler_render(handler, protocol, cJSON, cEntry, cPath)
 defer C.webui_free(ptr)
 result := C.GoString(ptr)
 ```
 
-### C# (P/Invoke)
+### C# (.NET package)
 
 ```csharp
-IntPtr ptr = webui_render(html, dataJson);
-string result = Marshal.PtrToStringUTF8(ptr);
-webui_free(ptr);
+using var protocol = new Protocol(File.ReadAllBytes("dist/protocol.bin"));
+using var handler = new WebUIHandler("webui");
+string result = handler.Render(protocol, dataJson, "index.html", requestPath);
+string partial = protocol.RenderPartial(dataJson, "index.html", requestPath, invHex);
+string templates = protocol.RenderComponentTemplates(["settings-dialog"], invHex);
+string[] tokens = protocol.Tokens();
 ```
 
 ### Server Template Endpoint
@@ -1151,18 +1347,18 @@ webui_free(ptr);
 For `Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2`:
 
 ```rust
-let result = route_handler::render_component_templates(&protocol, &tags, &inv);
+let result = protocol.render_component_templates(&tags, &inv);
 ```
 
 ```javascript
-// Node native addon
-const result = renderComponentTemplates(protocolBuf, JSON.stringify(tags), invHex);
-
 // @microsoft/webui npm package
-import { renderComponentTemplates } from '@microsoft/webui';
-const result = renderComponentTemplates(protocolBuf, ['settings-dialog'], invHex);
+const result = protocol.renderComponentTemplates(['settings-dialog'], invHex);
 ```
 
-The JSON response contains `templates` as component-tag-keyed metadata, `templateFunctions`
-as component-tag-keyed condition closure arrays, `templateStyles` for CSS module importmaps,
-and `inventory` with the updated component bitmask.
+```csharp
+string result = protocol.RenderComponentTemplates(["settings-dialog"], invHex);
+```
+
+The JSON response contains component-tag-keyed `templates`, matching
+`templateFunctions`, `templateStyles` for CSS module importmaps, and `inventory`
+with the updated component bitmask.

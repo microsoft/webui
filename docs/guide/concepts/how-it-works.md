@@ -32,7 +32,10 @@ The binary protocol is the key to WebUI's performance. By moving parsing, expres
 
 ## Server Render Phase
 
-At runtime, the server handler loads the compiled protocol **once** at startup and reuses it for every request.
+At runtime, the server constructs one loaded `Protocol` from the compiled bytes
+at startup and reuses it for every request. Rust, Node, WASM, C, and .NET all
+follow this explicit lifecycle. Protocol decoding and deterministic index
+construction never occur on the request path.
 
 For each incoming request, the handler:
 
@@ -40,7 +43,8 @@ For each incoming request, the handler:
 2. Walks the compiled protocol fragments in order
 3. Copies **static fragments** directly to the output buffer (no processing needed)
 4. Resolves **dynamic fragments** by looking up keys in the JSON state
-5. Emits the final HTML response
+5. Includes only the browser state needed by components on the active route
+6. Emits the final HTML response
 
 ```
 ┌──────────────┐     ┌────────────────┐     ┌──────────────┐
@@ -74,7 +78,9 @@ The user sees rendered content immediately - no blank page, no loading spinner.
 
 ## Client Hydration Phase
 
-After the browser renders the server HTML, JavaScript loads and Web Components **hydrate** as independent islands of interactivity.
+After the browser renders the server HTML, authored Web Components **hydrate**
+as independent islands of interactivity. HTML-only components remain as
+server-rendered content unless later navigation or state updates need them.
 
 ### How hydration works
 
@@ -127,6 +133,11 @@ If a value must appear in the initial HTML, it must come from the server state J
 
 For complex derived values, compute them on the server and include them in the state JSON.
 
+State that participates in hydration is client-facing. When enabled with a
+bundler manifest, route-scoped projection reduces serialization work and
+response bytes, but it is not a secrecy boundary. Without a manifest, WebUI
+preserves full state. Do not put secrets in browser render state.
+
 ### The client handles interactivity after hydration
 
 Once components hydrate, user interactions are handled entirely on the client. Sorting a list, filtering results, toggling a panel - these operations mutate `@observable` properties directly, and the framework updates the DOM reactively.
@@ -144,10 +155,10 @@ WebUI's architecture is designed so that the most common operation - rendering a
 |-----------|--------|
 | **Pre-serialized static fragments** | Copied byte-for-byte to the output buffer - no processing |
 | **Key-based dynamic resolution** | Simple hash map lookup against JSON state - no expression parsing |
-| **No runtime allocations for structure** | Template shape is fixed at build time; only data values vary |
+| **Loaded protocol reuse** | Decode protobuf and build deterministic indices once at startup |
 | **No JavaScript on the server** | Native code (Rust/C) handles rendering - no VM startup, no GC pauses |
 | **Declarative Shadow DOM** | Browser renders content before JS loads - no white flash |
 | **Islands Architecture** | Only interactive components ship JS - static content has zero client cost |
-| **Binary Protocol Buffer** | Compact, zero-copy deserialization - faster than JSON or text templates |
+| **Binary Protocol Buffer** | Compact build artifact with no runtime template parsing |
 
 The result: server render times measured in microseconds, not milliseconds. First Contentful Paint that doesn't depend on JavaScript. And client-side interactivity that activates without rebuilding the DOM.

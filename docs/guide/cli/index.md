@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -47,13 +47,16 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
+| `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
 | `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
-Path inputs for `APP`, `--state`, and `--servedir` support absolute paths, relative paths, `~/...`, and `file://...` URI-style values.
+Path inputs for `APP`, `--state`, `--servedir`, and
+`--projection-manifest` support absolute paths, relative paths, `~/...`, and
+`file://...` URI-style values.
 
 **CSS Modes:**
 
@@ -168,6 +171,11 @@ webui build ./my-app --out ./dist \
 # Build with the WebUI Framework plugin (hydration support)
 webui build ./my-app --out ./dist --plugin=webui
 
+# Build browser code first, then embed exact state projection metadata
+node ./my-app/build-client.mjs
+webui build ./my-app --out ./dist --plugin=webui \
+  --projection-manifest ./my-app/dist/webui-projection.json
+
 # Build with external component packages
 webui build ./my-app --out ./dist --components @reactive-ui
 
@@ -181,6 +189,13 @@ webui build ./my-app --out ./dist --components ./shared/components
 webui build ./src/apps/app1 --out ./dist/app1.bin
 webui build ./src/apps/app2 --out ./dist/app2.bin
 ```
+
+`--projection-manifest` is opt-in and strict. Without it, WebUI performs no
+JavaScript analysis and preserves full state. With one or more fragments, every
+scripted component compiled from the app or `--components` sources must have
+exactly one manifest entry. Build external component bundles separately and
+repeat the flag for each fragment. See
+[Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection).
 
 ### `webui inspect`
 
@@ -214,7 +229,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -231,7 +246,8 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
-| `--api-port <PORT>` | Proxy route requests to your API server on this port. The dev server forwards navigation requests so your backend can provide real state data. | *(none)* |
+| `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
+| `--api-port <PORT>` | Proxy route requests to your API server on this port. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
@@ -245,9 +261,28 @@ The `APP` directory should contain your entry HTML and component files.
 1. Builds the protocol from your `APP` directory (no separate `webui build` step needed)
 2. Renders the entry template with state data
 3. Serves the rendered HTML with an injected live-reload script
-4. If `--watch` is enabled, watches app, state, and asset files for changes
+4. If `--watch` is enabled, watches app, state, asset, and explicit projection manifest files for changes
 5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
 6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+
+When `--api-port` is set, backend state requests and `/api/*` forwarding use
+the encoded path and query exactly as received except for the entry route alias.
+`/` and `/index.html` both resolve backend state at `/` (the entry path is
+normalized), while still preserving the query string. All other request paths
+forward their encoded path and query unchanged. Do not double-encode route
+parameters for development. For example, `%2F` remains part of one parameter
+instead of becoming a path separator.
+
+After generated assets and `--servedir` files miss, route fallback is based on
+the `Accept` header. Requests that explicitly accept `text/html` or
+`application/xhtml+xml` receive the SSR document, and requests that explicitly
+accept `application/json` receive the JSON partial response. `q=0` disables
+that media type, while a malformed or out-of-range `q` value falls back to
+`q=1.0`; when HTML and JSON are both acceptable, the higher `q` wins and exact
+ties prefer JSON. Missing or wildcard-only `Accept` headers return 404, as do JS,
+CSS, image, and other
+non-HTML/non-JSON asset requests. Dots are valid in route segments, so paths
+such as `/docs/v2.1` can still fall back to the route renderer.
 
 **Examples:**
 
@@ -266,6 +301,10 @@ webui serve ./my-app --state ./state.json --servedir ./assets --css style --watc
 
 # Use the WebUI Framework plugin for hydration
 webui serve ./my-app --state ./state.json --plugin=webui --port 3001
+
+# Rebuild when the client bundler atomically replaces its manifest
+webui serve ./my-app --state ./state.json --plugin=webui \
+  --projection-manifest ./dist/webui-projection.json --watch
 
 # Dev server with external components (--watch watches local paths)
 webui serve ./my-app --state ./state.json --components @reactive-ui --watch
@@ -310,6 +349,8 @@ successful rebuild clears the error and reloads connected browsers.
 | `/` or `/index.html` | Rendered HTML with live-reload script |
 | `/<tag>.webui.js` | In-memory static component assets emitted by `--emit-component-assets` (served as JS modules) |
 | `/*` | Static files from `--servedir` (when provided) |
+| `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
+| Missing JS, CSS, image, and wildcard-only asset requests | 404 |
 | `/hmr` | HMR version endpoint (polling backend, only when `--watch`) |
 
 ## Error output and exit codes
@@ -514,11 +555,19 @@ The package's `package.json` must have:
 
 The Custom Elements Manifest provides the component tag name via `modules[].declarations[].tagName`.
 
+If the package also exposes a root JavaScript entry (`exports["."]`, `main`,
+`module`, or `browser`), WebUI treats those components as authored custom
+elements. Packages with only template/style exports are HTML-only component
+libraries. Their templates render on the server and the framework can activate
+them later when needed.
+
 **Resolution:** The CLI searches for `node_modules/` by walking up from the app directory, matching Node.js module resolution behavior. Symlinks (pnpm, npm workspaces) are resolved automatically.
 
 ### Local Paths
 
-Pass a filesystem path to discover components the same way the app directory is scanned.
+Pass a filesystem path to discover components the same way the app directory
+is scanned. A sibling `.ts` or `.js` file marks a component as
+authored/interactive. Otherwise the component remains HTML-only.
 
 ```bash
 # Relative path

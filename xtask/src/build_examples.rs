@@ -36,6 +36,15 @@ pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
         run_commands: &[],
     },
     IntegrationBuild {
+        name: "node-addon-bench",
+        commands: &[BuildCommand {
+            cmd: "node",
+            args: &["--check", "bench.mjs"],
+            cwd: Some("examples/integration/node-addon-bench"),
+        }],
+        run_commands: &[],
+    },
+    IntegrationBuild {
         name: "electron",
         commands: &[BuildCommand {
             cmd: "pnpm",
@@ -165,7 +174,63 @@ pub fn run_app_builds() -> Result<(), String> {
 
 pub fn run_example_builds() -> Result<(), String> {
     run_integration_builds()?;
+    ensure_example_wasm()?;
+    ensure_example_deps()?;
     run_app_builds()
+}
+
+/// Build the shared workspace JS packages once, before the parallel app builds.
+///
+/// Every example app's `build:deps` step compiles the shared packages
+/// (`@microsoft/webui`, `@microsoft/webui-framework`, `@microsoft/webui-router`)
+/// with `tsc` into their `dist/` directories. Building the apps in parallel
+/// makes those `tsc` invocations race for the shared output: one app reads
+/// `packages/webui/dist/projection/adapters/esbuild.js` while another app's
+/// `tsc` is mid-rewrite of the sibling `loader.js`, surfacing in CI as
+/// `does not provide an export named 'compileProjection'`.
+///
+/// Building the shared packages once here seeds their outputs and the
+/// incremental `.tsbuildinfo` (the shared tsconfigs set `"incremental": true`),
+/// so each per-app `build:deps` becomes a no-op emit that never rewrites the
+/// shared files concurrently. Mirrors `ensure_example_wasm`: one up-front build
+/// keeps `build-examples` self-contained. This is strictly less work than the
+/// status quo, which ran the same shared build once per app in parallel.
+fn ensure_example_deps() -> Result<(), String> {
+    run_command_quiet(
+        "pnpm",
+        &[
+            "--filter",
+            "@microsoft/webui",
+            "--filter",
+            "@microsoft/webui-framework",
+            "--filter",
+            "@microsoft/webui-router",
+            "run",
+            "build",
+        ],
+        None,
+    )
+    .map_err(|message| format!("shared example dependency build failed: {message}"))
+}
+
+/// Build the WASM bundles once, before the parallel app builds, when they are
+/// not already present.
+///
+/// Some example apps (e.g. `service-worker`) copy the compiled handler bundle
+/// during their own build and otherwise spawn a nested `cargo xtask build-wasm`.
+/// Running that nested build inside the parallel app builds races the other
+/// apps for the Cargo target-directory lock and fails in CI, where no earlier
+/// step has produced the bundle. Building it here first keeps `build-examples`
+/// self-contained. Locally the gate builds WASM in an earlier phase, so this
+/// check is a no-op and adds no cost.
+fn ensure_example_wasm() -> Result<(), String> {
+    let handler_dir = Path::new(crate::build_wasm::WASM_OUTPUT_DIR).join("handler");
+    let js = handler_dir.join("webui_wasm_handler.js");
+    let wasm = handler_dir.join("webui_wasm_handler_bg.wasm");
+    if js.is_file() && wasm.is_file() {
+        return Ok(());
+    }
+    crate::build_wasm::run()
 }
 
 fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
@@ -183,6 +248,7 @@ fn run_app_build_script(app_dir: &Path) -> Result<(), String> {
             if let Ok(s) = String::from_utf8(output.stdout) {
                 msg.push_str(&s);
             }
+
             if let Ok(s) = String::from_utf8(output.stderr) {
                 msg.push_str(&s);
             }

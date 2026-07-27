@@ -7,7 +7,6 @@
  */
 
 import { isStateful } from './types.js';
-import type { StatefulElement } from './types.js';
 
 // ── Constants ────────────────────────────────────────────────────
 

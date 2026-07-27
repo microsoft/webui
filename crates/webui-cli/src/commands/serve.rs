@@ -16,12 +16,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_stream::StreamExt;
 use webui::streaming::StreamingWriter;
-use webui::{Diagnostic, WebUIHandler};
+use webui::{Diagnostic, Protocol, WebUIHandler};
 use webui_dev_server::{spawn_watcher, sse_handler, LiveReload, WatchConfig};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{encode_safe, RenderOptions, ResponseWriter};
+#[cfg(test)]
 use webui_protocol::WebUIProtocol;
 
 use super::common::*;
@@ -49,7 +50,9 @@ pub struct ServeArgs {
     #[arg(long)]
     pub watch: bool,
 
-    /// Port of the user's API server to proxy route requests to
+    /// Port of the user's API server to proxy route requests to. Encoded path
+    /// and query bytes are forwarded unchanged, except the entry route: `/` and
+    /// `/index.html` both resolve backend state at `/` (query preserved).
     #[arg(long)]
     pub api_port: Option<u16>,
 
@@ -191,7 +194,7 @@ struct SharedState {
     /// In-memory static component assets (`<tag>.webui.js`) emitted by
     /// `--emit-component-assets`, served from memory like generated CSS.
     component_assets: HashMap<String, String>,
-    protocol: Option<WebUIProtocol>,
+    protocol: Option<Arc<Protocol>>,
     state_data: Option<Value>,
     token_css: Option<HashMap<String, String>>,
     rebuild_error: Option<String>,
@@ -345,6 +348,7 @@ fn run(args: &ServeArgs) -> Result<()> {
 
         let handle = start_file_watcher(WatcherConfig {
             watch_paths: watch_paths_list,
+            projection_manifests: args.app_args.projection_manifests.clone(),
             state: Arc::clone(&state),
             render_config,
             livereload: active_lr.clone(),
@@ -459,7 +463,7 @@ struct BuildRenderResult {
     css_files: HashMap<String, String>,
     /// Static component assets (`<tag>.webui.js`) keyed by filename.
     component_assets: HashMap<String, String>,
-    protocol: WebUIProtocol,
+    protocol: Arc<Protocol>,
     state_data: Value,
     token_css: Option<HashMap<String, String>>,
     /// Non-fatal build advisories (warning-severity diagnostics) to frame under
@@ -512,11 +516,13 @@ fn build_and_render(
         map.insert("basePath".into(), Value::String(bp));
     }
 
+    let protocol = Arc::new(Protocol::new(build_result.protocol));
+
     // Render to memory
     let mut writer = MemoryWriter::with_capacity(4096);
     let handler = create_handler(config.app_args.plugin);
-    handler.handle(
-        &build_result.protocol,
+    handler.render(
+        &protocol,
         &state,
         &RenderOptions::new(&config.app_args.entry, "/"),
         &mut writer,
@@ -538,7 +544,7 @@ fn build_and_render(
         html,
         css_files: css_map,
         component_assets,
-        protocol: build_result.protocol,
+        protocol,
         state_data: state,
         token_css,
         warnings: build_result.warnings,
@@ -620,6 +626,13 @@ struct RequestPaths {
     request_path: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpaFallbackKind {
+    None,
+    Html,
+    Json,
+}
+
 fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
     let route_path = if relative.is_empty() {
         "/".to_string()
@@ -642,6 +655,18 @@ fn build_request_paths(relative: &str, query: &str) -> RequestPaths {
     request_path.push('?');
     request_path.push_str(query);
 
+    RequestPaths {
+        route_path,
+        request_path,
+    }
+}
+
+fn request_paths(req: &HttpRequest) -> RequestPaths {
+    let uri = req.uri();
+    let route_path = uri.path().to_string();
+    let request_path = uri
+        .path_and_query()
+        .map_or_else(|| route_path.clone(), |value| value.as_str().to_string());
     RequestPaths {
         route_path,
         request_path,
@@ -749,12 +774,8 @@ async fn render_page_response(
 
     // Inject route params (nested) into state for SSR
     if let Value::Object(ref mut map) = state {
-        let nested_params = webui_handler::route_handler::collect_nested_route_params(
-            &proto,
-            &entry,
-            route_path,
-            &mut webui_handler::route_matcher::CompiledRouteCache::new(),
-        );
+        let nested_params =
+            webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
         for (k, v) in &nested_params {
             map.insert(k.clone(), Value::String(v.clone()));
         }
@@ -791,22 +812,16 @@ async fn render_page_response(
             None => opts_owner,
         };
         let handler = create_handler(plugin);
-        if let Err(e) = handler.handle(&proto, &state, &opts, &mut writer) {
+        if let Err(e) = handler.render(&proto, &state, &opts, &mut writer) {
             // Status 200 + headers are already on the wire — we cannot
             // return an HTTP error. Log the detail so ops sees it;
             // emit a fixed HTML comment so an attacker-controlled
             // error message cannot break out of the comment via `-->`.
             log::error!("render failed for {route_path_for_log}: {e}");
             let _ = ResponseWriter::write(&mut writer, "<!-- webui: render error -->");
-        }
-        // `end()` now returns the typed error from the final flush
-        // (`ClientDisconnected` / `StreamTimeout`) rather than
-        // silently swallowing it. Log truncated-response cases at
-        // debug so they're visible to operators without spamming
-        // production logs — these are normal "browser navigated away
-        // during a long-tail render" events.
-        if let Err(e) = ResponseWriter::end(&mut writer) {
-            log::debug!("render stream truncated for {route_path_for_log}: {e}");
+            if let Err(flush_error) = ResponseWriter::end(&mut writer) {
+                log::debug!("render stream truncated for {route_path_for_log}: {flush_error}");
+            }
         }
     });
 
@@ -825,7 +840,8 @@ async fn render_page_response(
 async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
     // JSON partial render for client-side navigation
     if wants_json(&req) {
-        return handle_json_partial(&req, &context, "").await;
+        let paths = build_request_paths("", req.query_string());
+        return handle_json_partial(&req, &context, paths).await;
     }
 
     // With API proxy, render on-the-fly with fresh state
@@ -884,11 +900,7 @@ async fn handle_component_templates(
             .content_type("application/json")
             .body(r#"{"error":"no protocol"}"#);
     };
-    // Per-request index — see ProtocolIndex doc for caching guidance.
-    let mut index = webui_handler::route_handler::ProtocolIndex::new(protocol);
-    let result = match webui_handler::route_handler::render_component_templates(
-        protocol, &tags, &inv, &mut index,
-    ) {
+    let result = match protocol.render_component_templates(&tags, &inv) {
         Ok(v) => v,
         Err(e) => {
             return HttpResponse::InternalServerError()
@@ -927,8 +939,9 @@ async fn handle_asset(
     }
 
     let Some(assets_dir) = &context.assets_dir else {
-        // No assets dir — try SPA fallback for paths without file extensions
-        return spa_fallback(&req, &context, &relative).await;
+        // No assets dir: let the Accept header decide whether this was a route
+        // navigation/partial request or a missing asset fetch.
+        return spa_fallback(&req, &context).await;
     };
 
     let asset_path = assets_dir.join(&relative);
@@ -936,8 +949,9 @@ async fn handle_asset(
     let canonical = match asset_path.canonicalize() {
         Ok(p) => p,
         Err(_) => {
-            // File not found — SPA fallback for paths without file extensions
-            return spa_fallback(&req, &context, &relative).await;
+            // File not found: let the Accept header decide whether this was a
+            // route navigation/partial request or a missing asset fetch.
+            return spa_fallback(&req, &context).await;
         }
     };
 
@@ -947,7 +961,7 @@ async fn handle_asset(
 
     let body = match fs::read(&canonical) {
         Ok(bytes) => bytes,
-        Err(_) => return spa_fallback(&req, &context, &relative).await,
+        Err(_) => return spa_fallback(&req, &context).await,
     };
 
     let content_type = from_path(&canonical).first_or_octet_stream();
@@ -957,31 +971,89 @@ async fn handle_asset(
         .body(body)
 }
 
-/// Check if the request accepts JSON (for partial render).
+fn accept_media_q(params: &str) -> f32 {
+    for raw_param in params.split(';') {
+        let Some((key, value)) = raw_param.trim().split_once('=') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("q") {
+            // HTTP qvalues are finite and within 0..=1. Anything outside that
+            // range is malformed and falls back to the default of 1.0 so an
+            // invalid header cannot force a 404 or skew tie-breaking.
+            return value
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|q| (0.0..=1.0).contains(q))
+                .unwrap_or(1.0);
+        }
+    }
+    1.0
+}
+
+/// Select the SPA fallback response explicitly accepted by the request.
+///
+/// `q=0` disables that media type, while malformed or out-of-range q values
+/// (outside `0..=1`) are treated as absent with the default q of 1.0. When HTML
+/// and JSON have the same highest acceptable q value, JSON wins because it is
+/// only sent by clients opting into partial render.
+fn spa_fallback_kind(req: &HttpRequest) -> SpaFallbackKind {
+    let Some(accept) = req.headers().get("accept").and_then(|v| v.to_str().ok()) else {
+        return SpaFallbackKind::None;
+    };
+
+    let mut html_q = 0.0;
+    let mut json_q = 0.0;
+    for raw_media in accept.split(',') {
+        let (media, params) = raw_media
+            .split_once(';')
+            .map_or((raw_media, ""), |(value, params)| (value, params));
+        let q = accept_media_q(params);
+        if q <= 0.0 {
+            continue;
+        }
+
+        let media = media.trim();
+        if media.eq_ignore_ascii_case("text/html")
+            || media.eq_ignore_ascii_case("application/xhtml+xml")
+        {
+            if q > html_q {
+                html_q = q;
+            }
+        } else if media.eq_ignore_ascii_case("application/json") && q > json_q {
+            json_q = q;
+        }
+    }
+
+    if html_q <= 0.0 && json_q <= 0.0 {
+        SpaFallbackKind::None
+    } else if json_q >= html_q {
+        SpaFallbackKind::Json
+    } else {
+        SpaFallbackKind::Html
+    }
+}
+
+/// Check if the request explicitly accepts JSON (for partial render).
 fn wants_json(req: &HttpRequest) -> bool {
-    req.headers()
-        .get("accept")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.contains("application/json"))
+    spa_fallback_kind(req) == SpaFallbackKind::Json
 }
 
 /// SPA fallback: serve HTML or JSON partial depending on Accept header.
-/// Activates for paths that look like route paths (no file extension).
-async fn spa_fallback(
-    req: &HttpRequest,
-    context: &web::Data<ServerContext>,
-    relative: &str,
-) -> HttpResponse {
-    // Only serve fallback for paths without file extensions (likely route paths)
-    if relative.contains('.') {
+/// Activates for explicit document navigation or JSON partial requests.
+async fn spa_fallback(req: &HttpRequest, context: &web::Data<ServerContext>) -> HttpResponse {
+    let kind = spa_fallback_kind(req);
+    if kind == SpaFallbackKind::None {
         return HttpResponse::NotFound().body("Not Found");
     }
 
-    let paths = build_request_paths(relative, req.query_string());
+    // Actix decodes `web::Path` values. Route matching and backend state
+    // requests must instead receive the original encoded request target.
+    let paths = request_paths(req);
 
-    // JSON partial render: return { state, templates } for client-side navigation
-    if wants_json(req) {
-        return handle_json_partial(req, context, relative).await;
+    // JSON partial render: return { state, templates } for client-side navigation.
+    if kind == SpaFallbackKind::Json {
+        return handle_json_partial(req, context, paths).await;
     }
 
     render_page_response(context, &paths.route_path, &paths.request_path).await
@@ -995,10 +1067,8 @@ async fn spa_fallback(
 async fn handle_json_partial(
     req: &HttpRequest,
     context: &web::Data<ServerContext>,
-    relative: &str,
+    paths: RequestPaths,
 ) -> HttpResponse {
-    let paths = build_request_paths(relative, req.query_string());
-
     // Clone protocol from shared state (release lock quickly)
     let (protocol, entry) = match context.state.lock() {
         Ok(s) => {
@@ -1021,7 +1091,6 @@ async fn handle_json_partial(
                 proto,
                 &entry,
                 &paths.route_path,
-                &mut webui_handler::route_matcher::CompiledRouteCache::new(),
             );
             for (k, v) in &nested_params {
                 map.insert(k.clone(), Value::String(v.clone()));
@@ -1039,33 +1108,31 @@ async fn handle_json_partial(
 
     // Build the complete partial response (templateStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        // Per-request index — ideally cached alongside protocol for server lifetime.
-        let mut index = webui_handler::route_handler::ProtocolIndex::new(proto);
-        let mut p = match webui_handler::route_handler::render_partial(
-            proto,
-            &entry,
-            &paths.route_path,
-            &client_inv_hex,
-            &mut index,
-        ) {
-            Ok(v) => v,
+        let state_json = match serde_json::to_string(&state_data) {
+            Ok(value) => value,
+            Err(error) => {
+                return HttpResponse::InternalServerError()
+                    .content_type("application/json")
+                    .body(format!(
+                        r#"{{"error":"state serialization failed: {error}"}}"#
+                    ));
+            }
+        };
+        match proto.render_partial(&state_json, &entry, &paths.route_path, &client_inv_hex) {
+            Ok(value) => value,
             Err(e) => {
                 return HttpResponse::InternalServerError()
                     .content_type("application/json")
                     .body(format!(r#"{{"error":"{}"}}"#, e));
             }
-        };
-        if let Some(obj) = p.as_object_mut() {
-            obj.insert("state".into(), state_data);
         }
-        p
     } else {
-        Value::Object(serde_json::Map::new())
+        "{}".to_string()
     };
 
     HttpResponse::Ok()
         .content_type("application/json")
-        .json(partial)
+        .body(partial)
 }
 
 #[cfg(test)]
@@ -1075,21 +1142,25 @@ fn collect_needed_template_names(
     request_path: &str,
     inventory_hex: &str,
 ) -> (Vec<String>, String) {
-    let component_index = webui_handler::route_handler::build_component_index(protocol);
-    webui_handler::route_handler::get_needed_components_for_request(
-        protocol,
-        entry_fragment_id,
-        request_path,
-        inventory_hex,
-        &component_index,
-    )
-    .unwrap()
+    let protocol = Protocol::new(protocol.clone());
+    let json = protocol
+        .render_partial("{}", entry_fragment_id, request_path, inventory_hex)
+        .unwrap();
+    let response: Value = serde_json::from_str(&json).unwrap();
+    let names = response["templates"]
+        .as_object()
+        .map(|templates| templates.keys().cloned().collect())
+        .unwrap_or_default();
+    let inventory = response["inventory"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    (names, inventory)
 }
 
 /// Forward requests under `/api/*` to the user's API server.
 async fn handle_api_proxy(
     req: HttpRequest,
-    path: web::Path<String>,
     body: web::Bytes,
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
@@ -1097,20 +1168,20 @@ async fn handle_api_proxy(
         return HttpResponse::NotFound().body("Not Found");
     };
 
-    let tail = path.into_inner();
-    let query = req.query_string();
-    let url = if query.is_empty() {
-        format!("http://127.0.0.1:{api_port}/api/{tail}")
-    } else {
-        let mut u = String::with_capacity(30 + tail.len() + query.len());
-        u.push_str("http://127.0.0.1:");
-        u.push_str(&api_port.to_string());
-        u.push_str("/api/");
-        u.push_str(&tail);
-        u.push('?');
-        u.push_str(query);
-        u
-    };
+    let uri = req.uri();
+    let path_and_query = uri
+        .path_and_query()
+        .map_or(uri.path(), |value| value.as_str());
+    const API_URL_PREFIX: &str = "http://127.0.0.1:";
+    const MAX_PORT_DIGITS: usize = 5;
+    let mut url =
+        String::with_capacity(API_URL_PREFIX.len() + MAX_PORT_DIGITS + path_and_query.len());
+    url.push_str(API_URL_PREFIX);
+    // Write the port digits straight into the reserved capacity instead of
+    // allocating a temporary `String` via `to_string()` on the proxy hot path.
+    use std::fmt::Write as _;
+    let _ = write!(url, "{api_port}");
+    url.push_str(path_and_query);
 
     let client = awc::Client::new();
     let mut proxy_req = client.request(req.method().clone(), &url);
@@ -1157,6 +1228,7 @@ const WATCH_DEBOUNCE: Duration = Duration::from_millis(50);
 /// Configuration for the file watcher.
 struct WatcherConfig {
     watch_paths: Vec<PathBuf>,
+    projection_manifests: Vec<PathBuf>,
     state: Arc<Mutex<SharedState>>,
     render_config: RenderConfig,
     livereload: LiveReload,
@@ -1172,6 +1244,7 @@ struct WatcherConfig {
 fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::WatcherHandle> {
     let WatcherConfig {
         watch_paths,
+        projection_manifests,
         state,
         render_config,
         livereload,
@@ -1212,6 +1285,7 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     spawn_watcher(
         WatchConfig {
             paths: watch_paths,
+            explicit_files: projection_manifests,
             ignore,
             debounce: WATCH_DEBOUNCE,
             retry_unchanged_when: Some(retry_unchanged_when),
@@ -1301,6 +1375,110 @@ mod tests {
         dir
     }
 
+    fn test_server_context(api_port: u16) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: "<html><body>ok</body></html>".to_string(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: None,
+                state_data: None,
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: Some(api_port),
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    fn test_route_context(protocol: Arc<Protocol>) -> web::Data<ServerContext> {
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: "<html><body>ok</body></html>".to_string(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: Some(protocol),
+                state_data: Some(Value::Object(serde_json::Map::new())),
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: None,
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    fn dotted_route_protocol() -> Arc<Protocol> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(WebUiFragmentRoute {
+                    path: "/docs/:version".to_string(),
+                    fragment_id: "docs-page".to_string(),
+                    exact: true,
+                    keep_alive: false,
+                    ..Default::default()
+                })],
+            },
+        );
+        fragments.insert(
+            "docs-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<main>docs</main>")],
+            },
+        );
+        Arc::new(Protocol::new(WebUIProtocol::with_tokens(
+            fragments,
+            Vec::new(),
+        )))
+    }
+
+    fn start_request_target_server() -> (u16, actix_web::dev::ServerHandle, Arc<Mutex<Vec<String>>>)
+    {
+        let request_targets = Arc::new(Mutex::new(Vec::new()));
+        let server_targets = Arc::clone(&request_targets);
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(move || {
+            let request_targets = Arc::clone(&server_targets);
+            App::new().default_service(web::to(move |req: HttpRequest| {
+                let request_targets = Arc::clone(&request_targets);
+                async move {
+                    let request_target = req.uri().path_and_query().map_or_else(
+                        || req.path().to_string(),
+                        |value| value.as_str().to_string(),
+                    );
+                    request_targets.lock().unwrap().push(request_target.clone());
+                    HttpResponse::Ok().json(serde_json::json!({
+                        "state": { "requestTarget": request_target }
+                    }))
+                }
+            }))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        (port, handle, request_targets)
+    }
+
     #[test]
     fn test_take_new_warnings_suppresses_repeats_and_surfaces_changes() {
         // `take_new_warnings` dedupes on each diagnostic's plain `body()` and
@@ -1352,6 +1530,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1381,6 +1560,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1416,6 +1596,7 @@ mod tests {
                     dom: DomStrategy::Shadow,
                     plugin,
                     components: Vec::new(),
+                    projection_manifests: Vec::new(),
                     asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                     css_public_base: None,
                     legal_comments: LegalComments::Inline,
@@ -1465,6 +1646,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1504,6 +1686,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1530,6 +1713,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1555,6 +1739,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1593,7 +1778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_needed_template_names_follows_active_route_chain() {
+    fn test_collect_needed_template_names_returns_active_route_payloads() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -1668,12 +1853,8 @@ mod tests {
         let (needed, inventory) =
             collect_needed_template_names(&protocol, "index.html", "/search/shirts", "");
 
-        assert!(needed.contains(&"mp-app".to_string()));
-        assert!(needed.contains(&"mp-page-search".to_string()));
-        assert!(needed.contains(&"mp-product-grid".to_string()));
-        assert!(needed.contains(&"mp-category-nav".to_string()));
+        assert_eq!(needed, vec!["mp-page-search".to_string()]);
         assert!(!needed.contains(&"mp-page-product".to_string()));
-        assert!(!needed.contains(&"mp-product-detail".to_string()));
         assert!(!inventory.is_empty());
     }
 
@@ -1712,6 +1893,205 @@ mod tests {
         handle.stop(true).await;
     }
 
+    #[actix_web::test]
+    async fn test_route_state_fetch_preserves_encoded_request_target() {
+        let request_targets = [
+            "/projects/WebUI%20Fidelity%20Fixture?filter=space%20value",
+            "/reviews/WebUI/ceo%2Fbranch?filter=slash%2Fvalue",
+            "/discount/100%25?filter=percent%25value",
+            "/city/Montr%C3%A9al?filter=unicode%C3%A9",
+        ];
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        for request_target in request_targets {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri(request_target)
+                    .insert_header(("accept", "application/json"))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let expected: Vec<String> = request_targets
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(*captured_targets.lock().unwrap(), expected);
+        handle.stop(true).await;
+    }
+
+    fn fallback_kind_for_accept(accept: &str) -> SpaFallbackKind {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("accept", accept))
+            .to_http_request();
+        spa_fallback_kind(&req)
+    }
+
+    #[test]
+    fn test_spa_fallback_kind_honors_q_weights() {
+        let cases = [
+            ("application/json;q=0", SpaFallbackKind::None),
+            ("text/html;q=0", SpaFallbackKind::None),
+            (
+                "text/html;q=0.8, application/json;q=0.9",
+                SpaFallbackKind::Json,
+            ),
+            (
+                "text/html;q=0.9, application/json;q=0.8",
+                SpaFallbackKind::Html,
+            ),
+            ("text/html;q=1, application/json;q=1", SpaFallbackKind::Json),
+            ("application/json", SpaFallbackKind::Json),
+            (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                SpaFallbackKind::Html,
+            ),
+            ("APPLICATION/JSON ; Q=0.5", SpaFallbackKind::Json),
+            ("application/json;q=not-a-number", SpaFallbackKind::Json),
+            // Out-of-range q is malformed and falls back to the default 1.0, so
+            // it neither wins tie-breaking nor disables the media type.
+            ("text/html;q=2, application/json;q=1", SpaFallbackKind::Json),
+            ("text/html;q=-1", SpaFallbackKind::Html),
+        ];
+
+        for (accept, expected) in cases {
+            assert_eq!(fallback_kind_for_accept(accept), expected, "{accept}");
+        }
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_allows_encoded_dot_route_parameter() {
+        let request_target = "/discount/100%2E5?filter=x";
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri(request_target)
+                .insert_header(("accept", "application/json"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let captured = match captured_targets.lock() {
+            Ok(targets) => targets.clone(),
+            Err(error) => panic!("captured targets mutex poisoned: {error}"),
+        };
+        assert_eq!(captured, vec![request_target.to_string()]);
+        handle.stop(true).await;
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_allows_literal_dot_html_route() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_route_context(dotted_route_protocol()))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/docs/v2.1")
+                .insert_header(("accept", "text/html,application/xhtml+xml"))
+                .to_request(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[actix_web::test]
+    async fn test_spa_fallback_rejects_missing_asset_intent() {
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_route_context(dotted_route_protocol()))
+                .route("/{tail:.*}", web::get().to(handle_asset)),
+        )
+        .await;
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/missing.js")
+                .insert_header(("accept", "text/javascript,*/*;q=0.1"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/users/john.doe")
+                .insert_header(("accept", "*/*"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = actix_test::call_service(
+            &app,
+            actix_test::TestRequest::get()
+                .uri("/docs/v2.1")
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[actix_web::test]
+    async fn test_api_proxy_preserves_encoded_request_target() {
+        let request_targets = [
+            "/api/projects/WebUI%20Fidelity%20Fixture?filter=space%20value",
+            "/api/reviews/WebUI/ceo%2Fbranch?filter=slash%2Fvalue",
+            "/api/discount/100%25?filter=percent%25value",
+            "/api/city/Montr%C3%A9al?filter=unicode%C3%A9",
+        ];
+        let (port, handle, captured_targets) = start_request_target_server();
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(test_server_context(port))
+                .route("/api/{tail:.*}", web::route().to(handle_api_proxy)),
+        )
+        .await;
+
+        for request_target in request_targets {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri(request_target)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let expected: Vec<String> = request_targets
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect();
+        assert_eq!(*captured_targets.lock().unwrap(), expected);
+        handle.stop(true).await;
+    }
+
     #[test]
     fn test_hmr_script_is_injected_when_livereload_present() {
         let app = create_app_dir(&[("index.html", "<h1>Hi</h1>"), ("state.json", "{}")]);
@@ -1723,6 +2103,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -1771,6 +2152,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2067,6 +2449,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2103,6 +2486,17 @@ mod tests {
         // The error demands the missing `--token-c`, not the locally-defined
         // `--token-a` (which appears in the source snippet only as context).
         assert!(!error.contains("add --token-a"), "error: {error}");
+
+        std::fs::write(
+            app.path().join("my-card.css"),
+            ":host { --foo-bar: var(--token-b); }",
+        )
+        .unwrap();
+        assert!(
+            rebuild_and_update_state(&config, &livereload, &state).is_ok(),
+            "a later valid synchronization file must recover the rebuild loop"
+        );
+        assert!(state.lock().unwrap().rebuild_error.is_none());
     }
 
     #[test]
@@ -2123,6 +2517,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2186,6 +2581,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: None,
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2221,6 +2617,7 @@ mod tests {
             ("app-shell.html", "<div></div>"),
             ("lazy-panel.html", "<p>{{title}}</p>"),
             ("lazy-panel.css", ":host { color: red; }"),
+            ("lazy-panel.ts", "export {};"),
         ]);
         let config = RenderConfig {
             app_args: AppArgs {
@@ -2230,6 +2627,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,
@@ -2274,6 +2672,7 @@ mod tests {
                 dom: DomStrategy::Shadow,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
+                projection_manifests: Vec::new(),
                 asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
                 css_public_base: None,
                 legal_comments: LegalComments::Inline,

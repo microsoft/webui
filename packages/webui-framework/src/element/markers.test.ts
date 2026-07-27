@@ -69,6 +69,33 @@ describe('collectItemMarkers', () => {
     assert.strictEqual(end, null, 'end should be null when <!--/wr--> is missing');
   });
 
+  test('ignores item and end markers from nested repeats', () => {
+    const outerStart = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
+    const outerItem1 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerStart1 = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
+    const innerItem1 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerEnd1 = { nodeType: COMMENT, data: '/wr', nextSibling: null } as MockNode;
+    const outerItem2 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerStart2 = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
+    const innerItem2 = { nodeType: COMMENT, data: 'wi', nextSibling: null } as MockNode;
+    const innerEnd2 = { nodeType: COMMENT, data: '/wr', nextSibling: null } as MockNode;
+    const outerEnd = { nodeType: COMMENT, data: '/wr', nextSibling: null } as MockNode;
+
+    outerStart.nextSibling = outerItem1;
+    outerItem1.nextSibling = innerStart1;
+    innerStart1.nextSibling = innerItem1;
+    innerItem1.nextSibling = innerEnd1;
+    innerEnd1.nextSibling = outerItem2;
+    outerItem2.nextSibling = innerStart2;
+    innerStart2.nextSibling = innerItem2;
+    innerItem2.nextSibling = innerEnd2;
+    innerEnd2.nextSibling = outerEnd;
+
+    const { items, end } = collectItemMarkers(outerStart as unknown as Comment);
+    assert.deepEqual(items, [outerItem1, outerItem2]);
+    assert.strictEqual(end, outerEnd);
+  });
+
   test('skips non-comment siblings', () => {
     // <!--wr--> text elem <!--wi--> text <!--/wr-->
     const wrStart = { nodeType: COMMENT, data: 'wr', nextSibling: null } as MockNode;
@@ -156,6 +183,14 @@ describe('nextElement', () => {
 
     const result = nextElement(marker as unknown as Comment);
     assert.strictEqual(result, null);
+  });
+
+  test('returns null when hitting <!--/wc--> before an element', () => {
+    const marker = { nodeType: COMMENT, data: 'wc', nextSibling: null } as MockNode;
+    const wcEnd = { nodeType: COMMENT, data: '/wc', nextSibling: null } as MockNode;
+    marker.nextSibling = wcEnd;
+
+    assert.strictEqual(nextElement(marker as unknown as Comment), null);
   });
 
   test('returns null when hitting next <!--wi--> before an element', () => {

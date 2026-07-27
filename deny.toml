@@ -32,6 +32,8 @@ skip = [
     { name = "getrandom" },
     { name = "hashbrown" },
     { name = "http" },
+    # actix-web 4.14 depends on impl-more 0.3 directly while actix-tls 3.5 still pins impl-more 0.1.
+    { name = "impl-more" },
     { name = "r-efi" },
     # awc 3.8.2 uses rand 0.9 directly while actix-http 3.12 uses rand 0.10.
     { name = "rand" },

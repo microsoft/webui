@@ -5,14 +5,8 @@ import { WebUIElement, attr, observable } from '@microsoft/webui-framework';
 
 import '#molecules/mp-search-bar/mp-search-bar.js';
 
-interface Category {
-  handle: string;
-  title: string;
-}
-
 export class MpMobileMenu extends WebUIElement {
   @attr({ attribute: 'search-query' }) searchQuery = '';
-  @observable navCategories: Category[] = [];
   @observable open = false;
   panelEl!: HTMLElement;
 

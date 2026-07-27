@@ -3,9 +3,6 @@
 
 import { WebUIElement, attr } from '@microsoft/webui-framework';
 
-import '#atoms/mp-product-image/mp-product-image.js';
-import '#molecules/mp-product-label/mp-product-label.js';
-
 export class MpProductCard extends WebUIElement {
   @attr handle = '';
   @attr title = '';

@@ -54,9 +54,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use webui::streaming::{ChunkPool, StreamingWriter};
-use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
+use webui::{build, BuildOptions, CssStrategy, Protocol, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
-use webui_protocol::WebUIProtocol;
 
 // ── Counting allocator ────────────────────────────────────────────────
 
@@ -327,7 +326,7 @@ fn build_state(count: usize) -> Value {
     })
 }
 
-fn build_protocol() -> WebUIProtocol {
+fn build_protocol() -> Protocol {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let app_dir = manifest
         .join("..")
@@ -336,14 +335,15 @@ fn build_protocol() -> WebUIProtocol {
         .join("app")
         .join("contact-book-manager")
         .join("src");
-    build(BuildOptions {
+    let document = build(BuildOptions {
         app_dir,
         entry: "index.html".to_string(),
         css: CssStrategy::Style,
         ..BuildOptions::default()
     })
     .expect("failed to build contact-book-manager protocol")
-    .protocol
+    .protocol;
+    Protocol::new(document)
 }
 
 const HEAD_INJECT: &str = r#"<link rel="preload" as="image" href="/img/hero.jpg" fetchpriority="high"><link rel="preload" as="image" href="/img/p1.jpg"><link rel="preload" as="image" href="/img/p2.jpg">"#;
@@ -400,10 +400,10 @@ fn post_inject(html: &str, script: &str) -> String {
 
 // ── Per-path drivers ──────────────────────────────────────────────────
 
-fn run_string(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
+fn run_string(protocol: &Protocol, state: &Value, output_size: usize) -> usize {
     let h = WebUIHandler::new();
     let mut w = StringWriter::with_capacity(output_size);
-    h.handle(
+    h.render(
         protocol,
         state,
         &RenderOptions::new("index.html", "/"),
@@ -413,19 +413,18 @@ fn run_string(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> us
     w.buf.len()
 }
 
-fn run_streaming(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
+fn run_streaming(protocol: &Protocol, state: &Value, output_size: usize) -> usize {
     let h = WebUIHandler::new();
     let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
     let (tx, rx) = mpsc::channel::<Bytes>(cap);
     let mut w = StreamingWriter::new(tx);
-    h.handle(
+    h.render(
         protocol,
         state,
         &RenderOptions::new("index.html", "/"),
         &mut w,
     )
     .expect("render");
-    ResponseWriter::end(&mut w).expect("end");
     drop(w);
     drain_total(rx)
 }
@@ -439,7 +438,7 @@ fn run_streaming(protocol: &WebUIProtocol, state: &Value, output_size: usize) ->
 /// (just two `Option<String>` fields on the context). The legacy
 /// byte-scanner approach had to scan every output byte looking for
 /// never-present markers, costing ~14 µs of pure overhead.
-fn run_streaming_with_inject(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
+fn run_streaming_with_inject(protocol: &Protocol, state: &Value, output_size: usize) -> usize {
     let h = WebUIHandler::new();
     let cap = (output_size / StreamingWriter::CHUNK_TARGET) + 4;
     let (tx, rx) = mpsc::channel::<Bytes>(cap);
@@ -447,8 +446,7 @@ fn run_streaming_with_inject(protocol: &WebUIProtocol, state: &Value, output_siz
     let opts = RenderOptions::new("index.html", "/")
         .with_head_inject(HEAD_INJECT)
         .with_body_inject(BODY_INJECT);
-    h.handle(protocol, state, &opts, &mut w).expect("render");
-    ResponseWriter::end(&mut w).expect("end");
+    h.render(protocol, state, &opts, &mut w).expect("render");
     drop(w);
     drain_total(rx)
 }
@@ -458,7 +456,7 @@ fn run_streaming_with_inject(protocol: &WebUIProtocol, state: &Value, output_siz
 /// the whole bench run) to mirror the actual server's startup-time
 /// pool.
 fn run_streaming_pooled_with_inject(
-    protocol: &WebUIProtocol,
+    protocol: &Protocol,
     state: &Value,
     output_size: usize,
     pool: &Arc<ChunkPool>,
@@ -470,18 +468,17 @@ fn run_streaming_pooled_with_inject(
     let opts = RenderOptions::new("index.html", "/")
         .with_head_inject(HEAD_INJECT)
         .with_body_inject(BODY_INJECT);
-    h.handle(protocol, state, &opts, &mut w).expect("render");
-    ResponseWriter::end(&mut w).expect("end");
+    h.render(protocol, state, &opts, &mut w).expect("render");
     drop(w);
     // Drain consumes the Bytes — drops PooledChunk owners — releases
     // chunk Vec back to the pool. This is exactly the actix lifecycle.
     drain_total(rx)
 }
 
-fn run_string_postinject(protocol: &WebUIProtocol, state: &Value, output_size: usize) -> usize {
+fn run_string_postinject(protocol: &Protocol, state: &Value, output_size: usize) -> usize {
     let h = WebUIHandler::new();
     let mut w = StringWriter::with_capacity(output_size);
-    h.handle(
+    h.render(
         protocol,
         state,
         &RenderOptions::new("index.html", "/"),
@@ -584,10 +581,10 @@ fn format_total_rss(bytes: i64) -> String {
     }
 }
 
-fn warmup_output_size(protocol: &WebUIProtocol, state: &Value) -> usize {
+fn warmup_output_size(protocol: &Protocol, state: &Value) -> usize {
     let h = WebUIHandler::new();
     let mut w = StringWriter::with_capacity(128 * 1024);
-    h.handle(
+    h.render(
         protocol,
         state,
         &RenderOptions::new("index.html", "/"),
@@ -839,10 +836,10 @@ fn main() {
     // production server uses it (constructed at startup, lives forever).
     let pool = Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET + 1024));
 
-    let paths: &[(&str, fn(&WebUIProtocol, &Value, usize) -> usize)] = &[
+    let paths: &[(&str, fn(&Protocol, &Value, usize) -> usize)] = &[
         (
             "string",
-            run_string as fn(&WebUIProtocol, &Value, usize) -> usize,
+            run_string as fn(&Protocol, &Value, usize) -> usize,
         ),
         ("streaming", run_streaming),
         ("streaming+inject(opts)", run_streaming_with_inject),

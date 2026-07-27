@@ -34,6 +34,12 @@ pub struct WatchConfig {
     /// Roots to watch recursively. Non-existent entries are silently
     /// skipped.
     pub paths: Vec<PathBuf>,
+    /// Exact files to watch through their parent directories.
+    ///
+    /// These files bypass `ignore` filtering, which lets a manifest under an
+    /// ignored output directory act as an explicit synchronization point
+    /// without forwarding unrelated bundle writes.
+    pub explicit_files: Vec<PathBuf>,
     /// Subtrees to ignore. An event is suppressed when its path lives
     /// underneath any entry here. Typical values: the build's `out_dir`,
     /// `node_modules`, `.git`, `target`.
@@ -85,9 +91,15 @@ where
         .iter()
         .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
         .collect();
+    let explicit_files: Vec<PathBuf> = cfg
+        .explicit_files
+        .iter()
+        .filter_map(|path| normalize_explicit_file(path))
+        .collect();
 
     let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
     let retry_unchanged_when = cfg.retry_unchanged_when.clone();
+    let explicit_filter = explicit_files.clone();
     let mut debouncer = new_debouncer(cfg.debounce, move |res: DebounceEventResult| match res {
         Ok(events) => {
             // Filter out ignored paths and dedupe (notify can emit
@@ -95,7 +107,7 @@ where
             let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
             let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
             for e in events {
-                if is_ignored(&e.path, &ignore) {
+                if should_ignore_event(&e.path, &ignore, &explicit_filter) {
                     continue;
                 }
                 if seen.insert(e.path.clone()) {
@@ -123,18 +135,56 @@ where
     })
     .context("Cannot start file watcher")?;
 
+    let mut watched_roots = Vec::with_capacity(cfg.paths.len());
     for p in &cfg.paths {
         if p.exists() {
+            watched_roots.push(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
             debouncer
                 .watcher()
                 .watch(p, RecursiveMode::Recursive)
                 .with_context(|| format!("Cannot watch {}", p.display()))?;
         }
     }
+    let mut explicit_parents = HashSet::new();
+    for file in &explicit_files {
+        if watched_roots.iter().any(|root| file.starts_with(root)) {
+            continue;
+        }
+        let Some(parent) = file.parent() else {
+            continue;
+        };
+        if parent.exists() && explicit_parents.insert(parent.to_path_buf()) {
+            debouncer
+                .watcher()
+                .watch(parent, RecursiveMode::NonRecursive)
+                .with_context(|| format!("Cannot watch {}", parent.display()))?;
+        }
+    }
 
     Ok(WatcherHandle {
         _debouncer: debouncer,
     })
+}
+
+fn normalize_explicit_file(path: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return Some(canonical);
+    }
+    let parent = path
+        .parent()
+        .filter(|value| !value.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = std::fs::canonicalize(parent).ok()?;
+    Some(parent.join(path.file_name()?))
+}
+
+fn is_explicit_file(event_path: &Path, explicit_files: &[PathBuf]) -> bool {
+    let normalized = std::fs::canonicalize(event_path).unwrap_or_else(|_| event_path.to_path_buf());
+    explicit_files.iter().any(|path| path == &normalized)
+}
+
+fn should_ignore_event(event_path: &Path, ignore: &[PathBuf], explicit_files: &[PathBuf]) -> bool {
+    is_ignored(event_path, ignore) && !is_explicit_file(event_path, explicit_files)
 }
 
 /// Returns true when `event_path` lives under any ignored root.
@@ -257,6 +307,22 @@ mod tests {
 
         let ignore = vec![std::fs::canonicalize(&dist).unwrap()];
         assert!(is_ignored(&nested, &ignore));
+    }
+
+    #[test]
+    fn explicit_manifest_bypasses_ignored_output_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir(&dist).unwrap();
+        let manifest = dist.join("webui-projection.json");
+        let bundle = dist.join("index.js");
+        std::fs::write(&manifest, "{}").unwrap();
+        std::fs::write(&bundle, "export {};").unwrap();
+
+        let ignore = vec![std::fs::canonicalize(&dist).unwrap()];
+        let explicit = vec![std::fs::canonicalize(&manifest).unwrap()];
+        assert!(!should_ignore_event(&manifest, &ignore, &explicit));
+        assert!(should_ignore_event(&bundle, &ignore, &explicit));
     }
 
     #[test]

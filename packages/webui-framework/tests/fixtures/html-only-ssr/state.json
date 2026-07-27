@@ -1,0 +1,12 @@
+{
+  "heading": "Contacts",
+  "filter": "from-state",
+  "status": "Ready",
+  "selectedId": "42",
+  "items": [
+    { "name": "Ada" },
+    { "name": "Grace" }
+  ],
+  "showDetails": false,
+  "details": "Initial details"
+}

@@ -24,12 +24,13 @@ import { css as cssLang } from "@codemirror/lang-css";
 
 interface WasmModule {
   build_protocol(files: Record<string, string>, entry: string): Uint8Array;
-  render(
-    protocol: Uint8Array,
+  Protocol: new (protocol: Uint8Array, plugin?: string) => {
+    renderStream(
     state: string,
     onChunk: (chunk: string) => void,
-    options?: { entry?: string; requestPath?: string; plugin?: string },
-  ): void;
+      options?: { entry?: string; requestPath?: string },
+    ): void;
+  };
 }
 
 interface FileEntry {
@@ -883,7 +884,8 @@ export class DocsPlayground extends WebUIElement {
       const t1 = performance.now();
       const stateJson = this.fileByName(this.stateFile)?.content || "{}";
       let html = "";
-      this.wasm.render(proto, stateJson, (chunk) => {
+      const protocol = new this.wasm.Protocol(proto);
+      protocol.renderStream(stateJson, (chunk) => {
         html += chunk;
       }, { entry: this.entry, requestPath: "/" });
       const t2 = performance.now();

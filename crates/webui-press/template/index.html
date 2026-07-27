@@ -104,45 +104,47 @@
   </header>
 
   <if condition="page.isHome">
-    <main class="main-content" tabindex="-1" style="max-width:1152px;margin:0 auto;">
-      <if condition="hero">
-        <div class="home-hero">
-          <h1>{{site.title}}</h1>
-          <if condition="hero.text">
-            <p class="hero-text">{{hero.text}}</p>
+    <main class="main-content" tabindex="-1">
+      <div class="home-container">
+        <if condition="hero">
+          <div class="home-hero">
+            <h1>{{site.title}}</h1>
+            <if condition="hero.text">
+              <p class="hero-text">{{hero.text}}</p>
+            </if>
+            <p class="tagline">{{hero.tagline}}</p>
+            <div class="home-actions">
+              <for each="action in hero.actions">
+                <if condition="action.brand">
+                  <a href="{{action.link}}" class="btn-brand">{{action.text}}</a>
+                </if>
+                <if condition="!action.brand">
+                  <a href="{{action.link}}" class="btn-alt">{{action.text}}</a>
+                </if>
+              </for>
+            </div>
+          </div>
+          <if condition="hero.manifesto">
+            <p class="hero-manifesto">{{hero.manifesto}}</p>
           </if>
-          <p class="tagline">{{hero.tagline}}</p>
-          <div class="home-actions">
-            <for each="action in hero.actions">
-              <if condition="action.brand">
-                <a href="{{action.link}}" class="btn-brand">{{action.text}}</a>
-              </if>
-              <if condition="!action.brand">
-                <a href="{{action.link}}" class="btn-alt">{{action.text}}</a>
-              </if>
+          <div class="features-grid">
+            <for each="feature in hero.features">
+              <div class="feature-card">
+                <div class="feature-card-header">
+                  <div class="feature-icon">{{feature.icon}}</div>
+                  <h3>{{feature.title}}</h3>
+                </div>
+                <p>{{feature.description}}</p>
+              </div>
             </for>
           </div>
-        </div>
-        <if condition="hero.manifesto">
-          <p class="hero-manifesto">{{hero.manifesto}}</p>
         </if>
-        <div class="features-grid">
-          <for each="feature in hero.features">
-            <div class="feature-card">
-              <div class="feature-card-header">
-                <div class="feature-icon">{{feature.icon}}</div>
-                <h3>{{feature.title}}</h3>
-              </div>
-              <p>{{feature.description}}</p>
-            </div>
-          </for>
-        </div>
-      </if>
-      <if condition="footer">
-        <footer class="site-footer">
-          {{{footer.html}}}
-        </footer>
-      </if>
+        <if condition="footer">
+          <footer class="site-footer">
+            {{{footer.html}}}
+          </footer>
+        </if>
+      </div>
     </main>
   </if>
 

@@ -1,0 +1,12 @@
+<h2 class="heading">{{heading}}</h2>
+<p class="filter">{{filter}}</p>
+<p class="status">{{status}}</p>
+<a class="detail-link" href="/items/{{selectedId}}">Details</a>
+<ul class="items">
+  <for each="item in items">
+    <li class="item">{{item.name}}</li>
+  </for>
+</ul>
+<if condition="showDetails">
+  <p class="details">{{details}}</p>
+</if>

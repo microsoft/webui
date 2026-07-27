@@ -82,10 +82,23 @@ pub fn run_command_quiet(cmd: &str, args: &[&str], cwd: Option<&Path>) -> Result
 /// huge startup time scanning hundreds of thousands of stale fingerprint
 /// files. Disabling it here keeps `cargo xtask check` reliably fast on
 /// long-lived working copies.
+///
+/// For pnpm invocations, this forces `manage-package-manager-versions=false`.
+/// pnpm honours the root `packageManager` pin by re-running its
+/// package-manager self-management on every `pnpm run`, resolving (and, when the
+/// shared global store is being churned by other pnpm processes, blocking on) a
+/// pinned pnpm under `~/AppData/Local/pnpm/.tools`. On a loaded machine that
+/// pre-run step can stall for tens of seconds before the script even starts,
+/// even though the underlying work (e.g. an esbuild integration build) is
+/// milliseconds. CI and the `engines`/`packageManager` fields already guarantee
+/// the correct pnpm, so xtask runs the already-resolved pnpm directly. This
+/// keeps the pnpm-driven `cargo xtask check` phases fast regardless of load.
 pub fn build_command(cmd: &str, args: &[&str]) -> Command {
     let mut command = build_command_inner(cmd, args);
     if cmd == "cargo" {
         command.env("CARGO_INCREMENTAL", "0");
+    } else if cmd == "pnpm" {
+        command.env("npm_config_manage_package_manager_versions", "false");
     }
     command
 }

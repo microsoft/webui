@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use webui::{build, BuildOptions, CssStrategy, ResponseWriter, WebUIHandler};
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
-use webui_handler::RenderOptions;
+use webui_handler::{Protocol, RenderOptions};
 use webui_protocol::WebUIProtocol;
 
 /// Contact counts to benchmark.
@@ -240,7 +240,7 @@ fn contact_book_app_dir() -> PathBuf {
 /// `.pb` file. Any change to `examples/app/contact-book-manager/src/` is
 /// automatically reflected in the next benchmark run, making regressions and
 /// improvements traceable to specific template changes.
-fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
+fn build_contact_book_protocol() -> (Protocol, Vec<u8>) {
     let app_dir = contact_book_app_dir();
     assert!(
         app_dir.join("index.html").exists(),
@@ -257,7 +257,7 @@ fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
     .expect("failed to build contact-book-manager protocol");
 
     let bytes = result.protocol_bytes.clone();
-    (result.protocol, bytes)
+    (Protocol::new(result.protocol), bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ fn build_contact_book_protocol() -> (WebUIProtocol, Vec<u8>) {
 // ---------------------------------------------------------------------------
 
 struct BenchFixture {
-    protocol: WebUIProtocol,
+    protocol: Protocol,
     protocol_bytes: Vec<u8>,
     states: Vec<(usize, Value)>,
 }
@@ -319,7 +319,7 @@ fn handler_rendering_bench(c: &mut Criterion) {
         let handler = WebUIHandler::new();
         let mut warmup_writer = BenchWriter::new(count * BYTES_PER_CONTACT + BASE_HTML_BYTES);
         handler
-            .handle(
+            .render(
                 &fixture.protocol,
                 state,
                 &RenderOptions::new("index.html", "/"),
@@ -334,7 +334,7 @@ fn handler_rendering_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&fixture.protocol),
                     black_box(state),
                     &RenderOptions::new("index.html", "/"),
@@ -362,7 +362,7 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
         let mut warmup_writer =
             BenchWriter::new(count * BYTES_PER_CONTACT_WITH_PLUGIN + BASE_HTML_BYTES_WITH_PLUGIN);
         handler
-            .handle(
+            .render(
                 &fixture.protocol,
                 state,
                 &RenderOptions::new("index.html", "/"),
@@ -379,7 +379,7 @@ fn handler_rendering_with_plugin_bench(c: &mut Criterion) {
 
             b.iter(|| {
                 w.clear();
-                h.handle(
+                h.render(
                     black_box(&fixture.protocol),
                     black_box(state),
                     &RenderOptions::new("index.html", "/"),
@@ -499,7 +499,7 @@ fn collect_parse_samples(name: &str, bytes: &[u8]) -> SummaryRow {
 
 fn collect_render_samples(
     name: &str,
-    protocol: &WebUIProtocol,
+    protocol: &Protocol,
     state: &Value,
     use_plugin: bool,
 ) -> SummaryRow {
@@ -513,7 +513,7 @@ fn collect_render_samples(
     for _ in 0..RENDER_WARMUP_ITERATIONS {
         writer.clear();
         handler
-            .handle(
+            .render(
                 protocol,
                 state,
                 &RenderOptions::new("index.html", "/"),
@@ -531,7 +531,7 @@ fn collect_render_samples(
         writer.clear();
         let start = Instant::now();
         handler
-            .handle(
+            .render(
                 black_box(protocol),
                 black_box(state),
                 &RenderOptions::new("index.html", "/"),

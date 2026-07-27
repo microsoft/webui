@@ -277,18 +277,10 @@ pub fn run(args: &[String]) -> ExitCode {
         if !dir.join("src").join("index.ts").exists() {
             continue;
         }
-        match util::run_command_quiet(
-            "npx",
-            &[
-                "esbuild",
-                "src/index.ts",
-                "--bundle",
-                "--outfile=dist/index.js",
-                "--format=esm",
-                "--sourcemap",
-            ],
-            Some(&dir),
-        ) {
+        // Use each app's declared client build. WebUI examples run esbuild's
+        // JS API with esbuildProjection(), so bypassing the script would
+        // overwrite bundle bytes without updating the manifest.
+        match util::run_command_quiet("pnpm", &["build:client"], Some(&dir)) {
             Ok(()) => {
                 eprintln!("  {} {}", console::style("✔").green(), suite.name);
             }

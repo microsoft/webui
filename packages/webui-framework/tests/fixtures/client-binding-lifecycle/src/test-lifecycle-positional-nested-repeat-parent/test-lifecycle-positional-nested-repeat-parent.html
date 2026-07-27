@@ -1,0 +1,6 @@
+<for each="group in groups">
+  <span class="group-label" data-id="{{group.id}}">{{group.id}}</span>
+  <for each="item in group.items">
+    <test-lifecycle-child :value="{{item.value}}"></test-lifecycle-child>
+  </for>
+</for>

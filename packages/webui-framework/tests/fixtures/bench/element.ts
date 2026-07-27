@@ -81,6 +81,7 @@ TestBench.define('test-bench');
 // ── Repeat instantiation benchmark ─────────────────────────────────
 
 interface BenchItem {
+  id: number;
   label: string;
   value: string;
 }
@@ -90,38 +91,44 @@ export class TestBenchRepeat extends WebUIElement {
   @observable benchResult = '';
 
   runRepeatBench(): void {
-    // Generate 200 items
+    const updateIterations = 200;
     const data: BenchItem[] = [];
+    const swapped: BenchItem[] = [];
     for (let i = 0; i < 200; i++) {
-      data.push({ label: `Item ${i}`, value: `val-${i}` });
+      data.push({ id: i, label: `Item ${i}`, value: `val-${i}` });
+      swapped.push({ id: i, label: `val-${i}`, value: `Item ${i}` });
     }
 
-    // Benchmark: create 200 items (measures template cloning vs parsing)
     const createStart = performance.now();
     this.items = data;
+    this.$flushUpdates();
     const createTime = performance.now() - createStart;
 
-    // Benchmark: update all items (swap values)
-    const swapped = data.map(d => ({ label: d.value, value: d.label }));
     const updateStart = performance.now();
-    this.items = swapped;
+    for (let i = 0; i < updateIterations; i++) {
+      this.items = i % 2 === 0 ? swapped : data;
+      this.$flushUpdates();
+    }
     const updateTime = performance.now() - updateStart;
 
-    // Benchmark: clear all
     const clearStart = performance.now();
     this.items = [];
+    this.$flushUpdates();
     const clearTime = performance.now() - clearStart;
 
-    // Second create to measure cached clone path
     const create2Start = performance.now();
     this.items = data;
+    this.$flushUpdates();
     const create2Time = performance.now() - create2Start;
 
     const result = {
       itemCount: 200,
+      updateIterations,
       createMs: Math.round(createTime * 100) / 100,
       create2Ms: Math.round(create2Time * 100) / 100,
       updateMs: Math.round(updateTime * 100) / 100,
+      updatePerIterationMs:
+        Math.round((updateTime / updateIterations) * 1000) / 1000,
       clearMs: Math.round(clearTime * 100) / 100,
     };
 

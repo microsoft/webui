@@ -16,7 +16,8 @@ mod windows_local;
 use std::process::ExitCode;
 use std::time::Instant;
 use util::{
-    ensure_cargo_install, ensure_rustup_component, run_command, run_command_quiet, workspace_root,
+    build_command, ensure_cargo_install, ensure_rustup_component, run_command, run_command_quiet,
+    workspace_root,
 };
 
 fn main() -> ExitCode {
@@ -129,8 +130,9 @@ fn usage() -> ExitCode {
            build-wasm  Build WASM playground module\n  \
            docs    Build the documentation site\n  \
            bench <target> [-- <extra>] [--save-baseline NAME | --baseline NAME]\n  \
-                       Targets: parser, handler, protocol, expressions, state, contact-book, streaming, all\n  \
-                       Streaming-only: streaming-resource, streaming-e2e-ttfb, streaming-browser, streaming-all/full\n  \
+                       Criterion: parser, handler, protocol, expressions, state, contact-book, streaming, all\n  \
+                       Integration: node-addon, streaming-resource, streaming-e2e-ttfb, streaming-browser\n  \
+                       Streaming suite: streaming-all/full\n  \
                        Baselines: --save-baseline NAME records, --baseline NAME compares\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
            e2e [--update-snapshots]  Run Playwright E2E tests for all example apps\n  \
@@ -149,7 +151,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
     // the extra args. These map to:
     //   * criterion benches: passed through as `--save-baseline`/`--baseline`
     //   * resource & e2e-ttfb examples: `--save NAME` / `--compare NAME`
-    //   * browser bench: `WEBUI_BENCH_SAVE` / `WEBUI_BENCH_COMPARE` env vars
+    //   * browser & Node benches: `WEBUI_BENCH_SAVE` / `WEBUI_BENCH_COMPARE` env vars
     let mut save_baseline: Option<String> = None;
     let mut compare_baseline: Option<String> = None;
     let mut criterion_args: Vec<&str> = Vec::with_capacity(extra_args.len());
@@ -180,6 +182,9 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
         Some("streaming-resource") => bench_resource(save_baseline, compare_baseline),
         Some("streaming-e2e-ttfb") => bench_e2e_ttfb(save_baseline, compare_baseline),
         Some("streaming-browser") => bench_browser(save_baseline, compare_baseline),
+        Some("node-addon") | Some("webui-node") | Some("microsoft-webui-node") => {
+            bench_node_addon(save_baseline, compare_baseline)
+        }
         Some("streaming-all") | Some("full") => {
             // The full bench suite: criterion micro + resource + e2e + browser.
             // Each phase passes through the baseline flags.
@@ -255,8 +260,8 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
                         "Unknown bench target '{other}'.\n\
                          Criterion targets: parser, handler, protocol, expressions, state, \
                          contact-book, streaming, all.\n\
-                         Non-criterion targets: streaming-resource, streaming-e2e-ttfb, \
-                         streaming-browser, streaming-all (= full)."
+                         Integration targets: node-addon, streaming-resource, \
+                         streaming-e2e-ttfb, streaming-browser, streaming-all (= full)."
                     );
                     return ExitCode::FAILURE;
                 }
@@ -406,6 +411,90 @@ fn bench_browser(save: Option<String>, compare: Option<String>) -> ExitCode {
         }
         Err(e) => {
             eprintln!("streaming-browser bench: failed to spawn pnpm: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn bench_node_addon(save: Option<String>, compare: Option<String>) -> ExitCode {
+    if save.is_some() && compare.is_some() {
+        eprintln!("node-addon bench: save and compare modes are mutually exclusive");
+        return ExitCode::FAILURE;
+    }
+
+    let bench_dir = std::path::PathBuf::from("examples")
+        .join("integration")
+        .join("node-addon-bench");
+    if !bench_dir.join("package.json").exists() {
+        eprintln!("node-addon bench: {} not found", bench_dir.display());
+        return ExitCode::FAILURE;
+    }
+
+    eprintln!(
+        "  {} building microsoft-webui-node (release)",
+        console::style("•").dim()
+    );
+    if let Err(message) = run_command(
+        "cargo",
+        &["build", "--release", "-p", "microsoft-webui-node"],
+        None,
+    ) {
+        eprintln!("node-addon bench: release addon build failed: {message}");
+        return ExitCode::FAILURE;
+    }
+
+    eprintln!(
+        "  {} building @microsoft/webui package",
+        console::style("•").dim()
+    );
+    if let Err(message) = run_command("pnpm", &["--filter", "@microsoft/webui", "build"], None) {
+        eprintln!("node-addon bench: package build failed: {message}");
+        return ExitCode::FAILURE;
+    }
+
+    let addon_file = if cfg!(target_os = "windows") {
+        "webui_node.dll"
+    } else if cfg!(target_os = "macos") {
+        "libwebui_node.dylib"
+    } else {
+        "libwebui_node.so"
+    };
+    let addon_path = match std::env::current_dir() {
+        Ok(root) => root.join("target").join("release").join(addon_file),
+        Err(error) => {
+            eprintln!("node-addon bench: failed to resolve workspace directory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if !addon_path.is_file() {
+        eprintln!(
+            "node-addon bench: release addon not found at {}",
+            addon_path.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    let mut cmd = build_command("pnpm", &["run", "bench"]);
+    cmd.current_dir(&bench_dir)
+        .env("WEBUI_ADDON_PATH", &addon_path)
+        .env_remove("WEBUI_BENCH_SAVE")
+        .env_remove("WEBUI_BENCH_COMPARE")
+        .env_remove("WEBUI_BENCH_QUICK");
+    if let Some(name) = save.as_ref() {
+        cmd.env("WEBUI_BENCH_SAVE", name);
+    }
+    if let Some(name) = compare.as_ref() {
+        cmd.env("WEBUI_BENCH_COMPARE", name);
+    }
+
+    match cmd.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!("node-addon bench exited with {status}");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("node-addon bench: failed to spawn pnpm: {error}");
             ExitCode::FAILURE
         }
     }

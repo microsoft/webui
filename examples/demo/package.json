@@ -4,11 +4,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --minify --sourcemap && cp src/index.css dist/index.css && cp src/demo-shell/demo-shell.css dist/demo-shell.css",
-    "start:client": "esbuild src/index.ts --bundle --outfile=dist/index.js --format=esm --sourcemap --watch",
-    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3099 --watch"
+    "build": "pnpm run build:deps && node ../build-client.mjs && node -e \"const fs=require('node:fs');fs.copyFileSync('src/index.css','dist/index.css');fs.copyFileSync('src/demo-shell/demo-shell.css','dist/demo-shell.css')\"",
+    "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
+    "start:client": "pnpm run build:deps && node ../build-client.mjs --watch",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --port 3099 --watch"
   },
   "devDependencies": {
+    "@microsoft/webui": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "esbuild": "catalog:",
     "tslib": "catalog:",

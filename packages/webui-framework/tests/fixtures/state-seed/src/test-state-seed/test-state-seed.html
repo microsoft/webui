@@ -1,4 +1,10 @@
 <h1 class="title">{{title}}</h1>
 <test-state-seed-shell page="{{page}}" :groups="{{groups}}" :navCategories="{{navCategories}}"></test-state-seed-shell>
+<ul class="server-items">
+  <for each="item in serverItems">
+    <li>{{item}}</li>
+  </for>
+</ul>
 <button class="add-group" @click="{addGroup()}">Add Group</button>
 <button class="add-category" @click="{addCategory()}">Add Category</button>
+<button class="rename-title" @click="{renameTitle()}">Rename Title</button>

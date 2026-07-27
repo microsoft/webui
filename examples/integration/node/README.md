@@ -37,5 +37,6 @@ Or render a pre-built protocol with custom state:
 node index.js ../../app/hello-world/dist/protocol.bin ../../app/hello-world/data/state.json
 ```
 
-This uses the `@microsoft/webui` package API (`build()`, `render()`, `renderStream()`) which
+This uses the `@microsoft/webui` package API (`build()` and `Protocol`) which
 automatically resolves the native addon from the workspace build output.
+`Protocol.render()` and `Protocol.renderStream()` reuse the decoded protocol.

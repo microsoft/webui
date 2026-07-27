@@ -1,0 +1,12 @@
+<button class="mismatch-toggle" @click="{toggleClientOnlyOpen()}">Toggle mismatch</button>
+<if condition="clientOnlyOpen">
+  <span class="mismatch-details">Client-only details</span>
+</if>
+<button class="outer-toggle" @click="{toggleOuterOpen()}">Toggle outer</button>
+<if condition="outerOpen">
+  <if condition="innerOpen">
+    <span class="nested-details">Nested details</span>
+  </if>
+  <div class="outer-details">Outer details</div>
+</if>
+<div class="static-sibling">Static sibling</div>

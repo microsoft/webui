@@ -126,7 +126,7 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
       "ag": [],
       "c": [[[0, ["items.length"]], 0, [[], 0]]],
       "r": [["items", "item", 1, [[0], 0]]],
-      "e": [],
+      "eg": [],
       "b": [],
       "sa": "todo-app",
       "sd": 1,
@@ -145,7 +145,7 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
 | `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
-| `e` | Event bindings with handler argument specs and target paths. |
+| `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
@@ -226,6 +226,11 @@ After this step, `this.count === 42` matches the rendered DOM, and the subsequen
 
 Properties not present in state, or not on the observable list, are left at their class defaults.
 
+Compiler-owned dormant hosts follow a stricter first-write rule: activation
+wires the SSR DOM, then updates only roots explicitly supplied by that write.
+Omitted text, attribute, conditional, and repeat roots retain their trusted SSR
+output until state supplies those roots.
+
 ---
 
 ## Reactive update model
@@ -275,25 +280,58 @@ Synchronous escape hatch. Call it when you need the DOM to reflect pending write
 
 Implemented in `src/element/diff.ts`.
 
-### Keyed mode
+### Positional mode (default)
 
-When the repeat block's root element has at least one attribute binding (e.g. `<todo-item id="{{item.id}}">`), the **first attribute** is treated as the key. On collection change:
+Every repeat matches items by array index:
 
-1. Build a `Map<key, existingInstance>` from current items.
-2. Walk the new collection in order. For each new item:
-   - If a matching key exists, reuse the existing DOM and move it into position.
-   - Otherwise, create a new instance from the block template.
-3. Anything left in the map after the walk is destroyed.
+1. Rebind the shared prefix of existing instances to the current items.
+2. Append instances for any new tail.
+3. Destroy instances in any excess old tail.
 
-Reused instances keep their event listeners, computed state, and any focus/scroll/selection state in their DOM.
+Repeated-root attributes are never inferred as keys. Duplicate values and
+attributes are therefore safe, and attribute order has no effect on identity.
+On reorder, reused instances keep local browser and component state at their
+positions while bindings update to the new positional items.
 
-### Sequential mode
+### Explicit-key mode
 
-When the repeat root has no attribute bindings, items are matched by index. Excess items are destroyed; new items are appended. Cheaper but loses identity on reorder.
+`<for each="item in items"><x key="{{item.id}}"></x></for>` compiles the
+relative path `id` from the first child as an optional fifth repeat metadata
+field. `key="{{item}}"` compiles an empty path and keys primitive items
+directly. `key` is compiler-only: it is omitted from SSR HTML, client `h`, and
+attribute metadata. `data-key` is an ordinary application attribute and has no
+identity semantics. Unkeyed repeat bindings do not allocate key state.
+
+Explicit keys must resolve to unique strings or finite numbers. The runtime
+validates the complete next key set before changing DOM, scopes, or instances.
+Stable order, append, and truncate use the positional/prefix fast path. A real
+order change fills one reusable map from old keys to instances, reorders the
+instances, and then clears the map and scratch arrays.
+
+Duplicate, invalid, or throwing key reads clear established identity, warn
+once, and use positional reconciliation. A later valid update first reconciles
+positionally and establishes fresh identity; subsequent updates can move by
+key.
 
 ### SSR repeat reading
 
-On initial hydration, `$hydrate`'s repeat phase walks `<!--wi-->` markers to discover the rendered items, then runs `$hydrate` recursively on each item with a scope frame that introduces the item variable. State is already seeded from `window.__webui.state`, so item observables match the server-rendered DOM. The `<!--wi-->` markers are then collected for deletion.
+On initial hydration, `$hydrate`'s repeat phase walks `<!--wi-->` markers to
+discover the rendered items, then runs `$hydrate` recursively on each item with
+a scope frame that introduces the item variable. When the repeat collection is
+present in client state, that frame is synchronized immediately. When the
+collection is template-only and intentionally absent from bootstrap state, the
+frame remains unknown and its SSR bindings are preserved during unrelated
+updates. A later explicit collection reconciles the repeat normally; an
+explicit empty collection removes the SSR items. The `<!--wi-->` markers are
+then collected for deletion.
+
+SSR item markers do not contain separate key values. When bootstrap collection
+state exists and its length matches the hydrated instance count, hydration
+derives typed keys by index from that collection. Missing state, a count
+mismatch, or invalid keys leave identity unestablished, so the next valid
+update reconciles positionally once before establishing fresh keys. This uses
+the same invariant as repeat scope hydration: SSR HTML and bootstrap state
+represent the same render.
 
 ---
 
@@ -315,7 +353,7 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `[event, handler, argSpecs, targetPath]`. Hydration resolves `targetPath` to the real element, installs the listener there, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element, installs one delegated listener per event name, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
 - **Root events** (`re` field): attached to the host element rather than the shadow root. Used for `@custom-event` on the component's `<template>` root.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.
@@ -380,8 +418,7 @@ The `webui:hydration-complete` event fires once after the last component on the 
 | Initial hydration | O(bindings) | Single pass over compiled paths |
 | Reactive update | O(affected) | Path index skips unrelated bindings |
 | Conditional toggle | O(block size) | Create or destroy a block instance |
-| Repeat reconciliation (keyed) | O(items) | Map lookup per item, in-place moves |
-| Repeat reconciliation (sequential) | O(items) | Linear scan, append/remove tail |
+| Repeat reconciliation | O(items) | Positional scan; keyed map only for changed explicit-key order |
 | Event wiring | O(events) | One-time during hydration |
 
 ### What the framework does NOT do
@@ -404,7 +441,7 @@ src/
 ├── element/
 │   ├── markers.ts              Marker constants, collectItemMarkers,
 │   │                           findByOrdinal (block-skipping ordinal walk)
-│   ├── diff.ts                 syncRepeat: keyed + sequential reconciliation
+│   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
 │   ├── styles.ts               injectModuleStyle (adopted CSS modules)
 │   └── types.ts                AttrBinding, CondBinding, RepeatBinding,
 │                               TextBinding, ScopeFrame, TemplateInstance
@@ -441,6 +478,6 @@ Everything else is internal and may change without notice.
 ## Where to look next
 
 - `examples/app/todo-webui` — minimal SSR + interactivity example
-- `examples/app/contact-book-manager` — repeat blocks, keyed reconciliation
+- `examples/app/contact-book-manager` — repeat block reconciliation
 - `examples/app/commerce` — larger composition, multiple components per page
 - [Interactivity guide](https://microsoft.github.io/webui/guide/concepts/interactivity) — component-author view of the same machinery

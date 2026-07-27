@@ -26,6 +26,16 @@ pub(crate) struct AppState {
 impl AppState {
     pub(crate) fn load(app_root: &Path, css: webui::CssStrategy, base_path: &str) -> Result<Self> {
         let frontend = FrontendRuntime::load(app_root, css)?;
+        Self::with_frontend(app_root, base_path, frontend)
+    }
+
+    #[cfg(test)]
+    fn load_for_tests(app_root: &Path, css: webui::CssStrategy, base_path: &str) -> Result<Self> {
+        let frontend = FrontendRuntime::load_for_tests(app_root, css)?;
+        Self::with_frontend(app_root, base_path, frontend)
+    }
+
+    fn with_frontend(app_root: &Path, base_path: &str, frontend: FrontendRuntime) -> Result<Self> {
         let catalog = Catalog::generate();
         // 60 mutation requests per IP per minute
         let rate_limiter = RateLimiter::new(60, 60);
@@ -96,7 +106,7 @@ pub(crate) fn test_state_with_css(css: webui::CssStrategy) -> actix_web::web::Da
     let app_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("server crate should live under the app directory");
-    let state = match AppState::load(app_root, css, "/") {
+    let state = match AppState::load_for_tests(app_root, css, "/") {
         Ok(state) => state,
         Err(error) => panic!("Failed to build the commerce WebUI protocol: {error:#}"),
     };

@@ -18,7 +18,7 @@ const HEADER_LINE_1: &str = "// Copyright (c) Microsoft Corporation.";
 const HEADER_LINE_2: &str = "// Licensed under the MIT license.";
 
 /// Extensions that require the `//`-style license header.
-const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "cs", "h", "proto"];
+const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "mjs", "cs", "h", "proto"];
 
 /// Individual tracked files to skip (relative to workspace root).
 /// Generated files that are checked in but not hand-authored belong here.
@@ -242,6 +242,7 @@ mod tests {
         assert!(is_checked_file(Path::new("baz.cs")));
         assert!(is_checked_file(Path::new("qux.h")));
         assert!(is_checked_file(Path::new("quux.js")));
+        assert!(is_checked_file(Path::new("runner.mjs")));
         assert!(is_checked_file(Path::new("schema.proto")));
 
         assert!(!is_checked_file(Path::new("page.html")));

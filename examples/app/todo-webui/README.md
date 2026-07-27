@@ -2,15 +2,16 @@
 ### todo-webui (WebUI Framework hydration)
 
 ```bash
-# Install JS dependencies (esbuild, @microsoft/webui-framework)
+# Install JS dependencies
 pnpm install
 
-# Build the protocol with WebUI parser plugin
-cargo run -p microsoft-webui-cli -- build examples/app/todo-webui/src --out examples/app/todo-webui/dist --plugin=webui
+# Build client JavaScript + projection manifest, then protocol.bin
+pnpm build
 
 # Or use the dev server with live rendering
 cd examples/app/todo-webui
-cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --servedir ./dist --port 3006
+node ../../build-client.mjs --watch
+cargo run -p microsoft-webui-cli -- serve ./src --state ./data/state.json --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --port 3006 --watch
 ```
 
 ### Using `--plugin=webui`

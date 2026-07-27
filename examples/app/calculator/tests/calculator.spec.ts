@@ -7,7 +7,26 @@ test.describe('SSR rendering', () => {
   test('renders calculator display', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('calc-app')).toBeVisible();
-    await expect(page.locator('calc-display')).toBeVisible();
+    const display = page.locator('calc-display');
+    await expect(display).toBeVisible();
+
+    await expect(
+      display.evaluate((el) => {
+        const component = el as HTMLElement & { $ready?: boolean; setState?: unknown };
+
+        return {
+          ready: component.$ready === true,
+          setState: typeof component.setState === 'function',
+        };
+      }),
+    ).resolves.toEqual({ ready: true, setState: true });
+
+    await display.evaluate((el) => {
+      const component = el as HTMLElement & { setState(state: unknown): void };
+      component.setState({ expression: '1 + 1', value: '2' });
+    });
+    await expect(display).toContainText('1 + 1');
+    await expect(display).toContainText('2');
   });
 
   test('renders calculator buttons', async ({ page }) => {

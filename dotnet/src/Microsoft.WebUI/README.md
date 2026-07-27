@@ -9,31 +9,17 @@ WebUI separates static and dynamic content at build time into a binary protocol 
 ```csharp
 using Microsoft.WebUI;
 
-// One-shot render (parse + render in a single call)
-var html = "<div>Hello, {{name}}!</div>";
-var json = """{"name": "World"}""";
-var result = WebUIRenderer.RenderHtml(html, json);
-// result: "<div>Hello, World!</div>"
-```
-
-## Handler API (Higher Performance)
-
-For repeated renders with pre-compiled protocol data, use the `WebUIHandler`:
-
-```csharp
-using Microsoft.WebUI;
-
-// Create a handler (optionally with a plugin name)
-using var handler = new WebUIHandler("webui");
-
 // Load pre-compiled protocol binary (from `webui build`)
-byte[] protocol = File.ReadAllBytes("app.webui");
+using var protocol = new Protocol(File.ReadAllBytes("app.webui"));
+using var handler = new WebUIHandler("webui");
 
 // Render with different state each time
 var html = handler.Render(protocol, """{"user": "Alice"}""", "index.html", "/");
 ```
 
-Refer to the WebUI documentation for the available plugin identifiers.
+`Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
+Keep it alive for the server lifetime. Refer to the WebUI documentation for the
+available plugin identifiers.
 
 ## Client-Side Navigation (Partial Responses)
 
@@ -49,7 +35,7 @@ app.MapGet("/users/{id}", (HttpContext ctx, string id) =>
     {
         // Client-side navigation — return JSON partial (no assembly required)
         var inventoryHex = ctx.Request.Headers["X-WebUI-Inventory"].FirstOrDefault() ?? "";
-        var json = handler.RenderPartial(protocol, stateJson, "index.html", ctx.Request.Path, inventoryHex);
+        var json = protocol.RenderPartial(stateJson, "index.html", ctx.Request.Path, inventoryHex);
         return Results.Content(json, "application/json");
     }
 
@@ -60,6 +46,10 @@ app.MapGet("/users/{id}", (HttpContext ctx, string id) =>
 ```
 
 The response is a JSON string — pipe it directly to the HTTP response. No deserialization needed.
+
+`protocol.RenderComponentTemplates(tags, inventoryHex)` returns the template
+payload for on-demand component loading. `protocol.Tokens()` returns CSS token
+names in build order.
 
 ## Installation
 
@@ -98,7 +88,7 @@ export WEBUI_LIB_PATH=/path/to/libwebui_ffi.dylib  # direct file path
 
 ```bash
 # Build the native FFI library
-cargo build --release -p webui-ffi
+cargo build --release -p microsoft-webui-ffi
 
 # Build and test the .NET package
 cargo xtask dotnet

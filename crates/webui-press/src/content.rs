@@ -425,7 +425,16 @@ pub(crate) fn process_content_with_states(
                     };
 
                     if !is_home {
-                        html = render_markdown(body, highlighter, base_path)?;
+                        // Canonical page URL: every page is written as
+                        // `<dir>/index.html`, so it is served with a trailing
+                        // slash. In-page anchors need this exact path so they
+                        // aren't resolved against `<base href>`.
+                        let page_url = if url_path.ends_with('/') {
+                            url_path.to_string()
+                        } else {
+                            format!("{url_path}/")
+                        };
+                        html = render_markdown(body, highlighter, base_path, &page_url)?;
                     }
 
                     if let Some(d) = fm.description {

@@ -5,6 +5,7 @@ import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { build, type BuildOptions } from 'esbuild';
+import { esbuildProjection } from '@microsoft/webui/projection.js';
 
 export interface FixtureBuildOptions {
   fixturesRoot: string;
@@ -32,7 +33,7 @@ export async function buildFixtureEntries({
   tsconfig,
   emptyMessage,
   extraBuilds = [],
-}: FixtureBuildOptions): Promise<void> {
+}: FixtureBuildOptions): Promise<string> {
   const entryPoints = collectFixtureEntryPoints(fixturesRoot, entryFileName);
   if (entryPoints.length === 0) {
     throw new Error(emptyMessage ?? `No fixture entry points found in ${fixturesRoot}`);
@@ -40,6 +41,7 @@ export async function buildFixtureEntries({
 
   rmSync(outDir, { recursive: true, force: true });
 
+  const projectionManifest = resolve(outDir, 'webui-projection.json');
   await build({
     entryPoints,
     bundle: true,
@@ -51,6 +53,8 @@ export async function buildFixtureEntries({
     supported: { 'import-attributes': true },
     tsconfig,
     logLevel: 'info',
+    metafile: true,
+    plugins: [esbuildProjection({ manifest: projectionManifest })],
   });
 
   for (const extraBuild of extraBuilds) {
@@ -59,4 +63,5 @@ export async function buildFixtureEntries({
       ...extraBuild,
     });
   }
+  return projectionManifest;
 }

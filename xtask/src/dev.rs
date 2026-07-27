@@ -6,7 +6,7 @@
 //! Usage: `cargo xtask dev todo-fast`
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::process::{self, ManagedChild, ReservedPort};
@@ -101,19 +101,9 @@ pub fn run(app: Option<&str>) -> ExitCode {
         }
     }
 
-    // Start WebUI server
-    match process::spawn_child_prefixed(
-        "server",
-        "pnpm",
-        &["start:server"],
-        &app_dir,
-        console::Color::Cyan,
-    ) {
-        Some(c) => children.push(("server", c)),
-        None => {
-            kill_all(&mut children);
-            return ExitCode::FAILURE;
-        }
+    let projection_manifests = read_projection_manifests(&app_dir);
+    for manifest in &projection_manifests {
+        fs::remove_file(manifest).ok();
     }
 
     // Start client bundler (watch mode).
@@ -125,8 +115,7 @@ pub fn run(app: Option<&str>) -> ExitCode {
     // the server's behavior. All example `start:client` scripts use esbuild.
     //
     // The flag is appended WITHOUT a `--` separator: pnpm forwards extra args
-    // verbatim (it does not consume `--`), so a `--` would reach esbuild and be
-    // rejected as an invalid build flag.
+    // to the example's JS build wrapper.
     let client_args: &[&str] = if console::colors_enabled_stderr() {
         &["start:client", "--color=true"]
     } else {
@@ -140,6 +129,37 @@ pub fn run(app: Option<&str>) -> ExitCode {
         console::Color::Green,
     ) {
         Some(c) => children.push(("client", c)),
+        None => {
+            kill_all(&mut children);
+            return ExitCode::FAILURE;
+        }
+    }
+
+    for manifest in projection_manifests {
+        let Some((_, client)) = children.last_mut() else {
+            kill_all(&mut children);
+            return ExitCode::FAILURE;
+        };
+        if !wait_for_projection_manifest(&manifest, client) {
+            eprintln!(
+                "  {} client projection manifest was not produced: {}",
+                console::style("✘").red().bold(),
+                manifest.display()
+            );
+            kill_all(&mut children);
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // Start WebUI server only after the first client manifest is complete.
+    match process::spawn_child_prefixed(
+        "server",
+        "pnpm",
+        &["start:server"],
+        &app_dir,
+        console::Color::Cyan,
+    ) {
+        Some(c) => children.push(("server", c)),
         None => {
             kill_all(&mut children);
             return ExitCode::FAILURE;
@@ -176,19 +196,81 @@ fn read_api_port(app_dir: &Path) -> Option<u16> {
 }
 
 fn read_script_flag_port(app_dir: &Path, script_name: &str, flag: &str) -> Option<u16> {
-    let content = fs::read_to_string(app_dir.join("package.json")).ok()?;
-    let script = serde_json::from_str::<serde_json::Value>(&content)
-        .ok()?
-        .get("scripts")?
-        .get(script_name)?
-        .as_str()?
-        .to_string();
+    read_script_flag_value(app_dir, script_name, flag)?
+        .parse()
+        .ok()
+}
+
+fn read_script_flag_value(app_dir: &Path, script_name: &str, flag: &str) -> Option<String> {
+    read_script_flag_values(app_dir, script_name, flag)
+        .into_iter()
+        .next()
+}
+
+fn read_script_flag_values(app_dir: &Path, script_name: &str, flag: &str) -> Vec<String> {
+    let Ok(content) = fs::read_to_string(app_dir.join("package.json")) else {
+        return Vec::new();
+    };
+    let Some(script) = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("scripts")?
+                .get(script_name)?
+                .as_str()
+                .map(str::to_string)
+        })
+    else {
+        return Vec::new();
+    };
 
     script
         .split_whitespace()
         .zip(script.split_whitespace().skip(1))
-        .find(|(candidate_flag, _)| *candidate_flag == flag)
-        .and_then(|(_, port)| port.parse::<u16>().ok())
+        .filter(|(candidate_flag, _)| *candidate_flag == flag)
+        .map(|(_, value)| value.to_string())
+        .collect()
+}
+
+fn read_projection_manifests(app_dir: &Path) -> Vec<PathBuf> {
+    let mut values = read_script_flag_values(app_dir, "start:server", "--projection-manifest");
+    if values.is_empty() {
+        if let Some(value) = (|| {
+            let content = fs::read_to_string(app_dir.join("package.json")).ok()?;
+            serde_json::from_str::<serde_json::Value>(&content)
+                .ok()?
+                .get("webuiProjectionManifest")?
+                .as_str()
+                .map(str::to_string)
+        })() {
+            values.push(value);
+        }
+    }
+    values
+        .into_iter()
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                app_dir.join(path)
+            }
+        })
+        .collect()
+}
+
+fn wait_for_projection_manifest(path: &Path, client: &mut ManagedChild) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while std::time::Instant::now() < deadline {
+        if path.is_file() {
+            return true;
+        }
+        if client.try_wait().ok().flatten().is_some() {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
 }
 
 fn collect_reserved_ports(
@@ -262,5 +344,41 @@ mod tests {
 
         assert_eq!(read_port(app.path()), Some(3003));
         assert_eq!(read_api_port(app.path()), Some(3013));
+    }
+
+    #[test]
+    fn test_read_projection_manifest_from_start_server_script() {
+        let app = create_app_dir(
+            r#"{
+                "scripts": {
+                    "start:server": "webui serve ./src --projection-manifest ./dist/webui-projection.json --projection-manifest ./dist/external-projection.json --watch"
+                }
+            }"#,
+        );
+
+        assert_eq!(
+            read_projection_manifests(app.path()),
+            vec![
+                app.path().join("./dist/webui-projection.json"),
+                app.path().join("./dist/external-projection.json"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_read_projection_manifest_from_package_metadata() {
+        let app = create_app_dir(
+            r#"{
+                "webuiProjectionManifest": "./dist/webui-projection.json",
+                "scripts": {
+                    "start:server": "cargo run -p custom-server"
+                }
+            }"#,
+        );
+
+        assert_eq!(
+            read_projection_manifests(app.path()),
+            vec![app.path().join("./dist/webui-projection.json")]
+        );
     }
 }

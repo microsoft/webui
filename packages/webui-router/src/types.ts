@@ -12,6 +12,7 @@ declare global {
       state?: Record<string, unknown>;
       templates?: Record<string, unknown>;
       templateFns?: Record<string, unknown>;
+      templateHostExclusions?: Set<string>;
     };
   }
 }
@@ -76,6 +77,15 @@ export interface RouterConfig {
    * ```
    */
   preload?: boolean;
+
+  /**
+   * Intercept same-origin POST forms and dispatch component `static action()`
+   * handlers. Disabled by default so the core router does not load the action
+   * runtime unless an app opts into route actions.
+   *
+   * @default false
+   */
+  actions?: boolean;
 
   /**
    * Path prefixes that the router should NOT intercept.

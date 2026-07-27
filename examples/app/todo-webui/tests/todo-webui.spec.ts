@@ -59,8 +59,8 @@ test.describe('SSR rendering', () => {
         textPaths,
         repeat: template?.r?.[0] ?? null,
         hasRepeatSlot: Array.isArray(template?.r?.[0]) && template.r[0].length >= 4,
-        eventCount: template?.e?.length ?? 0,
-        hasEvents: Array.isArray(template?.e),
+        eventCount: template?.eg?.reduce((count, [, bindings]) => count + bindings.length, 0) ?? 0,
+        hasEvents: Array.isArray(template?.eg),
       };
     });
 
