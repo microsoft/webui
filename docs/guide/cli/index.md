@@ -577,12 +577,6 @@ webui build ./my-app --out ./dist --components ./shared/components
 webui build ./my-app --out ./dist --components /libs/ui-kit
 ```
 
-Because the app directory is scanned recursively too, a local `--components`
-path may overlap it — for example `--components ./src` while the app lives in
-`./src/foo`. That is allowed: a component file discovered by both scans is
-registered once. Only two **different** templates sharing one tag name are
-reported as a conflict.
-
 ### Multiple Sources
 
 Combine multiple `--components` flags:

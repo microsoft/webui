@@ -1062,13 +1062,6 @@ SSR-only. Scriptless templates may contain server-rendered bindings,
 conditionals, and repeats, but they emit no client metadata or state.
 Local paths perform a recursive WalkDir scan for HTML files with hyphenated names, pairing matching CSS files — the same convention used by the parser's `ComponentRegistry`.
 
-Because the app directory is also scanned recursively, a `--components` path may
-**overlap** the app directory (for example `--components ./src` while the app
-lives in `./src/foo`). Registration is therefore **idempotent**: re-registering a
-tag with identical template content, CSS, and client-ownership — the same
-physical file discovered by both scans — is a silent no-op. Re-registering a tag
-with **different** content remains a hard `already registered` error.
-
 ### HTML Parser
 ```rust
 pub struct HtmlParser {
