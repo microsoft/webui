@@ -29,6 +29,10 @@ const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
 const CONVERTER_FALLBACK_NAME: &str = "webui-fallback";
 /// Target dialect requested from `microsoft-fast-convert`.
 const WEBUI_CONVERTER_SYNTAX: &str = "webui-prerelease";
+/// The FAST element name used by both the authoritative [`Walker`] match in
+/// [`find_f_template_source`] and the cheap byte precheck in
+/// [`contains_f_template_name`], preventing false negatives from name drift.
+const F_TEMPLATE_NAME: &str = "f-template";
 
 /// Located `<f-template>` element within an authored component source.
 struct FTemplateSource {
@@ -45,6 +49,10 @@ struct FTemplateSource {
 /// attribute (or the filename), and retains the authored inner `<template>` as
 /// the client artifact.
 ///
+/// A cheap byte precheck ([`contains_f_template_name`]) rules out sources that
+/// cannot possibly contain an `<f-template>` element, so ordinary FAST-free
+/// component sources never pay for the element walk.
+///
 /// # Errors
 ///
 /// Returns a [`Diagnostic`]-carrying error when multiple `<f-template>` blocks
@@ -53,6 +61,10 @@ pub(crate) fn transform_component_source(
     source: ComponentSource<'_>,
 ) -> Result<ComponentSourceResult> {
     let html_content = source.html_content;
+    if !contains_f_template_name(html_content.as_bytes()) {
+        return Ok(ComponentSourceResult::Unchanged);
+    }
+
     let Some(found) = find_f_template_source(html_content) else {
         return Ok(ComponentSourceResult::Unchanged);
     };
@@ -72,6 +84,26 @@ pub(crate) fn transform_component_source(
     ))
 }
 
+/// Cheap case-insensitive precheck for the bare ASCII name `f-template`
+/// anywhere in `haystack`, without the surrounding `<` delimiter.
+///
+/// The HTML [`Walker`] takes an opening element name to be the run of bytes
+/// after `<` (skipping ASCII whitespace) and matches it
+/// ASCII-case-insensitively, so every spelling it accepts contains these ten
+/// bytes verbatim, case aside. Searching for the bare name therefore has no
+/// false negatives, whereas searching for `"<f-template"` would. Non-ASCII
+/// bytes are compared without case folding, so UTF-8 input can neither panic
+/// nor be misread. False positives (the bytes appearing in text, comments,
+/// attributes, or longer names) only cost the walk that would have happened
+/// anyway: [`find_f_template_source`] remains authoritative and still reports
+/// `Unchanged`.
+#[inline]
+fn contains_f_template_name(haystack: &[u8]) -> bool {
+    haystack
+        .windows(F_TEMPLATE_NAME.len())
+        .any(|window| window.eq_ignore_ascii_case(F_TEMPLATE_NAME.as_bytes()))
+}
+
 /// Find the first `<f-template>` element anywhere in the authored source.
 fn find_f_template_source(html_content: &str) -> Option<FTemplateSource> {
     let mut stack = Vec::with_capacity(1);
@@ -83,7 +115,7 @@ fn find_f_template_source(html_content: &str) -> Option<FTemplateSource> {
                 continue;
             };
 
-            if element.name().eq_ignore_ascii_case("f-template") {
+            if element.name().eq_ignore_ascii_case(F_TEMPLATE_NAME) {
                 return Some(FTemplateSource {
                     name: element
                         .attr("name")
@@ -274,5 +306,80 @@ mod tests {
         assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert!(diag.to_string().contains("item in items"));
         assert!(diag.help_text().is_some());
+    }
+
+    #[test]
+    fn precheck_matches_lower_upper_and_mixed_case_names() {
+        for haystack in [
+            "<f-template name=\"card\"><template></template></f-template>",
+            "<F-TEMPLATE NAME=\"card\"><template></template></F-TEMPLATE>",
+            "<F-template Name=\"card\"><template></template></f-Template>",
+        ] {
+            assert!(contains_f_template_name(haystack.as_bytes()));
+            assert!(find_f_template_source(haystack).is_some());
+        }
+    }
+
+    #[test]
+    fn whitespace_after_opening_angle_bracket_passes_precheck_and_walker() {
+        let html =
+            r#"< f-template name="card"><template><span>{{title}}</span></template></f-template>"#;
+        assert!(contains_f_template_name(html.as_bytes()));
+
+        let ComponentSourceResult::Transformed(result) =
+            transform("file-card", html).expect("transform")
+        else {
+            panic!("expected a transformed FAST source");
+        };
+        assert_eq!(result.tag_name, "card");
+    }
+
+    #[test]
+    fn precheck_covers_every_ascii_whitespace_accepted_before_the_name() {
+        for byte in (0u8..=127).filter(|byte| byte.is_ascii_whitespace()) {
+            let whitespace = char::from(byte);
+            let html =
+                format!("<{whitespace}f-template name=\"card\"><template></template></f-template>");
+            assert!(contains_f_template_name(html.as_bytes()));
+            assert!(
+                find_f_template_source(&html).is_some(),
+                "walker rejected ASCII whitespace byte {:#04x}",
+                byte
+            );
+        }
+    }
+
+    #[test]
+    fn precheck_rejects_sources_without_the_bare_name() {
+        for haystack in [
+            "<f-templat name=\"card\"></f-templat>",
+            "<f_template name=\"card\"></f_template>",
+            "<ftemplate name=\"card\"></ftemplate>",
+            "<template><span>{{title}}</span></template>",
+            "<template><span>ƒ-template ☃</span></template>",
+            "",
+            "f-templat",
+        ] {
+            assert!(!contains_f_template_name(haystack.as_bytes()));
+        }
+    }
+
+    #[test]
+    fn precheck_false_positive_in_text_comment_or_attribute_is_harmless() {
+        for html in [
+            r#"<template><span>the f-template directive is unused here</span></template>"#,
+            r#"<template><!-- f-template mentioned only in a comment --><span>{{title}}</span></template>"#,
+            r#"<template><span data-note="f-template">{{title}}</span></template>"#,
+            r#"<template><f-templatex></f-templatex></template>"#,
+        ] {
+            // The bare bytes are present, so the precheck reports a possible
+            // match, but no source contains an actual `<f-template>` element,
+            // so the authoritative walker still finds nothing.
+            assert!(contains_f_template_name(html.as_bytes()));
+            assert_eq!(
+                transform("plain-card", html).expect("transform"),
+                ComponentSourceResult::Unchanged
+            );
+        }
     }
 }
