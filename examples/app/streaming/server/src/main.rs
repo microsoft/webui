@@ -38,7 +38,7 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::RenderOptions;
 use webui_tokens::{inject_into_state, resolve_tokens};
 
-use crate::assets::{asset_response, load_dist_assets, CachedAsset};
+use crate::assets::{asset_response, insert_generated_css, load_dist_assets, CachedAsset};
 use crate::paced_writer::CheckpointPacedWriter;
 
 const THEME: &str = "@microsoft/webui-examples-theme";
@@ -154,11 +154,19 @@ fn feed_batches() -> (Vec<Value>, Vec<Value>, Vec<Value>) {
 /// carries only the hydration keys its own components declare, which is the
 /// "boundary payload locality" contract in DESIGN.md ("Progressive Streaming
 /// Hydration — Phase 1").
-fn load_protocol(
-    app_root: &Path,
-    css: CssStrategy,
-    base_path: &str,
-) -> Result<(Arc<Protocol>, Value)> {
+/// Everything `load_protocol` produces: the compiled protocol, its
+/// render-time state, and the component stylesheets the build emitted.
+///
+/// `css_files` never reaches `dist/` — the client build only emits
+/// JavaScript — so the caller must serve it for the `link` and `module` CSS
+/// strategies.
+struct LoadedApp {
+    protocol: Arc<Protocol>,
+    state: Value,
+    css_files: Vec<(String, String)>,
+}
+
+fn load_protocol(app_root: &Path, css: CssStrategy, base_path: &str) -> Result<LoadedApp> {
     let theme_path = resolve_theme_path(THEME, app_root)
         .with_context(|| format!("Failed to resolve theme {THEME}"))?;
     let token_file = load_token_file(&theme_path)
@@ -187,6 +195,7 @@ fn load_protocol(
 
     let resolved_tokens = resolve_tokens(&build_result.protocol.tokens, &token_file)
         .context("Failed to resolve design tokens for the loaded theme")?;
+    let css_files = build_result.css_files;
     let protocol = Protocol::new(build_result.protocol);
 
     let (feed_batch_1, feed_batch_2, feed_batch_3) = feed_batches();
@@ -198,7 +207,11 @@ fn load_protocol(
     let mut state = Value::Object(state_map);
     inject_into_state(&mut state, &resolved_tokens);
 
-    Ok((Arc::new(protocol), state))
+    Ok(LoadedApp {
+        protocol: Arc::new(protocol),
+        state,
+        css_files,
+    })
 }
 
 async fn render_page(ctx: web::Data<AppCtx>) -> HttpResponse {
@@ -255,10 +268,10 @@ async fn main() -> Result<()> {
     let app_root =
         std::env::current_dir().context("Failed to determine streaming example app directory")?;
 
-    let (protocol, state) = load_protocol(&app_root, css, &args.base_path)?;
+    let app = load_protocol(&app_root, css, &args.base_path)?;
 
     let dist_dir = app_root.join("dist");
-    let assets = load_dist_assets(&dist_dir)
+    let mut assets = load_dist_assets(&dist_dir)
         .with_context(|| format!("Failed to load client assets from {}", dist_dir.display()))?;
     if !assets.contains_key("index.js") {
         anyhow::bail!(
@@ -266,10 +279,14 @@ async fn main() -> Result<()> {
             dist_dir.display()
         );
     }
+    // Component stylesheets exist only in the build result, never in
+    // `dist/`. The `link` and `module` strategies reference them by URL, so
+    // they must be served or every shadow root's stylesheet 404s.
+    insert_generated_css(&mut assets, app.css_files);
 
     let ctx = web::Data::new(AppCtx {
-        protocol,
-        state: Arc::new(state),
+        protocol: app.protocol,
+        state: Arc::new(app.state),
         pool: Arc::new(ChunkPool::new(64, StreamingWriter::CHUNK_TARGET + 1024)),
         checkpoint_delay: Duration::from_millis(args.checkpoint_delay_ms),
         assets,

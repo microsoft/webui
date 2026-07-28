@@ -27,6 +27,23 @@ pnpm start:server
 pnpm test
 ```
 
+### Trying the CSS strategies
+
+The server accepts `--css style|module|link`. It defaults to `style` because a
+critical boundary should paint styled with zero extra round trips, and it
+serves the compiler-generated stylesheets in memory so `link` and `module`
+work too:
+
+```bash
+cargo run -p streaming-example-server -- --css module
+```
+
+Measured here (four feed items, cold context, 100 ms RTT): `style` is 12,228 B
+with the composer styled at 147 ms, `module` is 10,061 B at 158 ms, and `link`
+is 8,368 B at 268 ms. Time to interactive is ~616 ms in all three — it is gated
+by the application bundle, not by CSS. See
+`docs/guide/concepts/directives/boundary.md` for the full trade-off.
+
 ### How it stays deterministic
 
 The server (`server/src/main.rs`) calls the real, opt-in
