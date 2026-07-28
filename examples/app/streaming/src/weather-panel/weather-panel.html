@@ -1,0 +1,26 @@
+<template shadowrootmode="open">
+  <!--
+    `aria-live="polite"` because this region's content is replaced by a
+    client fetch after the response has already streamed past the header —
+    a screen reader user needs the forecast announced when it lands rather
+    than only on first paint.
+  -->
+  <section class="weather" data-status="{{status}}" aria-live="polite" data-testid="weather-panel">
+    <if condition="status == 'loading'">
+      <p class="weather-loading" data-testid="weather-skeleton">
+        <span class="weather-shimmer" aria-hidden="true"></span>
+        <span class="weather-assistive">Loading the local forecast</span>
+      </p>
+    </if>
+    <if condition="status == 'ready'">
+      <p class="weather-summary" data-testid="weather-summary">
+        <span class="weather-temperature" data-testid="weather-temperature">{{temperature}}</span>
+        <span class="weather-condition" data-testid="weather-condition">{{condition}}</span>
+        <span class="weather-location" data-testid="weather-location">{{location}}</span>
+      </p>
+    </if>
+    <if condition="status == 'error'">
+      <p class="weather-error" data-testid="weather-error">The forecast is unavailable right now.</p>
+    </if>
+  </section>
+</template>

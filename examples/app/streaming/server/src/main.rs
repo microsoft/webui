@@ -14,6 +14,7 @@
 //! rather than completing instantly in one scheduler tick.
 
 mod assets;
+mod jitter;
 mod paced_writer;
 
 use std::collections::HashMap;
@@ -39,17 +40,43 @@ use webui_handler::RenderOptions;
 use webui_tokens::{inject_into_state, resolve_tokens};
 
 use crate::assets::{asset_response, insert_generated_css, load_dist_assets, CachedAsset};
+use crate::jitter::Jitter;
 use crate::paced_writer::CheckpointPacedWriter;
 
 const THEME: &str = "@microsoft/webui-examples-theme";
 const ENTRY: &str = "index.html";
 
-/// Number of leading boundary flushes to pace: the composer checkpoint
-/// (sequence 0) and the first two feed batches (sequences 1 and 2). The
-/// third feed batch, the implicit tail checkpoint, and the terminal
-/// record flush immediately, so the response closes promptly once all
-/// priority content has committed.
-const PACED_FLUSH_COUNT: usize = 3;
+/// Zero-based index of the flush whose pause precedes feed batch 1.
+///
+/// Flush 0 commits the weather shell, which carries no server data — the
+/// composer must follow it immediately, so that gap is never paced. Flush 1
+/// commits the composer, and its pause is the wait before the first feed
+/// batch arrives.
+const FIRST_FEED_GAP: usize = 1;
+
+/// Feed batches, and therefore jittered gaps: one before each batch.
+const FEED_BATCH_COUNT: usize = 3;
+
+/// Simulated backend latency bounds for `GET /api/weather`.
+///
+/// Deliberately slower than a single feed gap so the forecast lands *between*
+/// feed batches, which is the whole point of the panel: it proves the weather
+/// resolves independently of the response stream rather than riding along with
+/// it.
+const WEATHER_DELAY_MIN_MS: u64 = 700;
+const WEATHER_DELAY_MAX_MS: u64 = 1_400;
+
+/// Whether the pause *after* flush `index` should be paced.
+///
+/// Flush 0 commits the weather shell, which carries no server data, so the
+/// composer must follow it immediately. Flushes 1 through 3 commit the
+/// composer and the first two feed batches, and each of their pauses is the
+/// wait before the next feed batch. Everything after that — the last batch,
+/// the implicit tail checkpoint, and the terminal record — closes the
+/// response without further delay.
+fn gap_is_paced(index: usize) -> bool {
+    (FIRST_FEED_GAP..FIRST_FEED_GAP + FEED_BATCH_COUNT).contains(&index)
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "streaming-example-server")]
@@ -67,18 +94,24 @@ struct Args {
     #[arg(long, default_value = "/")]
     base_path: String,
 
-    /// Milliseconds to pause after each paced boundary flush (composer,
-    /// feed batch 1, feed batch 2) so network delivery timing is
-    /// deterministic for the Playwright suite.
-    #[arg(long, default_value_t = 300)]
-    checkpoint_delay_ms: u64,
+    /// Lower bound, in milliseconds, of the randomized pause before each
+    /// feed batch is flushed.
+    #[arg(long, default_value_t = 500)]
+    feed_delay_min_ms: u64,
+
+    /// Upper bound, in milliseconds, of the randomized pause before each
+    /// feed batch is flushed. Set equal to the lower bound for a fixed,
+    /// fully deterministic cadence.
+    #[arg(long, default_value_t = 1_000)]
+    feed_delay_max_ms: u64,
 }
 
 struct AppCtx {
     protocol: Arc<Protocol>,
     state: Arc<Value>,
     pool: Arc<ChunkPool>,
-    checkpoint_delay: Duration,
+    feed_delay_min_ms: u64,
+    feed_delay_max_ms: u64,
     assets: HashMap<String, CachedAsset>,
 }
 
@@ -220,7 +253,8 @@ async fn render_page(ctx: web::Data<AppCtx>) -> HttpResponse {
     // `Value` built at startup.
     let state = Arc::clone(&ctx.state);
     let pool = Arc::clone(&ctx.pool);
-    let delay = ctx.checkpoint_delay;
+    let feed_delay_min_ms = ctx.feed_delay_min_ms;
+    let feed_delay_max_ms = ctx.feed_delay_max_ms;
 
     // Bounded channel: backpressure when the client is slow, no unbounded
     // memory growth. The blocking render task is spawned but *not* awaited
@@ -234,7 +268,16 @@ async fn render_page(ctx: web::Data<AppCtx>) -> HttpResponse {
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
         let inner =
             StreamingWriter::new_pooled(tx, pool).with_flush_timeout(Duration::from_secs(30));
-        let mut writer = CheckpointPacedWriter::new(inner, delay, PACED_FLUSH_COUNT);
+        // One generator per request, so a reload re-orders how the page
+        // fills in instead of replaying one hard-coded timeline.
+        let mut jitter = Jitter::from_clock();
+        let mut writer = CheckpointPacedWriter::new(inner, move |index| {
+            if gap_is_paced(index) {
+                jitter.delay_ms(feed_delay_min_ms, feed_delay_max_ms)
+            } else {
+                Duration::ZERO
+            }
+        });
         let opts = RenderOptions::new(ENTRY, "/");
         if let Err(err) = handler.render_streaming(&protocol, &state, &opts, &mut writer) {
             // The response's status/headers are already on the wire by the
@@ -251,6 +294,47 @@ async fn render_page(ctx: web::Data<AppCtx>) -> HttpResponse {
         .streaming(stream)
 }
 
+/// Rotating sample forecasts, so a reload visibly returns new data rather
+/// than looking like a cached response.
+const FORECASTS: [(&str, &str); 4] = [
+    ("68°F", "Partly cloudy"),
+    ("54°F", "Light rain"),
+    ("72°F", "Clear"),
+    ("61°F", "Overcast"),
+];
+
+/// Where this demo pretends to be.
+const FORECAST_LOCATION: &str = "Redmond, WA";
+
+/// The weather panel's own data source, deliberately slow.
+///
+/// This is *not* part of the streamed response. The forecast is not ready in
+/// document order, and native HTML streaming cannot reach back into a header
+/// it has already streamed past, so the panel fetches it from the client
+/// instead — see `src/weather-panel/weather-panel.ts`. Because streaming
+/// hydration makes the panel interactive while the response is still open,
+/// this request overlaps the remaining feed chunks rather than queueing
+/// behind them.
+async fn weather_api() -> HttpResponse {
+    let mut jitter = Jitter::from_clock();
+    let delay = jitter.delay_ms(WEATHER_DELAY_MIN_MS, WEATHER_DELAY_MAX_MS);
+    tokio::time::sleep(delay).await;
+
+    let index = jitter.index(FORECASTS.len());
+    let (temperature, condition) = FORECASTS[index];
+
+    // Built as a `Map` rather than with `serde_json::json!`, because that
+    // macro expands to an `unwrap` the workspace lint bans.
+    let mut forecast = Map::with_capacity(3);
+    forecast.insert("location".to_owned(), Value::from(FORECAST_LOCATION));
+    forecast.insert("temperature".to_owned(), Value::from(temperature));
+    forecast.insert("condition".to_owned(), Value::from(condition));
+
+    HttpResponse::Ok()
+        .insert_header(("Cache-Control", "no-store"))
+        .json(Value::Object(forecast))
+}
+
 /// Serve any file this app's client build produced under `dist/` — the
 /// entry bundle and every hashed shared chunk esbuild's code splitting
 /// emits. The exact chunk filenames are not known until the client build
@@ -265,6 +349,15 @@ async fn serve_asset(req: HttpRequest, ctx: web::Data<AppCtx>) -> HttpResponse {
 async fn main() -> Result<()> {
     let args = Args::parse();
     let css = css_strategy(&args.css)?;
+    if args.feed_delay_max_ms < args.feed_delay_min_ms {
+        anyhow::bail!(
+            "--feed-delay-max-ms ({}) is below --feed-delay-min-ms ({}). \
+             Pass a max at or above the min, or set both to the same value \
+             for a fixed cadence.",
+            args.feed_delay_max_ms,
+            args.feed_delay_min_ms
+        );
+    }
     let app_root =
         std::env::current_dir().context("Failed to determine streaming example app directory")?;
 
@@ -288,7 +381,8 @@ async fn main() -> Result<()> {
         protocol: app.protocol,
         state: Arc::new(app.state),
         pool: Arc::new(ChunkPool::new(64, StreamingWriter::CHUNK_TARGET + 1024)),
-        checkpoint_delay: Duration::from_millis(args.checkpoint_delay_ms),
+        feed_delay_min_ms: args.feed_delay_min_ms,
+        feed_delay_max_ms: args.feed_delay_max_ms,
         assets,
     });
 
@@ -298,6 +392,7 @@ async fn main() -> Result<()> {
         App::new()
             .app_data(ctx.clone())
             .route("/", web::get().to(render_page))
+            .route("/api/weather", web::get().to(weather_api))
             .default_service(web::route().to(serve_asset))
     })
     .bind(("0.0.0.0", port))?
@@ -309,7 +404,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{css_strategy, Args};
+    use super::{css_strategy, gap_is_paced, Args, FORECASTS, WEATHER_DELAY_MIN_MS};
     use clap::Parser;
     use webui::CssStrategy;
 
@@ -338,5 +433,62 @@ mod tests {
     #[test]
     fn css_strategy_rejects_unknown_values() {
         assert!(css_strategy("bogus").is_err());
+    }
+
+    #[test]
+    fn feed_delays_default_to_a_half_to_one_second_range() {
+        let args = Args::parse_from(["streaming-example-server"]);
+        assert_eq!(args.feed_delay_min_ms, 500);
+        assert_eq!(args.feed_delay_max_ms, 1_000);
+    }
+
+    #[test]
+    fn feed_delays_are_overridable() {
+        let args = Args::parse_from([
+            "streaming-example-server",
+            "--feed-delay-min-ms",
+            "50",
+            "--feed-delay-max-ms",
+            "75",
+        ]);
+        assert_eq!(args.feed_delay_min_ms, 50);
+        assert_eq!(args.feed_delay_max_ms, 75);
+    }
+
+    /// The exact predicate `render_page` installs as its pacing schedule, so
+    /// the flush-index-to-boundary mapping is asserted rather than implied by
+    /// a comment.
+    #[test]
+    fn only_the_gaps_before_feed_batches_are_paced() {
+        // Flush 0 commits the weather shell; the composer must follow it
+        // immediately or the highest-priority island is delayed behind a
+        // boundary that carries no server data at all.
+        assert!(!gap_is_paced(0), "the weather-to-composer gap must be free");
+        // Flushes 1, 2 and 3 precede feed batches 1, 2 and 3.
+        assert!(gap_is_paced(1));
+        assert!(gap_is_paced(2));
+        assert!(gap_is_paced(3));
+        // The tail checkpoint and terminal record close the response.
+        assert!(!gap_is_paced(4), "the response must close promptly");
+        assert!(!gap_is_paced(5));
+    }
+
+    #[test]
+    fn every_forecast_sample_is_populated() {
+        for (temperature, condition) in FORECASTS {
+            assert!(!temperature.is_empty(), "a forecast has no temperature");
+            assert!(!condition.is_empty(), "a forecast has no condition");
+        }
+    }
+
+    #[test]
+    fn the_weather_outlasts_a_single_feed_gap() {
+        // The panel only demonstrates independence from the stream if its
+        // data cannot land before the first batch it is racing.
+        let args = Args::parse_from(["streaming-example-server"]);
+        assert!(
+            WEATHER_DELAY_MIN_MS > args.feed_delay_min_ms,
+            "the forecast would resolve before the first feed batch"
+        );
     }
 }

@@ -88,6 +88,33 @@ Boundaries are committed only in document order. They do not start asynchronous
 server work, move later content ahead of earlier content, or replace an earlier
 skeleton with later same-response HTML.
 
+### Slow surfaces: place the skeleton in its own boundary
+
+Because of that ordering rule, a region that depends on slow backend data must
+not stall the response — doing so delays every boundary after it, including the
+critical one. Give the slow surface a *complete* placeholder component inside
+its own early boundary instead, then let it resolve its own data after it
+hydrates:
+
+```html
+<header>
+  <boundary name="weather-shell">
+    <weather-panel status="loading"></weather-panel>
+  </boundary>
+</header>
+```
+
+```typescript
+connectedCallback(): void {
+  super.connectedCallback();
+  void this.loadForecast(); // Runs once this boundary commits.
+}
+```
+
+The boundary carries no server data, so it commits immediately and the next
+boundary follows in the same flush window. `examples/app/streaming` ships this
+exact pattern.
+
 Each checkpoint includes projected state and first-use metadata for the
 component graph reachable from roots rendered in that boundary. This includes
 initially hidden conditional/repeat descendants so they can appear after a

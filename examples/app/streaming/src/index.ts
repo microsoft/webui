@@ -8,16 +8,18 @@
  * chunks, using the Progressive Streaming Hydration Phase 1 contract from
  * DESIGN.md ("Progressive Streaming Hydration — Phase 1"):
  *
- * 1. The composer boundary (`message-composer`) commits first and must be
+ * 1. The weather boundary commits first. It carries no server data, so it is
+ *    the cheapest checkpoint on the page — `weather-panel` hydrates while the
+ *    response is still open and immediately fetches its own forecast, which
+ *    then overlaps the rest of the stream.
+ * 2. The composer boundary (`message-composer`) commits next and must be
  *    interactive before `DOMContentLoaded`, while the response is still open.
- * 2. The weather header renders a permanent skeleton (Phase 1 does not block
- *    the composer on it — see the comment in `index.html`).
  * 3. Three feed boundaries commit afterward, each with its own `feed-item`
  *    islands, hydrating independently and in order as their chunks arrive.
  *
- * `message-composer.js`/`feed-item.js` import `@microsoft/webui-framework`,
- * which no longer installs the streaming coordinator on its own. This entry
- * imports `@microsoft/webui-framework/streaming.js` first — before those
+ * The component modules import `@microsoft/webui-framework`, which no longer
+ * installs the streaming coordinator on its own. This entry imports
+ * `@microsoft/webui-framework/streaming.js` first — before those
  * component side-effect imports — so the coordinator is installed and the
  * streaming gate is open before any authored `.define()` runs.
  */
@@ -36,6 +38,9 @@ function logHydrationTiming(): void {
 }
 
 // Side-effect imports — register custom elements and trigger hydration.
+// Ordered to match document order, so the first boundary to commit is also
+// the first component whose class is defined.
+import './weather-panel/weather-panel.js';
 import './message-composer/message-composer.js';
 import './feed-item/feed-item.js';
 

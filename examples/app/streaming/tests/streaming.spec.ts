@@ -9,14 +9,24 @@ import { test, expect, type Page } from '@playwright/test';
  * boundary contract in DESIGN.md ("Progressive Streaming Hydration —
  * Phase 1").
  *
- * The server (`server/src/main.rs`) paces its first three boundary flushes
- * (composer, feed batch 1, feed batch 2) by `--checkpoint-delay-ms`
- * (default 300ms) so delivery order is observable over real network
- * timing. These tests never sleep to assert ordering: they capture the
- * client coordinator's own `webui:boundary-hydrated` /
- * `webui:hydration-complete` events (`@microsoft/webui-framework`'s
- * `streaming.ts` / `lifecycle.ts`) via `page.addInitScript`, then use
- * `page.waitForFunction` to resolve the instant a condition becomes true.
+ * Boundary sequence numbers follow document order:
+ *
+ * | Sequence | Boundary        | Gap before the *next* flush        |
+ * | -------- | --------------- | ---------------------------------- |
+ * | 0        | weather shell   | none — the composer must not wait   |
+ * | 1        | composer        | jittered 500-1000ms                 |
+ * | 2        | feed batch 1    | jittered 500-1000ms                 |
+ * | 3        | feed batch 2    | jittered 500-1000ms                 |
+ * | 4        | feed batch 3    | none — the response closes promptly |
+ *
+ * The server (`server/src/main.rs`) paces only the gaps that precede feed
+ * batches, bounded by `--feed-delay-min-ms` / `--feed-delay-max-ms`, so
+ * delivery order is observable over real network timing. These tests never
+ * sleep to assert ordering: they capture the client coordinator's own
+ * `webui:boundary-hydrated` / `webui:hydration-complete` events
+ * (`@microsoft/webui-framework`'s `streaming.ts` / `lifecycle.ts`) via
+ * `page.addInitScript`, then use `page.waitForFunction` to resolve the
+ * instant a condition becomes true.
  */
 
 interface BoundaryEvent {
@@ -81,7 +91,7 @@ test.describe('streaming priority hydration', () => {
     // test can observe the still-open-response state instead of racing it.
     await page.goto('/', { waitUntil: 'commit' });
 
-    await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 0));
+    await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 1));
     expect(await page.evaluate(() => window.__dclFired)).toBe(false);
 
     const input = page.locator('message-composer input.composer-input');
@@ -105,8 +115,8 @@ test.describe('streaming priority hydration', () => {
     await instrumentPage(page);
     await page.goto('/', { waitUntil: 'commit' });
 
-    await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 1));
-    expect(await hasSequence(page, 2)).toBe(false);
+    await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 2));
+    expect(await hasSequence(page, 3)).toBe(false);
 
     const firstItem = page.locator('feed-item[post-id="1"]');
     const likeButton = firstItem.locator('[data-testid="feed-item-like"]');
@@ -116,7 +126,7 @@ test.describe('streaming priority hydration', () => {
     await expect(likeCount).toHaveText('5');
 
     // Still true after interacting: batch 2 has not been delivered yet.
-    expect(await hasSequence(page, 2)).toBe(false);
+    expect(await hasSequence(page, 3)).toBe(false);
   });
 
   test('all three feed batches hydrate in order and stay independently interactive', async ({ page }) => {
@@ -126,7 +136,7 @@ test.describe('streaming priority hydration', () => {
 
     const events = await boundaryEvents(page);
     const sequences = events.map((e) => e.sequence);
-    expect(sequences).toEqual(expect.arrayContaining([0, 1, 2, 3]));
+    expect(sequences).toEqual(expect.arrayContaining([0, 1, 2, 3, 4]));
     for (let i = 1; i < sequences.length; i++) {
       expect(sequences[i]).toBeGreaterThan(sequences[i - 1]);
     }
@@ -161,6 +171,30 @@ test.describe('streaming priority hydration', () => {
     }
   });
 
+  test('the weather panel hydrates first and resolves independently of the stream', async ({ page }) => {
+    await instrumentPage(page);
+    await page.goto('/', { waitUntil: 'commit' });
+
+    // The weather shell is boundary 0: it carries no server data, so it
+    // commits immediately and must never delay the composer behind it.
+    await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 0));
+
+    const panel = page.locator('weather-panel [data-testid="weather-panel"]');
+    await expect(panel).toHaveAttribute('data-status', 'loading');
+    await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toBeVisible();
+
+    // The forecast endpoint is deliberately slower than a feed gap, so this
+    // resolves through the component's own fetch rather than the stream.
+    const summary = page.locator('weather-panel [data-testid="weather-summary"]');
+    await expect(summary).toBeVisible({ timeout: 15_000 });
+    await expect(panel).toHaveAttribute('data-status', 'ready');
+    await expect(page.locator('weather-panel [data-testid="weather-temperature"]')).not.toBeEmpty();
+    await expect(page.locator('weather-panel [data-testid="weather-condition"]')).not.toBeEmpty();
+
+    // The skeleton branch is torn down, not merely hidden.
+    await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toHaveCount(0);
+  });
+
   test('webui:hydration-complete fires only after the terminal boundary record', async ({ page }) => {
     await instrumentPage(page);
     await page.goto('/');
@@ -182,6 +216,11 @@ test.describe('streaming priority hydration', () => {
     const leftovers = await page.evaluate(() => {
       const scripts = document.querySelectorAll('script[data-webui-boundary]').length;
       const sentinels = document.querySelectorAll('webui-hydrate').length;
+      // `<if>` conditions compile to an inline `templateFns` script emitted
+      // between each payload and its sentinel. Those are boundary
+      // scaffolding too, and the only scripts this example puts in <body>,
+      // so a non-zero count means `removeBoundaryScaffolding` missed them.
+      const bodyScripts = document.body.querySelectorAll('script').length;
 
       const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_COMMENT);
       let markers = 0;
@@ -190,10 +229,10 @@ test.describe('streaming priority hydration', () => {
         if (/^\/?wb:\d+$/.test((node as Comment).data)) markers++;
       }
 
-      return { scripts, sentinels, markers };
+      return { scripts, sentinels, markers, bodyScripts };
     });
 
-    expect(leftovers).toEqual({ scripts: 0, sentinels: 0, markers: 0 });
+    expect(leftovers).toEqual({ scripts: 0, sentinels: 0, markers: 0, bodyScripts: 0 });
   });
 
   test('the streaming response eventually closes', async ({ page }) => {

@@ -1,0 +1,79 @@
+:host {
+  display: block;
+  margin-top: var(--spacing-m);
+}
+
+.weather {
+  background-color: var(--color-neutral-100);
+  border-radius: var(--border-radius-m);
+  padding: var(--spacing-l);
+}
+
+.weather-loading,
+.weather-summary,
+.weather-error {
+  margin: 0;
+  min-height: 2.5rem;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-m);
+}
+
+.weather-shimmer {
+  flex: 1;
+  height: 2.5rem;
+  border-radius: var(--border-radius-s);
+  background: linear-gradient(
+    90deg,
+    var(--color-neutral-200) 25%,
+    var(--color-neutral-100) 50%,
+    var(--color-neutral-200) 75%
+  );
+  background-size: 200% 100%;
+  animation: weather-shimmer 1.4s ease-in-out infinite;
+}
+
+/* The skeleton is decoration; the assistive text carries the same meaning
+   for anyone who cannot see it animate. */
+.weather-assistive {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.weather-temperature {
+  font-size: 1.75rem;
+  font-weight: 600;
+}
+
+.weather-condition {
+  color: var(--color-neutral-700);
+}
+
+.weather-location {
+  margin-left: auto;
+  color: var(--color-neutral-700);
+  font-size: 0.875rem;
+}
+
+.weather-error {
+  color: var(--color-neutral-700);
+}
+
+@keyframes weather-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .weather-shimmer {
+    animation: none;
+  }
+}

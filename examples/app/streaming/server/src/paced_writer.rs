@@ -8,8 +8,7 @@
 //! example's boundaries back-to-back, which would make the network timing
 //! between chunks nondeterministic and too fast for Playwright to observe
 //! reliably. `CheckpointPacedWriter` wraps any [`FlushWriter`] and sleeps
-//! *after* delegating each of the first `paced_flushes` flushes to the
-//! wrapped writer, so:
+//! *after* delegating each flush to the wrapped writer, so:
 //!
 //! - Backpressure is unaffected: the delay never touches the wrapped
 //!   writer's internal buffering/backpressure, it only runs after the
@@ -21,34 +20,38 @@
 //! - No envelope, chunk, or boundary payload is manufactured or split by
 //!   this adapter — it only observes flush *calls* the handler already
 //!   makes and defers returning from them.
+//!
+//! The delay is supplied per flush rather than as one fixed duration,
+//! because this app's boundaries do not all deserve the same gap: the
+//! weather shell must hand straight over to the composer, while each feed
+//! batch should arrive after a visible, randomized pause.
 
 use std::time::Duration;
 
 use webui_handler::{FlushWriter, ResponseWriter, Result};
 
-/// Wraps a [`FlushWriter`] and sleeps after each of the first
-/// `paced_flushes` calls to [`FlushWriter::flush`].
-pub(crate) struct CheckpointPacedWriter<W> {
+/// Wraps a [`FlushWriter`] and sleeps for a caller-chosen duration after
+/// each flush.
+pub(crate) struct CheckpointPacedWriter<W, D> {
     inner: W,
-    delay: Duration,
+    delay_for_flush: D,
     flushes_seen: usize,
-    paced_flushes: usize,
 }
 
-impl<W> CheckpointPacedWriter<W> {
-    /// `delay` is applied after each of the first `paced_flushes` flushes;
-    /// every later flush is immediate.
-    pub(crate) fn new(inner: W, delay: Duration, paced_flushes: usize) -> Self {
+impl<W, D: FnMut(usize) -> Duration> CheckpointPacedWriter<W, D> {
+    /// `delay_for_flush` receives the zero-based index of the flush that
+    /// just completed and returns how long to pause before returning from
+    /// it. A [`Duration::ZERO`] never sleeps.
+    pub(crate) fn new(inner: W, delay_for_flush: D) -> Self {
         Self {
             inner,
-            delay,
+            delay_for_flush,
             flushes_seen: 0,
-            paced_flushes,
         }
     }
 }
 
-impl<W: ResponseWriter> ResponseWriter for CheckpointPacedWriter<W> {
+impl<W: ResponseWriter, D> ResponseWriter for CheckpointPacedWriter<W, D> {
     fn write(&mut self, content: &str) -> Result<()> {
         self.inner.write(content)
     }
@@ -58,16 +61,18 @@ impl<W: ResponseWriter> ResponseWriter for CheckpointPacedWriter<W> {
     }
 }
 
-impl<W: FlushWriter> FlushWriter for CheckpointPacedWriter<W> {
+impl<W: FlushWriter, D: FnMut(usize) -> Duration> FlushWriter for CheckpointPacedWriter<W, D> {
     fn flush(&mut self) -> Result<()> {
         // Propagate the wrapped writer's error (disconnect/timeout) before
         // touching the counter or sleeping — a client that has already
         // gone away must never cause this adapter to block the render
         // thread further.
         self.inner.flush()?;
+        let index = self.flushes_seen;
         self.flushes_seen += 1;
-        if self.flushes_seen <= self.paced_flushes && !self.delay.is_zero() {
-            std::thread::sleep(self.delay);
+        let delay = (self.delay_for_flush)(index);
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
         }
         Ok(())
     }
@@ -110,21 +115,51 @@ mod tests {
     }
 
     #[test]
-    fn paces_only_the_configured_leading_flushes() {
-        let delay = Duration::from_millis(30);
-        let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), delay, 2);
+    fn each_flush_receives_its_own_index() {
+        let mut seen = Vec::new();
+        {
+            let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), |index| {
+                seen.push(index);
+                Duration::ZERO
+            });
+            for _ in 0..4 {
+                writer
+                    .flush()
+                    .unwrap_or_else(|e| panic!("flush failed: {e}"));
+            }
+        }
+        assert_eq!(seen, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn sleeps_only_for_the_flushes_the_schedule_selects() {
+        let delay = Duration::from_millis(40);
+        let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), move |index| {
+            if index == 1 {
+                delay
+            } else {
+                Duration::ZERO
+            }
+        });
 
         let start = Instant::now();
         writer
             .flush()
             .unwrap_or_else(|e| panic!("first flush failed: {e}"));
+        assert!(
+            start.elapsed() < delay,
+            "flush 0 is unscheduled and must not sleep, took {:?}",
+            start.elapsed()
+        );
+
+        let start = Instant::now();
         writer
             .flush()
             .unwrap_or_else(|e| panic!("second flush failed: {e}"));
-        let paced_elapsed = start.elapsed();
         assert!(
-            paced_elapsed >= delay * 2,
-            "expected at least two delays, got {paced_elapsed:?}"
+            start.elapsed() >= delay,
+            "flush 1 is scheduled and must sleep, took {:?}",
+            start.elapsed()
         );
 
         let start = Instant::now();
@@ -133,23 +168,31 @@ mod tests {
             .unwrap_or_else(|e| panic!("third flush failed: {e}"));
         assert!(
             start.elapsed() < delay,
-            "third flush should not be paced, took {:?}",
+            "flush 2 is unscheduled and must not sleep, took {:?}",
             start.elapsed()
         );
     }
 
     #[test]
-    fn disconnect_propagates_without_sleeping() {
-        let delay = Duration::from_secs(5);
+    fn disconnect_propagates_without_sleeping_or_consulting_the_schedule() {
         let inner = RecordingWriter {
             fail_after: Some(1),
             ..RecordingWriter::default()
         };
-        let mut writer = CheckpointPacedWriter::new(inner, delay, 3);
-
+        let mut consulted = false;
         let start = Instant::now();
-        let result = writer.flush();
+        let result = {
+            let mut writer = CheckpointPacedWriter::new(inner, |_| {
+                consulted = true;
+                Duration::from_secs(5)
+            });
+            writer.flush()
+        };
         assert!(result.is_err(), "expected the disconnect error to surface");
+        assert!(
+            !consulted,
+            "a disconnected client must not even price the delay"
+        );
         assert!(
             start.elapsed() < Duration::from_millis(200),
             "must not sleep after a disconnect, took {:?}",
@@ -159,7 +202,7 @@ mod tests {
 
     #[test]
     fn write_and_end_delegate_unchanged() {
-        let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), Duration::ZERO, 0);
+        let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), |_| Duration::ZERO);
         writer
             .write("hello")
             .unwrap_or_else(|e| panic!("write failed: {e}"));
@@ -169,8 +212,8 @@ mod tests {
     }
 
     #[test]
-    fn unpaced_writer_never_sleeps() {
-        let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), Duration::ZERO, 5);
+    fn an_all_zero_schedule_never_sleeps() {
+        let mut writer = CheckpointPacedWriter::new(RecordingWriter::default(), |_| Duration::ZERO);
         let start = Instant::now();
         for _ in 0..5 {
             writer

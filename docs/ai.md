@@ -561,7 +561,9 @@ at compile time and emits no application DOM wrapper.
 </head>
 <body>
   <header>
-    <weather-skeleton></weather-skeleton>
+    <boundary name="weather-shell">
+      <weather-panel status="loading"></weather-panel>
+    </boundary>
   </header>
 
   <boundary name="critical-composer">
@@ -591,10 +593,12 @@ Rules for code generation:
   modules. The default framework entry excludes the coordinator. A normal
   module is deferred until parsing completes and cannot provide early
   hydration. This loading requirement is not currently validated by the parser.
-- Boundaries commit and flush strictly in document order. The weather skeleton
-  can paint first, the composer can be the first interactive boundary, and the
-  feed can be a later explicit boundary. A boundary does not make server work
-  asynchronous and cannot replace the earlier skeleton out of order.
+- Boundaries commit and flush strictly in document order. A boundary does not
+  make server work asynchronous and cannot replace an earlier region out of
+  order. For a slow surface, emit a *complete* placeholder component in its own
+  early boundary and let it resolve its own data client-side after it hydrates;
+  do not stall the response waiting for it, which would delay every later
+  boundary including the critical one.
 - Use `RenderOptions::with_nonce` for generated inline boundary scripts under
   CSP. The policy must also allow the external application module.
 - `webui:boundary-hydrated` is emitted only when

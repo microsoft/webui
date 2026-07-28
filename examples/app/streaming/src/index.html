@@ -39,26 +39,6 @@
       margin-bottom: var(--spacing-xl);
     }
 
-    .weather-slot {
-      background-color: var(--color-neutral-100);
-      border-radius: var(--border-radius-m);
-      padding: var(--spacing-l);
-      margin-top: var(--spacing-m);
-    }
-
-    .weather-skeleton {
-      height: 2.5rem;
-      border-radius: var(--border-radius-s);
-      background: linear-gradient(90deg, var(--color-neutral-200) 25%, var(--color-neutral-100) 50%, var(--color-neutral-200) 75%);
-      background-size: 200% 100%;
-      animation: webui-streaming-shimmer 1.4s ease-in-out infinite;
-    }
-
-    @keyframes webui-streaming-shimmer {
-      0% { background-position: 200% 0; }
-      100% { background-position: -200% 0; }
-    }
-
     main {
       display: flex;
       flex-direction: column;
@@ -76,18 +56,23 @@
   <header>
     <h1>Home</h1>
     <!--
-      Weather represents expensive backend work. Progressive streaming
-      hydration Phase 1 leaves this skeleton in place rather than
-      blocking the composer boundary below on it — native in-order HTML
-      parsing cannot fill an already-closed header later in the same
-      response. A production app would resolve this via a
-      component-owned client fetch; this example keeps the skeleton
-      static so the example stays focused on the streaming/boundary
-      behavior itself.
+      Weather represents expensive backend work whose data is not ready in
+      document order. Native HTML streaming is strictly in-order, so nothing
+      later in this response can reach back into an already-closed header —
+      and blocking this boundary until the forecast resolved would stall the
+      composer below, which is exactly the head-of-line blocking boundaries
+      exist to remove.
+
+      So this is the cheapest boundary on the page: it carries no server data
+      and commits immediately, which gets `weather-panel` hydrated while the
+      response is still open. The component then fetches its own forecast, so
+      the slow backend work overlaps the rest of the stream instead of
+      queueing behind it. See `weather-panel.ts`, and DESIGN.md's Phase 2
+      "deferred boundary placement" note for the in-response alternative.
     -->
-    <div class="weather-slot" aria-busy="true" data-testid="weather-slot">
-      <div class="weather-skeleton"></div>
-    </div>
+    <boundary name="weather-shell">
+      <weather-panel status="loading"></weather-panel>
+    </boundary>
   </header>
 
   <main>

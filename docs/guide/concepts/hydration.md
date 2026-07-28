@@ -76,7 +76,9 @@ with the Rust `WebUIHandler::render_streaming` API.
 </head>
 <body>
   <header>
-    <weather-skeleton></weather-skeleton>
+    <boundary name="weather-shell">
+      <weather-panel status="loading"></weather-panel>
+    </boundary>
   </header>
 
   <boundary name="critical-composer">
@@ -93,6 +95,7 @@ Import the streaming entry before component registration modules:
 
 ```typescript
 import '@microsoft/webui-framework/streaming.js';
+import './weather-panel/weather-panel.js';
 import './message-composer/message-composer.js';
 import './activity-feed/activity-feed.js';
 ```
@@ -106,12 +109,28 @@ defeats early hydration. The parser currently validates boundary syntax and
 placement, but does not validate this script loading order.
 
 The server commits boundaries in document order. In this example the weather
-skeleton can paint in the earlier header, the critical composer is the first
-interactive checkpoint, and the feed is a second explicit checkpoint. A
-boundary does not make data fetching asynchronous. Phase 1 cannot send a later
-weather result back to replace the earlier skeleton out of order. Use ordinary
-client behavior for that update, or wait for the data before continuing the
-in-order response.
+shell commits first and carries no server data, so it never delays the critical
+composer behind it; the composer is the first *interesting* interactive
+checkpoint, and the feed is a later explicit checkpoint.
+
+A boundary does not make data fetching asynchronous, and Phase 1 cannot send a
+later weather result back to replace an earlier region out of order. The
+recommended pattern for slow backend data is the one shown above: make the
+placeholder a **real component in a boundary of its own**, so it hydrates early
+and then resolves its own data client-side.
+
+```typescript
+connectedCallback(): void {
+  super.connectedCallback();
+  void this.loadForecast(); // Resolves after this boundary commits.
+}
+```
+
+That keeps the critical island's time to interactive independent of the slow
+surface. The alternative — waiting for the data before continuing the in-order
+response — delays every boundary after it, including the composer.
+
+See `examples/app/streaming` for a complete working version of this pattern.
 
 Every registered WebUI component rendered through `render_streaming` must be
 inside an explicit boundary. Native HTML and unregistered static tail markup can

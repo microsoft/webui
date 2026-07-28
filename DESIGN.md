@@ -2225,6 +2225,65 @@ Scenario (mirrors #394 and the session plan's acceptance tests, unchanged):
 - Native declarative partial updates as a stable browser primitive, should
   one ship, replacing the `DomTemplate`/`Declarative` adapter layer above.
 
+#### Deferred boundary placement (the in-response answer to slow surfaces)
+
+Phase 1 commits boundaries strictly in document order, so a region that has
+already been parsed cannot be filled from later in the same response. The
+recommended Phase 1 workaround is to make the placeholder a real component in
+its own early boundary and let it resolve its own data client-side
+(`examples/app/streaming`'s `weather-panel` does exactly this).
+
+The in-response alternative — deferring a boundary's *content* while keeping its
+*position* — is designed here but not implemented.
+
+An early boundary commits normally and its marker pair survives as an anchor.
+Later in the same response, the deferred content arrives wrapped in an inert
+`<template>` and names the anchor it belongs to:
+
+```html
+<header>
+  <boundary name="weather">        <!-- commits instantly; markers = anchor -->
+    <weather-panel status="loading"></weather-panel>
+  </boundary>
+</header>
+
+<!-- ...later in the same response... -->
+<template>
+  <boundary fills="weather">
+    <weather-panel status="ready" temperature="18°C"></weather-panel>
+  </boundary>
+</template>
+```
+
+`<template>` is what makes this safe: its content is parsed inert, so there is
+no flash of the deferred markup, custom elements inside it do not upgrade until
+adoption, and no rendered wrapper element is introduced. Relocation happens
+*before* activation, so no live component state can be disturbed.
+
+The client cost is bounded by design. `resolveBoundaryRange()` is the
+coordinator's only placement-aware step, so this becomes a second range
+resolver — the queue, ordering, state projection, activation, and scaffolding
+teardown are all unchanged. It also maps 1:1 onto `<template patchfor>` should
+declarative partial updates ship, which is why the seam exists.
+
+What makes it a milestone rather than an increment:
+
+- The handler renders in strict document order and `render_streaming` takes
+  state once, up front, synchronously. Emitting a boundary's content at a
+  position other than where it was authored requires restructuring the
+  streaming render loop.
+- It needs a protobuf field, which cascades through handler, FFI, and CLI and
+  must be cascade-tested.
+- It needs parser support for `fills`, anchor-uniqueness validation, and the
+  same foster-parenting guard boundaries already carry.
+- Genuinely *deferred state* — the server awaiting slow data mid-render rather
+  than merely relocating already-rendered content — is a strictly larger change
+  requiring a new host API, and should not be conflated with placement.
+
+Until then the client-fetch pattern above is the supported answer, and it is
+often the better one regardless: server work starts at request time instead of
+waiting for the bundle to download and the element to upgrade.
+
 #### Boundary naming: free-form strings, resolved once to integer handles
 
 Boundary and `<webui-stream>` slot names are **free-form author-chosen
