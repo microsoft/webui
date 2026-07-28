@@ -124,17 +124,20 @@ unstyled.
   response, so it recovers most of the byte savings for only ~11 ms. This is
   usually the best default for pages that stream many repeated components.
 - **`link`** is the smallest response and the only cacheable-across-navigations
-  option, but each stylesheet is a separate request. Under real latency that
-  leaves the critical island unstyled for a full round trip even though
-  WebUI emits `<link rel="preload">` in `<head>`. Prefer it when repeat visits
-  matter more than first-visit paint, or when boundaries are low priority.
+  option, but each stylesheet is a separate request. WebUI emits
+  `<link rel="preload">` in `<head>` so that request starts as early as
+  possible; under real latency it still costs a round trip before the shadow
+  root is styled. Prefer it when repeat visits matter more than first-visit
+  paint, or when the boundaries involved are low priority.
 
 ::: warning Serve the generated stylesheets
-`link` and `module` reference files that only exist in the build result, not in
-your client bundler's output directory. Serve every entry of
-`BuildResult::css_files` or the stylesheets 404 and the page renders unstyled.
-The streaming example does this in
-`server/src/assets.rs::insert_generated_css`.
+`link` and `module` reference component stylesheets, which the WebUI build
+returns in `BuildResult::css_files` rather than writing to your client
+bundler's output directory. `webui build` writes them to disk and `webui serve`
+serves them for you, but a **custom server must serve them itself** — otherwise
+the markup and preload hints are correct while every stylesheet URL 404s and
+the page renders unstyled. See
+`examples/app/streaming/server/src/assets.rs::insert_generated_css`.
 :::
 
 WebUI applies one strategy per build, so a page whose critical boundary wants
