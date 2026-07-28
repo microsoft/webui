@@ -1,4 +1,6 @@
 {
+  "others": ["One", "Two"],
+  "selected": "none",
   "groups": [
     {
       "name": "Color",

@@ -203,3 +203,31 @@ test.describe('nested repeat SSR hydration', () => {
     expect(preserved).toBe(true);
   });
 });
+
+test.describe('sibling repeat after root-level nested repeat (#405)', () => {
+  test('hydrates the second repeat against its own marker', async ({ page }) => {
+    await page.goto('/nested-repeat/fixture.html');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-repeat-siblings');
+      return el && (el as unknown as { $ready?: boolean }).$ready === true;
+    });
+
+    const host = page.locator('test-repeat-siblings');
+    const others = host.locator('.other');
+
+    await expect(others).toHaveCount(2);
+    await expect(others).toHaveText(['One', 'Two']);
+
+    await others.first().click();
+    await expect(host.locator('.selected')).toHaveText('One');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-repeat-siblings') as HTMLElement & {
+        replaceOthers(): void;
+      }).replaceOthers();
+    });
+
+    await expect(others).toHaveCount(2);
+    await expect(others).toHaveText(['Three', 'Four']);
+  });
+});
