@@ -1,0 +1,9 @@
+<template shadowrootmode="open">
+  <article class="feed-item" data-testid="feed-item" data-post-id="{{postId}}">
+    <p class="feed-item-author">{{author}}</p>
+    <p class="feed-item-text">{{text}}</p>
+    <button type="button" class="feed-item-like" data-testid="feed-item-like" @click="{onLikeClick()}">
+      Like (<span class="feed-item-like-count" data-testid="feed-item-like-count">{{likeCount}}</span>)
+    </button>
+  </article>
+</template>

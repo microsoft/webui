@@ -151,16 +151,24 @@ Each layer of the architecture contributes to the overall performance profile:
   build deterministic indices once at startup rather than repeating that work
   per request.
 
-- **Streaming output with backpressure.** The `webui::streaming::StreamingWriter`
-  coalesces handler writes into ~4 KB chunks and pushes them through a
-  bounded `tokio::mpsc` channel, so the browser starts parsing while
-  the server is still serializing. A shared lock-free `ChunkPool`
-  recycles chunk buffers across requests (zero per-flush allocation
-  in steady state), and a configurable flush deadline bounds the
-  slow-loris DoS surface. Real-Chromium measurement on a 250 ms render
-  shows TTFB drops from 265 ms (buffered) to 0.4 ms (streaming), with
-  FCP / LCP from 284 ms to 56 ms. See `BENCHMARKS.md` and
-  `examples/integration/streaming-browser-bench/`.
+- **Streaming output with explicit checkpoints.** The Rust
+  `webui::streaming::StreamingWriter` coalesces writes into chunks and uses a
+  bounded `tokio::mpsc` channel for backpressure. A shared `ChunkPool` can
+  recycle buffers across requests, and a configurable flush deadline bounds
+  how long a render thread waits on a slow consumer. With
+  `WebUIHandler::render_streaming`, authored `<webui-boundary>` checkpoints
+  request a semantic transport flush and can hydrate in document order before
+  the response completes. Each checkpoint emits state and newly needed metadata
+  only for the local component surface reachable from its rendered roots,
+  including initially hidden descendants; inventory still records only actual
+  SSR roots. The runtime protocol lazily indexes route-free component
+  dependencies once, on its first streaming render; ordinary rendering never
+  allocates this index. Checkpoints reuse an integer DFS stack, and leaf-only
+  boundaries need no graph walk. Request-local buffers retain capacity for
+  reuse. The separately imported streaming coordinator passes this ephemeral
+  state directly to components and removes checkpoint scaffolding after commit.
+  Intermediaries can still buffer the response, so production deployments must
+  configure and verify their full delivery path.
 
 - **No JavaScript runtime.** There is no V8, no garbage collector pauses, and
   no JIT warmup. The hot path is pure compiled Rust with predictable, low-

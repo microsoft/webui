@@ -53,6 +53,88 @@ const MAX_TEMPLATE_BYTES: usize = 16 * 1024 * 1024;
 /// the Rust call stack while preserving generous headroom for real templates.
 const MAX_TEMPLATE_DEPTH: usize = 512;
 
+/// Prefix for compiler-owned structural signals.
+///
+/// `}}}` cannot occur in a parsed double- or triple-brace expression: it closes
+/// the binding first. This keeps transport structure distinct from every
+/// authored state key without changing the protobuf schema.
+const STRUCTURAL_SIGNAL_PREFIX: &str = "}}}webui:";
+
+fn structural_signal(value: impl AsRef<str>) -> WebUIFragment {
+    WebUIFragment::signal(
+        format!("{STRUCTURAL_SIGNAL_PREFIX}{}", value.as_ref()),
+        true,
+    )
+}
+
+/// How an element affects the HTML insertion mode that decides whether an
+/// unknown element (the generated `<webui-hydrate>` sentinel) is
+/// foster-parented away from its payload script.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FosterContext {
+    /// Does not change the current insertion mode.
+    Transparent,
+    /// "in table"/"in table body"/"in row"/"in column group"/"in select":
+    /// unknown elements are foster-parented out of this subtree.
+    Hostile,
+    /// `<td>`/`<th>`/`<caption>` return to "in body" rules, so a boundary
+    /// inside them is safe even though an ancestor is hostile.
+    Barrier,
+}
+
+/// Classify `name` for foster-parenting purposes.
+///
+/// Dispatching on length first means the common non-table element (`div`,
+/// `span`, `p`, `section`, …) costs one integer compare and a fallthrough,
+/// keeping this off the parser's measured hot path.
+#[inline]
+fn foster_context_of(name: &str) -> FosterContext {
+    match name.len() {
+        2 => {
+            if name.eq_ignore_ascii_case("tr") {
+                FosterContext::Hostile
+            } else if name.eq_ignore_ascii_case("td") || name.eq_ignore_ascii_case("th") {
+                FosterContext::Barrier
+            } else {
+                FosterContext::Transparent
+            }
+        }
+        5 => {
+            if name.eq_ignore_ascii_case("table")
+                || name.eq_ignore_ascii_case("tbody")
+                || name.eq_ignore_ascii_case("thead")
+                || name.eq_ignore_ascii_case("tfoot")
+            {
+                FosterContext::Hostile
+            } else {
+                FosterContext::Transparent
+            }
+        }
+        6 => {
+            if name.eq_ignore_ascii_case("select") {
+                FosterContext::Hostile
+            } else {
+                FosterContext::Transparent
+            }
+        }
+        7 => {
+            if name.eq_ignore_ascii_case("caption") {
+                FosterContext::Barrier
+            } else {
+                FosterContext::Transparent
+            }
+        }
+        8 => {
+            if name.eq_ignore_ascii_case("optgroup") || name.eq_ignore_ascii_case("colgroup") {
+                FosterContext::Hostile
+            } else {
+                FosterContext::Transparent
+            }
+        }
+        _ => FosterContext::Transparent,
+    }
+}
+
 /// Strategy for how component CSS is delivered in rendered output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
@@ -343,8 +425,18 @@ enum ParseOp<'a> {
         depth: usize,
     },
     EmitClose(&'a str),
-    EndHead,
-    EndBody,
+    EndHead(&'a str),
+    EndBody(&'a str),
+    /// Close a `<webui-boundary>` opened with response-local sequence
+    /// number `seq`: emits the `boundary_end:<seq>` raw signal and clears
+    /// [`HtmlParser::in_boundary`].
+    EndBoundary(u32),
+    /// Restore [`HtmlParser::foster_context_depth`] to the saved value when
+    /// leaving an element that changed it.
+    ///
+    /// Save/restore of the single overwritten value keeps ancestor tracking
+    /// allocation-free: no ancestor stack is retained.
+    RestoreFosterDepth(u32),
     CompleteFor {
         parent: ParseContext,
         item: String,
@@ -416,6 +508,39 @@ pub struct HtmlParser {
     /// The fragment ID (entry file or component tag) currently being parsed.
     /// Used to name the owning template in authoring [`Diagnostic`]s.
     current_fragment_id: String,
+
+    /// Next `<webui-boundary>` response-local sequence number
+    /// (`boundary_start:<seq>` / `boundary_end:<seq>`). Reset to `0` at the
+    /// start of each top-level [`HtmlParser::parse`] call.
+    boundary_sequence: u32,
+
+    /// `<webui-boundary name>` values already used in the current top-level
+    /// parse, so a duplicate name can be rejected.
+    boundary_names: HashSet<String>,
+
+    /// `true` while parsing is inside an open `<webui-boundary>`, used to
+    /// reject a nested boundary.
+    in_boundary: bool,
+
+    /// Number of currently open native `<body>` elements. A depth rather than
+    /// a boolean preserves the parent state while recursively parsing a
+    /// component template.
+    body_depth: usize,
+
+    /// Stack of open `<if>`/`<for>` scope descriptions, used to reject a
+    /// `<webui-boundary>` that would cut through a conditionally-rendered or
+    /// repeated scope instead of independently wrapping it.
+    structural_scopes: Vec<&'static str>,
+
+    /// Number of enclosing elements whose HTML insertion mode would
+    /// foster-parent an unknown element such as the generated
+    /// `<webui-hydrate>` sentinel.
+    ///
+    /// Non-zero means a `<webui-boundary>` here would be split from its
+    /// payload script by the browser's parser, so it must be rejected at build
+    /// time. `<td>`/`<th>`/`<caption>` reset it to `0` because those switch
+    /// back to "in body" insertion rules.
+    foster_context_depth: u32,
 }
 
 struct BuiltComponentTemplate {
@@ -720,6 +845,12 @@ impl HtmlParser {
             fragment_css_tokens: HashMap::new(),
             in_progress_fragments: HashSet::new(),
             current_fragment_id: String::new(),
+            boundary_sequence: 0,
+            boundary_names: HashSet::new(),
+            in_boundary: false,
+            body_depth: 0,
+            structural_scopes: Vec::new(),
+            foster_context_depth: 0,
         }
     }
 
@@ -765,6 +896,16 @@ impl HtmlParser {
     /// Check if a fragment ID has been parsed (exists in the fragment records).
     pub fn has_fragment(&self, fragment_id: &str) -> bool {
         self.fragment_records.contains_key(fragment_id)
+    }
+
+    /// Number of `<webui-boundary>` streaming checkpoints compiled by the most
+    /// recent top-level [`HtmlParser::parse`] call.
+    ///
+    /// Returns `0` for an ordinary, non-streaming entry. Callers use this to
+    /// decide whether streaming-specific build advisories apply.
+    #[must_use]
+    pub fn boundary_count(&self) -> usize {
+        self.boundary_sequence as usize
     }
 
     /// Take any post-parse artifacts captured by the parser plugin.
@@ -966,6 +1107,21 @@ impl HtmlParser {
     pub fn parse(&mut self, fragment_id: &str, html_content: &str) -> Result<()> {
         let fragment_key = fragment_id.to_string();
         let is_token_root = self.in_progress_fragments.is_empty();
+        if is_token_root {
+            // A new top-level entry template starts a fresh boundary
+            // namespace: sequence numbers are response-local (spec: "0, 1,
+            // …") and names are only required to be unique per entry. Also
+            // reset `in_boundary`/`structural_scopes`, which should already
+            // be empty/false here but could be left dirty if a *previous*
+            // top-level parse on this same `HtmlParser` errored out midway
+            // through an open boundary or `<if>`/`<for>` scope.
+            self.boundary_sequence = 0;
+            self.boundary_names.clear();
+            self.in_boundary = false;
+            self.body_depth = 0;
+            self.structural_scopes.clear();
+            self.foster_context_depth = 0;
+        }
         // Save the caller's fragment id and restore it before returning. A
         // component parse recurses through `enter_component_directive`
         // (`self.parse(child, …)`); without restoring, the parent would keep
@@ -1226,18 +1382,26 @@ impl HtmlParser {
                                 "if" => {
                                     self.enter_if_directive(&element, fragments, depth, &mut ops)?;
                                 }
-                                "body" => {
-                                    self.enter_body_element(&element, fragments, depth, &mut ops)?;
-                                }
-                                "head" => {
-                                    self.enter_head_element(&element, depth, &mut ops);
-                                }
                                 "route" => {
                                     self.process_route_directive(&element, fragments)?;
                                 }
                                 "outlet" => {
                                     self.flush_raw_buffer(fragments);
                                     fragments.push(WebUIFragment::outlet());
+                                }
+                                "webui-boundary" => {
+                                    self.enter_boundary_directive(
+                                        &element, fragments, depth, &mut ops,
+                                    )?;
+                                }
+                                name if name.eq_ignore_ascii_case("body") => {
+                                    self.enter_body_element(&element, fragments, depth, &mut ops)?;
+                                }
+                                name if name.eq_ignore_ascii_case("head") => {
+                                    self.enter_head_element(&element, fragments, depth, &mut ops)?;
+                                }
+                                name if name.eq_ignore_ascii_case("webui-hydrate") => {
+                                    return Err(self.authored_webui_hydrate_error(&element));
                                 }
                                 name if name.eq_ignore_ascii_case("style") => {
                                     self.process_style_element(&element, fragments)?;
@@ -1276,15 +1440,28 @@ impl HtmlParser {
                     self.add_raw_fragment(name);
                     self.add_raw_fragment(">");
                 }
-                ParseOp::EndHead => {
+                ParseOp::EndHead(name) => {
                     self.flush_raw_buffer(fragments);
-                    fragments.push(WebUIFragment::signal("head_end", true));
-                    self.add_raw_fragment("</head>");
+                    fragments.push(structural_signal("head_end"));
+                    self.add_raw_fragment("</");
+                    self.add_raw_fragment(name);
+                    self.add_raw_fragment(">");
                 }
-                ParseOp::EndBody => {
+                ParseOp::EndBody(name) => {
                     self.flush_raw_buffer(fragments);
-                    fragments.push(WebUIFragment::signal("body_end", true));
-                    self.add_raw_fragment("</body>");
+                    fragments.push(structural_signal("body_end"));
+                    self.add_raw_fragment("</");
+                    self.add_raw_fragment(name);
+                    self.add_raw_fragment(">");
+                    self.body_depth = self.body_depth.saturating_sub(1);
+                }
+                ParseOp::EndBoundary(sequence) => {
+                    self.flush_raw_buffer(fragments);
+                    fragments.push(structural_signal(format!("boundary_end:{sequence}")));
+                    self.in_boundary = false;
+                }
+                ParseOp::RestoreFosterDepth(previous) => {
+                    self.foster_context_depth = previous;
                 }
                 ParseOp::CompleteFor {
                     parent,
@@ -1293,6 +1470,7 @@ impl HtmlParser {
                     fragment_id,
                     keep_empty,
                 } => {
+                    self.structural_scopes.pop();
                     self.flush_raw_buffer(fragments);
                     let for_fragment = std::mem::take(fragments);
                     *fragments = parent.fragments;
@@ -1316,6 +1494,7 @@ impl HtmlParser {
                     condition,
                     fragment_id,
                 } => {
+                    self.structural_scopes.pop();
                     self.flush_raw_buffer(fragments);
                     let if_fragment = std::mem::take(fragments);
                     *fragments = parent.fragments;
@@ -1362,6 +1541,7 @@ impl HtmlParser {
             if element.close_end() > element.content_end() {
                 ops.push(ParseOp::EmitClose(element.name()));
             }
+            self.enter_foster_context(element.name(), ops);
             ops.push(ParseOp::Parse {
                 range: element.inner(),
                 depth: depth + 1,
@@ -1373,15 +1553,42 @@ impl HtmlParser {
     fn enter_head_element<'a>(
         &mut self,
         element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
-    ) {
-        self.add_raw_fragment("<head>");
-        ops.push(ParseOp::EndHead);
+    ) -> Result<()> {
+        if element.name() == "head" {
+            // Preserve the lowercase legacy protocol shape exactly: authored
+            // attributes on `<head>` were ignored and the opening was emitted
+            // as the literal `<head>`.
+            self.add_raw_fragment("<head>");
+        } else {
+            // origin/main treated mixed-case native tags as ordinary elements.
+            // Keep their authored name and attributes while adding only the
+            // separate case-insensitive streaming structure.
+            self.add_raw_fragment("<");
+            self.add_raw_fragment(element.name());
+            let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
+            if let Some(ref mut p) = self.plugin {
+                if let Some(data) = p.finish_element(binding_count) {
+                    self.add_fragment(WebUIFragment::plugin(data), fragments);
+                }
+            }
+            self.add_raw_fragment(">");
+        }
+        self.flush_raw_buffer(fragments);
+        // Mirrors `body_start`: emitted immediately after the raw opening
+        // `<head>` fragment and before any child content (including
+        // authored async scripts), so `render_streaming` can preflight on it.
+        // Raw signals unknown to the legacy (non-streaming) handler are
+        // ignored there, so this is a no-op for existing output.
+        fragments.push(structural_signal("head_start"));
+        ops.push(ParseOp::EndHead(element.name()));
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
         });
+        Ok(())
     }
 
     fn enter_body_element<'a>(
@@ -1391,7 +1598,8 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
-        self.add_raw_fragment("<body");
+        self.add_raw_fragment("<");
+        self.add_raw_fragment(element.name());
         let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
         if let Some(ref mut p) = self.plugin {
             if let Some(data) = p.finish_element(binding_count) {
@@ -1400,8 +1608,9 @@ impl HtmlParser {
         }
         self.add_raw_fragment(">");
         self.flush_raw_buffer(fragments);
-        fragments.push(WebUIFragment::signal("body_start", true));
-        ops.push(ParseOp::EndBody);
+        fragments.push(structural_signal("body_start"));
+        self.body_depth += 1;
+        ops.push(ParseOp::EndBody(element.name()));
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
@@ -1627,6 +1836,7 @@ impl HtmlParser {
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
 
+        self.structural_scopes.push("a <for> loop");
         ops.push(ParseOp::CompleteFor {
             parent,
             item: item.to_string(),
@@ -1701,6 +1911,7 @@ impl HtmlParser {
         };
         let fragment_id = self.id_counter.next_id("if");
 
+        self.structural_scopes.push("an <if> block");
         ops.push(ParseOp::CompleteIf {
             parent,
             condition,
@@ -1711,6 +1922,250 @@ impl HtmlParser {
             depth: depth + 1,
         });
         Ok(())
+    }
+
+    /// Track whether `name` opens (or shields from) an HTML insertion mode
+    /// that foster-parents unknown elements, pushing a restore op when the
+    /// depth changes.
+    ///
+    /// Called for every regular element, so the common `Transparent` case
+    /// does no work beyond the classification compare — no op is pushed and
+    /// no field is written.
+    #[inline]
+    fn enter_foster_context<'a>(&mut self, name: &str, ops: &mut Vec<ParseOp<'a>>) {
+        match foster_context_of(name) {
+            FosterContext::Transparent => {}
+            FosterContext::Hostile => {
+                ops.push(ParseOp::RestoreFosterDepth(self.foster_context_depth));
+                self.foster_context_depth += 1;
+            }
+            FosterContext::Barrier => {
+                if self.foster_context_depth != 0 {
+                    ops.push(ParseOp::RestoreFosterDepth(self.foster_context_depth));
+                    self.foster_context_depth = 0;
+                }
+            }
+        }
+    }
+
+    /// Enter a `<webui-boundary name="…">` directive.
+    ///
+    /// `<webui-boundary>` is a reserved, compile-time-only directive (see
+    /// "Progressive Streaming Hydration — Phase 1" in `DESIGN.md`): it emits
+    /// no wrapper element, only `boundary_start:<seq>` /
+    /// `boundary_end:<seq>` raw signal fragments around its children, mirroring
+    /// how [`Self::enter_body_element`] brackets its children with
+    /// `body_start`/`body_end`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParserError::Template`] when:
+    /// - the boundary is nested inside another open boundary
+    ///   ([`codes::NESTED_BOUNDARY`]);
+    /// - the boundary is outside an open `<body>`
+    ///   ([`codes::BOUNDARY_OUTSIDE_BODY`]);
+    /// - the boundary sits in an HTML foster-parenting context such as
+    ///   `<table>`/`<tbody>`/`<tr>`/`<select>`
+    ///   ([`codes::BOUNDARY_IN_FOSTER_CONTEXT`]);
+    /// - the boundary would cut through a reusable component template, an
+    ///   `<if>`, a `<for>`, or a `<route>` scope instead of independently
+    ///   wrapping it ([`codes::BOUNDARY_CROSSES_SCOPE`] — see the "Known
+    ///   limitation" note on [`Self::boundary_scope_error`]);
+    /// - `name` is missing/empty ([`codes::MISSING_BOUNDARY_NAME`]), dynamic
+    ///   ([`codes::INVALID_BOUNDARY_NAME`]), or a duplicate within the entry
+    ///   ([`codes::DUPLICATE_BOUNDARY_NAME`]).
+    fn enter_boundary_directive<'a>(
+        &mut self,
+        element: &Element<'a>,
+        fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) -> Result<()> {
+        // `in_progress_fragments.len() > 1` means parsing has recursed into a
+        // reusable template (a component usage or a route-referenced
+        // component) via `self.parse(..)`, as opposed to the outermost entry
+        // template. Phase 1 intentionally permits boundaries only in that
+        // outermost entry.
+        if self.in_progress_fragments.len() > 1 {
+            return Err(self.boundary_scope_error(element, "a reusable component template"));
+        }
+        if let Some(scope) = self.structural_scopes.last() {
+            return Err(self.boundary_scope_error(element, scope));
+        }
+        if self.in_boundary {
+            return Err(self.nested_boundary_error(element));
+        }
+        if self.body_depth == 0 {
+            return Err(self.boundary_outside_body_error(element));
+        }
+        if self.foster_context_depth != 0 {
+            return Err(self.boundary_in_foster_context_error(element));
+        }
+
+        let name = self.validate_boundary_name(element)?;
+        if !self.boundary_names.insert(name.clone()) {
+            return Err(self.duplicate_boundary_name_error(element, &name));
+        }
+
+        let sequence = self.boundary_sequence;
+        self.boundary_sequence += 1;
+        self.in_boundary = true;
+
+        self.flush_raw_buffer(fragments);
+        fragments.push(structural_signal(format!("boundary_start:{sequence}")));
+
+        ops.push(ParseOp::EndBoundary(sequence));
+        ops.push(ParseOp::Parse {
+            range: element.inner(),
+            depth: depth + 1,
+        });
+        Ok(())
+    }
+
+    /// Validate `<webui-boundary name>`: required, non-empty, and static (no
+    /// `{{binding}}`).
+    fn validate_boundary_name(&self, element: &Element<'_>) -> Result<String> {
+        let name = element.attr("name").unwrap_or_default();
+        if name.is_empty() {
+            return Err(self.missing_boundary_name_error(element));
+        }
+        if name.contains("{{") {
+            return Err(self.invalid_boundary_name_error(element, name));
+        }
+        Ok(name.to_string())
+    }
+
+    /// Build the error for a `<webui-boundary>` missing its `name` attribute
+    /// (cold path).
+    #[cold]
+    #[inline(never)]
+    fn missing_boundary_name_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::MISSING_BOUNDARY_NAME,
+            "missing name attribute on <webui-boundary>",
+            element,
+        )
+        .element("webui-boundary")
+        .help("add a unique static name, e.g. <webui-boundary name=\"counter-ready\">")
+        .into()
+    }
+
+    /// Build the error for a `<webui-boundary name>` that is not a static
+    /// string literal (cold path).
+    #[cold]
+    #[inline(never)]
+    fn invalid_boundary_name_error(&self, element: &Element<'_>, name: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_BOUNDARY_NAME,
+            "invalid name attribute on <webui-boundary>",
+            element,
+        )
+        .element("webui-boundary")
+        .snippet(format!("name=\"{name}\""))
+        .help("boundary names must be a static string literal, e.g. name=\"counter-ready\"")
+        .into()
+    }
+
+    /// Build the error for a duplicate `<webui-boundary name>` within the
+    /// same entry template (cold path).
+    #[cold]
+    #[inline(never)]
+    fn duplicate_boundary_name_error(&self, element: &Element<'_>, name: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::DUPLICATE_BOUNDARY_NAME,
+            format!("duplicate <webui-boundary> name \"{name}\""),
+            element,
+        )
+        .element("webui-boundary")
+        .help("boundary names must be unique within the page; rename one of the boundaries")
+        .into()
+    }
+
+    /// Build the error for a `<webui-boundary>` nested inside another open
+    /// boundary (cold path).
+    #[cold]
+    #[inline(never)]
+    fn nested_boundary_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::NESTED_BOUNDARY,
+            "nested <webui-boundary> is not allowed",
+            element,
+        )
+        .element("webui-boundary")
+        .help("boundaries cannot be nested; close the enclosing <webui-boundary> before opening another")
+        .into()
+    }
+
+    /// Build the error for a `<webui-boundary>` that would cut through
+    /// `scope` (a reusable component template, an `<if>`/`<for>` block, or a
+    /// `<route>` element) instead of independently wrapping it (cold path).
+    ///
+    /// Phase 1 rejects boundaries in every recursively parsed template,
+    /// including route shells: only the outermost entry passed to
+    /// [`Self::parse`] may contain one.
+    #[cold]
+    #[inline(never)]
+    fn boundary_scope_error(&self, element: &Element<'_>, scope: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::BOUNDARY_CROSSES_SCOPE,
+            format!("<webui-boundary> cannot appear inside {scope}"),
+            element,
+        )
+        .element("webui-boundary")
+        .help("move the <webui-boundary> so it fully wraps this scope from the entry template, instead of appearing inside it")
+        .into()
+    }
+
+    /// Build the error for a `<webui-boundary>` outside an open body.
+    #[cold]
+    #[inline(never)]
+    fn boundary_outside_body_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::BOUNDARY_OUTSIDE_BODY,
+            "<webui-boundary> must appear inside <body>",
+            element,
+        )
+        .element("webui-boundary")
+        .help("move the <webui-boundary> between the opening <body> and its matching </body>")
+        .into()
+    }
+
+    /// Build the error for a `<webui-boundary>` inside an HTML
+    /// foster-parenting insertion mode (cold path).
+    ///
+    /// The browser would move the generated `<webui-hydrate>` sentinel out of
+    /// the table while leaving its payload `<script>` behind, so the
+    /// coordinator could not pair them and would halt hydration for the whole
+    /// page. Rejecting at build time keeps that failure impossible.
+    #[cold]
+    #[inline(never)]
+    fn boundary_in_foster_context_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::BOUNDARY_IN_FOSTER_CONTEXT,
+            "<webui-boundary> cannot appear inside a table or select context",
+            element,
+        )
+        .element("webui-boundary")
+        .help(
+            "the HTML parser moves unknown elements out of <table>/<tbody>/<tr>/<select>, which would split the hydration sentinel from its payload; wrap the whole <table> in the boundary, or move it inside a <td>, <th>, or <caption>",
+        )
+        .into()
+    }
+
+    /// Build the error for an authored `<webui-hydrate>` (cold path).
+    /// `<webui-hydrate>` is reserved for the compiler/handler-generated
+    /// runtime hydration sentinel and must never appear in authored markup.
+    #[cold]
+    #[inline(never)]
+    fn authored_webui_hydrate_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::AUTHORED_WEBUI_HYDRATE,
+            "<webui-hydrate> is reserved for the generated runtime sentinel",
+            element,
+        )
+        .element("webui-hydrate")
+        .help("remove <webui-hydrate>; it is emitted only by the compiler/handler, never authored")
+        .into()
     }
 
     fn enter_component_directive<'a>(
@@ -1729,6 +2184,18 @@ impl HtmlParser {
                 self.add_fragment(WebUIFragment::plugin(data), fragments);
             }
         }
+
+        // Emit a compiler-owned streamed SSR root signal immediately before the
+        // component opening tag closes. Ordinary rendering ignores it byte-for-byte;
+        // streaming rendering consumes it to inject ` data-ws` inside the opening tag
+        // (so the marker exists before custom-element upgrade). Placing the signal
+        // between the attribute run and the closing `>` is required because an
+        // attribute cannot be injected once `>` has already been flushed.
+        self.flush_raw_buffer(fragments);
+        fragments.push(structural_signal(format!(
+            "streaming_root:{}",
+            element.name()
+        )));
 
         if element.self_closing() {
             self.add_raw_fragment("/>");
@@ -2210,6 +2677,7 @@ impl HtmlParser {
             match event {
                 Event::Element(element) => {
                     self.validate_closed_element(&element)?;
+                    self.reject_boundary_or_hydrate_in_route(&element)?;
                     if element.name() == "route" {
                         children.push(self.parse_route_as_fragment(
                             &element,
@@ -2304,6 +2772,7 @@ impl HtmlParser {
                 match event {
                     Event::Element(element) => {
                         self.validate_closed_element(&element)?;
+                        self.reject_boundary_or_hydrate_in_route(&element)?;
                         if element.name().eq_ignore_ascii_case("style") {
                             self.validate_style_element(&element)?;
                         } else if !element.self_closing() && !element.is_void() {
@@ -2334,6 +2803,25 @@ impl HtmlParser {
             }
         }
         Ok(())
+    }
+
+    /// Reject `<webui-boundary>`/`<webui-hydrate>` written inside `<route>`
+    /// markup.
+    ///
+    /// `<route>` children are validated by a separate well-formedness walker
+    /// ([`Self::parse_child_routes`]/[`Self::validate_ignored_route_html`]),
+    /// not the main fragment dispatch in [`Self::parse_range`], so both
+    /// reserved directives need an explicit check here to produce the same
+    /// structured diagnostics as everywhere else instead of silently passing
+    /// through as ignored HTML.
+    fn reject_boundary_or_hydrate_in_route(&self, element: &Element<'_>) -> Result<()> {
+        if element.name() == "webui-boundary" {
+            Err(self.boundary_scope_error(element, "a <route> element"))
+        } else if element.name().eq_ignore_ascii_case("webui-hydrate") {
+            Err(self.authored_webui_hydrate_error(element))
+        } else {
+            Ok(())
+        }
     }
 
     fn validate_closed_element(&self, element: &Element<'_>) -> Result<()> {
@@ -2875,6 +3363,10 @@ mod tests {
 
     use super::*;
 
+    fn structural_matcher(value: &str) -> FragmentMatcher {
+        signal_raw(&format!("{STRUCTURAL_SIGNAL_PREFIX}{value}"))
+    }
+
     #[test]
     fn test_plugin_display_names() {
         assert_eq!(Plugin::Fast.to_string(), "fast");
@@ -3067,7 +3559,9 @@ mod tests {
             records,
             "test.html",
             [
-                raw("<my-component>"),
+                raw("<my-component"),
+                structural_matcher("streaming_root:my-component"),
+                raw(">"),
                 component("my-component"),
                 raw("</my-component>"),
             ]
@@ -3080,6 +3574,98 @@ mod tests {
             matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 !raw.value.contains("<template shadowrootmode") && raw.value.contains("<div>My Component</div>"))
         );
+    }
+
+    #[test]
+    fn streaming_root_signal_emitted_before_component_opening_tag_closes() {
+        // The compiler-owned streamed SSR root signal must sit between the
+        // component's attribute run and the closing `>`, carrying the tag,
+        // so the streaming handler can inject ` data-ws` inside the tag before
+        // custom-element upgrade. Ordinary rendering ignores the signal.
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "my-widget",
+                "<div>w</div>",
+                None,
+                true,
+            ))
+            .expect("register");
+
+        let result = parser.parse("test.html", "<my-widget></my-widget>");
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+
+        assert_stream!(
+            records,
+            "test.html",
+            [
+                raw("<my-widget"),
+                structural_matcher("streaming_root:my-widget"),
+                raw(">"),
+                component("my-widget"),
+                raw("</my-widget>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn streaming_root_signal_emitted_per_component_when_nested_and_repeated() {
+        // Each distinct component host emits its own streaming_root signal,
+        // including nested hosts and hosts repeated across sibling positions.
+        use webui_protocol::web_ui_fragment::Fragment;
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        for name in ["outer-box", "inner-pill"] {
+            parser
+                .component_registry
+                .register_component(ComponentRegistration::new(
+                    name,
+                    "<slot></slot>",
+                    None,
+                    true,
+                ))
+                .expect("register");
+        }
+
+        let result = parser.parse(
+            "test.html",
+            "<outer-box><inner-pill></inner-pill></outer-box><inner-pill></inner-pill>",
+        );
+        assert!(result.is_ok(), "Parse error: {:?}", result.err());
+        let records = parser.into_fragment_records();
+        let fragments = &records["test.html"].fragments;
+
+        let signals: Vec<&str> = fragments
+            .iter()
+            .filter_map(|f| match f.fragment.as_ref() {
+                Some(Fragment::Signal(s)) if s.raw => Some(s.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            signals,
+            [
+                "}}}webui:streaming_root:outer-box",
+                "}}}webui:streaming_root:inner-pill",
+                "}}}webui:streaming_root:inner-pill",
+            ]
+        );
+
+        // Every streaming_root signal is immediately followed by a `>` raw and
+        // preceded by a raw ending in the host tag name (never a bare `<tag>`).
+        for (i, frag) in fragments.iter().enumerate() {
+            let Some(Fragment::Signal(s)) = frag.fragment.as_ref() else {
+                continue;
+            };
+            if !s.raw || !s.value.starts_with("}}}webui:streaming_root:") {
+                continue;
+            }
+            match fragments[i + 1].fragment.as_ref() {
+                Some(Fragment::Raw(r)) => assert_eq!(r.value, ">"),
+                other => panic!("expected raw(\">\") after signal, got {other:?}"),
+            }
+        }
     }
 
     #[test]
@@ -3211,9 +3797,10 @@ mod tests {
 
         // Entry: raw(Hello<my-component>) + component + raw(<p>World</p></my-component>)
         assert!(fragments.len() >= 3);
-        // First fragment should contain "Hello" and "<my-component>"
+        // First fragment should contain "Hello" and "<my-component" (the opening
+        // tag is split by the compiler-owned streaming_root signal before `>`).
         assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("Hello") && raw.value.contains("<my-component>"))
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("Hello") && raw.value.contains("<my-component"))
         );
         // Should have component fragment
         assert!(fragments.iter().any(|f| matches!(
@@ -3330,7 +3917,9 @@ mod tests {
         assert_fragments!(
             records["index.html"].fragments,
             [
-                raw("<custom-element>"),
+                raw("<custom-element"),
+                structural_matcher("streaming_root:custom-element"),
+                raw(">"),
                 component("custom-element"),
                 raw("Hello</custom-element>"),
             ]
@@ -3468,6 +4057,7 @@ mod tests {
             [
                 raw("<custom-element"),
                 attr_raw_start("appearance", "subtle"),
+                structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
                 raw("Hello World</custom-element>"),
@@ -3494,7 +4084,9 @@ mod tests {
         assert_fragments!(
             records["index.html"].fragments,
             [
-                raw("<custom-element>"),
+                raw("<custom-element"),
+                structural_matcher("streaming_root:custom-element"),
+                raw(">"),
                 component("custom-element"),
                 raw("</custom-element>"),
             ]
@@ -3528,6 +4120,7 @@ mod tests {
             [
                 raw("<custom-widget"),
                 attr_start("config", "settings"),
+                structural_matcher("streaming_root:custom-widget"),
                 raw("/>"),
                 component("custom-widget"),
             ]
@@ -3556,7 +4149,9 @@ mod tests {
         assert_fragments!(
             records["index.html"].fragments,
             [
-                raw("<custom-icon>"),
+                raw("<custom-icon"),
+                structural_matcher("streaming_root:custom-icon"),
+                raw(">"),
                 component("custom-icon"),
                 raw("<use"),
                 attr_template("href", "attr-1"),
@@ -3594,6 +4189,7 @@ mod tests {
                 bool_attr_start("disabled", "isDisabled"),
                 // Static attr after dynamic: rawValue
                 attr_raw("title", "Hello"),
+                structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
                 raw("</custom-element>"),
@@ -3650,21 +4246,29 @@ mod tests {
         let (fragments, _) = parse_and_get_fragments(
             r#"<head><meta charset="utf-8" /><link rel="stylesheet" href="{{cssFile}}" /></head>"#,
         );
-        assert!(fragments.len() >= 5);
+        assert!(fragments.len() >= 7);
         assert!(
-            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("<head><meta charset=\"utf-8\"") && raw.value.contains("<link"))
+            matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value == "<head>")
         );
         assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "href" && a.value == "cssFile")
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("head_start"))
         );
         assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("/>"))
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("<meta charset=\"utf-8\"") && raw.value.contains("<link"))
         );
         assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if s.value == "head_end" && s.raw)
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Attribute(a)) if a.name == "href" && a.value == "cssFile")
         );
         assert!(
-            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</head>"))
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("/>"))
+        );
+        assert!(
+            matches!(fragments[5].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("head_end"))
+        );
+        assert!(
+            matches!(fragments[6].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</head>"))
         );
     }
 
@@ -3930,6 +4534,7 @@ mod tests {
             [
                 raw("<my-component"),
                 attr_complex_start(":config", "settings"),
+                structural_matcher("streaming_root:my-component"),
                 raw(">"),
                 component("my-component"),
                 raw("</my-component>"),
@@ -3952,6 +4557,7 @@ mod tests {
                 raw("<my-component"),
                 attr_complex_start(":prop1", "val1"),
                 attr_complex(":prop2", "val2"),
+                structural_matcher("streaming_root:my-component"),
                 raw(">"),
                 component("my-component"),
                 raw("</my-component>"),
@@ -4025,6 +4631,7 @@ mod tests {
             [
                 raw("<my-component"),
                 attr_complex_start(":config", "settings"),
+                structural_matcher("streaming_root:my-component"),
                 raw(">"),
                 component("my-component"),
                 raw("</my-component>"),
@@ -4048,6 +4655,7 @@ mod tests {
                 attr_raw_start("id", "comp"),
                 attr_complex(":config", "settings"),
                 bool_attr("enabled", "isEnabled"),
+                structural_matcher("streaming_root:my-component"),
                 raw(">"),
                 component("my-component"),
                 raw("</my-component>"),
@@ -4174,9 +4782,9 @@ mod tests {
             fragments,
             [
                 raw("<body>"),
-                signal_raw("body_start"),
+                structural_matcher("body_start"),
                 raw("<app-shell></app-shell>"),
-                signal_raw("body_end"),
+                structural_matcher("body_end"),
                 raw("</body>"),
             ]
         );
@@ -4494,6 +5102,7 @@ mod tests {
                 attr_skip("role", "value2"),
                 attr_skip("data-test", "value3"),
                 attr_skip("aria-test", "value4"),
+                structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
                 raw("</custom-element>"),
@@ -4529,6 +5138,7 @@ mod tests {
                 attr_skip_template("aria-labelledby", "attr-1"),
                 attr_skip_template("data-testid", "attr-2"),
                 attr_skip_raw("class", "fixed-class"),
+                structural_matcher("streaming_root:item-group"),
                 raw(">"),
                 component("item-group"),
                 raw("</item-group>"),
@@ -4589,9 +5199,13 @@ mod tests {
             records,
             "for-1",
             [
-                raw("<custom-element>"),
+                raw("<custom-element"),
+                structural_matcher("streaming_root:custom-element"),
+                raw(">"),
                 component("custom-element"),
-                raw("<custom-button>"),
+                raw("<custom-button"),
+                structural_matcher("streaming_root:custom-button"),
+                raw(">"),
                 component("custom-button"),
                 raw("Ok</custom-button></custom-element>"),
             ]
@@ -4599,15 +5213,15 @@ mod tests {
 
         // Component streams — custom-element has contains() checks, keep manual
         let ce = &records["custom-element"].fragments;
-        assert_eq!(ce.len(), 3);
+        assert_eq!(ce.len(), 5);
         assert!(
-            matches!(ce[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.starts_with("<custom-child>"))
+            matches!(ce[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.starts_with("<custom-child"))
         );
         assert!(
-            matches!(ce[1].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-child")
+            matches!(ce[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-child")
         );
         assert!(
-            matches!(ce[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</custom-child><slot></slot>"))
+            matches!(ce[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</custom-child><slot></slot>"))
         );
 
         assert_stream!(records, "custom-button", [raw("<slot></slot>"),]);
@@ -4743,34 +5357,43 @@ mod tests {
         let html = r#"<!DOCTYPE HTML><html dir="auto" lang="en"><head><meta charset="utf-8"><title>Test</title><style>html { margin: 0; }</style></head><body><app-shell></app-shell><script type="module" src="./index.js"></script></body></html>"#;
         let (fragments, _) = parse_and_get_fragments(html);
 
-        // DOCTYPE + head content, head_end, </head><body>, body_start, body content, body_end, </body></html>
-        assert!(fragments.len() >= 7);
+        // DOCTYPE + <head>, head_start, head content, head_end, </head><body>,
+        // body_start, body content, body_end, </body></html>
+        assert!(fragments.len() >= 9);
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value.contains("<!DOCTYPE HTML>") && raw.value.contains("<title>Test</title>"))
+                raw.value.contains("<!DOCTYPE HTML>") && raw.value.ends_with("<head>"))
         );
         assert!(
             matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "head_end" && s.raw)
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("head_start"))
         );
         assert!(
             matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value.contains("</head>") && raw.value.ends_with("<body>"))
+                raw.value.contains("<title>Test</title>"))
         );
         assert!(
             matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "body_start" && s.raw)
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("head_end"))
         );
         assert!(
             matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value.contains("<app-shell>"))
+                raw.value.contains("</head>") && raw.value.ends_with("<body>"))
         );
         assert!(
             matches!(fragments[5].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "body_end" && s.raw)
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("body_start"))
         );
         assert!(
             matches!(fragments[6].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+                raw.value.contains("<app-shell>"))
+        );
+        assert!(
+            matches!(fragments[7].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("body_end"))
+        );
+        assert!(
+            matches!(fragments[8].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</body>") && raw.value.contains("</html>"))
         );
     }
@@ -5258,12 +5881,14 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<html><head><title>Test</title>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<title>Test</title>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
+                structural_matcher("body_start"),
                 raw("<div>Content</div><p>More</p>"),
-                signal_raw("body_end"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -5281,12 +5906,14 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<html><head><title>T</title>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<title>T</title>"),
+                structural_matcher("head_end"),
                 raw(r#"</head><body data-layout="doc" class="page">"#),
-                signal_raw("body_start"),
+                structural_matcher("body_start"),
                 raw("<p>x</p>"),
-                signal_raw("body_end"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -5303,15 +5930,603 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<html><head><title>T</title>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<title>T</title>"),
+                structural_matcher("head_end"),
                 raw("</head><body"),
                 attr("data-layout", "layout"),
                 raw(">"),
-                signal_raw("body_start"),
+                structural_matcher("body_start"),
                 raw("<p>x</p>"),
-                signal_raw("body_end"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_head_start_signal_ordering_with_authored_script() {
+        // `render_streaming` preflights on `head_start` before authored async
+        // scripts in <head>, mirroring `body_start`. `head_start` must appear
+        // immediately after the raw `<head>` opening fragment and before any
+        // child content, including an authored `<script>`.
+        let html = r#"<html><head><script async src="./analytics.js"></script></head><body></body></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw(r#"<script async src="./analytics.js"></script>"#),
+                structural_matcher("head_end"),
+                raw("</head><body>"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_head_static_attributes_preserve_legacy_opening_bytes() {
+        // Compatibility: origin/main emitted a literal `<head>` and ignored
+        // authored head attributes. The structural signal must not alter that
+        // ordinary protocol/output shape.
+        let html = r#"<html><head data-theme="dark" class="app-head"><title>T</title></head><body></body></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<title>T</title>"),
+                structural_matcher("head_end"),
+                raw("</head><body>"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_head_bound_attributes_preserve_legacy_opening_bytes() {
+        // Bound head attributes were also ignored by origin/main. In
+        // particular, do not introduce an attribute fragment before
+        // `head_start`, because ordinary rendering must remain byte-identical.
+        let html =
+            r#"<html><head data-theme="{{theme}}"><title>T</title></head><body></body></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<title>T</title>"),
+                structural_matcher("head_end"),
+                raw("</head><body>"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
+                raw("</body></html>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_head_and_body_are_ascii_case_insensitive() {
+        let html = r#"<html><HEAD data-theme="ignored"><title>T</title></HEAD><BODY data-layout="{{layout}}"><p>x</p></BODY></html>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw(r#"<html><HEAD data-theme="ignored">"#),
+                structural_matcher("head_start"),
+                raw("<title>T</title>"),
+                structural_matcher("head_end"),
+                raw("</HEAD><BODY"),
+                attr("data-layout", "layout"),
+                raw(">"),
+                structural_matcher("body_start"),
+                raw("<p>x</p>"),
+                structural_matcher("body_end"),
+                raw("</BODY></html>"),
+            ]
+        );
+    }
+
+    // ── `<webui-boundary>` / `<webui-hydrate>` tests (Progressive Streaming
+    // Hydration — Phase 1) ────────────────────────────────────────────────
+
+    #[test]
+    fn webui_boundary_emits_no_wrapper_and_brackets_children_with_signals() {
+        let html = r#"<body><div><webui-boundary name="counter-ready"><my-counter></my-counter></webui-boundary></div></body>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        // No `<webui-boundary>`/`</webui-boundary>` markup is emitted at
+        // all — only the raw boundary_start/boundary_end signals bracket
+        // the untouched children.
+        assert_fragments!(
+            fragments,
+            [
+                raw("<body>"),
+                structural_matcher("body_start"),
+                raw("<div>"),
+                structural_matcher("boundary_start:0"),
+                raw("<my-counter></my-counter>"),
+                structural_matcher("boundary_end:0"),
+                raw("</div>"),
+                structural_matcher("body_end"),
+                raw("</body>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn webui_boundary_sequence_increments_in_document_order_and_resets_per_entry() {
+        let html = concat!(
+            "<body>",
+            r#"<webui-boundary name="a"><p>1</p></webui-boundary>"#,
+            r#"<webui-boundary name="b"><p>2</p></webui-boundary>"#,
+            "</body>",
+        );
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<body>"),
+                structural_matcher("body_start"),
+                structural_matcher("boundary_start:0"),
+                raw("<p>1</p>"),
+                structural_matcher("boundary_end:0"),
+                structural_matcher("boundary_start:1"),
+                raw("<p>2</p>"),
+                structural_matcher("boundary_end:1"),
+                structural_matcher("body_end"),
+                raw("</body>"),
+            ]
+        );
+
+        // A separate top-level entry parsed on the same `HtmlParser` starts
+        // its own boundary sequence back at 0 and does not reject "a" as a
+        // duplicate name — sequence/name state is per top-level entry.
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "first.html",
+                r#"<body><webui-boundary name="a"><p>1</p></webui-boundary></body>"#,
+            )
+            .expect("first entry parses");
+        parser
+            .parse(
+                "second.html",
+                r#"<body><webui-boundary name="a"><p>2</p></webui-boundary></body>"#,
+            )
+            .expect("second entry reuses the name and sequence 0");
+        let records = parser.into_fragment_records();
+        assert_stream!(
+            records,
+            "second.html",
+            [
+                raw("<body>"),
+                structural_matcher("body_start"),
+                structural_matcher("boundary_start:0"),
+                raw("<p>2</p>"),
+                structural_matcher("boundary_end:0"),
+                structural_matcher("body_end"),
+                raw("</body>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn webui_boundary_missing_name_errors() {
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "index.html",
+                "<body><webui-boundary><p>x</p></webui-boundary></body>",
+            )
+            .expect_err("a boundary without a name must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::MISSING_BOUNDARY_NAME));
+    }
+
+    #[test]
+    fn webui_boundary_dynamic_name_errors() {
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><webui-boundary name="{{sectionName}}"><p>x</p></webui-boundary></body>"#,
+            )
+            .expect_err("a dynamic boundary name must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_BOUNDARY_NAME));
+    }
+
+    /// Boundary names are an *authoring* concept: they are validated for
+    /// uniqueness and then discarded, so no identifier charset restriction may
+    /// creep in and no name may reach the wire. Only the integer sequence does.
+    #[test]
+    fn webui_boundary_names_are_free_form_and_never_reach_fragments() {
+        let mut parser = HtmlParser::new();
+        let html = concat!(
+            "<body>",
+            r#"<webui-boundary name="above the fold"><p>1</p></webui-boundary>"#,
+            r#"<webui-boundary name="feed/items #2"><p>2</p></webui-boundary>"#,
+            r#"<webui-boundary name="ダッシュボード"><p>3</p></webui-boundary>"#,
+            "</body>",
+        );
+        parser
+            .parse("index.html", html)
+            .expect("free-form boundary names must be accepted");
+        assert_eq!(parser.boundary_count(), 3);
+
+        let records = parser.into_fragment_records();
+        let fragments = &records
+            .get("index.html")
+            .expect("index.html fragment record")
+            .fragments;
+
+        let mut starts = Vec::new();
+        for fragment in fragments {
+            let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
+                continue;
+            };
+            let value = signal.value.as_str();
+            assert!(
+                !value.contains("above the fold")
+                    && !value.contains("feed/items")
+                    && !value.contains("ダッシュボード"),
+                "boundary names must never reach a fragment: {value}"
+            );
+            if let Some(sequence) = value
+                .strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
+                .and_then(|signal| signal.strip_prefix("boundary_start:"))
+            {
+                starts.push(sequence.to_string());
+            }
+        }
+        assert_eq!(
+            starts,
+            ["0", "1", "2"],
+            "only integer sequences are emitted"
+        );
+    }
+
+    #[test]
+    fn webui_boundary_duplicate_name_errors() {
+        let mut parser = HtmlParser::new();
+        let html = concat!(
+            "<body>",
+            r#"<webui-boundary name="dup"><p>1</p></webui-boundary>"#,
+            r#"<webui-boundary name="dup"><p>2</p></webui-boundary>"#,
+            "</body>",
+        );
+        let err = parser
+            .parse("index.html", html)
+            .expect_err("a duplicate boundary name must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::DUPLICATE_BOUNDARY_NAME));
+    }
+
+    #[test]
+    fn webui_boundary_nested_boundary_errors() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<body><webui-boundary name="outer"><webui-boundary name="inner"><p>x</p></webui-boundary></webui-boundary></body>"#;
+        let err = parser
+            .parse("index.html", html)
+            .expect_err("a nested boundary must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::NESTED_BOUNDARY));
+    }
+
+    #[test]
+    fn webui_boundary_inside_if_errors() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<body><if condition="ready"><webui-boundary name="x"><p>x</p></webui-boundary></if></body>"#;
+        let err = parser
+            .parse("index.html", html)
+            .expect_err("a boundary inside <if> must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+        assert!(diag.to_string().contains("<if>"), "{diag}");
+    }
+
+    #[test]
+    fn webui_boundary_inside_for_errors() {
+        let mut parser = HtmlParser::new();
+        let html = r#"<body><for each="item in items"><webui-boundary name="x"><p>x</p></webui-boundary></for></body>"#;
+        let err = parser
+            .parse("index.html", html)
+            .expect_err("a boundary inside <for> must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+        assert!(diag.to_string().contains("<for>"), "{diag}");
+    }
+
+    #[test]
+    fn webui_boundary_inside_reusable_component_template_errors() {
+        // The boundary lives inside the component's own `.html` template, not
+        // the entry template — disallowed even though the entry's usage of
+        // `<my-widget>` looks unremarkable.
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "my-widget",
+                r#"<webui-boundary name="x"><p>x</p></webui-boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+
+        let err = parser
+            .parse("index.html", "<body><my-widget></my-widget></body>")
+            .expect_err("a boundary inside a component template must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+    }
+
+    #[test]
+    fn webui_boundary_inside_route_element_errors() {
+        let mut parser = HtmlParser::new();
+        // Directly inside <route> children.
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><route path="/" component="home"><webui-boundary name="x"><p>x</p></webui-boundary></route></body>"#,
+            )
+            .expect_err("a boundary directly inside <route> must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+
+        // Nested deeper inside <route> ignored markup.
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><route path="/" component="home"><div><webui-boundary name="x"><p>x</p></webui-boundary></div></route></body>"#,
+            )
+            .expect_err("a boundary nested inside <route> markup must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+    }
+
+    #[test]
+    fn webui_boundary_must_be_inside_an_open_body() {
+        for html in [
+            r#"<webui-boundary name="before"><p>x</p></webui-boundary><body></body>"#,
+            r#"<body></body><webui-boundary name="after"><p>x</p></webui-boundary>"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            let err = parser
+                .parse("index.html", html)
+                .expect_err("a boundary outside body must error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(diag.error_code(), Some(codes::BOUNDARY_OUTSIDE_BODY));
+            assert_eq!(
+                diag.help_text(),
+                Some(
+                    "move the <webui-boundary> between the opening <body> and its matching </body>"
+                )
+            );
+        }
+
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                r#"<BODY><webui-boundary name="inside"></webui-boundary></BODY>"#,
+            )
+            .expect("mixed-case native body keeps the boundary inside an open body");
+    }
+
+    #[test]
+    fn webui_boundary_inside_foster_parenting_context_errors() {
+        // Each of these insertion modes moves an unknown element (the
+        // generated <webui-hydrate> sentinel) out of the subtree, which would
+        // split it from its payload script and halt hydration at runtime.
+        for html in [
+            r#"<body><table><webui-boundary name="t"><p>x</p></webui-boundary></table></body>"#,
+            r#"<body><table><tbody><webui-boundary name="t"><p>x</p></webui-boundary></tbody></table></body>"#,
+            r#"<body><table><thead><webui-boundary name="t"><p>x</p></webui-boundary></thead></table></body>"#,
+            r#"<body><table><tfoot><webui-boundary name="t"><p>x</p></webui-boundary></tfoot></table></body>"#,
+            r#"<body><table><tbody><tr><webui-boundary name="t"><p>x</p></webui-boundary></tr></tbody></table></body>"#,
+            r#"<body><table><colgroup><webui-boundary name="t"><p>x</p></webui-boundary></colgroup></table></body>"#,
+            r#"<body><select><webui-boundary name="t"><option>x</option></webui-boundary></select></body>"#,
+            r#"<body><select><optgroup><webui-boundary name="t"><option>x</option></webui-boundary></optgroup></select></body>"#,
+            // Mixed case must be rejected identically: HTML tag names are
+            // case-insensitive, so the browser foster-parents these too.
+            r#"<body><TABLE><TBODY><webui-boundary name="t"><p>x</p></webui-boundary></TBODY></TABLE></body>"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            let err = parser
+                .parse("index.html", html)
+                .expect_err("a boundary in a foster-parenting context must error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(
+                diag.error_code(),
+                Some(codes::BOUNDARY_IN_FOSTER_CONTEXT),
+                "unexpected code for {html}"
+            );
+            assert!(
+                diag.help_text()
+                    .is_some_and(|help| help.contains("<td>, <th>, or <caption>")),
+                "help should suggest a safe placement for {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn webui_boundary_is_allowed_where_insertion_mode_returns_to_in_body() {
+        // <td>/<th>/<caption> switch back to "in body" rules, so an unknown
+        // element is *not* foster-parented and the boundary is safe even
+        // though <table>/<tr> ancestors are hostile.
+        for html in [
+            r#"<body><table><tbody><tr><td><webui-boundary name="cell"><p>x</p></webui-boundary></td></tr></tbody></table></body>"#,
+            r#"<body><table><tbody><tr><th><webui-boundary name="head"><p>x</p></webui-boundary></th></tr></tbody></table></body>"#,
+            r#"<body><table><caption><webui-boundary name="cap"><p>x</p></webui-boundary></caption></table></body>"#,
+            // Wrapping the whole table is the other documented fix.
+            r#"<body><webui-boundary name="whole"><table><tbody><tr><td>x</td></tr></tbody></table></webui-boundary></body>"#,
+            // A <td> barrier resets the depth, an inner table raises it again,
+            // and closing that inner table must restore the barrier's zero —
+            // not the outer table's non-zero depth.
+            concat!(
+                "<body><table><tbody><tr><td>",
+                "<table><tbody><tr><td>inner</td></tr></tbody></table>",
+                r#"<webui-boundary name="after-inner"><p>x</p></webui-boundary>"#,
+                "</td></tr></tbody></table></body>",
+            ),
+            // Void and self-closing elements must not leak restore ops.
+            r#"<body><table><tbody><tr><td><img src="a"><br><input></td></tr></tbody></table><webui-boundary name="v"><p>x</p></webui-boundary></body>"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            parser
+                .parse("index.html", html)
+                .unwrap_or_else(|err| panic!("{html} should parse, got {err:?}"));
+        }
+    }
+
+    #[test]
+    fn foster_context_depth_is_restored_after_leaving_a_table() {
+        // Regression guard for the save/restore op: a boundary *after* a table
+        // must not inherit the table's hostile depth.
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                concat!(
+                    "<body>",
+                    "<table><tbody><tr><td>x</td></tr></tbody></table>",
+                    r#"<webui-boundary name="after-table"><p>y</p></webui-boundary>"#,
+                    "</body>",
+                ),
+            )
+            .expect("a boundary after a closed table must be accepted");
+    }
+
+    #[test]
+    fn authored_raw_bindings_cannot_forge_structural_signals() {
+        let html = concat!(
+            "<html><head></head><body>",
+            "{{{head_start}}}{{{head_end}}}{{{body_start}}}{{{body_end}}}",
+            "{{{boundary_start:0}}}{{{boundary_end:0}}}",
+            "{{{streaming_root:forged}}}",
+            "</body></html>",
+        );
+        let (fragments, _) = parse_and_get_fragments(html);
+        let raw_signals: Vec<&str> = fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Signal(signal)) if signal.raw => Some(signal.value.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(
+            raw_signals,
+            [
+                "}}}webui:head_start",
+                "}}}webui:head_end",
+                "}}}webui:body_start",
+                "head_start",
+                "head_end",
+                "body_start",
+                "body_end",
+                "boundary_start:0",
+                "boundary_end:0",
+                "streaming_root:forged",
+                "}}}webui:body_end",
+            ]
+        );
+    }
+
+    #[test]
+    fn authored_webui_hydrate_errors_at_top_level() {
+        for tag in ["webui-hydrate", "WEBUI-HYDRATE", "WebUi-HyDrAtE"] {
+            let mut parser = HtmlParser::new();
+            let html = format!("<div><{tag}></{tag}></div>");
+            let err = parser
+                .parse("index.html", &html)
+                .expect_err("an authored <webui-hydrate> must error in any ASCII casing");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(diag.error_code(), Some(codes::AUTHORED_WEBUI_HYDRATE));
+        }
+    }
+
+    #[test]
+    fn authored_webui_hydrate_errors_inside_route() {
+        for tag in ["webui-hydrate", "WEBUI-HYDRATE", "WebUi-HyDrAtE"] {
+            let mut parser = HtmlParser::new();
+            let html = format!(r#"<route path="/" component="home"><{tag}></{tag}></route>"#);
+            let err = parser
+                .parse("index.html", &html)
+                .expect_err("an authored <webui-hydrate> inside <route> must error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(diag.error_code(), Some(codes::AUTHORED_WEBUI_HYDRATE));
+        }
+    }
+
+    #[test]
+    fn webui_boundary_directive_remains_case_sensitive() {
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<WEBUI-BOUNDARY name="ordinary"><p>x</p></WEBUI-BOUNDARY>"#);
+
+        assert_fragments!(
+            fragments,
+            [raw(
+                r#"<WEBUI-BOUNDARY name="ordinary"><p>x</p></WEBUI-BOUNDARY>"#
+            ),]
+        );
+    }
+
+    #[test]
+    fn templates_without_webui_boundary_are_unaffected() {
+        // Regression: ordinary templates with no `<webui-boundary>` directive
+        // must parse exactly as before — no boundary signals, no behavior
+        // change for the non-streaming path.
+        let html = r#"<div><my-counter count="{{count}}"></my-counter></div>"#;
+        let (fragments, _) = parse_and_get_fragments(html);
+
+        assert_fragments!(
+            fragments,
+            [
+                raw("<div><my-counter"),
+                attr("count", "count"),
+                raw("></my-counter></div>"),
             ]
         );
     }
@@ -5349,68 +6564,83 @@ mod tests {
         );
         let (fragments, _) = parse_and_get_fragments(html);
 
-        // Should have: raw(DOCTYPE+head content), head_end, raw(</head><body>),
-        // body_start, raw(body content), body_end, raw(</body></html>)
+        // Should have: raw(DOCTYPE+<head>), head_start, raw(head content),
+        // head_end, raw(</head><body>), body_start, raw(body content),
+        // body_end, raw(</body></html>)
         assert!(
-            fragments.len() >= 7,
-            "Expected at least 7 fragments, got {}",
+            fragments.len() >= 9,
+            "Expected at least 9 fragments, got {}",
             fragments.len()
         );
 
-        // First fragment: DOCTYPE through head content (before </head>)
+        // First fragment: DOCTYPE through the opening <head> tag
         assert!(
             matches!(fragments[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                raw.value.contains("<!DOCTYPE html>") &&
+                raw.value.contains("<!DOCTYPE html>") && raw.value.ends_with("<head>")),
+            "First fragment should contain DOCTYPE and end with <head>, got: {:?}",
+            fragments[0]
+        );
+
+        // head_start signal
+        assert!(
+            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("head_start")),
+            "Second fragment should be head_start signal"
+        );
+
+        // Head content (meta, title, style, link)
+        assert!(
+            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("<meta charset=\"utf-8\">") &&
                 raw.value.contains("<meta name=\"viewport\"") &&
                 raw.value.contains("<title>Complex Page</title>") &&
                 raw.value.contains("<style>") &&
                 raw.value.contains("body { margin: 0; padding: 0; }")),
-            "First fragment should contain all head content, got: {:?}",
-            fragments[0]
+            "Third fragment should contain all head content, got: {:?}",
+            fragments[2]
         );
 
         // head_end signal
         assert!(
-            matches!(fragments[1].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "head_end" && s.raw),
-            "Second fragment should be head_end signal"
+            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("head_end")),
+            "Fourth fragment should be head_end signal"
         );
 
         // </head><body>
         assert!(
-            matches!(fragments[2].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</head>") && raw.value.ends_with("<body>")),
-            "Third fragment should contain </head><body>"
+            "Fifth fragment should contain </head><body>"
         );
 
         // body_start signal
         assert!(
-            matches!(fragments[3].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "body_start" && s.raw),
-            "Fourth fragment should be body_start signal"
+            matches!(fragments[5].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("body_start")),
+            "Sixth fragment should be body_start signal"
         );
 
         // Body content (h1 and script)
         assert!(
-            matches!(fragments[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+            matches!(fragments[6].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("<h1>Hello World</h1>") &&
                 raw.value.contains("<script")),
-            "Fifth fragment should contain body content"
+            "Seventh fragment should contain body content"
         );
 
         // body_end signal
         assert!(
-            matches!(fragments[5].fragment.as_ref(), Some(Fragment::Signal(s)) if
-                s.value == "body_end" && s.raw),
-            "Sixth fragment should be body_end signal"
+            matches!(fragments[7].fragment.as_ref(), Some(Fragment::Signal(s)) if
+                s.raw && s.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX) == Some("body_end")),
+            "Eighth fragment should be body_end signal"
         );
 
         // Closing tags
         assert!(
-            matches!(fragments[6].fragment.as_ref(), Some(Fragment::Raw(raw)) if
+            matches!(fragments[8].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 raw.value.contains("</body>") && raw.value.contains("</html>")),
-            "Seventh fragment should contain closing tags"
+            "Ninth fragment should contain closing tags"
         );
     }
 
@@ -6590,13 +7820,15 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n:root {\n    "),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>\n:root {\n    "),
                 signal_raw("tokens.light"),
                 raw("\n}\n</style>"),
-                signal_raw("head_end"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6619,13 +7851,15 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n:root {\n    "),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>\n:root {\n    "),
                 signal_raw("tokens.light"),
                 raw("\n}\n</style>"),
-                signal_raw("head_end"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6644,13 +7878,15 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>"),
                 signal("themeCss"),
                 raw("</style>"),
-                signal_raw("head_end"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6669,11 +7905,13 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style></style>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style></style>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6692,11 +7930,13 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style></style>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style></style>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6717,11 +7957,13 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>body { color: {{textColor}}; }</style>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>body { color: {{textColor}}; }</style>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6744,13 +7986,15 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>\n  .a { color: red; }\n  "),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>\n  .a { color: red; }\n  "),
                 signal("themeCss"),
                 raw("\n  .b { color: blue; }\n</style>"),
-                signal_raw("head_end"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6768,11 +8012,13 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>/*! @license MIT */ .x { color: red; } </style>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>/*! @license MIT */ .x { color: red; } </style>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6793,11 +8039,13 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style> .x { color: red; }</style>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style> .x { color: red; }</style>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );
@@ -6817,11 +8065,13 @@ mod tests {
             fragment_records,
             "test.html",
             [
-                raw("<html><head><style>body { margin: 0; }</style>"),
-                signal_raw("head_end"),
+                raw("<html><head>"),
+                structural_matcher("head_start"),
+                raw("<style>body { margin: 0; }</style>"),
+                structural_matcher("head_end"),
                 raw("</head><body>"),
-                signal_raw("body_start"),
-                signal_raw("body_end"),
+                structural_matcher("body_start"),
+                structural_matcher("body_end"),
                 raw("</body></html>"),
             ]
         );

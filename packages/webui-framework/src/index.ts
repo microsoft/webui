@@ -23,6 +23,10 @@
 
 import { installTemplateElementRuntime } from './static-host.js';
 
+// Set up compiler-owned dormant template hosts. The default entry deliberately
+// carries no dependency on the streaming coordinator: streaming apps import the
+// separate `@microsoft/webui-framework/streaming.js` entry (see
+// `streaming-entry.ts`) to install it, so a non-streaming app never loads it.
 setTimeout(installTemplateElementRuntime, 0);
 
 export { WebUIElement } from './element.js';

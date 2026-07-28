@@ -103,10 +103,16 @@ describe('dormant template host runtime', () => {
     const instance = new ctor() as HTMLElement & {
       $shouldDeferSSRHydration(): boolean;
       $shouldApplySSRBootstrapState(): boolean;
+      $shouldActivateOnBoundaryCommit(): boolean;
       setState(state: Record<string, unknown>): void;
     };
     assert.equal(instance.$shouldDeferSSRHydration(), true);
     assert.equal(instance.$shouldApplySSRBootstrapState(), false);
+    assert.equal(
+      instance.$shouldActivateOnBoundaryCommit(),
+      false,
+      'a compiler-owned host must stay dormant on a streaming boundary commit; only a client state write wakes it',
+    );
     assert.equal(typeof instance.setState, 'function');
   });
 

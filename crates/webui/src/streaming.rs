@@ -63,7 +63,7 @@ use crossbeam_queue::ArrayQueue;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
-use webui_handler::{HandlerError, ResponseWriter, Result};
+use webui_handler::{FlushWriter, HandlerError, ResponseWriter, Result};
 
 // ── ChunkPool ──────────────────────────────────────────────────────
 
@@ -637,6 +637,12 @@ impl ResponseWriter for StreamingWriter {
     }
 }
 
+impl FlushWriter for StreamingWriter {
+    fn flush(&mut self) -> Result<()> {
+        self.flush_buf()
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -674,6 +680,20 @@ mod tests {
         let first = rx.try_recv().expect("first chunk should be available");
         assert_eq!(first.len(), StreamingWriter::CHUNK_TARGET);
         ResponseWriter::end(&mut w).unwrap();
+    }
+
+    #[test]
+    fn streaming_writer_explicit_flush_sends_partial_chunk() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(8);
+        let mut writer = StreamingWriter::new(tx);
+        ResponseWriter::write(&mut writer, "boundary").unwrap();
+        assert!(rx.try_recv().is_err());
+
+        FlushWriter::flush(&mut writer).unwrap();
+        assert_eq!(
+            rx.try_recv().expect("explicitly flushed chunk"),
+            Bytes::from_static(b"boundary")
+        );
     }
 
     #[test]

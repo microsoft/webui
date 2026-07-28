@@ -549,6 +549,81 @@ CSS is scoped per component via Shadow DOM. No CSS-in-JS.
 </html>
 ```
 
+## Progressive Streaming Hydration (Rust Phase 1)
+
+Use `<webui-boundary>` only when the Rust server calls
+`WebUIHandler::render_streaming` with a `FlushWriter`. The directive is removed
+at compile time and emits no application DOM wrapper.
+
+```html
+<head>
+  <script type="module" async src="/index.js"></script>
+</head>
+<body>
+  <header>
+    <weather-skeleton></weather-skeleton>
+  </header>
+
+  <webui-boundary name="critical-composer">
+    <message-composer></message-composer>
+  </webui-boundary>
+
+  <webui-boundary name="low-priority-feed">
+    <activity-feed></activity-feed>
+  </webui-boundary>
+</body>
+```
+
+Rules for code generation:
+
+- `name` is required, non-empty, static, and unique in the entry template. It
+  cannot contain a <code v-pre>{{binding}}</code>.
+- Author boundaries only in the outermost entry template. They cannot appear
+  inside reusable components, route-shell components, `<if>`, `<for>`,
+  `<route>`, or another boundary. An entry-level boundary can fully wrap those
+  complete scopes.
+- Every registered WebUI component rendered by `render_streaming` must be
+  inside an explicit boundary. Native HTML and unregistered static tail markup
+  may remain outside.
+- Never author `<webui-hydrate>`. It is reserved generated runtime output.
+- Put the async application module in `<head>` before boundary content and
+  import `@microsoft/webui-framework/streaming.js` before component registration
+  modules. The default framework entry excludes the coordinator. A normal
+  module is deferred until parsing completes and cannot provide early
+  hydration. This loading requirement is not currently validated by the parser.
+- Boundaries commit and flush strictly in document order. The weather skeleton
+  can paint first, the composer can be the first interactive boundary, and the
+  feed can be a later explicit boundary. A boundary does not make server work
+  asynchronous and cannot replace the earlier skeleton out of order.
+- Use `RenderOptions::with_nonce` for generated inline boundary scripts under
+  CSP. The policy must also allow the external application module.
+- `webui:boundary-hydrated` is emitted only when
+  `window.__WEBUI_STREAMING_DEBUG__ === true`; its detail is
+  `{ sequence, terminal }`. `webui:hydration-complete` fires only after the
+  terminal checkpoint and all pending hydration work complete.
+- Boundary payloads contain checkpoint-local state and newly needed metadata for
+  the component graph reachable from that boundary's rendered roots, including
+  initially hidden conditional/repeat descendants. Inventory still contains
+  only rendered SSR roots, and unrelated later boundaries are excluded. State
+  is passed directly to activation instead of being retained in
+  `window.__webui.state`.
+- A semantic flush hands bytes to the HTTP transport. Server adapters,
+  compression, proxies, and CDNs can still buffer them.
+
+Malformed directives use stable diagnostics:
+`missing-boundary-name`, `invalid-boundary-name`,
+`duplicate-boundary-name`, `nested-boundary`, `boundary-crosses-scope`, and
+`authored-webui-hydrate`.
+
+Do not generate these as usable APIs. They are not implemented in Phase 1:
+
+- Dynamic `<webui-stream>`, `page.append()`, or
+  `begin_append()` / `commit()` APIs
+- Out-of-order same-response replacement
+- Router partial-navigation streaming reuse
+- Node, FFI/.NET, WASM, or other host-language streaming mirrors
+- Declarative partial-update APIs
+
 ## Hydration Entry Point
 
 ```typescript
@@ -638,8 +713,8 @@ Router.start({
 ### View Transitions
 
 The router wraps every client-side navigation in `document.startViewTransition()`
-automatically. **Do not** wrap `Router.navigate()` in your own `startViewTransition()`
-— that would double-transition.
+automatically. **Do not** wrap `Router.navigate()` in your own
+`startViewTransition()` - that would double-transition.
 
 While active, the router installs a nonce-bearing
 `@view-transition { navigation: none; }` override. Automatic cross-document
@@ -800,7 +875,7 @@ location, the offending snippet, and a `help:` fix:
   help: use the form each="item in collection", e.g. each="todo in todos"
 ```
 
-When a mistake looks like a typo, `help:` suggests the intended name — a
+When a mistake looks like a typo, `help:` suggests the intended name - a
 misspelled directive attribute (`eahc` → `each`) or an unregistered
 custom-element tag that closely matches a registered component **in the same
 namespace** (`<mp-buton>` → `<mp-button>`). A different-namespace tag (e.g. a
@@ -841,7 +916,9 @@ apply to a given error are `null`.
 `unclosed-html-tag`,
 `malformed-html-tag`, `unexpected-closing-tag`, `unterminated-html-comment`,
 `unterminated-html-declaration`, `excessive-nesting`, `recursive-template`,
-`invalid-css`, `PROJ-P001`, `PROJ-P002`, `PROJ-B001`, `PROJ-B002`,
+`invalid-css`, `missing-boundary-name`, `invalid-boundary-name`,
+`duplicate-boundary-name`, `nested-boundary`, `boundary-crosses-scope`,
+`authored-webui-hydrate`, `PROJ-P001`, `PROJ-P002`, `PROJ-B001`, `PROJ-B002`,
 `PROJ-M001`, `PROJ-M003`, `PROJ-M004`, `PROJ-M006`, `PROJ-M007`,
 `PROJ-M009`, `PROJ-S001`, `PROJ-S003`, `PROJ-S004`.
 
@@ -941,7 +1018,7 @@ property declarations into the render state.
 4. Fails with `missing-theme-token` when any required token is absent from a
    theme. `var(--a, var(--b, var(--c)))` requires `a`, `b`, and `c` unless a
    token is defined by local/ancestor CSS. A `var()` usage with a literal
-   fallback (e.g. `var(--brand, #000)`) is exempt — the token is still hoisted
+   fallback (e.g. `var(--brand, #000)`) is exempt - the token is still hoisted
    for runtime resolution but its absence does not fail the build, unless the
    same token is also used without a fallback.
 5. Generates CSS declaration strings per theme
@@ -951,7 +1028,7 @@ property declarations into the render state.
 A token used only with a literal `var()` fallback and absent from every theme
 (e.g. a misspelled `var(--colr-brand, #000)`) is reported as a non-fatal
 `unthemed-token` **warning** on `BuildResult.warnings` (a `Vec<Diagnostic>`,
-also printed by `webui build` and `webui serve`) instead of failing the build —
+also printed by `webui build` and `webui serve`) instead of failing the build -
 a typo safety net. Warnings are warning-severity `Diagnostic`s, so they render
 with the same layout as `missing-theme-token` errors: both carry the source
 location (`my-card.css:2:10` + the CSS line) and a `did you mean --…?`
@@ -1075,7 +1152,7 @@ The handler resolves `tokens.light` from the state, outputting:
 11. **No `@observable` writes before `super.connectedCallback()`.** During SSR
     hydration the server-rendered DOM is trusted and not re-rendered, so a value
     set in a field initializer, the `constructor`, or before
-    `super.connectedCallback()` cannot reach the DOM — the write is dropped and
+    `super.connectedCallback()` cannot reach the DOM - the write is dropped and
     the runtime logs a `[WebUI] Hydration mismatch` warning. If the value must
     appear in the first render, put it in the SSR state JSON; otherwise assign it
     after `super.connectedCallback()`. The call is a synchronous hydration
@@ -1085,7 +1162,7 @@ The handler resolves `tokens.light` from the state, outputting:
     follow every SSR instance it may upgrade. Descendants must not structurally
     mutate a containing WebUI component's SSR subtree before it hydrates, because
     node insertion, removal, or reordering shifts compiled paths. The warning is
-    development-only — it is
+    development-only - it is
     stripped from production bundles via the `__WEBUI_DEV__` compile-time flag
     (`webui-press build` sets `__WEBUI_DEV__=false` automatically; self-bundled
     apps add the define for production).
@@ -1198,7 +1275,7 @@ Loop variables (e.g. `app`) compose with outer component state (e.g.
 `currentApp`) inside the same expression, so per-iteration flags are almost
 never needed.
 
-Text bindings only do path lookups — they can't do arithmetic. If you need
+Text bindings only do path lookups - they can't do arithmetic. If you need
 `{{currentIndex + 1}}` for a 1-based display, that's a legitimate `@observable`
 (or precomputed in the SSR state).
 
@@ -1252,7 +1329,28 @@ let handler = WebUIHandler::new();
 handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 
-**Streaming SSR (production).** Use `webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a process-wide `ChunkPool` for bounded backpressure + zero per-flush allocation. Configure `.with_flush_timeout(Duration::from_secs(30))` to bound slow-loris DoS. Use `RenderOptions::with_head_inject(html)` / `with_body_inject(html)` for per-request HTML splicing at parser-synthesized `head_end` / `body_end` boundaries (no byte-scanner, cannot mis-fire on literals in comments / srcdoc). `HandlerError::ClientDisconnected` and `StreamTimeout` are returned from both `write()` and `end()` for telemetry. Pre-escape untrusted inject content with `webui_handler::encode_safe`.
+**Transport streaming.** Use
+`webui::streaming::StreamingWriter::new_pooled(tx, chunk_pool)` with a
+process-wide `ChunkPool` for bounded backpressure and buffer reuse. Configure
+`.with_flush_timeout(Duration::from_secs(30))` to bound slow-consumer waits.
+Use `RenderOptions::with_head_inject(html)` /
+`with_body_inject(html)` for per-request HTML splicing at parser-synthesized
+`head_end` / `body_end` boundaries. Pre-escape untrusted inject content with
+`webui_handler::encode_safe`.
+
+For progressive hydration, use `<webui-boundary>` in the entry template and
+call:
+
+```rust
+handler.render_streaming(&protocol, &state, &options, &mut flush_writer)?;
+```
+
+The writer must implement `FlushWriter`, which extends `ResponseWriter` with
+`fn flush(&mut self) -> HandlerResult<()>`. Boundary flushes can return
+`HandlerError::ClientDisconnected` or `HandlerError::StreamTimeout`. This API is
+Rust-only in Phase 1. The early async browser entry must import
+`@microsoft/webui-framework/streaming.js` before component registration
+modules.
 
 ### Node.js
 

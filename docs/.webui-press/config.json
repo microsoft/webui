@@ -107,6 +107,10 @@
               {
                 "text": "Routes <route>",
                 "link": "/guide/concepts/directives/route"
+              },
+              {
+                "text": "Streaming <webui-boundary>",
+                "link": "/guide/concepts/directives/boundary"
               }
             ]
           },

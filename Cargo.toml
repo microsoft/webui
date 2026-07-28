@@ -6,6 +6,7 @@ members = [
     "examples/integration/ssr-performance-showdown",
     "examples/integration/streaming-browser-bench/server",
     "examples/app/commerce/server",
+    "examples/app/streaming/server",
     "examples/demo/server",
 ]
 resolver = "2"

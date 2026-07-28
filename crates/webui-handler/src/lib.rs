@@ -34,6 +34,7 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
@@ -93,6 +94,47 @@ pub enum HandlerError {
     /// so ops can alert on slow-client attacks.
     #[error("streaming flush timed out")]
     StreamTimeout,
+
+    /// A streaming-boundary signal was malformed or arrived out of order.
+    ///
+    /// The payload is boxed so this cold, streaming-only variant does not
+    /// widen [`HandlerError`] — and therefore `Result<(), HandlerError>`
+    /// threaded through the entire hot legacy render path — with two inline
+    /// `String`s.
+    #[error("invalid streaming boundary signal `{}`: {}", .0.signal, .0.reason)]
+    StreamingBoundary(Box<StreamingBoundaryError>),
+
+    /// A streaming render ended without its structural `body_end` signal.
+    #[error("streaming render ended before `body_end`; no terminal boundary record was emitted")]
+    MissingStreamingBodyEnd,
+
+    /// Streaming initialization cannot be emitted before document content.
+    #[error(
+        "streaming protocol is missing the required `head_start` signal before `{before}`; \
+         rebuild the protocol with streaming-boundary parser support"
+    )]
+    MissingStreamingHeadStart {
+        /// Structural point that made initialization too late.
+        before: &'static str,
+    },
+
+    /// A malformed protocol emitted streaming initialization more than once.
+    #[error("streaming protocol emitted duplicate `head_start` signals")]
+    DuplicateStreamingHeadStart,
+}
+
+/// Boxed payload for [`HandlerError::StreamingBoundary`].
+///
+/// Kept behind a `Box` so the streaming-validation variant contributes only a
+/// pointer-sized payload to [`HandlerError`], keeping the common
+/// `Result<(), HandlerError>` small on the ordinary render path where these
+/// boundary errors never occur.
+#[derive(Debug)]
+pub struct StreamingBoundaryError {
+    /// The logical structural token (the internal namespace is stripped).
+    pub signal: String,
+    /// Actionable validation failure.
+    pub reason: String,
 }
 
 pub type Result<T> = std::result::Result<T, HandlerError>;
@@ -104,6 +146,27 @@ pub trait ResponseWriter {
 
     /// Finalize the output
     fn end(&mut self) -> Result<()>;
+
+    /// Hand buffered bytes to the transport at a committed streaming boundary.
+    ///
+    /// Internal hook used only by the progressive streaming render path so the
+    /// request-local sink can flush its concrete transport without a shared-cell
+    /// borrow or a second virtual dispatch on every write. Ordinary writers keep
+    /// the no-op default; hosts must not override or depend on this — implement
+    /// [`FlushWriter`] and use [`WebUIHandler::render_streaming`] instead.
+    #[doc(hidden)]
+    fn stream_flush(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// A response writer that can hand buffered bytes to its transport immediately.
+///
+/// Progressive hydration requires this semantic flush at every committed
+/// boundary. Hosts that cannot provide it must use [`WebUIHandler::render`].
+pub trait FlushWriter: ResponseWriter {
+    /// Hand all currently buffered bytes to the underlying transport.
+    fn flush(&mut self) -> Result<()>;
 }
 
 /// Options controlling how the handler renders a protocol.
@@ -201,21 +264,25 @@ pub struct WebUIHandler {
 }
 
 /// Context object for processing WebUI fragments
-struct WebUIProcessContext<'a> {
-    protocol: &'a WebUIProtocol,
-    state: &'a Value,
-    writer: &'a mut dyn ResponseWriter,
+struct WebUIProcessContext<'data, 'output, 'stream> {
+    protocol: &'data WebUIProtocol,
+    /// Whether this runtime document predates namespaced compiler signals.
+    /// Legacy compatibility is ordinary-render-only; streaming preflight still
+    /// requires the namespaced `head_start` introduced with boundaries.
+    legacy_structural_signals: bool,
+    state: &'data Value,
+    writer: &'output mut dyn ResponseWriter,
     local_vars: HashMap<String, Value>,
     /// Accumulates component attribute values between attrStart and the component fragment.
     component_attrs: HashMap<String, Value>,
     /// URL path for server-side route matching. Borrowed from
     /// `RenderOptions<'a>::request_path` — zero-copy.
-    request_path: &'a str,
+    request_path: &'data str,
     /// Base path for resolving relative route paths (`./`).
     /// Updated as the handler descends into nested matched routes.
     /// `Cow` keeps the initial `"/"` literal zero-copy; nested-route
     /// descent owns the recomputed path.
-    route_base: Cow<'a, str>,
+    route_base: Cow<'data, str>,
     /// Component names visited during rendering (for selective f-template emission
     /// and CSS module dedup — only the first render of each component emits
     /// its `<script type="importmap">` data-URI tag).
@@ -227,23 +294,23 @@ struct WebUIProcessContext<'a> {
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     /// Entry fragment ID — used to compute the initial inventory at head_end.
     /// Borrowed from `RenderOptions<'a>::entry_id` — zero-copy.
-    entry_id: &'a str,
+    entry_id: &'data str,
     /// CSP nonce for inline `<script>` tags (None = no nonce attribute).
     /// Borrowed from `RenderOptions<'a>::nonce` — zero-copy.
-    nonce: Option<&'a str>,
+    nonce: Option<&'data str>,
     /// Component-name → bit-position map built once when the runtime
     /// [`Protocol`] is created and shared by every render.
-    component_index: &'a HashMap<String, u32>,
+    component_index: &'data HashMap<String, u32>,
     /// HTML emitted at the structural `head_end` boundary (before
     /// `</head>`), after the built-in nonce/CSS-preload emissions.
     /// Zero-copy borrow of the caller's `RenderOptions<'a>::head_inject`
     /// (no per-render clone — saves an allocation when the host passes
     /// a `&'static str` such as a dev livereload script).
-    head_inject: Option<&'a str>,
+    head_inject: Option<&'data str>,
     /// HTML emitted at the structural `body_end` boundary (before
     /// `</body>`), after the built-in template metadata emissions.
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
-    body_inject: Option<&'a str>,
+    body_inject: Option<&'data str>,
     /// Tracks whether the `head_end` hook has already fired in this
     /// render. Defends against malformed protocols that emit the
     /// signal more than once (e.g., a template with multiple `<head>`
@@ -257,11 +324,773 @@ struct WebUIProcessContext<'a> {
     /// host-supplied `body_inject` would be duplicated.
     body_end_emitted: bool,
     /// Immutable authored route patterns compiled when [`Protocol`] is loaded.
-    route_index: &'a CompiledRouteIndex,
+    route_index: &'data CompiledRouteIndex,
     /// Counter for `data-ri` attributes on matched route elements.
     /// Incremented each time a matched route is rendered, allowing O(1) element
     /// binding on the client side instead of DOM-walking.
     route_chain_index: usize,
+    /// Present only for the opt-in progressive streaming render path.
+    streaming: Option<StreamingRenderState<'data, 'stream>>,
+    /// Reusable JSON serialization scratch buffer, owned by the render context.
+    /// The bootstrap/field/template helpers borrow it so each render reuses one
+    /// buffer across every serialized field and every streaming checkpoint
+    /// instead of allocating per value. It grows lazily on first serialization
+    /// and is dropped with the context at request end — no per-thread
+    /// high-water buffer is retained between requests.
+    json_scratch: Vec<u8>,
+    /// Small request-local pool of cleared scope maps reused across sibling
+    /// component roots. `process_component` recycles each finished component's
+    /// local/attr map here instead of dropping it, so a sibling reuses the
+    /// bucket capacity rather than reallocating a fresh `HashMap`. Bounded
+    /// ([`SCOPE_POOL_CAP`]) and dropped with the context at request end.
+    scope_pool: Vec<HashMap<String, Value>>,
+}
+
+const STREAMING_MARKER: &str = "<meta name=\"webui-streaming\" content=\"1\">";
+/// Compiler-owned signal namespace. The leading `}}}` cannot be produced by
+/// authored double- or triple-brace expressions because it closes the binding.
+pub(crate) const STRUCTURAL_SIGNAL_PREFIX: &str = "}}}webui:";
+const BOUNDARY_START_PREFIX: &str = "boundary_start:";
+const BOUNDARY_END_PREFIX: &str = "boundary_end:";
+/// Compiler-owned signal marking a streamed SSR component host. The parser
+/// emits it inside the component's opening tag, immediately before `>`. Ordinary
+/// rendering ignores it byte-for-byte; streaming rendering consumes it to inject
+/// ` data-ws` so the marker exists before custom-element upgrade.
+const STREAMING_ROOT_PREFIX: &str = "streaming_root:";
+
+fn structural_signal_value(signal: &webui_protocol::WebUIFragmentSignal) -> Option<&str> {
+    if !signal.raw {
+        return None;
+    }
+    signal.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
+}
+
+fn legacy_structural_signal_value(signal: &webui_protocol::WebUIFragmentSignal) -> Option<&str> {
+    if !signal.raw {
+        return None;
+    }
+    match signal.value.as_str() {
+        "head_end" | "body_start" | "body_end" => Some(signal.value.as_str()),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StreamingRootStage {
+    OpeningTagClose,
+    Component,
+}
+
+#[derive(Clone, Copy)]
+struct PendingStreamingRoot<'data> {
+    tag: &'data str,
+    stage: StreamingRootStage,
+}
+
+#[derive(Clone, Copy)]
+enum ComponentHostOrigin {
+    ParserProduced,
+    HandlerGenerated,
+}
+
+struct StreamingRenderState<'data, 'stream> {
+    dirty: &'stream Cell<bool>,
+    /// Startup-built component dependency graph. Route-free checkpoints use its
+    /// integer edges instead of walking/cloning protocol fragments per request.
+    component_reachability: &'data route_handler::ComponentReachabilityIndex,
+    head_marker_emitted: bool,
+    active_boundary: Option<usize>,
+    /// Parser-produced root signal awaiting its exact `>`/component sequence.
+    /// The tag is borrowed from the protocol signal, so validation allocates
+    /// nothing on the successful per-component path.
+    pending_root: Option<PendingStreamingRoot<'data>>,
+    /// Set only between a handler-generated route host's `data-ws` injection
+    /// and its immediately following component render.
+    generated_root_ready: bool,
+    next_sequence: usize,
+    bootstrap_sent: bool,
+    body_ended: bool,
+    inventory: Vec<u8>,
+    inventory_delta: Vec<u8>,
+    inventory_hex: String,
+    /// Dedup bitset for template/CSS metadata already delivered. Kept separate
+    /// from `inventory`: reachable-but-unrendered descendants receive metadata
+    /// but must not be reported as rendered DOM.
+    template_inventory: Vec<u8>,
+    /// Unique component tags rendered since the previous checkpoint, in render
+    /// order. Borrowed from `component_index` keys (`&'data str`) so capture is
+    /// allocation-free per tag. The vector is cleared after commit while retaining
+    /// capacity for the next checkpoint.
+    checkpoint_tags: Vec<&'data str>,
+    /// Dedup bitset (one bit per component index) marking tags already recorded
+    /// into `checkpoint_tags` for the current checkpoint. Cleared and reused
+    /// alongside `checkpoint_tags`.
+    checkpoint_seen: Vec<u8>,
+    /// Set while capturing a root whose startup graph contains descendants or
+    /// authored routes. Leaf-only checkpoints retain the original zero-walk path.
+    checkpoint_needs_expansion: bool,
+    /// Reusable allowlist storage for checkpoint-local hydration state.
+    state_key_scratch: Vec<&'data str>,
+    /// Reusable first-delivery metadata tag list.
+    template_tag_scratch: Vec<&'data str>,
+    /// Reusable CSS bootstrap lists for newly delivered templates.
+    css_href_scratch: Vec<&'data str>,
+    style_spec_scratch: Vec<&'data str>,
+    /// Reusable integer DFS stack for expanding route-free checkpoint surfaces.
+    reachability_stack: Vec<u32>,
+}
+
+/// Request-local streaming sink selected once at
+/// [`WebUIHandler::render_streaming`] entry.
+///
+/// Wrapping the transport lets every write mark the current boundary dirty
+/// while forwarding to the concrete writer with a static call: no per-write
+/// `RefCell` borrow and no second virtual dispatch. `dirty` is a shared `Cell`
+/// (plain load/store, no borrow check) that `body_end` reads to decide whether
+/// trailing bytes need a final checkpoint.
+struct StreamingSink<'w, W: FlushWriter + ?Sized> {
+    transport: &'w mut W,
+    dirty: &'w Cell<bool>,
+}
+
+impl<W: FlushWriter + ?Sized> ResponseWriter for StreamingSink<'_, W> {
+    fn write(&mut self, content: &str) -> Result<()> {
+        self.dirty.set(true);
+        self.transport.write(content)
+    }
+
+    fn end(&mut self) -> Result<()> {
+        self.transport.end()
+    }
+
+    fn stream_flush(&mut self) -> Result<()> {
+        self.dirty.set(false);
+        self.transport.flush()
+    }
+}
+
+fn streaming_state<'a, 'data, 'stream>(
+    context: &'a mut WebUIProcessContext<'data, '_, 'stream>,
+) -> Result<&'a mut StreamingRenderState<'data, 'stream>> {
+    context.streaming.as_mut().ok_or_else(|| {
+        HandlerError::Invariant("streaming signal processed outside a streaming render".to_string())
+    })
+}
+
+fn parse_boundary_sequence(signal: &str, sequence: &str) -> Result<usize> {
+    if sequence.is_empty() {
+        return Err(streaming_boundary_error(signal, "missing decimal sequence"));
+    }
+    if !sequence.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(streaming_boundary_error(
+            signal,
+            "sequence must contain only decimal digits",
+        ));
+    }
+    sequence
+        .parse::<usize>()
+        .map_err(|_| streaming_boundary_error(signal, "sequence exceeds the platform limit"))
+}
+
+#[cold]
+#[inline(never)]
+fn streaming_boundary_error(signal: &str, reason: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: signal.to_string(),
+        reason: reason.to_string(),
+    }))
+}
+
+/// A streamed component host (`streaming_root:<tag>`) was authored outside any
+/// `<webui-boundary>`. Such a host can never be progressively activated, so the
+/// streaming render fails with an actionable structured error instead of
+/// emitting dead markup. Cold and out-of-line: reuses the boxed
+/// [`HandlerError::StreamingBoundary`] variant so no error widens the small
+/// hot-path `Result`.
+#[cold]
+#[inline(never)]
+fn streaming_root_outside_boundary_error(tag: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
+        reason: format!(
+            "streamed component host <{tag}> is outside any <webui-boundary>; \
+             author the host, or its matched <route>, inside a boundary so it can be \
+             progressively hydrated"
+        ),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+fn missing_streaming_root_error(tag: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
+        reason: format!(
+            "component <{tag}> has no matching compiler-owned root signal at its opening-tag \
+             close; rebuild the protocol and place the host inside an explicit <webui-boundary>"
+        ),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+fn misplaced_streaming_root_error(tag: &str, expected: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
+        reason: format!(
+            "root signal for <{tag}> is misplaced: expected {expected}; rebuild the protocol \
+             with matching parser and handler versions"
+        ),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+fn mismatched_streaming_root_error(signal_tag: &str, component_tag: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: format!("{STREAMING_ROOT_PREFIX}{signal_tag}"),
+        reason: format!(
+            "root signal names <{signal_tag}>, but the opening host renders component \
+             <{component_tag}>; rebuild the protocol so the tags match"
+        ),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+fn generated_streaming_root_error(tag: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
+        reason: format!(
+            "handler-generated route host <{tag}> was not marked for streaming before it \
+             rendered; place the matched <route> inside an explicit <webui-boundary>"
+        ),
+    }))
+}
+
+#[inline]
+fn validate_pending_streaming_root(
+    fragment: &WebUIFragment,
+    context: &mut WebUIProcessContext<'_, '_, '_>,
+) -> Result<()> {
+    let Some(pending) = context
+        .streaming
+        .as_ref()
+        .and_then(|streaming| streaming.pending_root)
+    else {
+        return Ok(());
+    };
+
+    match (pending.stage, fragment.fragment.as_ref()) {
+        (StreamingRootStage::OpeningTagClose, Some(Fragment::Raw(raw)))
+            if raw.value == ">" || raw.value == "/>" =>
+        {
+            if let Some(root) = context
+                .streaming
+                .as_mut()
+                .and_then(|streaming| streaming.pending_root.as_mut())
+            {
+                root.stage = StreamingRootStage::Component;
+            }
+            Ok(())
+        }
+        (StreamingRootStage::Component, Some(Fragment::Component(_))) => Ok(()),
+        (StreamingRootStage::OpeningTagClose, _) => Err(misplaced_streaming_root_error(
+            pending.tag,
+            "the raw opening-tag close `>` or `/>` immediately after the signal",
+        )),
+        (StreamingRootStage::Component, _) => Err(misplaced_streaming_root_error(
+            pending.tag,
+            "the matching component fragment immediately after the opening-tag close",
+        )),
+    }
+}
+
+fn raw_has_unclosed_opening_tag(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    let mut search_end = raw.len();
+    while let Some(open) = raw[..search_end].rfind('<') {
+        let name_start = open + 1;
+        if bytes.get(name_start).is_some_and(|byte| {
+            !byte.is_ascii_whitespace() && !matches!(*byte, b'/' | b'!' | b'?' | b'>')
+        }) {
+            let mut name_end = name_start;
+            while name_end < bytes.len()
+                && !bytes[name_end].is_ascii_whitespace()
+                && !matches!(bytes[name_end], b'/' | b'>')
+            {
+                name_end += 1;
+            }
+            if !contains_unquoted_tag_close(&bytes[name_end..]) {
+                return true;
+            }
+        }
+        search_end = open;
+    }
+    false
+}
+
+fn contains_unquoted_tag_close(bytes: &[u8]) -> bool {
+    let mut quote = 0u8;
+    for &byte in bytes {
+        if quote != 0 {
+            if byte == quote {
+                quote = 0;
+            }
+        } else if matches!(byte, b'"' | b'\'') {
+            quote = byte;
+        } else if byte == b'>' {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline]
+fn validate_streaming_root_opening(
+    preceding: &[WebUIFragment],
+    fragment: &WebUIFragment,
+) -> Result<()> {
+    let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
+        return Ok(());
+    };
+    let Some(tag) =
+        structural_signal_value(signal).and_then(|value| value.strip_prefix(STREAMING_ROOT_PREFIX))
+    else {
+        return Ok(());
+    };
+    if tag.is_empty() {
+        return Ok(());
+    }
+
+    for candidate in preceding.iter().rev() {
+        match candidate.fragment.as_ref() {
+            Some(Fragment::Attribute(_) | Fragment::Plugin(_)) => {}
+            Some(Fragment::Raw(raw)) if raw_has_unclosed_opening_tag(&raw.value) => return Ok(()),
+            Some(Fragment::Raw(raw))
+                if raw
+                    .value
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|byte| byte.is_ascii_whitespace()) => {}
+            _ => break,
+        }
+    }
+    Err(misplaced_streaming_root_error(
+        tag,
+        "the compiler-owned signal at an unclosed component opening-tag close",
+    ))
+}
+
+fn ensure_no_pending_streaming_root(
+    context: &WebUIProcessContext<'_, '_, '_>,
+    before: &str,
+) -> Result<()> {
+    let Some(streaming) = context.streaming.as_ref() else {
+        return Ok(());
+    };
+    if let Some(pending) = streaming.pending_root {
+        return Err(misplaced_streaming_root_error(pending.tag, before));
+    }
+    if streaming.generated_root_ready {
+        return Err(streaming_boundary_error(
+            "handler-generated route root",
+            "route host ended before its component fragment rendered",
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_generated_streaming_root(
+    tag: &str,
+    context: &mut WebUIProcessContext<'_, '_, '_>,
+) -> Result<()> {
+    if context.streaming.is_none() {
+        return Ok(());
+    }
+    require_streaming_head_start(context, "route component host")?;
+    let (active_boundary, generated_root_ready) = context
+        .streaming
+        .as_ref()
+        .map_or((None, false), |streaming| {
+            (streaming.active_boundary, streaming.generated_root_ready)
+        });
+    if active_boundary.is_none() {
+        return Err(streaming_root_outside_boundary_error(tag));
+    }
+    if generated_root_ready {
+        return Err(generated_streaming_root_error(tag));
+    }
+    context.writer.write(" data-ws")?;
+    streaming_state(context)?.generated_root_ready = true;
+    Ok(())
+}
+
+fn consume_streaming_component_root(
+    tag: &str,
+    origin: ComponentHostOrigin,
+    context: &mut WebUIProcessContext<'_, '_, '_>,
+) -> Result<()> {
+    let streaming = streaming_state(context)?;
+    match origin {
+        ComponentHostOrigin::ParserProduced => {
+            let Some(pending) = streaming.pending_root.take() else {
+                return Err(missing_streaming_root_error(tag));
+            };
+            if !matches!(pending.stage, StreamingRootStage::Component) {
+                return Err(misplaced_streaming_root_error(
+                    pending.tag,
+                    "the opening-tag close before the component fragment",
+                ));
+            }
+            if pending.tag != tag {
+                return Err(mismatched_streaming_root_error(pending.tag, tag));
+            }
+        }
+        ComponentHostOrigin::HandlerGenerated => {
+            if !streaming.generated_root_ready {
+                return Err(generated_streaming_root_error(tag));
+            }
+            streaming.generated_root_ready = false;
+        }
+    }
+    Ok(())
+}
+
+fn process_streaming_root_signal<'data>(
+    value: &'data str,
+    context: &mut WebUIProcessContext<'data, '_, '_>,
+) -> Result<()> {
+    require_streaming_head_start(context, "component host")?;
+    let Some(tag) = value.strip_prefix(STREAMING_ROOT_PREFIX) else {
+        return Err(streaming_boundary_error(
+            value,
+            "expected `streaming_root:<component tag>`",
+        ));
+    };
+    if tag.is_empty() {
+        return Err(streaming_boundary_error(
+            value,
+            "expected `streaming_root:<component tag>`",
+        ));
+    }
+
+    let (active_boundary, pending_root, generated_root_ready) =
+        context
+            .streaming
+            .as_ref()
+            .map_or((None, None, false), |streaming| {
+                (
+                    streaming.active_boundary,
+                    streaming.pending_root,
+                    streaming.generated_root_ready,
+                )
+            });
+    if active_boundary.is_none() {
+        return Err(streaming_root_outside_boundary_error(tag));
+    }
+    if let Some(pending) = pending_root {
+        return Err(misplaced_streaming_root_error(
+            pending.tag,
+            "one opening-tag close and matching component before another root signal",
+        ));
+    }
+    if generated_root_ready {
+        return Err(generated_streaming_root_error(tag));
+    }
+
+    context.writer.write(" data-ws")?;
+    streaming_state(context)?.pending_root = Some(PendingStreamingRoot {
+        tag,
+        stage: StreamingRootStage::OpeningTagClose,
+    });
+    Ok(())
+}
+
+fn validate_streaming_head_start(protocol: &WebUIProtocol, entry_id: &str) -> Result<()> {
+    let fragments = protocol
+        .fragments
+        .get(entry_id)
+        .ok_or_else(|| HandlerError::MissingFragment(entry_id.to_string()))?;
+    for fragment in &fragments.fragments {
+        let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
+            continue;
+        };
+        let Some(value) = structural_signal_value(signal) else {
+            continue;
+        };
+        if value == "head_start" {
+            return Ok(());
+        }
+        let before = match value {
+            "head_end" => Some("head_end"),
+            "body_start" => Some("body_start"),
+            "body_end" => Some("body_end"),
+            value if value.starts_with("boundary_start") || value.starts_with("boundary_end") => {
+                Some("streaming boundary")
+            }
+            _ => None,
+        };
+        if let Some(before) = before {
+            return Err(HandlerError::MissingStreamingHeadStart { before });
+        }
+    }
+    Err(HandlerError::MissingStreamingHeadStart {
+        before: "end of entry fragment",
+    })
+}
+
+fn require_streaming_head_start(
+    context: &WebUIProcessContext<'_, '_, '_>,
+    before: &'static str,
+) -> Result<()> {
+    if context
+        .streaming
+        .as_ref()
+        .is_some_and(|streaming| streaming.head_marker_emitted)
+    {
+        Ok(())
+    } else {
+        Err(HandlerError::MissingStreamingHeadStart { before })
+    }
+}
+
+fn increment_streaming_sequence(
+    signal: &str,
+    streaming: &mut StreamingRenderState<'_, '_>,
+) -> Result<()> {
+    streaming.next_sequence = streaming.next_sequence.checked_add(1).ok_or_else(|| {
+        streaming_boundary_error(signal, "boundary sequence overflowed the platform limit")
+    })?;
+    Ok(())
+}
+
+/// Maximum scope maps retained in the request-local pool. Small: sibling
+/// component roots rarely nest deeply, so the cap keeps retained capacity bounded.
+const SCOPE_POOL_CAP: usize = 8;
+
+/// Take a cleared scope map from the pool, or a fresh empty one when the pool is
+/// empty. A fresh `HashMap` does not allocate until its first insert.
+fn take_scope_map(pool: &mut Vec<HashMap<String, Value>>) -> HashMap<String, Value> {
+    pool.pop().unwrap_or_default()
+}
+
+/// Return a spent scope map to the pool, clearing it but retaining its bucket
+/// capacity for a sibling root to reuse. Drops the map once the pool is full so
+/// retained memory stays bounded.
+fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<String, Value>) {
+    if pool.len() < SCOPE_POOL_CAP {
+        map.clear();
+        pool.push(map);
+    }
+}
+
+/// Record a rendered component tag into the current checkpoint's exact capture
+/// set, deduplicated by the reusable bitset. The tag is borrowed from
+/// `component_index` (`&'data str`) so capture allocates nothing per tag. Tags
+/// without an inventory bit are ignored (they carry no template or hydration
+/// state anyway).
+fn record_checkpoint_tag<'data>(
+    context: &mut WebUIProcessContext<'data, '_, '_>,
+    fragment_id: &str,
+) {
+    // Copy the `'data` index reference out first so the borrowed key outlives the
+    // subsequent mutable borrow of `context.streaming` (disjoint fields).
+    let index_map: &'data HashMap<String, u32> = context.component_index;
+    let Some((tag, &index)) = index_map.get_key_value(fragment_id) else {
+        return;
+    };
+    let tag: &'data str = tag.as_str();
+    let Some(streaming) = context.streaming.as_mut() else {
+        return;
+    };
+    let byte_index = (index / 8) as usize;
+    let bit = 1u8 << (index % 8);
+    if byte_index >= streaming.checkpoint_seen.len()
+        || streaming.checkpoint_seen[byte_index] & bit != 0
+    {
+        return;
+    }
+    streaming.checkpoint_seen[byte_index] |= bit;
+    streaming.checkpoint_tags.push(tag);
+    if streaming.component_reachability.requires_expansion(index) != Some(false) {
+        streaming.checkpoint_needs_expansion = true;
+    }
+}
+
+/// Commit the exact rendered tags to the cumulative DOM inventory and encode
+/// this checkpoint's delta. Template delivery is tracked separately because a
+/// reachable-but-unrendered descendant needs metadata without claiming live DOM.
+fn commit_checkpoint_inventory(
+    streaming: &mut StreamingRenderState<'_, '_>,
+    component_index: &HashMap<String, u32>,
+) -> Result<()> {
+    streaming.inventory_delta.fill(0);
+    for &tag in &streaming.checkpoint_tags {
+        let Some(&index) = component_index.get(tag) else {
+            continue;
+        };
+        let byte_index = usize::try_from(index / 8).map_err(|_| {
+            HandlerError::Invariant("component inventory index does not fit usize".to_string())
+        })?;
+        if byte_index >= streaming.inventory.len() {
+            return Err(HandlerError::Invariant(
+                "component inventory index exceeds the request-local bitset".to_string(),
+            ));
+        }
+        let bit = 1u8 << (index % 8);
+        if streaming.inventory[byte_index] & bit == 0 {
+            streaming.inventory[byte_index] |= bit;
+            streaming.inventory_delta[byte_index] |= bit;
+        }
+    }
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    streaming.inventory_hex.clear();
+    let byte_count = streaming
+        .inventory_delta
+        .iter()
+        .rposition(|byte| *byte != 0)
+        .map_or(0, |index| index + 1);
+    for byte in &streaming.inventory_delta[..byte_count] {
+        streaming
+            .inventory_hex
+            .push(char::from(HEX[usize::from(byte >> 4)]));
+        streaming
+            .inventory_hex
+            .push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    Ok(())
+}
+
+/// Expand the exact rendered-root capture into its transitive component
+/// surface using the startup-built integer dependency graph.
+///
+/// Returns `false` without mutating the capture when any root can reach an
+/// authored route. Those uncommon surfaces require the request-aware fallback.
+fn expand_static_checkpoint_reachability<'data>(
+    streaming: &mut StreamingRenderState<'data, '_>,
+    component_index: &HashMap<String, u32>,
+) -> Result<bool> {
+    if !streaming.checkpoint_needs_expansion {
+        return Ok(true);
+    }
+    for &tag in &streaming.checkpoint_tags {
+        let Some(&index) = component_index.get(tag) else {
+            continue;
+        };
+        match streaming.component_reachability.is_route_dependent(index) {
+            Some(false) => {}
+            Some(true) => return Ok(false),
+            None => {
+                return Err(HandlerError::Invariant(
+                    "component reachability index is incomplete".to_string(),
+                ));
+            }
+        }
+    }
+
+    streaming.reachability_stack.clear();
+    for &tag in streaming.checkpoint_tags.iter().rev() {
+        if let Some(&index) = component_index.get(tag) {
+            streaming.reachability_stack.push(index);
+        }
+    }
+    streaming.checkpoint_tags.clear();
+    streaming.checkpoint_seen.fill(0);
+
+    while let Some(index) = streaming.reachability_stack.pop() {
+        let byte_index = usize::try_from(index / 8).map_err(|_| {
+            HandlerError::Invariant("component reachability index does not fit usize".to_string())
+        })?;
+        if byte_index >= streaming.checkpoint_seen.len() {
+            return Err(HandlerError::Invariant(
+                "component reachability index exceeds the request-local bitset".to_string(),
+            ));
+        }
+        let bit = 1u8 << (index % 8);
+        if streaming.checkpoint_seen[byte_index] & bit != 0 {
+            continue;
+        }
+        streaming.checkpoint_seen[byte_index] |= bit;
+
+        let Some(name) = streaming.component_reachability.name(index) else {
+            return Err(HandlerError::Invariant(
+                "component reachability name is missing".to_string(),
+            ));
+        };
+        streaming.checkpoint_tags.push(name);
+        let Some(dependencies) = streaming.component_reachability.dependencies(index) else {
+            return Err(HandlerError::Invariant(
+                "component reachability dependencies are missing".to_string(),
+            ));
+        };
+        streaming
+            .reachability_stack
+            .extend(dependencies.iter().rev().copied());
+    }
+
+    Ok(true)
+}
+
+fn replace_checkpoint_reachability<'data>(
+    streaming: &mut StreamingRenderState<'data, '_>,
+    component_index: &'data HashMap<String, u32>,
+    reachable: &[String],
+) {
+    streaming.checkpoint_tags.clear();
+    streaming.checkpoint_seen.fill(0);
+    for name in reachable {
+        let Some((tag, &index)) = component_index.get_key_value(name) else {
+            continue;
+        };
+        let byte_index = (index / 8) as usize;
+        let bit = 1u8 << (index % 8);
+        if byte_index < streaming.checkpoint_seen.len()
+            && streaming.checkpoint_seen[byte_index] & bit == 0
+        {
+            streaming.checkpoint_seen[byte_index] |= bit;
+            streaming.checkpoint_tags.push(tag.as_str());
+        }
+    }
+}
+
+/// Mark one component's template/CSS metadata as delivered.
+///
+/// Returns `true` exactly once per indexed component for this render.
+fn mark_streaming_template_sent(
+    streaming: &mut StreamingRenderState<'_, '_>,
+    component_index: &HashMap<String, u32>,
+    tag: &str,
+) -> Result<bool> {
+    let Some(&index) = component_index.get(tag) else {
+        return Ok(false);
+    };
+    let byte_index = usize::try_from(index / 8).map_err(|_| {
+        HandlerError::Invariant("component template index does not fit usize".to_string())
+    })?;
+    if byte_index >= streaming.template_inventory.len() {
+        return Err(HandlerError::Invariant(
+            "component template index exceeds the request-local bitset".to_string(),
+        ));
+    }
+    let bit = 1u8 << (index % 8);
+    if streaming.template_inventory[byte_index] & bit != 0 {
+        return Ok(false);
+    }
+    streaming.template_inventory[byte_index] |= bit;
+    Ok(true)
+}
+
+fn flush_streaming_transport(context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()> {
+    if context.streaming.is_none() {
+        return Err(HandlerError::Invariant(
+            "streaming flush requested outside a streaming render".to_string(),
+        ));
+    }
+    // The sink resets its own dirty flag as part of flushing, so there is no
+    // separate `dirty.set(false)` here.
+    context.writer.stream_flush()
 }
 
 struct WebUiBootstrap<'a> {
@@ -308,14 +1137,25 @@ fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
     }
 }
 
-pub(crate) fn write_script_safe_json<T>(writer: &mut dyn ResponseWriter, value: &T) -> Result<()>
+pub(crate) fn write_script_safe_json<T>(
+    writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
+    value: &T,
+) -> Result<()>
 where
     T: Serialize + ?Sized,
 {
-    let mut json = Vec::with_capacity(256);
-    serde_json::to_writer(&mut json, value)
+    // Serialize into the caller's request-local `scratch`. The streaming path
+    // emits one bootstrap envelope per committed boundary and the ordinary
+    // body_end bootstrap serializes several fields, so reusing one buffer across
+    // the render avoids a fresh allocation per value. The buffer grows lazily on
+    // first use (no allocation until serialization needs it) and is dropped with
+    // the render context — capacity is reused within a request but never
+    // retained across requests.
+    scratch.clear();
+    serde_json::to_writer(&mut *scratch, value)
         .map_err(|error| HandlerError::Rendering(format!("failed to serialize JSON: {error}")))?;
-    let json = std::str::from_utf8(&json)
+    let json = std::str::from_utf8(scratch)
         .map_err(|error| HandlerError::Rendering(format!("invalid JSON UTF-8: {error}")))?;
     write_script_safe_json_str(writer, json)
 }
@@ -354,6 +1194,7 @@ fn write_json_field_name(
 
 fn write_json_field<T>(
     writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
     wrote_field: &mut bool,
     name: &str,
     value: &T,
@@ -362,7 +1203,7 @@ where
     T: Serialize + ?Sized,
 {
     write_json_field_name(writer, wrote_field, name)?;
-    write_script_safe_json(writer, value)
+    write_script_safe_json(writer, scratch, value)
 }
 
 /// Serialize wrapper that projects an SSR state object down to only the
@@ -437,11 +1278,14 @@ impl Serialize for ProjectedState<'_> {
 /// is tiny in the common case.
 fn write_selected_state(
     writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
     state: &Value,
     selection: &StateSelection<'_>,
 ) -> Result<()> {
-    let StateSelection::Keys(keys) = selection else {
-        return write_script_safe_json(writer, state);
+    let keys = match selection {
+        StateSelection::Full => return write_script_safe_json(writer, scratch, state),
+        StateSelection::Keys(keys) => keys.as_slice(),
+        StateSelection::BorrowedKeys(keys) => *keys,
     };
     if keys.is_empty() {
         return writer.write("{}");
@@ -459,10 +1303,10 @@ fn write_selected_state(
         let selects_entire_map =
             keys.len() == map.len() && keys.iter().copied().eq(map.keys().map(String::as_str));
         if selects_entire_map {
-            return write_script_safe_json(writer, state);
+            return write_script_safe_json(writer, scratch, state);
         }
     }
-    write_script_safe_json(writer, &ProjectedState { value: state, keys })
+    write_script_safe_json(writer, scratch, &ProjectedState { value: state, keys })
 }
 
 // Covers the common route surface without trusting protocol-derived counts for
@@ -475,8 +1319,11 @@ pub(crate) enum StateSelection<'a> {
     Full,
     /// Project an object to a sorted, deduplicated key allowlist.
     Keys(Vec<&'a str>),
+    /// Project using request-local scratch owned by the streaming render.
+    BorrowedKeys(&'a [&'a str]),
 }
 
+#[derive(Clone, Copy)]
 enum ComponentStateSurface {
     Hydration,
     Navigation,
@@ -497,6 +1344,18 @@ pub(crate) fn collect_hydration_state<'a, 'b>(
     collect_component_state(protocol, components, ComponentStateSurface::Hydration)
 }
 
+fn collect_hydration_state_into<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    components: impl IntoIterator<Item = &'b str>,
+    keys: &mut Vec<&'a str>,
+) -> bool {
+    if protocol.initial_state_strategy != InitialStateStrategy::Components as i32 {
+        keys.clear();
+        return true;
+    }
+    collect_component_state_into(protocol, components, ComponentStateSurface::Hydration, keys)
+}
+
 /// Select state for client-created components reachable during navigation.
 pub(crate) fn collect_navigation_state<'a, 'b>(
     protocol: &'a WebUIProtocol,
@@ -511,9 +1370,25 @@ fn collect_component_state<'a, 'b>(
     surface: ComponentStateSurface,
 ) -> StateSelection<'a> {
     let mut keys = Vec::with_capacity(INITIAL_KEY_CAPACITY);
+    if collect_component_state_into(protocol, components, surface, &mut keys) {
+        StateSelection::Full
+    } else {
+        StateSelection::Keys(keys)
+    }
+}
+
+/// Fill a reusable state-key allowlist. Returns `true` when correctness
+/// requires sending full state instead of the collected keys.
+fn collect_component_state_into<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    components: impl IntoIterator<Item = &'b str>,
+    surface: ComponentStateSurface,
+    keys: &mut Vec<&'a str>,
+) -> bool {
+    keys.clear();
     for name in components {
         let Some(component) = protocol.components.get(name) else {
-            return StateSelection::Full;
+            return true;
         };
         let (mode, component_keys) = match surface {
             ComponentStateSurface::Hydration => {
@@ -524,42 +1399,61 @@ fn collect_component_state<'a, 'b>(
             }
         };
         if mode == StateProjectionMode::All as i32 {
-            return StateSelection::Full;
+            return true;
         }
         if mode == StateProjectionMode::Keys as i32
             || (mode == StateProjectionMode::None as i32 && !component_keys.is_empty())
         {
             keys.extend(component_keys.iter().map(String::as_str));
         } else if mode != StateProjectionMode::None as i32 {
-            return StateSelection::Full;
+            return true;
         }
     }
     keys.sort_unstable();
     keys.dedup();
-    StateSelection::Keys(keys)
+    false
 }
 
 fn write_webui_bootstrap(
     writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
     bootstrap: WebUiBootstrap<'_>,
 ) -> Result<()> {
     let mut wrote_field = false;
 
     writer.write("{")?;
     if !bootstrap.chain.is_empty() {
-        write_json_field(writer, &mut wrote_field, "chain", bootstrap.chain)?;
+        write_json_field(writer, scratch, &mut wrote_field, "chain", bootstrap.chain)?;
     }
     if !bootstrap.css_hrefs.is_empty() {
-        write_json_field(writer, &mut wrote_field, "css", bootstrap.css_hrefs)?;
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "css",
+            bootstrap.css_hrefs,
+        )?;
     }
-    write_json_field(writer, &mut wrote_field, "inventory", bootstrap.inventory)?;
+    write_json_field(
+        writer,
+        scratch,
+        &mut wrote_field,
+        "inventory",
+        bootstrap.inventory,
+    )?;
     if let Some(nonce) = bootstrap.nonce {
-        write_json_field(writer, &mut wrote_field, "nonce", nonce)?;
+        write_json_field(writer, scratch, &mut wrote_field, "nonce", nonce)?;
     }
     write_json_field_name(writer, &mut wrote_field, "state")?;
-    write_selected_state(writer, bootstrap.state, &bootstrap.state_selection)?;
+    write_selected_state(writer, scratch, bootstrap.state, &bootstrap.state_selection)?;
     if !bootstrap.style_specs.is_empty() {
-        write_json_field(writer, &mut wrote_field, "styles", bootstrap.style_specs)?;
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "styles",
+            bootstrap.style_specs,
+        )?;
     }
     if bootstrap
         .templates
@@ -567,13 +1461,14 @@ fn write_webui_bootstrap(
         .any(|template| !template.template_json.is_empty())
     {
         write_json_field_name(writer, &mut wrote_field, "templates")?;
-        write_webui_template_json_map(writer, bootstrap.templates)?;
+        write_webui_template_json_map(writer, scratch, bootstrap.templates)?;
     }
     writer.write("}")
 }
 
 fn write_webui_data_block(
     writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
     bootstrap: WebUiBootstrap<'_>,
 ) -> Result<()> {
     writer.write("<script type=\"application/json\" id=\"webui-data\"")?;
@@ -583,12 +1478,13 @@ fn write_webui_data_block(
         writer.write("\"")?;
     }
     writer.write(">")?;
-    write_webui_bootstrap(writer, bootstrap)?;
+    write_webui_bootstrap(writer, scratch, bootstrap)?;
     writer.write("</script>\n")
 }
 
 fn write_webui_template_json_map(
     writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
     templates: &[WebUiTemplatePayload<'_>],
 ) -> Result<()> {
     writer.write("{")?;
@@ -601,7 +1497,7 @@ fn write_webui_template_json_map(
             writer.write(",")?;
         }
         wrote = true;
-        write_script_safe_json(writer, template.tag_name)?;
+        write_script_safe_json(writer, scratch, template.tag_name)?;
         writer.write(":")?;
         write_script_safe_json_str(writer, template.template_json)?;
     }
@@ -665,10 +1561,10 @@ impl WebUIHandler {
     ///
     /// The `context` parameter contains scope-local variables that are accessible during rendering,
     /// such as loop iteration variables. This is separate from the global `state`.
-    fn process_fragment_id(
+    fn process_fragment_id<'data>(
         &self,
         fragment_id: &str,
-        context: &mut WebUIProcessContext,
+        context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
         if let Some(fragment_list) = context.protocol.fragments.get(fragment_id) {
             self.process_fragment(&fragment_list.fragments, context)
@@ -681,10 +1577,10 @@ impl WebUIHandler {
     ///
     /// The `context` maintains scope-specific variables that can be accessed by fragments
     /// during rendering, while `state` contains the global application state.
-    fn process_fragment(
+    fn process_fragment<'data>(
         &self,
-        fragments: &[WebUIFragment],
-        context: &mut WebUIProcessContext,
+        fragments: &'data [WebUIFragment],
+        context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
         // Pre-scan: find the best matching route among sibling routes by specificity.
         // This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal).
@@ -696,13 +1592,21 @@ impl WebUIHandler {
             context.route_index,
         );
 
-        for item in fragments {
+        for (index, item) in fragments.iter().enumerate() {
+            if context.streaming.is_some() {
+                validate_pending_streaming_root(item, context)?;
+                validate_streaming_root_opening(&fragments[..index], item)?;
+            }
             match item.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => {
                     context.writer.write(&raw.value)?;
                 }
                 Some(Fragment::Component(component)) => {
-                    self.process_component(component, context)?;
+                    self.process_component(
+                        component,
+                        ComponentHostOrigin::ParserProduced,
+                        context,
+                    )?;
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     self.process_for_loop(for_loop, context)?;
@@ -730,7 +1634,7 @@ impl WebUIHandler {
                 None => {}
             }
         }
-        Ok(())
+        ensure_no_pending_streaming_root(context, "the end of the containing fragment")
     }
 
     /// Process an `<outlet />` directive.
@@ -816,12 +1720,14 @@ impl WebUIHandler {
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
+                prepare_generated_streaming_root(comp, context)?;
                 context.writer.write(">")?;
 
                 self.process_component(
                     &webui_protocol::WebUIFragmentComponent {
                         fragment_id: comp.clone(),
                     },
+                    ComponentHostOrigin::HandlerGenerated,
                     context,
                 )?;
 
@@ -896,7 +1802,19 @@ impl WebUIHandler {
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        if !context.rendered_components.contains(&component.fragment_id) {
+        let metadata_already_streamed = context.streaming.as_ref().is_some_and(|streaming| {
+            context
+                .component_index
+                .get(&component.fragment_id)
+                .is_some_and(|index| {
+                    let byte_index = (index / 8) as usize;
+                    byte_index < streaming.template_inventory.len()
+                        && streaming.template_inventory[byte_index] & (1u8 << (index % 8)) != 0
+                })
+        });
+        if !metadata_already_streamed
+            && !context.rendered_components.contains(&component.fragment_id)
+        {
             if let Some(css) = context
                 .protocol
                 .components
@@ -966,9 +1884,10 @@ impl WebUIHandler {
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
+                prepare_generated_streaming_root(&route_frag.fragment_id, context)?;
                 context.writer.write(">")?;
 
-                self.process_component(&comp, context)?;
+                self.process_component(&comp, ComponentHostOrigin::HandlerGenerated, context)?;
 
                 context.writer.write("</")?;
                 context.writer.write(&route_frag.fragment_id)?;
@@ -989,24 +1908,37 @@ impl WebUIHandler {
     fn process_component(
         &self,
         component: &webui_protocol::WebUIFragmentComponent,
+        origin: ComponentHostOrigin,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Emit the component's CSS module importmap into its light DOM
-        // on first encounter (see `emit_css_module`).
-        if !context.rendered_components.contains(&component.fragment_id) {
-            self.emit_css_module(component, context)?;
+        if context.streaming.is_some() {
+            consume_streaming_component_root(&component.fragment_id, origin, context)?;
+            // Capture only after root parity succeeds, so malformed protocols
+            // cannot contribute unmarked hosts to a checkpoint.
+            record_checkpoint_tag(context, &component.fragment_id);
         }
 
-        // Track this component as rendered (for selective f-template emission)
-        context
-            .rendered_components
-            .insert(component.fragment_id.clone());
+        // Emit the component's CSS module importmap into its light DOM and track
+        // the component as rendered on first encounter only. `rendered_components`
+        // is a set, so gating the `insert` (and its `String` clone) behind the
+        // first-encounter check avoids allocating a throwaway `String` for every
+        // duplicate instance while keeping the set contents identical.
+        if !context.rendered_components.contains(&component.fragment_id) {
+            self.emit_css_module(component, context)?;
+            context
+                .rendered_components
+                .insert(component.fragment_id.clone());
+        }
 
-        // Save parent scope
+        // Save parent scope. `mem::take` leaves an alloc-free empty map behind.
         let saved_local_vars = std::mem::take(&mut context.local_vars);
-        let saved_component_attrs = std::mem::take(&mut context.component_attrs);
-
-        // Component gets accumulated attrs as its local vars.
+        // The component's accumulated attrs become its local vars; the next
+        // sibling accumulates into a recycled (capacity-preserving) map from the
+        // request-local pool instead of a freshly allocated `HashMap`.
+        let saved_component_attrs = std::mem::replace(
+            &mut context.component_attrs,
+            take_scope_map(&mut context.scope_pool),
+        );
         context.local_vars = saved_component_attrs;
 
         if let Some(p) = &mut context.plugin {
@@ -1019,15 +1951,23 @@ impl WebUIHandler {
             p.pop_scope();
         }
 
-        // Restore parent scope
-        context.local_vars = saved_local_vars;
-        context.component_attrs = HashMap::new();
+        // Restore parent scope, recycling this component's local map (its
+        // accumulated attrs) back into the pool so a sibling reuses its capacity.
+        let used_locals = std::mem::replace(&mut context.local_vars, saved_local_vars);
+        recycle_scope_map(&mut context.scope_pool, used_locals);
+        // The attr accumulator (pulled from the pool above) is cleared for the
+        // next sibling while retaining its bucket capacity.
+        context.component_attrs.clear();
 
         Ok(())
     }
 
     /// Resolve a dotted path value, checking local variables first, then global state.
-    fn resolve_value(&self, path: &str, context: &WebUIProcessContext<'_>) -> Option<Value> {
+    fn resolve_value(
+        &self,
+        path: &str,
+        context: &WebUIProcessContext<'_, '_, '_>,
+    ) -> Option<Value> {
         resolve_value_from_sources(path, &context.local_vars, context.state).map(Cow::into_owned)
     }
 
@@ -1132,20 +2072,425 @@ impl WebUIHandler {
         Ok(())
     }
 
+    fn emit_streaming_checkpoint(
+        &self,
+        sequence: usize,
+        terminal: bool,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        let first_checkpoint = context
+            .streaming
+            .as_ref()
+            .is_some_and(|streaming| !streaming.bootstrap_sent);
+
+        // Commit the exact rendered roots before expanding the local metadata
+        // surface. The DOM inventory must never claim hidden descendants.
+        let component_index = context.component_index;
+        let needs_route_walk = {
+            let streaming = streaming_state(context)?;
+            commit_checkpoint_inventory(streaming, component_index)?;
+            !expand_static_checkpoint_reachability(streaming, component_index)?
+        };
+
+        if needs_route_walk {
+            // Only a component surface containing authored routes needs request
+            // matching. Route-free surfaces use the startup-built integer graph.
+            let roots = context
+                .streaming
+                .as_ref()
+                .map_or(&[][..], |streaming| streaming.checkpoint_tags.as_slice());
+            let reachable = crate::route_handler::collect_reachable_components_from_roots(
+                context.protocol,
+                roots,
+                context.request_path,
+                context.route_index,
+            );
+            replace_checkpoint_reachability(streaming_state(context)?, component_index, &reachable);
+        }
+
+        // Move the reusable tag vector out so plugin/state code can borrow it
+        // without retaining a borrow of the render context.
+        let checkpoint_tags = {
+            let streaming = streaming_state(context)?;
+            std::mem::take(&mut streaming.checkpoint_tags)
+        };
+        let mut new_template_tags = {
+            let streaming = streaming_state(context)?;
+            std::mem::take(&mut streaming.template_tag_scratch)
+        };
+        new_template_tags.clear();
+        {
+            let streaming = streaming_state(context)?;
+            for &name in &checkpoint_tags {
+                if mark_streaming_template_sent(streaming, component_index, name)? {
+                    new_template_tags.push(name);
+                }
+            }
+        }
+
+        // Rendered components emitted module importmaps inline before their
+        // declarative shadow roots. Emit the same metadata here only for
+        // reachable-but-unrendered descendants.
+        for &name in &new_template_tags {
+            if !context.rendered_components.contains(name) {
+                if let Some(css) = context
+                    .protocol
+                    .components
+                    .get(name)
+                    .map(|component| component.css.as_str())
+                    .filter(|css| !css.is_empty())
+                {
+                    self.emit_css_module_importmap(name, css, context)?;
+                }
+            }
+        }
+
+        let template_payloads = context.plugin.as_ref().and_then(|plugin| {
+            plugin.collect_template_payloads_slice(context.protocol, &new_template_tags)
+        });
+        if template_payloads.is_none() {
+            if let Some(plugin) = context.plugin.as_ref() {
+                plugin.emit_templates_slice(
+                    context.protocol,
+                    &new_template_tags,
+                    context.nonce,
+                    context.writer,
+                )?;
+            }
+        }
+
+        // Hydration state covers this root surface even when a descendant is not
+        // initially rendered, so a client-side condition can create it without
+        // consulting a page-global state object.
+        let mut state_key_scratch = {
+            let streaming = streaming_state(context)?;
+            std::mem::take(&mut streaming.state_key_scratch)
+        };
+        let requires_full_state = collect_hydration_state_into(
+            context.protocol,
+            checkpoint_tags.iter().copied(),
+            &mut state_key_scratch,
+        );
+        let chain = if first_checkpoint {
+            crate::route_handler::collect_route_chain(
+                context.protocol,
+                context.entry_id,
+                context.request_path,
+                context.route_index,
+            )
+            .iter()
+            .map(crate::route_handler::RouteChainEntry::to_json)
+            .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let (mut css_hrefs, mut style_specs) = {
+            let streaming = streaming_state(context)?;
+            (
+                std::mem::take(&mut streaming.css_href_scratch),
+                std::mem::take(&mut streaming.style_spec_scratch),
+            )
+        };
+        css_hrefs.clear();
+        style_specs.clear();
+        let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+        for &name in &new_template_tags {
+            if let Some(component) = context.protocol.components.get(name) {
+                if is_link && !component.css_href.is_empty() {
+                    css_hrefs.push(component.css_href.as_str());
+                }
+                if !component.css.is_empty() {
+                    style_specs.push(name);
+                }
+            }
+        }
+
+        let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
+        let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
+        context
+            .writer
+            .write("<script type=\"application/json\" data-webui-boundary")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">[1,")?;
+        write_usize(context.writer, sequence)?;
+        context.writer.write(if terminal { ",1," } else { ",0," })?;
+        let inventory = context
+            .streaming
+            .as_ref()
+            .map_or("", |streaming| streaming.inventory_hex.as_str());
+        {
+            let state_selection = if requires_full_state {
+                StateSelection::Full
+            } else {
+                StateSelection::BorrowedKeys(&state_key_scratch)
+            };
+            write_webui_bootstrap(
+                context.writer,
+                &mut context.json_scratch,
+                WebUiBootstrap {
+                    state: context.state,
+                    state_selection,
+                    chain: &chain,
+                    inventory,
+                    nonce: context.nonce,
+                    css_hrefs: &css_hrefs,
+                    style_specs: &style_specs,
+                    templates: payloads,
+                },
+            )?;
+        }
+        context.writer.write("]</script>")?;
+
+        if let Some(plugin) = context.plugin.as_ref() {
+            plugin.emit_bootstrap_extension_payloads(payloads, context.nonce, context.writer)?;
+        }
+        context.writer.write("<webui-hydrate></webui-hydrate>")?;
+        flush_streaming_transport(context)?;
+        if let Some(streaming) = context.streaming.as_mut() {
+            streaming.bootstrap_sent = true;
+            state_key_scratch.clear();
+            streaming.state_key_scratch = state_key_scratch;
+            // Reset the exact-capture buffers for the next checkpoint, retaining
+            // their capacity.
+            let mut checkpoint_tags = checkpoint_tags;
+            checkpoint_tags.clear();
+            streaming.checkpoint_tags = checkpoint_tags;
+            new_template_tags.clear();
+            streaming.template_tag_scratch = new_template_tags;
+            css_hrefs.clear();
+            streaming.css_href_scratch = css_hrefs;
+            style_specs.clear();
+            streaming.style_spec_scratch = style_specs;
+            streaming.checkpoint_seen.fill(0);
+            streaming.checkpoint_needs_expansion = false;
+        }
+        Ok(())
+    }
+
+    fn emit_streaming_terminal(
+        &self,
+        sequence: usize,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        context
+            .writer
+            .write("<script type=\"application/json\" data-webui-boundary")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">[1,")?;
+        write_usize(context.writer, sequence)?;
+        context
+            .writer
+            .write(",1,{}]</script><webui-hydrate></webui-hydrate>")?;
+        flush_streaming_transport(context)
+    }
+
+    fn process_streaming_signal<'data>(
+        &self,
+        value: &'data str,
+        context: &mut WebUIProcessContext<'data, '_, '_>,
+    ) -> Result<bool> {
+        if context
+            .streaming
+            .as_ref()
+            .is_some_and(|streaming| streaming.body_ended)
+        {
+            return Err(streaming_boundary_error(
+                value,
+                "structural signal arrived after the body_end terminal record",
+            ));
+        }
+
+        if value == "head_start" {
+            if context
+                .streaming
+                .as_ref()
+                .is_some_and(|streaming| streaming.head_marker_emitted)
+            {
+                return Err(HandlerError::DuplicateStreamingHeadStart);
+            }
+            context.writer.write(STREAMING_MARKER)?;
+            streaming_state(context)?.head_marker_emitted = true;
+            return Ok(true);
+        }
+
+        if value.starts_with("streaming_root") {
+            // Compiler-owned streamed SSR root marker: inject ` data-ws` inside
+            // the component's opening tag (the parser placed this signal before
+            // `>`). The host must live inside an open boundary, otherwise it can
+            // never be activated — fail with a cold structured error.
+            process_streaming_root_signal(value, context)?;
+            return Ok(true);
+        }
+        if let Some(raw_sequence) = value.strip_prefix(BOUNDARY_START_PREFIX) {
+            require_streaming_head_start(context, "streaming boundary")?;
+            let sequence = parse_boundary_sequence(value, raw_sequence)?;
+            let streaming = streaming_state(context)?;
+            if let Some(active) = streaming.active_boundary {
+                return Err(streaming_boundary_error(
+                    value,
+                    &format!("nested boundary {sequence}; boundary {active} is still open"),
+                ));
+            }
+            if sequence != streaming.next_sequence {
+                return Err(streaming_boundary_error(
+                    value,
+                    &format!(
+                        "expected boundary sequence {}, received {sequence}",
+                        streaming.next_sequence
+                    ),
+                ));
+            }
+            context.writer.write("<!--wb:")?;
+            write_usize(context.writer, sequence)?;
+            context.writer.write("-->")?;
+            streaming_state(context)?.active_boundary = Some(sequence);
+            return Ok(true);
+        }
+        if value.starts_with("boundary_start") {
+            require_streaming_head_start(context, "streaming boundary")?;
+            return Err(streaming_boundary_error(
+                value,
+                "expected `boundary_start:<decimal sequence>`",
+            ));
+        }
+
+        if let Some(raw_sequence) = value.strip_prefix(BOUNDARY_END_PREFIX) {
+            require_streaming_head_start(context, "streaming boundary")?;
+            let sequence = parse_boundary_sequence(value, raw_sequence)?;
+            let active = streaming_state(context)?.active_boundary.ok_or_else(|| {
+                streaming_boundary_error(value, "boundary end has no matching start")
+            })?;
+            if active != sequence {
+                return Err(streaming_boundary_error(
+                    value,
+                    &format!("boundary {active} is open, but boundary {sequence} ended"),
+                ));
+            }
+
+            context.writer.write("<!--/wb:")?;
+            write_usize(context.writer, sequence)?;
+            context.writer.write("-->")?;
+            self.emit_streaming_checkpoint(sequence, false, context)?;
+            let streaming = streaming_state(context)?;
+            streaming.active_boundary = None;
+            increment_streaming_sequence(value, streaming)?;
+            return Ok(true);
+        }
+        if value.starts_with("boundary_end") {
+            require_streaming_head_start(context, "streaming boundary")?;
+            return Err(streaming_boundary_error(
+                value,
+                "expected `boundary_end:<decimal sequence>`",
+            ));
+        }
+
+        if value == "body_end" {
+            require_streaming_head_start(context, "body_end")?;
+            let (active_boundary, body_ended, needs_implicit, next_sequence) = {
+                let streaming = streaming_state(context)?;
+                (
+                    streaming.active_boundary,
+                    streaming.body_ended,
+                    streaming.dirty.get() || !streaming.bootstrap_sent,
+                    streaming.next_sequence,
+                )
+            };
+            if let Some(active) = active_boundary {
+                return Err(streaming_boundary_error(
+                    value,
+                    &format!("body ended while boundary {active} was still open"),
+                ));
+            }
+            if body_ended {
+                return Err(streaming_boundary_error(value, "duplicate body_end signal"));
+            }
+            if let Some(html) = context.body_inject {
+                context.writer.write(html)?;
+            }
+
+            // Any raw/native tail bytes after the last commit require one
+            // implicit final checkpoint. Registered component hosts cannot
+            // appear outside an explicit boundary (the streaming_root branch
+            // rejects them), so this tail never contains an untracked
+            // interactive root. Coalesce the tail commit with the terminal:
+            // emit a single terminal checkpoint (`terminal = true`) carrying the
+            // tail bootstrap in one flush, rather than an implicit checkpoint
+            // flush followed by a separate empty terminal flush. This may ship an
+            // empty-state checkpoint for a scriptless tail, but never strands an
+            // interactive root. When no tail exists, emit the standalone empty
+            // terminal so the client still observes a markerless close.
+            if needs_implicit {
+                self.emit_streaming_checkpoint(next_sequence, true, context)?;
+            } else {
+                self.emit_streaming_terminal(next_sequence, context)?;
+            }
+            let streaming = streaming_state(context)?;
+            streaming.body_ended = true;
+            context.body_end_emitted = true;
+            return Ok(true);
+        }
+
+        if value == "head_end" {
+            require_streaming_head_start(context, "head_end")?;
+        } else if value == "body_start" {
+            require_streaming_head_start(context, "body_start")?;
+        }
+
+        Ok(false)
+    }
+
     /// Process a signal fragment.
     ///
     /// Looks up the value in the context first (for local variables), then in the global state.
     /// This prioritization allows local variables (like loop items) to override global state.
     /// If the value is not found in either scope, an empty string is returned.
-    fn process_signal(
+    #[inline]
+    fn process_signal<'data>(
         &self,
-        signal: &webui_protocol::WebUIFragmentSignal,
-        context: &mut WebUIProcessContext,
+        signal: &'data webui_protocol::WebUIFragmentSignal,
+        context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
+        if signal.raw {
+            self.process_raw_signal(signal, context)
+        } else {
+            self.process_state_signal(signal, context)
+        }
+    }
+
+    #[inline(never)]
+    fn process_raw_signal<'data>(
+        &self,
+        signal: &'data webui_protocol::WebUIFragmentSignal,
+        context: &mut WebUIProcessContext<'data, '_, '_>,
+    ) -> Result<()> {
+        let structural_value = structural_signal_value(signal).or_else(|| {
+            context
+                .legacy_structural_signals
+                .then(|| legacy_structural_signal_value(signal))
+                .flatten()
+        });
+        let Some(structural_value) = structural_value else {
+            return self.process_state_signal(signal, context);
+        };
+
+        if context.streaming.is_some()
+            && self.process_streaming_signal(structural_value, context)?
+        {
+            return Ok(());
+        }
+
         // Hook: emit nonce meta and CSS <link> tags before </head>.
         // Guarded by `head_end_emitted` so a malformed protocol cannot
         // emit nonce/preloads/inject more than once per render.
-        if signal.raw && signal.value == "head_end" && !context.head_end_emitted {
+        if structural_value == "head_end" && !context.head_end_emitted {
             context.head_end_emitted = true;
             if let Some(nonce) = context.nonce {
                 context
@@ -1214,7 +2559,7 @@ impl WebUIHandler {
         // Single guarded block so the dedup flag protects both the
         // hydration emission and the host inject from a malformed
         // protocol that fires `body_end` more than once per render.
-        if signal.raw && signal.value == "body_end" && !context.body_end_emitted {
+        if structural_value == "body_end" && !context.body_end_emitted {
             context.body_end_emitted = true;
             if context.plugin.is_some() {
                 // Emit templates for all REACHABLE components on the current route,
@@ -1323,6 +2668,7 @@ impl WebUIHandler {
                 let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
                 write_webui_data_block(
                     context.writer,
+                    &mut context.json_scratch,
                     WebUiBootstrap {
                         state: context.state,
                         state_selection,
@@ -1362,6 +2708,18 @@ impl WebUIHandler {
             }
         }
 
+        // Structural signals are never state lookups. In particular, ordinary
+        // rendering ignores boundary/root markers byte-for-byte, while authored
+        // raw bindings with the same visible key remain ordinary state.
+        Ok(())
+    }
+
+    #[inline]
+    fn process_state_signal(
+        &self,
+        signal: &webui_protocol::WebUIFragmentSignal,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
         if let Some(p) = &mut context.plugin {
             p.on_binding_start(&signal.value, context.writer)?;
         }
@@ -1580,6 +2938,7 @@ impl WebUIHandler {
         }
         let mut context = WebUIProcessContext {
             protocol: document,
+            legacy_structural_signals: protocol.legacy_structural_signals(),
             state,
             writer,
             local_vars: HashMap::new(),
@@ -1600,12 +2959,102 @@ impl WebUIHandler {
             body_end_emitted: false,
             route_index: protocol.route_index(),
             route_chain_index: 0,
+            streaming: None,
+            json_scratch: Vec::new(),
+            scope_pool: Vec::new(),
         };
 
         self.process_fragment_id(options.entry_id, &mut context)?;
         writer.end()?;
 
         Ok(())
+    }
+
+    /// Render an opt-in progressive hydration response.
+    ///
+    /// Boundary signals are validated in document order and every committed
+    /// checkpoint is flushed through `writer`. Unlike [`Self::render`], this
+    /// mode emits boundary envelopes instead of a page-wide `#webui-data`
+    /// block and requires structural `head_start` and `body_end` signals.
+    pub fn render_streaming<'a, W: FlushWriter + ?Sized>(
+        &self,
+        protocol: &'a Protocol,
+        state: &'a Value,
+        options: &RenderOptions<'a>,
+        writer: &mut W,
+    ) -> Result<()> {
+        let document = protocol.protocol();
+        if !document.fragments.contains_key(options.entry_id) {
+            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
+        }
+        validate_streaming_head_start(document, options.entry_id)?;
+
+        let dirty = Cell::new(false);
+        let inventory_bytes = protocol.component_index().len().div_ceil(8);
+        // Select the streaming sink once, here at render entry. It borrows the
+        // transport mutably and shares `dirty` with the render state; ordinary
+        // per-write output never sees this wrapper.
+        let mut sink = StreamingSink {
+            transport: writer,
+            dirty: &dirty,
+        };
+        let mut context = WebUIProcessContext {
+            protocol: document,
+            legacy_structural_signals: protocol.legacy_structural_signals(),
+            state,
+            writer: &mut sink,
+            local_vars: HashMap::new(),
+            component_attrs: HashMap::new(),
+            request_path: options.request_path,
+            route_base: Cow::Borrowed("/"),
+            rendered_components: HashSet::new(),
+            plugin: self.plugin_factory.map(|factory| factory()),
+            route_children: Vec::new(),
+            entry_id: options.entry_id,
+            nonce: options.nonce.filter(|nonce| !nonce.is_empty()),
+            head_inject: options.head_inject.filter(|html| !html.is_empty()),
+            body_inject: options.body_inject.filter(|html| !html.is_empty()),
+            head_end_emitted: false,
+            component_index: protocol.component_index(),
+            body_end_emitted: false,
+            route_index: protocol.route_index(),
+            route_chain_index: 0,
+            streaming: Some(StreamingRenderState {
+                dirty: &dirty,
+                component_reachability: protocol.component_reachability(),
+                head_marker_emitted: false,
+                active_boundary: None,
+                pending_root: None,
+                generated_root_ready: false,
+                next_sequence: 0,
+                bootstrap_sent: false,
+                body_ended: false,
+                inventory: vec![0; inventory_bytes],
+                inventory_delta: vec![0; inventory_bytes],
+                inventory_hex: String::with_capacity(inventory_bytes * 2),
+                template_inventory: vec![0; inventory_bytes],
+                checkpoint_tags: Vec::new(),
+                checkpoint_seen: vec![0; inventory_bytes],
+                checkpoint_needs_expansion: false,
+                state_key_scratch: Vec::with_capacity(INITIAL_KEY_CAPACITY),
+                template_tag_scratch: Vec::new(),
+                css_href_scratch: Vec::new(),
+                style_spec_scratch: Vec::new(),
+                reachability_stack: Vec::new(),
+            }),
+            json_scratch: Vec::new(),
+            scope_pool: Vec::new(),
+        };
+
+        self.process_fragment_id(options.entry_id, &mut context)?;
+        if !context
+            .streaming
+            .as_ref()
+            .is_some_and(|streaming| streaming.body_ended)
+        {
+            return Err(HandlerError::MissingStreamingBodyEnd);
+        }
+        context.writer.end()
     }
 }
 
@@ -1639,11 +3088,19 @@ fn handle(
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
     use webui_protocol::{
         web_ui_fragment, ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator,
         WebUIFragmentAttribute,
     };
     use webui_test_utils::test_json;
+
+    fn structural_fragment(value: impl AsRef<str>) -> WebUIFragment {
+        WebUIFragment::signal(
+            format!("{STRUCTURAL_SIGNAL_PREFIX}{}", value.as_ref()),
+            true,
+        )
+    }
 
     // A simple test writer implementation
     struct TestWriter {
@@ -6334,13 +7791,13 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><div>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("A".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("B</div>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6448,7 +7905,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</body></html>".to_string()),
@@ -6499,7 +7956,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><my-card>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card></body></html>".to_string()),
@@ -6554,11 +8011,11 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><my-card>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6625,13 +8082,13 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><o-loading-state>".to_string()),
                     WebUIFragment::component("o-loading-state"),
                     WebUIFragment::raw("</o-loading-state><my-card>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6714,13 +8171,13 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><z-widget>".to_string()),
                     WebUIFragment::component("z-widget"),
                     WebUIFragment::raw("</z-widget><a-widget>".to_string()),
                     WebUIFragment::component("a-widget"),
                     WebUIFragment::raw("</a-widget>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6796,7 +8253,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><my-card>".to_string()),
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card>".to_string()),
@@ -6860,10 +8317,10 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body>".to_string()),
                     WebUIFragment::route("/", "dash-page"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6915,11 +8372,11 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body>".to_string()),
                     WebUIFragment::component("has-css"),
                     WebUIFragment::component("no-css"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -6989,11 +8446,11 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><app-shell>".to_string()),
                     WebUIFragment::component("app-shell"),
                     WebUIFragment::raw("</app-shell>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -7144,10 +8601,10 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body>".to_string()),
                     WebUIFragment::route("/", "dash-page"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -7199,11 +8656,11 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body><app-shell>".to_string()),
                     WebUIFragment::component("app-shell"),
                     WebUIFragment::raw("</app-shell>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -7274,7 +8731,7 @@ mod tests {
                     WebUIFragment::raw("<html><body><style>".to_string()),
                     WebUIFragment::signal("tokens.light", true),
                     WebUIFragment::raw("</style>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -7339,7 +8796,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><body>"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
@@ -7374,7 +8831,7 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::raw("<html><body>"),
                     WebUIFragment::component("app-shell"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
@@ -7423,7 +8880,7 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::raw("<html><body>"),
                     WebUIFragment::component("app-shell"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
@@ -7465,7 +8922,7 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::raw("<html><body>"),
                     WebUIFragment::component("app-shell"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
@@ -7518,7 +8975,9 @@ mod tests {
 
         match collect_navigation_state(&protocol, ["app-shell"]) {
             StateSelection::Keys(keys) => assert_eq!(keys, vec!["selected"]),
-            StateSelection::Full => panic!("legacy navigation keys should remain projected"),
+            StateSelection::Full | StateSelection::BorrowedKeys(_) => {
+                panic!("legacy navigation keys should remain owned and projected")
+            }
         }
     }
 
@@ -7530,7 +8989,7 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><body>".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -7567,7 +9026,7 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::raw("<html><body>"),
                     WebUIFragment::component("items-page"),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
@@ -7623,7 +9082,8 @@ mod tests {
         let keys = ["keep"];
         let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_selected_state(&mut sink, &state, &selection).unwrap();
+        let mut scratch = Vec::new();
+        write_selected_state(&mut sink, &mut scratch, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keep":"<\/script><b>"}"#);
     }
 
@@ -7633,7 +9093,8 @@ mod tests {
         let keys: [&str; 0] = [];
         let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_selected_state(&mut sink, &state, &selection).unwrap();
+        let mut scratch = Vec::new();
+        write_selected_state(&mut sink, &mut scratch, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), "{}");
     }
 
@@ -7648,7 +9109,8 @@ mod tests {
         let keys = ["keptA", "keptA", "keptB", "missing"];
         let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_selected_state(&mut sink, &state, &selection).unwrap();
+        let mut scratch = Vec::new();
+        write_selected_state(&mut sink, &mut scratch, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
     }
 
@@ -7661,7 +9123,8 @@ mod tests {
         let keys = ["keptA", "keptB", "missingA", "missingB"];
         let selection = StateSelection::Keys(keys.to_vec());
         let mut sink = TestWriter::new();
-        write_selected_state(&mut sink, &state, &selection).unwrap();
+        let mut scratch = Vec::new();
+        write_selected_state(&mut sink, &mut scratch, &state, &selection).unwrap();
         assert_eq!(sink.get_content(), r#"{"keptA":1,"keptB":2}"#);
     }
 
@@ -7672,11 +9135,50 @@ mod tests {
             "value": 42,
         });
         let mut sink = TestWriter::new();
-        write_selected_state(&mut sink, &state, &StateSelection::Full).unwrap();
+        let mut scratch = Vec::new();
+        write_selected_state(&mut sink, &mut scratch, &state, &StateSelection::Full).unwrap();
         assert_eq!(
             sink.get_content(),
             r#"{"serverOnly":"<\/script><b>","value":42}"#
         );
+    }
+
+    #[test]
+    fn json_scratch_capacity_reused_across_checkpoint_payloads() {
+        // Simulates several checkpoint bootstraps serialized in one render: a
+        // single request-local buffer must grow once for the largest payload and
+        // then be reused for subsequent payloads without reallocating. This is
+        // the deterministic seam behind the streaming path's allocation gate —
+        // `write_script_safe_json` is `pub(crate)`, so no public API is exposed.
+        let mut sink = TestWriter::new();
+        let mut scratch: Vec<u8> = Vec::new();
+        // No allocation until serialization actually needs it.
+        assert_eq!(scratch.capacity(), 0);
+
+        // The largest payload first establishes the high-water capacity.
+        let mut large = serde_json::Map::new();
+        for index in 0..64 {
+            large.insert(
+                format!("component_{index:04}"),
+                Value::String("x".repeat(48)),
+            );
+        }
+        let large = Value::Object(large);
+        write_script_safe_json(&mut sink, &mut scratch, &large).unwrap();
+        let high_water = scratch.capacity();
+        assert!(high_water > 0);
+
+        // Subsequent smaller checkpoint payloads reuse the same buffer: capacity
+        // never grows (no per-checkpoint allocation) and never shrinks.
+        for seq in 0..8 {
+            let small = test_json!({ "inventory": "", "state": {}, "seq": seq });
+            write_script_safe_json(&mut sink, &mut scratch, &small).unwrap();
+            assert_eq!(
+                scratch.capacity(),
+                high_water,
+                "scratch reallocated on checkpoint {seq}"
+            );
+        }
     }
 
     #[test]
@@ -7699,7 +9201,7 @@ mod tests {
                         exact: true,
                         ..Default::default()
                     }),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },
@@ -7947,9 +9449,9 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head><title>x</title>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body>hello".to_string()),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -8061,11 +9563,11 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head><title>x</title>".to_string()),
-                    WebUIFragment::signal("head_end", true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw(
                         "</head><body><!-- </body> </head> --><p>hi</p>".to_string(),
                     ),
-                    WebUIFragment::signal("body_end", true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -8134,12 +9636,12 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>".to_string()),
-                    WebUIFragment::signal("head_end", true),
-                    WebUIFragment::signal("head_end", true), // duplicate
-                    WebUIFragment::signal("head_end", true), // triplicate
+                    structural_fragment("head_end"),
+                    structural_fragment("head_end"), // duplicate
+                    structural_fragment("head_end"), // triplicate
                     WebUIFragment::raw("</head><body>".to_string()),
-                    WebUIFragment::signal("body_end", true),
-                    WebUIFragment::signal("body_end", true), // duplicate
+                    structural_fragment("body_end"),
+                    structural_fragment("body_end"), // duplicate
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
             },
@@ -8431,5 +9933,1327 @@ mod tests {
             "[(O=A[I=X][I=Y],O=A)(O=B[I=X][I=Y],O=B)]",
             "outer `item` must stay bound to its iteration value across the inner loop's save/restore"
         );
+    }
+
+    #[derive(Default)]
+    struct FlushTestWriter {
+        output: String,
+        flushes: Vec<usize>,
+        fail_flush: bool,
+        ended: bool,
+    }
+
+    impl ResponseWriter for FlushTestWriter {
+        fn write(&mut self, content: &str) -> Result<()> {
+            self.output.push_str(content);
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            self.ended = true;
+            Ok(())
+        }
+    }
+
+    impl FlushWriter for FlushTestWriter {
+        fn flush(&mut self) -> Result<()> {
+            if self.fail_flush {
+                return Err(HandlerError::ClientDisconnected);
+            }
+            self.flushes.push(self.output.len());
+            Ok(())
+        }
+    }
+
+    fn streaming_protocol(with_boundaries: bool) -> Protocol {
+        let mut fragments = HashMap::new();
+        let mut entry = vec![
+            WebUIFragment::raw("<!DOCTYPE html><html><HEAD data-shell=\"main\">"),
+            structural_fragment("head_start"),
+            WebUIFragment::raw("<script type=\"module\" async src=\"/index.js\"></script>"),
+            structural_fragment("head_end"),
+            WebUIFragment::raw("</HEAD><body>"),
+            structural_fragment("body_start"),
+        ];
+        if with_boundaries {
+            entry.push(structural_fragment("boundary_start:0"));
+        }
+        entry.extend([
+            WebUIFragment::raw("<my-counter"),
+            structural_fragment("streaming_root:my-counter"),
+            WebUIFragment::raw(">"),
+            WebUIFragment::component("my-counter"),
+            WebUIFragment::raw("</my-counter>"),
+        ]);
+        if with_boundaries {
+            entry.push(structural_fragment("boundary_end:0"));
+        }
+        entry.extend([
+            WebUIFragment::raw("<app-footer>slow tail</app-footer>"),
+            structural_fragment("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ]);
+        fragments.insert("index.html".to_string(), FragmentList { fragments: entry });
+        fragments.insert(
+            "my-counter".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<button>Count</button>")],
+            },
+        );
+
+        let mut document = WebUIProtocol::new(fragments);
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        document.components.insert(
+            "my-counter".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<button>Count</button>","th":1}"#.to_string(),
+                template_functions: "[function(){return true}]".to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["count".to_string()],
+                ..Default::default()
+            },
+        );
+        Protocol::new(document)
+    }
+
+    #[test]
+    fn handler_error_stays_small() {
+        // Boxing the cold `StreamingBoundary` payload keeps `HandlerError` — and
+        // therefore `Result<(), HandlerError>` threaded through the hot legacy
+        // render path — down to a single `String`-sized payload plus a
+        // discriminant word. If the boundary payload is un-boxed back to
+        // `{ signal, reason }` it grows to two `String`s (48-byte payload) and
+        // this fails.
+        assert!(
+            std::mem::size_of::<HandlerError>()
+                <= std::mem::size_of::<String>() + std::mem::size_of::<usize>(),
+            "HandlerError grew to {} bytes",
+            std::mem::size_of::<HandlerError>()
+        );
+    }
+
+    #[test]
+    fn streaming_render_flushes_bootstrap_before_slow_tail_and_emits_terminal() {
+        let protocol = streaming_protocol(true);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let state = test_json!({ "count": 1, "serverOnly": "secret" });
+        let mut writer = FlushTestWriter::default();
+
+        handler
+            .render_streaming(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert!(writer.ended);
+        assert_eq!(
+            writer.flushes.len(),
+            2,
+            "boundary commit plus one coalesced terminal-tail flush"
+        );
+        let first_flush = &writer.output[..writer.flushes[0]];
+        assert!(first_flush.contains("<!--wb:0-->"));
+        assert!(first_flush.contains("<!--/wb:0-->"));
+        assert!(first_flush.contains(r#"[1,0,0,{"inventory":"01","state":{"count":1}"#));
+        assert!(first_flush.contains(r#""templates":{"my-counter":"#));
+        assert!(!first_flush.contains("slow tail"));
+        assert!(!writer.output.contains("id=\"webui-data\""));
+        // The dirty tail coalesces into a single terminal checkpoint that both
+        // carries the (empty) tail bootstrap and marks the stream terminal, so
+        // there is no separate `[1,1,0,...]` tail record and no trailing
+        // `[1,2,1,{}]` empty terminal.
+        assert!(writer
+            .output
+            .contains("[1,1,1,{\"inventory\":\"\",\"state\":{}}]"));
+        assert!(!writer.output.contains("[1,1,0,"));
+        assert!(!writer.output.contains("[1,2,1,{}]"));
+
+        let marker = writer
+            .output
+            .find(STREAMING_MARKER)
+            .expect("streaming marker");
+        let attributed_head = writer
+            .output
+            .find("<HEAD data-shell=\"main\">")
+            .expect("attributed mixed-case head");
+        let authored_script = writer
+            .output
+            .find("src=\"/index.js\"")
+            .expect("entry script");
+        assert!(attributed_head < marker && marker < authored_script);
+    }
+
+    #[test]
+    fn streaming_render_emits_nonce_and_functions_before_sentinel() {
+        let protocol = streaming_protocol(true);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({ "count": 1 }),
+                &RenderOptions::new("index.html", "/").with_nonce("nonce-123"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let boundary_end = writer.output.find("<!--/wb:0-->").expect("end marker");
+        let envelope = writer.output[boundary_end..]
+            .find("data-webui-boundary nonce=\"nonce-123\"")
+            .map(|index| index + boundary_end)
+            .expect("nonce-bearing envelope");
+        let functions = writer
+            .output
+            .find("templateFns")
+            .expect("function side channel");
+        let sentinel = writer
+            .output
+            .find("<webui-hydrate>")
+            .expect("hydration sentinel");
+        assert!(boundary_end < envelope && envelope < functions && functions < sentinel);
+        assert!(writer.output.contains("<script nonce=\"nonce-123\">"));
+    }
+
+    #[test]
+    fn streaming_render_rejects_out_of_order_and_nested_boundaries() {
+        fn protocol(signals: &[&str]) -> Protocol {
+            let mut protocol_signals = Vec::with_capacity(signals.len() + 1);
+            protocol_signals.push(structural_fragment("head_start"));
+            protocol_signals.extend(signals.iter().map(|signal| structural_fragment(*signal)));
+            let fragments = HashMap::from([(
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: protocol_signals,
+                },
+            )]);
+            Protocol::new(WebUIProtocol::new(fragments))
+        }
+
+        let handler = WebUIHandler::new();
+        let mut writer = FlushTestWriter::default();
+        let result = handler.render_streaming(
+            &protocol(&["boundary_start:1"]),
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+        match result {
+            Err(HandlerError::StreamingBoundary(err)) => {
+                assert_eq!(err.signal, "boundary_start:1");
+                assert!(err.reason.contains("expected boundary sequence 0"));
+            }
+            other => panic!("expected ordered-boundary error, got {other:?}"),
+        }
+
+        let mut writer = FlushTestWriter::default();
+        let result = handler.render_streaming(
+            &protocol(&["boundary_start:0", "boundary_start:1"]),
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+        assert!(matches!(result, Err(HandlerError::StreamingBoundary(_))));
+    }
+
+    #[test]
+    fn streaming_render_propagates_boundary_flush_disconnect() {
+        let protocol = streaming_protocol(true);
+        let handler = WebUIHandler::new();
+        let mut writer = FlushTestWriter {
+            fail_flush: true,
+            ..FlushTestWriter::default()
+        };
+        let result = handler.render_streaming(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+        assert!(matches!(result, Err(HandlerError::ClientDisconnected)));
+        assert!(!writer.ended);
+    }
+
+    #[test]
+    fn streaming_render_requires_structural_head_start_before_writing() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw(
+                        "<html><HEAD data-shell=\"main\"><script src=\"/early.js\"></script>",
+                    ),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</HEAD><body>"),
+                    structural_fragment("body_start"),
+                    structural_fragment("body_end"),
+                ],
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut writer = FlushTestWriter::default();
+
+        let result = WebUIHandler::new().render_streaming(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+
+        assert!(matches!(
+            result,
+            Err(HandlerError::MissingStreamingHeadStart { before: "head_end" })
+        ));
+        assert!(
+            writer.output.is_empty(),
+            "preflight must fail before output"
+        );
+        assert!(writer.flushes.is_empty());
+        assert!(!writer.ended);
+    }
+
+    #[test]
+    fn streaming_render_rejects_duplicate_head_start() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    structural_fragment("head_start"),
+                    structural_fragment("head_start"),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>"),
+                    structural_fragment("body_start"),
+                    structural_fragment("body_end"),
+                ],
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut writer = FlushTestWriter::default();
+
+        let result = WebUIHandler::new().render_streaming(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+
+        assert!(matches!(
+            result,
+            Err(HandlerError::DuplicateStreamingHeadStart)
+        ));
+        assert_eq!(writer.output.matches(STREAMING_MARKER).count(), 1);
+        assert!(writer.flushes.is_empty());
+    }
+
+    #[test]
+    fn legacy_render_is_byte_identical_when_boundary_signals_are_present() {
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let state = test_json!({
+            "count": 1,
+            "head_start": "must not render",
+            "boundary_start:0": "must not render",
+            "boundary_end:0": "must not render",
+        });
+        let mut with_boundaries = TestWriter::new();
+        let mut without_boundaries = TestWriter::new();
+        handler
+            .render(
+                &streaming_protocol(true),
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut with_boundaries,
+            )
+            .unwrap();
+        handler
+            .render(
+                &streaming_protocol(false),
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut without_boundaries,
+            )
+            .unwrap();
+        assert_eq!(
+            with_boundaries.get_content(),
+            without_boundaries.get_content()
+        );
+    }
+
+    #[test]
+    fn parser_head_attributes_preserve_legacy_ordinary_render_bytes() {
+        for source in [
+            r#"<html><head data-theme="dark"><title>T</title></head><body>x</body></html>"#,
+            r#"<html><head data-theme="{{theme}}"><title>T</title></head><body>x</body></html>"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            parser
+                .parse("index.html", source)
+                .expect("parse head fixture");
+            let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
+            let mut writer = TestWriter::new();
+            WebUIHandler::new()
+                .render(
+                    &protocol,
+                    &test_json!({ "theme": "light" }),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+
+            assert_eq!(
+                writer.get_content(),
+                "<html><head><title>T</title></head><body>x</body></html>"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_case_native_tags_preserve_ordinary_bytes_and_stream_structurally() {
+        let source =
+            r#"<html><HEAD data-theme="dark"><title>T</title></HEAD><BODY>x</BODY></html>"#;
+        let mut parser = HtmlParser::new();
+        parser.parse("index.html", source).expect("parse fixture");
+        let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
+
+        let mut ordinary = TestWriter::new();
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut ordinary,
+            )
+            .unwrap();
+        assert_eq!(ordinary.get_content(), source);
+
+        let mut streaming = FlushTestWriter::default();
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut streaming,
+            )
+            .unwrap();
+        assert!(streaming.output.contains(r#"<HEAD data-theme="dark">"#));
+        assert!(streaming.output.contains("</HEAD><BODY>x"));
+        let opening = streaming.output.find("<HEAD").expect("mixed-case head");
+        let marker = streaming.output.find(STREAMING_MARKER).expect("marker");
+        let title = streaming.output.find("<title>").expect("title");
+        assert!(opening < marker && marker < title);
+        assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
+    }
+
+    #[test]
+    fn ordinary_render_preserves_legacy_unnamespaced_structural_hooks() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    WebUIFragment::signal("head_end".to_string(), true),
+                    WebUIFragment::raw("</head><body>"),
+                    WebUIFragment::signal("body_start".to_string(), true),
+                    WebUIFragment::raw("<p>legacy</p>"),
+                    WebUIFragment::signal("body_end".to_string(), true),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let options = RenderOptions::new("index.html", "/").with_nonce("legacy-nonce");
+        let mut writer = TestWriter::new();
+
+        handler
+            .render(&protocol, &test_json!({}), &options, &mut writer)
+            .unwrap();
+
+        let html = writer.get_content();
+        assert!(html.contains(r#"<meta name="webui-nonce" content="legacy-nonce">"#));
+        assert!(html.contains(r#"<script type="application/json" id="webui-data""#));
+        assert!(html.contains("<p>legacy</p>"));
+
+        let mut streaming = FlushTestWriter::default();
+        assert!(matches!(
+            handler.render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut streaming,
+            ),
+            Err(HandlerError::MissingStreamingHeadStart { .. })
+        ));
+    }
+
+    #[test]
+    fn authored_raw_signal_keys_remain_content_in_both_render_modes() {
+        let source = concat!(
+            "<html><head></head><body>",
+            "{{{head_start}}}|{{{head_end}}}|{{{body_start}}}|{{{body_end}}}|",
+            "{{{boundary_start:0}}}|{{{boundary_end:0}}}|{{{streaming_root:forged}}}",
+            "</body></html>",
+        );
+        let state = test_json!({
+            "head_start": "hs",
+            "head_end": "he",
+            "body_start": "bs",
+            "body_end": "be",
+            "boundary_start:0": "b0s",
+            "boundary_end:0": "b0e",
+            "streaming_root:forged": "root",
+        });
+        let mut parser = HtmlParser::new();
+        parser.parse("index.html", source).expect("parse fixture");
+        let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
+        let expected = "<html><head></head><body>hs|he|bs|be|b0s|b0e|root</body></html>";
+
+        let mut ordinary = TestWriter::new();
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut ordinary,
+            )
+            .unwrap();
+        assert_eq!(ordinary.get_content(), expected);
+
+        let mut streaming = FlushTestWriter::default();
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut streaming,
+            )
+            .unwrap();
+        assert!(streaming.output.contains("<body>hs|he|bs|be|b0s|b0e|root"));
+        assert!(!streaming.output.contains("<!--wb:"));
+        assert_eq!(streaming.output.matches(STREAMING_MARKER).count(), 1);
+        assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
+    }
+
+    #[test]
+    fn streaming_rejects_structural_signals_after_terminal() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    structural_fragment("head_start"),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>"),
+                    structural_fragment("body_start"),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body>"),
+                    structural_fragment("boundary_start:0"),
+                    WebUIFragment::raw("</html>"),
+                ],
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut streaming = FlushTestWriter::default();
+        let result = WebUIHandler::new().render_streaming(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut streaming,
+        );
+
+        match result {
+            Err(HandlerError::StreamingBoundary(error)) => {
+                assert_eq!(error.signal, "boundary_start:0");
+                assert!(error.reason.contains("after the body_end terminal record"));
+            }
+            other => panic!("expected post-terminal rejection, got {other:?}"),
+        }
+        assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
+        assert!(streaming.output.contains("[1,0,1,"));
+        assert!(!streaming.output.contains("<!--wb:0-->"));
+
+        let mut ordinary = TestWriter::new();
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut ordinary,
+            )
+            .unwrap();
+        assert_eq!(
+            ordinary.get_content(),
+            "<html><head></head><body></body></html>"
+        );
+    }
+
+    /// Build a streaming protocol with one boundary per `hosts` entry. Each
+    /// boundary wraps a component host whose opening tag is split so the
+    /// compiler-owned `streaming_root:<tag>` signal (optionally emitted) lands
+    /// inside the tag, exactly as `HtmlParser` produces. Components `comp-a` and
+    /// `comp-b` carry disjoint templates and disjoint hydration keys.
+    fn disjoint_streaming_protocol_ext(hosts: &[&str], emit_root_signal: bool) -> Protocol {
+        let mut fragments = HashMap::new();
+        let mut entry = vec![
+            WebUIFragment::raw("<!DOCTYPE html><html><head>"),
+            structural_fragment("head_start"),
+            structural_fragment("head_end"),
+            WebUIFragment::raw("</head><body>"),
+            structural_fragment("body_start"),
+        ];
+        for (sequence, host) in hosts.iter().enumerate() {
+            entry.push(structural_fragment(format!("boundary_start:{sequence}")));
+            entry.push(WebUIFragment::raw(format!("<{host}")));
+            if emit_root_signal {
+                entry.push(structural_fragment(format!("streaming_root:{host}")));
+            }
+            entry.push(WebUIFragment::raw(">"));
+            entry.push(WebUIFragment::component(*host));
+            entry.push(WebUIFragment::raw(format!("</{host}>")));
+            entry.push(structural_fragment(format!("boundary_end:{sequence}")));
+        }
+        entry.push(structural_fragment("body_end"));
+        entry.push(WebUIFragment::raw("</body></html>"));
+        fragments.insert("index.html".to_string(), FragmentList { fragments: entry });
+        fragments.insert(
+            "comp-a".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<b>A</b>")],
+            },
+        );
+        fragments.insert(
+            "comp-b".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<b>B</b>")],
+            },
+        );
+
+        let mut document = WebUIProtocol::new(fragments);
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        document.components.insert(
+            "comp-a".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<i>A</i>","th":1}"#.to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["a_count".to_string()],
+                ..Default::default()
+            },
+        );
+        document.components.insert(
+            "comp-b".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<i>B</i>","th":1}"#.to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["b_count".to_string()],
+                ..Default::default()
+            },
+        );
+        Protocol::new(document)
+    }
+
+    fn disjoint_streaming_protocol(hosts: &[&str]) -> Protocol {
+        disjoint_streaming_protocol_ext(hosts, true)
+    }
+
+    fn streaming_root_validation_protocol(
+        mut host_fragments: Vec<WebUIFragment>,
+        tail: Vec<WebUIFragment>,
+    ) -> Protocol {
+        let mut entry = vec![
+            WebUIFragment::raw("<html><head>"),
+            structural_fragment("head_start"),
+            structural_fragment("head_end"),
+            WebUIFragment::raw("</head><body>"),
+            structural_fragment("body_start"),
+            structural_fragment("boundary_start:0"),
+        ];
+        entry.append(&mut host_fragments);
+        entry.extend(tail);
+        let fragments = HashMap::from([
+            ("index.html".to_string(), FragmentList { fragments: entry }),
+            (
+                "comp-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<b>A</b>")],
+                },
+            ),
+            (
+                "comp-b".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<b>B</b>")],
+                },
+            ),
+        ]);
+        Protocol::new(WebUIProtocol::new(fragments))
+    }
+
+    fn completed_streaming_tail() -> Vec<WebUIFragment> {
+        vec![
+            WebUIFragment::raw("</comp-a>"),
+            structural_fragment("boundary_end:0"),
+            structural_fragment("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ]
+    }
+
+    fn assert_streaming_root_error(
+        protocol: &Protocol,
+        expected_signal: &str,
+        expected_reason: &str,
+    ) {
+        let mut writer = FlushTestWriter::default();
+        let result = WebUIHandler::new().render_streaming(
+            protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+        match result {
+            Err(HandlerError::StreamingBoundary(error)) => {
+                assert_eq!(error.signal, expected_signal);
+                assert!(
+                    error.reason.contains(expected_reason),
+                    "reason: {}",
+                    error.reason
+                );
+            }
+            other => panic!("expected streaming-root rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_root_signal_injects_data_ws_inside_boundary() {
+        let protocol = disjoint_streaming_protocol(&["comp-a"]);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({ "a_count": 1 }),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        // The parser-owned signal is consumed to inject exactly ` data-ws`
+        // inside the host's opening tag, before the custom element upgrades.
+        assert!(
+            writer.output.contains("<comp-a data-ws>"),
+            "streamed host must carry data-ws: {}",
+            writer.output
+        );
+    }
+
+    #[test]
+    fn streaming_root_signal_preserves_ordinary_output_bytes() {
+        // Ordinary rendering ignores `streaming_root` byte-for-byte: identical
+        // output with and without the signal, and never a `data-ws` attribute.
+        let with_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], true);
+        let without_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], false);
+        let state = test_json!({ "a_count": 1, "b_count": 2 });
+        let plugin = || {
+            WebUIHandler::with_plugin(
+                || Box::new(crate::plugin::webui::WebUIHydrationPlugin::new()),
+            )
+        };
+        let mut with_writer = TestWriter::new();
+        let mut without_writer = TestWriter::new();
+        plugin()
+            .render(
+                &with_signal,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut with_writer,
+            )
+            .unwrap();
+        plugin()
+            .render(
+                &without_signal,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut without_writer,
+            )
+            .unwrap();
+        // The rendered DOM (everything up to the inert data block) is
+        // deterministic and is where a leaked `data-ws` would appear. The
+        // ordinary template map is HashSet-ordered, so compare the DOM prefix
+        // for byte identity rather than the whole document.
+        let dom_prefix = |content: &str| -> String {
+            content
+                .split_once(r#"<script type="application/json" id="webui-data""#)
+                .map_or_else(|| content.to_string(), |(head, _)| head.to_string())
+        };
+        assert_eq!(
+            dom_prefix(&with_writer.get_content()),
+            dom_prefix(&without_writer.get_content())
+        );
+        assert!(!with_writer.get_content().contains("data-ws"));
+        assert!(with_writer.get_content().contains("<comp-a>"));
+    }
+
+    #[test]
+    fn streaming_component_without_root_signal_is_rejected() {
+        let protocol = streaming_root_validation_protocol(
+            vec![
+                WebUIFragment::raw("<comp-a>"),
+                WebUIFragment::component("comp-a"),
+            ],
+            completed_streaming_tail(),
+        );
+
+        assert_streaming_root_error(
+            &protocol,
+            "streaming_root:comp-a",
+            "has no matching compiler-owned root signal",
+        );
+    }
+
+    #[test]
+    fn duplicate_and_misplaced_streaming_root_signals_are_rejected() {
+        let duplicate = streaming_root_validation_protocol(
+            vec![
+                WebUIFragment::raw("<comp-a"),
+                structural_fragment("streaming_root:comp-a"),
+                structural_fragment("streaming_root:comp-a"),
+                WebUIFragment::raw(">"),
+                WebUIFragment::component("comp-a"),
+            ],
+            completed_streaming_tail(),
+        );
+        assert_streaming_root_error(&duplicate, "streaming_root:comp-a", "is misplaced");
+
+        let after_tag_close = streaming_root_validation_protocol(
+            vec![
+                WebUIFragment::raw("<comp-a>"),
+                structural_fragment("streaming_root:comp-a"),
+                WebUIFragment::component("comp-a"),
+            ],
+            completed_streaming_tail(),
+        );
+        assert_streaming_root_error(&after_tag_close, "streaming_root:comp-a", "is misplaced");
+
+        let detached_from_opening = streaming_root_validation_protocol(
+            vec![
+                WebUIFragment::raw("not an opening tag"),
+                structural_fragment("streaming_root:comp-a"),
+                WebUIFragment::raw(">"),
+                WebUIFragment::component("comp-a"),
+            ],
+            completed_streaming_tail(),
+        );
+        assert_streaming_root_error(
+            &detached_from_opening,
+            "streaming_root:comp-a",
+            "unclosed component opening-tag close",
+        );
+    }
+
+    #[test]
+    fn mismatched_streaming_root_signal_is_rejected() {
+        let protocol = streaming_root_validation_protocol(
+            vec![
+                WebUIFragment::raw("<comp-a"),
+                structural_fragment("streaming_root:comp-b"),
+                WebUIFragment::raw(">"),
+                WebUIFragment::component("comp-a"),
+            ],
+            completed_streaming_tail(),
+        );
+
+        assert_streaming_root_error(
+            &protocol,
+            "streaming_root:comp-b",
+            "opening host renders component <comp-a>",
+        );
+    }
+
+    #[test]
+    fn pending_streaming_root_is_rejected_at_structural_ends() {
+        let pending_host = || {
+            vec![
+                WebUIFragment::raw("<comp-a"),
+                structural_fragment("streaming_root:comp-a"),
+                WebUIFragment::raw(">"),
+            ]
+        };
+        for tail in [
+            vec![structural_fragment("boundary_end:0")],
+            vec![structural_fragment("body_end")],
+            Vec::new(),
+        ] {
+            let protocol = streaming_root_validation_protocol(pending_host(), tail);
+            assert_streaming_root_error(&protocol, "streaming_root:comp-a", "is misplaced");
+        }
+    }
+
+    #[test]
+    fn streaming_root_outside_boundary_is_rejected() {
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_start"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body>"),
+                        structural_fragment("body_start"),
+                        WebUIFragment::raw("<comp-a"),
+                        structural_fragment("streaming_root:comp-a"),
+                        WebUIFragment::raw(">"),
+                        WebUIFragment::component("comp-a"),
+                        WebUIFragment::raw("</comp-a>"),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                },
+            ),
+            (
+                "comp-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<b>A</b>")],
+                },
+            ),
+        ]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut writer = FlushTestWriter::default();
+        let result = WebUIHandler::new().render_streaming(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+        match result {
+            Err(HandlerError::StreamingBoundary(err)) => {
+                assert_eq!(err.signal, "streaming_root:comp-a");
+                assert!(
+                    err.reason.contains("outside any <webui-boundary>"),
+                    "reason: {}",
+                    err.reason
+                );
+            }
+            other => panic!("expected outside-boundary rejection, got {other:?}"),
+        }
+    }
+
+    fn parser_route_protocol(with_boundary: bool) -> Protocol {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "route-page",
+                "<p>route content</p>",
+                None,
+                true,
+            ))
+            .expect("register route component");
+        let route = r#"<route path="/" component="route-page" exact />"#;
+        let html = if with_boundary {
+            format!(
+                "<html><head></head><body>\
+                 <webui-boundary name=\"route\">{route}</webui-boundary>\
+                 </body></html>"
+            )
+        } else {
+            format!("<html><head></head><body>{route}</body></html>")
+        };
+        parser
+            .parse("index.html", &html)
+            .expect("parse route streaming fixture");
+        let mut document = WebUIProtocol::new(parser.into_fragment_records());
+        document.components.insert(
+            "route-page".to_string(),
+            webui_protocol::ComponentData::default(),
+        );
+        Protocol::new(document)
+    }
+
+    #[test]
+    fn streaming_parser_route_host_is_marked_inside_explicit_boundary() {
+        let protocol = parser_route_protocol(true);
+        let mut writer = FlushTestWriter::default();
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert!(
+            writer
+                .output
+                .contains("<route-page data-ws><p>route content</p></route-page>"),
+            "matched route host must be deferred before upgrade: {}",
+            writer.output
+        );
+    }
+
+    #[test]
+    fn streaming_parser_route_host_outside_boundary_is_rejected() {
+        let protocol = parser_route_protocol(false);
+        let mut writer = FlushTestWriter::default();
+        let result = WebUIHandler::new().render_streaming(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        );
+
+        match result {
+            Err(HandlerError::StreamingBoundary(error)) => {
+                assert_eq!(error.signal, "streaming_root:route-page");
+                assert!(error.reason.contains("outside any <webui-boundary>"));
+            }
+            other => panic!("expected route boundary rejection, got {other:?}"),
+        }
+        assert!(
+            !writer.output.contains("<route-page>"),
+            "an unmarked custom-element opening must never be completed"
+        );
+    }
+
+    #[test]
+    fn streaming_checkpoints_carry_boundary_local_templates_and_state() {
+        // Three boundaries: comp-a, comp-b, then comp-a reused. Each checkpoint
+        // envelope must be locally scoped — templates/state for exactly the
+        // components rendered since the previous checkpoint, with reused tags
+        // carrying hydration state but never a duplicate template.
+        let protocol = disjoint_streaming_protocol(&["comp-a", "comp-b", "comp-a"]);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let state = test_json!({ "a_count": 1, "b_count": 2, "serverOnly": "secret" });
+        let mut writer = FlushTestWriter::default();
+        handler
+            .render_streaming(
+                &protocol,
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert_eq!(
+            writer.flushes.len(),
+            4,
+            "three boundary commits plus one terminal"
+        );
+        let segment = |index: usize| -> &str {
+            let start = if index == 0 {
+                0
+            } else {
+                writer.flushes[index - 1]
+            };
+            &writer.output[start..writer.flushes[index]]
+        };
+        let b0 = segment(0);
+        let b1 = segment(1);
+        let b2 = segment(2);
+
+        // Boundary 0: only comp-a's template/state; no comp-b artifacts.
+        assert!(b0.contains(r#""templates":{"comp-a":"#), "b0: {b0}");
+        assert!(b0.contains(r#""a_count":1"#), "b0: {b0}");
+        assert!(b0.contains(r#"[1,0,0,{"inventory":"01""#), "b0: {b0}");
+        assert!(!b0.contains("comp-b"), "b0 leaked comp-b: {b0}");
+        assert!(!b0.contains("b_count"), "b0 leaked b_count: {b0}");
+
+        // Boundary 1: only comp-b's template/state; no duplicate comp-a template.
+        assert!(b1.contains(r#""templates":{"comp-b":"#), "b1: {b1}");
+        assert!(b1.contains(r#""b_count":2"#), "b1: {b1}");
+        assert!(b1.contains(r#"[1,1,0,{"inventory":"02""#), "b1: {b1}");
+        assert!(
+            !b1.contains(r#""templates":{"comp-a"#),
+            "b1 re-sent comp-a: {b1}"
+        );
+        assert!(!b1.contains("a_count"), "b1 leaked a_count: {b1}");
+
+        // Boundary 2: comp-a reused — state present, template absent (empty delta).
+        assert!(b2.contains(r#""a_count":1"#), "b2: {b2}");
+        assert!(b2.contains(r#"[1,2,0,{"inventory":"""#), "b2: {b2}");
+        assert!(
+            !b2.contains(r#""templates""#),
+            "b2 re-sent a template: {b2}"
+        );
+
+        // Server-only state never leaks into any envelope.
+        assert!(!writer.output.contains("serverOnly"));
+    }
+
+    #[test]
+    fn streaming_checkpoint_carries_reachable_unrendered_metadata_without_inventory() {
+        let entry = vec![
+            WebUIFragment::raw("<html><head>"),
+            structural_fragment("head_start"),
+            structural_fragment("head_end"),
+            WebUIFragment::raw("</head><body>"),
+            structural_fragment("body_start"),
+            structural_fragment("boundary_start:0"),
+            WebUIFragment::raw("<comp-a"),
+            structural_fragment("streaming_root:comp-a"),
+            WebUIFragment::raw(">"),
+            WebUIFragment::component("comp-a"),
+            WebUIFragment::raw("</comp-a>"),
+            structural_fragment("boundary_end:0"),
+            structural_fragment("boundary_start:1"),
+            WebUIFragment::raw("<comp-hidden"),
+            structural_fragment("streaming_root:comp-hidden"),
+            WebUIFragment::raw(">"),
+            WebUIFragment::component("comp-hidden"),
+            WebUIFragment::raw("</comp-hidden>"),
+            structural_fragment("boundary_end:1"),
+            structural_fragment("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ];
+        let fragments = HashMap::from([
+            ("index.html".to_string(), FragmentList { fragments: entry }),
+            (
+                "comp-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::if_cond(
+                        ConditionExpr::identifier("show_hidden"),
+                        "hidden-if",
+                    )],
+                },
+            ),
+            (
+                "hidden-if".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::component("comp-hidden")],
+                },
+            ),
+            (
+                "comp-hidden".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>hidden</p>")],
+                },
+            ),
+        ]);
+        let mut document = WebUIProtocol::new(fragments);
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        document.components.insert(
+            "comp-a".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<div></div>","th":1}"#.to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["show_hidden".to_string()],
+                ..Default::default()
+            },
+        );
+        document.components.insert(
+            "comp-hidden".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>hidden</p>","th":1}"#.to_string(),
+                css: ".hidden{display:block}".to_string(),
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["hidden_count".to_string()],
+                ..Default::default()
+            },
+        );
+        let protocol = Protocol::new(document);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({
+                    "show_hidden": false,
+                    "hidden_count": 7,
+                    "unrelated": "private",
+                }),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let boundary = |index: usize| -> &str {
+            let start = if index == 0 {
+                0
+            } else {
+                writer.flushes[index - 1]
+            };
+            &writer.output[start..writer.flushes[index]]
+        };
+        let first = boundary(0);
+        let second = boundary(1);
+
+        assert!(first.contains(r#""comp-a":"#), "first: {first}");
+        assert!(first.contains(r#""comp-hidden":"#), "first: {first}");
+        assert!(first.contains(r#""show_hidden":false"#), "first: {first}");
+        assert!(first.contains(r#""hidden_count":7"#), "first: {first}");
+        assert!(first.contains(r#""inventory":"01""#), "first: {first}");
+        assert!(
+            first.contains(r#"<script type="importmap">"#),
+            "first: {first}"
+        );
+        assert!(
+            !first.contains("unrelated"),
+            "first leaked unrelated state: {first}"
+        );
+
+        assert!(
+            !second.contains(r#""templates""#),
+            "second re-sent metadata: {second}"
+        );
+        assert!(
+            !second.contains(r#"<script type="importmap">"#),
+            "second re-sent CSS: {second}"
+        );
+        assert!(second.contains(r#""hidden_count":7"#), "second: {second}");
+        assert!(second.contains(r#""inventory":"02""#), "second: {second}");
+        assert_eq!(
+            writer
+                .output
+                .matches(r#"<script type="importmap">"#)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn streaming_flush_count_is_boundaries_plus_one() {
+        for &count in &[1usize, 3, 10, 100] {
+            let hosts: Vec<&str> = (0..count)
+                .map(|index| if index % 2 == 0 { "comp-a" } else { "comp-b" })
+                .collect();
+            let protocol = disjoint_streaming_protocol(&hosts);
+            let handler = WebUIHandler::with_plugin(|| {
+                Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+            });
+            let mut writer = FlushTestWriter::default();
+            handler
+                .render_streaming(
+                    &protocol,
+                    &test_json!({ "a_count": 1, "b_count": 2 }),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            assert_eq!(
+                writer.flushes.len(),
+                count + 1,
+                "expected boundaries+1 flushes for {count} boundaries"
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_tag_buffers_retain_capacity_across_commits() {
+        // Deterministic capacity-reuse proof for the checkpoint tag vector /
+        // dedup bitsets: rendered inventory and template delivery remain
+        // independent, and the capture buffers keep their capacity once cleared.
+        let dirty = std::cell::Cell::new(false);
+        let protocol = Protocol::new(WebUIProtocol::with_tokens(
+            HashMap::from([
+                ("comp-a".to_string(), FragmentList::default()),
+                ("comp-b".to_string(), FragmentList::default()),
+            ]),
+            Vec::new(),
+        ));
+        let mut streaming = StreamingRenderState {
+            dirty: &dirty,
+            component_reachability: protocol.component_reachability(),
+            head_marker_emitted: true,
+            active_boundary: None,
+            pending_root: None,
+            generated_root_ready: false,
+            next_sequence: 0,
+            bootstrap_sent: false,
+            body_ended: false,
+            inventory: vec![0u8; 1],
+            inventory_delta: vec![0u8; 1],
+            inventory_hex: String::new(),
+            template_inventory: vec![0u8; 1],
+            checkpoint_tags: Vec::new(),
+            checkpoint_seen: vec![0u8; 1],
+            checkpoint_needs_expansion: false,
+            state_key_scratch: Vec::new(),
+            template_tag_scratch: Vec::new(),
+            css_href_scratch: Vec::new(),
+            style_spec_scratch: Vec::new(),
+            reachability_stack: Vec::new(),
+        };
+        let index = protocol.component_index();
+
+        // First checkpoint: both tags become rendered and have metadata sent.
+        streaming.checkpoint_tags.push("comp-a");
+        streaming.checkpoint_tags.push("comp-b");
+        commit_checkpoint_inventory(&mut streaming, index).unwrap();
+        assert_eq!(streaming.inventory_hex, "03");
+        assert!(mark_streaming_template_sent(&mut streaming, index, "comp-a").unwrap());
+        assert!(mark_streaming_template_sent(&mut streaming, index, "comp-b").unwrap());
+        let capacity = streaming.checkpoint_tags.capacity();
+        assert!(capacity >= 2);
+
+        // Reset for the next checkpoint (mirrors the checkpoint tail).
+        streaming.checkpoint_tags.clear();
+        streaming.checkpoint_seen.fill(0);
+        streaming.checkpoint_needs_expansion = false;
+
+        // Second checkpoint: comp-a reused — no new metadata or DOM delta.
+        streaming.checkpoint_tags.push("comp-a");
+        commit_checkpoint_inventory(&mut streaming, index).unwrap();
+        assert_eq!(streaming.inventory_hex, "");
+        assert!(!mark_streaming_template_sent(&mut streaming, index, "comp-a").unwrap());
+        assert!(
+            streaming.checkpoint_tags.capacity() >= capacity,
+            "checkpoint tag buffer capacity must be reused, not reallocated"
+        );
+    }
+
+    #[test]
+    fn checkpoint_state_key_scratch_reuses_allocation_and_stays_local() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        protocol.components.insert(
+            "comp-a".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["a".to_string(), "shared".to_string()],
+                ..Default::default()
+            },
+        );
+        protocol.components.insert(
+            "comp-b".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["b".to_string(), "shared".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let mut scratch = Vec::with_capacity(INITIAL_KEY_CAPACITY);
+        assert!(!collect_hydration_state_into(
+            &protocol,
+            ["comp-a"],
+            &mut scratch,
+        ));
+        assert_eq!(scratch, ["a", "shared"]);
+        let pointer = scratch.as_ptr();
+        let capacity = scratch.capacity();
+
+        assert!(!collect_hydration_state_into(
+            &protocol,
+            ["comp-b"],
+            &mut scratch,
+        ));
+        assert_eq!(scratch, ["b", "shared"]);
+        assert_eq!(scratch.as_ptr(), pointer);
+        assert_eq!(scratch.capacity(), capacity);
     }
 }

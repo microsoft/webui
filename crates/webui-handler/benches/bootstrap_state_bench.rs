@@ -37,7 +37,7 @@
 //! whose inactive route owns the large collection. Those cases gate adaptive
 //! projection lookup and request-scoped hydration key collection.
 //!
-//! The protocol is intentionally minimal — a bare `<body>` plus a raw
+//! The protocol is intentionally minimal — a bare `<body>` plus a structural
 //! `body_end` signal that triggers the bootstrap emission — so the measured
 //! work is dominated by state projection + serialization, not template
 //! rendering.
@@ -55,6 +55,13 @@ use webui_protocol::{
     ComponentData, FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment,
     WebUIFragmentRoute, WebUIProtocol,
 };
+
+fn structural_fragment(value: &str) -> WebUIFragment {
+    let mut token = String::with_capacity("}}}webui:".len() + value.len());
+    token.push_str("}}}webui:");
+    token.push_str(value);
+    WebUIFragment::signal(token, true)
+}
 
 struct BenchWriter {
     output: String,
@@ -244,7 +251,7 @@ fn build_routed_protocol() -> WebUIProtocol {
                     exact: true,
                     ..Default::default()
                 }),
-                WebUIFragment::signal("body_end", true),
+                structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
         },
@@ -305,7 +312,7 @@ fn build_bootstrap_protocol(
             fragments: vec![
                 WebUIFragment::raw("<!DOCTYPE html><html><body>"),
                 WebUIFragment::component("bench-component"),
-                WebUIFragment::signal("body_end", true),
+                structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
         },

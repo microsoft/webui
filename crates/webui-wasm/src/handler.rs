@@ -314,6 +314,13 @@ fn create_handler(plugin: Option<HandlerPluginKind>) -> WebUIHandler {
 mod tests {
     use super::*;
 
+    fn structural_fragment(value: &str) -> webui_protocol::WebUIFragment {
+        let mut token = String::with_capacity("}}}webui:".len() + value.len());
+        token.push_str("}}}webui:");
+        token.push_str(value);
+        webui_protocol::WebUIFragment::signal(token, true)
+    }
+
     #[test]
     fn parse_plugin_keeps_fast_aliases_parser_free() {
         assert_eq!(
@@ -384,10 +391,10 @@ mod tests {
             FragmentList {
                 fragments: vec![
                     WebUIFragment::raw("<html><head>"),
-                    WebUIFragment::signal("head_end".to_string(), true),
+                    structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body>"),
                     WebUIFragment::component("client-card"),
-                    WebUIFragment::signal("body_end".to_string(), true),
+                    structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
             },

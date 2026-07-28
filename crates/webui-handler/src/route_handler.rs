@@ -17,7 +17,7 @@ use serde_json::{value::RawValue, Map, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
 
 // ── Protocol Index ──────────────────────────────────────────────────────
@@ -34,7 +34,9 @@ use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtoco
 pub struct Protocol {
     protocol: WebUIProtocol,
     component_index: HashMap<String, u32>,
+    component_reachability: OnceLock<ComponentReachabilityIndex>,
     route_index: CompiledRouteIndex,
+    legacy_structural_signals: bool,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
 }
 
@@ -53,10 +55,22 @@ impl Protocol {
     pub fn new(protocol: WebUIProtocol) -> Self {
         let component_index = build_component_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
+        let legacy_structural_signals = !protocol.fragments.values().any(|list| {
+            list.fragments.iter().any(|fragment| {
+                matches!(
+                    fragment.fragment.as_ref(),
+                    Some(Fragment::Signal(signal))
+                        if signal.raw
+                            && signal.value.starts_with(crate::STRUCTURAL_SIGNAL_PREFIX)
+                )
+            })
+        });
         Self {
             protocol,
             component_index,
+            component_reachability: OnceLock::new(),
             route_index,
+            legacy_structural_signals,
             template_metadata_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -69,8 +83,17 @@ impl Protocol {
         &self.component_index
     }
 
+    pub(crate) fn component_reachability(&self) -> &ComponentReachabilityIndex {
+        self.component_reachability
+            .get_or_init(|| ComponentReachabilityIndex::new(&self.protocol, &self.component_index))
+    }
+
     pub(crate) fn route_index(&self) -> &CompiledRouteIndex {
         &self.route_index
+    }
+
+    pub(crate) fn legacy_structural_signals(&self) -> bool {
+        self.legacy_structural_signals
     }
 
     /// Borrow the build-time CSS token list.
@@ -218,6 +241,148 @@ pub(crate) fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String,
         index.insert(name.clone(), idx);
     }
     index
+}
+
+/// Startup-built direct component dependency graph used by streaming
+/// checkpoints. Route-free component surfaces walk integer indexes on the
+/// request path; only route-dependent surfaces need the more expensive
+/// request-aware fragment traversal.
+pub(crate) struct ComponentReachabilityIndex {
+    names: Vec<String>,
+    dependencies: Vec<Box<[u32]>>,
+    route_dependent: Vec<bool>,
+}
+
+impl ComponentReachabilityIndex {
+    fn new(protocol: &WebUIProtocol, component_index: &HashMap<String, u32>) -> Self {
+        let mut names: Vec<String> = component_index.keys().cloned().collect();
+        names.sort_unstable();
+
+        let mut dependencies = Vec::with_capacity(names.len());
+        let mut route_dependent = Vec::with_capacity(names.len());
+        for name in &names {
+            let (direct, has_route) =
+                collect_direct_component_dependencies(protocol, name, component_index);
+            dependencies.push(direct.into_boxed_slice());
+            route_dependent.push(has_route);
+        }
+        propagate_route_dependencies(&dependencies, &mut route_dependent);
+
+        Self {
+            names,
+            dependencies,
+            route_dependent,
+        }
+    }
+
+    pub(crate) fn name(&self, index: u32) -> Option<&str> {
+        self.names.get(index as usize).map(String::as_str)
+    }
+
+    pub(crate) fn dependencies(&self, index: u32) -> Option<&[u32]> {
+        self.dependencies.get(index as usize).map(Box::as_ref)
+    }
+
+    pub(crate) fn is_route_dependent(&self, index: u32) -> Option<bool> {
+        self.route_dependent.get(index as usize).copied()
+    }
+
+    pub(crate) fn requires_expansion(&self, index: u32) -> Option<bool> {
+        Some(self.is_route_dependent(index)? || !self.dependencies.get(index as usize)?.is_empty())
+    }
+}
+
+enum ComponentDependencyWork<'a> {
+    Fragment(&'a str),
+    Component(u32),
+}
+
+fn collect_direct_component_dependencies(
+    protocol: &WebUIProtocol,
+    root: &str,
+    component_index: &HashMap<String, u32>,
+) -> (Vec<u32>, bool) {
+    let mut work = vec![ComponentDependencyWork::Fragment(root)];
+    let mut visited_fragments = HashSet::new();
+    let mut seen_components = HashSet::new();
+    let mut dependencies = Vec::new();
+    let mut has_route = false;
+
+    while let Some(item) = work.pop() {
+        match item {
+            ComponentDependencyWork::Component(index) => {
+                if seen_components.insert(index) {
+                    dependencies.push(index);
+                }
+            }
+            ComponentDependencyWork::Fragment(id) => {
+                if !visited_fragments.insert(id) {
+                    continue;
+                }
+                let Some(list) = protocol.fragments.get(id) else {
+                    continue;
+                };
+                for fragment in list.fragments.iter().rev() {
+                    match fragment.fragment.as_ref() {
+                        Some(Fragment::Component(component)) => {
+                            if let Some(&index) = component_index.get(&component.fragment_id) {
+                                work.push(ComponentDependencyWork::Component(index));
+                            }
+                        }
+                        Some(Fragment::ForLoop(for_loop)) => work.push(
+                            ComponentDependencyWork::Fragment(for_loop.fragment_id.as_str()),
+                        ),
+                        Some(Fragment::IfCond(if_cond)) => work.push(
+                            ComponentDependencyWork::Fragment(if_cond.fragment_id.as_str()),
+                        ),
+                        Some(Fragment::Attribute(attribute)) if !attribute.template.is_empty() => {
+                            work.push(ComponentDependencyWork::Fragment(
+                                attribute.template.as_str(),
+                            ));
+                        }
+                        Some(Fragment::Route(_)) => has_route = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    (dependencies, has_route)
+}
+
+fn propagate_route_dependencies(dependencies: &[Box<[u32]>], route_dependent: &mut [bool]) {
+    let mut reverse = vec![Vec::new(); dependencies.len()];
+    for (parent, children) in dependencies.iter().enumerate() {
+        for &child in children.iter() {
+            if let Some(parents) = reverse.get_mut(child as usize) {
+                #[allow(clippy::cast_possible_truncation)]
+                parents.push(parent as u32);
+            }
+        }
+    }
+
+    let mut pending = Vec::new();
+    for (index, &depends_on_route) in route_dependent.iter().enumerate() {
+        if depends_on_route {
+            #[allow(clippy::cast_possible_truncation)]
+            pending.push(index as u32);
+        }
+    }
+    while let Some(index) = pending.pop() {
+        let Some(parents) = reverse.get(index as usize) else {
+            continue;
+        };
+        for &parent in parents {
+            let Some(depends_on_route) = route_dependent.get_mut(parent as usize) else {
+                continue;
+            };
+            if !*depends_on_route {
+                *depends_on_route = true;
+                pending.push(parent);
+            }
+        }
+    }
 }
 
 /// Check if a component's bit is set in the inventory bitfield.
@@ -537,14 +702,16 @@ fn select_raw_state<'de>(
     state_json: &'de str,
     selection: &StateSelection<'_>,
 ) -> Result<SelectedRawState<'de>, HandlerError> {
-    match selection {
-        StateSelection::Full => serde_json::from_str::<&RawValue>(state_json)
-            .map(SelectedRawState::Full)
-            .map_err(|error| invalid_state_json(&error.to_string())),
-        StateSelection::Keys(keys) => {
-            project_raw_state(state_json, keys).map(SelectedRawState::Keys)
+    let state_keys = match selection {
+        StateSelection::Full => {
+            return serde_json::from_str::<&RawValue>(state_json)
+                .map(SelectedRawState::Full)
+                .map_err(|error| invalid_state_json(&error.to_string()));
         }
-    }
+        StateSelection::Keys(keys) => keys.as_slice(),
+        StateSelection::BorrowedKeys(keys) => *keys,
+    };
+    project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
 }
 
 struct ProjectedRawStateSeed<'a> {
@@ -741,6 +908,40 @@ fn collect_inventoryable_components(
     root_inventoryable: bool,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
+    let stack = vec![QueuedFragment {
+        id: entry_id.to_string(),
+        inventoryable: root_inventoryable,
+        route_base: "/".to_string(),
+    }];
+    collect_inventoryable_components_from_stack(protocol, request_path, route_index, stack)
+}
+
+/// Collect the transitive client component surface rooted in this checkpoint's
+/// rendered tags. Conditional and empty-repeat branches are followed
+/// conservatively so a later client-side state change already has its metadata.
+pub(crate) fn collect_reachable_components_from_roots(
+    protocol: &WebUIProtocol,
+    roots: &[&str],
+    request_path: &str,
+    route_index: &CompiledRouteIndex,
+) -> Vec<String> {
+    let mut stack = Vec::with_capacity(roots.len());
+    for root in roots.iter().rev() {
+        stack.push(QueuedFragment {
+            id: (*root).to_string(),
+            inventoryable: true,
+            route_base: "/".to_string(),
+        });
+    }
+    collect_inventoryable_components_from_stack(protocol, Some(request_path), route_index, stack)
+}
+
+fn collect_inventoryable_components_from_stack(
+    protocol: &WebUIProtocol,
+    request_path: Option<&str>,
+    route_index: &CompiledRouteIndex,
+    mut stack: Vec<QueuedFragment>,
+) -> Vec<String> {
     let mut visited_fragments = HashSet::new();
     // Preserve first-discovery (document/traversal) order so Link-strategy
     // CSS `<link>` tags are emitted in source order, not alphabetically.
@@ -748,12 +949,6 @@ fn collect_inventoryable_components(
     // `HashSet` would lose it).
     let mut seen_components = HashSet::new();
     let mut component_ids: Vec<String> = Vec::new();
-    let mut stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
-        inventoryable: root_inventoryable,
-        route_base: "/".to_string(),
-    }];
-
     while let Some(queued) = stack.pop() {
         if queued.id.is_empty() {
             continue;
@@ -1487,8 +1682,10 @@ fn render_partial_indexed_with_state<'a>(
 
 #[cfg(test)]
 fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
-    let StateSelection::Keys(state_keys) = selection else {
-        return state;
+    let state_keys = match selection {
+        StateSelection::Full => return state,
+        StateSelection::Keys(keys) => keys.as_slice(),
+        StateSelection::BorrowedKeys(keys) => *keys,
     };
     let Value::Object(mut source) = state else {
         return Value::Object(Map::new());
@@ -2798,6 +2995,64 @@ mod tests {
             reachable.contains("error-display"),
             "error component of an unmatched sibling route must be inventoried: {reachable:?}"
         );
+    }
+
+    #[test]
+    fn component_reachability_propagates_route_dependency_to_parent() {
+        let protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "comp-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::component("comp-b")],
+                },
+            ),
+            (
+                "comp-b".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route("/", "page-a")],
+                },
+            ),
+            (
+                "page-a".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                },
+            ),
+        ]));
+        let component_index = build_component_index(&protocol);
+        let reachability = ComponentReachabilityIndex::new(&protocol, &component_index);
+
+        assert_eq!(
+            reachability.is_route_dependent(component_index["comp-a"]),
+            Some(true)
+        );
+        assert_eq!(
+            reachability.is_route_dependent(component_index["comp-b"]),
+            Some(true)
+        );
+        assert_eq!(
+            reachability.is_route_dependent(component_index["page-a"]),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn component_reachability_index_is_lazy() {
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([(
+            "comp-a".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>leaf</p>")],
+            },
+        )])));
+
+        assert!(protocol.component_reachability.get().is_none());
+        assert_eq!(
+            protocol
+                .component_reachability()
+                .is_route_dependent(protocol.component_index["comp-a"]),
+            Some(false)
+        );
+        assert!(protocol.component_reachability.get().is_some());
     }
 
     #[test]

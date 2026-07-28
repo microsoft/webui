@@ -33,7 +33,8 @@ pub use error::WebUIError;
 pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
-    plugin::HandlerPlugin, HandlerError, Protocol, RenderOptions, ResponseWriter, WebUIHandler,
+    plugin::HandlerPlugin, FlushWriter, HandlerError, Protocol, RenderOptions, ResponseWriter,
+    WebUIHandler,
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
@@ -330,6 +331,26 @@ pub struct BuildResult {
     pub stats: BuildStats,
 }
 
+/// Advisory for a streaming entry compiled without a state-projection
+/// manifest.
+///
+/// Cold: constructed at most once per build, and only for streaming entries.
+#[cold]
+#[inline(never)]
+fn streaming_without_projection_warning(entry: &str, boundary_count: usize) -> Diagnostic {
+    let plural = if boundary_count == 1 { "" } else { "s" };
+    Diagnostic::warning(format!(
+        "{entry} declares {boundary_count} streaming boundary checkpoint{plural} \
+         but this build has no state-projection manifest"
+    ))
+    .code(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)
+    .help(
+        "every checkpoint will serialize the whole state object instead of its own \
+         components' keys; pass the client build's `webui-projection.json` through \
+         `BuildOptions::projection_manifests` to send boundary-local state only",
+    )
+}
+
 /// Build a WebUI application from an app directory.
 ///
 /// Parses templates, discovers components, and produces a compiled protocol
@@ -526,6 +547,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let synthetic_asset_fragments =
         parse_component_asset_roots(&mut parser, &options.component_asset_roots)?;
 
+    // Copied out now: `token_analysis()` below borrows the parser, and the
+    // parser is consumed before the projection manifest is known.
+    let boundary_count = parser.boundary_count();
+
     let css_snapshot: Vec<(String, String)> = parser
         .component_registry()
         .get_all()
@@ -586,6 +611,17 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     } else {
         webui_protocol::InitialStateStrategy::Full as i32
     };
+
+    // Advisory: without a projection manifest every streaming checkpoint falls
+    // back to serializing the entire state object, so the cost is
+    // O(boundaries x full state) rather than O(boundaries x that boundary's
+    // own keys). The build still works, so this is a warning.
+    if boundary_count > 0 && merged_manifest.is_none() {
+        warnings.push(streaming_without_projection_warning(
+            &options.entry,
+            boundary_count,
+        ));
+    }
 
     // Strict coverage applies only to scripted components that actually made
     // it into the compiled protocol/route closure (i.e. their fragment was
@@ -865,6 +901,105 @@ mod tests {
         assert_eq!(
             result.protocol.initial_state_strategy,
             webui_protocol::InitialStateStrategy::Components as i32
+        );
+    }
+
+    /// Streaming entries pay O(boundaries x full state) without a projection
+    /// manifest, so the build must say so.
+    #[test]
+    fn streaming_entry_without_projection_manifest_warns() {
+        let app = create_app_dir(&[(
+            "index.html",
+            concat!(
+                "<html><body>",
+                r#"<webui-boundary name="a"><p>{{one}}</p></webui-boundary>"#,
+                r#"<webui-boundary name="b"><p>{{two}}</p></webui-boundary>"#,
+                "</body></html>",
+            ),
+        )]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Full as i32
+        );
+        let warning = result
+            .warnings
+            .iter()
+            .find(|diag| {
+                diag.error_code() == Some(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)
+            })
+            .expect("a streaming build without projection must warn");
+        assert_eq!(warning.severity(), webui_parser::Severity::Warning);
+        assert!(
+            warning.to_string().contains("2 streaming boundary"),
+            "warning should report the boundary count: {warning}"
+        );
+        assert!(
+            warning
+                .help_text()
+                .is_some_and(|help| help.contains("projection_manifests")),
+            "warning should point at the fix: {warning}"
+        );
+    }
+
+    #[test]
+    fn streaming_entry_with_projection_manifest_does_not_warn() {
+        let app = create_app_dir(&[(
+            "index.html",
+            concat!(
+                "<html><body>",
+                r#"<webui-boundary name="a"><p>{{one}}</p></webui-boundary>"#,
+                "</body></html>",
+            ),
+        )]);
+        let manifest_json =
+            projection::test_support::build_valid_manifest_json(app.path(), &[], &[], &[]);
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.projection_manifests = vec![manifest.into()];
+
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.initial_state_strategy,
+            webui_protocol::InitialStateStrategy::Components as i32
+        );
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|diag| diag.error_code()
+                    == Some(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)),
+            "a projected streaming build must not warn"
+        );
+    }
+
+    /// The advisory is streaming-specific: ordinary entries emit one bootstrap
+    /// block, so full state there is not a per-checkpoint multiplier.
+    #[test]
+    fn non_streaming_entry_without_projection_manifest_does_not_warn() {
+        let app = create_app_dir(&[("index.html", "<html><body><p>{{one}}</p></body></html>")]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+
+        let result = build(options).unwrap();
+
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|diag| diag.error_code()
+                    == Some(webui_parser::codes::STREAMING_WITHOUT_PROJECTION)),
+            "a non-streaming build must not warn about projection"
         );
     }
 

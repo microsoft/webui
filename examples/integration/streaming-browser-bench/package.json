@@ -2,15 +2,18 @@
   "name": "streaming-browser-bench",
   "version": "0.0.0",
   "private": true,
-  "description": "Browser-perceived metrics (TTFB / FCP / LCP) for buffered vs streaming SSR via Playwright.",
+  "description": "Browser-perceived transport metrics (TTFB / FCP / LCP) for buffered vs streaming SSR, plus a progressive streaming-hydration performance/memory matrix that bundles the real framework sources and measures the real Phase 1 coordinator + WebUIElement hydration.",
   "type": "module",
   "scripts": {
     "test": "playwright test",
+    "test:hydration": "playwright test -c playwright.hydration.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "start:server": "cargo run -p streaming-browser-bench-server --release"
   },
   "devDependencies": {
     "@playwright/test": "catalog:",
     "@types/node": "catalog:",
+    "esbuild": "catalog:",
     "typescript": "catalog:"
   }
 }

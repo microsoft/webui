@@ -102,6 +102,34 @@ pub mod codes {
     /// A CSS token used only with a literal `var()` fallback and absent from
     /// every theme — non-fatal, but usually a typo. Severity: warning.
     pub const UNTHEMED_TOKEN: &str = "unthemed-token";
+    /// `<webui-boundary>` is missing its required, non-empty `name` attribute.
+    pub const MISSING_BOUNDARY_NAME: &str = "missing-boundary-name";
+    /// `<webui-boundary name>` is not a static string literal (e.g. it
+    /// contains a `{{binding}}`).
+    pub const INVALID_BOUNDARY_NAME: &str = "invalid-boundary-name";
+    /// Two `<webui-boundary>` directives in the same entry template share a
+    /// `name`.
+    pub const DUPLICATE_BOUNDARY_NAME: &str = "duplicate-boundary-name";
+    /// A `<webui-boundary>` is nested inside another `<webui-boundary>`.
+    pub const NESTED_BOUNDARY: &str = "nested-boundary";
+    /// A `<webui-boundary>` would cut through a component, `<if>`, `<for>`,
+    /// or `<route>` scope instead of independently wrapping it.
+    pub const BOUNDARY_CROSSES_SCOPE: &str = "boundary-crosses-scope";
+    /// A `<webui-boundary>` appears before `<body>` opens or after it closes.
+    pub const BOUNDARY_OUTSIDE_BODY: &str = "boundary-outside-body";
+    /// A `<webui-boundary>` appears inside an HTML insertion mode that
+    /// foster-parents unknown elements (`<table>`, `<tbody>`, `<tr>`,
+    /// `<select>`, …), which would separate the generated `<webui-hydrate>`
+    /// sentinel from its payload script.
+    pub const BOUNDARY_IN_FOSTER_CONTEXT: &str = "boundary-in-foster-context";
+    /// `<webui-hydrate>` was written by an application author. It is reserved
+    /// for the compiler/handler-generated runtime hydration sentinel.
+    pub const AUTHORED_WEBUI_HYDRATE: &str = "authored-webui-hydrate";
+    /// An entry declares `<webui-boundary>` streaming checkpoints but the
+    /// build has no state-projection manifest, so every checkpoint serializes
+    /// the whole state object instead of its own components' keys.
+    /// Severity: warning.
+    pub const STREAMING_WITHOUT_PROJECTION: &str = "streaming-without-projection";
 }
 
 /// A build-time template-authoring diagnostic.

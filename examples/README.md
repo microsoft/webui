@@ -20,6 +20,7 @@ Current entries:
 | `app/commerce` | WebUI Framework hydration app with a Rust backend for commerce demo app, dozens of controls |
 | `app/routes` | Nested declarative routing demo showing 4-level deep routes, full server side and client handoff |
 | `app/service-worker` | Static/CDN service worker app using `webui_wasm_handler` to stream WASM-rendered chunks from public API state |
+| `app/streaming` | Progressive streaming hydration Phase 1 demo — priority-ordered `<webui-boundary>` chunks (composer, then feed) over a real paced `render_streaming` response |
 | `integration/node` | Node.js integration via native addon |
 | `integration/node-addon-bench` | Node/V8/N-API runtime benchmark for the native addon |
 | `integration/rust` | Rust integration via `webui-handler` |

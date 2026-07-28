@@ -63,6 +63,7 @@ RUN cd examples/app/contact-book-manager && pnpm build
 RUN cd examples/app/component-assets && pnpm build
 RUN cd examples/app/routes && pnpm build
 RUN cd examples/app/commerce && pnpm build
+RUN cd examples/app/streaming && pnpm build
 
 # Build the demo shell client (bundles src/index.ts → dist/index.js)
 RUN cd examples/demo && pnpm build
@@ -77,7 +78,7 @@ RUN cd examples/app/routes/server && \
     --outfile=dist/index.js --packages=external
 
 # ── Build Rust binaries ─────────────────────────────────────────────
-RUN cargo build --release -p microsoft-webui-cli -p marketplace-api -p demo-shell
+RUN cargo build --release -p microsoft-webui-cli -p marketplace-api -p streaming-example-server -p demo-shell
 
 # ── Stage 3: Runtime ────────────────────────────────────────────────
 FROM debian:bookworm-slim
@@ -109,6 +110,7 @@ WORKDIR /app
 # Copy Rust binaries
 COPY --from=builder /build/target/release/webui /usr/local/bin/webui
 COPY --from=builder /build/target/release/marketplace-api /usr/local/bin/marketplace-api
+COPY --from=builder /build/target/release/streaming-example-server /usr/local/bin/streaming-example-server
 COPY --from=builder /build/target/release/demo-shell /usr/local/bin/demo-shell
 
 # Copy entrypoint
@@ -164,6 +166,11 @@ COPY --from=builder --chown=app:app /build/examples/app/commerce/src/ ./apps/com
 COPY --from=builder --chown=app:app /build/examples/app/commerce/dist/ ./apps/commerce/dist/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/images/ ./apps/commerce/images/
 COPY --from=builder --chown=app:app /build/examples/app/commerce/demo.toml ./apps/commerce/demo.toml
+
+# streaming (custom Rust server, generates its own state — no data/ dir)
+COPY --from=builder --chown=app:app /build/examples/app/streaming/src/ ./apps/streaming/src/
+COPY --from=builder --chown=app:app /build/examples/app/streaming/dist/ ./apps/streaming/dist/
+COPY --from=builder --chown=app:app /build/examples/app/streaming/demo.toml ./apps/streaming/demo.toml
 
 # Demo shell (the `/` UI itself — a real WebUI app)
 COPY --from=builder --chown=app:app /build/examples/demo/src/  ./shell/src/

@@ -30,6 +30,13 @@ use webui_protocol::{
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn structural_fragment(value: &str) -> WebUIFragment {
+    let mut token = String::with_capacity("}}}webui:".len() + value.len());
+    token.push_str("}}}webui:");
+    token.push_str(value);
+    WebUIFragment::signal(token, true)
+}
+
 /// Retrieve the last error as a Rust String, or `None`.
 unsafe fn last_error_string() -> Option<String> {
     let ptr = webui_last_error();
@@ -391,9 +398,9 @@ fn build_protocol_with_body_end() -> Vec<u8> {
         FragmentList {
             fragments: vec![
                 WebUIFragment::raw("<html><head>"),
-                WebUIFragment::signal("head_end".to_string(), true),
+                structural_fragment("head_end"),
                 WebUIFragment::raw("</head><body>"),
-                WebUIFragment::signal("body_end".to_string(), true),
+                structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
         },
@@ -635,10 +642,10 @@ fn build_protocol_with_hydration_keys(hydration_keys: &[&str]) -> Vec<u8> {
         FragmentList {
             fragments: vec![
                 WebUIFragment::raw("<html><head>"),
-                WebUIFragment::signal("head_end".to_string(), true),
+                structural_fragment("head_end"),
                 WebUIFragment::raw("</head><body>"),
                 WebUIFragment::component("client-card"),
-                WebUIFragment::signal("body_end".to_string(), true),
+                structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
         },

@@ -1890,6 +1890,7 @@ version = "0.0.19"
 dependencies = [
  "criterion",
  "microsoft-webui-expressions",
+ "microsoft-webui-parser",
  "microsoft-webui-protocol",
  "microsoft-webui-state",
  "microsoft-webui-test-utils",
@@ -3000,6 +3001,24 @@ dependencies = [
  "microsoft-webui",
  "microsoft-webui-handler",
  "serde",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "streaming-example-server"
+version = "0.0.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "bytes",
+ "clap",
+ "futures-util",
+ "microsoft-webui",
+ "microsoft-webui-handler",
+ "microsoft-webui-tokens",
+ "mime_guess",
+ "serde_json",
  "tokio",
  "tokio-stream",
 ]

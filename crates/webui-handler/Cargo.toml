@@ -24,6 +24,7 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.19" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.19" }
 criterion = { workspace = true }
 
 [[bench]]
@@ -32,6 +33,10 @@ harness = false
 
 [[bench]]
 name = "bootstrap_state_bench"
+harness = false
+
+[[bench]]
+name = "streaming_hydration_bench"
 harness = false
 
 [lints]

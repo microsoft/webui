@@ -133,6 +133,16 @@ const SUITES: &[PlaywrightSuite] = &[
         update_snapshots_script: "test:update-snapshots",
     },
     PlaywrightSuite {
+        name: "streaming",
+        dir: "examples/app/streaming",
+        ports: &[3020],
+        scripts: &["start:server"],
+        build_client: true,
+        pre_script: None,
+        test_script: "test",
+        update_snapshots_script: "test:update-snapshots",
+    },
+    PlaywrightSuite {
         name: "webui-framework",
         dir: "packages/webui-framework",
         ports: &[],

@@ -155,7 +155,12 @@ async fn main() {
 
 ## Streaming SSR
 
-For production, prefer the framework-provided `webui::streaming::StreamingWriter` over a hand-rolled `String` buffer. It coalesces small writes into ~4 KB chunks, ships them over a **bounded** `tokio::mpsc` channel (backpressure on slow clients), and recycles chunk buffers through a shared `ChunkPool` so steady-state RPS does zero per-flush allocation.
+`webui::streaming::StreamingWriter` coalesces small writes, sends them over a
+bounded `tokio::mpsc` channel for backpressure, and can recycle buffers through
+a shared `ChunkPool`. You can use it with `WebUIHandler::render` for transport
+streaming. To make authored `<webui-boundary>` checkpoints hydrate before the
+response completes, call the opt-in `WebUIHandler::render_streaming` API shown
+below.
 
 ```rust
 use std::sync::Arc;
@@ -179,13 +184,13 @@ actix_web::rt::task::spawn_blocking({
     move || {
         // `with_flush_timeout` bounds the slow-loris DoS surface to
         // `30s × concurrent_renders`. `end()` returns the typed error
-        // from the final flush — log truncated streams at debug.
+        // from the final flush. Log truncated streams at debug.
         let mut writer = StreamingWriter::new_pooled(tx, chunk_pool)
             .with_flush_timeout(Duration::from_secs(30));
         let options = RenderOptions::new("index.html", &request_path)
             .with_nonce(&csp_nonce)
             .with_body_inject(&livereload_script); // per-request inject
-        if let Err(e) = handler.render(&proto, &state, &options, &mut writer) {
+        if let Err(e) = handler.render_streaming(&proto, &state, &options, &mut writer) {
             log::error!("render failed: {e}");
             if let Err(flush_error) = ResponseWriter::end(&mut writer) {
                 log::debug!("stream truncated: {flush_error}");
@@ -198,15 +203,61 @@ HttpResponse::Ok()
     .streaming(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, actix_web::Error>))
 ```
 
+The public writer contract is:
+
+```rust
+pub trait FlushWriter: ResponseWriter {
+    fn flush(&mut self) -> HandlerResult<()>;
+}
+```
+
+`render_streaming` accepts `&mut dyn FlushWriter`; `StreamingWriter` implements
+that trait. Each explicit boundary is completed, followed by its hydration
+checkpoint and a semantic flush. The final response also includes an in-order
+tail checkpoint when needed and a terminal checkpoint. The normal `render`
+method still accepts any `ResponseWriter` and does not progressively hydrate
+authored boundaries.
+
+The entry template must load its application module with an early
+`<script type="module" async>` in `<head>`, before boundary content. See
+[Progressive Streaming Hydration](/guide/concepts/hydration#progressive-streaming-hydration)
+and the
+[`<webui-boundary>` directive](/guide/concepts/directives/boundary) for the
+authoring and lifecycle contract. That application entry must import
+`@microsoft/webui-framework/streaming.js` before component registration
+modules. The default framework entry does not include the streaming coordinator.
+
+Each checkpoint carries state and templates for the component surface reachable
+from roots rendered since the previous checkpoint, including descendants behind
+initially false conditions or empty repeats. Unrelated later boundaries remain
+excluded. Template metadata is sent only when first reachable, inventory still
+tracks only rendered SSR roots, and repeated instances receive checkpoint-local
+state without duplicate metadata. If an uncommitted tail exists, its checkpoint
+and the terminal flag share one payload and one flush.
+
+`FlushWriter::flush` means all currently buffered bytes were handed to the HTTP
+transport. It cannot force an HTTP adapter, compressor, reverse proxy, or CDN to
+deliver them immediately. Disable response buffering where applicable and test
+the production delivery path. Phase 1 checkpoints are strictly in document
+order.
+
 ### Per-request HTML injection
 
-`with_head_inject` / `with_body_inject` splice host-provided HTML at the parser-synthesized `head_end` / `body_end` structural boundaries — zero scan cost, and cannot mis-fire on `</head>` / `</body>` literals appearing inside HTML comments, `<iframe srcdoc>`, or inline `<script>`. Typical uses: per-request `<link rel="preload">` hints, dev livereload script, OpenTelemetry trace IDs.
+`with_head_inject` / `with_body_inject` splice host-provided HTML at the
+parser-synthesized `head_end` / `body_end` structural boundaries. They cannot
+mis-fire on `</head>` / `</body>` literals appearing inside HTML comments,
+`<iframe srcdoc>`, or inline `<script>`. Typical uses include per-request
+`<link rel="preload">` hints, a development livereload script, and OpenTelemetry
+trace IDs.
 
 > **Safety:** the HTML is written verbatim, no escaping. Untrusted input is a direct XSS vector. Pre-escape with `webui_handler::encode_safe` (re-exported for this purpose) if your content path may include user data.
 
 ### Typed streaming errors
 
-`StreamingWriter` returns `HandlerError::ClientDisconnected` (receiver dropped) or `HandlerError::StreamTimeout` (flush deadline exceeded) from both `write()` and `end()`, so callers can distinguish "fully delivered" from "client cancelled" for correct telemetry.
+`StreamingWriter` returns `HandlerError::ClientDisconnected` (receiver dropped)
+or `HandlerError::StreamTimeout` (flush deadline exceeded) from writes,
+boundary flushes, and the final `end()`, so callers can distinguish a completed
+delivery from a cancelled or stalled stream.
 
 ## API Reference
 

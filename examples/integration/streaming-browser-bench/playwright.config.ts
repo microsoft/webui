@@ -7,7 +7,7 @@ const port = 3099;
 
 export default defineConfig({
   testDir: './tests',
-  testMatch: '**/*.spec.ts',
+  testMatch: '**/browser_metrics.spec.ts',
   fullyParallel: false, // measurements must not contend
   forbidOnly: !!process.env.CI,
   retries: 0,

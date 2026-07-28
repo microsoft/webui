@@ -137,6 +137,51 @@ pub trait HandlerPlugin {
         None
     }
 
+    /// Slice-based counterpart to [`HandlerPlugin::emit_templates`].
+    ///
+    /// The streaming checkpoint path captures the exact component tags rendered
+    /// since the previous checkpoint as a borrowed `&[&str]`, avoiding the owned
+    /// `HashSet<String>` the ordinary body-end path builds. The default forwards
+    /// to [`emit_component_templates_slice`] (verbatim FAST `<f-template>`
+    /// emission).
+    fn emit_templates_slice(
+        &self,
+        protocol: &WebUIProtocol,
+        tags: &[&str],
+        _nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        emit_component_templates_slice(protocol, tags, writer)
+    }
+
+    /// Slice-based counterpart to [`HandlerPlugin::collect_template_payloads`].
+    ///
+    /// Consumes a borrowed `&[&str]` of component tags so the streaming path can
+    /// project per-checkpoint templates without materializing an owned set. The
+    /// default returns `None`.
+    fn collect_template_payloads_slice<'a>(
+        &self,
+        _protocol: &'a WebUIProtocol,
+        _tags: &[&str],
+    ) -> Option<Vec<WebUiTemplatePayload<'a>>> {
+        None
+    }
+
+    /// Emit plugin-specific executable SSR bootstrap code for the streaming
+    /// path, given only the already-collected template payloads.
+    ///
+    /// Unlike [`HandlerPlugin::emit_bootstrap_extension`], this takes no
+    /// `HashSet<String>` component set — the streaming checkpoint has already
+    /// projected the exact per-checkpoint payloads. The default is a no-op.
+    fn emit_bootstrap_extension_payloads(
+        &self,
+        _payloads: &[WebUiTemplatePayload<'_>],
+        _nonce: Option<&str>,
+        _writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Emit plugin-specific executable SSR bootstrap code, if needed.
     ///
     /// The handler emits shared metadata as inert `#webui-data`; client
@@ -160,6 +205,28 @@ pub(crate) fn emit_component_templates(
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
     for name in components {
+        if let Some(template) = protocol
+            .components
+            .get(name)
+            .map(|component| component.template.as_str())
+            .filter(|template| !template.is_empty())
+        {
+            writer.write(template)?;
+        }
+    }
+    Ok(())
+}
+
+/// Slice-based counterpart to [`emit_component_templates`].
+///
+/// Writes each non-empty template verbatim for the borrowed component tags,
+/// used by the streaming checkpoint fallback path.
+pub(crate) fn emit_component_templates_slice(
+    protocol: &WebUIProtocol,
+    tags: &[&str],
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    for &name in tags {
         if let Some(template) = protocol
             .components
             .get(name)

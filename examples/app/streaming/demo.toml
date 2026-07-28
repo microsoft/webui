@@ -1,0 +1,11 @@
+# Demo shell metadata — auto-discovered by the demo shell server.
+# See examples/demo/README.md for the full schema.
+
+name = "Streaming"
+description = "Progressive streaming hydration: priority-ordered composer/weather/feed rendering over one open response"
+backend = "rust"
+
+[server]
+type = "custom-binary"
+binary = "streaming-example-server"
+args = ["--css", "style"]

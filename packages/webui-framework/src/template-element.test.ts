@@ -1,0 +1,336 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+import { strict as assert } from 'node:assert';
+import { describe, test } from 'node:test';
+
+/**
+ * `TemplateElement extends HTMLElement` at module scope, so `HTMLElement`
+ * must exist globally before the module is evaluated — same mocking pattern
+ * as `static-host.test.ts` and `streaming.test.ts`.
+ */
+Object.defineProperty(globalThis, 'HTMLElement', {
+  value: class HTMLElement {
+    tagName = '';
+    isConnected = false;
+    childNodes: unknown[] = [];
+    shadowRoot = null;
+    _attrs: Record<string, string> = {};
+
+    hasAttribute(name: string): boolean {
+      return Object.prototype.hasOwnProperty.call(this._attrs, name);
+    }
+
+    getAttribute(name: string): string | null {
+      return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null;
+    }
+
+    setAttribute(name: string, value: string): void {
+      this._attrs[name] = String(value);
+    }
+
+    removeAttribute(name: string): void {
+      delete this._attrs[name];
+    }
+  },
+  configurable: true,
+});
+
+Object.defineProperty(globalThis, 'document', {
+  value: {
+    readyState: 'loading',
+    getElementById() {
+      return null;
+    },
+    querySelector(selector: string) {
+      // Matches the real streaming meta tag detection query in
+      // streaming-mode.ts — asserted so this test breaks loudly if that
+      // selector ever changes instead of silently detecting non-streaming.
+      assert.equal(selector, 'meta[name="webui-streaming"][content="1"]');
+      return { getAttribute: () => '1' };
+    },
+  },
+  configurable: true,
+});
+
+const dispatchedEvents: string[] = [];
+Object.defineProperty(globalThis, 'window', {
+  value: {
+    __webui: { templates: {} },
+    dispatchEvent(event: Event): boolean {
+      dispatchedEvents.push(event.type);
+      return true;
+    },
+  },
+  configurable: true,
+});
+
+const { TemplateElement } = await import('./template-element.js');
+const { resetStreamingModeForTests } = await import('./streaming-mode.js');
+const {
+  beginStreamingGate,
+  markBoundaryPending,
+  markBoundaryCommitted,
+  __getLifecycleStateForTests,
+  __resetLifecycleForTests,
+} = await import('./lifecycle.js');
+
+/** The activation hook the streaming coordinator invokes on a committed boundary. */
+const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
+
+/** Register template metadata for a tag exactly like `registerTemplateData()`. */
+function registerTemplate(tag: string): void {
+  (window as unknown as { __webui: { templates: Record<string, unknown> } }).__webui.templates[tag] = {
+    h: '<div></div>',
+  };
+}
+
+describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral', () => {
+  test('defers a data-ws-marked streamed host without warning, even when metadata is missing', () => {
+    resetStreamingModeForTests();
+
+    const previousWarn = console.warn;
+    let warned = false;
+    console.warn = () => {
+      warned = true;
+    };
+
+    try {
+      // A streamed SSR component host carries the parser-emitted `data-ws`
+      // marker. It connects at its opening tag (zero children, no shadow root)
+      // before its boundary — and thus its template metadata — has streamed in.
+      const el = new TemplateElement();
+      (el as unknown as { tagName: string }).tagName = 'test-stream-widget';
+      (el as unknown as { setAttribute(n: string, v: string): void }).setAttribute('data-ws', '');
+
+      assert.equal((el as unknown as { childNodes: unknown[] }).childNodes.length, 0);
+
+      el.connectedCallback();
+
+      assert.equal(warned, false, 'a marked streamed host must never warn about in-flight metadata');
+      assert.equal((el as unknown as { $deferredSSR: boolean }).$deferredSSR, true);
+      assert.equal((el as unknown as { $ready: boolean }).$ready, true);
+      // The marker stays until the boundary activates the instance.
+      assert.equal((el as unknown as { hasAttribute(n: string): boolean }).hasAttribute('data-ws'), true);
+    } finally {
+      console.warn = previousWarn;
+    }
+  });
+
+  test('warns for an UNMARKED client-created element with missing metadata (no silent defer)', () => {
+    resetStreamingModeForTests();
+
+    const previousWarn = console.warn;
+    let warned = false;
+    console.warn = () => {
+      warned = true;
+    };
+
+    try {
+      // No `data-ws`: a genuinely client-created empty element. With the old
+      // empty-subtree heuristic removed, a missing template is now a real
+      // authoring error surfaced immediately rather than an indefinite defer.
+      const el = new TemplateElement();
+      (el as unknown as { tagName: string }).tagName = 'test-unmarked-widget';
+
+      el.connectedCallback();
+
+      assert.equal(warned, true, 'an unmarked element with no metadata must warn, not defer');
+      assert.notEqual((el as unknown as { $deferredSSR: boolean }).$deferredSSR, true);
+    } finally {
+      console.warn = previousWarn;
+    }
+  });
+
+  test('does not reserve an authored data-ws attribute on an ordinary page', () => {
+    const documentFake = document as unknown as {
+      querySelector(selector: string): unknown;
+    };
+    const streamingQuery = documentFake.querySelector;
+    documentFake.querySelector = () => null;
+    resetStreamingModeForTests();
+
+    const previousWarn = console.warn;
+    let warned = false;
+    console.warn = () => {
+      warned = true;
+    };
+
+    try {
+      const el = new TemplateElement();
+      (el as unknown as { tagName: string }).tagName = 'test-ordinary-data-attribute';
+      (el as unknown as { setAttribute(n: string, v: string): void }).setAttribute('data-ws', 'authored');
+
+      el.connectedCallback();
+
+      assert.equal(warned, true, 'ordinary lifecycle continues through metadata lookup');
+      assert.notEqual((el as unknown as { $deferredSSR: boolean }).$deferredSSR, true);
+    } finally {
+      console.warn = previousWarn;
+      documentFake.querySelector = streamingQuery;
+      resetStreamingModeForTests();
+    }
+  });
+});
+
+describe('TemplateElement.connectedCallback — reused-template race', () => {
+  test('defers a data-ws instance even when the tag metadata is already registered by an earlier boundary', () => {
+    resetStreamingModeForTests();
+
+    // Boundary 0 already committed and registered this tag's template metadata;
+    // a later, not-yet-committed boundary connects its own <test-reused-widget>
+    // instance whose SSR children have not been parsed yet. The `data-ws`
+    // marker short-circuits the metadata lookup, so $mount() can never
+    // misclassify the empty instance as client-created.
+    registerTemplate('test-reused-widget');
+
+    const el = new TemplateElement();
+    (el as unknown as { tagName: string }).tagName = 'test-reused-widget';
+    (el as unknown as { setAttribute(n: string, v: string): void }).setAttribute('data-ws', '');
+
+    assert.equal((el as unknown as { childNodes: unknown[] }).childNodes.length, 0);
+
+    el.connectedCallback();
+
+    assert.equal((el as unknown as { $deferredSSR: boolean }).$deferredSSR, true);
+    assert.equal((el as unknown as { $ready: boolean }).$ready, true);
+    // $mount() must never have run: no client root wired, $meta still unset
+    // (resolved lazily at activation).
+    assert.equal((el as unknown as { $root: unknown }).$root, null);
+    assert.equal((el as unknown as { $meta: unknown }).$meta, undefined);
+  });
+});
+
+describe('TemplateElement — streamed-host activation ownership', () => {
+  test('activation clears the deferral but leaves data-ws for the coordinator to strip', () => {
+    resetStreamingModeForTests();
+    registerTemplate('test-activate-widget');
+
+    const el = new TemplateElement();
+    (el as unknown as { tagName: string }).tagName = 'test-activate-widget';
+    const raw = el as unknown as {
+      setAttribute(n: string, v: string): void;
+      hasAttribute(n: string): boolean;
+      $deferredSSR: boolean;
+      $hydrated: boolean;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void;
+    };
+    raw.setAttribute('data-ws', '');
+
+    // Reach the deferred state the coordinator would activate. Marking the
+    // instance already-hydrated makes $mount() a clean no-op so this test
+    // isolates the activation contract without a real DOM.
+    el.connectedCallback();
+    assert.equal(raw.$deferredSSR, true);
+    assert.equal(raw.hasAttribute('data-ws'), true);
+    raw.$hydrated = true;
+
+    raw[STREAMING_BOUNDARY_ACTIVATE]();
+
+    assert.equal(raw.$deferredSSR, false, 'activation clears the deferral');
+    // Successful-path marker removal is centralized in the streaming
+    // coordinator's `invokeActivationHook` (proved by the pipeline tests), NOT
+    // duplicated in TemplateElement — so invoking the hook directly leaves the
+    // marker in place. This guards against re-introducing the duplicate cleanup.
+    assert.equal(raw.hasAttribute('data-ws'), true, 'TemplateElement itself does not strip the marker');
+  });
+
+  test('activation establishes deferral for a detached root upgraded before first connection', () => {
+    let received: Record<string, unknown> | undefined;
+    let wasDeferred = false;
+
+    class DetachedUpgradeElement extends TemplateElement {
+      protected override $activateDeferredSSR(state?: Record<string, unknown>): void {
+        wasDeferred = (this as unknown as { $deferredSSR: boolean }).$deferredSSR;
+        received = state;
+      }
+    }
+
+    const el = new DetachedUpgradeElement();
+    const raw = el as unknown as {
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void;
+    };
+    raw.setAttribute('data-ws', '');
+
+    raw[STREAMING_BOUNDARY_ACTIVATE]({ detached: true });
+
+    assert.equal(wasDeferred, true, 'the marker establishes dormant SSR state without connectedCallback');
+    assert.deepEqual(received, { detached: true });
+  });
+
+  test('authored components do not globally defer unmarked SSR-shaped light DOM', () => {
+    const el = new TemplateElement() as unknown as {
+      $shouldDeferSSRHydration(): boolean;
+    };
+    assert.equal(el.$shouldDeferSSRHydration(), false);
+  });
+});
+
+describe('TemplateElement — hydration lifecycle exceptions', () => {
+  test('a real streamed activation throw balances lifecycle and does not wedge terminal completion', () => {
+    class ThrowingStateElement extends TemplateElement {
+      protected override $shouldApplySSRBootstrapState(): boolean {
+        throw new Error('state hydration failed');
+      }
+    }
+
+    const tag = 'test-throwing-hydration-widget';
+    registerTemplate(tag);
+    __resetLifecycleForTests();
+    dispatchedEvents.length = 0;
+    beginStreamingGate();
+    markBoundaryPending();
+
+    const el = new ThrowingStateElement();
+    const raw = el as unknown as {
+      tagName: string;
+      childNodes: unknown[];
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void;
+    };
+    raw.tagName = tag;
+    raw.childNodes.push({});
+    raw.setAttribute('data-ws', '');
+    el.connectedCallback();
+
+    assert.throws(
+      () => raw[STREAMING_BOUNDARY_ACTIVATE]({ count: 1 }),
+      /state hydration failed/,
+      'TemplateElement must not swallow the hydration error',
+    );
+    let state = __getLifecycleStateForTests();
+    assert.equal(state.pendingCount, 0, 'the throwing activation balances hydrationStart');
+    assert.equal(state.completed, false, 'terminal has not committed yet');
+
+    markBoundaryCommitted(true);
+    state = __getLifecycleStateForTests();
+    assert.equal(state.completed, true, 'balanced accounting allows terminal completion');
+    assert.equal(dispatchedEvents.includes('webui:hydration-complete'), true);
+  });
+
+  test('a reconnect update throw also balances hydration lifecycle', () => {
+    class ThrowingReconnectElement extends TemplateElement {
+      override $update(): void {
+        throw new Error('reconnect update failed');
+      }
+    }
+
+    __resetLifecycleForTests();
+    dispatchedEvents.length = 0;
+    const el = new ThrowingReconnectElement();
+    const raw = el as unknown as {
+      tagName: string;
+      $hydrated: boolean;
+      $root: object;
+    };
+    raw.tagName = 'test-throwing-reconnect-widget';
+    raw.$hydrated = true;
+    raw.$root = {};
+
+    assert.throws(() => el.connectedCallback(), /reconnect update failed/);
+    const state = __getLifecycleStateForTests();
+    assert.equal(state.pendingCount, 0);
+    assert.equal(state.completed, true);
+  });
+});

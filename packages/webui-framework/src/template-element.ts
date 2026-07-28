@@ -54,6 +54,7 @@ import type {
   TemplateNodePath,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
+import { isStreamingHydrationMode } from './streaming-mode.js';
 import {
   createRepeatKeyState,
   seedHydratedRepeatKeys,
@@ -154,6 +155,12 @@ const EMPTY_ARR: readonly never[] = [];
 const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
 /** Branded single-key state writer used by framework bindings, not public duck typing. */
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
+/** Branded streaming-boundary activation hook, invoked by the coordinator in `streaming.ts`. */
+const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
+/** Shared coordinator callback retained only by an undefined streamed root
+ *  that was detached when its class became defined. */
+const PENDING_ROOT_CONNECTED = Symbol.for('microsoft.webui.pendingRootConnected');
+const STREAMED_HOST_ATTR = 'data-ws';
 
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 
@@ -307,6 +314,25 @@ export class TemplateElement extends HTMLElement {
   }
 
   /**
+   * Internal hook invoked by the streaming coordinator (`streaming.ts`) once
+   * a boundary containing this element has committed. A no-op unless the
+   * instance is actually deferred and opts in via `$shouldActivateOnBoundaryCommit()`
+   * (compiler-owned static hosts opt out — see `static-host.ts`). The optional
+   * `state` is this element's boundary-local SSR state, handed straight through
+   * to hydration instead of via the global `window.__webui.state` handoff.
+   */
+  [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void {
+    // `customElements.upgrade()` installs this class on detached roots without
+    // invoking connectedCallback(). Preserve the same marker-driven dormant
+    // state those roots would have entered while connected before activation.
+    if (!this.$deferredSSR && this.hasAttribute(STREAMED_HOST_ATTR)) {
+      this.$deferredSSR = true;
+      this.$ready = true;
+    }
+    if (this.$deferredSSR && this.$shouldActivateOnBoundaryCommit()) this.$activateDeferredSSR(state);
+  }
+
+  /**
    * Register this constructor for a tag and install template-derived observers.
    */
   static define(tagName: string): void {
@@ -326,9 +352,34 @@ export class TemplateElement extends HTMLElement {
 
     if (this.$hydrated && this.$root) {
       hydrationStart();
+      try {
+        this.$ready = true;
+        this.$update();
+      } finally {
+        hydrationEnd();
+      }
+      return;
+    }
+
+    // Streamed SSR hosts carry an explicit `data-ws` marker emitted by the
+    // server/parser on every streamed component host root (and only those). It
+    // is the sole signal that this element's SSR subtree is still being
+    // streamed and its boundary has not committed yet: defer, and let the
+    // streaming coordinator (`streaming.ts`) activate this instance once its
+    // boundary commits — by which point its subtree has fully parsed. It also
+    // resolves the reused-tag race (an earlier boundary already registered
+    // this tag's metadata, but the parser has not yet appended *this*
+    // instance's own SSR children): $mount() would misclassify it as
+    // client-created, so deferring on the marker sidesteps that entirely.
+    //
+    // A genuinely client-created empty element made during the streaming
+    // window has no `data-ws` and falls through to mount normally below — the
+    // marker, not an empty-subtree heuristic, is what distinguishes the two.
+    if (isStreamingHydrationMode() && this.hasAttribute(STREAMED_HOST_ATTR)) {
+      this.$deferredSSR = true;
       this.$ready = true;
-      this.$update();
-      hydrationEnd();
+      const resume = (this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void })[PENDING_ROOT_CONNECTED];
+      if (typeof resume === 'function') resume.call(this);
       return;
     }
 
@@ -348,7 +399,7 @@ export class TemplateElement extends HTMLElement {
   }
 
   /** Mount the component after children are available. */
-  private $mount(meta: TemplateMeta, forceSSR: boolean): void {
+  private $mount(meta: TemplateMeta, forceSSR: boolean, ssrState?: Record<string, unknown>): void {
     if (this.$hydrated) return;
 
     // Auto-detect shadow vs light DOM
@@ -390,52 +441,58 @@ export class TemplateElement extends HTMLElement {
     }
 
     hydrationStart();
+    try {
+      // Inject CSS module stylesheet after root is determined
+      if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
 
-    // Inject CSS module stylesheet after root is determined
-    if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
+      if (isSSR) {
+        // Seed explicit authored state. A streamed activation (forceSSR) supplies
+        // its boundary-local state directly; ordinary hydration defaults to the
+        // global `window.__webui.state` handoff. Passing `forceSSR`'s state as-is
+        // (even when undefined) keeps a stateless streamed boundary from falling
+        // back to a later boundary's global state.
+        if (this.$shouldApplySSRBootstrapState()) {
+          this.$applySSRState(forceSSR ? ssrState : window.__webui?.state);
+        }
+        this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
-    if (isSSR) {
-      // Seed explicit authored state. Template-only roots already exist in the
-      // trusted SSR DOM and arrive later only when navigation updates them.
-      if (this.$shouldApplySSRBootstrapState()) this.$applySSRState();
-      this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
-
-    } else {
-      clientRoot = this.$createStagingRoot(meta);
-      this.$root = this.$wire(clientRoot, meta);
-    }
-
-    this.$meta = meta;
-    this.$hydrated = true;
-    this.$ready = true;
-    this.$syncAuthoredAttributes();
-
-    // SSR only: warn when a pre-ready write left an observable disagreeing
-    // with the server-rendered DOM. Client-created components have no SSR
-    // content to diverge from. `DEV` gates the call so production bundles
-    // (`--define:__WEBUI_DEV__=false`) drop it entirely.
-    if (isSSR && DEV) this.$checkHydrationMismatch();
-    else this.$preReadyWrites = null;
-
-    // Client-created components: flush current attr/observable values
-    // into the freshly-wired template DOM. Call $updateInstance directly
-    // to avoid the $update() path-index build — it will be lazy-built
-    // on the first reactive change instead.
-    if (!isSSR && clientRoot) {
-      this.$updateInstance(this.$root);
-      if (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0) {
-        this.$root.nodes = childNodesArray(clientRoot);
-        this.$replaceInstanceContainer(
-          this.$root,
-          clientRoot,
-          root as ParentNode & Node,
-        );
+      } else {
+        clientRoot = this.$createStagingRoot(meta);
+        this.$root = this.$wire(clientRoot, meta);
       }
-      this.$appendStagedChildren(root, clientRoot);
-      this.$root.container = root as ParentNode & Node;
-    }
 
-    hydrationEnd();
+      this.$meta = meta;
+      this.$hydrated = true;
+      this.$ready = true;
+      this.$syncAuthoredAttributes();
+
+      // SSR only: warn when a pre-ready write left an observable disagreeing
+      // with the server-rendered DOM. Client-created components have no SSR
+      // content to diverge from. `DEV` gates the call so production bundles
+      // (`--define:__WEBUI_DEV__=false`) drop it entirely.
+      if (isSSR && DEV) this.$checkHydrationMismatch();
+      else this.$preReadyWrites = null;
+
+      // Client-created components: flush current attr/observable values
+      // into the freshly-wired template DOM. Call $updateInstance directly
+      // to avoid the $update() path-index build — it will be lazy-built
+      // on the first reactive change instead.
+      if (!isSSR && clientRoot) {
+        this.$updateInstance(this.$root);
+        if (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0) {
+          this.$root.nodes = childNodesArray(clientRoot);
+          this.$replaceInstanceContainer(
+            this.$root,
+            clientRoot,
+            root as ParentNode & Node,
+          );
+        }
+        this.$appendStagedChildren(root, clientRoot);
+        this.$root.container = root as ParentNode & Node;
+      }
+    } finally {
+      hydrationEnd();
+    }
   }
 
   disconnectedCallback(): void {
@@ -551,22 +608,53 @@ export class TemplateElement extends HTMLElement {
   protected $afterExternalStateWrite(_applied: boolean): void {
   }
 
-  /** Decide whether an SSR instance should remain dormant until client use. */
+  /**
+   * Decide whether an SSR instance should remain dormant until client use.
+   *
+   * Authored components defer only when their compiler-owned `data-ws` marker
+   * is present; `connectedCallback()` handles that case before mounting.
+   * Keeping the default false prevents unrelated client-created light-DOM
+   * components on a streaming page from becoming permanently dormant.
+   * Compiler-owned static hosts override this to retain their existing
+   * dormant-until-state-write behavior.
+   */
   protected $shouldDeferSSRHydration(): boolean {
     return false;
   }
 
-  /** Activate a previously deferred SSR instance. */
-  protected $activateDeferredSSR(): void {
-    if (!this.$deferredSSR || !this.$meta) return;
+  /**
+   * Decide whether a streamed boundary commit should activate this instance.
+   * Authored/base components activate immediately; compiler-owned static
+   * hosts (`static-host.ts`) opt out to keep their existing
+   * dormant-until-state-write contract.
+   */
+  protected $shouldActivateOnBoundaryCommit(): boolean {
+    return true;
+  }
+
+  /** Activate a previously deferred SSR instance. `state` is the boundary-local
+   *  SSR state supplied by the streaming coordinator; ordinary (non-streaming)
+   *  activations omit it and fall back to the global handoff inside `$mount`. */
+  protected $activateDeferredSSR(state?: Record<string, unknown>): void {
+    if (!this.$deferredSSR) return;
+    // Point-A deferrals (metadata missing entirely at connect time) never set
+    // $meta, unlike the $mount()-driven deferral above. Resolve it lazily.
+    const meta = this.$meta ?? getTemplate(this.tagName.toLowerCase());
+    if (!meta) return;
+    this.$meta = meta;
     this.$deferredSSR = false;
     this.$ready = false;
     this.$preReadyWrites = null;
     this.$activatingDeferredSSR = true;
     try {
-      this.$mount(this.$meta, true);
+      this.$mount(meta, true, state);
     } finally {
       this.$activatingDeferredSSR = false;
+      // The streamed-host `data-ws` marker is NOT dropped here: the streaming
+      // coordinator (`streaming.ts` `invokeActivationHook`) owns successful-path
+      // removal in its own `finally`, so every committed root — including
+      // no-hook and opt-out (static host) roots — is stripped uniformly, even
+      // if this activation threw. Removing it here too would be redundant.
     }
   }
 
@@ -648,19 +736,22 @@ export class TemplateElement extends HTMLElement {
   }
 
   /**
-   * Apply SSR state from `window.__webui.state`.
+   * Apply SSR state to this instance's `@observable`/`@attr` and template
+   * backing fields.
    *
-   * The handler emits all SSR metadata in a single consolidated
-   * `window.__webui` script block. State lives at `.state`; the build-time
-   * hydration keys contain only explicit `@observable`/`@attr` properties.
-   * Template-only roots remain absent because their initial values are already
+   * `state` is supplied by the caller: ordinary hydration passes
+   * `window.__webui.state` (the consolidated SSR bootstrap block), while a
+   * streamed activation passes its boundary-local state directly so a late
+   * activation sees the state that was live when its *own* boundary committed
+   * rather than whatever the global handoff currently holds. The build-time
+   * hydration keys contain only explicit `@observable`/`@attr` properties;
+   * template-only roots remain absent because their initial values are already
    * represented by the trusted SSR DOM.
    *
    * Writes directly to the backing field (`_prop`) to avoid triggering
    * reactive updates before bindings are wired.
    */
-  private $applySSRState(): void {
-    const state = window.__webui?.state;
+  private $applySSRState(state: Record<string, unknown> | undefined): void {
     if (!state || typeof state !== 'object') return;
     const observableNames = this.$observableNames();
     const keys = Object.keys(state);

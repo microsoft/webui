@@ -104,36 +104,22 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         nonce: Option<&str>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        let mut templates: Vec<&str> = Vec::with_capacity(components.len());
+        webui_emit_templates(
+            protocol,
+            components.iter().map(String::as_str),
+            nonce,
+            writer,
+        )
+    }
 
-        for name in components {
-            if let Some(template) = protocol
-                .components
-                .get(name)
-                .map(|component| component.template.as_str())
-                .filter(|t| !t.is_empty())
-            {
-                templates.push(template);
-            }
-        }
-
-        if templates.is_empty() {
-            return Ok(());
-        }
-
-        if let Some(nonce) = nonce {
-            writer.write("<script nonce=\"")?;
-            writer.write(nonce)?;
-            writer.write("\">\n")?;
-        } else {
-            writer.write("<script>\n")?;
-        }
-        for tmpl in &templates {
-            writer.write(tmpl)?;
-        }
-        writer.write("</script>\n")?;
-
-        Ok(())
+    fn emit_templates_slice(
+        &self,
+        protocol: &WebUIProtocol,
+        tags: &[&str],
+        nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        webui_emit_templates(protocol, tags.iter().copied(), nonce, writer)
     }
 
     /// Collect split WebUI template payloads for SSR bootstrap emission.
@@ -142,24 +128,15 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         protocol: &'a WebUIProtocol,
         components: &HashSet<String>,
     ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
-        let mut templates: Vec<super::WebUiTemplatePayload<'a>> =
-            Vec::with_capacity(components.len());
-        for name in components {
-            if let Some((tag_name, component)) = protocol.components.get_key_value(name) {
-                if !component.template_json.is_empty() {
-                    templates.push(super::WebUiTemplatePayload {
-                        tag_name: tag_name.as_str(),
-                        template_json: component.template_json.as_str(),
-                        template_functions: component.template_functions.as_str(),
-                    });
-                }
-            }
-        }
-        if templates.is_empty() {
-            None
-        } else {
-            Some(templates)
-        }
+        webui_collect_payloads(protocol, components.iter().map(String::as_str))
+    }
+
+    fn collect_template_payloads_slice<'a>(
+        &self,
+        protocol: &'a WebUIProtocol,
+        tags: &[&str],
+    ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
+        webui_collect_payloads(protocol, tags.iter().copied())
     }
 
     fn emit_bootstrap_extension(
@@ -167,35 +144,127 @@ impl HandlerPlugin for WebUIHydrationPlugin {
         context: BootstrapExtensionContext<'_>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        let has_functions = context
-            .payloads
-            .iter()
-            .any(|payload| !payload.template_functions.is_empty());
-        if !has_functions {
-            return Ok(());
-        }
-
-        if let Some(nonce) = context.nonce {
-            writer.write("<script nonce=\"")?;
-            writer.write(nonce)?;
-            writer.write("\">")?;
-        } else {
-            writer.write("<script>")?;
-        }
-        writer.write("(function(){var w=window.__webui||(window.__webui={});")?;
-        writer.write("var f=w.templateFns||(w.templateFns={});")?;
-        for payload in context.payloads {
-            if payload.template_functions.is_empty() {
-                continue;
-            }
-            writer.write("f[")?;
-            crate::write_script_safe_json(writer, payload.tag_name)?;
-            writer.write("]=")?;
-            writer.write(payload.template_functions)?;
-            writer.write(";")?;
-        }
-        writer.write("})();</script>\n")
+        webui_emit_bootstrap_fns(context.payloads, context.nonce, writer)
     }
+
+    fn emit_bootstrap_extension_payloads(
+        &self,
+        payloads: &[super::WebUiTemplatePayload<'_>],
+        nonce: Option<&str>,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        webui_emit_bootstrap_fns(payloads, nonce, writer)
+    }
+}
+
+/// Emit non-split WebUI component templates inside a single `<script>` tag.
+///
+/// Shared by the `HashSet`-based ordinary path and the `&[&str]`-based streaming
+/// path; the lookup-key lifetime `'b` is independent of the protocol so both
+/// callers pass borrowed tags without cloning.
+fn webui_emit_templates<'b>(
+    protocol: &WebUIProtocol,
+    tags: impl Iterator<Item = &'b str>,
+    nonce: Option<&str>,
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    let mut templates: Vec<&str> = Vec::new();
+
+    for name in tags {
+        if let Some(template) = protocol
+            .components
+            .get(name)
+            .map(|component| component.template.as_str())
+            .filter(|t| !t.is_empty())
+        {
+            templates.push(template);
+        }
+    }
+
+    if templates.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(nonce) = nonce {
+        writer.write("<script nonce=\"")?;
+        writer.write(nonce)?;
+        writer.write("\">\n")?;
+    } else {
+        writer.write("<script>\n")?;
+    }
+    for tmpl in &templates {
+        writer.write(tmpl)?;
+    }
+    writer.write("</script>\n")?;
+
+    Ok(())
+}
+
+/// Collect split WebUI template payloads for the given component tags.
+///
+/// Returned payloads borrow the protocol (`'a`); the lookup-key lifetime `'b`
+/// is independent so both the `HashSet` and slice callers share this helper.
+fn webui_collect_payloads<'a, 'b>(
+    protocol: &'a WebUIProtocol,
+    tags: impl Iterator<Item = &'b str>,
+) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
+    let mut templates: Vec<super::WebUiTemplatePayload<'a>> = Vec::new();
+    for name in tags {
+        if let Some((tag_name, component)) = protocol.components.get_key_value(name) {
+            if !component.template_json.is_empty() {
+                templates.push(super::WebUiTemplatePayload {
+                    tag_name: tag_name.as_str(),
+                    template_json: component.template_json.as_str(),
+                    template_functions: component.template_functions.as_str(),
+                });
+            }
+        }
+    }
+    if templates.is_empty() {
+        None
+    } else {
+        Some(templates)
+    }
+}
+
+/// Emit the WebUI `templateFns` executable side-channel for payloads that carry
+/// component-local condition closures. Shared by the ordinary and streaming
+/// bootstrap-extension hooks.
+fn webui_emit_bootstrap_fns(
+    payloads: &[super::WebUiTemplatePayload<'_>],
+    nonce: Option<&str>,
+    writer: &mut dyn ResponseWriter,
+) -> Result<()> {
+    let has_functions = payloads
+        .iter()
+        .any(|payload| !payload.template_functions.is_empty());
+    if !has_functions {
+        return Ok(());
+    }
+
+    if let Some(nonce) = nonce {
+        writer.write("<script nonce=\"")?;
+        writer.write(nonce)?;
+        writer.write("\">")?;
+    } else {
+        writer.write("<script>")?;
+    }
+    writer.write("(function(){var w=window.__webui||(window.__webui={});")?;
+    writer.write("var f=w.templateFns||(w.templateFns={});")?;
+    // Request-local scratch reused across every tag_name serialized in this
+    // loop; dropped when the emission returns.
+    let mut json_scratch = Vec::new();
+    for payload in payloads {
+        if payload.template_functions.is_empty() {
+            continue;
+        }
+        writer.write("f[")?;
+        crate::write_script_safe_json(writer, &mut json_scratch, payload.tag_name)?;
+        writer.write("]=")?;
+        writer.write(payload.template_functions)?;
+        writer.write(";")?;
+    }
+    writer.write("})();</script>\n")
 }
 
 #[cfg(test)]

@@ -41,6 +41,13 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
     protected $shouldApplySSRBootstrapState(): boolean {
       return false;
     }
+
+    // Streaming boundaries have no per-root activation signal in Phase 1, so
+    // a committed boundary alone must not wake a compiler-owned host — it
+    // stays dormant until an explicit client state write, same as today.
+    protected $shouldActivateOnBoundaryCommit(): boolean {
+      return false;
+    }
   }
 
   StaticTemplateHost.define(tag);
@@ -88,14 +95,17 @@ export function installTemplateElementRuntime(): void {
     defineTemplateHosts(detail.templates);
   });
 
+  // Claim whatever templates are already registered immediately — streamed
+  // boundaries register templates (and may need dormant hosts defined) long
+  // before `DOMContentLoaded`. The listener above claims templates that
+  // arrive later; this call claims anything already present right now.
+  defineTemplateHosts();
+
   if (document.readyState === 'loading') {
     document.addEventListener(
       'DOMContentLoaded',
       () => defineTemplateHosts(),
       { once: true },
     );
-    return;
   }
-
-  defineTemplateHosts();
 }

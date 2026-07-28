@@ -126,6 +126,28 @@ The plugin alone preserves full server state. To emit exact `@observable` and
 `--projection-manifest`. The manifest tooling is build-only; this runtime
 package does not depend on esbuild or TypeScript.
 
+### Progressive streaming hydration
+
+Streaming applications opt into a separate side-effect entry:
+
+```ts
+import '@microsoft/webui-framework/streaming.js';
+import './counter-card.js';
+```
+
+Import it before component registration modules and load the application entry
+early with `<script type="module" async>` in `<head>`. The server must render
+authored `<webui-boundary>` directives through
+`WebUIHandler::render_streaming`. The default
+`@microsoft/webui-framework` entry has no dependency on the coordinator, so
+normal applications pay no streaming bundle or initialization cost.
+
+Each committed boundary receives its own ephemeral state object directly during
+activation. The coordinator does not publish that state to
+`window.__webui.state`, and it removes generated checkpoint scaffolding after
+commit. Set `window.__WEBUI_STREAMING_DEBUG__ = true` only when tooling needs the
+diagnostic `webui:boundary-hydrated` event.
+
 ### Property binding lifecycle
 
 Property bindings use the `:` prefix to pass values directly to child DOM properties:
@@ -360,9 +382,9 @@ resource-constrained devices.
 
 5. **Single-pass hydration via path mapping.**
    SSR DOM is matched to compiled template bindings through
-   template-parallel traversal (`$resolveSSR`).  No marker comments, no
-   data attributes — just path-based node resolution.  The hydration walk
-   touches each DOM node exactly once.
+   template-parallel traversal (`$resolveSSR`). Ordinary buffered hydration
+   needs no marker comments or data attributes for binding resolution. The
+   hydration walk touches each DOM node exactly once.
 
 6. **Keep the framework out of the GC's way.**
    Fewer JS objects = fewer GC pauses.  Binding arrays are pre-built at
@@ -424,7 +446,10 @@ Angular all require a JavaScript runtime on the server.  This framework's SSR
 is driven by data (template metadata + state values), not code.  Any language
 that can read the compiled metadata and produce HTML can serve as the SSR
 backend.  No comment markers or data attributes are needed — the runtime
-resolves SSR DOM nodes via template-parallel path traversal.
+resolves ordinary buffered SSR nodes via template-parallel path traversal.
+Progressive streaming uses temporary checkpoint scaffolding only to delay
+activation until a complete region arrives; it removes that scaffolding after
+commit.
 
 ### Build → Serve → Hydrate → Update
 
@@ -490,8 +515,8 @@ When the server renders a component, it emits HTML content (as a declarative
 shadow root or as light DOM children) along with an inert `#webui-data`
 JSON payload.  The browser parses this DOM before any JavaScript runs.
 When the component's JS loads and `connectedCallback` fires, the framework
-uses compiled template paths to resolve SSR DOM nodes without any marker
-comments or data attributes:
+uses compiled template paths to resolve ordinary buffered SSR DOM nodes without
+binding markers:
 
 ```mermaid
 sequenceDiagram
@@ -734,10 +759,11 @@ stylesheet specifier for a component.
 
 ## Path-Based Binding Resolution
 
-Unlike frameworks that use comment markers or data attributes to locate
-dynamic content, this framework uses **compiled template paths** — arrays of
+Unlike frameworks that use comment markers or data attributes to locate each
+dynamic binding, this framework uses **compiled template paths** — arrays of
 child-node indices that describe exactly where each binding lives in the DOM
-tree.
+tree. Progressive streaming's temporary boundary markers locate complete
+activation regions, not individual bindings.
 
 ### Client-created resolution (`$resolve`)
 

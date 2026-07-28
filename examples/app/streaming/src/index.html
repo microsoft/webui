@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <base href="{{basePath}}">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebUI Streaming Priority Demo</title>
+
+  <!--
+    Loaded early and async so the composer boundary below can hydrate
+    while the response is still open. The handler marks each streamed SSR
+    component host with a temporary compiler-owned identity before browser
+    upgrade, so an upgraded element defers until its complete boundary
+    commits. See DESIGN.md, "Progressive Streaming Hydration — Phase 1"
+    ("Initialization ordering").
+  -->
+  <script type="module" async src="./index.js"></script>
+
+  <style>
+    :root {
+      /*{{{tokens.light}}}*/
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
+    }
+
+    body {
+      font-family: var(--font-family-base);
+      max-width: 720px;
+      margin: 0 auto;
+      padding: var(--spacing-xl);
+      line-height: var(--line-height-base);
+    }
+
+    header {
+      margin-bottom: var(--spacing-xl);
+    }
+
+    .weather-slot {
+      background-color: var(--color-neutral-100);
+      border-radius: var(--border-radius-m);
+      padding: var(--spacing-l);
+      margin-top: var(--spacing-m);
+    }
+
+    .weather-skeleton {
+      height: 2.5rem;
+      border-radius: var(--border-radius-s);
+      background: linear-gradient(90deg, var(--color-neutral-200) 25%, var(--color-neutral-100) 50%, var(--color-neutral-200) 75%);
+      background-size: 200% 100%;
+      animation: webui-streaming-shimmer 1.4s ease-in-out infinite;
+    }
+
+    @keyframes webui-streaming-shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+
+    main {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xl);
+    }
+
+    section[aria-label="Feed"] {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-m);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Home</h1>
+    <!--
+      Weather represents expensive backend work. Progressive streaming
+      hydration Phase 1 leaves this skeleton in place rather than
+      blocking the composer boundary below on it — native in-order HTML
+      parsing cannot fill an already-closed header later in the same
+      response. A production app would resolve this via a
+      component-owned client fetch; this example keeps the skeleton
+      static so the example stays focused on the streaming/boundary
+      behavior itself.
+    -->
+    <div class="weather-slot" aria-busy="true" data-testid="weather-slot">
+      <div class="weather-skeleton"></div>
+    </div>
+  </header>
+
+  <main>
+    <webui-boundary name="composer-ready">
+      <message-composer draft="" posted=""></message-composer>
+    </webui-boundary>
+
+    <section aria-label="Feed">
+      <webui-boundary name="feed-batch-1">
+        <for each="post in feedBatch1">
+          <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
+        </for>
+      </webui-boundary>
+
+      <webui-boundary name="feed-batch-2">
+        <for each="post in feedBatch2">
+          <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
+        </for>
+      </webui-boundary>
+
+      <webui-boundary name="feed-batch-3">
+        <for each="post in feedBatch3">
+          <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
+        </for>
+      </webui-boundary>
+    </section>
+  </main>
+</body>
+</html>

@@ -46,12 +46,13 @@ not need to enter browser state just because the component has an event handler,
 An authored component with no decorators can therefore wire its behavior
 without adding any startup state.
 
-Load authored component definitions with a parser-inserted, non-async ES module
-script or a classic `defer` script. If a classic script blocks parsing, place it
-after every SSR instance it may upgrade. This guarantees that each component
-subtree exists before upgrade. WebUI then hydrates synchronously inside
-`super.connectedCallback()`; when it returns, bindings, events, and `w-ref`
-references are ready.
+For a normal buffered page, load authored component definitions with a
+parser-inserted, non-async ES module script or a classic `defer` script. If a
+classic script blocks parsing, place it after every SSR instance it may upgrade.
+This guarantees that each component subtree exists before upgrade. WebUI then
+hydrates synchronously inside `super.connectedCallback()`; when it returns,
+bindings, events, and `w-ref` references are ready. Progressive streaming pages
+use the early async module contract described below instead.
 
 Until a containing WebUI component hydrates, descendants must not insert,
 remove, or reorder nodes in its SSR subtree. Hydration resolves compiled paths
@@ -60,6 +61,117 @@ against the trusted server DOM and cannot recover after those paths shift.
 Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
+
+## Progressive Streaming Hydration
+
+Phase 1 can hydrate an explicit, complete entry-page region while the document
+is still loading. Author a
+[`<webui-boundary>`](/guide/concepts/directives/boundary), then serve the page
+with the Rust `WebUIHandler::render_streaming` API.
+
+```html
+<head>
+  <!-- Must be ahead of boundary content and able to run during parsing. -->
+  <script type="module" async src="/index.js"></script>
+</head>
+<body>
+  <header>
+    <weather-skeleton></weather-skeleton>
+  </header>
+
+  <webui-boundary name="critical-composer">
+    <message-composer></message-composer>
+  </webui-boundary>
+
+  <webui-boundary name="low-priority-feed">
+    <activity-feed></activity-feed>
+  </webui-boundary>
+</body>
+```
+
+Import the streaming entry before component registration modules:
+
+```typescript
+import '@microsoft/webui-framework/streaming.js';
+import './message-composer/message-composer.js';
+import './activity-feed/activity-feed.js';
+```
+
+The streaming entry installs the coordinator synchronously. It is separate from
+the default framework entry so non-streaming applications do not download,
+parse, or initialize streaming code. The application module must use `async`,
+or an equivalent non-blocking loading strategy, in `<head>` before the first
+boundary. A normal module script is deferred until parsing completes and
+defeats early hydration. The parser currently validates boundary syntax and
+placement, but does not validate this script loading order.
+
+The server commits boundaries in document order. In this example the weather
+skeleton can paint in the earlier header, the critical composer is the first
+interactive checkpoint, and the feed is a second explicit checkpoint. A
+boundary does not make data fetching asynchronous. Phase 1 cannot send a later
+weather result back to replace the earlier skeleton out of order. Use ordinary
+client behavior for that update, or wait for the data before continuing the
+in-order response.
+
+Every registered WebUI component rendered through `render_streaming` must be
+inside an explicit boundary. Native HTML and unregistered static tail markup can
+remain outside. This lets the handler mark each streamed SSR component before
+custom-element upgrade and guarantees that a later checkpoint can activate it.
+The checkpoint also includes metadata and projected state for descendants that
+are reachable inside those roots but initially hidden by a false condition or
+empty repeat. It does not include unrelated components rooted in later
+boundaries, and its inventory marks only SSR roots that actually rendered.
+
+### Timing and lifecycle
+
+When the module loads before a boundary, upgraded components wait without
+touching incomplete server DOM. When a boundary arrives before its component
+definition, it waits for that custom element definition. Once both are ready,
+WebUI hydrates the complete boundary without waiting for `DOMContentLoaded`.
+Actual timing still depends on module download, server progress, and transport
+delivery.
+
+WebUI dispatches these events on `window`:
+
+- `webui:boundary-hydrated` after each checkpoint commits only when
+  `window.__WEBUI_STREAMING_DEBUG__ === true`. Its `CustomEvent.detail` contains
+  `{ sequence, terminal }`. Sequence numbers are response order, not authored
+  boundary names. Keep this diagnostics flag off in production to avoid one
+  event allocation per checkpoint.
+- `webui:hydration-complete` once the terminal checkpoint has arrived and no
+  component or boundary remains pending. On a streaming page, it means the
+  complete response hydration lifecycle is done, not merely that the first
+  interactive boundary is ready.
+
+After a checkpoint commits, WebUI removes its generated payload, sentinel, and
+marker nodes, plus the temporary streamed-host identity. Boundary-local state is
+passed directly to each component and is not retained in
+`window.__webui.state`. Applications should not query or depend on generated
+scaffolding.
+
+### CSP and delivery
+
+Pass the request nonce with `RenderOptions::with_nonce`. The handler applies it
+to generated inline boundary scripts, while your Content Security Policy must
+also allow the external application module. Use a fresh nonce per response.
+
+`FlushWriter::flush` means that WebUI handed all currently buffered bytes to the
+HTTP transport. A server adapter, compression layer, CDN, or reverse proxy can
+still buffer those bytes. Disable response buffering where appropriate and
+verify early delivery through the production path.
+
+### Current limits
+
+Progressive streaming hydration is currently exposed only by the Rust handler.
+It is for one initial HTML response and is strictly in order. The following are
+not implemented APIs:
+
+- Dynamic `<webui-stream>`, `page.append()`, or
+  `begin_append()` / `commit()` APIs
+- Out-of-order same-response replacement
+- Streaming reuse by router partial navigations
+- Node, FFI/.NET, WASM, or other host-language mirrors
+- Declarative partial-update APIs
 
 ## Build-Time State Projection
 
