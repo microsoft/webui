@@ -502,7 +502,7 @@ fn streaming_boundary_error(signal: &str, reason: &str) -> HandlerError {
 }
 
 /// A streamed component host (`streaming_root:<tag>`) was authored outside any
-/// `<webui-boundary>`. Such a host can never be progressively activated, so the
+/// `<boundary>`. Such a host can never be progressively activated, so the
 /// streaming render fails with an actionable structured error instead of
 /// emitting dead markup. Cold and out-of-line: reuses the boxed
 /// [`HandlerError::StreamingBoundary`] variant so no error widens the small
@@ -513,7 +513,7 @@ fn streaming_root_outside_boundary_error(tag: &str) -> HandlerError {
     HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
         signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
         reason: format!(
-            "streamed component host <{tag}> is outside any <webui-boundary>; \
+            "streamed component host <{tag}> is outside any <boundary>; \
              author the host, or its matched <route>, inside a boundary so it can be \
              progressively hydrated"
         ),
@@ -527,7 +527,7 @@ fn missing_streaming_root_error(tag: &str) -> HandlerError {
         signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
         reason: format!(
             "component <{tag}> has no matching compiler-owned root signal at its opening-tag \
-             close; rebuild the protocol and place the host inside an explicit <webui-boundary>"
+             close; rebuild the protocol and place the host inside an explicit <boundary>"
         ),
     }))
 }
@@ -563,7 +563,7 @@ fn generated_streaming_root_error(tag: &str) -> HandlerError {
         signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
         reason: format!(
             "handler-generated route host <{tag}> was not marked for streaming before it \
-             rendered; place the matched <route> inside an explicit <webui-boundary>"
+             rendered; place the matched <route> inside an explicit <boundary>"
         ),
     }))
 }
@@ -10838,7 +10838,7 @@ mod tests {
             Err(HandlerError::StreamingBoundary(err)) => {
                 assert_eq!(err.signal, "streaming_root:comp-a");
                 assert!(
-                    err.reason.contains("outside any <webui-boundary>"),
+                    err.reason.contains("outside any <boundary>"),
                     "reason: {}",
                     err.reason
                 );
@@ -10862,7 +10862,7 @@ mod tests {
         let html = if with_boundary {
             format!(
                 "<html><head></head><body>\
-                 <webui-boundary name=\"route\">{route}</webui-boundary>\
+                 <boundary name=\"route\">{route}</boundary>\
                  </body></html>"
             )
         } else {
@@ -10915,7 +10915,7 @@ mod tests {
         match result {
             Err(HandlerError::StreamingBoundary(error)) => {
                 assert_eq!(error.signal, "streaming_root:route-page");
-                assert!(error.reason.contains("outside any <webui-boundary>"));
+                assert!(error.reason.contains("outside any <boundary>"));
             }
             other => panic!("expected route boundary rejection, got {other:?}"),
         }

@@ -4,7 +4,7 @@
 /**
  * Streaming priority-hydration entry point.
  *
- * The server streams `index.html` as priority-ordered `<webui-boundary>`
+ * The server streams `index.html` as priority-ordered `<boundary>`
  * chunks, using the Progressive Streaming Hydration Phase 1 contract from
  * DESIGN.md ("Progressive Streaming Hydration — Phase 1"):
  *

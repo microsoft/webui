@@ -86,7 +86,7 @@ fn benchmark_state() -> Value {
 }
 
 /// Author the entry-page HTML the benchmark parses. Each boundary is a real
-/// `<webui-boundary>` directive wrapping an authored `<article>` and a
+/// `<boundary>` directive wrapping an authored `<article>` and a
 /// registered `<bench-island>` component, inside a real `<head>`/`<body>`
 /// document so the parser emits the streaming head/body/boundary signals.
 fn entry_html(boundaries: usize) -> String {
@@ -98,9 +98,9 @@ fn entry_html(boundaries: usize) -> String {
     );
     for sequence in 0..boundaries {
         html.push_str(&format!(
-            "<webui-boundary name=\"boundary-{sequence}\">\
+            "<boundary name=\"boundary-{sequence}\">\
              <article data-boundary=\"{sequence}\"><bench-island></bench-island></article>\
-             </webui-boundary>"
+             </boundary>"
         ));
     }
     html.push_str("</body></html>");

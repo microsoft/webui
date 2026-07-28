@@ -11,7 +11,7 @@ interactive before `DOMContentLoaded` while the response is still open; a
 **weather** header stays a skeleton (Phase 1 does not block the composer on
 expensive backend work); a three-batch **feed** streams in afterward, each
 batch's `feed-item` islands hydrating independently as their own
-`<webui-boundary>` commits.
+`<boundary>` commits.
 
 ```bash
 # Install JS dependencies
@@ -55,7 +55,7 @@ each of the first few flushes to the real writer, so backpressure and
 disconnect propagation are unaffected — no envelope or chunk is ever
 manufactured or split by hand.
 
-Three feed batches are three explicit `<webui-boundary>` groups (sequences
+Three feed batches are three explicit `<boundary>` groups (sequences
 1–3, after the composer's sequence 0) — Phase 1 does not implement an
 open-ended `<webui-stream>` directive. The feed's `<section>` container is
 never itself hydrated: each `feed-item` carries its own state in its own

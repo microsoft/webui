@@ -427,7 +427,7 @@ enum ParseOp<'a> {
     EmitClose(&'a str),
     EndHead(&'a str),
     EndBody(&'a str),
-    /// Close a `<webui-boundary>` opened with response-local sequence
+    /// Close a `<boundary>` opened with response-local sequence
     /// number `seq`: emits the `boundary_end:<seq>` raw signal and clears
     /// [`HtmlParser::in_boundary`].
     EndBoundary(u32),
@@ -509,16 +509,16 @@ pub struct HtmlParser {
     /// Used to name the owning template in authoring [`Diagnostic`]s.
     current_fragment_id: String,
 
-    /// Next `<webui-boundary>` response-local sequence number
+    /// Next `<boundary>` response-local sequence number
     /// (`boundary_start:<seq>` / `boundary_end:<seq>`). Reset to `0` at the
     /// start of each top-level [`HtmlParser::parse`] call.
     boundary_sequence: u32,
 
-    /// `<webui-boundary name>` values already used in the current top-level
+    /// `<boundary name>` values already used in the current top-level
     /// parse, so a duplicate name can be rejected.
     boundary_names: HashSet<String>,
 
-    /// `true` while parsing is inside an open `<webui-boundary>`, used to
+    /// `true` while parsing is inside an open `<boundary>`, used to
     /// reject a nested boundary.
     in_boundary: bool,
 
@@ -528,7 +528,7 @@ pub struct HtmlParser {
     body_depth: usize,
 
     /// Stack of open `<if>`/`<for>` scope descriptions, used to reject a
-    /// `<webui-boundary>` that would cut through a conditionally-rendered or
+    /// `<boundary>` that would cut through a conditionally-rendered or
     /// repeated scope instead of independently wrapping it.
     structural_scopes: Vec<&'static str>,
 
@@ -536,7 +536,7 @@ pub struct HtmlParser {
     /// foster-parent an unknown element such as the generated
     /// `<webui-hydrate>` sentinel.
     ///
-    /// Non-zero means a `<webui-boundary>` here would be split from its
+    /// Non-zero means a `<boundary>` here would be split from its
     /// payload script by the browser's parser, so it must be rejected at build
     /// time. `<td>`/`<th>`/`<caption>` reset it to `0` because those switch
     /// back to "in body" insertion rules.
@@ -898,7 +898,7 @@ impl HtmlParser {
         self.fragment_records.contains_key(fragment_id)
     }
 
-    /// Number of `<webui-boundary>` streaming checkpoints compiled by the most
+    /// Number of `<boundary>` streaming checkpoints compiled by the most
     /// recent top-level [`HtmlParser::parse`] call.
     ///
     /// Returns `0` for an ordinary, non-streaming entry. Callers use this to
@@ -1389,7 +1389,7 @@ impl HtmlParser {
                                     self.flush_raw_buffer(fragments);
                                     fragments.push(WebUIFragment::outlet());
                                 }
-                                "webui-boundary" => {
+                                "boundary" => {
                                     self.enter_boundary_directive(
                                         &element, fragments, depth, &mut ops,
                                     )?;
@@ -1948,9 +1948,9 @@ impl HtmlParser {
         }
     }
 
-    /// Enter a `<webui-boundary name="…">` directive.
+    /// Enter a `<boundary name="…">` directive.
     ///
-    /// `<webui-boundary>` is a reserved, compile-time-only directive (see
+    /// `<boundary>` is a reserved, compile-time-only directive (see
     /// "Progressive Streaming Hydration — Phase 1" in `DESIGN.md`): it emits
     /// no wrapper element, only `boundary_start:<seq>` /
     /// `boundary_end:<seq>` raw signal fragments around its children, mirroring
@@ -2022,7 +2022,7 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Validate `<webui-boundary name>`: required, non-empty, and static (no
+    /// Validate `<boundary name>`: required, non-empty, and static (no
     /// `{{binding}}`).
     fn validate_boundary_name(&self, element: &Element<'_>) -> Result<String> {
         let name = element.attr("name").unwrap_or_default();
@@ -2035,68 +2035,68 @@ impl HtmlParser {
         Ok(name.to_string())
     }
 
-    /// Build the error for a `<webui-boundary>` missing its `name` attribute
+    /// Build the error for a `<boundary>` missing its `name` attribute
     /// (cold path).
     #[cold]
     #[inline(never)]
     fn missing_boundary_name_error(&self, element: &Element<'_>) -> ParserError {
         self.authoring_error_at(
             codes::MISSING_BOUNDARY_NAME,
-            "missing name attribute on <webui-boundary>",
+            "missing name attribute on <boundary>",
             element,
         )
-        .element("webui-boundary")
-        .help("add a unique static name, e.g. <webui-boundary name=\"counter-ready\">")
+        .element("boundary")
+        .help("add a unique static name, e.g. <boundary name=\"counter-ready\">")
         .into()
     }
 
-    /// Build the error for a `<webui-boundary name>` that is not a static
+    /// Build the error for a `<boundary name>` that is not a static
     /// string literal (cold path).
     #[cold]
     #[inline(never)]
     fn invalid_boundary_name_error(&self, element: &Element<'_>, name: &str) -> ParserError {
         self.authoring_error_at(
             codes::INVALID_BOUNDARY_NAME,
-            "invalid name attribute on <webui-boundary>",
+            "invalid name attribute on <boundary>",
             element,
         )
-        .element("webui-boundary")
+        .element("boundary")
         .snippet(format!("name=\"{name}\""))
         .help("boundary names must be a static string literal, e.g. name=\"counter-ready\"")
         .into()
     }
 
-    /// Build the error for a duplicate `<webui-boundary name>` within the
+    /// Build the error for a duplicate `<boundary name>` within the
     /// same entry template (cold path).
     #[cold]
     #[inline(never)]
     fn duplicate_boundary_name_error(&self, element: &Element<'_>, name: &str) -> ParserError {
         self.authoring_error_at(
             codes::DUPLICATE_BOUNDARY_NAME,
-            format!("duplicate <webui-boundary> name \"{name}\""),
+            format!("duplicate <boundary> name \"{name}\""),
             element,
         )
-        .element("webui-boundary")
+        .element("boundary")
         .help("boundary names must be unique within the page; rename one of the boundaries")
         .into()
     }
 
-    /// Build the error for a `<webui-boundary>` nested inside another open
+    /// Build the error for a `<boundary>` nested inside another open
     /// boundary (cold path).
     #[cold]
     #[inline(never)]
     fn nested_boundary_error(&self, element: &Element<'_>) -> ParserError {
         self.authoring_error_at(
             codes::NESTED_BOUNDARY,
-            "nested <webui-boundary> is not allowed",
+            "nested <boundary> is not allowed",
             element,
         )
-        .element("webui-boundary")
-        .help("boundaries cannot be nested; close the enclosing <webui-boundary> before opening another")
+        .element("boundary")
+        .help("boundaries cannot be nested; close the enclosing <boundary> before opening another")
         .into()
     }
 
-    /// Build the error for a `<webui-boundary>` that would cut through
+    /// Build the error for a `<boundary>` that would cut through
     /// `scope` (a reusable component template, an `<if>`/`<for>` block, or a
     /// `<route>` element) instead of independently wrapping it (cold path).
     ///
@@ -2108,29 +2108,29 @@ impl HtmlParser {
     fn boundary_scope_error(&self, element: &Element<'_>, scope: &str) -> ParserError {
         self.authoring_error_at(
             codes::BOUNDARY_CROSSES_SCOPE,
-            format!("<webui-boundary> cannot appear inside {scope}"),
+            format!("<boundary> cannot appear inside {scope}"),
             element,
         )
-        .element("webui-boundary")
-        .help("move the <webui-boundary> so it fully wraps this scope from the entry template, instead of appearing inside it")
+        .element("boundary")
+        .help("move the <boundary> so it fully wraps this scope from the entry template, instead of appearing inside it")
         .into()
     }
 
-    /// Build the error for a `<webui-boundary>` outside an open body.
+    /// Build the error for a `<boundary>` outside an open body.
     #[cold]
     #[inline(never)]
     fn boundary_outside_body_error(&self, element: &Element<'_>) -> ParserError {
         self.authoring_error_at(
             codes::BOUNDARY_OUTSIDE_BODY,
-            "<webui-boundary> must appear inside <body>",
+            "<boundary> must appear inside <body>",
             element,
         )
-        .element("webui-boundary")
-        .help("move the <webui-boundary> between the opening <body> and its matching </body>")
+        .element("boundary")
+        .help("move the <boundary> between the opening <body> and its matching </body>")
         .into()
     }
 
-    /// Build the error for a `<webui-boundary>` inside an HTML
+    /// Build the error for a `<boundary>` inside an HTML
     /// foster-parenting insertion mode (cold path).
     ///
     /// The browser would move the generated `<webui-hydrate>` sentinel out of
@@ -2142,10 +2142,10 @@ impl HtmlParser {
     fn boundary_in_foster_context_error(&self, element: &Element<'_>) -> ParserError {
         self.authoring_error_at(
             codes::BOUNDARY_IN_FOSTER_CONTEXT,
-            "<webui-boundary> cannot appear inside a table or select context",
+            "<boundary> cannot appear inside a table or select context",
             element,
         )
-        .element("webui-boundary")
+        .element("boundary")
         .help(
             "the HTML parser moves unknown elements out of <table>/<tbody>/<tr>/<select>, which would split the hydration sentinel from its payload; wrap the whole <table> in the boundary, or move it inside a <td>, <th>, or <caption>",
         )
@@ -2805,7 +2805,7 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Reject `<webui-boundary>`/`<webui-hydrate>` written inside `<route>`
+    /// Reject `<boundary>`/`<webui-hydrate>` written inside `<route>`
     /// markup.
     ///
     /// `<route>` children are validated by a separate well-formedness walker
@@ -2815,7 +2815,7 @@ impl HtmlParser {
     /// structured diagnostics as everywhere else instead of silently passing
     /// through as ignored HTML.
     fn reject_boundary_or_hydrate_in_route(&self, element: &Element<'_>) -> Result<()> {
-        if element.name() == "webui-boundary" {
+        if element.name() == "boundary" {
             Err(self.boundary_scope_error(element, "a <route> element"))
         } else if element.name().eq_ignore_ascii_case("webui-hydrate") {
             Err(self.authored_webui_hydrate_error(element))
@@ -6039,15 +6039,15 @@ mod tests {
         );
     }
 
-    // ── `<webui-boundary>` / `<webui-hydrate>` tests (Progressive Streaming
+    // ── `<boundary>` / `<webui-hydrate>` tests (Progressive Streaming
     // Hydration — Phase 1) ────────────────────────────────────────────────
 
     #[test]
-    fn webui_boundary_emits_no_wrapper_and_brackets_children_with_signals() {
-        let html = r#"<body><div><webui-boundary name="counter-ready"><my-counter></my-counter></webui-boundary></div></body>"#;
+    fn boundary_emits_no_wrapper_and_brackets_children_with_signals() {
+        let html = r#"<body><div><boundary name="counter-ready"><my-counter></my-counter></boundary></div></body>"#;
         let (fragments, _) = parse_and_get_fragments(html);
 
-        // No `<webui-boundary>`/`</webui-boundary>` markup is emitted at
+        // No `<boundary>`/`</boundary>` markup is emitted at
         // all — only the raw boundary_start/boundary_end signals bracket
         // the untouched children.
         assert_fragments!(
@@ -6067,11 +6067,11 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_sequence_increments_in_document_order_and_resets_per_entry() {
+    fn boundary_sequence_increments_in_document_order_and_resets_per_entry() {
         let html = concat!(
             "<body>",
-            r#"<webui-boundary name="a"><p>1</p></webui-boundary>"#,
-            r#"<webui-boundary name="b"><p>2</p></webui-boundary>"#,
+            r#"<boundary name="a"><p>1</p></boundary>"#,
+            r#"<boundary name="b"><p>2</p></boundary>"#,
             "</body>",
         );
         let (fragments, _) = parse_and_get_fragments(html);
@@ -6099,13 +6099,13 @@ mod tests {
         parser
             .parse(
                 "first.html",
-                r#"<body><webui-boundary name="a"><p>1</p></webui-boundary></body>"#,
+                r#"<body><boundary name="a"><p>1</p></boundary></body>"#,
             )
             .expect("first entry parses");
         parser
             .parse(
                 "second.html",
-                r#"<body><webui-boundary name="a"><p>2</p></webui-boundary></body>"#,
+                r#"<body><boundary name="a"><p>2</p></boundary></body>"#,
             )
             .expect("second entry reuses the name and sequence 0");
         let records = parser.into_fragment_records();
@@ -6125,13 +6125,10 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_missing_name_errors() {
+    fn boundary_missing_name_errors() {
         let mut parser = HtmlParser::new();
         let err = parser
-            .parse(
-                "index.html",
-                "<body><webui-boundary><p>x</p></webui-boundary></body>",
-            )
+            .parse("index.html", "<body><boundary><p>x</p></boundary></body>")
             .expect_err("a boundary without a name must error");
         let ParserError::Template(diag) = err else {
             panic!("expected ParserError::Template, got {err:?}");
@@ -6140,12 +6137,12 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_dynamic_name_errors() {
+    fn boundary_dynamic_name_errors() {
         let mut parser = HtmlParser::new();
         let err = parser
             .parse(
                 "index.html",
-                r#"<body><webui-boundary name="{{sectionName}}"><p>x</p></webui-boundary></body>"#,
+                r#"<body><boundary name="{{sectionName}}"><p>x</p></boundary></body>"#,
             )
             .expect_err("a dynamic boundary name must error");
         let ParserError::Template(diag) = err else {
@@ -6158,13 +6155,13 @@ mod tests {
     /// uniqueness and then discarded, so no identifier charset restriction may
     /// creep in and no name may reach the wire. Only the integer sequence does.
     #[test]
-    fn webui_boundary_names_are_free_form_and_never_reach_fragments() {
+    fn boundary_names_are_free_form_and_never_reach_fragments() {
         let mut parser = HtmlParser::new();
         let html = concat!(
             "<body>",
-            r#"<webui-boundary name="above the fold"><p>1</p></webui-boundary>"#,
-            r#"<webui-boundary name="feed/items #2"><p>2</p></webui-boundary>"#,
-            r#"<webui-boundary name="ダッシュボード"><p>3</p></webui-boundary>"#,
+            r#"<boundary name="above the fold"><p>1</p></boundary>"#,
+            r#"<boundary name="feed/items #2"><p>2</p></boundary>"#,
+            r#"<boundary name="ダッシュボード"><p>3</p></boundary>"#,
             "</body>",
         );
         parser
@@ -6205,12 +6202,12 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_duplicate_name_errors() {
+    fn boundary_duplicate_name_errors() {
         let mut parser = HtmlParser::new();
         let html = concat!(
             "<body>",
-            r#"<webui-boundary name="dup"><p>1</p></webui-boundary>"#,
-            r#"<webui-boundary name="dup"><p>2</p></webui-boundary>"#,
+            r#"<boundary name="dup"><p>1</p></boundary>"#,
+            r#"<boundary name="dup"><p>2</p></boundary>"#,
             "</body>",
         );
         let err = parser
@@ -6223,9 +6220,9 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_nested_boundary_errors() {
+    fn boundary_nested_boundary_errors() {
         let mut parser = HtmlParser::new();
-        let html = r#"<body><webui-boundary name="outer"><webui-boundary name="inner"><p>x</p></webui-boundary></webui-boundary></body>"#;
+        let html = r#"<body><boundary name="outer"><boundary name="inner"><p>x</p></boundary></boundary></body>"#;
         let err = parser
             .parse("index.html", html)
             .expect_err("a nested boundary must error");
@@ -6236,9 +6233,10 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_inside_if_errors() {
+    fn boundary_inside_if_errors() {
         let mut parser = HtmlParser::new();
-        let html = r#"<body><if condition="ready"><webui-boundary name="x"><p>x</p></webui-boundary></if></body>"#;
+        let html =
+            r#"<body><if condition="ready"><boundary name="x"><p>x</p></boundary></if></body>"#;
         let err = parser
             .parse("index.html", html)
             .expect_err("a boundary inside <if> must error");
@@ -6250,9 +6248,9 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_inside_for_errors() {
+    fn boundary_inside_for_errors() {
         let mut parser = HtmlParser::new();
-        let html = r#"<body><for each="item in items"><webui-boundary name="x"><p>x</p></webui-boundary></for></body>"#;
+        let html = r#"<body><for each="item in items"><boundary name="x"><p>x</p></boundary></for></body>"#;
         let err = parser
             .parse("index.html", html)
             .expect_err("a boundary inside <for> must error");
@@ -6264,7 +6262,7 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_inside_reusable_component_template_errors() {
+    fn boundary_inside_reusable_component_template_errors() {
         // The boundary lives inside the component's own `.html` template, not
         // the entry template — disallowed even though the entry's usage of
         // `<my-widget>` looks unremarkable.
@@ -6273,7 +6271,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "my-widget",
-                r#"<webui-boundary name="x"><p>x</p></webui-boundary>"#,
+                r#"<boundary name="x"><p>x</p></boundary>"#,
                 None,
                 true,
             ))
@@ -6289,13 +6287,13 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_inside_route_element_errors() {
+    fn boundary_inside_route_element_errors() {
         let mut parser = HtmlParser::new();
         // Directly inside <route> children.
         let err = parser
             .parse(
                 "index.html",
-                r#"<body><route path="/" component="home"><webui-boundary name="x"><p>x</p></webui-boundary></route></body>"#,
+                r#"<body><route path="/" component="home"><boundary name="x"><p>x</p></boundary></route></body>"#,
             )
             .expect_err("a boundary directly inside <route> must error");
         let ParserError::Template(diag) = err else {
@@ -6308,7 +6306,7 @@ mod tests {
         let err = parser
             .parse(
                 "index.html",
-                r#"<body><route path="/" component="home"><div><webui-boundary name="x"><p>x</p></webui-boundary></div></route></body>"#,
+                r#"<body><route path="/" component="home"><div><boundary name="x"><p>x</p></boundary></div></route></body>"#,
             )
             .expect_err("a boundary nested inside <route> markup must error");
         let ParserError::Template(diag) = err else {
@@ -6318,10 +6316,10 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_must_be_inside_an_open_body() {
+    fn boundary_must_be_inside_an_open_body() {
         for html in [
-            r#"<webui-boundary name="before"><p>x</p></webui-boundary><body></body>"#,
-            r#"<body></body><webui-boundary name="after"><p>x</p></webui-boundary>"#,
+            r#"<boundary name="before"><p>x</p></boundary><body></body>"#,
+            r#"<body></body><boundary name="after"><p>x</p></boundary>"#,
         ] {
             let mut parser = HtmlParser::new();
             let err = parser
@@ -6333,9 +6331,7 @@ mod tests {
             assert_eq!(diag.error_code(), Some(codes::BOUNDARY_OUTSIDE_BODY));
             assert_eq!(
                 diag.help_text(),
-                Some(
-                    "move the <webui-boundary> between the opening <body> and its matching </body>"
-                )
+                Some("move the <boundary> between the opening <body> and its matching </body>")
             );
         }
 
@@ -6343,28 +6339,28 @@ mod tests {
         parser
             .parse(
                 "index.html",
-                r#"<BODY><webui-boundary name="inside"></webui-boundary></BODY>"#,
+                r#"<BODY><boundary name="inside"></boundary></BODY>"#,
             )
             .expect("mixed-case native body keeps the boundary inside an open body");
     }
 
     #[test]
-    fn webui_boundary_inside_foster_parenting_context_errors() {
+    fn boundary_inside_foster_parenting_context_errors() {
         // Each of these insertion modes moves an unknown element (the
         // generated <webui-hydrate> sentinel) out of the subtree, which would
         // split it from its payload script and halt hydration at runtime.
         for html in [
-            r#"<body><table><webui-boundary name="t"><p>x</p></webui-boundary></table></body>"#,
-            r#"<body><table><tbody><webui-boundary name="t"><p>x</p></webui-boundary></tbody></table></body>"#,
-            r#"<body><table><thead><webui-boundary name="t"><p>x</p></webui-boundary></thead></table></body>"#,
-            r#"<body><table><tfoot><webui-boundary name="t"><p>x</p></webui-boundary></tfoot></table></body>"#,
-            r#"<body><table><tbody><tr><webui-boundary name="t"><p>x</p></webui-boundary></tr></tbody></table></body>"#,
-            r#"<body><table><colgroup><webui-boundary name="t"><p>x</p></webui-boundary></colgroup></table></body>"#,
-            r#"<body><select><webui-boundary name="t"><option>x</option></webui-boundary></select></body>"#,
-            r#"<body><select><optgroup><webui-boundary name="t"><option>x</option></webui-boundary></optgroup></select></body>"#,
+            r#"<body><table><boundary name="t"><p>x</p></boundary></table></body>"#,
+            r#"<body><table><tbody><boundary name="t"><p>x</p></boundary></tbody></table></body>"#,
+            r#"<body><table><thead><boundary name="t"><p>x</p></boundary></thead></table></body>"#,
+            r#"<body><table><tfoot><boundary name="t"><p>x</p></boundary></tfoot></table></body>"#,
+            r#"<body><table><tbody><tr><boundary name="t"><p>x</p></boundary></tr></tbody></table></body>"#,
+            r#"<body><table><colgroup><boundary name="t"><p>x</p></boundary></colgroup></table></body>"#,
+            r#"<body><select><boundary name="t"><option>x</option></boundary></select></body>"#,
+            r#"<body><select><optgroup><boundary name="t"><option>x</option></boundary></optgroup></select></body>"#,
             // Mixed case must be rejected identically: HTML tag names are
             // case-insensitive, so the browser foster-parents these too.
-            r#"<body><TABLE><TBODY><webui-boundary name="t"><p>x</p></webui-boundary></TBODY></TABLE></body>"#,
+            r#"<body><TABLE><TBODY><boundary name="t"><p>x</p></boundary></TBODY></TABLE></body>"#,
         ] {
             let mut parser = HtmlParser::new();
             let err = parser
@@ -6387,27 +6383,27 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_is_allowed_where_insertion_mode_returns_to_in_body() {
+    fn boundary_is_allowed_where_insertion_mode_returns_to_in_body() {
         // <td>/<th>/<caption> switch back to "in body" rules, so an unknown
         // element is *not* foster-parented and the boundary is safe even
         // though <table>/<tr> ancestors are hostile.
         for html in [
-            r#"<body><table><tbody><tr><td><webui-boundary name="cell"><p>x</p></webui-boundary></td></tr></tbody></table></body>"#,
-            r#"<body><table><tbody><tr><th><webui-boundary name="head"><p>x</p></webui-boundary></th></tr></tbody></table></body>"#,
-            r#"<body><table><caption><webui-boundary name="cap"><p>x</p></webui-boundary></caption></table></body>"#,
+            r#"<body><table><tbody><tr><td><boundary name="cell"><p>x</p></boundary></td></tr></tbody></table></body>"#,
+            r#"<body><table><tbody><tr><th><boundary name="head"><p>x</p></boundary></th></tr></tbody></table></body>"#,
+            r#"<body><table><caption><boundary name="cap"><p>x</p></boundary></caption></table></body>"#,
             // Wrapping the whole table is the other documented fix.
-            r#"<body><webui-boundary name="whole"><table><tbody><tr><td>x</td></tr></tbody></table></webui-boundary></body>"#,
+            r#"<body><boundary name="whole"><table><tbody><tr><td>x</td></tr></tbody></table></boundary></body>"#,
             // A <td> barrier resets the depth, an inner table raises it again,
             // and closing that inner table must restore the barrier's zero —
             // not the outer table's non-zero depth.
             concat!(
                 "<body><table><tbody><tr><td>",
                 "<table><tbody><tr><td>inner</td></tr></tbody></table>",
-                r#"<webui-boundary name="after-inner"><p>x</p></webui-boundary>"#,
+                r#"<boundary name="after-inner"><p>x</p></boundary>"#,
                 "</td></tr></tbody></table></body>",
             ),
             // Void and self-closing elements must not leak restore ops.
-            r#"<body><table><tbody><tr><td><img src="a"><br><input></td></tr></tbody></table><webui-boundary name="v"><p>x</p></webui-boundary></body>"#,
+            r#"<body><table><tbody><tr><td><img src="a"><br><input></td></tr></tbody></table><boundary name="v"><p>x</p></boundary></body>"#,
         ] {
             let mut parser = HtmlParser::new();
             parser
@@ -6427,7 +6423,7 @@ mod tests {
                 concat!(
                     "<body>",
                     "<table><tbody><tr><td>x</td></tr></tbody></table>",
-                    r#"<webui-boundary name="after-table"><p>y</p></webui-boundary>"#,
+                    r#"<boundary name="after-table"><p>y</p></boundary>"#,
                     "</body>",
                 ),
             )
@@ -6501,7 +6497,7 @@ mod tests {
     }
 
     #[test]
-    fn webui_boundary_directive_remains_case_sensitive() {
+    fn boundary_directive_remains_case_sensitive() {
         let (fragments, _) =
             parse_and_get_fragments(r#"<WEBUI-BOUNDARY name="ordinary"><p>x</p></WEBUI-BOUNDARY>"#);
 
@@ -6515,7 +6511,7 @@ mod tests {
 
     #[test]
     fn templates_without_webui_boundary_are_unaffected() {
-        // Regression: ordinary templates with no `<webui-boundary>` directive
+        // Regression: ordinary templates with no `<boundary>` directive
         // must parse exactly as before — no boundary signals, no behavior
         // change for the non-streaming path.
         let html = r#"<div><my-counter count="{{count}}"></my-counter></div>"#;

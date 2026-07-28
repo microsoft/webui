@@ -551,7 +551,7 @@ CSS is scoped per component via Shadow DOM. No CSS-in-JS.
 
 ## Progressive Streaming Hydration (Rust Phase 1)
 
-Use `<webui-boundary>` only when the Rust server calls
+Use `<boundary>` only when the Rust server calls
 `WebUIHandler::render_streaming` with a `FlushWriter`. The directive is removed
 at compile time and emits no application DOM wrapper.
 
@@ -564,13 +564,13 @@ at compile time and emits no application DOM wrapper.
     <weather-skeleton></weather-skeleton>
   </header>
 
-  <webui-boundary name="critical-composer">
+  <boundary name="critical-composer">
     <message-composer></message-composer>
-  </webui-boundary>
+  </boundary>
 
-  <webui-boundary name="low-priority-feed">
+  <boundary name="low-priority-feed">
     <activity-feed></activity-feed>
-  </webui-boundary>
+  </boundary>
 </body>
 ```
 
@@ -1338,7 +1338,7 @@ Use `RenderOptions::with_head_inject(html)` /
 `head_end` / `body_end` boundaries. Pre-escape untrusted inject content with
 `webui_handler::encode_safe`.
 
-For progressive hydration, use `<webui-boundary>` in the entry template and
+For progressive hydration, use `<boundary>` in the entry template and
 call:
 
 ```rust

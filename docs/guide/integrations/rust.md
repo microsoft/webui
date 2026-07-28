@@ -158,7 +158,7 @@ async fn main() {
 `webui::streaming::StreamingWriter` coalesces small writes, sends them over a
 bounded `tokio::mpsc` channel for backpressure, and can recycle buffers through
 a shared `ChunkPool`. You can use it with `WebUIHandler::render` for transport
-streaming. To make authored `<webui-boundary>` checkpoints hydrate before the
+streaming. To make authored `<boundary>` checkpoints hydrate before the
 response completes, call the opt-in `WebUIHandler::render_streaming` API shown
 below.
 
@@ -222,7 +222,7 @@ The entry template must load its application module with an early
 `<script type="module" async>` in `<head>`, before boundary content. See
 [Progressive Streaming Hydration](/guide/concepts/hydration#progressive-streaming-hydration)
 and the
-[`<webui-boundary>` directive](/guide/concepts/directives/boundary) for the
+[`<boundary>` directive](/guide/concepts/directives/boundary) for the
 authoring and lifecycle contract. That application entry must import
 `@microsoft/webui-framework/streaming.js` before component registration
 modules. The default framework entry does not include the streaming coordinator.

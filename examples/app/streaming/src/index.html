@@ -91,28 +91,28 @@
   </header>
 
   <main>
-    <webui-boundary name="composer-ready">
+    <boundary name="composer-ready">
       <message-composer draft="" posted=""></message-composer>
-    </webui-boundary>
+    </boundary>
 
     <section aria-label="Feed">
-      <webui-boundary name="feed-batch-1">
+      <boundary name="feed-batch-1">
         <for each="post in feedBatch1">
           <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
         </for>
-      </webui-boundary>
+      </boundary>
 
-      <webui-boundary name="feed-batch-2">
+      <boundary name="feed-batch-2">
         <for each="post in feedBatch2">
           <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
         </for>
-      </webui-boundary>
+      </boundary>
 
-      <webui-boundary name="feed-batch-3">
+      <boundary name="feed-batch-3">
         <for each="post in feedBatch3">
           <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
         </for>
-      </webui-boundary>
+      </boundary>
     </section>
   </main>
 </body>

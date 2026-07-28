@@ -156,7 +156,7 @@ Each layer of the architecture contributes to the overall performance profile:
   bounded `tokio::mpsc` channel for backpressure. A shared `ChunkPool` can
   recycle buffers across requests, and a configurable flush deadline bounds
   how long a render thread waits on a slow consumer. With
-  `WebUIHandler::render_streaming`, authored `<webui-boundary>` checkpoints
+  `WebUIHandler::render_streaming`, authored `<boundary>` checkpoints
   request a semantic transport flush and can hydrate in document order before
   the response completes. Each checkpoint emits state and newly needed metadata
   only for the local component surface reachable from its rendered roots,

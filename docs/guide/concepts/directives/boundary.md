@@ -1,6 +1,6 @@
 # Streaming Boundaries
 
-`<webui-boundary>` marks a complete part of an entry page that can be flushed
+`<boundary>` marks a complete part of an entry page that can be flushed
 and hydrated before the rest of the response arrives. It is available with the
 WebUI parser plugin and the opt-in Rust streaming render path.
 
@@ -9,13 +9,13 @@ WebUI parser plugin and the opt-in Rust streaming render path.
   <script type="module" async src="/index.js"></script>
 </head>
 <body>
-  <webui-boundary name="composer">
+  <boundary name="composer">
     <message-composer></message-composer>
-  </webui-boundary>
+  </boundary>
 
-  <webui-boundary name="feed">
+  <boundary name="feed">
     <activity-feed></activity-feed>
-  </webui-boundary>
+  </boundary>
 </body>
 ```
 

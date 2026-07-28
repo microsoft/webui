@@ -137,7 +137,7 @@ import './counter-card.js';
 
 Import it before component registration modules and load the application entry
 early with `<script type="module" async>` in `<head>`. The server must render
-authored `<webui-boundary>` directives through
+authored `<boundary>` directives through
 `WebUIHandler::render_streaming`. The default
 `@microsoft/webui-framework` entry has no dependency on the coordinator, so
 normal applications pay no streaming bundle or initialization cost.

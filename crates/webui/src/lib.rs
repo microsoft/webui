@@ -912,8 +912,8 @@ mod tests {
             "index.html",
             concat!(
                 "<html><body>",
-                r#"<webui-boundary name="a"><p>{{one}}</p></webui-boundary>"#,
-                r#"<webui-boundary name="b"><p>{{two}}</p></webui-boundary>"#,
+                r#"<boundary name="a"><p>{{one}}</p></boundary>"#,
+                r#"<boundary name="b"><p>{{two}}</p></boundary>"#,
                 "</body></html>",
             ),
         )]);
@@ -952,7 +952,7 @@ mod tests {
             "index.html",
             concat!(
                 "<html><body>",
-                r#"<webui-boundary name="a"><p>{{one}}</p></webui-boundary>"#,
+                r#"<boundary name="a"><p>{{one}}</p></boundary>"#,
                 "</body></html>",
             ),
         )]);

@@ -66,7 +66,7 @@ bindings or routing work.
 
 Phase 1 can hydrate an explicit, complete entry-page region while the document
 is still loading. Author a
-[`<webui-boundary>`](/guide/concepts/directives/boundary), then serve the page
+[`<boundary>`](/guide/concepts/directives/boundary), then serve the page
 with the Rust `WebUIHandler::render_streaming` API.
 
 ```html
@@ -79,13 +79,13 @@ with the Rust `WebUIHandler::render_streaming` API.
     <weather-skeleton></weather-skeleton>
   </header>
 
-  <webui-boundary name="critical-composer">
+  <boundary name="critical-composer">
     <message-composer></message-composer>
-  </webui-boundary>
+  </boundary>
 
-  <webui-boundary name="low-priority-feed">
+  <boundary name="low-priority-feed">
     <activity-feed></activity-feed>
-  </webui-boundary>
+  </boundary>
 </body>
 ```
 

@@ -105,7 +105,7 @@ fn feed_post(post_id: &str, author: &str, text: &str, like_count: &str) -> Value
 /// Three explicit, complete feed batches (DESIGN.md's Phase 1 "Future
 /// work" names an open-ended `<webui-stream>` append/feed-batch directive
 /// as future work, not implemented here). Each batch is rendered by its
-/// own `<webui-boundary>` in `src/index.html` and committed with its own
+/// own `<boundary>` in `src/index.html` and committed with its own
 /// checkpoint and flush.
 fn feed_batches() -> (Vec<Value>, Vec<Value>, Vec<Value>) {
     let batch_1 = vec![

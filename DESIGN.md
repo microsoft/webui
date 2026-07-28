@@ -1739,7 +1739,7 @@ are named in "Future work" below and are explicitly not designed further here.
    already coalesces writes into ~4 KB chunks via a **private** `flush_buf`.
    There is no public `flush()` and no `FlushWriter` trait — an
    explicit, boundary-driven flush is new API surface, not just wiring.
-5. `<webui-boundary>`, `<webui-hydrate>`, and any boundary wire format do not
+5. `<boundary>`, `<webui-hydrate>`, and any boundary wire format do not
    exist anywhere in the tree (parser, protocol, or framework). This is new
    work, not a partially-built feature.
 6. `TemplateElement` already has the right extension seam for gated
@@ -1820,7 +1820,7 @@ introduce a parallel one.
 
 **Compile time**
 
-13. **`<webui-boundary>` is a directive, not an element.** It emits no wrapper
+13. **`<boundary>` is a directive, not an element.** It emits no wrapper
     node, never nests or overlaps another boundary, and may not cut through a
     component, `<if>`, `<for>`, route, or hydration-marker scope.
 14. **Boundaries are rejected in HTML foster-parenting contexts.** Inside
@@ -1842,7 +1842,7 @@ introduce a parallel one.
     never silently degrade to buffering. Only the host knows backend data
     readiness and transport backpressure, so flush timing is never compiled in.
 
-### Is `<webui-boundary>` disproportionate compiler work?
+### Is `<boundary>` disproportionate compiler work?
 
 No. `HtmlParser::parse` already special-cases bare element names in one
 dispatch (`crates/webui-parser/src/lib.rs`, `match element.name()`: `"for"`,
@@ -1850,7 +1850,7 @@ dispatch (`crates/webui-parser/src/lib.rs`, `match element.name()`: `"for"`,
 fallback). `<body>`'s handler, `enter_body_element`, is the closest existing
 analogue: it pushes compiler-owned `body_start` structure before children and
 `body_end` after them (via `ParseOp::EndBody`) using a raw signal fragment, not
-a new protobuf message. `<webui-boundary>` fits the same shape: one more
+a new protobuf message. `<boundary>` fits the same shape: one more
 `match` arm, one new `enter_boundary_directive`, reusing
 `WebUIFragmentSignal` for `boundary_start:<seq>` / `boundary_end:<seq>`
 markers instead of adding `oneof` variants to `webui.proto`.
@@ -1877,9 +1877,24 @@ same order of cost as the existing `key`-on-`<for>` validation
 (`invalid-for-key`). No simpler surface syntax removes that cost, because
 marking a statically-provable, independently-hydratable fragment subtree is
 inherently a parse-time structural question. An attribute spelling
-(`<div webui-boundary="name">`) would carry identical validation cost while
+(`<div boundary="name">`) would carry identical validation cost while
 losing "emits no wrapper element" and a clean reserved-tag diagnostic; it is
-differently spelled, not simpler. **`<webui-boundary>` is kept as specified.**
+differently spelled, not simpler. **`<boundary>` is kept as specified.**
+
+The bare, unhyphenated spelling is deliberate and follows the rule the rest of
+the compiler already uses:
+
+| Spelling | Meaning | Examples |
+| --- | --- | --- |
+| Bare tag | Compile-time directive, erased at build, never in the DOM | `<if>`, `<for>`, `<route>`, `<outlet>`, `<boundary>` |
+| `webui-` tag | Real custom element defined at runtime | `<webui-hydrate>` |
+| `data-webui-*` | Runtime marker attribute on emitted output | `data-webui-boundary`, `data-webui-ssr-preload` |
+
+A hyphenated name is the HTML requirement for *custom elements*, so spending it
+on a directive that is deleted before the browser ever sees it would imply a
+runtime element that does not exist. `<boundary>` cannot collide with a
+component either: WebUI components are discovered from hyphenated filenames, so
+no component can ever be named `boundary`.
 
 ### Author-facing syntax
 
@@ -1888,15 +1903,15 @@ differently spelled, not simpler. **`<webui-boundary>` is kept as specified.**
   <script type="module" async src="/index.js"></script>
 </head>
 <body>
-  <webui-boundary name="counter-ready">
+  <boundary name="counter-ready">
     <my-counter count="{{count}}"></my-counter>
-  </webui-boundary>
+  </boundary>
 
   <footer>Slow tail content</footer>
 </body>
 ```
 
-`<webui-boundary>` is a reserved compile-time directive, resolved by
+`<boundary>` is a reserved compile-time directive, resolved by
 `webui-parser`, that emits no wrapper element. The compiler:
 
 - requires a static, unique `name` attribute;
@@ -2113,7 +2128,7 @@ existing private `flush_buf` (`crates/webui/src/streaming.rs`) as a public
 `FlushWriter`; a writer that only implements `ResponseWriter` must be
 rejected at the streaming-render entry point rather than silently buffering.
 
-When the handler reaches `</webui-boundary>` it: finishes all child markup,
+When the handler reaches `</boundary>` it: finishes all child markup,
 emits template/state deltas, emits the sentinel, then calls `flush()` — this
 sequence is atomic from the host's perspective. "Flush" means bytes were
 handed to the HTTP transport; intermediary proxies may still coalesce them,
@@ -2147,7 +2162,7 @@ occur before that split point.
 ### Compatibility
 
 - Streaming boundaries are strictly opt-in (a distinct render/session mode);
-  pages without `<webui-boundary>` render exactly as today.
+  pages without `<boundary>` render exactly as today.
 - Existing pages retain one `#webui-data` block and current script behavior,
   byte-for-byte.
 - Existing `render()` and complete `renderPartial()` APIs are unchanged.
