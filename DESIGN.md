@@ -2108,12 +2108,25 @@ own HTML today.
 This is a gap in WebUI, not a pattern for applications to reimplement. The
 compiler already derives each boundary's component closure — that is how the
 template delta works — and the projection manifest already records which build
-output defines each component, so WebUI has the information needed to emit
-these hints through the existing head-injection path. Doing so is future work
-tracked with the per-boundary CSS strategy split, which shares the same
-priority mechanism. Until then `examples/app/streaming` demonstrates the
-boundary-carried island loader only, and its README records the measurements
-that justify closing the gap.
+output defines each component, so the tag-to-module half of the problem is
+solved. Two inputs are still missing, and both are why this is future work
+rather than plumbing:
+
+- **Module sizes.** The manifest records `outputs` as path-to-hash pairs, so
+  "ordered largest first" cannot be computed from it. Either the manifest
+  gains a size per output, or the ordering claim is dropped.
+- **Island exclusion.** Nothing in the protocol distinguishes a component
+  whose module the critical entry imports from one loaded by a `<script>`
+  inside a boundary. Preloading every reachable component's outputs would
+  therefore preload the island too — precisely the regression the hint exists
+  to remove. The parser must mark modules that a boundary loads for itself,
+  or the emission must be restricted to outputs already reachable from a
+  `<head>` module script.
+
+Closing it is tracked with the per-boundary CSS strategy split, which shares
+the same priority mechanism. Until then `examples/app/streaming` demonstrates
+the boundary-carried island loader only, and its README records the
+measurements that justify closing the gap.
 
 **Commit.** For one boundary, the coordinator:
 
@@ -2247,6 +2260,9 @@ Scenario (mirrors #394 and the session plan's acceptance tests, unchanged):
 
 - Router generalization / client-navigation streaming records.
 - Host-language mirroring (Node, FFI/.NET, WASM) of the streaming API.
+- Boundary-aware module preload hints (see "Splitting an island into a
+  separate bundle entry" above), tracked with the per-boundary CSS strategy
+  split.
 - Dynamic append/feed batch APIs (`<webui-stream>`, `page.append()`,
   `begin_append()` / `commit()`).
 - Out-of-order content delivery and either patch transport
