@@ -72,6 +72,20 @@ pub struct ProjectionManifest {
     /// Exact component surfaces keyed by custom-element tag.
     #[serde(deserialize_with = "deserialize_unique_map")]
     pub components: BTreeMap<String, ProjectionComponent>,
+    /// Per-entry static import closure, keyed by entry output.
+    ///
+    /// Each value lists the **other** outputs an entry pulls in through static
+    /// `import` statements, transitively, ordered largest-first. Dynamic
+    /// `import()` edges are excluded: those are meant to cost a round trip.
+    ///
+    /// The bundler is the only party that knows output sizes, so it sorts.
+    /// Consumers use the order as given rather than re-deriving it.
+    ///
+    /// Optional so manifests produced before this field existed still validate
+    /// and still reproduce their original [`build_id`](Self::build_id).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(deserialize_with = "deserialize_unique_map")]
+    pub entry_closures: BTreeMap<String, Vec<String>>,
 }
 
 /// Manifest producer identity.
@@ -159,6 +173,7 @@ impl ProjectionManifest {
         validate_hash_map(&self.inputs)?;
         validate_hash_map(&self.outputs)?;
         validate_components(self)?;
+        validate_entry_closures(self)?;
         if self.compute_build_id() != self.build_id {
             return Err(error(
                 codes::BUILD_ID_MISMATCH,
@@ -219,8 +234,68 @@ impl ProjectionManifest {
             fields.extend(component.navigation_keys.iter().map(String::as_str));
             append_record(&mut canonical, "component", &fields);
         }
+
+        // Appended only when present so manifests produced before this field
+        // existed keep reproducing their original build ID.
+        if !self.entry_closures.is_empty() {
+            let closure_count = self.entry_closures.len().to_string();
+            append_record(&mut canonical, "entryClosures", &[&closure_count]);
+            for (entry, closure) in &self.entry_closures {
+                let member_count = closure.len().to_string();
+                let mut fields = Vec::with_capacity(2 + closure.len());
+                fields.push(entry.as_str());
+                fields.push(member_count.as_str());
+                fields.extend(closure.iter().map(String::as_str));
+                append_record(&mut canonical, "entryClosure", &fields);
+            }
+        }
         hash_bytes(canonical.as_bytes())
     }
+}
+
+/// Validate that every entry closure references declared, distinct outputs.
+///
+/// Closure order is meaningful (largest-first) and therefore deliberately not
+/// required to be sorted — only to be free of duplicates and self-references.
+fn validate_entry_closures(manifest: &ProjectionManifest) -> Result<(), ProjectionManifestError> {
+    for (entry, closure) in &manifest.entry_closures {
+        if !manifest.outputs.contains_key(entry) {
+            return Err(invalid_field(&format!(
+                "entry closure key '{entry}' is absent from outputs"
+            )));
+        }
+        for member in closure {
+            if member == entry {
+                return Err(invalid_field(&format!(
+                    "entry closure '{entry}' includes itself"
+                )));
+            }
+            if !manifest.outputs.contains_key(member) {
+                return Err(invalid_field(&format!(
+                    "entry closure '{entry}' references undeclared output '{member}'"
+                )));
+            }
+        }
+        if has_duplicate(closure) {
+            return Err(invalid_field(&format!(
+                "entry closure '{entry}' repeats an output"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Duplicate check that preserves a meaningful, non-sorted order.
+///
+/// Closures are O(1-10) members, so the quadratic scan avoids allocating a set
+/// for what is almost always a two-element list.
+fn has_duplicate(values: &[String]) -> bool {
+    for (index, value) in values.iter().enumerate() {
+        if values[index + 1..].contains(value) {
+            return true;
+        }
+    }
+    false
 }
 
 fn validate_hash_map(values: &BTreeMap<String, String>) -> Result<(), ProjectionManifestError> {
@@ -495,6 +570,7 @@ mod tests {
                     navigation_keys: vec!["displayValue".to_string(), "é".to_string()],
                 },
             )]),
+            entry_closures: BTreeMap::new(),
         };
         manifest.build_id = manifest.compute_build_id();
         assert_eq!(
@@ -511,5 +587,137 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), codes::INVALID_FIELD);
+    }
+
+    /// Build a two-output manifest so entry-closure cases have somewhere to point.
+    fn manifest_with_closures(closures: BTreeMap<String, Vec<String>>) -> ProjectionManifest {
+        let mut manifest = ProjectionManifest {
+            schema: SCHEMA_ID.to_string(),
+            producer: ProjectionProducer {
+                name: PRODUCER_NAME.to_string(),
+                version: "0.0.19".to_string(),
+            },
+            adapter: ProjectionAdapter {
+                name: "esbuild".to_string(),
+                bundler: "esbuild@0.28.1".to_string(),
+            },
+            root: "..".to_string(),
+            analysis_hash: format!("sha256:{}", "1".repeat(64)),
+            build_id: String::new(),
+            outputs: BTreeMap::from([
+                (
+                    "dist/index.js".to_string(),
+                    format!("sha256:{}", "3".repeat(64)),
+                ),
+                (
+                    "dist/chunk.js".to_string(),
+                    format!("sha256:{}", "4".repeat(64)),
+                ),
+            ]),
+            inputs: BTreeMap::from([(
+                "src/a.ts".to_string(),
+                format!("sha256:{}", "2".repeat(64)),
+            )]),
+            components: BTreeMap::new(),
+            entry_closures: closures,
+        };
+        manifest.build_id = manifest.compute_build_id();
+        manifest
+    }
+
+    #[test]
+    fn entry_closure_accepts_declared_outputs() {
+        let manifest = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/chunk.js".to_string()],
+        )]));
+        assert!(manifest.validate().is_ok());
+    }
+
+    #[test]
+    fn entry_closure_rejects_undeclared_key() {
+        let manifest = manifest_with_closures(BTreeMap::from([(
+            "dist/missing.js".to_string(),
+            vec!["dist/chunk.js".to_string()],
+        )]));
+        let error = manifest.validate().unwrap_err();
+        assert_eq!(error.code(), codes::INVALID_FIELD);
+    }
+
+    #[test]
+    fn entry_closure_rejects_undeclared_member() {
+        let manifest = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/absent.js".to_string()],
+        )]));
+        let error = manifest.validate().unwrap_err();
+        assert_eq!(error.code(), codes::INVALID_FIELD);
+    }
+
+    #[test]
+    fn entry_closure_rejects_self_reference() {
+        let manifest = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/index.js".to_string()],
+        )]));
+        let error = manifest.validate().unwrap_err();
+        assert_eq!(error.code(), codes::INVALID_FIELD);
+    }
+
+    #[test]
+    fn entry_closure_rejects_repeated_member() {
+        let manifest = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/chunk.js".to_string(), "dist/chunk.js".to_string()],
+        )]));
+        let error = manifest.validate().unwrap_err();
+        assert_eq!(error.code(), codes::INVALID_FIELD);
+    }
+
+    #[test]
+    fn entry_closure_order_changes_build_id() {
+        let unordered = manifest_with_closures(BTreeMap::new());
+        let one = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/chunk.js".to_string()],
+        )]));
+        assert_ne!(unordered.compute_build_id(), one.compute_build_id());
+
+        // Closures are largest-first, so member order is load order and must be
+        // covered by the build ID rather than normalized away.
+        let a = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/chunk.js".to_string(), "dist/index.js".to_string()],
+        )]));
+        let b = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/index.js".to_string(), "dist/chunk.js".to_string()],
+        )]));
+        assert_ne!(a.compute_build_id(), b.compute_build_id());
+    }
+
+    #[test]
+    fn entry_closure_round_trips_as_camel_case() {
+        let manifest = manifest_with_closures(BTreeMap::from([(
+            "dist/index.js".to_string(),
+            vec!["dist/chunk.js".to_string()],
+        )]));
+        let json = serde_json::to_vec(&manifest).expect("manifest serializes");
+        assert!(String::from_utf8_lossy(&json).contains("\"entryClosures\""));
+
+        let parsed = ProjectionManifest::from_slice(&json).expect("manifest parses");
+        assert_eq!(
+            parsed.entry_closures.get("dist/index.js"),
+            Some(&vec!["dist/chunk.js".to_string()])
+        );
+    }
+
+    #[test]
+    fn absent_entry_closures_parse_as_empty() {
+        let mut manifest = manifest_with_closures(BTreeMap::new());
+        manifest.build_id = manifest.compute_build_id();
+        let json = serde_json::to_vec(&manifest).expect("manifest serializes");
+        assert!(!String::from_utf8_lossy(&json).contains("entryClosures"));
+        assert!(ProjectionManifest::from_slice(&json).is_ok());
     }
 }

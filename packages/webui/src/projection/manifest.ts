@@ -58,6 +58,17 @@ export function computeBuildId(params: {
       sortedNavigationKeys: ReadonlyArray<string>,
     ]
   >;
+
+  /**
+   * Per-entry static import closures, keyed by entry output and sorted by key.
+   *
+   * Member order is load order (largest-first) and is therefore covered by the
+   * build ID rather than normalized away. Omitted entirely when empty so
+   * manifests produced before this field existed keep their original ID.
+   */
+  readonly sortedEntryClosures?: ReadonlyArray<
+    readonly [entry: string, closure: ReadonlyArray<string>]
+  >;
 }): string {
   const records: string[] = [];
   appendRecord(records, "schema", [MANIFEST_SCHEMA]);
@@ -100,6 +111,17 @@ export function computeBuildId(params: {
       ...navigationKeys,
     ]);
   }
+  const entryClosures = params.sortedEntryClosures ?? [];
+  if (entryClosures.length > 0) {
+    appendRecord(records, "entryClosures", [String(entryClosures.length)]);
+    for (const [entry, closure] of entryClosures) {
+      appendRecord(records, "entryClosure", [
+        entry,
+        String(closure.length),
+        ...closure,
+      ]);
+    }
+  }
   return hashContent(records.join(""));
 }
 
@@ -131,6 +153,12 @@ export function serializeManifestCanonical(
       navigationKeys: [...entry.navigationKeys].sort(compareUtf8),
     };
   }
+  const entryClosures = manifest.entryClosures ?? {};
+  const entryClosureKeys = Object.keys(entryClosures).sort(compareUtf8);
+  const sortedEntryClosures: Record<string, ReadonlyArray<string>> = {};
+  for (const entry of entryClosureKeys) {
+    sortedEntryClosures[entry] = entryClosures[entry]!;
+  }
   return JSON.stringify({
     schema: manifest.schema,
     producer: manifest.producer,
@@ -141,6 +169,11 @@ export function serializeManifestCanonical(
     outputs,
     inputs,
     components,
+    // Omitted when empty so the JSON matches a pre-`entryClosures` manifest
+    // byte for byte, exactly like the Rust `skip_serializing_if`.
+    ...(entryClosureKeys.length > 0
+      ? { entryClosures: sortedEntryClosures }
+      : {}),
   });
 }
 
@@ -182,6 +215,19 @@ export interface ProjectionManifest {
 
   /** Exact component surfaces keyed by custom-element tag. */
   readonly components: Readonly<Record<string, ComponentEntry>>;
+
+  /**
+   * Per-entry transitive static import closure, keyed by entry output path.
+   *
+   * Each value lists the *other* outputs an entry pulls in through static
+   * `import` statements, ordered largest-first. Dynamic `import()` edges are
+   * excluded — those are meant to cost a round trip.
+   *
+   * The bundler is the only party that knows output sizes, so it sorts here
+   * and consumers use the order as given. Absent on manifests produced before
+   * this field existed.
+   */
+  readonly entryClosures?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
 
 /** Identity of the tool that produced the manifest. */
@@ -238,6 +284,7 @@ export function validateManifestSchema(value: unknown): string[] {
       "outputs",
       "inputs",
       "components",
+      "entryClosures",
     ],
     errors
   );
@@ -258,7 +305,45 @@ export function validateManifestSchema(value: unknown): string[] {
   const inputs = validateHashRecord(value["inputs"], errors);
   const outputs = validateHashRecord(value["outputs"], errors);
   validateComponents(value["components"], inputs, outputs, errors);
+  validateEntryClosures(value["entryClosures"], outputs, errors);
   return [...errors];
+}
+
+/**
+ * Validates per-entry closures against declared outputs.
+ *
+ * Closure member order is meaningful (largest-first), so members are checked
+ * for uniqueness and membership but deliberately not for sortedness.
+ */
+function validateEntryClosures(
+  value: unknown,
+  outputs: Readonly<Record<string, string>> | undefined,
+  errors: Set<string>
+): void {
+  if (value === undefined) return;
+  if (!isRecord(value)) {
+    errors.add("PROJ-M009");
+    return;
+  }
+  const entries = Object.keys(value);
+  if (entries.length === 0 || !isSortedUnique(entries)) errors.add("PROJ-M009");
+  for (const [entry, closure] of Object.entries(value)) {
+    if (outputs?.[entry] === undefined || !isStringArray(closure)) {
+      errors.add("PROJ-M009");
+      continue;
+    }
+    const seen = new Set<string>();
+    for (const member of closure) {
+      if (
+        member === entry ||
+        outputs[member] === undefined ||
+        seen.has(member)
+      ) {
+        errors.add("PROJ-M009");
+      }
+      seen.add(member);
+    }
+  }
 }
 
 function validateHashRecord(

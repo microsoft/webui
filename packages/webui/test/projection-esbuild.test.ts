@@ -85,6 +85,40 @@ Card.define('probe-card');
   );
 }
 
+async function writeSharedChunkFixture(root: string): Promise<void> {
+  // Two entries that both *statically* import one module. Splitting hoists it
+  // into its own chunk that is named only inside each entry's bytes, so the
+  // browser's preload scanner cannot see it — the case the closure exists for.
+  await writeFile(
+    path.join(root, "src", "shared.ts"),
+    `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+export class Base extends WebUIElement {
+  @observable shared = '';
+}
+export const padding = '${"padding".repeat(2048)}';
+`
+  );
+  await writeFile(
+    path.join(root, "src", "entry.ts"),
+    `
+import { Base, padding } from './shared.ts';
+class Main extends Base {}
+Main.define('probe-main');
+export const used = padding.length;
+`
+  );
+  await writeFile(
+    path.join(root, "src", "island.ts"),
+    `
+import { Base, padding } from './shared.ts';
+class Island extends Base {}
+Island.define('probe-island');
+export const used = padding.length;
+`
+  );
+}
+
 describe("esbuildProjection", () => {
   test("emits a code-split manifest from the same esbuild run", async (t) => {
     const root = await fixtureRoot();
@@ -134,6 +168,104 @@ describe("esbuildProjection", () => {
       files.some((name) => name.includes(".tmp-")),
       false,
       "atomic manifest temporary files must be cleaned"
+    );
+  });
+
+  test("records each entry's static import closure, largest first", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeSharedChunkFixture(root);
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts", "src/island.ts"],
+      outdir: "dist",
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      write: true,
+      alias: {
+        "@microsoft/webui-framework": FRAMEWORK_ENTRY,
+      },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+
+    const closures = manifest.entryClosures ?? {};
+    // esbuild also marks dynamic-import split points as entry points, so match
+    // the two configured entries by name rather than counting keys.
+    const entryKeys = Object.keys(closures).filter(
+      (key) => key.endsWith("/entry.js") || key.endsWith("/island.js")
+    );
+    assert.equal(entryKeys.length, 2, "both entries should carry a closure");
+
+    for (const entryKey of entryKeys) {
+      const closure = closures[entryKey]!;
+      assert.ok(
+        closure.some((member) => member.includes("chunk-")),
+        `${entryKey} must reach the shared chunk it statically imports`
+      );
+      assert.equal(
+        closure.includes(entryKey),
+        false,
+        "an entry must not list itself"
+      );
+      for (const member of closure) {
+        assert.ok(
+          manifest.outputs[member] !== undefined,
+          `closure member ${member} must be a declared output`
+        );
+      }
+
+      // Preloads are issued in document order over a shared connection, so a
+      // small chunk ahead of a large one delays the long pole. Verify the
+      // contract against real bytes rather than trusting the sort.
+      const sizes: number[] = [];
+      for (const member of closure) {
+        const bytes = await readFile(resolvedArtifact(root, manifest, member));
+        sizes.push(bytes.byteLength);
+      }
+      for (let index = 1; index < sizes.length; index++) {
+        assert.ok(
+          sizes[index - 1]! >= sizes[index]!,
+          `closure for ${entryKey} must be ordered largest-first`
+        );
+      }
+    }
+  });
+
+  test("excludes dynamically imported chunks from the closure", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeCardFixture(root);
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      write: true,
+      alias: {
+        "@microsoft/webui-framework": FRAMEWORK_ENTRY,
+      },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.deepEqual(validateManifestSchema(manifest), []);
+
+    // `entry.ts` reaches `card.ts` only through `import()`. Preloading it would
+    // defeat the deferral the author asked for, so the closure must be empty
+    // and therefore omitted entirely.
+    const closure = Object.values(manifest.entryClosures ?? {}).flat();
+    assert.equal(
+      closure.some((member) => member.includes("card-")),
+      false,
+      "dynamic imports must not be preloaded"
     );
   });
 

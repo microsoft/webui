@@ -1358,6 +1358,7 @@ function buildManifest(
 
   const inputs = buildInputsMap(ctx);
   const outputs = buildOutputsMap(ctx);
+  const entryClosures = buildEntryClosuresMap(ctx);
   const analysisHash = computeAnalysisHash(ctx);
 
   const producerVersion = readProducerVersion();
@@ -1382,6 +1383,9 @@ function buildManifest(
             components[tag]!.navigationKeys,
           ] as const
       ),
+    ...(entryClosures
+      ? { sortedEntryClosures: Object.entries(entryClosures) }
+      : {}),
   });
 
   return {
@@ -1394,7 +1398,40 @@ function buildManifest(
     outputs,
     inputs,
     components,
+    ...(entryClosures ? { entryClosures } : {}),
   };
+}
+
+/**
+ * Canonicalizes adapter-reported entry closures to root-relative paths.
+ *
+ * Members that did not survive into `outputs` are dropped rather than
+ * diagnosed: an adapter may legitimately report an import graph wider than the
+ * outputs it hands to the compiler. Order is preserved exactly — it is the
+ * adapter's size ordering and re-deriving it here is not possible.
+ */
+function buildEntryClosuresMap(
+  ctx: AdapterContext
+): Record<string, ReadonlyArray<string>> | undefined {
+  const source = ctx.entryClosures;
+  if (!source || source.size === 0) return undefined;
+
+  const entries: Array<[string, ReadonlyArray<string>]> = [];
+  for (const [entryId, closure] of source) {
+    if (!ctx.membership.outputs.has(entryId)) continue;
+    const members: string[] = [];
+    for (const memberId of closure) {
+      if (memberId === entryId) continue;
+      if (!ctx.membership.outputs.has(memberId)) continue;
+      members.push(canonicalOutputId(ctx, memberId));
+    }
+    if (members.length > 0) {
+      entries.push([canonicalOutputId(ctx, entryId), members]);
+    }
+  }
+  if (entries.length === 0) return undefined;
+  entries.sort((left, right) => compareUtf8(left[0], right[0]));
+  return Object.fromEntries(entries);
 }
 
 function findOutputsContaining(ctx: AdapterContext, moduleId: string): string[] {

@@ -2304,8 +2304,14 @@ Scenario (mirrors #394 and the session plan's acceptance tests, unchanged):
   (`DomTemplate` current-browser fallback, or a native `Declarative`
   marker/`<template for>` transport) — no correctness path in Phase 1 depends
   on either.
-- Native declarative partial updates as a stable browser primitive, should
-  one ship, replacing the `DomTemplate`/`Declarative` adapter layer above.
+- A native declarative-partial-updates transport. The placement half of that
+  API — `<?marker>` / `<?start>` / `<?end>` processing instructions plus
+  `<template for>` — **shipped in Chrome 150 stable**, with a formal `positive`
+  position from Mozilla and `support` from WebKit, implementation bugs filed,
+  and neither shipped. It stays future work because it is a *transport for a
+  capability WebUI does not have yet*: see "Deferred boundary placement" below
+  for why placement is the prerequisite, and why the transport is worth about
+  one `<template>` and one `DocumentFragment` per patch once it exists.
 
 #### Deferred boundary placement (the in-response answer to slow surfaces)
 
@@ -2345,8 +2351,22 @@ adoption, and no rendered wrapper element is introduced. Relocation happens
 The client cost is bounded by design. `resolveBoundaryRange()` is the
 coordinator's only placement-aware step, so this becomes a second range
 resolver — the queue, ordering, state projection, activation, and scaffolding
-teardown are all unchanged. It also maps 1:1 onto `<template patchfor>` should
-declarative partial updates ship, which is why the seam exists.
+teardown are all unchanged. It also maps 1:1 onto declarative partial updates'
+`<?start name>` / `<?end>` placement markers and `<template for>` patches,
+which is why the seam exists.
+
+**Why the native transport does not come first.** Declarative partial updates
+ship the *transport*; this section is the *capability*. Without deferred
+placement the handler has nothing to send out of order, so a DPU adapter would
+have no payload. With deferred placement, the `DomTemplate` transport already
+works in every browser, and the native one saves one inert `<template>` and one
+`DocumentFragment` per patch — against a measured 6 ms hydration CPU for 1,500
+roots and a 41.3 KiB retained-heap slope, that is not a recoverable cost. The
+streaming client increment is also 9,190 B minified / 3,176 B gzip against a
+hard 10 KiB / 3.5 KiB gate, and the comment-marker resolver can never be
+removed while Firefox and Safari have positions but no implementation, so a
+second resolver plus feature detection must fit in ~810 B on top of a path that
+stays forever. Placement first, transport second.
 
 What makes it a milestone rather than an increment:
 
@@ -2362,9 +2382,11 @@ What makes it a milestone rather than an increment:
   than merely relocating already-rendered content — is a strictly larger change
   requiring a new host API, and should not be conflated with placement.
 
-Until then the client-fetch pattern above is the supported answer, and it is
-often the better one regardless: server work starts at request time instead of
-waiting for the bundle to download and the element to upgrade.
+Until then the client-fetch pattern above is the supported answer. Be honest
+about its cost: the request is issued only after the bundle downloads and the
+element upgrades, so it pays a round trip that deferred placement would not.
+What it buys is that it works in every browser today and holds no server task
+open across the slow dependency.
 
 #### Boundary naming: free-form strings, resolved once to integer handles
 
@@ -2830,6 +2852,24 @@ export interface ProjectionManifest {
    * Component entries keyed by custom-element tag name.
    */
   readonly components: Record<string, ComponentEntry>;
+
+  /**
+   * Per-entry transitive *static* import closure, keyed by entry output.
+   *
+   * Value: the other outputs that entry pulls in through static `import`
+   * statements, ordered **largest byte size first**. Dynamic `import()` edges
+   * are excluded — those are meant to cost a round trip, and preloading them
+   * would defeat the deferral the author asked for.
+   *
+   * These chunks are named only inside the entry's own bytes, so the browser's
+   * preload scanner cannot see them. Recording the closure here is what lets a
+   * host emit `<link rel="modulepreload">` without a second bundler pass.
+   *
+   * Absent when the adapter cannot report an output import graph, and omitted
+   * entirely when empty so manifests produced before this field existed keep
+   * reproducing their original `buildId`.
+   */
+  readonly entryClosures?: Record<string, readonly string[]>;
 }
 
 export interface ComponentEntry {
@@ -2850,11 +2890,15 @@ The manifest must be reproducible byte-for-byte given the same inputs,
 graph, configuration, and tool versions:
 
 1. **No timestamps.** No `builtAt`, `date`, `time`, or any time-derived field.
-2. **Sorted object keys.** `outputs`, `inputs`, and `components` are sorted
-   lexicographically by raw UTF-8 bytes, ascending.
+2. **Sorted object keys.** `outputs`, `inputs`, `components`, and
+   `entryClosures` are sorted lexicographically by raw UTF-8 bytes, ascending.
 3. **Sorted arrays.** `ComponentEntry.outputs`, `hydrationKeys`, and
    `navigationKeys` are sorted and deduplicated by raw UTF-8 bytes.
    `navigationKeys` must contain every `hydrationKeys` entry.
+   `entryClosures` values are the deliberate exception: their order is *load
+   order*, sorted by descending output size, so it is validated for uniqueness
+   and membership but never re-sorted. Only the bundler knows output sizes,
+   so it sorts once and every consumer uses the order as given.
 4. **Normalized paths.** All paths use forward slashes. No leading `./`.
    Physical keys are relative to `root`, never the manifest directory.
 5. **Compact JSON serialization.** No trailing newlines, no pretty-printing
@@ -2948,6 +2992,9 @@ component(
   navigation-keys...
 )
   ... sorted by UTF-8 tag bytes
+entryClosures(count)                    ... omitted entirely when empty
+entryClosure(entry, member-count, members...)
+  ... sorted by UTF-8 entry bytes; members in their given load order
 ```
 
 Each record ends in exactly one LF. Decimal lengths count UTF-8 bytes, not
@@ -2956,6 +3003,13 @@ UTF-16 code units. The final identifier is:
 ```text
 "sha256:" + hex(sha256(canonical_record_bytes))
 ```
+
+The two `entryClosures` records are appended **only when the map is non-empty**.
+That is what keeps a manifest written before the field existed hashing to
+exactly the value it hashed to then, which the cross-language golden vector
+below pins. Closure member order participates in the hash on purpose: reordering
+preloads measurably changes page load, so it is a real input, not noise to
+normalize away.
 
 Cross-language golden vector:
 

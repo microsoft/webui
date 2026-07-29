@@ -650,6 +650,7 @@ pub(crate) mod test_support {
             outputs: output_hashes,
             inputs: input_hashes,
             components: entries,
+            entry_closures: BTreeMap::new(),
         };
         manifest.build_id = manifest.compute_build_id();
         serde_json::to_string(&manifest).unwrap()
@@ -764,6 +765,7 @@ mod tests {
             outputs,
             inputs,
             components,
+            entry_closures: BTreeMap::new(),
         };
         projection.build_id = projection.compute_build_id();
         let json = serde_json::to_string(&projection).unwrap();

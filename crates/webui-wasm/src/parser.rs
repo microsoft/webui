@@ -285,6 +285,7 @@ mod tests {
                     navigation_keys: vec!["label".to_string(), "name".to_string()],
                 },
             )]),
+            entry_closures: BTreeMap::new(),
         };
         manifest.build_id = manifest.compute_build_id();
 
