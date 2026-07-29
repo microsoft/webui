@@ -11,11 +11,11 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 
 | What changed | Update |
 |-------------|--------|
-| CLI flags or commands | `docs/guide/cli/index.md` + `docs/guide/ai.md` (CLI section) |
-| Template syntax or directives | `docs/guide/concepts/directives/` + `docs/guide/ai.md` |
-| Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/guide/ai.md` |
+| CLI flags or commands | `docs/guide/cli/index.md` + `docs/ai.md` (Build and run section) |
+| Template syntax or directives | `docs/guide/concepts/directives/` + `docs/ai.md` |
+| Component authoring model | `docs/guide/concepts/interactivity.md` + `docs/ai.md` |
 | Hydration markers or mechanism | `docs/guide/concepts/hydration.md` + `DESIGN.md` (WebUI Framework Plugin) |
-| Routing behavior | `docs/guide/concepts/routing.md` + `docs/guide/ai.md` |
+| Routing behavior | `docs/guide/concepts/routing.md` + `docs/ai.md` |
 | State management or path resolution | `docs/guide/concepts/state-management/index.md` |
 | Handler API (Rust, Node, FFI) | `docs/guide/concepts/handlers/` + `docs/guide/integrations.md` |
 | Protocol fields or fragment types | `DESIGN.md` (Protocol Specification) |
@@ -23,7 +23,7 @@ Use this skill whenever a change touches user-visible behavior, APIs, or contrac
 | Performance characteristics | `docs/guide/concepts/performance.md` |
 | Public API (Rust crate, npm package) | `DESIGN.md` + relevant handler/integration docs |
 | Error variants or error messages | `DESIGN.md` |
-| `@microsoft/webui-framework` decorators or API | `docs/guide/concepts/interactivity.md` + `docs/guide/ai.md` + `packages/webui-framework/README.md` |
+| `@microsoft/webui-framework` decorators or API | `docs/guide/concepts/interactivity.md` + `docs/ai.md` + `packages/webui-framework/README.md` |
 | `@microsoft/webui-router` behavior | `docs/guide/concepts/routing.md` + `packages/webui-router/README.md` |
 
 ## DESIGN.md rules
@@ -48,7 +48,9 @@ Update `docs/` in the same commit when the change is user-visible:
 - Integration behavior that external developers depend on
 - New features or removed features
 
-Keep protocol internals out of general user docs. The `docs/guide/ai.md` file is the single-page AI reference and should be kept in sync with all other docs.
+Keep protocol internals out of general user docs. The `docs/ai.md` file is the single-page AI reference and should be kept in sync with all other docs.
+
+`docs/ai.md` is authoring-first by design. Keep deep reference material (full CLI flag tables, error-code lists, per-language integration snippets) in its canonical page and link to it from `docs/ai.md` rather than duplicating it there.
 
 ## Validation
 
