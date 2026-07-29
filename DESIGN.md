@@ -2114,17 +2114,21 @@ inputs are missing, and all three are why this is future work rather than
 plumbing:
 
 - **Module sizes.** The manifest records `outputs` as path-to-hash pairs, so
-  "ordered largest first" cannot be computed from it. Either the manifest
-  gains a size per output, or the ordering claim is dropped. Ordering is not
+  "ordered largest first" cannot be computed from it. Ordering is not
   incidental: `examples/app/streaming`'s README measures a 125 ms swing from
-  ordering alone, larger than the split itself.
+  ordering alone, larger than the split itself. The bundler already reports
+  this — esbuild's `metafile.outputs[path].bytes` — and the adapter's
+  `buildMembership()` already iterates that object to read `.inputs`. The
+  field is discarded, not unavailable.
 - **Island exclusion.** Nothing in the protocol distinguishes a component
   whose module the critical entry imports from one loaded by a `<script>`
   inside a boundary. Preloading every reachable component's outputs would
   therefore preload the island too — precisely the regression the hint exists
-  to remove. The parser must mark modules that a boundary loads for itself,
-  or the emission must be restricted to outputs already reachable from a
-  `<head>` module script.
+  to remove. The parser already carries the state this needs: `in_boundary`
+  is maintained to reject nested boundaries, and a `<script type="module"
+  src>` seen while it is set is island-owned by definition. Exclusion must
+  subtract an island's *exclusive* closure rather than its whole closure —
+  a chunk shared with the critical entry stays critical.
 - **The output import graph.** A shared runtime chunk defines no component,
   so it appears in no component's `outputs` — yet it is exactly the file the
   hint must cover, because it is the static import the preload scanner cannot
@@ -2134,6 +2138,25 @@ plumbing:
   hints from the component mapping alone would preload only what is already
   preloaded and miss every byte that matters. The manifest must record
   output-to-output import edges before a critical closure can be computed.
+  As with sizes these already exist upstream — `metafile.outputs[path]
+  .imports`, whose `kind` distinguishes a static import statement from a
+  dynamic `import()` that is *meant* to cost a round trip.
+
+None of the three requires deriving information the build does not have; each
+requires recording something already in hand at a seam the code already
+touches. What makes this future work rather than plumbing is the blast radius:
+`outputs` is `deny_unknown_fields` and feeds the manifest's deterministic ID,
+so extending it is a schema bump with conformance-fixture and canonicalization
+consequences.
+
+Two constraints govern the eventual design. The closure must be computed at
+**build time and shipped as an ordered list of hrefs**, not shipped as a graph
+and traversed per request — request-time emission is then N writes against a
+precomputed slice, with no traversal, sorting, or scratch collections. And the
+hint set belongs on the entry rather than on `ComponentData`, because a
+critical closure is a per-entry property; scoping v1 to the entry's
+route-independent closure captures the shared-runtime chunk that dominates the
+measurement while keeping request-time cost at exactly zero.
 
 Closing it is tracked with the per-boundary CSS strategy split, which shares
 the same priority mechanism. Until then `examples/app/streaming` demonstrates
