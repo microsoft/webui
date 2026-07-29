@@ -141,12 +141,17 @@ by the application bundle, not by CSS. See
 The server (`server/src/main.rs`) calls the real, opt-in
 `WebUIHandler::render_streaming` over a real `StreamingWriter`. Because a
 fast in-process render would otherwise commit every boundary in the same
-scheduler tick, `server/src/paced_writer.rs` wraps the writer in a narrowly
+scheduler tick, `server/src/pacing.rs` wraps the writer in a narrowly
 scoped, example-only `CheckpointPacedWriter`: it sleeps *after* delegating
 each flush to the real writer, so backpressure and disconnect propagation are
 unaffected — no envelope or chunk is ever manufactured or split by hand. The
 delay is chosen per flush index by a caller-supplied schedule, which is what
 lets the weather-to-composer gap stay at zero while the feed gaps are paced.
+
+The server is split so the streaming call is the first thing you read:
+`main.rs` is the routes and `render_page`, `pacing.rs` is the demo-only
+timing, `app.rs` is the protocol build and sample data, and `assets.rs` is
+the cache-header policy for `dist/`.
 
 Three feed batches are three explicit `<boundary>` groups — Phase 1 does not
 implement an open-ended `<webui-stream>` directive. The feed's `<section>`
