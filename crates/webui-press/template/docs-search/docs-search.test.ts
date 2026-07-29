@@ -91,18 +91,32 @@ test('heading search results use CSS spacing for breadcrumb separators', async (
     el.openSearch();
     await new Promise((resolve) => setTimeout(resolve, 300));
     const input = el.shadowRoot.querySelector('input');
-    input.value = 'webassembly';
+    input.value = 'wasm bundles';
     el.onInput();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   const separator = await page.locator('docs-search').evaluate((el) => {
-    const item = [...el.shadowRoot.querySelectorAll('.result')].find((result) =>
-      result.getAttribute('href').includes('#webassembly'),
+    const results = [...el.shadowRoot.querySelectorAll('.result')];
+    const hrefs = results.map((result) => result.getAttribute('href'));
+    const item = results.find((result) =>
+      result.getAttribute('href').includes('#building-the-wasm-bundles'),
     );
+    if (!item) {
+      return {
+        found: false,
+        hrefs,
+        text: '',
+        marginLeft: 0,
+        marginRight: 0,
+        normalizedTitle: '',
+      };
+    }
     const sep = item.querySelector('.result-separator');
     const style = getComputedStyle(sep);
     return {
+      found: true,
+      hrefs,
       text: sep.textContent,
       marginLeft: Number.parseFloat(style.marginLeft),
       marginRight: Number.parseFloat(style.marginRight),
@@ -112,10 +126,14 @@ test('heading search results use CSS spacing for breadcrumb separators', async (
     };
   });
 
+  assert.ok(
+    separator.found,
+    `no heading result linking to #building-the-wasm-bundles; got [${separator.hrefs.join(', ')}]`,
+  );
   assert.equal(separator.text, '>');
   assert.equal(
     separator.normalizedTitle,
-    'WebUIFramework-AIReference>WebAssembly',
+    'WebUIWebAssembly>BuildingtheWASMbundles',
   );
   assert.ok(separator.marginLeft > 0, `marginLeft=${separator.marginLeft}`);
   assert.ok(separator.marginRight > 0, `marginRight=${separator.marginRight}`);
