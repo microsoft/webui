@@ -195,6 +195,54 @@ test.describe('streaming priority hydration', () => {
     await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toHaveCount(0);
   });
 
+  test('the weather island loads its own module from inside its boundary', async ({ page }) => {
+    const requests: { url: string; t: number }[] = [];
+    const start = Date.now();
+    page.on('request', (request) => {
+      if (request.resourceType() === 'script') {
+        requests.push({ url: new URL(request.url()).pathname, t: Date.now() - start });
+      }
+    });
+
+    await instrumentPage(page);
+    await page.goto('/');
+    await page.waitForFunction(() => window.__hydrationCompleteFired);
+
+    // The island is a separate entry point: its code must never be inside
+    // the critical bundle, or splitting it bought nothing.
+    const critical = await page.evaluate(async () => {
+      const source = await (await fetch('./index.js')).text();
+      return { bytes: source.length, mentionsPanel: source.includes('weather-panel') };
+    });
+    expect(critical.mentionsPanel).toBe(false);
+
+    // It is fetched because the boundary's own <script> reached the parser,
+    // so it is requested after the critical entry rather than alongside it.
+    const entry = requests.find((r) => r.url.endsWith('/index.js'));
+    const island = requests.find((r) => r.url.endsWith('/weather-panel.js'));
+    expect(entry).toBeDefined();
+    expect(island).toBeDefined();
+    expect(island!.t).toBeGreaterThanOrEqual(entry!.t);
+
+    // The shared runtime chunk is preloaded from <head>. Without the hint the
+    // browser cannot discover it until index.js has parsed, and the resulting
+    // waterfall costs more than splitting the island saves.
+    const preloads = await page.evaluate(() =>
+      Array.from(document.head.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')).map(
+        (link) => new URL(link.href).pathname,
+      ),
+    );
+    expect(preloads.length).toBeGreaterThan(0);
+    // Preloading the island would put its code straight back on the critical
+    // path that moving it out of index.js just cleared.
+    expect(preloads.some((href) => href.endsWith('/weather-panel.js'))).toBe(false);
+
+    // Arriving late is safe: the boundary commits before the class exists,
+    // so the coordinator parks the root and activates it on definition.
+    await expect(page.locator('weather-panel [data-testid="weather-panel"]')).toHaveCount(1);
+    await expect(page.locator('weather-panel')).not.toHaveAttribute('data-ws', /.*/);
+  });
+
   test('webui:hydration-complete fires only after the terminal boundary record', async ({ page }) => {
     await instrumentPage(page);
     await page.goto('/');
@@ -218,9 +266,13 @@ test.describe('streaming priority hydration', () => {
       const sentinels = document.querySelectorAll('webui-hydrate').length;
       // `<if>` conditions compile to an inline `templateFns` script emitted
       // between each payload and its sentinel. Those are boundary
-      // scaffolding too, and the only scripts this example puts in <body>,
-      // so a non-zero count means `removeBoundaryScaffolding` missed them.
-      const bodyScripts = document.body.querySelectorAll('script').length;
+      // scaffolding too, so a non-zero count means
+      // `removeBoundaryScaffolding` missed them. The weather island's own
+      // loader also lives in <body>, inside its boundary, so it is excluded
+      // by src — teardown must not treat authored content as scaffolding.
+      const bodyScripts = Array.from(document.body.querySelectorAll('script')).filter(
+        (script) => !script.src.endsWith('/weather-panel.js'),
+      ).length;
 
       const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_COMMENT);
       let markers = 0;
@@ -229,10 +281,22 @@ test.describe('streaming priority hydration', () => {
         if (/^\/?wb:\d+$/.test((node as Comment).data)) markers++;
       }
 
-      return { scripts, sentinels, markers, bodyScripts };
+      // The island loader is authored markup, not scaffolding: it must
+      // survive the teardown that removes everything else above.
+      const islandLoaders = document.querySelectorAll(
+        'script[src$="/weather-panel.js"]',
+      ).length;
+
+      return { scripts, sentinels, markers, bodyScripts, islandLoaders };
     });
 
-    expect(leftovers).toEqual({ scripts: 0, sentinels: 0, markers: 0, bodyScripts: 0 });
+    expect(leftovers).toEqual({
+      scripts: 0,
+      sentinels: 0,
+      markers: 0,
+      bodyScripts: 0,
+      islandLoaders: 1,
+    });
   });
 
   test('the streaming response eventually closes', async ({ page }) => {

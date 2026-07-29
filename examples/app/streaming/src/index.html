@@ -13,7 +13,16 @@
     upgrade, so an upgraded element defers until its complete boundary
     commits. See DESIGN.md, "Progressive Streaming Hydration — Phase 1"
     ("Initialization ordering").
+
+    The preload hints come first because `index.js` statically imports a
+    shared runtime chunk that the preload scanner cannot see behind the
+    script tag. Without them the browser discovers that chunk only after
+    downloading and parsing `index.js`, and the round trip costs about
+    110ms of composer time-to-interactive. The filenames are content-hashed,
+    so the client build records them and `server/src/preload.rs` renders
+    them here. The weather island is deliberately not preloaded.
   -->
+  {{{modulePreloads}}}
   <script type="module" async src="./index.js"></script>
 
   <style>
@@ -71,6 +80,19 @@
       "deferred boundary placement" note for the in-response alternative.
     -->
     <boundary name="weather-shell">
+      <!--
+        The island's code ships with the island, not with the critical
+        bundle. The browser discovers this script when the weather chunk
+        reaches the parser, so `index.js` never carries the panel's bytes and
+        the composer's time to interactive does not pay for them.
+
+        Loading it late is safe by construction: the boundary commits before
+        the class exists, the coordinator parks the root on
+        `customElements.whenDefined('weather-panel')` with this boundary's
+        state stashed on it, and activates it the moment `.define()` runs.
+        `webui:hydration-complete` waits for that.
+      -->
+      <script type="module" async src="./weather-panel.js"></script>
       <weather-panel status="loading"></weather-panel>
     </boundary>
   </header>

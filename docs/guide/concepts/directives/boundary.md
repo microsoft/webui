@@ -115,6 +115,44 @@ The boundary carries no server data, so it commits immediately and the next
 boundary follows in the same flush window. `examples/app/streaming` ships this
 exact pattern.
 
+### Load an island's code with the island
+
+A boundary can carry its own `<script>`. Put the island's module inside it and
+the browser fetches that code when the chunk reaches the parser, so your
+critical entry never carries bytes the first interaction does not need:
+
+```html
+<boundary name="weather-shell">
+  <script type="module" async src="./weather-panel.js"></script>
+  <weather-panel status="loading"></weather-panel>
+</boundary>
+```
+
+This is safe by construction. The boundary commits before the class exists, so
+the coordinator stashes that boundary's state on the root and waits on
+`customElements.whenDefined()`, activating it the moment the module registers.
+`webui:hydration-complete` stays open until then, and the script is authored
+content, so boundary teardown leaves it alone.
+
+::: warning Preload the shared chunk, largest first
+Splitting an island into its own bundle entry makes your bundler hoist the
+framework runtime into a chunk your critical entry statically imports. The
+preload scanner cannot see that chunk behind your `<script>` tag, so the
+browser only discovers it after downloading and parsing the entry — a full
+round trip on the critical path.
+
+Emit `<link rel="modulepreload">` in `<head>` for each chunk the critical entry
+needs, ordered largest first, and do **not** preload the island itself. On
+`examples/app/streaming` over a throttled link, splitting alone was a wash
+(1074 ms → 1061 ms composer time-to-interactive), the hint in the wrong order
+was a loss (1076 ms), and the hint largest-first was a 10.9% win (956 ms).
+Preloads are issued in document order and share the connection, so a small
+chunk listed first delays the long pole behind it.
+
+Split an island out when its own code is large enough to matter. For a
+sub-kilobyte component the transfer saving cannot pay for the extra request.
+:::
+
 Each checkpoint includes projected state and first-use metadata for the
 component graph reachable from roots rendered in that boundary. This includes
 initially hidden conditional/repeat descendants so they can appear after a

@@ -2084,6 +2084,25 @@ still parsing):
    Once the tag is defined, detached roots are upgraded explicitly with
    `customElements.upgrade()` and activated without waiting for reattachment.
 
+This is also the mechanism that lets a boundary carry its own module loader.
+An authored `<script type="module" async src="…">` placed inside boundary
+content is discovered by the parser when that chunk arrives, so an island's
+code need not be part of the critical entry. The boundary commits first, its
+roots park on the per-tag waiter above, and activation happens when the module
+calls `.define()`. Streaming mode is a document-level `<meta>` query rather
+than an import-order side effect, so a late-arriving definition still defers
+its connected SSR hosts correctly. Boundary teardown removes only generated
+scaffolding — payload, sentinel, and marker pair — so the authored script
+survives.
+
+Splitting an island into a separate bundle entry is an application build
+concern rather than a protocol one, but it has a performance trap worth
+recording: the shared runtime chunk becomes a static import of the critical
+entry, invisible to the preload scanner, costing a round trip. Applications
+must emit `<link rel="modulepreload">` for the critical entry's chunks,
+ordered largest first, and must not preload the deferred island.
+`examples/app/streaming` demonstrates both halves and measures them.
+
 **Commit.** For one boundary, the coordinator:
 
 1. Validates sequence, size, marker closure, template indexes, state arity,

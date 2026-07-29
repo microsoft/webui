@@ -63,6 +63,53 @@ Filling an earlier, already-closed region from later in the same response is
 the deferred-boundary placement work described in `DESIGN.md`; the
 `resolveBoundaryRange()` seam in `streaming.ts` exists for exactly that.
 
+### Loading an island's code with the island
+
+`weather-panel` is not imported by `src/index.ts`. Its `<script>` lives inside
+its own boundary, so the browser discovers it when that chunk reaches the
+parser and the critical entry never carries its bytes:
+
+```html
+<boundary name="weather-shell">
+  <script type="module" async src="./weather-panel.js"></script>
+  <weather-panel status="loading"></weather-panel>
+</boundary>
+```
+
+Arriving late is safe by construction. The boundary commits before the class
+exists, so the coordinator stashes that boundary's state on the root and parks
+it on `customElements.whenDefined('weather-panel')`, keeping
+`webui:hydration-complete` open until it activates. Nothing in the framework
+changes for this; it is the same path any late definition takes.
+
+Splitting an island out has one hazard that matters more than the split
+itself. The shared runtime chunk is a static import of `index.js`, so the
+preload scanner cannot see it — the browser only discovers it after
+downloading and parsing `index.js`, and that waterfall costs a round trip.
+`build-client.mjs` therefore records the critical entry's chunks in
+`dist/critical-modules.json`, largest first, and `server/src/preload.rs`
+renders them as `<link rel="modulepreload">`. The island itself is
+deliberately excluded — preloading it would put the code straight back on the
+critical path.
+
+Measured over a throttled link (100 ms RTT, 1.6 Mbps, deterministic pacing,
+12 cold contexts, median composer time-to-interactive; per-run spreads were
+~25 ms and did not overlap):
+
+| Variant                        | Critical JS | Composer interactive |
+| ------------------------------ | ----------- | -------------------- |
+| Island bundled into `index.js` | 46,560 B    | 1074 ms              |
+| Island split, no preload hint  | 45,912 B    | 1061 ms              |
+| Island split, hint smallest-first | 45,912 B | 1076 ms              |
+| Island split, hint largest-first  | 45,912 B | **956 ms**           |
+
+Two things are worth taking away. Splitting alone is a wash: 648 bytes cannot
+pay for a round trip, and it would be a straight loss for an island much
+smaller than its share of the transfer. The preload hint is what makes it pay,
+and its *order* matters more than the split — preloads are issued in document
+order and share the connection, so listing the 284-byte chunk ahead of the
+35 KiB one delays the long pole and gives back the entire win.
+
 ### Trying the CSS strategies
 
 The server accepts `--css style|module|link`. It defaults to `style` because a

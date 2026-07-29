@@ -38,9 +38,9 @@ function logHydrationTiming(): void {
 }
 
 // Side-effect imports — register custom elements and trigger hydration.
-// Ordered to match document order, so the first boundary to commit is also
-// the first component whose class is defined.
-import './weather-panel/weather-panel.js';
+// `weather-panel` is deliberately absent: it is an island whose `<script>`
+// lives inside its own boundary, so its code is fetched when that chunk
+// reaches the parser rather than being bundled into this critical entry.
 import './message-composer/message-composer.js';
 import './feed-item/feed-item.js';
 
