@@ -2107,14 +2107,17 @@ own HTML today.
 
 This is a gap in WebUI, not a pattern for applications to reimplement. The
 compiler already derives each boundary's component closure — that is how the
-template delta works — and the projection manifest already records which build
-output defines each component, so the tag-to-module half of the problem is
-solved. Two inputs are still missing, and both are why this is future work
-rather than plumbing:
+template delta works — and the projection manifest records which build output
+*defines* each component. That is less than it sounds: it maps a tag to its
+defining entry, not to the closure of files the browser must fetch. Three
+inputs are missing, and all three are why this is future work rather than
+plumbing:
 
 - **Module sizes.** The manifest records `outputs` as path-to-hash pairs, so
   "ordered largest first" cannot be computed from it. Either the manifest
-  gains a size per output, or the ordering claim is dropped.
+  gains a size per output, or the ordering claim is dropped. Ordering is not
+  incidental: `examples/app/streaming`'s README measures a 125 ms swing from
+  ordering alone, larger than the split itself.
 - **Island exclusion.** Nothing in the protocol distinguishes a component
   whose module the critical entry imports from one loaded by a `<script>`
   inside a boundary. Preloading every reachable component's outputs would
@@ -2122,6 +2125,15 @@ rather than plumbing:
   to remove. The parser must mark modules that a boundary loads for itself,
   or the emission must be restricted to outputs already reachable from a
   `<head>` module script.
+- **The output import graph.** A shared runtime chunk defines no component,
+  so it appears in no component's `outputs` — yet it is exactly the file the
+  hint must cover, because it is the static import the preload scanner cannot
+  see. In `examples/app/streaming` the critical entry's closure is 45,912 B,
+  of which the unmapped shared chunk is 35,827 B (78%); the mapped
+  `index.js` is 9,801 B and the scanner already finds it unaided. Emitting
+  hints from the component mapping alone would preload only what is already
+  preloaded and miss every byte that matters. The manifest must record
+  output-to-output import edges before a critical closure can be computed.
 
 Closing it is tracked with the per-boundary CSS strategy split, which shares
 the same priority mechanism. Until then `examples/app/streaming` demonstrates
