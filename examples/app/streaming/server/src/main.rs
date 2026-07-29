@@ -16,7 +16,6 @@
 mod assets;
 mod jitter;
 mod paced_writer;
-mod preload;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -43,7 +42,6 @@ use webui_tokens::{inject_into_state, resolve_tokens};
 use crate::assets::{asset_response, insert_generated_css, load_dist_assets, CachedAsset};
 use crate::jitter::Jitter;
 use crate::paced_writer::CheckpointPacedWriter;
-use crate::preload::render_module_preloads;
 
 const THEME: &str = "@microsoft/webui-examples-theme";
 const ENTRY: &str = "index.html";
@@ -234,10 +232,8 @@ fn load_protocol(app_root: &Path, css: CssStrategy, base_path: &str) -> Result<L
     let protocol = Protocol::new(build_result.protocol);
 
     let (feed_batch_1, feed_batch_2, feed_batch_3) = feed_batches();
-    let module_preloads = render_module_preloads(&app_root.join("dist"))?;
-    let mut state_map = Map::with_capacity(5);
+    let mut state_map = Map::with_capacity(4);
     state_map.insert("basePath".to_owned(), Value::String(base_path.to_owned()));
-    state_map.insert("modulePreloads".to_owned(), Value::String(module_preloads));
     state_map.insert("feedBatch1".to_owned(), Value::Array(feed_batch_1));
     state_map.insert("feedBatch2".to_owned(), Value::Array(feed_batch_2));
     state_map.insert("feedBatch3".to_owned(), Value::Array(feed_batch_3));

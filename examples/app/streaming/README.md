@@ -83,14 +83,11 @@ it on `customElements.whenDefined('weather-panel')`, keeping
 changes for this; it is the same path any late definition takes.
 
 Splitting an island out has one hazard that matters more than the split
-itself. The shared runtime chunk is a static import of `index.js`, so the
-preload scanner cannot see it — the browser only discovers it after
-downloading and parsing `index.js`, and that waterfall costs a round trip.
-`build-client.mjs` therefore records the critical entry's chunks in
-`dist/critical-modules.json`, largest first, and `server/src/preload.rs`
-renders them as `<link rel="modulepreload">`. The island itself is
-deliberately excluded — preloading it would put the code straight back on the
-critical path.
+itself, and it is why this example demonstrates the boundary-carried loader
+but not a preload strategy. The shared runtime chunk is a static import of
+`index.js`, so the preload scanner cannot see it — the browser only discovers
+it after downloading and parsing `index.js`, and that waterfall costs a round
+trip.
 
 Measured over a throttled link (100 ms RTT, 1.6 Mbps, deterministic pacing,
 12 cold contexts, median composer time-to-interactive; per-run spreads were
@@ -105,10 +102,22 @@ Measured over a throttled link (100 ms RTT, 1.6 Mbps, deterministic pacing,
 
 Two things are worth taking away. Splitting alone is a wash: 648 bytes cannot
 pay for a round trip, and it would be a straight loss for an island much
-smaller than its share of the transfer. The preload hint is what makes it pay,
-and its *order* matters more than the split — preloads are issued in document
-order and share the connection, so listing the 284-byte chunk ahead of the
-35 KiB one delays the long pole and gives back the entire win.
+smaller than its share of the transfer. A `<link rel="modulepreload">` for the
+shared chunk is what makes it pay, and its *order* matters more than the split
+— preloads are issued in document order and share the connection, so listing
+the 284-byte chunk ahead of the 35 KiB one delays the long pole and gives back
+the entire win.
+
+The two hinted rows were measured with a throwaway build manifest and are
+recorded here as **motivation, not instruction**. Bundlers content-hash chunk
+filenames, so reproducing them means an application-owned bundler plugin, a
+manifest on disk, and a server that templates raw HTML into `<head>` — far too
+much ceremony to recommend, and the wrong layer besides. WebUI already knows
+each boundary's component closure and which build output defines each
+component, so it should emit these hints itself through the head-injection path
+it already uses for CSS. Until it does, this example ships the split without
+the hint: the architectural win (island code loads with its boundary) without
+pretending the time-to-interactive win is available to you.
 
 ### Trying the CSS strategies
 

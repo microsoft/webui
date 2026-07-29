@@ -224,17 +224,13 @@ test.describe('streaming priority hydration', () => {
     expect(island).toBeDefined();
     expect(island!.t).toBeGreaterThanOrEqual(entry!.t);
 
-    // The shared runtime chunk is preloaded from <head>. Without the hint the
-    // browser cannot discover it until index.js has parsed, and the resulting
-    // waterfall costs more than splitting the island saves.
+    // Nothing preloads the island: its whole point is to stay off the
+    // critical path that moving it out of index.js just cleared.
     const preloads = await page.evaluate(() =>
       Array.from(document.head.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')).map(
         (link) => new URL(link.href).pathname,
       ),
     );
-    expect(preloads.length).toBeGreaterThan(0);
-    // Preloading the island would put its code straight back on the critical
-    // path that moving it out of index.js just cleared.
     expect(preloads.some((href) => href.endsWith('/weather-panel.js'))).toBe(false);
 
     // Arriving late is safe: the boundary commits before the class exists,

@@ -13,16 +13,7 @@
     upgrade, so an upgraded element defers until its complete boundary
     commits. See DESIGN.md, "Progressive Streaming Hydration — Phase 1"
     ("Initialization ordering").
-
-    The preload hints come first because `index.js` statically imports a
-    shared runtime chunk that the preload scanner cannot see behind the
-    script tag. Without them the browser discovers that chunk only after
-    downloading and parsing `index.js`, and the round trip costs about
-    110ms of composer time-to-interactive. The filenames are content-hashed,
-    so the client build records them and `server/src/preload.rs` renders
-    them here. The weather island is deliberately not preloaded.
   -->
-  {{{modulePreloads}}}
   <script type="module" async src="./index.js"></script>
 
   <style>

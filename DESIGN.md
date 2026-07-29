@@ -2096,12 +2096,24 @@ scaffolding — payload, sentinel, and marker pair — so the authored script
 survives.
 
 Splitting an island into a separate bundle entry is an application build
-concern rather than a protocol one, but it has a performance trap worth
-recording: the shared runtime chunk becomes a static import of the critical
-entry, invisible to the preload scanner, costing a round trip. Applications
-must emit `<link rel="modulepreload">` for the critical entry's chunks,
-ordered largest first, and must not preload the deferred island.
-`examples/app/streaming` demonstrates both halves and measures them.
+concern rather than a protocol one, and it has a performance trap that WebUI
+does not yet close: the shared runtime chunk becomes a static import of the
+critical entry, invisible to the preload scanner, costing a round trip that
+erases what splitting saves. Removing it needs a
+`<link rel="modulepreload">` for each of the critical entry's chunks, ordered
+largest first, with the deferred island excluded. Because bundlers
+content-hash those filenames, an application cannot express the hints in its
+own HTML today.
+
+This is a gap in WebUI, not a pattern for applications to reimplement. The
+compiler already derives each boundary's component closure — that is how the
+template delta works — and the projection manifest already records which build
+output defines each component, so WebUI has the information needed to emit
+these hints through the existing head-injection path. Doing so is future work
+tracked with the per-boundary CSS strategy split, which shares the same
+priority mechanism. Until then `examples/app/streaming` demonstrates the
+boundary-carried island loader only, and its README records the measurements
+that justify closing the gap.
 
 **Commit.** For one boundary, the coordinator:
 

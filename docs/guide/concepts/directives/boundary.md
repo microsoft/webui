@@ -134,23 +134,26 @@ the coordinator stashes that boundary's state on the root and waits on
 `webui:hydration-complete` stays open until then, and the script is authored
 content, so boundary teardown leaves it alone.
 
-::: warning Preload the shared chunk, largest first
+::: warning Splitting an island is not yet a net win
 Splitting an island into its own bundle entry makes your bundler hoist the
 framework runtime into a chunk your critical entry statically imports. The
 preload scanner cannot see that chunk behind your `<script>` tag, so the
 browser only discovers it after downloading and parsing the entry — a full
 round trip on the critical path.
 
-Emit `<link rel="modulepreload">` in `<head>` for each chunk the critical entry
-needs, ordered largest first, and do **not** preload the island itself. On
-`examples/app/streaming` over a throttled link, splitting alone was a wash
-(1074 ms → 1061 ms composer time-to-interactive), the hint in the wrong order
-was a loss (1076 ms), and the hint largest-first was a 10.9% win (956 ms).
-Preloads are issued in document order and share the connection, so a small
-chunk listed first delays the long pole behind it.
+That round trip cancels out what splitting saves. On `examples/app/streaming`
+over a throttled link, splitting alone was a wash: 1074 ms composer
+time-to-interactive bundled versus 1061 ms split. Adding
+`<link rel="modulepreload">` for the shared chunk recovers it — 956 ms, a
+10.9% win — but only in the right order. Preloads are issued in document order
+and share the connection, so listing a 284-byte chunk ahead of a 35 KB one
+delays the long pole behind it and gives the whole win back (1076 ms).
 
-Split an island out when its own code is large enough to matter. For a
-sub-kilobyte component the transfer saving cannot pay for the extra request.
+WebUI does not emit those hints yet, and you cannot write them yourself because
+your bundler content-hashes the filenames. Until it does, split an island out
+for the *architectural* benefit — code that loads with its boundary rather than
+ahead of the first interaction — and do not expect a time-to-interactive win.
+For a sub-kilobyte component the extra request is not worth it either way.
 :::
 
 Each checkpoint includes projected state and first-use metadata for the
