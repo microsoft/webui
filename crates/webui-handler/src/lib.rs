@@ -12,6 +12,7 @@ pub mod plugin;
 pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
+pub(crate) mod streaming;
 
 pub use route_handler::Protocol;
 
@@ -34,8 +35,13 @@ use serde::ser::SerializeMap;
 use serde::Serialize;
 use serde_json::Value;
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
+use streaming::{
+    consume_streaming_component_root, ensure_no_pending_streaming_root,
+    prepare_generated_streaming_root, record_checkpoint_tag, streaming_template_already_sent,
+    validate_pending_streaming_root, validate_streaming_root_opening, ComponentHostOrigin,
+    StreamingRenderState,
+};
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{
@@ -264,101 +270,95 @@ pub struct WebUIHandler {
 }
 
 /// Context object for processing WebUI fragments
-struct WebUIProcessContext<'data, 'output, 'stream> {
-    protocol: &'data WebUIProtocol,
+pub(crate) struct WebUIProcessContext<'data, 'output, 'stream> {
+    pub(crate) protocol: &'data WebUIProtocol,
     /// Whether this runtime document predates namespaced compiler signals.
     /// Legacy compatibility is ordinary-render-only; streaming preflight still
     /// requires the namespaced `head_start` introduced with boundaries.
-    legacy_structural_signals: bool,
-    state: &'data Value,
-    writer: &'output mut dyn ResponseWriter,
-    local_vars: HashMap<String, Value>,
+    pub(crate) legacy_structural_signals: bool,
+    pub(crate) state: &'data Value,
+    pub(crate) writer: &'output mut dyn ResponseWriter,
+    pub(crate) local_vars: HashMap<String, Value>,
     /// Accumulates component attribute values between attrStart and the component fragment.
-    component_attrs: HashMap<String, Value>,
+    pub(crate) component_attrs: HashMap<String, Value>,
     /// URL path for server-side route matching. Borrowed from
     /// `RenderOptions<'a>::request_path` — zero-copy.
-    request_path: &'data str,
+    pub(crate) request_path: &'data str,
     /// Base path for resolving relative route paths (`./`).
     /// Updated as the handler descends into nested matched routes.
     /// `Cow` keeps the initial `"/"` literal zero-copy; nested-route
     /// descent owns the recomputed path.
-    route_base: Cow<'data, str>,
+    pub(crate) route_base: Cow<'data, str>,
     /// Component names visited during rendering (for selective f-template emission
     /// and CSS module dedup — only the first render of each component emits
     /// its `<script type="importmap">` data-URI tag).
-    rendered_components: HashSet<String>,
+    pub(crate) rendered_components: HashSet<String>,
     /// Per-render plugin instance created from the handler's factory.
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    pub(crate) plugin: Option<Box<dyn HandlerPlugin>>,
     /// Current position in the route tree for outlet-based rendering.
     /// Contains the children of the currently matched route fragment.
-    route_children: Vec<webui_protocol::WebUiFragmentRoute>,
+    pub(crate) route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     /// Entry fragment ID — used to compute the initial inventory at head_end.
     /// Borrowed from `RenderOptions<'a>::entry_id` — zero-copy.
-    entry_id: &'data str,
+    pub(crate) entry_id: &'data str,
     /// CSP nonce for inline `<script>` tags (None = no nonce attribute).
     /// Borrowed from `RenderOptions<'a>::nonce` — zero-copy.
-    nonce: Option<&'data str>,
+    pub(crate) nonce: Option<&'data str>,
     /// Component-name → bit-position map built once when the runtime
     /// [`Protocol`] is created and shared by every render.
-    component_index: &'data HashMap<String, u32>,
+    pub(crate) component_index: &'data HashMap<String, u32>,
     /// HTML emitted at the structural `head_end` boundary (before
     /// `</head>`), after the built-in nonce/CSS-preload emissions.
     /// Zero-copy borrow of the caller's `RenderOptions<'a>::head_inject`
     /// (no per-render clone — saves an allocation when the host passes
     /// a `&'static str` such as a dev livereload script).
-    head_inject: Option<&'data str>,
+    pub(crate) head_inject: Option<&'data str>,
     /// HTML emitted at the structural `body_end` boundary (before
     /// `</body>`), after the built-in template metadata emissions.
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
-    body_inject: Option<&'data str>,
+    pub(crate) body_inject: Option<&'data str>,
     /// Tracks whether the `head_end` hook has already fired in this
     /// render. Defends against malformed protocols that emit the
     /// signal more than once (e.g., a template with multiple `<head>`
     /// tags) — without this, host-supplied `head_inject` HTML, CSS
     /// preload `<link>` tags, and the CSP `<meta>` nonce would be
     /// duplicated, which can be a CSP-bypass / cache-bloat vector.
-    head_end_emitted: bool,
+    pub(crate) head_end_emitted: bool,
     /// Tracks whether the `body_end` hook has already fired in this
     /// render. Defends against malformed protocols emitting the
     /// signal twice — without this, hydration `<script>` blocks and
     /// host-supplied `body_inject` would be duplicated.
-    body_end_emitted: bool,
+    pub(crate) body_end_emitted: bool,
     /// Immutable authored route patterns compiled when [`Protocol`] is loaded.
-    route_index: &'data CompiledRouteIndex,
+    pub(crate) route_index: &'data CompiledRouteIndex,
     /// Counter for `data-ri` attributes on matched route elements.
     /// Incremented each time a matched route is rendered, allowing O(1) element
     /// binding on the client side instead of DOM-walking.
-    route_chain_index: usize,
+    pub(crate) route_chain_index: usize,
     /// Present only for the opt-in progressive streaming render path.
-    streaming: Option<StreamingRenderState<'data, 'stream>>,
+    pub(crate) streaming: Option<StreamingRenderState<'data, 'stream>>,
     /// Reusable JSON serialization scratch buffer, owned by the render context.
     /// The bootstrap/field/template helpers borrow it so each render reuses one
     /// buffer across every serialized field and every streaming checkpoint
     /// instead of allocating per value. It grows lazily on first serialization
     /// and is dropped with the context at request end — no per-thread
     /// high-water buffer is retained between requests.
-    json_scratch: Vec<u8>,
+    pub(crate) json_scratch: Vec<u8>,
     /// Small request-local pool of cleared scope maps reused across sibling
     /// component roots. `process_component` recycles each finished component's
     /// local/attr map here instead of dropping it, so a sibling reuses the
     /// bucket capacity rather than reallocating a fresh `HashMap`. Bounded
     /// ([`SCOPE_POOL_CAP`]) and dropped with the context at request end.
-    scope_pool: Vec<HashMap<String, Value>>,
+    pub(crate) scope_pool: Vec<HashMap<String, Value>>,
 }
 
-const STREAMING_MARKER: &str = "<meta name=\"webui-streaming\" content=\"1\">";
 /// Compiler-owned signal namespace. The leading `}}}` cannot be produced by
 /// authored double- or triple-brace expressions because it closes the binding.
 pub(crate) const STRUCTURAL_SIGNAL_PREFIX: &str = "}}}webui:";
-const BOUNDARY_START_PREFIX: &str = "boundary_start:";
-const BOUNDARY_END_PREFIX: &str = "boundary_end:";
-/// Compiler-owned signal marking a streamed SSR component host. The parser
-/// emits it inside the component's opening tag, immediately before `>`. Ordinary
-/// rendering ignores it byte-for-byte; streaming rendering consumes it to inject
-/// ` data-ws` so the marker exists before custom-element upgrade.
-const STREAMING_ROOT_PREFIX: &str = "streaming_root:";
 
-fn structural_signal_value(signal: &webui_protocol::WebUIFragmentSignal) -> Option<&str> {
+pub(crate) fn structural_signal_value(
+    signal: &webui_protocol::WebUIFragmentSignal,
+) -> Option<&str> {
     if !signal.raw {
         return None;
     }
@@ -373,496 +373,6 @@ fn legacy_structural_signal_value(signal: &webui_protocol::WebUIFragmentSignal) 
         "head_end" | "body_start" | "body_end" => Some(signal.value.as_str()),
         _ => None,
     }
-}
-
-#[derive(Clone, Copy)]
-enum StreamingRootStage {
-    OpeningTagClose,
-    Component,
-}
-
-#[derive(Clone, Copy)]
-struct PendingStreamingRoot<'data> {
-    tag: &'data str,
-    stage: StreamingRootStage,
-}
-
-#[derive(Clone, Copy)]
-enum ComponentHostOrigin {
-    ParserProduced,
-    HandlerGenerated,
-}
-
-struct StreamingRenderState<'data, 'stream> {
-    dirty: &'stream Cell<bool>,
-    /// Startup-built component dependency graph. Route-free checkpoints use its
-    /// integer edges instead of walking/cloning protocol fragments per request.
-    component_reachability: &'data route_handler::ComponentReachabilityIndex,
-    head_marker_emitted: bool,
-    active_boundary: Option<usize>,
-    /// Parser-produced root signal awaiting its exact `>`/component sequence.
-    /// The tag is borrowed from the protocol signal, so validation allocates
-    /// nothing on the successful per-component path.
-    pending_root: Option<PendingStreamingRoot<'data>>,
-    /// Set only between a handler-generated route host's `data-ws` injection
-    /// and its immediately following component render.
-    generated_root_ready: bool,
-    next_sequence: usize,
-    bootstrap_sent: bool,
-    body_ended: bool,
-    inventory: Vec<u8>,
-    inventory_delta: Vec<u8>,
-    inventory_hex: String,
-    /// Dedup bitset for template/CSS metadata already delivered. Kept separate
-    /// from `inventory`: reachable-but-unrendered descendants receive metadata
-    /// but must not be reported as rendered DOM.
-    template_inventory: Vec<u8>,
-    /// Unique component tags rendered since the previous checkpoint, in render
-    /// order. Borrowed from `component_index` keys (`&'data str`) so capture is
-    /// allocation-free per tag. The vector is cleared after commit while retaining
-    /// capacity for the next checkpoint.
-    checkpoint_tags: Vec<&'data str>,
-    /// Dedup bitset (one bit per component index) marking tags already recorded
-    /// into `checkpoint_tags` for the current checkpoint. Cleared and reused
-    /// alongside `checkpoint_tags`.
-    checkpoint_seen: Vec<u8>,
-    /// Set while capturing a root whose startup graph contains descendants or
-    /// authored routes. Leaf-only checkpoints retain the original zero-walk path.
-    checkpoint_needs_expansion: bool,
-    /// Reusable allowlist storage for checkpoint-local hydration state.
-    state_key_scratch: Vec<&'data str>,
-    /// Reusable first-delivery metadata tag list.
-    template_tag_scratch: Vec<&'data str>,
-    /// Reusable CSS bootstrap lists for newly delivered templates.
-    css_href_scratch: Vec<&'data str>,
-    style_spec_scratch: Vec<&'data str>,
-    /// Reusable integer DFS stack for expanding route-free checkpoint surfaces.
-    reachability_stack: Vec<u32>,
-}
-
-/// Request-local streaming sink selected once at
-/// [`WebUIHandler::render_streaming`] entry.
-///
-/// Wrapping the transport lets every write mark the current boundary dirty
-/// while forwarding to the concrete writer with a static call: no per-write
-/// `RefCell` borrow and no second virtual dispatch. `dirty` is a shared `Cell`
-/// (plain load/store, no borrow check) that `body_end` reads to decide whether
-/// trailing bytes need a final checkpoint.
-struct StreamingSink<'w, W: FlushWriter + ?Sized> {
-    transport: &'w mut W,
-    dirty: &'w Cell<bool>,
-}
-
-impl<W: FlushWriter + ?Sized> ResponseWriter for StreamingSink<'_, W> {
-    fn write(&mut self, content: &str) -> Result<()> {
-        self.dirty.set(true);
-        self.transport.write(content)
-    }
-
-    fn end(&mut self) -> Result<()> {
-        self.transport.end()
-    }
-
-    fn stream_flush(&mut self) -> Result<()> {
-        self.dirty.set(false);
-        self.transport.flush()
-    }
-}
-
-fn streaming_state<'a, 'data, 'stream>(
-    context: &'a mut WebUIProcessContext<'data, '_, 'stream>,
-) -> Result<&'a mut StreamingRenderState<'data, 'stream>> {
-    context.streaming.as_mut().ok_or_else(|| {
-        HandlerError::Invariant("streaming signal processed outside a streaming render".to_string())
-    })
-}
-
-fn parse_boundary_sequence(signal: &str, sequence: &str) -> Result<usize> {
-    if sequence.is_empty() {
-        return Err(streaming_boundary_error(signal, "missing decimal sequence"));
-    }
-    if !sequence.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(streaming_boundary_error(
-            signal,
-            "sequence must contain only decimal digits",
-        ));
-    }
-    sequence
-        .parse::<usize>()
-        .map_err(|_| streaming_boundary_error(signal, "sequence exceeds the platform limit"))
-}
-
-#[cold]
-#[inline(never)]
-fn streaming_boundary_error(signal: &str, reason: &str) -> HandlerError {
-    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
-        signal: signal.to_string(),
-        reason: reason.to_string(),
-    }))
-}
-
-/// A streamed component host (`streaming_root:<tag>`) was authored outside any
-/// `<boundary>`. Such a host can never be progressively activated, so the
-/// streaming render fails with an actionable structured error instead of
-/// emitting dead markup. Cold and out-of-line: reuses the boxed
-/// [`HandlerError::StreamingBoundary`] variant so no error widens the small
-/// hot-path `Result`.
-#[cold]
-#[inline(never)]
-fn streaming_root_outside_boundary_error(tag: &str) -> HandlerError {
-    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
-        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
-        reason: format!(
-            "streamed component host <{tag}> is outside any <boundary>; \
-             author the host, or its matched <route>, inside a boundary so it can be \
-             progressively hydrated"
-        ),
-    }))
-}
-
-#[cold]
-#[inline(never)]
-fn missing_streaming_root_error(tag: &str) -> HandlerError {
-    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
-        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
-        reason: format!(
-            "component <{tag}> has no matching compiler-owned root signal at its opening-tag \
-             close; rebuild the protocol and place the host inside an explicit <boundary>"
-        ),
-    }))
-}
-
-#[cold]
-#[inline(never)]
-fn misplaced_streaming_root_error(tag: &str, expected: &str) -> HandlerError {
-    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
-        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
-        reason: format!(
-            "root signal for <{tag}> is misplaced: expected {expected}; rebuild the protocol \
-             with matching parser and handler versions"
-        ),
-    }))
-}
-
-#[cold]
-#[inline(never)]
-fn mismatched_streaming_root_error(signal_tag: &str, component_tag: &str) -> HandlerError {
-    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
-        signal: format!("{STREAMING_ROOT_PREFIX}{signal_tag}"),
-        reason: format!(
-            "root signal names <{signal_tag}>, but the opening host renders component \
-             <{component_tag}>; rebuild the protocol so the tags match"
-        ),
-    }))
-}
-
-#[cold]
-#[inline(never)]
-fn generated_streaming_root_error(tag: &str) -> HandlerError {
-    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
-        signal: format!("{STREAMING_ROOT_PREFIX}{tag}"),
-        reason: format!(
-            "handler-generated route host <{tag}> was not marked for streaming before it \
-             rendered; place the matched <route> inside an explicit <boundary>"
-        ),
-    }))
-}
-
-#[inline]
-fn validate_pending_streaming_root(
-    fragment: &WebUIFragment,
-    context: &mut WebUIProcessContext<'_, '_, '_>,
-) -> Result<()> {
-    let Some(pending) = context
-        .streaming
-        .as_ref()
-        .and_then(|streaming| streaming.pending_root)
-    else {
-        return Ok(());
-    };
-
-    match (pending.stage, fragment.fragment.as_ref()) {
-        (StreamingRootStage::OpeningTagClose, Some(Fragment::Raw(raw)))
-            if raw.value == ">" || raw.value == "/>" =>
-        {
-            if let Some(root) = context
-                .streaming
-                .as_mut()
-                .and_then(|streaming| streaming.pending_root.as_mut())
-            {
-                root.stage = StreamingRootStage::Component;
-            }
-            Ok(())
-        }
-        (StreamingRootStage::Component, Some(Fragment::Component(_))) => Ok(()),
-        (StreamingRootStage::OpeningTagClose, _) => Err(misplaced_streaming_root_error(
-            pending.tag,
-            "the raw opening-tag close `>` or `/>` immediately after the signal",
-        )),
-        (StreamingRootStage::Component, _) => Err(misplaced_streaming_root_error(
-            pending.tag,
-            "the matching component fragment immediately after the opening-tag close",
-        )),
-    }
-}
-
-fn raw_has_unclosed_opening_tag(raw: &str) -> bool {
-    let bytes = raw.as_bytes();
-    let mut search_end = raw.len();
-    while let Some(open) = raw[..search_end].rfind('<') {
-        let name_start = open + 1;
-        if bytes.get(name_start).is_some_and(|byte| {
-            !byte.is_ascii_whitespace() && !matches!(*byte, b'/' | b'!' | b'?' | b'>')
-        }) {
-            let mut name_end = name_start;
-            while name_end < bytes.len()
-                && !bytes[name_end].is_ascii_whitespace()
-                && !matches!(bytes[name_end], b'/' | b'>')
-            {
-                name_end += 1;
-            }
-            if !contains_unquoted_tag_close(&bytes[name_end..]) {
-                return true;
-            }
-        }
-        search_end = open;
-    }
-    false
-}
-
-fn contains_unquoted_tag_close(bytes: &[u8]) -> bool {
-    let mut quote = 0u8;
-    for &byte in bytes {
-        if quote != 0 {
-            if byte == quote {
-                quote = 0;
-            }
-        } else if matches!(byte, b'"' | b'\'') {
-            quote = byte;
-        } else if byte == b'>' {
-            return true;
-        }
-    }
-    false
-}
-
-#[inline]
-fn validate_streaming_root_opening(
-    preceding: &[WebUIFragment],
-    fragment: &WebUIFragment,
-) -> Result<()> {
-    let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
-        return Ok(());
-    };
-    let Some(tag) =
-        structural_signal_value(signal).and_then(|value| value.strip_prefix(STREAMING_ROOT_PREFIX))
-    else {
-        return Ok(());
-    };
-    if tag.is_empty() {
-        return Ok(());
-    }
-
-    for candidate in preceding.iter().rev() {
-        match candidate.fragment.as_ref() {
-            Some(Fragment::Attribute(_) | Fragment::Plugin(_)) => {}
-            Some(Fragment::Raw(raw)) if raw_has_unclosed_opening_tag(&raw.value) => return Ok(()),
-            Some(Fragment::Raw(raw))
-                if raw
-                    .value
-                    .as_bytes()
-                    .first()
-                    .is_some_and(|byte| byte.is_ascii_whitespace()) => {}
-            _ => break,
-        }
-    }
-    Err(misplaced_streaming_root_error(
-        tag,
-        "the compiler-owned signal at an unclosed component opening-tag close",
-    ))
-}
-
-fn ensure_no_pending_streaming_root(
-    context: &WebUIProcessContext<'_, '_, '_>,
-    before: &str,
-) -> Result<()> {
-    let Some(streaming) = context.streaming.as_ref() else {
-        return Ok(());
-    };
-    if let Some(pending) = streaming.pending_root {
-        return Err(misplaced_streaming_root_error(pending.tag, before));
-    }
-    if streaming.generated_root_ready {
-        return Err(streaming_boundary_error(
-            "handler-generated route root",
-            "route host ended before its component fragment rendered",
-        ));
-    }
-    Ok(())
-}
-
-fn prepare_generated_streaming_root(
-    tag: &str,
-    context: &mut WebUIProcessContext<'_, '_, '_>,
-) -> Result<()> {
-    if context.streaming.is_none() {
-        return Ok(());
-    }
-    require_streaming_head_start(context, "route component host")?;
-    let (active_boundary, generated_root_ready) = context
-        .streaming
-        .as_ref()
-        .map_or((None, false), |streaming| {
-            (streaming.active_boundary, streaming.generated_root_ready)
-        });
-    if active_boundary.is_none() {
-        return Err(streaming_root_outside_boundary_error(tag));
-    }
-    if generated_root_ready {
-        return Err(generated_streaming_root_error(tag));
-    }
-    context.writer.write(" data-ws")?;
-    streaming_state(context)?.generated_root_ready = true;
-    Ok(())
-}
-
-fn consume_streaming_component_root(
-    tag: &str,
-    origin: ComponentHostOrigin,
-    context: &mut WebUIProcessContext<'_, '_, '_>,
-) -> Result<()> {
-    let streaming = streaming_state(context)?;
-    match origin {
-        ComponentHostOrigin::ParserProduced => {
-            let Some(pending) = streaming.pending_root.take() else {
-                return Err(missing_streaming_root_error(tag));
-            };
-            if !matches!(pending.stage, StreamingRootStage::Component) {
-                return Err(misplaced_streaming_root_error(
-                    pending.tag,
-                    "the opening-tag close before the component fragment",
-                ));
-            }
-            if pending.tag != tag {
-                return Err(mismatched_streaming_root_error(pending.tag, tag));
-            }
-        }
-        ComponentHostOrigin::HandlerGenerated => {
-            if !streaming.generated_root_ready {
-                return Err(generated_streaming_root_error(tag));
-            }
-            streaming.generated_root_ready = false;
-        }
-    }
-    Ok(())
-}
-
-fn process_streaming_root_signal<'data>(
-    value: &'data str,
-    context: &mut WebUIProcessContext<'data, '_, '_>,
-) -> Result<()> {
-    require_streaming_head_start(context, "component host")?;
-    let Some(tag) = value.strip_prefix(STREAMING_ROOT_PREFIX) else {
-        return Err(streaming_boundary_error(
-            value,
-            "expected `streaming_root:<component tag>`",
-        ));
-    };
-    if tag.is_empty() {
-        return Err(streaming_boundary_error(
-            value,
-            "expected `streaming_root:<component tag>`",
-        ));
-    }
-
-    let (active_boundary, pending_root, generated_root_ready) =
-        context
-            .streaming
-            .as_ref()
-            .map_or((None, None, false), |streaming| {
-                (
-                    streaming.active_boundary,
-                    streaming.pending_root,
-                    streaming.generated_root_ready,
-                )
-            });
-    if active_boundary.is_none() {
-        return Err(streaming_root_outside_boundary_error(tag));
-    }
-    if let Some(pending) = pending_root {
-        return Err(misplaced_streaming_root_error(
-            pending.tag,
-            "one opening-tag close and matching component before another root signal",
-        ));
-    }
-    if generated_root_ready {
-        return Err(generated_streaming_root_error(tag));
-    }
-
-    context.writer.write(" data-ws")?;
-    streaming_state(context)?.pending_root = Some(PendingStreamingRoot {
-        tag,
-        stage: StreamingRootStage::OpeningTagClose,
-    });
-    Ok(())
-}
-
-fn validate_streaming_head_start(protocol: &WebUIProtocol, entry_id: &str) -> Result<()> {
-    let fragments = protocol
-        .fragments
-        .get(entry_id)
-        .ok_or_else(|| HandlerError::MissingFragment(entry_id.to_string()))?;
-    for fragment in &fragments.fragments {
-        let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
-            continue;
-        };
-        let Some(value) = structural_signal_value(signal) else {
-            continue;
-        };
-        if value == "head_start" {
-            return Ok(());
-        }
-        let before = match value {
-            "head_end" => Some("head_end"),
-            "body_start" => Some("body_start"),
-            "body_end" => Some("body_end"),
-            value if value.starts_with("boundary_start") || value.starts_with("boundary_end") => {
-                Some("streaming boundary")
-            }
-            _ => None,
-        };
-        if let Some(before) = before {
-            return Err(HandlerError::MissingStreamingHeadStart { before });
-        }
-    }
-    Err(HandlerError::MissingStreamingHeadStart {
-        before: "end of entry fragment",
-    })
-}
-
-fn require_streaming_head_start(
-    context: &WebUIProcessContext<'_, '_, '_>,
-    before: &'static str,
-) -> Result<()> {
-    if context
-        .streaming
-        .as_ref()
-        .is_some_and(|streaming| streaming.head_marker_emitted)
-    {
-        Ok(())
-    } else {
-        Err(HandlerError::MissingStreamingHeadStart { before })
-    }
-}
-
-fn increment_streaming_sequence(
-    signal: &str,
-    streaming: &mut StreamingRenderState<'_, '_>,
-) -> Result<()> {
-    streaming.next_sequence = streaming.next_sequence.checked_add(1).ok_or_else(|| {
-        streaming_boundary_error(signal, "boundary sequence overflowed the platform limit")
-    })?;
-    Ok(())
 }
 
 /// Maximum scope maps retained in the request-local pool. Small: sibling
@@ -885,223 +395,15 @@ fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<St
     }
 }
 
-/// Record a rendered component tag into the current checkpoint's exact capture
-/// set, deduplicated by the reusable bitset. The tag is borrowed from
-/// `component_index` (`&'data str`) so capture allocates nothing per tag. Tags
-/// without an inventory bit are ignored (they carry no template or hydration
-/// state anyway).
-fn record_checkpoint_tag<'data>(
-    context: &mut WebUIProcessContext<'data, '_, '_>,
-    fragment_id: &str,
-) {
-    // Copy the `'data` index reference out first so the borrowed key outlives the
-    // subsequent mutable borrow of `context.streaming` (disjoint fields).
-    let index_map: &'data HashMap<String, u32> = context.component_index;
-    let Some((tag, &index)) = index_map.get_key_value(fragment_id) else {
-        return;
-    };
-    let tag: &'data str = tag.as_str();
-    let Some(streaming) = context.streaming.as_mut() else {
-        return;
-    };
-    let byte_index = (index / 8) as usize;
-    let bit = 1u8 << (index % 8);
-    if byte_index >= streaming.checkpoint_seen.len()
-        || streaming.checkpoint_seen[byte_index] & bit != 0
-    {
-        return;
-    }
-    streaming.checkpoint_seen[byte_index] |= bit;
-    streaming.checkpoint_tags.push(tag);
-    if streaming.component_reachability.requires_expansion(index) != Some(false) {
-        streaming.checkpoint_needs_expansion = true;
-    }
-}
-
-/// Commit the exact rendered tags to the cumulative DOM inventory and encode
-/// this checkpoint's delta. Template delivery is tracked separately because a
-/// reachable-but-unrendered descendant needs metadata without claiming live DOM.
-fn commit_checkpoint_inventory(
-    streaming: &mut StreamingRenderState<'_, '_>,
-    component_index: &HashMap<String, u32>,
-) -> Result<()> {
-    streaming.inventory_delta.fill(0);
-    for &tag in &streaming.checkpoint_tags {
-        let Some(&index) = component_index.get(tag) else {
-            continue;
-        };
-        let byte_index = usize::try_from(index / 8).map_err(|_| {
-            HandlerError::Invariant("component inventory index does not fit usize".to_string())
-        })?;
-        if byte_index >= streaming.inventory.len() {
-            return Err(HandlerError::Invariant(
-                "component inventory index exceeds the request-local bitset".to_string(),
-            ));
-        }
-        let bit = 1u8 << (index % 8);
-        if streaming.inventory[byte_index] & bit == 0 {
-            streaming.inventory[byte_index] |= bit;
-            streaming.inventory_delta[byte_index] |= bit;
-        }
-    }
-
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    streaming.inventory_hex.clear();
-    let byte_count = streaming
-        .inventory_delta
-        .iter()
-        .rposition(|byte| *byte != 0)
-        .map_or(0, |index| index + 1);
-    for byte in &streaming.inventory_delta[..byte_count] {
-        streaming
-            .inventory_hex
-            .push(char::from(HEX[usize::from(byte >> 4)]));
-        streaming
-            .inventory_hex
-            .push(char::from(HEX[usize::from(byte & 0x0f)]));
-    }
-    Ok(())
-}
-
-/// Expand the exact rendered-root capture into its transitive component
-/// surface using the startup-built integer dependency graph.
-///
-/// Returns `false` without mutating the capture when any root can reach an
-/// authored route. Those uncommon surfaces require the request-aware fallback.
-fn expand_static_checkpoint_reachability<'data>(
-    streaming: &mut StreamingRenderState<'data, '_>,
-    component_index: &HashMap<String, u32>,
-) -> Result<bool> {
-    if !streaming.checkpoint_needs_expansion {
-        return Ok(true);
-    }
-    for &tag in &streaming.checkpoint_tags {
-        let Some(&index) = component_index.get(tag) else {
-            continue;
-        };
-        match streaming.component_reachability.is_route_dependent(index) {
-            Some(false) => {}
-            Some(true) => return Ok(false),
-            None => {
-                return Err(HandlerError::Invariant(
-                    "component reachability index is incomplete".to_string(),
-                ));
-            }
-        }
-    }
-
-    streaming.reachability_stack.clear();
-    for &tag in streaming.checkpoint_tags.iter().rev() {
-        if let Some(&index) = component_index.get(tag) {
-            streaming.reachability_stack.push(index);
-        }
-    }
-    streaming.checkpoint_tags.clear();
-    streaming.checkpoint_seen.fill(0);
-
-    while let Some(index) = streaming.reachability_stack.pop() {
-        let byte_index = usize::try_from(index / 8).map_err(|_| {
-            HandlerError::Invariant("component reachability index does not fit usize".to_string())
-        })?;
-        if byte_index >= streaming.checkpoint_seen.len() {
-            return Err(HandlerError::Invariant(
-                "component reachability index exceeds the request-local bitset".to_string(),
-            ));
-        }
-        let bit = 1u8 << (index % 8);
-        if streaming.checkpoint_seen[byte_index] & bit != 0 {
-            continue;
-        }
-        streaming.checkpoint_seen[byte_index] |= bit;
-
-        let Some(name) = streaming.component_reachability.name(index) else {
-            return Err(HandlerError::Invariant(
-                "component reachability name is missing".to_string(),
-            ));
-        };
-        streaming.checkpoint_tags.push(name);
-        let Some(dependencies) = streaming.component_reachability.dependencies(index) else {
-            return Err(HandlerError::Invariant(
-                "component reachability dependencies are missing".to_string(),
-            ));
-        };
-        streaming
-            .reachability_stack
-            .extend(dependencies.iter().rev().copied());
-    }
-
-    Ok(true)
-}
-
-fn replace_checkpoint_reachability<'data>(
-    streaming: &mut StreamingRenderState<'data, '_>,
-    component_index: &'data HashMap<String, u32>,
-    reachable: &[String],
-) {
-    streaming.checkpoint_tags.clear();
-    streaming.checkpoint_seen.fill(0);
-    for name in reachable {
-        let Some((tag, &index)) = component_index.get_key_value(name) else {
-            continue;
-        };
-        let byte_index = (index / 8) as usize;
-        let bit = 1u8 << (index % 8);
-        if byte_index < streaming.checkpoint_seen.len()
-            && streaming.checkpoint_seen[byte_index] & bit == 0
-        {
-            streaming.checkpoint_seen[byte_index] |= bit;
-            streaming.checkpoint_tags.push(tag.as_str());
-        }
-    }
-}
-
-/// Mark one component's template/CSS metadata as delivered.
-///
-/// Returns `true` exactly once per indexed component for this render.
-fn mark_streaming_template_sent(
-    streaming: &mut StreamingRenderState<'_, '_>,
-    component_index: &HashMap<String, u32>,
-    tag: &str,
-) -> Result<bool> {
-    let Some(&index) = component_index.get(tag) else {
-        return Ok(false);
-    };
-    let byte_index = usize::try_from(index / 8).map_err(|_| {
-        HandlerError::Invariant("component template index does not fit usize".to_string())
-    })?;
-    if byte_index >= streaming.template_inventory.len() {
-        return Err(HandlerError::Invariant(
-            "component template index exceeds the request-local bitset".to_string(),
-        ));
-    }
-    let bit = 1u8 << (index % 8);
-    if streaming.template_inventory[byte_index] & bit != 0 {
-        return Ok(false);
-    }
-    streaming.template_inventory[byte_index] |= bit;
-    Ok(true)
-}
-
-fn flush_streaming_transport(context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()> {
-    if context.streaming.is_none() {
-        return Err(HandlerError::Invariant(
-            "streaming flush requested outside a streaming render".to_string(),
-        ));
-    }
-    // The sink resets its own dirty flag as part of flushing, so there is no
-    // separate `dirty.set(false)` here.
-    context.writer.stream_flush()
-}
-
-struct WebUiBootstrap<'a> {
-    state: &'a Value,
-    state_selection: StateSelection<'a>,
-    chain: &'a [Value],
-    inventory: &'a str,
-    nonce: Option<&'a str>,
-    css_hrefs: &'a [&'a str],
-    style_specs: &'a [&'a str],
-    templates: &'a [WebUiTemplatePayload<'a>],
+pub(crate) struct WebUiBootstrap<'a> {
+    pub(crate) state: &'a Value,
+    pub(crate) state_selection: StateSelection<'a>,
+    pub(crate) chain: &'a [Value],
+    pub(crate) inventory: &'a str,
+    pub(crate) nonce: Option<&'a str>,
+    pub(crate) css_hrefs: &'a [&'a str],
+    pub(crate) style_specs: &'a [&'a str],
+    pub(crate) templates: &'a [WebUiTemplatePayload<'a>],
 }
 
 /// Get the component attribute name, stripping `:` prefix and converting to camelCase.
@@ -1115,7 +417,7 @@ fn component_attr_name(name: &str) -> String {
 }
 
 /// Write a usize as decimal digits directly to the writer, avoiding `format!` allocation.
-fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
+pub(crate) fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
     if n == 0 {
         return writer.write("0");
     }
@@ -1311,7 +613,7 @@ fn write_selected_state(
 
 // Covers the common route surface without trusting protocol-derived counts for
 // an eager allocation; larger key sets grow only as actual keys are visited.
-const INITIAL_KEY_CAPACITY: usize = 16;
+pub(crate) const INITIAL_KEY_CAPACITY: usize = 16;
 
 /// Request-scoped state selection derived from reachable component metadata.
 pub(crate) enum StateSelection<'a> {
@@ -1344,7 +646,7 @@ pub(crate) fn collect_hydration_state<'a, 'b>(
     collect_component_state(protocol, components, ComponentStateSurface::Hydration)
 }
 
-fn collect_hydration_state_into<'a, 'b>(
+pub(crate) fn collect_hydration_state_into<'a, 'b>(
     protocol: &'a WebUIProtocol,
     components: impl IntoIterator<Item = &'b str>,
     keys: &mut Vec<&'a str>,
@@ -1414,7 +716,7 @@ fn collect_component_state_into<'a, 'b>(
     false
 }
 
-fn write_webui_bootstrap(
+pub(crate) fn write_webui_bootstrap(
     writer: &mut dyn ResponseWriter,
     scratch: &mut Vec<u8>,
     bootstrap: WebUiBootstrap<'_>,
@@ -1803,14 +1105,11 @@ impl WebUIHandler {
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         let metadata_already_streamed = context.streaming.as_ref().is_some_and(|streaming| {
-            context
-                .component_index
-                .get(&component.fragment_id)
-                .is_some_and(|index| {
-                    let byte_index = (index / 8) as usize;
-                    byte_index < streaming.template_inventory.len()
-                        && streaming.template_inventory[byte_index] & (1u8 << (index % 8)) != 0
-                })
+            streaming_template_already_sent(
+                streaming,
+                context.component_index,
+                &component.fragment_id,
+            )
         });
         if !metadata_already_streamed
             && !context.rendered_components.contains(&component.fragment_id)
@@ -2070,381 +1369,6 @@ impl WebUIHandler {
         }
 
         Ok(())
-    }
-
-    fn emit_streaming_checkpoint(
-        &self,
-        sequence: usize,
-        terminal: bool,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        let first_checkpoint = context
-            .streaming
-            .as_ref()
-            .is_some_and(|streaming| !streaming.bootstrap_sent);
-
-        // Commit the exact rendered roots before expanding the local metadata
-        // surface. The DOM inventory must never claim hidden descendants.
-        let component_index = context.component_index;
-        let needs_route_walk = {
-            let streaming = streaming_state(context)?;
-            commit_checkpoint_inventory(streaming, component_index)?;
-            !expand_static_checkpoint_reachability(streaming, component_index)?
-        };
-
-        if needs_route_walk {
-            // Only a component surface containing authored routes needs request
-            // matching. Route-free surfaces use the startup-built integer graph.
-            let roots = context
-                .streaming
-                .as_ref()
-                .map_or(&[][..], |streaming| streaming.checkpoint_tags.as_slice());
-            let reachable = crate::route_handler::collect_reachable_components_from_roots(
-                context.protocol,
-                roots,
-                context.request_path,
-                context.route_index,
-            );
-            replace_checkpoint_reachability(streaming_state(context)?, component_index, &reachable);
-        }
-
-        // Move the reusable tag vector out so plugin/state code can borrow it
-        // without retaining a borrow of the render context.
-        let checkpoint_tags = {
-            let streaming = streaming_state(context)?;
-            std::mem::take(&mut streaming.checkpoint_tags)
-        };
-        let mut new_template_tags = {
-            let streaming = streaming_state(context)?;
-            std::mem::take(&mut streaming.template_tag_scratch)
-        };
-        new_template_tags.clear();
-        {
-            let streaming = streaming_state(context)?;
-            for &name in &checkpoint_tags {
-                if mark_streaming_template_sent(streaming, component_index, name)? {
-                    new_template_tags.push(name);
-                }
-            }
-        }
-
-        // Rendered components emitted module importmaps inline before their
-        // declarative shadow roots. Emit the same metadata here only for
-        // reachable-but-unrendered descendants.
-        for &name in &new_template_tags {
-            if !context.rendered_components.contains(name) {
-                if let Some(css) = context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|component| component.css.as_str())
-                    .filter(|css| !css.is_empty())
-                {
-                    self.emit_css_module_importmap(name, css, context)?;
-                }
-            }
-        }
-
-        let template_payloads = context.plugin.as_ref().and_then(|plugin| {
-            plugin.collect_template_payloads_slice(context.protocol, &new_template_tags)
-        });
-        if template_payloads.is_none() {
-            if let Some(plugin) = context.plugin.as_ref() {
-                plugin.emit_templates_slice(
-                    context.protocol,
-                    &new_template_tags,
-                    context.nonce,
-                    context.writer,
-                )?;
-            }
-        }
-
-        // Hydration state covers this root surface even when a descendant is not
-        // initially rendered, so a client-side condition can create it without
-        // consulting a page-global state object.
-        let mut state_key_scratch = {
-            let streaming = streaming_state(context)?;
-            std::mem::take(&mut streaming.state_key_scratch)
-        };
-        let requires_full_state = collect_hydration_state_into(
-            context.protocol,
-            checkpoint_tags.iter().copied(),
-            &mut state_key_scratch,
-        );
-        let chain = if first_checkpoint {
-            crate::route_handler::collect_route_chain(
-                context.protocol,
-                context.entry_id,
-                context.request_path,
-                context.route_index,
-            )
-            .iter()
-            .map(crate::route_handler::RouteChainEntry::to_json)
-            .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let (mut css_hrefs, mut style_specs) = {
-            let streaming = streaming_state(context)?;
-            (
-                std::mem::take(&mut streaming.css_href_scratch),
-                std::mem::take(&mut streaming.style_spec_scratch),
-            )
-        };
-        css_hrefs.clear();
-        style_specs.clear();
-        let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
-        for &name in &new_template_tags {
-            if let Some(component) = context.protocol.components.get(name) {
-                if is_link && !component.css_href.is_empty() {
-                    css_hrefs.push(component.css_href.as_str());
-                }
-                if !component.css.is_empty() {
-                    style_specs.push(name);
-                }
-            }
-        }
-
-        let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
-        let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
-        context
-            .writer
-            .write("<script type=\"application/json\" data-webui-boundary")?;
-        if let Some(nonce) = context.nonce {
-            context.writer.write(" nonce=\"")?;
-            context.writer.write(nonce)?;
-            context.writer.write("\"")?;
-        }
-        context.writer.write(">[1,")?;
-        write_usize(context.writer, sequence)?;
-        context.writer.write(if terminal { ",1," } else { ",0," })?;
-        let inventory = context
-            .streaming
-            .as_ref()
-            .map_or("", |streaming| streaming.inventory_hex.as_str());
-        {
-            let state_selection = if requires_full_state {
-                StateSelection::Full
-            } else {
-                StateSelection::BorrowedKeys(&state_key_scratch)
-            };
-            write_webui_bootstrap(
-                context.writer,
-                &mut context.json_scratch,
-                WebUiBootstrap {
-                    state: context.state,
-                    state_selection,
-                    chain: &chain,
-                    inventory,
-                    nonce: context.nonce,
-                    css_hrefs: &css_hrefs,
-                    style_specs: &style_specs,
-                    templates: payloads,
-                },
-            )?;
-        }
-        context.writer.write("]</script>")?;
-
-        if let Some(plugin) = context.plugin.as_ref() {
-            plugin.emit_bootstrap_extension_payloads(payloads, context.nonce, context.writer)?;
-        }
-        context.writer.write("<webui-hydrate></webui-hydrate>")?;
-        flush_streaming_transport(context)?;
-        if let Some(streaming) = context.streaming.as_mut() {
-            streaming.bootstrap_sent = true;
-            state_key_scratch.clear();
-            streaming.state_key_scratch = state_key_scratch;
-            // Reset the exact-capture buffers for the next checkpoint, retaining
-            // their capacity.
-            let mut checkpoint_tags = checkpoint_tags;
-            checkpoint_tags.clear();
-            streaming.checkpoint_tags = checkpoint_tags;
-            new_template_tags.clear();
-            streaming.template_tag_scratch = new_template_tags;
-            css_hrefs.clear();
-            streaming.css_href_scratch = css_hrefs;
-            style_specs.clear();
-            streaming.style_spec_scratch = style_specs;
-            streaming.checkpoint_seen.fill(0);
-            streaming.checkpoint_needs_expansion = false;
-        }
-        Ok(())
-    }
-
-    fn emit_streaming_terminal(
-        &self,
-        sequence: usize,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        context
-            .writer
-            .write("<script type=\"application/json\" data-webui-boundary")?;
-        if let Some(nonce) = context.nonce {
-            context.writer.write(" nonce=\"")?;
-            context.writer.write(nonce)?;
-            context.writer.write("\"")?;
-        }
-        context.writer.write(">[1,")?;
-        write_usize(context.writer, sequence)?;
-        context
-            .writer
-            .write(",1,{}]</script><webui-hydrate></webui-hydrate>")?;
-        flush_streaming_transport(context)
-    }
-
-    fn process_streaming_signal<'data>(
-        &self,
-        value: &'data str,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
-    ) -> Result<bool> {
-        if context
-            .streaming
-            .as_ref()
-            .is_some_and(|streaming| streaming.body_ended)
-        {
-            return Err(streaming_boundary_error(
-                value,
-                "structural signal arrived after the body_end terminal record",
-            ));
-        }
-
-        if value == "head_start" {
-            if context
-                .streaming
-                .as_ref()
-                .is_some_and(|streaming| streaming.head_marker_emitted)
-            {
-                return Err(HandlerError::DuplicateStreamingHeadStart);
-            }
-            context.writer.write(STREAMING_MARKER)?;
-            streaming_state(context)?.head_marker_emitted = true;
-            return Ok(true);
-        }
-
-        if value.starts_with("streaming_root") {
-            // Compiler-owned streamed SSR root marker: inject ` data-ws` inside
-            // the component's opening tag (the parser placed this signal before
-            // `>`). The host must live inside an open boundary, otherwise it can
-            // never be activated — fail with a cold structured error.
-            process_streaming_root_signal(value, context)?;
-            return Ok(true);
-        }
-        if let Some(raw_sequence) = value.strip_prefix(BOUNDARY_START_PREFIX) {
-            require_streaming_head_start(context, "streaming boundary")?;
-            let sequence = parse_boundary_sequence(value, raw_sequence)?;
-            let streaming = streaming_state(context)?;
-            if let Some(active) = streaming.active_boundary {
-                return Err(streaming_boundary_error(
-                    value,
-                    &format!("nested boundary {sequence}; boundary {active} is still open"),
-                ));
-            }
-            if sequence != streaming.next_sequence {
-                return Err(streaming_boundary_error(
-                    value,
-                    &format!(
-                        "expected boundary sequence {}, received {sequence}",
-                        streaming.next_sequence
-                    ),
-                ));
-            }
-            context.writer.write("<!--wb:")?;
-            write_usize(context.writer, sequence)?;
-            context.writer.write("-->")?;
-            streaming_state(context)?.active_boundary = Some(sequence);
-            return Ok(true);
-        }
-        if value.starts_with("boundary_start") {
-            require_streaming_head_start(context, "streaming boundary")?;
-            return Err(streaming_boundary_error(
-                value,
-                "expected `boundary_start:<decimal sequence>`",
-            ));
-        }
-
-        if let Some(raw_sequence) = value.strip_prefix(BOUNDARY_END_PREFIX) {
-            require_streaming_head_start(context, "streaming boundary")?;
-            let sequence = parse_boundary_sequence(value, raw_sequence)?;
-            let active = streaming_state(context)?.active_boundary.ok_or_else(|| {
-                streaming_boundary_error(value, "boundary end has no matching start")
-            })?;
-            if active != sequence {
-                return Err(streaming_boundary_error(
-                    value,
-                    &format!("boundary {active} is open, but boundary {sequence} ended"),
-                ));
-            }
-
-            context.writer.write("<!--/wb:")?;
-            write_usize(context.writer, sequence)?;
-            context.writer.write("-->")?;
-            self.emit_streaming_checkpoint(sequence, false, context)?;
-            let streaming = streaming_state(context)?;
-            streaming.active_boundary = None;
-            increment_streaming_sequence(value, streaming)?;
-            return Ok(true);
-        }
-        if value.starts_with("boundary_end") {
-            require_streaming_head_start(context, "streaming boundary")?;
-            return Err(streaming_boundary_error(
-                value,
-                "expected `boundary_end:<decimal sequence>`",
-            ));
-        }
-
-        if value == "body_end" {
-            require_streaming_head_start(context, "body_end")?;
-            let (active_boundary, body_ended, needs_implicit, next_sequence) = {
-                let streaming = streaming_state(context)?;
-                (
-                    streaming.active_boundary,
-                    streaming.body_ended,
-                    streaming.dirty.get() || !streaming.bootstrap_sent,
-                    streaming.next_sequence,
-                )
-            };
-            if let Some(active) = active_boundary {
-                return Err(streaming_boundary_error(
-                    value,
-                    &format!("body ended while boundary {active} was still open"),
-                ));
-            }
-            if body_ended {
-                return Err(streaming_boundary_error(value, "duplicate body_end signal"));
-            }
-            if let Some(html) = context.body_inject {
-                context.writer.write(html)?;
-            }
-
-            // Any raw/native tail bytes after the last commit require one
-            // implicit final checkpoint. Registered component hosts cannot
-            // appear outside an explicit boundary (the streaming_root branch
-            // rejects them), so this tail never contains an untracked
-            // interactive root. Coalesce the tail commit with the terminal:
-            // emit a single terminal checkpoint (`terminal = true`) carrying the
-            // tail bootstrap in one flush, rather than an implicit checkpoint
-            // flush followed by a separate empty terminal flush. This may ship an
-            // empty-state checkpoint for a scriptless tail, but never strands an
-            // interactive root. When no tail exists, emit the standalone empty
-            // terminal so the client still observes a markerless close.
-            if needs_implicit {
-                self.emit_streaming_checkpoint(next_sequence, true, context)?;
-            } else {
-                self.emit_streaming_terminal(next_sequence, context)?;
-            }
-            let streaming = streaming_state(context)?;
-            streaming.body_ended = true;
-            context.body_end_emitted = true;
-            return Ok(true);
-        }
-
-        if value == "head_end" {
-            require_streaming_head_start(context, "head_end")?;
-        } else if value == "body_start" {
-            require_streaming_head_start(context, "body_start")?;
-        }
-
-        Ok(false)
     }
 
     /// Process a signal fragment.
@@ -2969,93 +1893,6 @@ impl WebUIHandler {
 
         Ok(())
     }
-
-    /// Render an opt-in progressive hydration response.
-    ///
-    /// Boundary signals are validated in document order and every committed
-    /// checkpoint is flushed through `writer`. Unlike [`Self::render`], this
-    /// mode emits boundary envelopes instead of a page-wide `#webui-data`
-    /// block and requires structural `head_start` and `body_end` signals.
-    pub fn render_streaming<'a, W: FlushWriter + ?Sized>(
-        &self,
-        protocol: &'a Protocol,
-        state: &'a Value,
-        options: &RenderOptions<'a>,
-        writer: &mut W,
-    ) -> Result<()> {
-        let document = protocol.protocol();
-        if !document.fragments.contains_key(options.entry_id) {
-            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
-        }
-        validate_streaming_head_start(document, options.entry_id)?;
-
-        let dirty = Cell::new(false);
-        let inventory_bytes = protocol.component_index().len().div_ceil(8);
-        // Select the streaming sink once, here at render entry. It borrows the
-        // transport mutably and shares `dirty` with the render state; ordinary
-        // per-write output never sees this wrapper.
-        let mut sink = StreamingSink {
-            transport: writer,
-            dirty: &dirty,
-        };
-        let mut context = WebUIProcessContext {
-            protocol: document,
-            legacy_structural_signals: protocol.legacy_structural_signals(),
-            state,
-            writer: &mut sink,
-            local_vars: HashMap::new(),
-            component_attrs: HashMap::new(),
-            request_path: options.request_path,
-            route_base: Cow::Borrowed("/"),
-            rendered_components: HashSet::new(),
-            plugin: self.plugin_factory.map(|factory| factory()),
-            route_children: Vec::new(),
-            entry_id: options.entry_id,
-            nonce: options.nonce.filter(|nonce| !nonce.is_empty()),
-            head_inject: options.head_inject.filter(|html| !html.is_empty()),
-            body_inject: options.body_inject.filter(|html| !html.is_empty()),
-            head_end_emitted: false,
-            component_index: protocol.component_index(),
-            body_end_emitted: false,
-            route_index: protocol.route_index(),
-            route_chain_index: 0,
-            streaming: Some(StreamingRenderState {
-                dirty: &dirty,
-                component_reachability: protocol.component_reachability(),
-                head_marker_emitted: false,
-                active_boundary: None,
-                pending_root: None,
-                generated_root_ready: false,
-                next_sequence: 0,
-                bootstrap_sent: false,
-                body_ended: false,
-                inventory: vec![0; inventory_bytes],
-                inventory_delta: vec![0; inventory_bytes],
-                inventory_hex: String::with_capacity(inventory_bytes * 2),
-                template_inventory: vec![0; inventory_bytes],
-                checkpoint_tags: Vec::new(),
-                checkpoint_seen: vec![0; inventory_bytes],
-                checkpoint_needs_expansion: false,
-                state_key_scratch: Vec::with_capacity(INITIAL_KEY_CAPACITY),
-                template_tag_scratch: Vec::new(),
-                css_href_scratch: Vec::new(),
-                style_spec_scratch: Vec::new(),
-                reachability_stack: Vec::new(),
-            }),
-            json_scratch: Vec::new(),
-            scope_pool: Vec::new(),
-        };
-
-        self.process_fragment_id(options.entry_id, &mut context)?;
-        if !context
-            .streaming
-            .as_ref()
-            .is_some_and(|streaming| streaming.body_ended)
-        {
-            return Err(HandlerError::MissingStreamingBodyEnd);
-        }
-        context.writer.end()
-    }
 }
 
 impl Default for WebUIHandler {
@@ -3087,6 +1924,7 @@ fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::streaming::STREAMING_MARKER;
     use std::cell::RefCell;
     use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
     use webui_protocol::{
@@ -11150,70 +9988,6 @@ mod tests {
                 "expected boundaries+1 flushes for {count} boundaries"
             );
         }
-    }
-
-    #[test]
-    fn checkpoint_tag_buffers_retain_capacity_across_commits() {
-        // Deterministic capacity-reuse proof for the checkpoint tag vector /
-        // dedup bitsets: rendered inventory and template delivery remain
-        // independent, and the capture buffers keep their capacity once cleared.
-        let dirty = std::cell::Cell::new(false);
-        let protocol = Protocol::new(WebUIProtocol::with_tokens(
-            HashMap::from([
-                ("comp-a".to_string(), FragmentList::default()),
-                ("comp-b".to_string(), FragmentList::default()),
-            ]),
-            Vec::new(),
-        ));
-        let mut streaming = StreamingRenderState {
-            dirty: &dirty,
-            component_reachability: protocol.component_reachability(),
-            head_marker_emitted: true,
-            active_boundary: None,
-            pending_root: None,
-            generated_root_ready: false,
-            next_sequence: 0,
-            bootstrap_sent: false,
-            body_ended: false,
-            inventory: vec![0u8; 1],
-            inventory_delta: vec![0u8; 1],
-            inventory_hex: String::new(),
-            template_inventory: vec![0u8; 1],
-            checkpoint_tags: Vec::new(),
-            checkpoint_seen: vec![0u8; 1],
-            checkpoint_needs_expansion: false,
-            state_key_scratch: Vec::new(),
-            template_tag_scratch: Vec::new(),
-            css_href_scratch: Vec::new(),
-            style_spec_scratch: Vec::new(),
-            reachability_stack: Vec::new(),
-        };
-        let index = protocol.component_index();
-
-        // First checkpoint: both tags become rendered and have metadata sent.
-        streaming.checkpoint_tags.push("comp-a");
-        streaming.checkpoint_tags.push("comp-b");
-        commit_checkpoint_inventory(&mut streaming, index).unwrap();
-        assert_eq!(streaming.inventory_hex, "03");
-        assert!(mark_streaming_template_sent(&mut streaming, index, "comp-a").unwrap());
-        assert!(mark_streaming_template_sent(&mut streaming, index, "comp-b").unwrap());
-        let capacity = streaming.checkpoint_tags.capacity();
-        assert!(capacity >= 2);
-
-        // Reset for the next checkpoint (mirrors the checkpoint tail).
-        streaming.checkpoint_tags.clear();
-        streaming.checkpoint_seen.fill(0);
-        streaming.checkpoint_needs_expansion = false;
-
-        // Second checkpoint: comp-a reused — no new metadata or DOM delta.
-        streaming.checkpoint_tags.push("comp-a");
-        commit_checkpoint_inventory(&mut streaming, index).unwrap();
-        assert_eq!(streaming.inventory_hex, "");
-        assert!(!mark_streaming_template_sent(&mut streaming, index, "comp-a").unwrap());
-        assert!(
-            streaming.checkpoint_tags.capacity() >= capacity,
-            "checkpoint tag buffer capacity must be reused, not reallocated"
-        );
     }
 
     #[test]
