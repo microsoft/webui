@@ -1539,6 +1539,13 @@ All arrays are optional and omitted from the output when empty to minimize paylo
 The closure itself has the shape `(resolve, scope) => boolean`; generated source calls
 `resolve(path, scope)` for identifier lookups and preserves the existing WebUI condition
 semantics for truthiness, comparison, negation, and `&&` / `||` compounds.
+
+> **Known divergence.** A bare identifier compiles to `!!resolve(path, scope)`, i.e.
+> host JavaScript truthiness, while the server evaluator in `webui-expressions`
+> reports `Value::Array` and `Value::Object` as truthy only when non-empty. An
+> empty array or object therefore evaluates falsy during SSR and truthy on the
+> client. Scalars agree. Templates must test `items.length` rather than `items`
+> until the two evaluators are reconciled.
 - `5` = `GREATER_THAN_OR_EQUAL`
 - `6` = `LESS_THAN_OR_EQUAL`
 

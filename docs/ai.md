@@ -175,7 +175,15 @@ Text bindings do path lookups only. They cannot do arithmetic or call functions.
 Operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 
 **Constraints:** max 5 logical operators per expression; cannot mix `&&` and
-`||` in one expression; no parentheses for grouping; no ternary.
+`||` in one expression; no parentheses for grouping; no ternary; **no
+arithmetic**.
+
+Each side of a comparison is either a literal (number, quoted string, `true`,
+`false`) or a dotted state path. Anything else is read as a path, so
+`{{currentIndex == items.length - 1}}` looks up a key literally named
+`items.length - 1`, finds nothing, and the condition is silently false. Have the
+server send a precomputed `lastIndex` (or `isLast`) instead. Bare `.length` on an
+array or string does work: `<if condition="items.length > 3">`.
 
 ### Loops
 
@@ -222,7 +230,7 @@ Operators: `==`, `!=`, `>`, `<`, `>=`, `<=`, `&&`, `||`, `!`
 <!-- Boolean attributes accept the same expressions as <if condition="...">.
      Compare against existing state instead of creating mirror observables. -->
 <button ?disabled="{{currentIndex == 0}}">Prev</button>
-<button ?disabled="{{currentIndex == items.length - 1}}">Next</button>
+<button ?disabled="{{currentIndex == lastIndex}}">Next</button>
 <option ?selected="{{item.id == selectedId}}">{{item.name}}</option>
 
 <!-- Mixed static + dynamic -->
@@ -765,10 +773,17 @@ bandwidth and render time.
 | Non-zero number | Yes |
 | `""` (empty string) | No |
 | `"false"` (string!) | **Yes** (non-empty string) |
-| `[]` (empty array) | **Yes** (use `.length`) |
+| `[]` (empty array) | No (server) / **Yes** (client) - always use `.length` |
+| `{}` (empty object) | No (server) / **Yes** (client) - test a real field |
 | `null` / missing key | No |
 
 **Never use the string `"false"` for boolean state. Use real booleans.**
+
+**Never test a bare array or object for truthiness.** The server evaluator treats
+empty collections as falsy; the compiled client condition is plain JS `!!value`,
+where `[]` and `{}` are truthy. Writing `<if condition="items">` means SSR and
+hydration can disagree. Write `<if condition="items.length">` instead - that
+agrees on both sides.
 
 ## Anti-patterns
 

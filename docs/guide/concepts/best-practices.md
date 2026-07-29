@@ -124,7 +124,7 @@ In your server state JSON, use actual booleans:
 
 ## Observable Truthiness in `<if>` Conditions
 
-The `<if>` directive evaluates conditions using standard JavaScript truthiness rules. Understanding these rules prevents subtle rendering bugs.
+The `<if>` directive evaluates conditions with JavaScript-like truthiness, with one important exception: empty collections. The server evaluator treats an empty array or object as falsy, while the compiled client condition is plain `!!value`, where both are truthy. Understanding these rules prevents subtle rendering bugs.
 
 | Value | Truthy? | Notes |
 |-------|---------|-------|
@@ -136,7 +136,8 @@ The `<if>` directive evaluates conditions using standard JavaScript truthiness r
 | `""` | ❌ No | Empty string |
 | `"false"` | ✅ Yes ⚠️ | Non-empty string - this is truthy! |
 | `"0"` | ✅ Yes ⚠️ | Non-empty string - this is truthy! |
-| `[]` (empty array) | ✅ Yes ⚠️ | Arrays are objects - always truthy |
+| `[]` (empty array) | ⚠️ Differs | Falsy on the server, truthy on the client - never test it directly |
+| `{}` (empty object) | ⚠️ Differs | Falsy on the server, truthy on the client - never test it directly |
 | `[].length` → `0` | ❌ No | Use `.length` to check for empty arrays |
 
 ### Common patterns
@@ -160,7 +161,7 @@ The `<if>` directive evaluates conditions using standard JavaScript truthiness r
 
 <webui-blockquote appearance="tip" title="Tip" icon="💡">
 
-Always use `.length` to check whether an array is empty. An empty array `[]` is truthy - only its `.length` (which is `0`) is falsy.
+Always use `.length` to check whether an array is empty. Never write `<if condition="items">`: the server treats `[]` as falsy while the client treats it as truthy, so server-rendered output and hydration can disagree. `items.length` is `0` for an empty array, which is falsy on both sides.
 
 </webui-blockquote>
 
@@ -412,7 +413,7 @@ Start with Shadow DOM (the default). Switch individual components or pages to Li
 | Provide all bound keys in server state | Missing keys silently render empty |
 | Use template expressions over shadow observables | Fewer properties, no sync bugs, no extra server state |
 | Use `@attr({ mode: 'boolean' })` for true/false | Follows HTML spec, avoids string `"false"` trap |
-| Check `.length` for empty arrays | Empty arrays are truthy; `.length` of `0` is falsy |
+| Check `.length` for empty arrays | Server and client disagree on bare `[]`; `.length` of `0` is falsy on both |
 | Return route-scoped state | Smaller payloads, faster rendering |
 | Prefer declarative bindings over imperative DOM manipulation | Template bindings are reactive and SSR-compatible |
 | Use Light DOM for performance-critical pages | Measurably faster FCP and fewer layout operations |

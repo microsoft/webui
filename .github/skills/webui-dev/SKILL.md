@@ -17,7 +17,7 @@ Use this skill when building or modifying WebUI applications.
 6. **HTML, CSS, TypeScript are separate files.** No JSX. No CSS-in-JS. No JS in templates.
 7. **The `<template>` tag is optional.** The build tool auto-injects it. Include it only for root host events (`@custom-event` on the shadow root).
 8. **Components inside `<for>` loops do NOT inherit loop variables.** Pass data via attributes.
-9. **Expressions in bindings: comparisons and logic OK; ternaries NOT.** `{{count > 0}}`, `?active="{{section == 'guide'}}"`, `<if condition="a && b">` all work. Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`. **Forbidden:** ternary (`? :`), function calls, mixing `&&` with `||`, more than 5 logical operators.
+9. **Text bindings are path lookups; comparisons belong in conditions.** `{{count}}` and `{{user.name}}` resolve a dotted state path - nothing else. `{{count > 0}}` is looked up as a key literally named `count > 0` and renders empty. Comparisons go in `<if condition="count > 0">` or `?active="{{section == 'guide'}}"`. Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `||`, `!`. **Forbidden everywhere:** ternary (`? :`), function calls, arithmetic (`items.length - 1` resolves as a path and silently fails - send a precomputed `lastIndex`), mixing `&&` with `||`, more than 5 logical operators.
 10. **`w-ref` requires braces.** `w-ref="{inputEl}"`, never `w-ref="inputEl"` - non-braced fails the build with `invalid-w-ref`. Use it only for imperative APIs (focus, scroll, `showModal`), never to read state.
 11. **`@attr({ mode: 'boolean' })` for true/false.** Present = true, absent = false. Never use string `"false"`.
 
