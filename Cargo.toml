@@ -5,6 +5,7 @@ members = [
     "examples/integration/rust",
     "examples/integration/ssr-performance-showdown",
     "examples/integration/streaming-browser-bench/server",
+    "examples/shared/dist-assets",
     "examples/app/commerce/server",
     "examples/app/streaming/server",
     "examples/demo/server",

@@ -1760,7 +1760,6 @@ dependencies = [
  "log",
  "microsoft-webui",
  "microsoft-webui-handler",
- "mime_guess",
  "rcgen",
  "rustls",
  "serde",
@@ -1769,6 +1768,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "webui-example-dist-assets",
 ]
 
 [[package]]
@@ -3017,10 +3017,10 @@ dependencies = [
  "microsoft-webui",
  "microsoft-webui-handler",
  "microsoft-webui-tokens",
- "mime_guess",
  "serde_json",
  "tokio",
  "tokio-stream",
+ "webui-example-dist-assets",
 ]
 
 [[package]]
@@ -3503,6 +3503,15 @@ checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webui-example-dist-assets"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "mime_guess",
 ]
 
 [[package]]

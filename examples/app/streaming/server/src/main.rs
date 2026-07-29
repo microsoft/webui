@@ -39,9 +39,10 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::RenderOptions;
 use webui_tokens::{inject_into_state, resolve_tokens};
 
-use crate::assets::{asset_response, insert_generated_css, load_dist_assets, CachedAsset};
+use crate::assets::{asset_response, insert_generated_css};
 use crate::jitter::Jitter;
 use crate::paced_writer::CheckpointPacedWriter;
+use webui_example_dist_assets::{load_dist_assets, CachedAsset};
 
 const THEME: &str = "@microsoft/webui-examples-theme";
 const ENTRY: &str = "index.html";

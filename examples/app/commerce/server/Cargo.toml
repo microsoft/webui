@@ -14,7 +14,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-mime_guess = { workspace = true }
 thiserror = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
@@ -23,6 +22,7 @@ rcgen = { workspace = true }
 microsoft-webui = { path = "../../../../crates/webui" }
 microsoft-webui-handler = { path = "../../../../crates/webui-handler" }
 bytes = { workspace = true }
+webui-example-dist-assets = { path = "../../../shared/dist-assets" }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }

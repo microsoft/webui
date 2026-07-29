@@ -6,13 +6,12 @@
 use actix_web::web::Bytes;
 use actix_web::{HttpRequest, HttpResponse};
 use anyhow::{Context, Result};
-use mime_guess::from_path;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use webui::{build, BuildOptions, CssStrategy, Plugin, Protocol, WebUIHandler};
+use webui_example_dist_assets::{is_content_hashed, load_dist_assets, CachedAsset};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
@@ -23,12 +22,6 @@ pub struct FrontendRuntime {
     asset_files: HashMap<String, CachedAsset>,
     entry: String,
     protocol: Arc<Protocol>,
-}
-
-#[derive(Clone)]
-struct CachedAsset {
-    content_type: String,
-    body: Bytes,
 }
 
 impl FrontendRuntime {
@@ -73,7 +66,7 @@ impl FrontendRuntime {
                 .into_iter()
                 .map(|(path, css)| (path, Bytes::from(css)))
                 .collect(),
-            asset_files: load_cached_assets(&assets_dir)?,
+            asset_files: load_dist_assets(&assets_dir)?,
             entry: "index.html".to_string(),
             protocol: Arc::new(Protocol::new(build_result.protocol)),
         })
@@ -175,74 +168,6 @@ fn canonicalize_dir(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Returns `true` if the filename contains an esbuild content hash, making it
-/// safe for immutable caching. Esbuild produces `chunk-{HASH}.js` for shared
-/// chunks and `{name}-{HASH}.js` for page-specific entry points.
-fn is_content_hashed(relative: &str) -> bool {
-    let name = relative.rsplit('/').next().unwrap_or(relative);
-    if !name.ends_with(".js") && !name.ends_with(".js.map") {
-        return false;
-    }
-    // Skip bare entry points like `index.js`
-    let stem = name.split('.').next().unwrap_or("");
-    // Content-hashed files always have a hyphenated 8-char uppercase hash suffix
-    // e.g. "chunk-3QJD3BDH" or "mp-page-home-UFH4TZ7P"
-    stem.rsplit('-').next().is_some_and(|hash| {
-        hash.len() == 8
-            && hash
-                .bytes()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-    })
-}
-
-fn load_cached_assets(assets_dir: &Path) -> Result<HashMap<String, CachedAsset>> {
-    let mut assets = HashMap::new();
-    if !assets_dir.is_dir() {
-        return Ok(assets);
-    }
-
-    let mut pending = vec![assets_dir.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        for entry in fs::read_dir(&dir)
-            .with_context(|| format!("Failed to read asset directory {}", dir.display()))?
-        {
-            let entry = entry.with_context(|| {
-                format!("Failed to read an asset entry under {}", dir.display())
-            })?;
-            let path = entry.path();
-            let file_type = entry
-                .file_type()
-                .with_context(|| format!("Failed to inspect asset {}", path.display()))?;
-
-            if file_type.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-
-            let relative = path
-                .strip_prefix(assets_dir)
-                .with_context(|| format!("Failed to relativize asset {}", path.display()))?;
-            let key = relative.to_string_lossy().replace('\\', "/");
-            let body = fs::read(&path)
-                .with_context(|| format!("Failed to read cached asset {}", path.display()))?;
-            let content_type = from_path(&path).first_or_octet_stream().to_string();
-
-            assets.insert(
-                key,
-                CachedAsset {
-                    content_type,
-                    body: Bytes::from(body),
-                },
-            );
-        }
-    }
-
-    Ok(assets)
-}
-
 pub fn wants_json(req: &HttpRequest) -> bool {
     req.headers()
         .get("accept")
@@ -265,9 +190,10 @@ pub fn request_path(req: &HttpRequest) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonicalize_dir, load_cached_assets};
+    use super::canonicalize_dir;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use webui_example_dist_assets::load_dist_assets;
 
     #[test]
     fn cached_assets_survive_source_file_removal() {
@@ -284,7 +210,7 @@ mod tests {
         fs::write(&asset_path, "console.log('cached');").unwrap_or_else(|error| panic!("{error}"));
 
         let cache =
-            load_cached_assets(&canonicalize_dir(&root)).unwrap_or_else(|error| panic!("{error}"));
+            load_dist_assets(&canonicalize_dir(&root)).unwrap_or_else(|error| panic!("{error}"));
         fs::remove_file(&asset_path).unwrap_or_else(|error| panic!("{error}"));
 
         let asset = cache
@@ -294,27 +220,5 @@ mod tests {
         assert_eq!(asset.body.as_ref(), b"console.log('cached');");
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn content_hashed_js_chunks_detected() {
-        assert!(super::is_content_hashed("chunk-3QJD3BDH.js"));
-        assert!(super::is_content_hashed("chunk-YXUYDP2R.js"));
-        assert!(super::is_content_hashed("mp-page-home-UFH4TZ7P.js"));
-        assert!(super::is_content_hashed("mp-page-product-3BEKONPP.js"));
-    }
-
-    #[test]
-    fn content_hashed_sourcemaps_detected() {
-        assert!(super::is_content_hashed("chunk-3QJD3BDH.js.map"));
-        assert!(super::is_content_hashed("mp-page-home-UFH4TZ7P.js.map"));
-    }
-
-    #[test]
-    fn unhashed_files_not_detected() {
-        assert!(!super::is_content_hashed("index.js"));
-        assert!(!super::is_content_hashed("index.js.map"));
-        assert!(!super::is_content_hashed("mp-app.css"));
-        assert!(!super::is_content_hashed("mp-page-home.css"));
     }
 }

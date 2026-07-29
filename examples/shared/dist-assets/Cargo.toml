@@ -1,0 +1,13 @@
+[package]
+name = "webui-example-dist-assets"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+mime_guess = { workspace = true }
+
+[lints]
+workspace = true
