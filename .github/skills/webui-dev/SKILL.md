@@ -57,6 +57,6 @@ webui serve ./src --state ./data/state.json --plugin=webui --watch
 
 The complete guide covering all template syntax, styling and animation rules, anti-patterns, routing, and a pre-flight checklist:
 
-**[docs/ai/SKILL.md](../../../docs/ai/SKILL.md)**
+**[docs/ai/SKILL.md](/docs/ai/SKILL.md)**
 
 Read that file before generating any WebUI code.
