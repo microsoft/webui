@@ -6,7 +6,7 @@ holds **two** independent benches:
 1. **Transport bench** (`browser_metrics.spec.ts`) - buffered vs streamed
    delivery of byte-identical HTML.
 2. **Progressive hydration matrix** (`hydration_matrix.spec.ts`) - the real
-   Phase 1 streaming coordinator plus real `WebUIElement` hydration, measured
+   streaming coordinator plus real `WebUIElement` hydration, measured
    across 1/3/10/100 boundaries against an ordinary one-shot control.
 
 ## Transport bench

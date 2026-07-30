@@ -2015,7 +2015,7 @@ impl HtmlParser {
     /// Enter a `<boundary name="…">` directive.
     ///
     /// `<boundary>` is a reserved, compile-time-only directive (see
-    /// "Progressive Streaming Hydration — Phase 1" in `DESIGN.md`): it emits
+    /// "Progressive Streaming Hydration" in `DESIGN.md`): it emits
     /// no wrapper element, only `boundary_start:<seq>` /
     /// `boundary_end:<seq>` raw signal fragments around its children, mirroring
     /// how [`Self::enter_body_element`] brackets its children with
@@ -2048,7 +2048,7 @@ impl HtmlParser {
         // `in_progress_fragments.len() > 1` means parsing has recursed into a
         // reusable template (a component usage or a route-referenced
         // component) via `self.parse(..)`, as opposed to the outermost entry
-        // template. Phase 1 intentionally permits boundaries only in that
+        // template. The design intentionally permits boundaries only in that
         // outermost entry.
         if self.in_progress_fragments.len() > 1 {
             return Err(self.boundary_scope_error(element, "a reusable component template"));
@@ -2164,7 +2164,7 @@ impl HtmlParser {
     /// `scope` (a reusable component template, an `<if>`/`<for>` block, or a
     /// `<route>` element) instead of independently wrapping it (cold path).
     ///
-    /// Phase 1 rejects boundaries in every recursively parsed template,
+    /// The parser rejects boundaries in every recursively parsed template,
     /// including route shells: only the outermost entry passed to
     /// [`Self::parse`] may contain one.
     #[cold]
@@ -6104,7 +6104,7 @@ mod tests {
     }
 
     // ── `<boundary>` / `<webui-hydrate>` tests (Progressive Streaming
-    // Hydration — Phase 1) ────────────────────────────────────────────────
+    // Hydration) ───────────────────────────────────────────────────────────
 
     #[test]
     fn boundary_emits_no_wrapper_and_brackets_children_with_signals() {

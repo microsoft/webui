@@ -5,8 +5,8 @@
  * Streaming priority-hydration entry point.
  *
  * The server streams `index.html` as priority-ordered `<boundary>`
- * chunks, using the Progressive Streaming Hydration Phase 1 contract from
- * DESIGN.md ("Progressive Streaming Hydration — Phase 1"):
+ * chunks, using the Progressive Streaming Hydration contract from
+ * DESIGN.md ("Progressive Streaming Hydration"):
  *
  * 1. The weather boundary commits first. It carries no server data, so it is
  *    the cheapest checkpoint on the page — `weather-panel` hydrates while the

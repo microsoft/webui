@@ -5,9 +5,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 /**
  * Progressive streaming hydration coverage for this example's
- * composer / weather / feed priority ordering, built on the Phase 1
- * boundary contract in DESIGN.md ("Progressive Streaming Hydration —
- * Phase 1").
+ * composer / weather / feed priority ordering, built on the boundary
+ * contract in DESIGN.md ("Progressive Streaming Hydration").
  *
  * Boundary sequence numbers follow document order:
  *

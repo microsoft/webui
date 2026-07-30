@@ -1708,56 +1708,32 @@ into `<f-repeat>` markup.
 
 ---
 
-## Progressive Streaming Hydration — Phase 1 (`--plugin=webui`)
+## Progressive Streaming Hydration
 
-This section is the implementable contract for [#394](https://github.com/microsoft/webui/issues/394):
-an interactive island that has already arrived in the HTML response must hydrate
+An interactive island that has already arrived in the HTML response hydrates
 while `document.readyState === "loading"`, without waiting for a slow response
-tail or `DOMContentLoaded`. It supersedes the exploratory session plan for this
-issue, reconciled against the code that actually exists today. **Phase 1 only.**
-Router generalization, host-language (.NET/Node/WASM) mirroring, dynamic
-append/feed batch APIs, out-of-order patching, and declarative partial updates
-are named in "Future work" below and are explicitly not designed further here.
+tail or `DOMContentLoaded`. This works in current browsers using ordinary
+in-order incremental HTML parsing; it does not depend on any out-of-order DOM
+protocol.
 
-### Confirmed gaps this phase closes
+Streaming is selected per response. A page opts in by placing `<boundary>`
+directives in its entry template and rendering through a `FlushWriter`;
+everything else about the framework is unchanged, and non-streaming output is
+byte-identical to a build without boundaries.
 
-1. `webui-handler` (`write_webui_data_block` / `write_webui_bootstrap` in
-   `crates/webui-handler/src/lib.rs`) emits exactly one `#webui-data`
-   `<script>` block — all template metadata and all projected state — at the
-   synthetic `body_end` raw signal (`signal.raw && signal.value == "body_end"`,
-   deduplicated by `body_end_emitted`). There is no earlier emission point.
-2. `TemplateElement.connectedCallback()` (`packages/webui-framework/src/template-element.ts:319`)
-   calls `getTemplate(tag)`, which lazily reads
-   `document.getElementById('webui-data')` (`template.ts:79-93`), and mounts
-   immediately if metadata resolves. If it does **not** resolve — because
-   `body_end` hasn't streamed yet — the element logs a `console.warn` and
-   gives up permanently; it does not wait or retry. This is the direct cause
-   of #394: the counter is upgraded but permanently inert.
-3. `installTemplateElementRuntime()` (`static-host.ts:91`) still falls back to
-   a `DOMContentLoaded` listener for compiler-owned scriptless-host discovery.
-4. `webui::streaming::StreamingWriter` (`crates/webui/src/streaming.rs`)
-   already coalesces writes into ~4 KB chunks via a **private** `flush_buf`.
-   There is no public `flush()` and no `FlushWriter` trait — an
-   explicit, boundary-driven flush is new API surface, not just wiring.
-5. `<boundary>`, `<webui-hydrate>`, and any boundary wire format do not
-   exist anywhere in the tree (parser, protocol, or framework). This is new
-   work, not a partially-built feature.
-6. `TemplateElement` already has the right extension seam for gated
-   hydration: `$deferredSSR` / `$shouldDeferSSRHydration()` /
-   `$activateDeferredSSR()` (`template-element.ts:267,555,560`), used today
-   only by the compiler-owned `StaticTemplateHost` (`static-host.ts`) to stay
-   dormant until a browser state write. Phase 1 should become the **second
-   caller** of this exact primitive — gated by streaming-mode + boundary
-   commit instead of by `setState`/attribute writes — rather than inventing a
-   parallel hydration-gating mechanism.
+Hydration is gated through `TemplateElement`'s deferral seam —
+`$deferredSSR` / `$shouldDeferSSRHydration()` / `$activateDeferredSSR()` — the
+same primitive the compiler-owned `StaticTemplateHost` uses to stay dormant
+until a browser state write. Streaming is its second caller, gated by
+streaming-mode plus boundary commit rather than by `setState`, so the framework
+has one hydration-gating mechanism rather than two.
 
 ### v1 stream contract (normative)
 
-These invariants are binding for Phase 1. Every one is enforced somewhere —
-by the compiler, by the coordinator, or by a test — and none may be relaxed
-without a corresponding change here. Future transports (out-of-order patching,
-declarative partial updates) must satisfy this same contract rather than
-introduce a parallel one.
+These invariants are binding. Every one is enforced somewhere — by the
+compiler, by the coordinator, or by a test — and none may be relaxed without a
+corresponding change here. Any additional transport must satisfy this same
+contract rather than introduce a parallel one.
 
 **Record format**
 
@@ -1842,18 +1818,16 @@ introduce a parallel one.
     never silently degrade to buffering. Only the host knows backend data
     readiness and transport backpressure, so flush timing is never compiled in.
 
-### Is `<boundary>` disproportionate compiler work?
+### Directive spelling and the structural signal namespace
 
-No. `HtmlParser::parse` already special-cases bare element names in one
-dispatch (`crates/webui-parser/src/lib.rs`, `match element.name()`: `"for"`,
-`"if"`, `"body"`, `"head"`, `"route"`, `"outlet"`, then the component-registry
-fallback). `<body>`'s handler, `enter_body_element`, is the closest existing
-analogue: it pushes compiler-owned `body_start` structure before children and
-`body_end` after them (via `ParseOp::EndBody`) using a raw signal fragment, not
-a new protobuf message. `<boundary>` fits the same shape: one more
-`match` arm, one new `enter_boundary_directive`, reusing
-`WebUIFragmentSignal` for `boundary_start:<seq>` / `boundary_end:<seq>`
-markers instead of adding `oneof` variants to `webui.proto`.
+`<boundary>` is one arm of the parser's existing bare-element dispatch
+(`HtmlParser::parse`, `match element.name()`: `"for"`, `"if"`, `"body"`,
+`"head"`, `"route"`, `"outlet"`, then the component-registry fallback). Its
+handler `enter_boundary_directive` follows the shape `enter_body_element`
+established: it pushes compiler-owned structure before children and after them
+via a raw signal fragment, reusing `WebUIFragmentSignal` for
+`boundary_start:<seq>` / `boundary_end:<seq>` rather than adding `oneof`
+variants to `webui.proto`.
 
 All compiler-owned structural signal values use the internal wire namespace
 `}}}webui:<token>` (for example `}}}webui:body_end` and
@@ -1864,25 +1838,22 @@ this prefix only from raw signals before interpreting structure. In protocols
 that contain this namespace, unprefixed values such as authored
 `{{{head_start}}}` and `{{{streaming_root}}}` always remain ordinary public
 state keys. For complete-response compatibility, a runtime protocol containing
-no namespaced structural signal recognizes only the legacy compiler's
-unprefixed `head_end`, `body_start`, and `body_end` hooks. Such a protocol
+no namespaced structural signal recognizes only the unnamespaced
+`head_end`, `body_start`, and `body_end` hooks. Such a protocol
 cannot enter streaming mode because it lacks namespaced `head_start`, boundary,
 and streamed-root signals and must be rebuilt first. This namespace is an
 internal parser/handler contract, not author syntax.
 
-The validation work (unique static `name`, no nesting, "only
-in the outermost entry template", "must not cut through a component, `<if>`,
-`<for>`, route, or hydration-marker scope") is real but proportionate — the
-same order of cost as the existing `key`-on-`<for>` validation
-(`invalid-for-key`). No simpler surface syntax removes that cost, because
-marking a statically-provable, independently-hydratable fragment subtree is
-inherently a parse-time structural question. An attribute spelling
-(`<div boundary="name">`) would carry identical validation cost while
-losing "emits no wrapper element" and a clean reserved-tag diagnostic; it is
-differently spelled, not simpler. **`<boundary>` is kept as specified.**
+Boundary validation — unique static `name`, no nesting, outermost entry
+template only, and "must not cut through a component, `<if>`, `<for>`, route,
+or hydration-marker scope" — is parse-time structural analysis of the same
+order as the existing `key`-on-`<for>` validation (`invalid-for-key`). Marking
+a statically-provable, independently-hydratable fragment subtree is inherently
+a parse-time question, so no surface spelling avoids that cost. An attribute
+spelling (`<div boundary="name">`) would carry identical validation cost while
+losing "emits no wrapper element" and a clean reserved-tag diagnostic.
 
-The bare, unhyphenated spelling is deliberate and follows the rule the rest of
-the compiler already uses:
+The bare, unhyphenated spelling follows the rule the rest of the compiler uses:
 
 | Spelling | Meaning | Examples |
 | --- | --- | --- |
@@ -1953,11 +1924,11 @@ author.
 
 Streaming pages must load their application entry with `async` (or an
 equivalent non-blocking load) in `<head>`, ahead of any boundary content.
-Phase 1 does not implement a build-time script-order diagnostic; authors and
-hosts must enforce this loading contract. `async` is safe here — and only here
-— because Phase 1 defers an upgraded element's SSR hydration until its
-enclosing boundary commits (see "Boundary lifecycle" below); this is exactly
-what closes the gap in "Confirmed gaps," item 2.
+There is no build-time script-order diagnostic; authors and hosts enforce this
+loading contract. `async` is safe here — and only here — because an upgraded
+element's SSR hydration is deferred until its enclosing boundary commits (see
+"Boundary lifecycle" below), so an entry that executes mid-document cannot
+strand an island the way a single end-of-body metadata block does.
 
 ### Generated response shape
 
@@ -1976,7 +1947,7 @@ Conceptually, the counter boundary becomes:
 - `<!--wb:N-->` / `<!--/wb:N-->` are new marker comments, siblings of the
   existing `<!--wr-->` / `<!--wc-->` family documented under "Plugin data and
   SSR hydration markers" above — same removal-after-hydration contract.
-- The Phase 1 boundary envelope is the script-safe tuple
+- The boundary envelope is the script-safe tuple
   `[version, sequence, terminal, bootstrap]`. `terminal` is `0` for a
   hydration checkpoint and `1` for the final markerless record. `bootstrap`
   reuses the existing object shape (`state`, `templates`, `inventory`, and
@@ -1994,8 +1965,8 @@ Conceptually, the counter boundary becomes:
   round-trip. Inventory remains exact and contains only tags with rendered SSR
   DOM. Template/CSS metadata is sent once when first reachable; a later rendered
   instance receives its inventory delta and checkpoint-local state without
-  resending metadata. Compact per-instance positional state tuples are a later
-  measured optimization, not part of the Phase 1 wire contract.
+  resending metadata. Per-instance positional state tuples are not part of the
+  wire contract; state is carried as named keys.
 - `data-ws` is a compiler-owned, streaming-only identity inserted into every
   streamed SSR component opening tag before browser upgrade. It is the sole
   parser-time deferral signal when the document also has the streaming mode
@@ -2025,11 +1996,11 @@ Conceptually, the counter boundary becomes:
   therefore available before an async application entry can define component
   classes. Route chain, inventory, CSP nonce, CSS bookkeeping, templates, and
   projected state deltas arrive in the applicable boundary bootstrap.
-- **Non-streaming mode is unchanged, byte-for-byte.** Streaming is a distinct,
-  explicitly selected render/session mode. Legacy rendering ignores the new
-  namespaced raw structural signals; ordinary element and fragment rendering is
-  unchanged. Boundary emission is gated on session mode and reuses the
-  existing per-signal dedup pattern.
+- **Streaming does not alter non-streaming output, byte-for-byte.** Streaming
+  is a distinct, explicitly selected render/session mode. Non-streaming
+  rendering ignores namespaced raw structural signals; ordinary element and
+  fragment rendering is identical in both modes. Boundary emission is gated on
+  session mode and reuses the existing per-signal dedup pattern.
 
 ### Initialization ordering
 
@@ -2096,15 +2067,15 @@ scaffolding — payload, sentinel, and marker pair — so the authored script
 survives.
 
 Splitting an island into a separate bundle entry is an application build
-concern rather than a protocol one, and it used to carry a performance trap:
-the shared runtime chunk becomes a static import of the critical entry,
-invisible to the preload scanner, costing a round trip that erases what
-splitting saves. WebUI now closes that trap automatically. The build emits a
+concern rather than a protocol one, and it carries a performance trap the
+build closes automatically: the shared runtime chunk becomes a static import of
+the critical entry, invisible to the preload scanner, costing a round trip that
+erases what splitting saves. The build therefore emits a
 `<link rel="modulepreload">` for each of the critical entry's shared chunks,
 ordered largest first, with deferred islands excluded.
 
 Three inputs make this computable, and each is recorded where the build
-already had it in hand:
+already has it in hand:
 
 - **Module sizes.** The bundler adapter reads `metafile.outputs[path].bytes`,
   which it already iterates for `.inputs`. Ordering is not incidental:
@@ -2202,9 +2173,11 @@ so production guidance must document disabling reverse-proxy response
 buffering where applicable (this is a deployment note, not something the
 library can enforce).
 
-The #394 repro remains valid even rendered to a full string and manually
-split at `<app-footer>`: the counter's payload, sentinel, and async entry all
-occur before that split point.
+Because each boundary's payload and sentinel are emitted before the flush that
+follows it, a streamed response rendered to a full string and split at an
+arbitrary byte offset still hydrates every boundary contained in the prefix.
+This is contract rule 3 observed from the transport side: flush points are an
+optimization of delivery timing, not a correctness requirement of the format.
 
 ### Limits, errors, and malformed input
 
@@ -2228,19 +2201,18 @@ occur before that split point.
 ### Compatibility
 
 - Streaming boundaries are strictly opt-in (a distinct render/session mode);
-  pages without `<boundary>` render exactly as today.
-- Existing pages retain one `#webui-data` block and current script behavior,
-  byte-for-byte.
-- Existing `render()` and complete `renderPartial()` APIs are unchanged.
-- Old router JSON / two-record NDJSON remains accepted; boundary records are
+  a page without `<boundary>` renders through the ordinary path.
+- Non-streaming pages carry one `#webui-data` block and the ordinary script
+  behavior, byte-for-byte identical to a build with no streaming support.
+- `render()` and complete `renderPartial()` are unaffected by streaming.
+- Router JSON and two-record NDJSON remain accepted; boundary records are
   additive.
 - Node, FFI/.NET, and WASM exposure follows only after the Rust/browser
-  contract and performance gates below stabilize — no host-binding work is
-  part of this phase.
+  contract and performance invariants below stabilize.
 
-### Performance gates (must hold before this phase is considered done)
+### Performance invariants
 
-Same shape as the existing streaming-browser-bench harness
+Enforced by the streaming-browser-bench harness
 (`examples/integration/streaming-browser-bench`): byte-identical
 non-streaming output with ≤2% throughput regression; zero per-root Rust
 allocation in the boundary collector (one reusable state buffer, cleared —
@@ -2250,72 +2222,69 @@ query on the client; at most one actively-parsed boundary payload at a time;
 boundary payload/marker/sentinel/root references released immediately after
 commit.
 
-### E2E acceptance: `examples/app/streaming`
+### Reference application: `examples/app/streaming`
 
-New example, following the existing `examples/app/hello-world` layout
-(`src/`, `data/`, `tests/`, `playwright.config.ts`, `package.json` with a
-`test` script running `playwright test`). Unlike `hello-world`, it needs a
-small standalone Rust server (new workspace member under
-`examples/app/streaming/server/`, added to root `Cargo.toml`
-`[workspace].members`, alongside `examples/app/commerce/server`) rather than
-plain `webui-cli serve`, because the scenario requires an artificial
-mid-response delay plus an explicit flush boundary — not just static
-protocol serving.
+The end-to-end reference for this design. It follows the standard example
+layout (`src/`, `data/`, `tests/`, `playwright.config.ts`, `package.json` with
+a `test` script running `playwright test`) but uses a standalone Rust server
+(`examples/app/streaming/server/`, a workspace member alongside
+`examples/app/commerce/server`) rather than `webui-cli serve`, because the
+scenario requires host-controlled flush timing and paced data arrival rather
+than static protocol serving.
 
-Scenario (mirrors #394 and the session plan's acceptance tests, unchanged):
+It exercises the three boundary shapes this design supports:
 
-1. Server flushes `<head>` (with async entry + init record), the
-   `counter-ready` boundary containing `<my-counter>`, and its payload/sentinel
-   immediately.
-2. Server then delays ~5 seconds before sending `<app-footer>` and the
-   closing document.
-3. Playwright asserts the counter is interactive (click increments the
-   displayed count) **before** `DOMContentLoaded` fires.
-4. Playwright asserts the footer still arrives and
-   `webui:hydration-complete` eventually fires.
-5. Additional coverage per the session plan: runtime-before-boundary,
-   boundary-before-runtime ordering, a scriptless host inside a boundary, a
-   malformed/truncated boundary (server test, not Playwright), and a CSP
-   nonce present on boundary scripts.
+1. **A self-loading island.** The weather panel's `<script type="module">`
+   lives inside its own boundary, so its code is excluded from the critical
+   entry and from the build's preload hints. Its definition arrives after the
+   boundary commits, exercising the per-tag waiter path.
+2. **A critical island.** The composer hydrates and is clickable long before
+   `DOMContentLoaded`, which is the property the whole design exists to
+   provide.
+3. **Repeated boundaries.** Three feed batches flush on a jittered interval,
+   each hydrating and staying independently interactive while later batches
+   are still in flight.
 
-### Future work (named, not designed here)
+Its Playwright suite covers hydration before `DOMContentLoaded`, per-batch
+independence and ordering, island module arrival after commit, compiler-emitted
+preload ordering, `webui:hydration-complete` firing only after the terminal
+record, complete scaffolding removal, and stream closure. Malformed and
+truncated boundary handling is covered by server-side tests rather than
+Playwright.
+
+### Outside the current design
+
+Named so their absence is intentional rather than an oversight:
 
 - Router generalization / client-navigation streaming records.
 - Host-language mirroring (Node, FFI/.NET, WASM) of the streaming API.
 - Per-boundary CSS strategy selection (`style` for the critical boundary's
   components, `link` for components only later boundaries use). Boundary-aware
-  *module* preload hints shipped — see "Splitting an island into a separate
-  bundle entry" above — but the CSS half still needs a per-component protocol
-  field, a build option, and a handler branch.
+  *module* preload hints are specified above under "Splitting an island into a
+  separate bundle entry"; the CSS half needs a per-component protocol field, a
+  build option, and a handler branch.
 - Dynamic append/feed batch APIs (`<webui-stream>`, `page.append()`,
   `begin_append()` / `commit()`).
-- Out-of-order content delivery and either patch transport
-  (`DomTemplate` current-browser fallback, or a native `Declarative`
-  marker/`<template for>` transport) — no correctness path in Phase 1 depends
-  on either.
-- A native declarative-partial-updates transport. The placement half of that
-  API — `<?marker>` / `<?start>` / `<?end>` processing instructions plus
-  `<template for>` — **shipped in Chrome 150 stable**, with a formal `positive`
-  position from Mozilla and `support` from WebKit, implementation bugs filed,
-  and neither shipped. It stays future work because it is a *transport for a
-  capability WebUI does not have yet*: see "Deferred boundary placement" below
-  for why placement is the prerequisite, and why the transport is worth about
-  one `<template>` and one `DocumentFragment` per patch once it exists.
+- Deferred boundary placement — filling an already-parsed region from later in
+  the same response — and the patch transports that would carry it
+  (`DomTemplate`, or native declarative partial updates). Sketched below,
+  because the seam that admits them is a binding part of the current design.
 
-#### Deferred boundary placement (the in-response answer to slow surfaces)
+#### Deferred boundary placement
 
-Phase 1 commits boundaries strictly in document order, so a region that has
-already been parsed cannot be filled from later in the same response. The
-recommended Phase 1 workaround is to make the placeholder a real component in
-its own early boundary and let it resolve its own data client-side
-(`examples/app/streaming`'s `weather-panel` does exactly this).
+Boundaries commit strictly in document order, so a region that has already
+been parsed cannot be filled from later in the same response. The supported
+answer is to make the placeholder a real component in its own early boundary
+and let it resolve its own data client-side (`examples/app/streaming`'s
+`weather-panel` does exactly this). Its cost is a round trip: the request is
+issued only after the bundle downloads and the element upgrades. What it buys
+is that it works in every browser and holds no server task open across the slow
+dependency.
 
-The in-response alternative — deferring a boundary's *content* while keeping its
-*position* — is designed here but not implemented.
-
-An early boundary commits normally and its marker pair survives as an anchor.
-Later in the same response, the deferred content arrives wrapped in an inert
-`<template>` and names the anchor it belongs to:
+The in-response alternative defers a boundary's *content* while keeping its
+*position*. An early boundary commits normally and its marker pair survives as
+an anchor; later in the same response the deferred content arrives wrapped in
+an inert `<template>` naming the anchor it belongs to:
 
 ```html
 <header>
@@ -2337,27 +2306,24 @@ no flash of the deferred markup, custom elements inside it do not upgrade until
 adoption, and no rendered wrapper element is introduced. Relocation happens
 *before* activation, so no live component state can be disturbed.
 
-The client cost is bounded by design. `resolveBoundaryRange()` is the
-coordinator's only placement-aware step, so this becomes a second range
-resolver — the queue, ordering, state projection, activation, and scaffolding
-teardown are all unchanged. It also maps 1:1 onto declarative partial updates'
-`<?start name>` / `<?end>` placement markers and `<template for>` patches,
-which is why the seam exists.
+The client cost is bounded by the contract's rule 8. `resolveBoundaryRange()`
+is the coordinator's only placement-aware step, so deferred placement is a
+second range resolver — the queue, ordering, state projection, activation, and
+scaffolding teardown are all unchanged. That seam also maps 1:1 onto
+declarative partial updates' `<?start name>` / `<?end>` placement markers and
+`<template for>` patches, so a native transport is an adapter behind the same
+resolver rather than a second coordinator.
 
-**Why the native transport does not come first.** Declarative partial updates
-ship the *transport*; this section is the *capability*. Without deferred
-placement the handler has nothing to send out of order, so a DPU adapter would
-have no payload. With deferred placement, the `DomTemplate` transport already
-works in every browser, and the native one saves one inert `<template>` and one
-`DocumentFragment` per patch — against a measured 6 ms hydration CPU for 1,500
-roots and a 41.3 KiB retained-heap slope, that is not a recoverable cost. The
-streaming client increment is also 9,190 B minified / 3,176 B gzip against a
-hard 10 KiB / 3.5 KiB gate, and the comment-marker resolver can never be
-removed while Firefox and Safari have positions but no implementation, so a
-second resolver plus feature detection must fit in ~810 B on top of a path that
-stays forever. Placement first, transport second.
+Placement is the prerequisite, not the wire format. Without it the handler has
+nothing to send out of order, so a patch transport would have no payload. Once
+placement exists, `DomTemplate` — one inert `<template>` and one
+`DocumentFragment` per patch — covers every browser, and a native transport
+saves exactly that, against a measured 6 ms hydration CPU for 1,500 roots and a
+41.3 KiB retained-heap slope. The comment-marker resolver is also permanent
+while browser support is uneven, so any second resolver is additive to a path
+that stays.
 
-What makes it a milestone rather than an increment:
+Adding placement touches more than the coordinator:
 
 - The handler renders in strict document order and `render_streaming` takes
   state once, up front, synchronously. Emitting a boundary's content at a
@@ -2369,13 +2335,7 @@ What makes it a milestone rather than an increment:
   same foster-parenting guard boundaries already carry.
 - Genuinely *deferred state* — the server awaiting slow data mid-render rather
   than merely relocating already-rendered content — is a strictly larger change
-  requiring a new host API, and should not be conflated with placement.
-
-Until then the client-fetch pattern above is the supported answer. Be honest
-about its cost: the request is issued only after the bundle downloads and the
-element upgrades, so it pays a round trip that deferred placement would not.
-What it buys is that it works in every browser today and holds no server task
-open across the slow dependency.
+  requiring a new host API, and is not the same feature as placement.
 
 #### Boundary naming: free-form strings, resolved once to integer handles
 
@@ -2384,6 +2344,11 @@ strings**. The compiler must not generate typed symbol constants such as
 `boundaries::COMPOSER` or `slots::FEED_ITEMS`; generated symbols would couple
 host code to compiler output ordering and buy exactly one avoided lookup per
 page render.
+
+The `<boundary name>` half of this rule is in force: names are validated for
+uniqueness and then discarded, and only the integer sequence reaches fragments
+and the wire. The rest specifies how the deferred slot API must consume a name
+so that it stays free-form without costing the hot path anything.
 
 Free-form naming is an *authoring* concept, never a runtime one. Names are
 resolved to an integer handle once, and every hot-path call is integer-indexed:
@@ -2408,8 +2373,8 @@ Normative contract:
    and is shared through the existing `Arc<WebUIProtocol>` without cloning.
 4. Names never reach the wire. Only the integer sequence appears in
    fragments and boundary records, so per-boundary bytes stay integer-sized.
-5. `validate_boundary_name` keeps today's behaviour: non-empty, static,
-   unique per entry, no `{{binding}}`, and **no identifier charset
+5. `validate_boundary_name` accepts any non-empty, static, per-entry-unique
+   name with no `{{binding}}`, and imposes **no identifier charset
    restriction**. Its `HashSet<String>` and `name.clone()` are build-time cold
    paths.
 6. An unknown slot name returns a structured error listing valid names with a

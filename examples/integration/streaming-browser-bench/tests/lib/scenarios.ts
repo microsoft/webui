@@ -11,7 +11,7 @@
  * the only variable, so component-hydration CPU and retained heap should stay
  * flat as the boundary count grows from 1 to 100.
  *
- * The markup emitted here is byte-for-byte the wire format the Phase 1
+ * The markup emitted here is byte-for-byte the wire format the
  * coordinator (`packages/webui-framework/src/streaming.ts`) parses:
  *
  *   <!--wb:N--> <bench-island data-ws>...</bench-island> <!--/wb:N-->

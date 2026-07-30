@@ -42,7 +42,7 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
       return false;
     }
 
-    // Streaming boundaries have no per-root activation signal in Phase 1, so
+    // Streaming boundaries have no per-root activation signal, so
     // a committed boundary alone must not wake a compiler-owned host — it
     // stays dormant until an explicit client state write, same as today.
     protected $shouldActivateOnBoundaryCommit(): boolean {

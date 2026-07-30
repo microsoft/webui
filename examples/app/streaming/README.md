@@ -1,11 +1,11 @@
 <!-- Copyright (c) Microsoft Corporation. -->
 <!-- Licensed under the MIT license. -->
 
-### streaming (Progressive Streaming Hydration, Phase 1)
+### streaming (Progressive Streaming Hydration)
 
 Demonstrates a priority-ordered hydration scenario built on the
-Progressive Streaming Hydration Phase 1 boundary contract from
-`DESIGN.md` ("Progressive Streaming Hydration — Phase 1"): a
+Progressive Streaming Hydration boundary contract from
+`DESIGN.md` ("Progressive Streaming Hydration"): a
 **`message-composer`** must paint and become
 interactive before `DOMContentLoaded` while the response is still open; a
 **`weather-panel`** shows its own skeleton and resolves itself off the
@@ -47,12 +47,12 @@ cargo run -p streaming-example-server -- --feed-delay-min-ms 200 --feed-delay-ma
 
 ### Why weather fetches instead of streaming
 
-Phase 1 delivers boundaries strictly in document order, so a header that has
+Boundaries are delivered strictly in document order, so a header that has
 already been parsed cannot be filled from later in the same response. The
 weather boundary therefore ships a *complete* island immediately — a
 `weather-panel` in its `loading` state — and the component resolves its own
 forecast from `/api/weather` (deliberately slower than a feed gap) after it
-hydrates. That is the Phase 1 answer to slow backend data: never make the
+hydrates. That is the answer to slow backend data: never make the
 critical island wait, and never leave a skeleton that resolves to nothing.
 
 This is also why it is a boundary at all rather than plain markup: the panel
@@ -163,7 +163,7 @@ The server is split so the streaming call is the first thing you read:
 timing, `app.rs` is the protocol build and sample data, and `assets.rs` is
 the cache-header policy for `dist/`.
 
-Three feed batches are three explicit `<boundary>` groups — Phase 1 does not
+Three feed batches are three explicit `<boundary>` groups — WebUI does not
 implement an open-ended `<webui-stream>` directive. The feed's `<section>`
 container is never itself hydrated: each `feed-item` carries its own state in
 its own attributes, so one batch's items can never read or mutate another

@@ -5,7 +5,7 @@
  * Progressive streaming-hydration performance / memory matrix.
  *
  * Unlike `browser_metrics.spec.ts` (which measures transport: buffered `/buf`
- * vs streamed `/stream`), this spec measures the *real* Phase 1 streaming
+ * vs streamed `/stream`), this spec measures the *real* streaming
  * coordinator (`packages/webui-framework/src/streaming.ts`) driving the *real*
  * `WebUIElement` hydration path — not a synthetic clone. It bundles the actual
  * framework sources in-memory with esbuild and runs an equal-total-work matrix:

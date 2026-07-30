@@ -2,7 +2,7 @@
   "name": "streaming-browser-bench",
   "version": "0.0.0",
   "private": true,
-  "description": "Browser-perceived transport metrics (TTFB / FCP / LCP) for buffered vs streaming SSR, plus a progressive streaming-hydration performance/memory matrix that bundles the real framework sources and measures the real Phase 1 coordinator + WebUIElement hydration.",
+  "description": "Browser-perceived transport metrics (TTFB / FCP / LCP) for buffered vs streaming SSR, plus a progressive streaming-hydration performance/memory matrix that bundles the real framework sources and measures the real streaming coordinator + WebUIElement hydration.",
   "type": "module",
   "scripts": {
     "test": "playwright test",

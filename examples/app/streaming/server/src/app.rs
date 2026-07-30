@@ -50,7 +50,7 @@ pub(crate) struct LoadedApp {
 /// three feed batches plus both resolved token sheets. With it, a checkpoint
 /// carries only the hydration keys its own components declare, which is the
 /// "boundary payload locality" contract in DESIGN.md ("Progressive Streaming
-/// Hydration — Phase 1").
+/// Hydration").
 pub(crate) fn load(app_root: &Path, css: CssStrategy, base_path: &str) -> Result<LoadedApp> {
     let theme_path = resolve_theme_path(THEME, app_root)
         .with_context(|| format!("Failed to resolve theme {THEME}"))?;
@@ -125,9 +125,10 @@ fn feed_post(post_id: &str, author: &str, text: &str, like_count: &str) -> Value
 
 /// Explicit, complete feed batches, one per `<boundary>` in `src/index.html`.
 ///
-/// Each is committed with its own checkpoint and flush. DESIGN.md's Phase 1
-/// "Future work" names an open-ended `<webui-stream>` append directive; until
-/// that exists, a fixed batch per boundary is how a feed streams.
+/// Each is committed with its own checkpoint and flush. DESIGN.md's
+/// "Outside the current design" names an open-ended `<webui-stream>` append
+/// directive; until that exists, a fixed batch per boundary is how a feed
+/// streams.
 fn feed_batches() -> Vec<Vec<Value>> {
     vec![
         vec![

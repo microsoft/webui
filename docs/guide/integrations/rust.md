@@ -238,7 +238,7 @@ and the terminal flag share one payload and one flush.
 `FlushWriter::flush` means all currently buffered bytes were handed to the HTTP
 transport. It cannot force an HTTP adapter, compressor, reverse proxy, or CDN to
 deliver them immediately. Disable response buffering where applicable and test
-the production delivery path. Phase 1 checkpoints are strictly in document
+the production delivery path. Checkpoints are strictly in document
 order.
 
 ### Per-request HTML injection

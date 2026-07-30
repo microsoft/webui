@@ -11,7 +11,7 @@
     while the response is still open. The handler marks each streamed SSR
     component host with a temporary compiler-owned identity before browser
     upgrade, so an upgraded element defers until its complete boundary
-    commits. See DESIGN.md, "Progressive Streaming Hydration — Phase 1"
+    commits. See DESIGN.md, "Progressive Streaming Hydration"
     ("Initialization ordering").
   -->
   <script type="module" async src="./index.js"></script>
@@ -67,7 +67,7 @@
       and commits immediately, which gets `weather-panel` hydrated while the
       response is still open. The component then fetches its own forecast, so
       the slow backend work overlaps the rest of the stream instead of
-      queueing behind it. See `weather-panel.ts`, and DESIGN.md's Phase 2
+      queueing behind it. See `weather-panel.ts`, and DESIGN.md's
       "deferred boundary placement" note for the in-response alternative.
     -->
     <boundary name="weather-shell">

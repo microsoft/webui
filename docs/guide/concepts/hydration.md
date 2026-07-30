@@ -64,7 +64,7 @@ bindings or routing work.
 
 ## Progressive Streaming Hydration
 
-Phase 1 can hydrate an explicit, complete entry-page region while the document
+WebUI can hydrate an explicit, complete entry-page region while the document
 is still loading. Author a
 [`<boundary>`](/guide/concepts/directives/boundary), then serve the page
 with the Rust `WebUIHandler::render_streaming` API.
@@ -113,7 +113,7 @@ shell commits first and carries no server data, so it never delays the critical
 composer behind it; the composer is the first *interesting* interactive
 checkpoint, and the feed is a later explicit checkpoint.
 
-A boundary does not make data fetching asynchronous, and Phase 1 cannot send a
+A boundary does not make data fetching asynchronous, and WebUI cannot send a
 later weather result back to replace an earlier region out of order. The
 recommended pattern for slow backend data is the one shown above: make the
 placeholder a **real component in a boundary of its own**, so it hydrates early

@@ -549,7 +549,7 @@ CSS is scoped per component via Shadow DOM. No CSS-in-JS.
 </html>
 ```
 
-## Progressive Streaming Hydration (Rust Phase 1)
+## Progressive Streaming Hydration (Rust)
 
 Use `<boundary>` only when the Rust server calls
 `WebUIHandler::render_streaming` with a `FlushWriter`. The directive is removed
@@ -619,7 +619,7 @@ Malformed directives use stable diagnostics:
 `duplicate-boundary-name`, `nested-boundary`, `boundary-crosses-scope`, and
 `authored-webui-hydrate`.
 
-Do not generate these as usable APIs. They are not implemented in Phase 1:
+Do not generate these as usable APIs. They are not part of the current design:
 
 - Dynamic `<webui-stream>`, `page.append()`, or
   `begin_append()` / `commit()` APIs
@@ -1352,7 +1352,7 @@ handler.render_streaming(&protocol, &state, &options, &mut flush_writer)?;
 The writer must implement `FlushWriter`, which extends `ResponseWriter` with
 `fn flush(&mut self) -> HandlerResult<()>`. Boundary flushes can return
 `HandlerError::ClientDisconnected` or `HandlerError::StreamTimeout`. This API is
-Rust-only in Phase 1. The early async browser entry must import
+Rust-only. The early async browser entry must import
 `@microsoft/webui-framework/streaming.js` before component registration
 modules.
 

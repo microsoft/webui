@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 /**
- * Progressive streaming hydration coordinator (Phase 1, issue #394).
+ * Progressive streaming hydration coordinator.
  *
  * The server streams the document as a sequence of *boundaries*. A boundary
  * that introduces new SSR roots wraps them in comment markers; every
@@ -947,7 +947,7 @@ function takePendingState(el: Element): Record<string, unknown> | undefined {
  * Invoke a deferred root's activation hook with its boundary-local `state`,
  * then strip its compiler scaffolding marker.
  *
- * Phase 1 boundary state is not cumulative: a late activation must see the
+ * Boundary state is not cumulative: a late activation must see the
  * state that was live when its *own* boundary committed. The coordinator no
  * longer routes that through the global `window.__webui.state` (a later
  * boundary may have replaced it, and `applyBootstrapGlobals` deliberately

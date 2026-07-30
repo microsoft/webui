@@ -35,7 +35,7 @@ interface Forecast {
  * its own boundary commit is preserved rather than reset to `loading`.
  *
  * Filling this header from later in the *same* response is the deferred
- * boundary placement design in DESIGN.md; it is deliberately not Phase 1.
+ * boundary placement design in DESIGN.md; it is deliberately outside the current design.
  */
 export class WeatherPanel extends WebUIElement {
   @attr location = '';

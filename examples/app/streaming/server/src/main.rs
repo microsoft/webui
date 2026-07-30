@@ -5,8 +5,8 @@
 //!
 //! The whole point is [`render_page`] below: it is the opt-in
 //! `WebUIHandler::render_streaming` path over a real `StreamingWriter`,
-//! following the Phase 1 boundary contract in DESIGN.md ("Progressive
-//! Streaming Hydration — Phase 1"). Everything else here is ordinary
+//! following the boundary contract in DESIGN.md ("Progressive Streaming
+//! Hydration"). Everything else here is ordinary
 //! server wiring, and the two demo-only concerns are quarantined:
 //!
 //! - [`pacing`] holds the flush schedule and the [`FlushWriter`] adapter

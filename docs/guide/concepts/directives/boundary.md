@@ -38,7 +38,7 @@ code.
 
 ## Authoring Rules
 
-In the current Phase 1 implementation:
+In the current implementation:
 
 - `name` is required, non-empty, static, and unique within the entry template.
   It cannot contain a <code v-pre>{{binding}}</code>.

@@ -6,7 +6,7 @@
 //! An opt-in render mode in which each compile-time `<boundary>` commits an
 //! independently hydratable island while the response is still open, instead
 //! of deferring every island to one page-wide `#webui-data` block at
-//! `body_end`. See DESIGN.md, "Progressive Streaming Hydration — Phase 1"
+//! `body_end`. See DESIGN.md, "Progressive Streaming Hydration"
 //! for the normative contract.
 //!
 //! The split mirrors the lifecycle of a single boundary:
