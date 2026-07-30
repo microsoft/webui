@@ -191,7 +191,7 @@ See the [Routing guide](/guide/concepts/routing) for setup and usage.
 
 ## AI Coding Agents
 
-WebUI publishes its framework reference as an installable [agent skill](https://agentskills.io). Installing it gives Claude Code, GitHub Copilot, Cursor, Codex, and other supported agents the authoring rules WebUI expects — template-first structure, CSS-owned styling, opt-in JavaScript — so generated code follows them instead of falling back to React habits.
+WebUI publishes its framework reference as an installable [agent skill](https://agentskills.io). Installing it gives GitHub Copilot, Claude Code, Cursor, Codex, and other supported agents the authoring rules WebUI expects — template-first structure, CSS-owned styling, opt-in JavaScript — so generated code follows them instead of falling back to React habits.
 
 <webui-press-tabs>
 <webui-press-tab slot="tab" active>npm</webui-press-tab>
@@ -220,18 +220,18 @@ pnpm dlx skills add microsoft/webui --skill webui-ai-reference
 </webui-press-tab-panel>
 </webui-press-tabs>
 
-The skill is written to `.agents/skills/webui-ai-reference/` and linked into each selected agent's own directory, such as `.claude/skills/`. Useful flags:
+The skill lands in `.agents/skills/webui-ai-reference/`, which GitHub Copilot reads directly. Agents that keep their own folder, such as Claude Code, also get a copy in theirs. Useful flags:
 
 | Flag | Effect |
 | ---- | ------ |
-| `-g` | Install once for every project on your machine instead of the current one |
-| `-a <agent>` | Target specific agents, for example `-a claude-code`. Defaults to prompting |
+| `-g` | Install once for every project on your machine, into the agent's user directory (`~/.copilot/skills/` for Copilot) |
+| `-a <agent>` | Target specific agents, for example `-a github-copilot`. Defaults to prompting |
 | `-l` | List what the repository publishes without installing anything |
 
 To try the reference in a single session without installing it:
 
 ```bash
-npx skills use microsoft/webui@webui-ai-reference | claude
+npx skills use microsoft/webui@webui-ai-reference | copilot
 ```
 
 <webui-blockquote appearance="tip" title="Read it yourself" icon="💡">
