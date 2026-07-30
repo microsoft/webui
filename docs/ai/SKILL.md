@@ -1,5 +1,7 @@
 ---
 layout: page
+name: webui-ai-reference
+description: Authoritative WebUI framework reference for generating correct application code - template-first authoring rules, template syntax, styling, interactivity, routing, state JSON, and anti-patterns.
 ---
 
 # WebUI Framework - AI Reference

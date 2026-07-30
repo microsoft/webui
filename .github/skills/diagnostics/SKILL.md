@@ -144,5 +144,5 @@ with **no** added hot-path work).
       (confirm with a benchmark if it sits near a hot loop).
 - [ ] Tests: a regression test that fails without the error, asserting on the
       `code` (not the prose); JSON stays plain (no `\x1b`).
-- [ ] `DESIGN.md` and `docs/` (incl. `docs/ai.md`) updated if the contract or
+- [ ] `DESIGN.md` and `docs/` (incl. `docs/ai/SKILL.md`) updated if the contract or
       a user-visible code/flag changed.

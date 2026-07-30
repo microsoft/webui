@@ -1,0 +1,5 @@
+{
+  "name": "webui",
+  "description": "WebUI framework agent skills.",
+  "skills": ["./docs/ai"]
+}

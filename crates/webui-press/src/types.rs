@@ -55,6 +55,12 @@ pub struct SiteConfig {
 pub struct NavLink {
     pub text: String,
     pub link: String,
+    /// Markdown file backing this link, relative to `contentDir` with forward
+    /// slashes (e.g. `ai/SKILL.md`). Pages are normally routed by filename, so
+    /// this is only needed when a file's name is dictated by an outside
+    /// convention and should not leak into the URL.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

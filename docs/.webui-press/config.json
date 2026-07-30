@@ -42,7 +42,8 @@
     },
     {
       "text": "AI",
-      "link": "/ai"
+      "link": "/ai",
+      "source": "ai/SKILL.md"
     },
     {
       "text": "GitHub",

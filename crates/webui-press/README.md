@@ -211,6 +211,7 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
   "nav": [
     { "text": "Guide",      "link": "/guide/" },
     { "text": "Tutorials",  "link": "/tutorials/" },
+    { "text": "AI",         "link": "/ai", "source": "ai/SKILL.md" },
     { "text": "GitHub",     "link": "https://github.com/me/proj" }
   ],
 
@@ -270,6 +271,34 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
 - **`sidebar`** is the default sidebar shown on pages that don't match a `sidebarGroups` prefix.
 - **`sidebarGroups`** maps URL prefixes to sidebar definitions. The longest matching prefix wins. A page at `/guide/concepts/` uses the `/guide/` sidebar.
 - **`prev`/`next`** links at the bottom of a page are derived from the active sidebar's flat link order.
+
+### Routing
+
+URLs are derived from the filesystem. Every `.md` file under `contentDir` becomes
+a page; `nav` and `sidebar` control navigation, not discovery.
+
+| Source file | URL |
+| ----------- | --- |
+| `index.md` | `/` |
+| `guide/install.md` | `/guide/install` |
+| `guide/index.md` | `/guide` |
+| `components/my-button/my-button.md` | `/components/my-button` |
+
+A trailing `index`, or a filename that repeats its parent folder, collapses to
+the folder.
+
+When a filename is dictated by an outside convention and should not leak into
+the URL, point a `nav` entry at the file with `source` (a path relative to
+`contentDir`, using forward slashes):
+
+```json
+{ "text": "AI", "link": "/ai", "source": "ai/SKILL.md" }
+```
+
+That serves `ai/SKILL.md` at `/ai` instead of `/ai/SKILL`. This is what keeps a
+page installable as an agent skill — the [agent-skill
+spec](https://agentskills.io) requires the file be named `SKILL.md` — while
+keeping its published docs URL stable.
 
 ### Shared state
 
