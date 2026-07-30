@@ -44,7 +44,7 @@ Boolean attributes accept the same expression syntax as `<if>`, so **derive bool
 ```html
 <!-- ✅ Good: derive from existing state -->
 <button ?disabled="{{currentIndex == 0}}">Prev</button>
-<button ?disabled="{{currentIndex == items.length - 1}}">Next</button>
+<button ?disabled="{{currentIndex == lastIndex}}">Next</button>
 <option ?selected="{{item.id == selectedId}}">{{item.name}}</option>
 
 <!-- ❌ Avoid: mirror observables that duplicate derivable state -->
@@ -54,6 +54,8 @@ Boolean attributes accept the same expression syntax as `<if>`, so **derive bool
 ```
 
 Mirror observables are a common source of UI desync bugs: any code path that mutates `currentIndex` but forgets to update `isPrevDisabled` produces incorrect rendering. Expressions are evaluated automatically whenever any signal they reference changes.
+
+Expressions compare a dotted path against a literal or another dotted path. There is **no arithmetic**: `{{currentIndex == items.length - 1}}` is read as a comparison against a state key literally named `items.length - 1`, which never resolves, so the attribute is silently never rendered. Supply a precomputed `lastIndex` instead. A bare `.length` is fine on its own (`{{items.length > 0}}`).
 
 ### Dotted Paths
 

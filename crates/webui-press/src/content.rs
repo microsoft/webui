@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
 use crate::state::{load_render_states, merge_page_state, LoadedStates};
-use crate::types::{DocsConfig, PageDescriptor, SidebarItem, SidebarSection};
+use crate::types::{DocsConfig, NavLink, PageDescriptor, SidebarItem, SidebarSection};
 
 /// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
 /// canonical URL path that includes the site's `base_path` prefix and
@@ -137,13 +137,10 @@ fn collect_sidebar_links(items: &[SidebarItem]) -> Vec<&str> {
     links
 }
 
-/// Build the page registry by walking content_dir for every `.md` file.
+/// Strip a redundant filename when it should resolve to its parent folder.
 ///
-/// Discovery is filesystem-driven: any markdown file under content_dir becomes
-/// a page. The sidebar/nav config controls navigation, not discovery.
-/// Strip redundant filename if it matches the parent folder name.
 /// E.g., "my-button/my-button" → "my-button"
-///      "my-button/usage" → "my-button/usage" (unchanged)
+///       "my-button/usage" → "my-button/usage" (unchanged)
 fn normalize_path_as_index(path: &str) -> &str {
     // Find the last slash to split parent/filename
     let Some(slash_pos) = path.rfind('/') else {
@@ -164,7 +161,72 @@ fn normalize_path_as_index(path: &str) -> &str {
     }
 }
 
-fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std::path::PathBuf)> {
+/// Resolve the public URL path for a markdown file.
+///
+/// `rel_path` is the file's path relative to the content directory, using
+/// forward slashes (e.g. `guide/install.md`). A nav entry that claims this
+/// file via its `source` field wins outright, which lets a page keep a stable
+/// URL when its filename is dictated by an outside convention. Any fragment
+/// (`#`) or query string (`?`) in the override link is stripped before the
+/// route is formed — they are navigation-only markers that cannot appear in a
+/// filesystem path and would break prev/next matching against normalized
+/// sidebar links. Otherwise the URL is derived from the filesystem: `.md` is
+/// dropped, then a trailing `index` — or a filename that repeats its parent
+/// folder — collapses to the folder.
+fn page_url_path(rel_path: &str, base_path: &str, sources: &HashMap<&str, &str>) -> String {
+    let prefix = base_path.trim_end_matches('/');
+
+    if let Some(&link) = sources.get(rel_path) {
+        // Strip any fragment (#) or query (?) — they are navigation-only and
+        // cannot appear in a filesystem-derived route or match sidebar links.
+        let end = link.find(['#', '?']).unwrap_or(link.len());
+        let link = &link[..end];
+        let cleaned = link.trim_matches('/');
+        return if cleaned.is_empty() {
+            format!("{prefix}/")
+        } else {
+            format!("{prefix}/{cleaned}")
+        };
+    }
+
+    let trimmed = rel_path.trim_end_matches(".md");
+    let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
+    let trimmed = normalize_path_as_index(trimmed);
+
+    if trimmed.is_empty() || trimmed == "index" {
+        format!("{prefix}/")
+    } else {
+        format!("{prefix}/{trimmed}")
+    }
+}
+
+/// Map each nav entry that declares a `source` file to its configured link.
+///
+/// Keys are content-relative markdown paths; values are raw config links.
+/// Entries whose `link` starts with `http` are excluded because `source` is
+/// only meaningful for internal routes; pairing it with an external URL would
+/// produce an invalid route in `page_url_path`.
+fn nav_source_overrides(nav: &[NavLink]) -> HashMap<&str, &str> {
+    nav.iter()
+        .filter_map(|item| {
+            let source = item.source.as_deref()?;
+            if item.link.starts_with("http") {
+                return None;
+            }
+            Some((source, item.link.as_str()))
+        })
+        .collect()
+}
+
+/// Build the page registry by walking content_dir for every `.md` file.
+///
+/// Discovery is filesystem-driven: any markdown file under content_dir becomes
+/// a page. The sidebar/nav config controls navigation, not discovery.
+fn build_page_registry(
+    content_dir: &Path,
+    base_path: &str,
+    sources: &HashMap<&str, &str>,
+) -> Vec<(String, std::path::PathBuf)> {
     let mut pages = Vec::new();
     let mut stack: Vec<std::path::PathBuf> = vec![content_dir.to_path_buf()];
 
@@ -188,34 +250,12 @@ fn build_page_registry(content_dir: &Path, base_path: &str) -> Vec<(String, std:
                 continue;
             }
 
-            // Compute URL: relative path from content_dir, drop trailing /index.md,
-            // drop .md, prefix with base_path.
             let rel = match path.strip_prefix(content_dir) {
                 Ok(r) => r,
                 Err(_) => continue,
             };
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let trimmed = rel_str.trim_end_matches(".md");
-
-            // Strip /index suffix
-            let trimmed = trimmed.strip_suffix("/index").unwrap_or(trimmed);
-
-            // Strip redundant filename if it matches parent folder
-            // e.g., "webui-button/webui-button" → "webui-button"
-            let trimmed = normalize_path_as_index(trimmed);
-
-            // Root index.md => "/"
-            let url_path = if trimmed.is_empty() || trimmed == "index" {
-                if base_path.is_empty() {
-                    "/".to_string()
-                } else {
-                    base_path.trim_end_matches('/').to_string() + "/"
-                }
-            } else {
-                let prefix = base_path.trim_end_matches('/');
-                format!("{prefix}/{trimmed}")
-            };
-            pages.push((url_path, path));
+            pages.push((page_url_path(&rel_str, base_path, sources), path));
         }
     }
 
@@ -364,7 +404,8 @@ pub(crate) fn process_content_with_states(
         })
         .collect();
 
-    let mut registry = build_page_registry(content_dir, base_path);
+    let mut registry =
+        build_page_registry(content_dir, base_path, &nav_source_overrides(&config.nav));
 
     // Register custom pages
     for page_link in config.custom_pages.keys() {
@@ -721,6 +762,130 @@ mod tests {
     #[test]
     fn normalize_path_as_index_no_slash_returns_unchanged() {
         assert_eq!(normalize_path_as_index("webui-button"), "webui-button");
+    }
+
+    // --- page_url_path ----------------------------------------------------
+
+    fn sources(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
+        pairs.iter().copied().collect()
+    }
+
+    #[test]
+    fn page_url_path_derives_url_from_filesystem() {
+        let none = sources(&[]);
+        assert_eq!(
+            page_url_path("guide/install.md", "/webui/", &none),
+            "/webui/guide/install"
+        );
+    }
+
+    #[test]
+    fn page_url_path_collapses_index_and_root() {
+        let none = sources(&[]);
+        assert_eq!(
+            page_url_path("guide/index.md", "/webui/", &none),
+            "/webui/guide"
+        );
+        assert_eq!(page_url_path("index.md", "/webui/", &none), "/webui/");
+        assert_eq!(page_url_path("index.md", "", &none), "/");
+    }
+
+    #[test]
+    fn page_url_path_collapses_filename_repeating_its_folder() {
+        let none = sources(&[]);
+        assert_eq!(
+            page_url_path("components/webui-button/webui-button.md", "/webui/", &none),
+            "/webui/components/webui-button"
+        );
+    }
+
+    #[test]
+    fn page_url_path_nav_source_overrides_derived_url() {
+        // `SKILL.md` is a filename fixed by the agent-skill spec; the nav entry
+        // keeps the page on `/ai` instead of leaking it as `/ai/SKILL`.
+        let map = sources(&[("ai/SKILL.md", "/ai")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_tolerates_surrounding_slashes() {
+        let map = sources(&[("ai/SKILL.md", "ai/"), ("b/SKILL.md", "/b")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+        assert_eq!(page_url_path("b/SKILL.md", "", &map), "/b");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_can_target_site_root() {
+        let map = sources(&[("home/landing.md", "/")]);
+        assert_eq!(page_url_path("home/landing.md", "/webui/", &map), "/webui/");
+    }
+
+    #[test]
+    fn page_url_path_ignores_nav_source_for_other_files() {
+        let map = sources(&[("ai/SKILL.md", "/ai")]);
+        assert_eq!(
+            page_url_path("guide/SKILL.md", "/webui/", &map),
+            "/webui/guide/SKILL"
+        );
+    }
+
+    #[test]
+    fn page_url_path_nav_source_strips_fragment_from_override() {
+        // A nav link like "/ai#rules" must route to "/ai", not "/ai#rules".
+        let map = sources(&[("ai/SKILL.md", "/ai#rules")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_strips_query_from_override() {
+        // A nav link like "/ai?v=2" must route to "/ai", not "/ai?v=2".
+        let map = sources(&[("ai/SKILL.md", "/ai?v=2")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    // --- nav_source_overrides ---------------------------------------------
+
+    fn nav_link(text: &str, link: &str, source: Option<&str>) -> NavLink {
+        NavLink {
+            text: text.to_string(),
+            link: link.to_string(),
+            source: source.map(String::from),
+        }
+    }
+
+    #[test]
+    fn nav_source_overrides_collects_only_entries_declaring_a_source() {
+        let nav = vec![
+            nav_link("Guide", "/guide/", None),
+            nav_link("AI", "/ai", Some("ai/SKILL.md")),
+            nav_link("GitHub", "https://github.com/microsoft/webui", None),
+        ];
+        let map = nav_source_overrides(&nav);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("ai/SKILL.md"), Some(&"/ai"));
+    }
+
+    #[test]
+    fn nav_source_overrides_empty_nav_yields_no_overrides() {
+        assert!(nav_source_overrides(&[]).is_empty());
+    }
+
+    #[test]
+    fn nav_source_overrides_excludes_external_link_with_source() {
+        // Accidentally pairing `source` with an external URL must be silently
+        // dropped so it never reaches `page_url_path` as a broken route.
+        let nav = vec![
+            nav_link("AI", "/ai", Some("ai/SKILL.md")),
+            nav_link(
+                "GitHub",
+                "https://github.com/microsoft/webui",
+                Some("github.md"),
+            ),
+        ];
+        let map = nav_source_overrides(&nav);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("ai/SKILL.md"), Some(&"/ai"));
+        assert!(!map.contains_key("github.md"));
     }
 
     #[test]
