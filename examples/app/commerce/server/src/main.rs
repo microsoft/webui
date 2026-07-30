@@ -6,6 +6,7 @@
 mod app;
 mod cart;
 mod catalog;
+mod dist_assets;
 mod error;
 mod extractors;
 mod frontend;

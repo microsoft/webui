@@ -1,20 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Load-once, in-memory cache of a client build's `dist/` output.
+//! Load-once, in-memory cache of this example's client build `dist/` output.
 //!
-//! Every WebUI example that serves a bundled client faces the same problem:
 //! `esbuild --splitting` emits content-hashed shared chunks (`chunk-HASH.js`)
-//! whose names are unknown until the client build runs, so a server cannot
+//! whose names are unknown until the client build runs, so the server cannot
 //! hard-code an asset list or a fixed set of routes. Reading the tree once at
 //! startup solves that and removes per-request filesystem work; it also means
 //! an arbitrary request path can only ever resolve to a file that was present
 //! at startup, so path traversal has no filesystem to traverse.
-//!
-//! This crate owns the parts that are genuinely identical between examples —
-//! the traversal, the MIME lookup, and content-hash detection. It deliberately
-//! does **not** depend on a web framework: examples build their own responses,
-//! because their cache policies differ and their HTTP types do not.
 
 use anyhow::{Context, Result};
 use bytes::Bytes;

@@ -3,6 +3,7 @@
 
 #![allow(clippy::disallowed_methods)]
 
+use crate::dist_assets::{is_content_hashed, load_dist_assets, CachedAsset};
 use actix_web::web::Bytes;
 use actix_web::{HttpRequest, HttpResponse};
 use anyhow::{Context, Result};
@@ -11,7 +12,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use webui::{build, BuildOptions, CssStrategy, Plugin, Protocol, WebUIHandler};
-use webui_example_dist_assets::{is_content_hashed, load_dist_assets, CachedAsset};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::route_handler;
 use webui_handler::{RenderOptions, ResponseWriter};
@@ -191,9 +191,9 @@ pub fn request_path(req: &HttpRequest) -> String {
 #[cfg(test)]
 mod tests {
     use super::canonicalize_dir;
+    use crate::dist_assets::load_dist_assets;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use webui_example_dist_assets::load_dist_assets;
 
     #[test]
     fn cached_assets_survive_source_file_removal() {
