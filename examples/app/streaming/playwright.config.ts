@@ -12,6 +12,12 @@ export default defineConfig({
     baseURL: 'http://127.0.0.1:3020',
     screenshot: 'only-on-failure',
   },
+  webServer: {
+    command: 'pnpm run build:deps && pnpm run build:client && pnpm run start:test-server',
+    url: 'http://127.0.0.1:3020/index.js',
+    reuseExistingServer: false,
+    timeout: 180_000,
+  },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },
   ],

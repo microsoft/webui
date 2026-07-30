@@ -50,7 +50,7 @@ pub(crate) enum ComponentHostOrigin {
 #[inline]
 pub(crate) fn validate_pending_streaming_root(
     fragment: &WebUIFragment,
-    context: &mut WebUIProcessContext<'_, '_, '_>,
+    context: &mut WebUIProcessContext<'_, '_>,
 ) -> Result<()> {
     let Some(pending) = context
         .streaming
@@ -168,7 +168,7 @@ pub(crate) fn validate_streaming_root_opening(
 /// built out-of-line.
 #[inline]
 pub(crate) fn ensure_no_pending_streaming_root(
-    context: &WebUIProcessContext<'_, '_, '_>,
+    context: &WebUIProcessContext<'_, '_>,
     before: &str,
 ) -> Result<()> {
     let Some(streaming) = context.streaming.as_ref() else {
@@ -194,7 +194,7 @@ fn unfinished_streaming_root_error(pending_tag: Option<&str>, before: &str) -> R
 
 pub(crate) fn prepare_generated_streaming_root(
     tag: &str,
-    context: &mut WebUIProcessContext<'_, '_, '_>,
+    context: &mut WebUIProcessContext<'_, '_>,
 ) -> Result<()> {
     if context.streaming.is_none() {
         return Ok(());
@@ -220,7 +220,7 @@ pub(crate) fn prepare_generated_streaming_root(
 pub(crate) fn consume_streaming_component_root(
     tag: &str,
     origin: ComponentHostOrigin,
-    context: &mut WebUIProcessContext<'_, '_, '_>,
+    context: &mut WebUIProcessContext<'_, '_>,
 ) -> Result<()> {
     let streaming = streaming_state(context)?;
     match origin {
@@ -250,7 +250,7 @@ pub(crate) fn consume_streaming_component_root(
 
 pub(super) fn process_streaming_root_signal<'data>(
     value: &'data str,
-    context: &mut WebUIProcessContext<'data, '_, '_>,
+    context: &mut WebUIProcessContext<'data, '_>,
 ) -> Result<()> {
     require_streaming_head_start(context, "component host")?;
     let Some(tag) = value.strip_prefix(STREAMING_ROOT_PREFIX) else {

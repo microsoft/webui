@@ -27,6 +27,10 @@ pnpm start:server
 pnpm test
 ```
 
+The client build's `dist/webui-projection.json` is required. It keeps every
+checkpoint's initial state boundary-local; the server fails with a build
+instruction instead of silently falling back to full-state payloads.
+
 ### Boundary order and pacing
 
 | Sequence | Boundary      | Gap before the *next* flush        |

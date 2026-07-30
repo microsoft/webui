@@ -135,6 +135,25 @@ fn foster_context_of(name: &str) -> FosterContext {
     }
 }
 
+/// Return the browser parsing context that prevents a nested boundary sentinel
+/// from becoming an active custom element.
+#[inline]
+fn boundary_parent_scope(name: &str) -> Option<&'static str> {
+    match name.len() {
+        3 if name.eq_ignore_ascii_case("xmp") => Some("<xmp> raw-text content"),
+        5 if name.eq_ignore_ascii_case("title") => Some("<title> text content"),
+        6 if name.eq_ignore_ascii_case("iframe") => Some("<iframe> raw-text content"),
+        6 if name.eq_ignore_ascii_case("script") => Some("<script> raw-text content"),
+        7 if name.eq_ignore_ascii_case("noembed") => Some("<noembed> raw-text content"),
+        8 if name.eq_ignore_ascii_case("template") => Some("<template> inert content"),
+        8 if name.eq_ignore_ascii_case("textarea") => Some("<textarea> text content"),
+        8 if name.eq_ignore_ascii_case("noframes") => Some("<noframes> raw-text content"),
+        8 if name.eq_ignore_ascii_case("noscript") => Some("<noscript> inert content"),
+        9 if name.eq_ignore_ascii_case("plaintext") => Some("<plaintext> text content"),
+        _ => None,
+    }
+}
+
 /// Strategy for how component CSS is delivered in rendered output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
@@ -437,6 +456,9 @@ enum ParseOp<'a> {
     /// Save/restore of the single overwritten value keeps ancestor tracking
     /// allocation-free: no ancestor stack is retained.
     RestoreFosterDepth(u32),
+    /// Restore the enclosing component/raw/inert context after its child range
+    /// has been parsed.
+    RestoreBoundaryParentScope(Option<&'static str>),
     CompleteFor {
         parent: ParseContext,
         item: String,
@@ -541,6 +563,12 @@ pub struct HtmlParser {
     /// time. `<td>`/`<th>`/`<caption>` reset it to `0` because those switch
     /// back to "in body" insertion rules.
     foster_context_depth: u32,
+
+    /// Enclosing component host content or native raw/inert HTML context.
+    ///
+    /// A generated sentinel in any of these contexts is either text or lives
+    /// in an inert fragment, so it cannot commit a streaming boundary.
+    boundary_parent_scope: Option<&'static str>,
 
     /// `src` of every authored `<script type="module">` outside any
     /// `<boundary>`, in document order, from the current top-level parse.
@@ -864,6 +892,7 @@ impl HtmlParser {
             body_depth: 0,
             structural_scopes: Vec::new(),
             foster_context_depth: 0,
+            boundary_parent_scope: None,
             module_entry_srcs: Vec::new(),
         }
     }
@@ -1150,6 +1179,7 @@ impl HtmlParser {
             self.body_depth = 0;
             self.structural_scopes.clear();
             self.foster_context_depth = 0;
+            self.boundary_parent_scope = None;
             self.module_entry_srcs.clear();
         }
         // Save the caller's fragment id and restore it before returning. A
@@ -1493,6 +1523,9 @@ impl HtmlParser {
                 ParseOp::RestoreFosterDepth(previous) => {
                     self.foster_context_depth = previous;
                 }
+                ParseOp::RestoreBoundaryParentScope(previous) => {
+                    self.boundary_parent_scope = previous;
+                }
                 ParseOp::CompleteFor {
                     parent,
                     item,
@@ -1575,6 +1608,7 @@ impl HtmlParser {
                 ops.push(ParseOp::EmitClose(element.name()));
             }
             self.enter_foster_context(element.name(), ops);
+            self.enter_boundary_parent_scope(element.name(), ops);
             ops.push(ParseOp::Parse {
                 range: element.inner(),
                 depth: depth + 1,
@@ -2012,6 +2046,25 @@ impl HtmlParser {
         }
     }
 
+    #[inline]
+    fn enter_boundary_parent_scope<'a>(&mut self, name: &str, ops: &mut Vec<ParseOp<'a>>) {
+        let Some(scope) = boundary_parent_scope(name) else {
+            return;
+        };
+        ops.push(ParseOp::RestoreBoundaryParentScope(
+            self.boundary_parent_scope,
+        ));
+        self.boundary_parent_scope = Some(scope);
+    }
+
+    #[inline]
+    fn enter_component_content_scope<'a>(&mut self, ops: &mut Vec<ParseOp<'a>>) {
+        ops.push(ParseOp::RestoreBoundaryParentScope(
+            self.boundary_parent_scope,
+        ));
+        self.boundary_parent_scope = Some("component host content");
+    }
+
     /// Enter a `<boundary name="…">` directive.
     ///
     /// `<boundary>` is a reserved, compile-time-only directive (see
@@ -2054,6 +2107,9 @@ impl HtmlParser {
             return Err(self.boundary_scope_error(element, "a reusable component template"));
         }
         if let Some(scope) = self.structural_scopes.last() {
+            return Err(self.boundary_scope_error(element, scope));
+        }
+        if let Some(scope) = self.boundary_parent_scope {
             return Err(self.boundary_scope_error(element, scope));
         }
         if self.in_boundary {
@@ -2315,6 +2371,7 @@ impl HtmlParser {
 
         if !element.self_closing() {
             ops.push(ParseOp::EmitClose(element.name()));
+            self.enter_component_content_scope(ops);
             ops.push(ParseOp::Parse {
                 range: element.inner(),
                 depth: depth + 1,
@@ -6409,6 +6466,71 @@ mod tests {
             panic!("expected ParserError::Template, got {err:?}");
         };
         assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+    }
+
+    #[test]
+    fn boundary_inside_component_host_content_errors() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "my-widget",
+                "<slot></slot>",
+                None,
+                true,
+            ))
+            .expect("register");
+
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><my-widget><boundary name="x"><p>x</p></boundary></my-widget></body>"#,
+            )
+            .expect_err("a boundary inside component host content must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+        assert!(
+            diag.to_string().contains("component host content"),
+            "{diag}"
+        );
+    }
+
+    #[test]
+    fn boundary_inside_raw_or_inert_html_context_errors() {
+        for (element, expected_scope) in [
+            ("textarea", "<textarea> text content"),
+            ("title", "<title> text content"),
+            ("script", "<script> raw-text content"),
+            ("xmp", "<xmp> raw-text content"),
+            ("iframe", "<iframe> raw-text content"),
+            ("noembed", "<noembed> raw-text content"),
+            ("noframes", "<noframes> raw-text content"),
+            ("noscript", "<noscript> inert content"),
+            ("plaintext", "<plaintext> text content"),
+            ("template", "<template> inert content"),
+        ] {
+            let mut parser = HtmlParser::new();
+            let html = format!(
+                r#"<body><{element}><boundary name="x"><p>x</p></boundary></{element}></body>"#
+            );
+            let err = parser
+                .parse("index.html", &html)
+                .expect_err("a boundary in raw or inert content must error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(
+                diag.error_code(),
+                Some(codes::BOUNDARY_CROSSES_SCOPE),
+                "unexpected code for <{element}>"
+            );
+            assert!(
+                diag.to_string().contains(expected_scope),
+                "unexpected scope for <{element}>: {diag}"
+            );
+        }
     }
 
     #[test]

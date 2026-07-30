@@ -13,6 +13,17 @@
 
 let cached: boolean | undefined;
 
+/** Shared activation hook installed on streamed template elements. */
+export const STREAMING_BOUNDARY_ACTIVATE = Symbol.for(
+  'microsoft.webui.boundaryActivate',
+);
+/** Shared reconnect hook retained by a detached undefined streamed root. */
+export const PENDING_ROOT_CONNECTED = Symbol.for(
+  'microsoft.webui.pendingRootConnected',
+);
+/** Compiler-owned marker for an uncommitted streamed host. */
+export const STREAMED_HOST_ATTR = 'data-ws';
+
 /**
  * Whether this document was served in streaming-hydration mode.
  *

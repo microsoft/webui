@@ -79,10 +79,13 @@ carrying `data-ws` + an inert `[data-webui-boundary]` JSON script + a
 `<webui-hydrate>` sentinel - appended one at a time, with the driver spinning the
 coordinator's microtask pump until that boundary's scaffolding is removed (a
 deterministic "committed + cleaned" signal) before the next, then a terminal
-envelope. The control uses the real inert `#webui-data` bootstrap (present in the
-base document so the framework's lazy loader latches on the real block); only its
-SSR roots are inserted at run time (after the baseline heap sample) so its
-empty->populated peak-heap transition matches the streaming arms.
+envelope. Consecutive chunks enter through separate `MessageChannel` tasks,
+matching browser response-chunk scheduling without the nested timer clamp that
+would add synthetic delay at 100 boundaries. The control uses the real inert
+`#webui-data` bootstrap (present in the base document so the framework's lazy
+loader latches on the real block); only its SSR roots are inserted at run time
+(after the baseline heap sample) so its empty->populated peak-heap transition
+matches the streaming arms.
 
 Coverage includes flat and deeply nested marker ranges (one root at each
 successive `<div>` depth) and the boundary-before-definition race (the class
@@ -107,6 +110,21 @@ path).
 nearest-rank p95 == max). Strict/enforced runs use at least 20 samples so p95 is
 a real tail statistic; override with `WEBUI_STREAMING_HYDRATION_RUNS=<n>` (floored
 at 20 under enforce).
+
+Every production arm is warmed once and discarded before measurement. Each
+round then runs every arm exactly once, rotating and reversing arm order across
+rounds so no scenario owns a fixed hot or cold position. CPU and elapsed gates
+compare aligned samples from the same round as paired deltas; they do not compare
+an interleaved current run against a stale standalone baseline.
+
+The primary scaling arms all receive the same empty metadata checkpoint before
+their 1/3/10/100 content checkpoints. This keeps custom-element construction
+identical across arms: every measured root is parser-created after template
+metadata defines the class. Without that setup, B=1 upgrades every root after
+parsing while larger arms mix upgraded and parser-created roots, so the CPU gate
+would measure a changing construction mode rather than boundary scaling. The
+separate eager/race coverage cases keep metadata co-located with real roots and
+exercise the production first-checkpoint behavior.
 
 ### Deterministic vs strict gates
 
@@ -227,7 +245,9 @@ Hydration snapshots live at
 `target/bench-baselines/browser-hydration-<name>.json` and record median/p95
 CPU and elapsed, peak/retained heap, long task, and the bundle byte sizes. The
 compare phase prints a per-scenario delta table with CPU %, elapsed %, and signed
-retained- and peak-heap KiB deltas.
+retained- and peak-heap KiB deltas. A strict comparison requires a compatible
+baseline and checks it before running the measurement matrix; a missing or stale
+baseline fails with the command needed to create a new one.
 
 
 ## What it measures

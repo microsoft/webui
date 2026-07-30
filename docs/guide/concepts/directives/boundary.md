@@ -46,6 +46,10 @@ In the current implementation:
   reusable components and route-shell component templates are not supported.
 - A boundary cannot appear inside another boundary, `<if>`, `<for>`, or
   `<route>`. Put it in the entry template so it fully wraps any such scope.
+- A boundary cannot appear inside a registered component's host content or
+  inside native raw/inert content such as `<textarea>`, `<script>`, or
+  `<template>`. The browser treats the generated sentinel as text or inert DOM
+  there, so wrap the whole host or native element instead.
 - A boundary cannot appear inside `<table>`, `<thead>`, `<tbody>`, `<tfoot>`,
   `<tr>`, `<colgroup>`, `<select>`, or `<optgroup>`. In those contexts the
   browser's HTML parser foster-parents the generated `<webui-hydrate>` sentinel
@@ -105,15 +109,16 @@ hydrates:
 ```
 
 ```typescript
-connectedCallback(): void {
-  super.connectedCallback();
-  void this.loadForecast(); // Runs once this boundary commits.
+protected override hydratedCallback(): void {
+  void this.loadForecast(); // Runs once this boundary actually hydrates.
 }
 ```
 
 The boundary carries no server data, so it commits immediately and the next
 boundary follows in the same flush window. `examples/app/streaming` ships this
-exact pattern.
+exact pattern. Use `hydratedCallback()` rather than `connectedCallback()` for
+post-hydration work: a streamed element can connect while its boundary is still
+open, but `hydratedCallback()` runs synchronously exactly once after activation.
 
 ### Load an island's code with the island
 
@@ -129,10 +134,12 @@ critical entry never carries bytes the first interaction does not need:
 ```
 
 This is safe by construction. The boundary commits before the class exists, so
-the coordinator stashes that boundary's state on the root and waits on
-`customElements.whenDefined()`, activating it the moment the module registers.
-`webui:hydration-complete` stays open until then, and the script is authored
-content, so boundary teardown leaves it alone.
+the coordinator retains that boundary's state with the root and waits on one
+`customElements.whenDefined()` reaction per tag, activating it when the module
+registers. An undefined outer component is a barrier for its descendants, so
+parent-first hydration remains intact. `webui:hydration-complete` stays open
+until all definitions activate, and the script is authored content, so boundary
+teardown leaves it alone.
 
 ::: tip WebUI preloads the shared chunks for you
 Splitting an island into its own bundle entry makes your bundler hoist the
@@ -158,6 +165,10 @@ automatically — a module loaded by a `<script>` **inside** a boundary is
 deferred on purpose, and preloading it would undo the split. A chunk your
 island shares with the critical entry still gets preloaded, because it is
 genuinely critical.
+
+When esbuild uses a non-empty `publicPath`, WebUI suppresses these generated
+hints rather than guessing how local metafile paths map to served or
+cross-origin URLs. The browser still discovers the imports normally.
 
 For a sub-kilobyte component the extra request may still not be worth it;
 split for the architectural benefit first.

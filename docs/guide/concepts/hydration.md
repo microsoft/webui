@@ -120,9 +120,8 @@ placeholder a **real component in a boundary of its own**, so it hydrates early
 and then resolves its own data client-side.
 
 ```typescript
-connectedCallback(): void {
-  super.connectedCallback();
-  void this.loadForecast(); // Resolves after this boundary commits.
+protected override hydratedCallback(): void {
+  void this.loadForecast(); // Resolves after this boundary actually hydrates.
 }
 ```
 
@@ -143,10 +142,20 @@ boundaries, and its inventory marks only SSR roots that actually rendered.
 
 ### Timing and lifecycle
 
-When the module loads before a boundary, upgraded components wait without
-touching incomplete server DOM. When a boundary arrives before its component
-definition, it waits for that custom element definition. Once both are ready,
-WebUI hydrates the complete boundary without waiting for `DOMContentLoaded`.
+When a component calls `.define()` before its streamed template metadata
+arrives, WebUI delays the native custom-element definition. Browsers snapshot
+`observedAttributes` at definition time, so defining early would permanently
+lose template-derived attribute observation. When a boundary arrives before its
+component module, it waits on one custom-element definition reaction per tag.
+An undefined outer root is an activation barrier for its descendants. Once the
+outer definition and metadata are ready, WebUI hydrates parent first, then
+descendants, without waiting for `DOMContentLoaded`.
+
+Use `hydratedCallback()` for setup that needs bindings, events, or `w-ref`
+references. It runs synchronously exactly once after the first successful
+ordinary hydration, client mount, streamed activation, or dormant static-host
+wake. `connectedCallback()` can run earlier on a deferred streamed host and can
+run again after reconnect, so it is not a universal post-hydration signal.
 Actual timing still depends on module download, server progress, and transport
 delivery.
 
@@ -157,7 +166,7 @@ WebUI dispatches these events on `window`:
   `{ sequence, terminal }`. Sequence numbers are response order, not authored
   boundary names. Keep this diagnostics flag off in production to avoid one
   event allocation per checkpoint.
-- `webui:hydration-complete` once the terminal checkpoint has arrived and no
+- `webui:hydration-complete` once the empty terminal record has arrived and no
   component or boundary remains pending. On a streaming page, it means the
   complete response hydration lifecycle is done, not merely that the first
   interactive boundary is ready.
@@ -167,6 +176,14 @@ marker nodes, plus the temporary streamed-host identity. Boundary-local state is
 passed directly to each component and is not retained in
 `window.__webui.state`. Applications should not query or depend on generated
 scaffolding.
+
+At `body_end`, the handler emits one markerless empty terminal envelope:
+`[1,nextSequence,1,{}]`. Its flush also commits any preceding native or static
+tail HTML, but terminal records never repeat template metadata or state. A
+malformed, truncated, or oversized stream logs an error, suppresses
+`webui:hydration-complete`, and releases discoverable deferred state within
+fixed bounds. Valid commits perform no document-wide scan; a bounded sweep is a
+fatal-cleanup fallback only.
 
 ### CSP and delivery
 

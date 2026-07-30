@@ -44,7 +44,7 @@
  * minimum DOM structure needed for the framework to operate.
  */
 
-import { getTemplate } from './template.js';
+import { deferTemplateDefinition, getTemplate } from './template.js';
 import type {
   TemplateMeta,
   TemplateBlockMeta,
@@ -54,7 +54,12 @@ import type {
   TemplateNodePath,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
-import { isStreamingHydrationMode } from './streaming-mode.js';
+import {
+  isStreamingHydrationMode,
+  PENDING_ROOT_CONNECTED,
+  STREAMED_HOST_ATTR,
+  STREAMING_BOUNDARY_ACTIVATE,
+} from './streaming-mode.js';
 import {
   createRepeatKeyState,
   seedHydratedRepeatKeys,
@@ -155,12 +160,11 @@ const EMPTY_ARR: readonly never[] = [];
 const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
 /** Branded single-key state writer used by framework bindings, not public duck typing. */
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
-/** Branded streaming-boundary activation hook, invoked by the coordinator in `streaming.ts`. */
-const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
-/** Shared coordinator callback retained only by an undefined streamed root
- *  that was detached when its class became defined. */
-const PENDING_ROOT_CONNECTED = Symbol.for('microsoft.webui.pendingRootConnected');
-const STREAMED_HOST_ATTR = 'data-ws';
+/** Branded fatal-stream cleanup hook, invoked before `data-ws` is removed. */
+const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
+const ACTIVATION_ACTIVATED = 1;
+const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
+const ACTIVATION_MISSING_TEMPLATE = 3;
 
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 
@@ -196,8 +200,11 @@ function getTemplateDom(meta: TemplateBlockMeta): Element {
  * reads `title`, then a host `title="..."` mutation can update the hidden
  * template state even when the class never declared an `@attr title` property.
  */
-function installTemplateObservedAttributes(ctor: TemplateObservedConstructor, tagName: string): void {
-  const meta = getTemplate(tagName);
+function installTemplateObservedAttributes(
+  ctor: TemplateObservedConstructor,
+  tagName: string,
+  meta = getTemplate(tagName),
+): void {
   if (!meta) return;
 
   templateMetaByCtor.set(ctor, meta);
@@ -233,6 +240,15 @@ function installTemplateObservedAttributes(ctor: TemplateObservedConstructor, ta
     },
     configurable: true,
   });
+}
+
+function defineTemplateConstructor(
+  ctor: TemplateObservedConstructor,
+  tagName: string,
+  meta?: TemplateMeta,
+): void {
+  installTemplateObservedAttributes(ctor, tagName, meta);
+  customElements.define(tagName, ctor);
 }
 
 /**
@@ -271,6 +287,7 @@ export class TemplateElement extends HTMLElement {
   private $meta?: TemplateMeta;
   private $ready = false;
   private $hydrated = false;
+  private $hydratedCallbackCalled = false;
   private $deferredSSR = false;
   private $activatingDeferredSSR = false;
   /** True once a repeat produced an SSR item scope whose collection state is
@@ -315,13 +332,14 @@ export class TemplateElement extends HTMLElement {
 
   /**
    * Internal hook invoked by the streaming coordinator (`streaming.ts`) once
-   * a boundary containing this element has committed. A no-op unless the
-   * instance is actually deferred and opts in via `$shouldActivateOnBoundaryCommit()`
-   * (compiler-owned static hosts opt out — see `static-host.ts`). The optional
-   * `state` is this element's boundary-local SSR state, handed straight through
-   * to hydration instead of via the global `window.__webui.state` handoff.
+   * a boundary containing this element has committed. Returns a numeric outcome
+   * so the allocation-sensitive coordinator can distinguish activation, an
+   * intentional static-host opt-out, and missing metadata without per-root
+   * result objects. The optional `state` is this element's boundary-local SSR
+   * state, handed straight through to hydration instead of via the global
+   * `window.__webui.state` handoff.
    */
-  [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void {
+  [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number {
     // `customElements.upgrade()` installs this class on detached roots without
     // invoking connectedCallback(). Preserve the same marker-driven dormant
     // state those roots would have entered while connected before activation.
@@ -329,15 +347,43 @@ export class TemplateElement extends HTMLElement {
       this.$deferredSSR = true;
       this.$ready = true;
     }
-    if (this.$deferredSSR && this.$shouldActivateOnBoundaryCommit()) this.$activateDeferredSSR(state);
+    if (!this.$deferredSSR) return ACTIVATION_ACTIVATED;
+    // Report missing metadata explicitly. A silent no-op would let the
+    // coordinator publish completion while this root remained inert.
+    const meta = this.$templateMeta();
+    if (!meta) {
+      return ACTIVATION_MISSING_TEMPLATE;
+    }
+    this.$meta = meta;
+    if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
+    this.$activateDeferredSSR(state);
+    return ACTIVATION_ACTIVATED;
+  }
+
+  /** Clear element-owned streaming deferral after a fatal stream failure. */
+  [STREAMING_BOUNDARY_ABANDON](): void {
+    this.$deferredSSR = false;
+    this.$activatingDeferredSSR = false;
+    this.$ready = false;
+    this.$preReadyWrites = null;
   }
 
   /**
    * Register this constructor for a tag and install template-derived observers.
    */
   static define(tagName: string): void {
-    installTemplateObservedAttributes(this as TemplateObservedConstructor, tagName);
-    customElements.define(tagName, this);
+    const ctor = this as TemplateObservedConstructor;
+    const meta = getTemplate(tagName);
+    if (!meta && isStreamingHydrationMode()) {
+      // Metadata supplies template-derived observed attributes. The browser
+      // snapshots that list at native define() time, so a streamed page must
+      // wait rather than permanently define an incomplete observer surface.
+      deferTemplateDefinition(tagName, ctor, () => {
+        defineTemplateConstructor(ctor, tagName, getTemplate(tagName));
+      });
+      return;
+    }
+    defineTemplateConstructor(ctor, tagName, meta);
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────
@@ -383,7 +429,7 @@ export class TemplateElement extends HTMLElement {
       return;
     }
 
-    const meta = getTemplate(tag);
+    const meta = this.$templateMeta();
     if (!meta) {
       console.warn(
         `[WebUI] Template metadata for <${tag}> not found. ` +
@@ -490,6 +536,7 @@ export class TemplateElement extends HTMLElement {
         this.$appendStagedChildren(root, clientRoot);
         this.$root.container = root as ParentNode & Node;
       }
+      this.$notifyHydrated();
     } finally {
       hydrationEnd();
     }
@@ -637,11 +684,11 @@ export class TemplateElement extends HTMLElement {
    *  activations omit it and fall back to the global handoff inside `$mount`. */
   protected $activateDeferredSSR(state?: Record<string, unknown>): void {
     if (!this.$deferredSSR) return;
-    // Point-A deferrals (metadata missing entirely at connect time) never set
-    // $meta, unlike the $mount()-driven deferral above. Resolve it lazily.
-    const meta = this.$meta ?? getTemplate(this.tagName.toLowerCase());
+    // Both activation owners establish metadata before calling this hook:
+    // static hosts retain it in `$mount()`, and streamed roots validate/cache it
+    // in the coordinator hook.
+    const meta = this.$meta;
     if (!meta) return;
-    this.$meta = meta;
     this.$deferredSSR = false;
     this.$ready = false;
     this.$preReadyWrites = null;
@@ -670,6 +717,23 @@ export class TemplateElement extends HTMLElement {
 
   /** Sync authored attribute-backed properties after mount. */
   protected $syncAuthoredAttributes(): void {
+  }
+
+  /**
+   * Runs synchronously once after this instance first hydrates or mounts.
+   *
+   * Unlike `connectedCallback()`, this hook does not run again on reconnect and
+   * is not called until a deferred streamed or static host actually activates.
+   */
+  protected hydratedCallback(): void {
+  }
+
+  private $notifyHydrated(): void {
+    if (this.$hydratedCallbackCalled) return;
+    // Latch before author code so an exception can never turn reconnect into a
+    // retry of a lifecycle that has already been entered.
+    this.$hydratedCallbackCalled = true;
+    this.hydratedCallback();
   }
 
   /** Decide whether hidden template state should be initialized from SSR state. */

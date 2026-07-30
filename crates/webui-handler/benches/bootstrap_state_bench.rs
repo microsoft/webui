@@ -220,8 +220,9 @@ fn build_partial_protocol(
                 .iter()
                 .map(|key| (*key).to_string())
                 .collect(),
-            navigation_mode: navigation_mode
-                .map_or_else(|| keyed_mode(navigation_keys), |mode| mode as i32),
+            navigation_mode: Some(
+                navigation_mode.map_or_else(|| keyed_mode(navigation_keys), |mode| mode as i32),
+            ),
             navigation_keys: navigation_keys
                 .iter()
                 .map(|key| (*key).to_string())
@@ -340,7 +341,7 @@ fn build_bootstrap_protocol(
                 keyed_mode(&hydration_keys)
             },
             hydration_keys,
-            navigation_mode: keyed_mode(&navigation_keys),
+            navigation_mode: Some(keyed_mode(&navigation_keys)),
             navigation_keys,
             ..Default::default()
         },
@@ -386,7 +387,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
         .get_mut("bench-component")
         .unwrap_or_else(|| panic!("benchmark component missing"));
     fallback_component.hydration_mode = StateProjectionMode::All as i32;
-    fallback_component.navigation_mode = StateProjectionMode::All as i32;
+    fallback_component.navigation_mode = Some(StateProjectionMode::All as i32);
     let full_fallback_protocol = Protocol::new(full_fallback_protocol);
     let server_only_protocol = Protocol::new(build_bootstrap_protocol(
         metadata_keys.clone(),
@@ -625,7 +626,7 @@ fn bootstrap_state_bench(c: &mut Criterion) {
     let mut dormant_routed_protocol = build_routed_protocol();
     for component in dormant_routed_protocol.components.values_mut() {
         component.navigation_keys = component.hydration_keys.clone();
-        component.navigation_mode = component.hydration_mode;
+        component.navigation_mode = Some(component.hydration_mode);
         component.hydration_keys.clear();
         component.hydration_mode = StateProjectionMode::None as i32;
         component.template_json = r#"{"h":"<p>ready</p>","th":1}"#.to_string();

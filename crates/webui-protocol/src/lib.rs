@@ -798,7 +798,7 @@ mod tests {
             ComponentData {
                 hydration_keys: vec!["name".to_string()],
                 hydration_mode: StateProjectionMode::Keys as i32,
-                navigation_mode: StateProjectionMode::All as i32,
+                navigation_mode: Some(StateProjectionMode::All as i32),
                 ..Default::default()
             },
         );
@@ -812,7 +812,10 @@ mod tests {
         let component = &decoded.components["my-card"];
         assert_eq!(component.hydration_mode, StateProjectionMode::Keys as i32);
         assert_eq!(component.hydration_keys, ["name"]);
-        assert_eq!(component.navigation_mode, StateProjectionMode::All as i32);
+        assert_eq!(
+            component.navigation_mode,
+            Some(StateProjectionMode::All as i32)
+        );
         assert!(component.navigation_keys.is_empty());
     }
 

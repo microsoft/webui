@@ -26,7 +26,6 @@ mod root;
 mod state;
 
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
@@ -59,19 +58,14 @@ pub(crate) const STREAMING_MARKER: &str = "<meta name=\"webui-streaming\" conten
 /// Request-local streaming sink selected once at
 /// [`WebUIHandler::render_streaming`] entry.
 ///
-/// Wrapping the transport lets every write mark the current boundary dirty
-/// while forwarding to the concrete writer with a static call: no per-write
-/// `RefCell` borrow and no second virtual dispatch. `dirty` is a shared `Cell`
-/// (plain load/store, no borrow check) that `body_end` reads to decide whether
-/// trailing bytes need a final checkpoint.
+/// Wrapping the transport maps the internal streaming flush hook to the
+/// caller's concrete [`FlushWriter`] with no second virtual dispatch.
 struct StreamingSink<'w, W: FlushWriter + ?Sized> {
     transport: &'w mut W,
-    dirty: &'w Cell<bool>,
 }
 
 impl<W: FlushWriter + ?Sized> ResponseWriter for StreamingSink<'_, W> {
     fn write(&mut self, content: &str) -> Result<()> {
-        self.dirty.set(true);
         self.transport.write(content)
     }
 
@@ -80,22 +74,19 @@ impl<W: FlushWriter + ?Sized> ResponseWriter for StreamingSink<'_, W> {
     }
 
     fn stream_flush(&mut self) -> Result<()> {
-        self.dirty.set(false);
         self.transport.flush()
     }
 }
 
-pub(super) fn streaming_state<'a, 'data, 'stream>(
-    context: &'a mut WebUIProcessContext<'data, '_, 'stream>,
-) -> Result<&'a mut StreamingRenderState<'data, 'stream>> {
+pub(super) fn streaming_state<'a, 'data>(
+    context: &'a mut WebUIProcessContext<'data, '_>,
+) -> Result<&'a mut StreamingRenderState<'data>> {
     context.streaming.as_mut().ok_or_else(|| {
         HandlerError::Invariant("streaming signal processed outside a streaming render".to_string())
     })
 }
 
-pub(super) fn flush_streaming_transport(
-    context: &mut WebUIProcessContext<'_, '_, '_>,
-) -> Result<()> {
+pub(super) fn flush_streaming_transport(context: &mut WebUIProcessContext<'_, '_>) -> Result<()> {
     if context.streaming.is_none() {
         return Err(HandlerError::Invariant(
             "streaming flush requested outside a streaming render".to_string(),
@@ -110,7 +101,7 @@ impl WebUIHandler {
     pub(crate) fn process_streaming_signal<'data>(
         &self,
         value: &'data str,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
+        context: &mut WebUIProcessContext<'data, '_>,
     ) -> Result<bool> {
         if context
             .streaming
@@ -209,12 +200,11 @@ impl WebUIHandler {
 
         if value == "body_end" {
             require_streaming_head_start(context, "body_end")?;
-            let (active_boundary, body_ended, needs_implicit, next_sequence) = {
+            let (active_boundary, body_ended, next_sequence) = {
                 let streaming = streaming_state(context)?;
                 (
                     streaming.active_boundary,
                     streaming.body_ended,
-                    streaming.dirty.get() || !streaming.bootstrap_sent,
                     streaming.next_sequence,
                 )
             };
@@ -231,22 +221,12 @@ impl WebUIHandler {
                 context.writer.write(html)?;
             }
 
-            // Any raw/native tail bytes after the last commit require one
-            // implicit final checkpoint. Registered component hosts cannot
-            // appear outside an explicit boundary (the streaming_root branch
-            // rejects them), so this tail never contains an untracked
-            // interactive root. Coalesce the tail commit with the terminal:
-            // emit a single terminal checkpoint (`terminal = true`) carrying the
-            // tail bootstrap in one flush, rather than an implicit checkpoint
-            // flush followed by a separate empty terminal flush. This may ship an
-            // empty-state checkpoint for a scriptless tail, but never strands an
-            // interactive root. When no tail exists, emit the standalone empty
-            // terminal so the client still observes a markerless close.
-            if needs_implicit {
-                self.emit_streaming_checkpoint(next_sequence, true, context)?;
-            } else {
-                self.emit_streaming_terminal(next_sequence, context)?;
-            }
+            // The terminal flush commits any raw/native tail bytes. Registered
+            // component hosts cannot appear outside an explicit boundary, so a
+            // rootless tail never needs another template or state projection.
+            // Keeping the envelope empty also prevents whitespace or a body
+            // injection from re-sending complete state on legacy protocols.
+            self.emit_streaming_terminal(next_sequence, context)?;
             let streaming = streaming_state(context)?;
             streaming.body_ended = true;
             context.body_end_emitted = true;
@@ -281,15 +261,11 @@ impl WebUIHandler {
         }
         validate_streaming_head_start(document, options.entry_id)?;
 
-        let dirty = Cell::new(false);
         let inventory_bytes = protocol.component_index().len().div_ceil(8);
         // Select the streaming sink once, here at render entry. It borrows the
         // transport mutably and shares `dirty` with the render state; ordinary
         // per-write output never sees this wrapper.
-        let mut sink = StreamingSink {
-            transport: writer,
-            dirty: &dirty,
-        };
+        let mut sink = StreamingSink { transport: writer };
         let mut context = WebUIProcessContext {
             protocol: document,
             legacy_structural_signals: protocol.legacy_structural_signals(),
@@ -312,7 +288,6 @@ impl WebUIHandler {
             route_index: protocol.route_index(),
             route_chain_index: 0,
             streaming: Some(StreamingRenderState {
-                dirty: &dirty,
                 component_reachability: protocol.component_reachability(),
                 head_marker_emitted: false,
                 active_boundary: None,
@@ -326,6 +301,7 @@ impl WebUIHandler {
                 inventory_hex: String::with_capacity(inventory_bytes * 2),
                 template_inventory: vec![0; inventory_bytes],
                 checkpoint_tags: Vec::new(),
+                checkpoint_route_roots: Vec::new(),
                 checkpoint_seen: vec![0; inventory_bytes],
                 checkpoint_needs_expansion: false,
                 state_key_scratch: Vec::with_capacity(INITIAL_KEY_CAPACITY),

@@ -34,7 +34,9 @@ use serde_json::Value;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{
+    HandlerError, Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler,
+};
 #[cfg(test)]
 use webui_protocol::WebUIProtocol;
 
@@ -277,7 +279,7 @@ impl Protocol {
         state_json: String,
         entry: String,
         request_path: String,
-        on_chunk: Function<String, ()>,
+        on_chunk: Function<String>,
     ) -> napi::Result<()> {
         let state = parse_state_json(&state_json)?;
         let options = RenderOptions::new(&entry, &request_path);
@@ -389,14 +391,17 @@ fn render_to_string(
 }
 
 /// A writer that batches rendered fragments before crossing into JavaScript.
-struct CallbackWriter<'a, 'env> {
-    callback: &'a Function<'env, String, ()>,
+struct CallbackWriter<F> {
+    callback: F,
     buffer: String,
-    error: Option<String>,
+    error: Option<NapiError>,
 }
 
-impl<'a, 'env> CallbackWriter<'a, 'env> {
-    fn new(callback: &'a Function<'env, String, ()>) -> Self {
+impl<F> CallbackWriter<F>
+where
+    F: FnMut(String) -> napi::Result<()>,
+{
+    fn new(callback: F) -> Self {
         Self {
             callback,
             buffer: String::with_capacity(STREAM_CHUNK_SIZE),
@@ -404,39 +409,47 @@ impl<'a, 'env> CallbackWriter<'a, 'env> {
         }
     }
 
-    fn flush(&mut self) {
-        if self.buffer.is_empty() || self.error.is_some() {
-            return;
+    fn flush(&mut self) -> webui_handler::Result<()> {
+        if self.error.is_some() {
+            return Err(callback_writer_error());
+        }
+        if self.buffer.is_empty() {
+            return Ok(());
         }
 
         let chunk = std::mem::replace(&mut self.buffer, String::with_capacity(STREAM_CHUNK_SIZE));
-        if let Err(error) = self.callback.call(chunk) {
-            // Ignore errors from callbacks that return non-void
-            // (for example, Node's response.write() returns a boolean).
-            let message = error.to_string();
-            if !message.contains("Value is not undefined") {
-                self.error = Some(message);
-            }
+        if let Err(error) = (self.callback)(chunk) {
+            self.error = Some(error);
+            return Err(callback_writer_error());
         }
+        Ok(())
     }
 }
 
-impl ResponseWriter for CallbackWriter<'_, '_> {
+impl<F> ResponseWriter for CallbackWriter<F>
+where
+    F: FnMut(String) -> napi::Result<()>,
+{
     fn write(&mut self, content: &str) -> webui_handler::Result<()> {
         if self.error.is_some() {
-            return Ok(());
+            return Err(callback_writer_error());
         }
         self.buffer.push_str(content);
         if self.buffer.len() >= STREAM_CHUNK_SIZE {
-            self.flush();
+            self.flush()?;
         }
         Ok(())
     }
 
     fn end(&mut self) -> webui_handler::Result<()> {
-        self.flush();
-        Ok(())
+        self.flush()
     }
+}
+
+#[cold]
+#[inline(never)]
+fn callback_writer_error() -> HandlerError {
+    HandlerError::Writer("Node chunk callback failed".to_owned())
 }
 
 fn render_to_callback(
@@ -444,18 +457,14 @@ fn render_to_callback(
     protocol: &HandlerProtocol,
     state: &Value,
     options: &RenderOptions<'_>,
-    on_chunk: &Function<String, ()>,
+    on_chunk: &Function<String>,
 ) -> napi::Result<()> {
-    let mut writer = CallbackWriter::new(on_chunk);
-    handler
-        .render(protocol, state, options, &mut writer)
-        .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
-    writer.flush();
-
+    let mut writer = CallbackWriter::new(|chunk| on_chunk.call(chunk).map(drop));
+    let render_result = handler.render(protocol, state, options, &mut writer);
     if let Some(error) = writer.error {
-        return Err(NapiError::from_reason(format!("Callback error: {error}")));
+        return Err(error);
     }
-    Ok(())
+    render_result.map_err(|e| NapiError::from_reason(format!("Render error: {e}")))
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
+import type { TemplateMeta } from './template.js';
 
 /**
  * `TemplateElement extends HTMLElement` at module scope, so `HTMLElement`
@@ -77,6 +78,7 @@ const {
 
 /** The activation hook the streaming coordinator invokes on a committed boundary. */
 const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
+const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
 
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
@@ -213,7 +215,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       hasAttribute(n: string): boolean;
       $deferredSSR: boolean;
       $hydrated: boolean;
-      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
     raw.setAttribute('data-ws', '');
 
@@ -248,9 +250,11 @@ describe('TemplateElement — streamed-host activation ownership', () => {
 
     const el = new DetachedUpgradeElement();
     const raw = el as unknown as {
+      $meta?: TemplateMeta;
       setAttribute(name: string, value: string): void;
-      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
+    raw.$meta = { h: '<span></span>' };
     raw.setAttribute('data-ws', '');
 
     raw[STREAMING_BOUNDARY_ACTIVATE]({ detached: true });
@@ -264,6 +268,60 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       $shouldDeferSSRHydration(): boolean;
     };
     assert.equal(el.$shouldDeferSSRHydration(), false);
+  });
+
+  test('reports missing metadata numerically and explicitly abandons internal deferral', () => {
+    const el = new TemplateElement();
+    const raw = el as unknown as {
+      tagName: string;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
+      [STREAMING_BOUNDARY_ABANDON](): void;
+    };
+    raw.tagName = 'test-missing-activation-meta';
+    raw.setAttribute('data-ws', '');
+    el.connectedCallback();
+
+    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), 3);
+    assert.equal(raw.$deferredSSR, true);
+
+    raw[STREAMING_BOUNDARY_ABANDON]();
+    assert.equal(raw.$deferredSSR, false);
+  });
+
+  test('caches metadata before static-host opt-out so a later state write can wake it', () => {
+    let activationMeta: TemplateMeta | undefined;
+    class OptOutElement extends TemplateElement {
+      protected override $shouldActivateOnBoundaryCommit(): boolean {
+        return false;
+      }
+
+      protected override $afterExternalStateWrite(applied: boolean): void {
+        if (applied) this.$activateDeferredSSR();
+      }
+
+      protected override $activateDeferredSSR(): void {
+        activationMeta = (this as unknown as { $meta?: TemplateMeta }).$meta;
+      }
+    }
+    const el = new OptOutElement();
+    const raw = el as unknown as {
+      tagName: string;
+      $meta?: TemplateMeta;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](): number;
+    };
+    raw.tagName = 'test-static-opt-out';
+    registerTemplate(raw.tagName);
+    window.__webui!.templates![raw.tagName].tr = ['message'];
+    raw.setAttribute('data-ws', '');
+    el.connectedCallback();
+
+    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), 2);
+    assert.ok(raw.$meta, 'boundary commit caches metadata without mounting');
+    el.setState({ message: 'wake' });
+    assert.equal(activationMeta, raw.$meta, 'the later state write can activate from cached metadata');
   });
 });
 
@@ -287,7 +345,7 @@ describe('TemplateElement — hydration lifecycle exceptions', () => {
       tagName: string;
       childNodes: unknown[];
       setAttribute(name: string, value: string): void;
-      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): void;
+      [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number;
     };
     raw.tagName = tag;
     raw.childNodes.push({});

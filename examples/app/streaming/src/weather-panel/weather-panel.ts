@@ -24,7 +24,7 @@ interface Forecast {
  *
  * That split is the whole point, and it is why the panel is a component
  * rather than a static skeleton. Streaming hydration makes this element
- * interactive while the response is still open, so `connectedCallback` — and
+ * interactive while the response is still open, so `hydratedCallback` — and
  * with it the forecast request — runs long before `DOMContentLoaded`. The
  * expensive backend work overlaps the rest of the stream instead of queueing
  * behind it, and the forecast typically lands between two feed batches.
@@ -44,14 +44,7 @@ export class WeatherPanel extends WebUIElement {
   /** `loading` (server-rendered), then `ready` or `error` from the fetch. */
   @attr status = 'loading';
 
-  /** `connectedCallback` also runs on re-insertion; the forecast is fetched
-   *  once per element, not once per connection. */
-  private requested = false;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    if (this.requested) return;
-    this.requested = true;
+  protected override hydratedCallback(): void {
     void this.loadForecast();
   }
 

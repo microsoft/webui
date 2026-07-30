@@ -97,18 +97,30 @@ export function saveSnapshot(name: string, bundle: BundleSizes, rows: HydrationR
   console.log(`\n[hydration] baseline saved to ${path}`);
 }
 
-export function loadSnapshot(name: string): HydrationSnapshot | null {
+export function loadSnapshot(name: string, required = false): HydrationSnapshot | null {
   const path = snapshotPath(name);
   if (!existsSync(path)) {
-    console.log(`\n[hydration] compare: baseline '${name}' not found (run WEBUI_BENCH_SAVE=${name} first)`);
-    return null;
+    return unavailableSnapshot(
+      `baseline '${name}' not found at ${path} (run WEBUI_BENCH_SAVE=${name} first)`,
+      required,
+    );
   }
   const snapshot = JSON.parse(readFileSync(path, 'utf-8')) as HydrationSnapshot;
   if (snapshot.schema !== HYDRATION_SNAPSHOT_SCHEMA) {
-    console.log(`\n[hydration] compare: baseline '${name}' schema ${snapshot.schema} != ${HYDRATION_SNAPSHOT_SCHEMA}; regenerate`);
-    return null;
+    return unavailableSnapshot(
+      `baseline '${name}' schema ${snapshot.schema} != ${HYDRATION_SNAPSHOT_SCHEMA}; regenerate it`,
+      required,
+    );
   }
   return snapshot;
+}
+
+function unavailableSnapshot(message: string, required: boolean): null {
+  if (required) {
+    throw new Error(`[hydration] compare: ${message}`);
+  }
+  console.log(`\n[hydration] compare: ${message}`);
+  return null;
 }
 
 function pctChange(base: number, current: number): number {

@@ -195,6 +195,29 @@ describe('renderStream', () => {
     assert.ok(chunks.length > 0);
     assert.ok(chunks.join('').includes('Hello, Stream!'));
   });
+
+  test('accepts callback return values', () => {
+    const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
+    const chunks: string[] = [];
+    protocol.renderStream({ name: 'Return', items: [], show: false }, (chunk) => {
+      chunks.push(chunk);
+      return false;
+    });
+    assert.ok(chunks.join('').includes('Hello, Return!'));
+  });
+
+  test('propagates callback exceptions', () => {
+    const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
+    assert.throws(
+      () =>
+        protocol.renderStream({ name: 'Throw', items: [], show: false }, () => {
+          throw new Error('chunk callback failed');
+        }),
+      /chunk callback failed/,
+    );
+  });
 });
 
 describe('renderComponentTemplates', () => {

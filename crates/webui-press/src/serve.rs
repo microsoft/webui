@@ -74,6 +74,13 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     let out_dir = PathBuf::from(&config.out_dir);
     let content_dir_str = config.content_dir.clone();
     let public_dir_str = config.public_dir.clone();
+    let projection_manifest_files = projection_manifest_paths(
+        &config_dir,
+        config
+            .bundler
+            .as_ref()
+            .map_or(&[][..], |bundler| bundler.projection_manifests.as_slice()),
+    );
 
     println!(
         "{} {}",
@@ -149,7 +156,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         spawn_watcher(
             WatchConfig {
                 paths: watched,
-                explicit_files: Vec::new(),
+                explicit_files: projection_manifest_files,
                 ignore,
                 debounce: DEBOUNCE_DURATION,
                 retry_unchanged_when: None,
@@ -265,6 +272,16 @@ fn watch_paths(
     paths
 }
 
+fn projection_manifest_paths(config_dir: &Path, manifests: &[String]) -> Vec<PathBuf> {
+    manifests
+        .iter()
+        .map(|manifest| {
+            let path = config_dir.join(manifest);
+            path.canonicalize().unwrap_or(path)
+        })
+        .collect()
+}
+
 /// Re-read and parse `config.json`. Used both to seed the initial build
 /// and inside the rebuild worker so live edits to the config take effect.
 fn clone_config_via_reparse(config_path: &Path) -> Result<DocsConfig> {
@@ -317,6 +334,21 @@ mod tests {
                 PathBuf::from("/proj/.webui-press"),
                 PathBuf::from("/proj/markdown"),
             ]
+        );
+    }
+
+    #[test]
+    fn projection_manifest_paths_resolve_from_config_directory() {
+        let paths = projection_manifest_paths(
+            Path::new("/proj/docs/.webui-press"),
+            &["../../client/dist/webui-projection.json".to_string()],
+        );
+
+        assert_eq!(
+            paths,
+            [PathBuf::from(
+                "/proj/docs/.webui-press/../../client/dist/webui-projection.json"
+            )]
         );
     }
 }

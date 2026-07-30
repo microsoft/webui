@@ -169,7 +169,11 @@ async function emitProjectionManifest(
     graph,
     membership,
     outputContents,
-    entryClosures: buildEntryClosures(metafile, outputIds),
+    entryClosures: buildEntryClosures(
+      metafile,
+      outputIds,
+      build.initialOptions.publicPath
+    ),
     rootDir,
     manifestPath,
     bundlerName: "esbuild",
@@ -241,6 +245,20 @@ async function loadInputRecords(
   const entries = Object.keys(metafile.inputs);
   const records = await Promise.all(
     entries.map(async (metafileId) => {
+      const stdinSource = sourceForStdin(
+        metafileId,
+        build
+      );
+      if (stdinSource !== undefined) {
+        return {
+          metafileId,
+          moduleId: virtualModuleId(metafileId),
+          kind: "virtual" as const,
+          source: stdinSource,
+          packageName: undefined,
+        };
+      }
+
       const filePath = path.resolve(workingDirectory, metafileId);
       const source = await readPhysicalSource(filePath);
       if (source !== undefined) {
@@ -253,15 +271,11 @@ async function loadInputRecords(
         };
       }
 
-      const stdinSource = sourceForStdin(
-        metafileId,
-        build
-      );
       return {
         metafileId,
         moduleId: virtualModuleId(metafileId),
         kind: "virtual" as const,
-        source: stdinSource,
+        source: undefined,
         packageName: undefined,
       };
     })
@@ -404,13 +418,22 @@ function buildMembership(
  */
 function buildEntryClosures(
   metafile: Metafile,
-  outputIds: ReadonlyMap<string, string>
+  outputIds: ReadonlyMap<string, string>,
+  publicPath: string | undefined
 ): ReadonlyMap<string, ReadonlyArray<string>> {
   const closures = new Map<string, ReadonlyArray<string>>();
   for (const [outputPath, metadata] of Object.entries(metafile.outputs)) {
     if (metadata.entryPoint === undefined) continue;
     const entryId = outputIds.get(outputPath);
     if (!entryId) continue;
+    if (publicPath) {
+      // A public path changes the URL written into emitted import specifiers,
+      // but the metafile still exposes local output paths. Until the manifest
+      // carries served URLs, retaining an empty owner is safer than synthesizing
+      // same-origin hrefs for potentially cross-origin chunks.
+      closures.set(entryId, []);
+      continue;
+    }
 
     // Iterative worklist: an output import graph may contain cycles, and the
     // repo bans recursion in graph walks.
@@ -431,8 +454,6 @@ function buildEntryClosures(
         members.push(edge.path);
       }
     }
-    if (members.length === 0) continue;
-
     members.sort((left, right) => {
       const bySize =
         (metafile.outputs[right]?.bytes ?? 0) -
@@ -445,7 +466,7 @@ function buildEntryClosures(
       const memberId = outputIds.get(member);
       if (memberId) resolved.push(memberId);
     }
-    if (resolved.length > 0) closures.set(entryId, resolved);
+    closures.set(entryId, resolved);
   }
   return closures;
 }

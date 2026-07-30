@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "type": "module",
   "private": true,
+  "webuiProjectionManifest": "./dist/webui-projection.json",
   "scripts": {
     "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:server",
     "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
@@ -10,6 +11,7 @@
     "build:server": "cargo check -p streaming-example-server",
     "start:client": "pnpm run build:deps && node ./build-client.mjs --watch",
     "start:server": "cargo run -p streaming-example-server -- --port 3020",
+    "start:test-server": "cargo run -p streaming-example-server -- --port 3020 --test-controls --max-concurrent-renders 16",
     "start": "cargo xtask dev streaming",
     "test": "playwright test",
     "test:update-snapshots": "playwright test --update-snapshots"

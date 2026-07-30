@@ -144,7 +144,7 @@ pub(crate) fn parse_to_protocol(
         component.hydration_mode = hydration_mode;
         component.hydration_keys = hydration_keys;
         let (navigation_mode, navigation_keys) = encode_state_surface(navigation);
-        component.navigation_mode = navigation_mode;
+        component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
     }
 

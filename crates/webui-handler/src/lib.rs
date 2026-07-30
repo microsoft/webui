@@ -270,7 +270,7 @@ pub struct WebUIHandler {
 }
 
 /// Context object for processing WebUI fragments
-pub(crate) struct WebUIProcessContext<'data, 'output, 'stream> {
+pub(crate) struct WebUIProcessContext<'data, 'output> {
     pub(crate) protocol: &'data WebUIProtocol,
     /// Whether this runtime document predates namespaced compiler signals.
     /// Legacy compatibility is ordinary-render-only; streaming preflight still
@@ -336,7 +336,7 @@ pub(crate) struct WebUIProcessContext<'data, 'output, 'stream> {
     /// binding on the client side instead of DOM-walking.
     pub(crate) route_chain_index: usize,
     /// Present only for the opt-in progressive streaming render path.
-    pub(crate) streaming: Option<StreamingRenderState<'data, 'stream>>,
+    pub(crate) streaming: Option<StreamingRenderState<'data>>,
     /// Reusable JSON serialization scratch buffer, owned by the render context.
     /// The bootstrap/field/template helpers borrow it so each render reuses one
     /// buffer across every serialized field and every streaming checkpoint
@@ -696,9 +696,16 @@ fn collect_component_state_into<'a, 'b>(
             ComponentStateSurface::Hydration => {
                 (component.hydration_mode, &component.hydration_keys)
             }
-            ComponentStateSurface::Navigation => {
-                (component.navigation_mode, &component.navigation_keys)
-            }
+            ComponentStateSurface::Navigation => (
+                match component.navigation_mode {
+                    Some(mode) => mode,
+                    None if !component.navigation_keys.is_empty() => {
+                        StateProjectionMode::Keys as i32
+                    }
+                    None => return true,
+                },
+                &component.navigation_keys,
+            ),
         };
         if mode == StateProjectionMode::All as i32 {
             return true;
@@ -866,7 +873,7 @@ impl WebUIHandler {
     fn process_fragment_id<'data>(
         &self,
         fragment_id: &str,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
+        context: &mut WebUIProcessContext<'data, '_>,
     ) -> Result<()> {
         if let Some(fragment_list) = context.protocol.fragments.get(fragment_id) {
             self.process_fragment(&fragment_list.fragments, context)
@@ -882,7 +889,7 @@ impl WebUIHandler {
     fn process_fragment<'data>(
         &self,
         fragments: &'data [WebUIFragment],
-        context: &mut WebUIProcessContext<'data, '_, '_>,
+        context: &mut WebUIProcessContext<'data, '_>,
     ) -> Result<()> {
         // Pre-scan: find the best matching route among sibling routes by specificity.
         // This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal).
@@ -1262,11 +1269,7 @@ impl WebUIHandler {
     }
 
     /// Resolve a dotted path value, checking local variables first, then global state.
-    fn resolve_value(
-        &self,
-        path: &str,
-        context: &WebUIProcessContext<'_, '_, '_>,
-    ) -> Option<Value> {
+    fn resolve_value(&self, path: &str, context: &WebUIProcessContext<'_, '_>) -> Option<Value> {
         resolve_value_from_sources(path, &context.local_vars, context.state).map(Cow::into_owned)
     }
 
@@ -1380,7 +1383,7 @@ impl WebUIHandler {
     fn process_signal<'data>(
         &self,
         signal: &'data webui_protocol::WebUIFragmentSignal,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
+        context: &mut WebUIProcessContext<'data, '_>,
     ) -> Result<()> {
         if signal.raw {
             self.process_raw_signal(signal, context)
@@ -1393,7 +1396,7 @@ impl WebUIHandler {
     fn process_raw_signal<'data>(
         &self,
         signal: &'data webui_protocol::WebUIFragmentSignal,
-        context: &mut WebUIProcessContext<'data, '_, '_>,
+        context: &mut WebUIProcessContext<'data, '_>,
     ) -> Result<()> {
         let structural_value = structural_signal_value(signal).or_else(|| {
             context
@@ -7920,6 +7923,20 @@ mod tests {
     }
 
     #[test]
+    fn legacy_navigation_without_projection_metadata_preserves_full_state() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.components.insert(
+            "app-shell".to_string(),
+            webui_protocol::ComponentData::default(),
+        );
+
+        assert!(matches!(
+            collect_navigation_state(&protocol, ["app-shell"]),
+            StateSelection::Full
+        ));
+    }
+
+    #[test]
     fn empty_reachable_hydration_keys_exclude_all_state() -> Result<()> {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -7981,7 +7998,7 @@ mod tests {
             "items-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
-                navigation_mode: StateProjectionMode::Keys as i32,
+                navigation_mode: Some(StateProjectionMode::Keys as i32),
                 navigation_keys: vec!["items".into()],
                 ..Default::default()
             },
@@ -8904,6 +8921,13 @@ mod tests {
     }
 
     fn streaming_protocol(with_boundaries: bool) -> Protocol {
+        streaming_protocol_with_state_strategy(with_boundaries, InitialStateStrategy::Components)
+    }
+
+    fn streaming_protocol_with_state_strategy(
+        with_boundaries: bool,
+        state_strategy: InitialStateStrategy,
+    ) -> Protocol {
         let mut fragments = HashMap::new();
         let mut entry = vec![
             WebUIFragment::raw("<!DOCTYPE html><html><HEAD data-shell=\"main\">"),
@@ -8940,7 +8964,7 @@ mod tests {
         );
 
         let mut document = WebUIProtocol::new(fragments);
-        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        document.initial_state_strategy = state_strategy as i32;
         document.components.insert(
             "my-counter".to_string(),
             webui_protocol::ComponentData {
@@ -9001,13 +9025,9 @@ mod tests {
         assert!(first_flush.contains(r#""templates":{"my-counter":"#));
         assert!(!first_flush.contains("slow tail"));
         assert!(!writer.output.contains("id=\"webui-data\""));
-        // The dirty tail coalesces into a single terminal checkpoint that both
-        // carries the (empty) tail bootstrap and marks the stream terminal, so
-        // there is no separate `[1,1,0,...]` tail record and no trailing
-        // `[1,2,1,{}]` empty terminal.
-        assert!(writer
-            .output
-            .contains("[1,1,1,{\"inventory\":\"\",\"state\":{}}]"));
+        // The terminal flush commits the scriptless tail without manufacturing
+        // another state/template projection.
+        assert!(writer.output.contains("[1,1,1,{}]"));
         assert!(!writer.output.contains("[1,1,0,"));
         assert!(!writer.output.contains("[1,2,1,{}]"));
 
@@ -9024,6 +9044,68 @@ mod tests {
             .find("src=\"/index.js\"")
             .expect("entry script");
         assert!(attributed_head < marker && marker < authored_script);
+    }
+
+    #[test]
+    fn streaming_terminal_tail_never_resends_full_state() {
+        let protocol = streaming_protocol_with_state_strategy(true, InitialStateStrategy::Full);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({ "count": 1, "serverOnly": "secret" }),
+                &RenderOptions::new("index.html", "/").with_body_inject(" \n"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert_eq!(
+            writer.output.matches("serverOnly").count(),
+            1,
+            "full state belongs only to the interactive boundary"
+        );
+        assert!(writer.output.contains("[1,1,1,{}]"));
+    }
+
+    #[test]
+    fn static_streaming_document_uses_one_empty_terminal_record() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    structural_fragment("head_start"),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>"),
+                    structural_fragment("body_start"),
+                    WebUIFragment::raw("<main>static</main>"),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut writer = FlushTestWriter::default();
+
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &test_json!({ "serverOnly": "secret" }),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert_eq!(writer.flushes.len(), 1);
+        assert!(writer.output.contains(STREAMING_MARKER));
+        assert!(writer.output.contains("[1,0,1,{}]"));
+        assert!(!writer.output.contains("serverOnly"));
+        assert!(!writer.output.contains("id=\"webui-data\""));
+        assert!(!writer.output.contains("<!--wb:"));
     }
 
     #[test]
@@ -9860,6 +9942,103 @@ mod tests {
         assert!(
             !writer.output.contains("<route-page>"),
             "an unmarked custom-element opening must never be completed"
+        );
+    }
+
+    #[test]
+    fn streaming_checkpoint_preserves_relative_route_base_for_metadata() {
+        let entry = vec![
+            WebUIFragment::raw("<html><head>"),
+            structural_fragment("head_start"),
+            structural_fragment("head_end"),
+            WebUIFragment::raw("</head><body>"),
+            structural_fragment("body_start"),
+            structural_fragment("boundary_start:0"),
+            WebUIFragment::route_from(webui_protocol::WebUiFragmentRoute {
+                path: "/account".into(),
+                fragment_id: "account-shell".into(),
+                exact: false,
+                ..Default::default()
+            }),
+            structural_fragment("boundary_end:0"),
+            structural_fragment("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ];
+        let fragments = HashMap::from([
+            ("index.html".to_string(), FragmentList { fragments: entry }),
+            (
+                "account-shell".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route_from(
+                        webui_protocol::WebUiFragmentRoute {
+                            path: "./details".into(),
+                            fragment_id: "details-page".into(),
+                            exact: true,
+                            pending_component: "details-loading".into(),
+                            error_component: "details-error".into(),
+                            ..Default::default()
+                        },
+                    )],
+                },
+            ),
+            (
+                "details-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>details</p>")],
+                },
+            ),
+            (
+                "details-loading".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>loading</p>")],
+                },
+            ),
+            (
+                "details-error".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>error</p>")],
+                },
+            ),
+        ]);
+        let mut document = WebUIProtocol::new(fragments);
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        for name in [
+            "account-shell",
+            "details-page",
+            "details-loading",
+            "details-error",
+        ] {
+            document.components.insert(
+                name.to_string(),
+                webui_protocol::ComponentData {
+                    template_json: format!(r#"{{"h":"<{name}></{name}>","th":1}}"#),
+                    ..Default::default()
+                },
+            );
+        }
+        let protocol = Protocol::new(document);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/account/details"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let first = &writer.output[..writer.flushes[0]];
+        assert!(
+            first.contains(r#""details-loading":"#),
+            "relative-route pending metadata missing: {first}"
+        );
+        assert!(
+            first.contains(r#""details-error":"#),
+            "relative-route error metadata missing: {first}"
         );
     }
 

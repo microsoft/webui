@@ -179,27 +179,45 @@ function terminalFragment(seq: number): string {
     + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
 }
 
+/** Metadata-only setup checkpoint used by the scaling matrix so every measured
+ * content boundary parses roots after the class has the same template metadata. */
+function templateSetupFragment(): string {
+  const envelope = JSON.stringify([
+    1,
+    0,
+    0,
+    { templates: { [ISLAND_TAG]: ISLAND_TEMPLATE } },
+  ]);
+  return '<!--wb:0--><!--/wb:0-->'
+    + `<script type="application/json" data-webui-boundary>${envelope}</script>`
+    + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
+}
+
 /** Build a full streamed scenario for a boundary count / layout / timing. */
 export function buildStreamingScenario(
   boundaryCount: number,
   layout: MarkerLayout,
   timing: DefineTiming,
+  separateTemplateSetup = false,
 ): StreamingScenario {
   const rootsPer = distribute(TOTAL_ROOTS, boundaryCount);
   const labelPer = distribute(TOTAL_STATE_VALUE_BYTES, boundaryCount);
-  const boundaries: string[] = [];
+  const boundaries: string[] = separateTemplateSetup
+    ? [templateSetupFragment()]
+    : [];
+  const sequenceOffset = separateTemplateSetup ? 1 : 0;
   let cell = 0;
   let totalStateChars = 0;
   let totalRoots = 0;
   for (let seq = 0; seq < boundaryCount; seq++) {
     boundaries.push(
       boundaryFragment(
-        seq,
+        seq + sequenceOffset,
         cell,
         rootsPer[seq],
         'x'.repeat(labelPer[seq]),
         layout,
-        seq === 0,
+        !separateTemplateSetup && seq === 0,
       ),
     );
     cell += rootsPer[seq];
@@ -213,7 +231,7 @@ export function buildStreamingScenario(
     layout,
     timing,
     boundaries,
-    terminal: terminalFragment(boundaryCount),
+    terminal: terminalFragment(boundaryCount + sequenceOffset),
     totalStateChars,
     totalRoots,
   };

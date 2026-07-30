@@ -97,7 +97,7 @@ export async function runScenario(config: DriveConfig): Promise<RunMetrics> {
     __benchHydrationCpu?: number;
     __benchPeakHeap?: number;
     __benchHydratedCount?: number;
-    __defineBenchIsland: () => void;
+    __defineBenchIsland: () => CustomElementConstructor;
     __webui?: { state?: unknown };
   };
 
@@ -168,27 +168,26 @@ export async function runScenario(config: DriveConfig): Promise<RunMetrics> {
   } else {
     const boundaries = config.boundaries ?? [];
     if (config.captureBoundaryState) {
-      win.__defineBenchIsland();
       receivedBoundaryLabels = [];
       const activate = Symbol.for('microsoft.webui.boundaryActivate');
       type Activation = (
         this: Element,
         state?: Record<string, unknown>,
-      ) => void;
-      const ctor = customElements.get('bench-island') as
-        | (CustomElementConstructor & { prototype: Record<symbol, Activation> })
-        | undefined;
-      const original = ctor?.prototype[activate];
-      if (!ctor || typeof original !== 'function') {
+      ) => number;
+      const ctor = win.__defineBenchIsland() as CustomElementConstructor & {
+        prototype: Record<symbol, Activation>;
+      };
+      const original = ctor.prototype[activate];
+      if (typeof original !== 'function') {
         throw new Error('bench: state-delivery probe could not wrap the activation hook');
       }
       const labels = receivedBoundaryLabels;
       ctor.prototype[activate] = function captureBoundaryState(
         this: Element,
         state?: Record<string, unknown>,
-      ): void {
+      ): number {
         labels.push(typeof state?.label === 'string' ? state.label : '<missing>');
-        original.call(this, state);
+        return original.call(this, state);
       };
     }
 
@@ -220,21 +219,46 @@ export async function runScenario(config: DriveConfig): Promise<RunMetrics> {
       if (!predicate()) throw new Error('bench: streaming coordinator did not settle within bounds');
     };
 
-    if (config.timing === 'eager') win.__defineBenchIsland();
-
-    const start = performance.now();
-    for (let seq = 0; seq < boundaries.length; seq++) {
-      document.body.insertAdjacentHTML('beforeend', boundaries[seq]);
-      await waitFor(noSentinels);
-      if (config.timing === 'race' && seq === 0) win.__defineBenchIsland();
-      notePeak();
+    if (config.timing === 'eager' && !config.captureBoundaryState) {
+      win.__defineBenchIsland();
     }
-    document.body.insertAdjacentHTML('beforeend', config.terminal ?? '');
-    // Wait until every root is activated (data-ws stripped, incl. late race
-    // activations) and all boundary scaffolding is gone.
-    await waitFor(fullyClean);
-    elapsedMs = performance.now() - start;
-    notePeak();
+
+    // Each delivered response chunk enters the browser from a distinct task.
+    // A MessageChannel yields without the nested-timer clamp that would add
+    // synthetic milliseconds per boundary at B=100.
+    const taskChannel = new MessageChannel();
+    let taskContinuation: (() => void) | undefined;
+    taskChannel.port1.onmessage = () => {
+      const continuation = taskContinuation;
+      taskContinuation = undefined;
+      continuation?.();
+    };
+    const nextTask = (): Promise<void> =>
+      new Promise((resolve) => {
+        taskContinuation = resolve;
+        taskChannel.port2.postMessage(0);
+      });
+
+    try {
+      const start = performance.now();
+      for (let seq = 0; seq < boundaries.length; seq++) {
+        if (seq > 0) await nextTask();
+        document.body.insertAdjacentHTML('beforeend', boundaries[seq]);
+        await waitFor(noSentinels);
+        if (config.timing === 'race' && seq === 0) win.__defineBenchIsland();
+        notePeak();
+      }
+      if (boundaries.length > 0) await nextTask();
+      document.body.insertAdjacentHTML('beforeend', config.terminal ?? '');
+      // Wait until every root is activated (data-ws stripped, incl. late race
+      // activations) and all boundary scaffolding is gone.
+      await waitFor(fullyClean);
+      elapsedMs = performance.now() - start;
+      notePeak();
+    } finally {
+      taskChannel.port1.close();
+      taskChannel.port2.close();
+    }
   }
 
   // Flush any pending longtask notifications before reading them.

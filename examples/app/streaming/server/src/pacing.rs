@@ -25,8 +25,8 @@
 //! The delay is supplied per flush rather than as one fixed duration,
 //! because this app's boundaries do not all deserve the same gap: the
 //! weather shell must hand straight over to the composer, while each feed
-//! batch should arrive after a visible, randomized pause. [`gap_is_paced`]
-//! is that mapping.
+//! batch should arrive after a visible, randomized pause. [`feed_gap`] is
+//! that mapping.
 
 use std::time::Duration;
 
@@ -43,15 +43,12 @@ const FIRST_FEED_GAP: usize = 1;
 /// Feed batches, and therefore jittered gaps: one before each batch.
 pub(crate) const FEED_BATCH_COUNT: usize = 3;
 
-/// Whether the pause *after* flush `index` should be paced.
-///
-/// Flushes [`FIRST_FEED_GAP`] onward commit the composer and the first two
-/// feed batches, and each of their pauses is the wait before the next feed
-/// batch. Everything after that — the last batch, the implicit tail
-/// checkpoint, and the terminal record — closes the response without
-/// further delay.
-pub(crate) fn gap_is_paced(index: usize) -> bool {
-    (FIRST_FEED_GAP..FIRST_FEED_GAP + FEED_BATCH_COUNT).contains(&index)
+/// Zero-based feed gap released after flush `index`, or `None` when that flush
+/// should return immediately.
+pub(crate) fn feed_gap(index: usize) -> Option<usize> {
+    index
+        .checked_sub(FIRST_FEED_GAP)
+        .filter(|gap| *gap < FEED_BATCH_COUNT)
 }
 
 /// Wraps a [`FlushWriter`] and sleeps for a caller-chosen duration after
@@ -104,7 +101,7 @@ impl<W: FlushWriter, D: FnMut(usize) -> Duration> FlushWriter for CheckpointPace
 
 #[cfg(test)]
 mod tests {
-    use super::{gap_is_paced, CheckpointPacedWriter};
+    use super::{feed_gap, CheckpointPacedWriter};
     use std::time::{Duration, Instant};
     use webui_handler::{FlushWriter, HandlerError, ResponseWriter, Result};
 
@@ -242,13 +239,16 @@ mod tests {
         // Flush 0 commits the weather shell; the composer must follow it
         // immediately or the highest-priority island is delayed behind a
         // boundary that carries no server data at all.
-        assert!(!gap_is_paced(0), "the weather-to-composer gap must be free");
+        assert!(
+            feed_gap(0).is_none(),
+            "the weather-to-composer gap must be free"
+        );
         // Flushes 1, 2 and 3 precede feed batches 1, 2 and 3.
-        assert!(gap_is_paced(1));
-        assert!(gap_is_paced(2));
-        assert!(gap_is_paced(3));
-        // The tail checkpoint and terminal record close the response.
-        assert!(!gap_is_paced(4), "the response must close promptly");
-        assert!(!gap_is_paced(5));
+        assert_eq!(feed_gap(1), Some(0));
+        assert_eq!(feed_gap(2), Some(1));
+        assert_eq!(feed_gap(3), Some(2));
+        // The empty terminal record closes the response.
+        assert!(feed_gap(4).is_none(), "the response must close promptly");
+        assert!(feed_gap(5).is_none());
     }
 }

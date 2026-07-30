@@ -167,6 +167,11 @@ Each layer of the architecture contributes to the overall performance profile:
   boundaries need no graph walk. Request-local buffers retain capacity for
   reuse. The separately imported streaming coordinator passes this ephemeral
   state directly to components and removes checkpoint scaffolding after commit.
+  Hosts must also bound concurrent blocking renders before calling
+  `spawn_blocking`; channel backpressure bounds bytes after a task starts, not
+  the runtime's queued blocking-task count. Reject saturation before spawning
+  (for example, with `Semaphore::try_acquire_owned`) so retained request state
+  stays bounded.
   Intermediaries can still buffer the response, so production deployments must
   configure and verify their full delivery path.
 

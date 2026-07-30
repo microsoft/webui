@@ -167,18 +167,26 @@ re-render it. An `@observable` written before hydration finishes — in a field
 initializer, the `constructor`, or before `super.connectedCallback()` — cannot
 update that DOM, so the write is dropped and the runtime logs a
 `[WebUI] Hydration mismatch` warning naming the properties. Seed such values in
-the SSR state, or assign them after `super.connectedCallback()`. The warning is
+the SSR state, or assign them from `hydratedCallback()`. The warning is
 development-only and is dead-code-eliminated from production bundles via the
 `__WEBUI_DEV__` compile-time flag (on by default; `webui-press build` sets it to
 `false`). See the
 [Interactivity Guide](https://microsoft.github.io/webui/guide/concepts/interactivity#setting-observable-state-during-setup).
 
-`super.connectedCallback()` is the synchronous hydration boundary for an
-authored component. When it returns, bindings, events, and `w-ref` references
-are wired. Use a parser-inserted, non-async ES module script or a classic
-`defer` script. A blocking classic script must follow every SSR instance it may
-upgrade. Descendants must not structurally mutate a containing component's SSR
-subtree before it hydrates, because hydration relies on stable compiled paths.
+Override the protected `hydratedCallback()` hook for work that requires the
+component's bindings, events, and `w-ref` references to be ready. It runs
+synchronously exactly once after the first successful ordinary SSR hydration,
+client-created mount, deferred streamed activation, or dormant static-host wake.
+Its once-latch is set before author code runs, so a thrown callback is not
+retried on reconnect.
+
+`connectedCallback()` remains a native per-connection lifecycle. On ordinary
+SSR and client-created mounts, `super.connectedCallback()` hydrates
+synchronously, but a streamed `data-ws` root returns while still deferred and
+hydrates only when its boundary commits. Therefore `connectedCallback()` cannot
+be used as a universal post-hydration signal. Descendants must not structurally
+mutate a containing component's SSR subtree before it hydrates, because
+hydration relies on stable compiled paths.
 
 ### DOM strategy (`--dom`)
 
@@ -208,6 +216,7 @@ Base class for framework components.
 | Member | Purpose |
 |--------|---------|
 | `static define(tagName)` | Register the class as a custom element |
+| `protected hydratedCallback()` | Run once after the first successful hydration or client mount |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
 | `$update()` | Force a reactive update (normally called automatically) |
 | `disconnectedCallback()` | Override for cleanup (global listeners, etc.) |
@@ -536,6 +545,7 @@ sequenceDiagram
     FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
     FW->>FW: $wireEvents() + $wireRefs()
     FW->>FW: $buildPathIndex(), $ready = true
+    FW->>CE: hydratedCallback() (once)
     Note over FW: DOM is already correct from SSR.<br/>No $update() call needed.
 ```
 
@@ -560,6 +570,7 @@ sequenceDiagram
     FW->>FW: $wireEvents() + $wireRefs()
     FW->>FW: $buildPathIndex(), $ready = true
     FW->>FW: $update() — flush initial property values
+    FW->>CE: hydratedCallback() (once)
 ```
 
 ---

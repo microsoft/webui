@@ -18,7 +18,7 @@ use crate::{HandlerError, Result, WebUIProcessContext};
 /// without an inventory bit are ignored (they carry no template or hydration
 /// state anyway).
 pub(crate) fn record_checkpoint_tag<'data>(
-    context: &mut WebUIProcessContext<'data, '_, '_>,
+    context: &mut WebUIProcessContext<'data, '_>,
     fragment_id: &str,
 ) {
     // Copy the `'data` index reference out first so the borrowed key outlives the
@@ -28,9 +28,22 @@ pub(crate) fn record_checkpoint_tag<'data>(
         return;
     };
     let tag: &'data str = tag.as_str();
+    let route_base = context.streaming.as_ref().and_then(|streaming| {
+        (streaming.component_reachability.is_route_dependent(index) == Some(true))
+            .then(|| context.route_base.clone())
+    });
     let Some(streaming) = context.streaming.as_mut() else {
         return;
     };
+    if let Some(route_base) = route_base {
+        let already_recorded = streaming
+            .checkpoint_route_roots
+            .iter()
+            .any(|(root, base)| *root == tag && base.as_ref() == route_base.as_ref());
+        if !already_recorded {
+            streaming.checkpoint_route_roots.push((tag, route_base));
+        }
+    }
     let byte_index = (index / 8) as usize;
     let bit = 1u8 << (index % 8);
     if byte_index >= streaming.checkpoint_seen.len()
@@ -49,7 +62,7 @@ pub(crate) fn record_checkpoint_tag<'data>(
 /// this checkpoint's delta. Template delivery is tracked separately because a
 /// reachable-but-unrendered descendant needs metadata without claiming live DOM.
 pub(super) fn commit_checkpoint_inventory(
-    streaming: &mut StreamingRenderState<'_, '_>,
+    streaming: &mut StreamingRenderState<'_>,
     component_index: &HashMap<String, u32>,
 ) -> Result<()> {
     streaming.inventory_delta.fill(0);
@@ -96,7 +109,7 @@ pub(super) fn commit_checkpoint_inventory(
 /// Returns `false` without mutating the capture when any root can reach an
 /// authored route. Those uncommon surfaces require the request-aware fallback.
 pub(super) fn expand_static_checkpoint_reachability<'data>(
-    streaming: &mut StreamingRenderState<'data, '_>,
+    streaming: &mut StreamingRenderState<'data>,
     component_index: &HashMap<String, u32>,
 ) -> Result<bool> {
     if !streaming.checkpoint_needs_expansion {
@@ -161,7 +174,7 @@ pub(super) fn expand_static_checkpoint_reachability<'data>(
 }
 
 pub(super) fn replace_checkpoint_reachability<'data>(
-    streaming: &mut StreamingRenderState<'data, '_>,
+    streaming: &mut StreamingRenderState<'data>,
     component_index: &'data HashMap<String, u32>,
     reachable: &[String],
 ) {
@@ -193,7 +206,7 @@ pub(super) fn replace_checkpoint_reachability<'data>(
 /// rendered component on the ordinary render path.
 #[inline]
 pub(crate) fn streaming_template_already_sent(
-    streaming: &StreamingRenderState<'_, '_>,
+    streaming: &StreamingRenderState<'_>,
     component_index: &HashMap<String, u32>,
     tag: &str,
 ) -> bool {
@@ -209,7 +222,7 @@ pub(crate) fn streaming_template_already_sent(
 ///
 /// Returns `true` exactly once per indexed component for this render.
 pub(super) fn mark_streaming_template_sent(
-    streaming: &mut StreamingRenderState<'_, '_>,
+    streaming: &mut StreamingRenderState<'_>,
     component_index: &HashMap<String, u32>,
     tag: &str,
 ) -> Result<bool> {
@@ -244,7 +257,6 @@ mod tests {
         // Deterministic capacity-reuse proof for the checkpoint tag vector /
         // dedup bitsets: rendered inventory and template delivery remain
         // independent, and the capture buffers keep their capacity once cleared.
-        let dirty = std::cell::Cell::new(false);
         let protocol = Protocol::new(WebUIProtocol::with_tokens(
             HashMap::from([
                 ("comp-a".to_string(), FragmentList::default()),
@@ -253,7 +265,6 @@ mod tests {
             Vec::new(),
         ));
         let mut streaming = StreamingRenderState {
-            dirty: &dirty,
             component_reachability: protocol.component_reachability(),
             head_marker_emitted: true,
             active_boundary: None,
@@ -267,6 +278,7 @@ mod tests {
             inventory_hex: String::new(),
             template_inventory: vec![0u8; 1],
             checkpoint_tags: Vec::new(),
+            checkpoint_route_roots: Vec::new(),
             checkpoint_seen: vec![0u8; 1],
             checkpoint_needs_expansion: false,
             state_key_scratch: Vec::new(),

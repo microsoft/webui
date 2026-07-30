@@ -44,6 +44,28 @@ declare global {
   }
 }
 
+let sessionCounter = 0;
+const controlledSessions = new WeakMap<Page, string>();
+
+async function gotoControlled(
+  page: Page,
+  waitUntil: 'commit' | 'domcontentloaded' | 'load' = 'commit',
+): Promise<string> {
+  const session = `worker-${process.pid}-${sessionCounter++}`;
+  controlledSessions.set(page, session);
+  await page.goto(`/?test=${session}`, { waitUntil });
+  return session;
+}
+
+async function release(
+  page: Page,
+  session: string,
+  gate: 'feed' | 'weather' | 'all',
+): Promise<void> {
+  const response = await page.request.post(`/__test/${session}/${gate}`);
+  expect(response.ok(), `release ${gate} for ${session}`).toBe(true);
+}
+
 /** Install test-only capture globals before any page script runs. Kept out
  *  of the production example so `src/index.ts` stays a faithful sample. */
 async function instrumentPage(page: Page): Promise<void> {
@@ -83,12 +105,17 @@ function hasSequence(page: Page, sequence: number): Promise<boolean> {
 }
 
 test.describe('streaming priority hydration', () => {
+  test.afterEach(async ({ page }) => {
+    const session = controlledSessions.get(page);
+    if (session) await release(page, session, 'all');
+  });
+
   test('composer paints and becomes interactive before DOMContentLoaded', async ({ page }) => {
     await instrumentPage(page);
     // 'commit' resolves as soon as the navigation's response headers are
     // received — well before the paced response body finishes — so this
     // test can observe the still-open-response state instead of racing it.
-    await page.goto('/', { waitUntil: 'commit' });
+    const session = await gotoControlled(page);
 
     await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 1));
     expect(await page.evaluate(() => window.__dclFired)).toBe(false);
@@ -106,14 +133,16 @@ test.describe('streaming priority hydration', () => {
     // (still-paced) response to finish parsing.
     expect(await page.evaluate(() => window.__dclFired)).toBe(false);
 
+    await release(page, session, 'all');
     await page.waitForLoadState('domcontentloaded');
     expect(await page.evaluate(() => window.__dclFired)).toBe(true);
   });
 
   test('feed batch 1 hydrates and is interactive before batch 2 is delivered', async ({ page }) => {
     await instrumentPage(page);
-    await page.goto('/', { waitUntil: 'commit' });
+    const session = await gotoControlled(page);
 
+    await release(page, session, 'feed');
     await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 2));
     expect(await hasSequence(page, 3)).toBe(false);
 
@@ -130,7 +159,8 @@ test.describe('streaming priority hydration', () => {
 
   test('all three feed batches hydrate in order and stay independently interactive', async ({ page }) => {
     await instrumentPage(page);
-    await page.goto('/');
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
     await page.waitForFunction(() => window.__hydrationCompleteFired);
 
     const events = await boundaryEvents(page);
@@ -172,7 +202,7 @@ test.describe('streaming priority hydration', () => {
 
   test('the weather panel hydrates first and resolves independently of the stream', async ({ page }) => {
     await instrumentPage(page);
-    await page.goto('/', { waitUntil: 'commit' });
+    const session = await gotoControlled(page);
 
     // The weather shell is boundary 0: it carries no server data, so it
     // commits immediately and must never delay the composer behind it.
@@ -185,6 +215,7 @@ test.describe('streaming priority hydration', () => {
     // The forecast endpoint is deliberately slower than a feed gap, so this
     // resolves through the component's own fetch rather than the stream.
     const summary = page.locator('weather-panel [data-testid="weather-summary"]');
+    await release(page, session, 'weather');
     await expect(summary).toBeVisible({ timeout: 15_000 });
     await expect(panel).toHaveAttribute('data-status', 'ready');
     await expect(page.locator('weather-panel [data-testid="weather-temperature"]')).not.toBeEmpty();
@@ -204,7 +235,8 @@ test.describe('streaming priority hydration', () => {
     });
 
     await instrumentPage(page);
-    await page.goto('/');
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
     await page.waitForFunction(() => window.__hydrationCompleteFired);
 
     // The island is a separate entry point: its code must never be inside
@@ -242,7 +274,8 @@ test.describe('streaming priority hydration', () => {
     page,
   }) => {
     await instrumentPage(page);
-    await page.goto('/');
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
     await page.waitForFunction(() => window.__hydrationCompleteFired);
 
     const preloads = await page.evaluate(() =>
@@ -275,7 +308,8 @@ test.describe('streaming priority hydration', () => {
 
   test('webui:hydration-complete fires only after the terminal boundary record', async ({ page }) => {
     await instrumentPage(page);
-    await page.goto('/');
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
     await page.waitForFunction(() => window.__hydrationCompleteFired);
 
     const events = await boundaryEvents(page);
@@ -288,7 +322,8 @@ test.describe('streaming priority hydration', () => {
 
   test('no boundary scaffolding remains once hydration completes', async ({ page }) => {
     await instrumentPage(page);
-    await page.goto('/');
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
     await page.waitForFunction(() => window.__hydrationCompleteFired);
 
     const leftovers = await page.evaluate(() => {
@@ -331,7 +366,8 @@ test.describe('streaming priority hydration', () => {
 
   test('the streaming response eventually closes', async ({ page }) => {
     await instrumentPage(page);
-    await page.goto('/');
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
     await page.waitForLoadState('load');
 
     // `responseEnd` is only populated once the full response body has been

@@ -43,7 +43,11 @@ export type {
   TemplateNodePath,
   TemplateSlotPath,
 } from './template-types.js';
-import { dispatchTemplatesRegistered } from './template-events.js';
+import {
+  dispatchTemplatesRegistered,
+  templateRegistrationDetail,
+  TEMPLATES_REGISTERED_EVENT,
+} from './template-events.js';
 
 import type {
   CompiledConditionFn,
@@ -56,6 +60,52 @@ import type {
 const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
 let webuiDataLoaded = false;
+
+interface PendingTemplateDefinition {
+  readonly ctor: Function;
+  readonly define: () => void;
+}
+
+/** Authored definitions waiting for their streamed template metadata. */
+const pendingTemplateDefinitions = new Map<string, PendingTemplateDefinition>();
+
+function acceptTemplateData(
+  templates: Record<string, TemplateMeta>,
+  templateFns?: Record<string, CompiledConditionFn[]>,
+): boolean {
+  const w = window as Window;
+  if (!w.__webui) w.__webui = {};
+  if (!w.__webui.templates) w.__webui.templates = {};
+  if (templateFns) {
+    if (!w.__webui.templateFns) w.__webui.templateFns = {};
+    const fnNames = Object.keys(templateFns);
+    for (let i = 0; i < fnNames.length; i++) {
+      const tag = fnNames[i];
+      w.__webui.templateFns[tag] = templateFns[tag];
+    }
+  }
+  const names = Object.keys(templates);
+  for (let i = 0; i < names.length; i++) {
+    const tag = names[i];
+    const meta = templates[tag];
+    w.__webui.templates[tag] = meta;
+    normalizeTemplate(tag, meta);
+  }
+  for (let i = 0; i < names.length; i++) {
+    const pending = pendingTemplateDefinitions.get(names[i]);
+    if (!pending) continue;
+    pendingTemplateDefinitions.delete(names[i]);
+    pending.define();
+  }
+  return names.length > 0;
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
+    const templates = templateRegistrationDetail(event)?.templates;
+    if (templates) acceptTemplateData(templates);
+  });
+}
 
 declare global {
   interface Window {
@@ -102,27 +152,30 @@ export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
 ): void {
-  const w = window as Window;
-  if (!w.__webui) w.__webui = {};
-  if (!w.__webui.templates) w.__webui.templates = {};
-  if (templateFns) {
-    if (!w.__webui.templateFns) w.__webui.templateFns = {};
-    const fnNames = Object.keys(templateFns);
-    for (let i = 0; i < fnNames.length; i++) {
-      const tag = fnNames[i];
-      w.__webui.templateFns[tag] = templateFns[tag];
+  if (acceptTemplateData(templates, templateFns)) {
+    dispatchTemplatesRegistered(templates);
+  }
+}
+
+/**
+ * Hold an authored custom-element definition until streamed metadata arrives.
+ *
+ * Internal to the framework package; the public registration surface remains
+ * `TemplateElement.define()`.
+ */
+export function deferTemplateDefinition(
+  tagName: string,
+  ctor: Function,
+  define: () => void,
+): void {
+  const pending = pendingTemplateDefinitions.get(tagName);
+  if (pending) {
+    if (pending.ctor === ctor) {
+      throw new Error(`[WebUI] <${tagName}> is already pending definition.`);
     }
+    throw new Error(`[WebUI] <${tagName}> already has a pending authored definition.`);
   }
-  const names = Object.keys(templates);
-  let hasTemplates = false;
-  for (let i = 0; i < names.length; i++) {
-    const tag = names[i];
-    const meta = templates[tag];
-    w.__webui.templates[tag] = meta;
-    normalizeTemplate(tag, meta);
-    hasTemplates = true;
-  }
-  if (hasTemplates) dispatchTemplatesRegistered(templates);
+  pendingTemplateDefinitions.set(tagName, { ctor, define });
 }
 
 function loadWebUIDataBlock(): void {

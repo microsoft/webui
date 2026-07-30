@@ -147,7 +147,11 @@ snapshot, or render path that accepts protocol bytes on every request.
 passed directly to `response.end()`. Call `.toString('utf8')` only when
 JavaScript string operations are required. Use `protocol.renderStream()` when
 the HTTP integration can make progress from callbacks; callbacks are batched
-rather than invoked for every internal handler write.
+rather than invoked for every internal handler write. The callback is
+synchronous and its return value is ignored. A `false` result from
+`response.write()` cannot pause native rendering or wait for `drain`, so this
+API does not provide transport backpressure. Callback exceptions abort the
+render immediately and propagate to the caller.
 
 ### BuildOptions
 

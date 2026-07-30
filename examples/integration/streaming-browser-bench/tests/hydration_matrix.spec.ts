@@ -117,6 +117,10 @@ const COMPARE_PEAK_ABS_BYTES = 512 * 1024;
 const COMPARE_PEAK_PCT = 15;
 
 interface AggregatedRow extends HydrationRow {
+  /** Per-round component CPU, aligned across arms for paired comparisons. */
+  cpuSamples: number[];
+  /** Per-round elapsed time, aligned across arms for paired comparisons. */
+  elapsedSamples: number[];
   /** Per-run retained-heap deltas (bytes) after forced GC. */
   retainedSamples: Array<number | null>;
   /** Per-run peak-heap deltas (bytes) sampled while boundaries commit. */
@@ -129,6 +133,20 @@ interface RunResult {
   /** Browser console errors + uncaught page errors captured during the run.
    *  The coordinator only logs on real failures, so this must stay empty. */
   errors: string[];
+}
+
+interface PrimaryArm {
+  readonly kind: 'streaming' | 'ordinary';
+  readonly label: string;
+  readonly boundaryCount: number;
+  readonly baseHtml: string;
+  readonly bundleCode: string;
+  readonly config: DriveConfig;
+  readonly cpu: number[];
+  readonly elapsed: number[];
+  readonly peak: Array<number | null>;
+  readonly retained: Array<number | null>;
+  readonly longTask: Array<number | null>;
 }
 
 async function getHeapUsage(session: CDPSession): Promise<number | null> {
@@ -228,8 +246,33 @@ function fmtMs(n: number | null): string {
   return n === null ? '    n/a' : n.toFixed(2).padStart(7);
 }
 
+/** Rotate arm order every round, reversing each complete cycle. With the
+ * default five arms and five runs, every arm occupies every position once. */
+function balancedArmOrder(armCount: number, round: number): number[] {
+  const order = Array.from({ length: armCount }, (_, index) => index);
+  if (Math.floor(round / armCount) % 2 === 1) order.reverse();
+  const shift = round % armCount;
+  return order.slice(shift).concat(order.slice(0, shift));
+}
+
 test.describe('progressive streaming hydration matrix', () => {
   test('measures real coordinator + WebUIElement hydration across boundary counts', async ({ browser }) => {
+    const compareName = process.env.WEBUI_BENCH_COMPARE;
+    const baseline = compareName ? loadSnapshot(compareName, ENFORCE) : null;
+    if (baseline && ENFORCE) {
+      const missingMemory = baseline.rows
+        .filter(
+          (row) =>
+            row.peakHeapDeltaBytesMedian === null
+            || row.retainedHeapDeltaBytesMedian === null,
+        )
+        .map((row) => row.scenario);
+      expect(
+        missingMemory,
+        'an enforced baseline comparison requires peak and retained heap for every row',
+      ).toEqual([]);
+    }
+
     // ── 1. Bundle the real framework sources ─────────────────────────
     const fixtures: BuiltFixtures = await buildFixtures();
 
@@ -265,7 +308,7 @@ test.describe('progressive streaming hydration matrix', () => {
     // ── 2. Verify equal-total-work invariants across scenarios ───────
     const control = buildOrdinaryScenario();
     const primary: StreamingScenario[] = BOUNDARY_COUNTS.map((count) =>
-      buildStreamingScenario(count, 'flat', 'eager'),
+      buildStreamingScenario(count, 'flat', 'eager', true),
     );
     for (const scenario of primary) {
       expect(scenario.totalRoots, 'equal total roots').toBe(TOTAL_ROOTS);
@@ -274,62 +317,79 @@ test.describe('progressive streaming hydration matrix', () => {
     expect(control.totalRoots).toBe(TOTAL_ROOTS);
     expect(control.totalStateChars).toBe(TOTAL_STATE_VALUE_BYTES);
 
-    // ── 3. Run the primary matrix (control + streaming flat eager) ───
-    const rows: AggregatedRow[] = [];
+    // ── 3. Run warmed, interleaved, paired primary rounds ────────────
+    const arms: PrimaryArm[] = [
+      {
+        kind: 'ordinary',
+        label: control.label,
+        boundaryCount: 0,
+        baseHtml: ordinaryBaseHtml(control.bootstrapHtml),
+        bundleCode: fixtures.ordinary.code,
+        config: { mode: 'ordinary', bodyHtml: control.rootsHtml },
+        cpu: [],
+        elapsed: [],
+        peak: [],
+        retained: [],
+        longTask: [],
+      },
+      ...primary.map((scenario): PrimaryArm => ({
+        kind: 'streaming',
+        label: scenario.label,
+        boundaryCount: scenario.boundaryCount,
+        baseHtml: streamingBaseHtml(),
+        bundleCode: fixtures.streaming.code,
+        config: {
+          mode: 'streaming',
+          boundaries: scenario.boundaries,
+          terminal: scenario.terminal,
+          timing: scenario.timing,
+        },
+        cpu: [],
+        elapsed: [],
+        peak: [],
+        retained: [],
+        longTask: [],
+      })),
+    ];
 
-    // Control (ordinary one-shot). The base document carries the inert
-    // `#webui-data` bootstrap (so the framework's lazy loader latches on the real
-    // block); only the SSR roots are inserted inside `runScenario` after the
-    // baseline heap sample, so the peak-heap transition matches the streaming arms.
-    {
-      const controlHtml = ordinaryBaseHtml(control.bootstrapHtml);
-      const controlConfig: DriveConfig = { mode: 'ordinary', bodyHtml: control.rootsHtml };
-      const cpu: number[] = [];
-      const elapsed: number[] = [];
-      const peak: Array<number | null> = [];
-      const retained: Array<number | null> = [];
-      const longTask: Array<number | null> = [];
-      for (let i = 0; i < RUNS; i++) {
-        const result = await runOnce(browser, controlHtml, fixtures.ordinary.code, controlConfig);
-        assertEnforcedHeapSamples(result, control.label, i);
-        assertDeterministic('ordinary', result.metrics);
-        expect(result.errors, 'no browser console/page errors').toEqual([]);
-        cpu.push(result.metrics.cpuMs);
-        elapsed.push(result.metrics.elapsedMs);
-        peak.push(result.metrics.peakHeapDeltaBytes);
-        retained.push(result.retainedHeapDeltaBytes);
-        longTask.push(result.metrics.maxLongTaskMs);
-      }
-      rows.push(aggregate(control.label, 0, RUNS, cpu, elapsed, peak, retained, longTask));
+    // Warm every production path once. These samples are deliberately discarded
+    // so first-use JIT and browser process startup do not bias the first arm.
+    for (const armIndex of balancedArmOrder(arms.length, 0)) {
+      const arm = arms[armIndex];
+      const result = await runOnce(browser, arm.baseHtml, arm.bundleCode, arm.config);
+      assertDeterministic(arm.kind, result.metrics);
+      expect(result.errors, `no browser console/page errors (${arm.label} warmup)`).toEqual([]);
     }
 
-    // Streaming scenarios.
-    for (const scenario of primary) {
-      const baseHtml = streamingBaseHtml();
-      const config: DriveConfig = {
-        mode: 'streaming',
-        boundaries: scenario.boundaries,
-        terminal: scenario.terminal,
-        timing: scenario.timing,
-      };
-      const cpu: number[] = [];
-      const elapsed: number[] = [];
-      const peak: Array<number | null> = [];
-      const retained: Array<number | null> = [];
-      const longTask: Array<number | null> = [];
-      for (let i = 0; i < RUNS; i++) {
-        const result = await runOnce(browser, baseHtml, fixtures.streaming.code, config);
-        assertEnforcedHeapSamples(result, scenario.label, i);
-        assertDeterministic('streaming', result.metrics);
-        expect(result.errors, 'no browser console/page errors').toEqual([]);
-        cpu.push(result.metrics.cpuMs);
-        elapsed.push(result.metrics.elapsedMs);
-        peak.push(result.metrics.peakHeapDeltaBytes);
-        retained.push(result.retainedHeapDeltaBytes);
-        longTask.push(result.metrics.maxLongTaskMs);
+    // Every round contains every arm. Rotation removes fixed position bias, and
+    // aligned sample indexes make strict comparisons paired within one round.
+    for (let round = 0; round < RUNS; round++) {
+      for (const armIndex of balancedArmOrder(arms.length, round)) {
+        const arm = arms[armIndex];
+        const result = await runOnce(browser, arm.baseHtml, arm.bundleCode, arm.config);
+        assertEnforcedHeapSamples(result, arm.label, round);
+        assertDeterministic(arm.kind, result.metrics);
+        expect(result.errors, `no browser console/page errors (${arm.label})`).toEqual([]);
+        arm.cpu.push(result.metrics.cpuMs);
+        arm.elapsed.push(result.metrics.elapsedMs);
+        arm.peak.push(result.metrics.peakHeapDeltaBytes);
+        arm.retained.push(result.retainedHeapDeltaBytes);
+        arm.longTask.push(result.metrics.maxLongTaskMs);
       }
-      rows.push(aggregate(scenario.label, scenario.boundaryCount, RUNS, cpu, elapsed, peak, retained, longTask));
     }
+
+    const rows: AggregatedRow[] = arms.map((arm) =>
+      aggregate(
+        arm.label,
+        arm.boundaryCount,
+        RUNS,
+        arm.cpu,
+        arm.elapsed,
+        arm.peak,
+        arm.retained,
+        arm.longTask,
+      ),
+    );
 
     // ── 4. Print the matrix ──────────────────────────────────────────
     console.log(`\nProgressive hydration matrix (${TOTAL_ROOTS} roots, ${(TOTAL_STATE_VALUE_BYTES / 1024).toFixed(0)}KiB projected state, median of ${RUNS}):`);
@@ -411,47 +471,38 @@ test.describe('progressive streaming hydration matrix', () => {
     }
 
     // ── 8. Baseline save / compare ───────────────────────────────────
-    const plainRows: HydrationRow[] = rows.map(({ retainedSamples, peakSamples, ...rest }) => {
+    const plainRows: HydrationRow[] = rows.map(({
+      cpuSamples,
+      elapsedSamples,
+      retainedSamples,
+      peakSamples,
+      ...rest
+    }) => {
+      void cpuSamples;
+      void elapsedSamples;
       void retainedSamples;
       void peakSamples;
       return rest;
     });
     const saveName = process.env.WEBUI_BENCH_SAVE;
-    const compareName = process.env.WEBUI_BENCH_COMPARE;
     if (saveName) {
       saveSnapshot(saveName, bundle, plainRows);
     }
-    if (compareName) {
-      const baseline = loadSnapshot(compareName);
-      if (baseline) {
+    if (compareName && baseline) {
+      const compareTolerances: CompareTolerances = {
+        relativePct: COMPARE_TOLERANCE_PCT,
+        retainedAbsBytes: COMPARE_RETAINED_ABS_BYTES,
+        retainedPct: COMPARE_RETAINED_PCT,
+        peakAbsBytes: COMPARE_PEAK_ABS_BYTES,
+        peakPct: COMPARE_PEAK_PCT,
+      };
+      const regressions = diffAgainst(plainRows, baseline, compareTolerances);
+      if (regressions.length > 0) {
+        console.log(`\n[hydration] ${regressions.length} regression(s) vs '${compareName}':`);
+        for (const regression of regressions) console.log(`  - ${regression}`);
+        // Compare only fails the run under the strict enforce flag.
         if (ENFORCE) {
-          const missingMemory = baseline.rows
-            .filter(
-              (row) =>
-                row.peakHeapDeltaBytesMedian === null
-                || row.retainedHeapDeltaBytesMedian === null,
-            )
-            .map((row) => row.scenario);
-          expect(
-            missingMemory,
-            'an enforced baseline comparison requires peak and retained heap for every row',
-          ).toEqual([]);
-        }
-        const compareTolerances: CompareTolerances = {
-          relativePct: COMPARE_TOLERANCE_PCT,
-          retainedAbsBytes: COMPARE_RETAINED_ABS_BYTES,
-          retainedPct: COMPARE_RETAINED_PCT,
-          peakAbsBytes: COMPARE_PEAK_ABS_BYTES,
-          peakPct: COMPARE_PEAK_PCT,
-        };
-        const regressions = diffAgainst(plainRows, baseline, compareTolerances);
-        if (regressions.length > 0) {
-          console.log(`\n[hydration] ${regressions.length} regression(s) vs '${compareName}':`);
-          for (const regression of regressions) console.log(`  - ${regression}`);
-          // Compare only fails the run under the strict enforce flag.
-          if (ENFORCE) {
-            expect(regressions, 'no configured regressions under strict enforce').toEqual([]);
-          }
+          expect(regressions, 'no configured regressions under strict enforce').toEqual([]);
         }
       }
     }
@@ -479,6 +530,8 @@ function aggregate(
     peakHeapDeltaBytesMedian: medianNullable(peak),
     retainedHeapDeltaBytesMedian: medianNullable(retained),
     maxLongTaskMsMedian: medianNullable(longTask),
+    cpuSamples: cpu,
+    elapsedSamples: elapsed,
     retainedSamples: retained,
     peakSamples: peak,
   };
@@ -499,16 +552,20 @@ function enforceStrictGates(rows: AggregatedRow[]): void {
   //     the same streaming activation path delivered as one boundary. The
   //     ordinary control uses a different bootstrap entry point and is retained
   //     for production-path/jank comparison, not as a permissive CPU baseline.
-  const cpuCap = b1.cpuMsMedian * (1 + CPU_TOLERANCE_PCT / 100) + CPU_NOISE_FLOOR_MS;
+  const cpuAllowance = b1.cpuMsMedian * (CPU_TOLERANCE_PCT / 100) + CPU_NOISE_FLOOR_MS;
+  const cpuCap = b1.cpuMsMedian + cpuAllowance;
   console.log(
     `\n[hydration] strict gates (n=${control.runs}): single-boundary streaming CPU ${b1.cpuMsMedian.toFixed(2)}ms`
     + ` -> CPU cap ${cpuCap.toFixed(2)}ms (+${CPU_TOLERANCE_PCT}% + ${CPU_NOISE_FLOOR_MS}ms floor)`,
   );
   for (const row of streaming) {
+    const pairedDelta = median(
+      row.cpuSamples.map((sample, index) => sample - b1.cpuSamples[index]),
+    );
     expect(
-      row.cpuMsMedian,
-      `${row.scenario}: component CPU ${row.cpuMsMedian.toFixed(2)}ms <= single-boundary streaming one-shot ${cpuCap.toFixed(2)}ms`,
-    ).toBeLessThanOrEqual(cpuCap);
+      pairedDelta,
+      `${row.scenario}: paired component CPU delta ${pairedDelta.toFixed(2)}ms <= ${cpuAllowance.toFixed(2)}ms`,
+    ).toBeLessThanOrEqual(cpuAllowance);
   }
 
   // (b) Retained-heap slope across N=1/10/100 <= max(64KiB, 2%) after forced GC.
@@ -557,7 +614,10 @@ function enforceStrictGates(rows: AggregatedRow[]): void {
   //     component work to one machine's absolute speed.
   const b100 = streaming.find((r) => r.boundaryCount === 100);
   if (b100) {
-    const perBoundary = (b100.elapsedMsMedian - b1.elapsedMsMedian) / (100 - 1);
+    const pairedElapsedDelta = median(
+      b100.elapsedSamples.map((sample, index) => sample - b1.elapsedSamples[index]),
+    );
+    const perBoundary = pairedElapsedDelta / (100 - 1);
     const perBoundaryCap = Math.max(
       COORDINATOR_MARGINAL_ABS_CAP_MS,
       b1.elapsedMsMedian * (COORDINATOR_MARGINAL_RELATIVE_PCT / 100),

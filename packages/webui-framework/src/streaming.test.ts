@@ -41,6 +41,13 @@ describe('parseBoundaryEnvelope', () => {
     assert.deepEqual(bootstrap, {});
   });
 
+  test('rejects terminal boundary data', () => {
+    const result = parseBoundaryEnvelope('[1,2,1,{"state":{"count":1}}]');
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.reason, /terminal boundary bootstrap must be empty/);
+  });
+
   test('rejects invalid JSON', () => {
     const result = parseBoundaryEnvelope('[1,0,0,{');
     assert.equal(result.ok, false);

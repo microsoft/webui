@@ -22,6 +22,7 @@ import { beforeEach, describe, test } from 'node:test';
 // ── Minimal DOM node model ───────────────────────────────────────────
 
 const ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
+const ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
 const RESUME_PENDING = Symbol.for('microsoft.webui.pendingRootConnected');
 
 interface FakeNode {
@@ -43,7 +44,8 @@ interface FakeElement extends FakeNode {
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
   readonly textContent: string;
-  [ACTIVATE]?: (state?: Record<string, unknown>) => void;
+  [ACTIVATE]?: (state?: Record<string, unknown>) => number;
+  [ABANDON]?: () => void;
   [RESUME_PENDING]?: () => void;
 }
 
@@ -100,6 +102,8 @@ interface ElementSpec {
   attrs?: Record<string, string>;
   text?: string;
   hook?: (state?: Record<string, unknown>) => void;
+  activationOutcome?: number;
+  abandon?: () => void;
   children?: Array<FakeNode>;
   shadowChildren?: Array<FakeNode>;
 }
@@ -135,7 +139,13 @@ function element(tagName: string, spec: ElementSpec = {}): FakeElement {
     },
   } as unknown as FakeElement & { _children: FakeNode[] };
   addSiblingGetters(node);
-  if (spec.hook) node[ACTIVATE] = spec.hook;
+  if (spec.hook) {
+    node[ACTIVATE] = (state) => {
+      spec.hook!(state);
+      return spec.activationOutcome ?? 1;
+    };
+  }
+  if (spec.abandon) node[ABANDON] = spec.abandon;
   if (spec.shadowChildren) {
     const shadowRoot = {
       nodeType: 11,
@@ -190,6 +200,7 @@ let whenDefinedCalls: Map<string, number>;
 let upgradeCalls: Map<string, number>;
 let dispatchedEvents: Array<{ type: string; detail?: unknown }>;
 let documentListeners: Map<string, Array<{ handler: () => void; once: boolean }>>;
+let documentWalkCalls: number;
 
 function installGlobals(): void {
   definedTags = new Map();
@@ -198,6 +209,7 @@ function installGlobals(): void {
   upgradeCalls = new Map();
   dispatchedEvents = [];
   documentListeners = new Map();
+  documentWalkCalls = 0;
 
   const win = {
     __webui: {} as Record<string, unknown>,
@@ -225,7 +237,7 @@ function installGlobals(): void {
       const tag = root.tagName.toLowerCase();
       upgradeCalls.set(tag, (upgradeCalls.get(tag) ?? 0) + 1);
       if (root[ACTIVATE]) return;
-      const ctor = definedTags.get(tag) as { prototype?: { [ACTIVATE]?: (state?: Record<string, unknown>) => void } } | undefined;
+      const ctor = definedTags.get(tag) as { prototype?: { [ACTIVATE]?: (state?: Record<string, unknown>) => number } } | undefined;
       const hook = ctor?.prototype?.[ACTIVATE];
       if (hook) root[ACTIVATE] = hook;
     },
@@ -234,8 +246,11 @@ function installGlobals(): void {
   const documentFake = {
     readyState: 'loading',
     getElementsByTagName(tag: string): FakeElement[] {
+      documentWalkCalls++;
       const upper = tag.toUpperCase();
-      return elementRegistry.filter((el) => el.tagName === upper && el.parentNode !== null);
+      return elementRegistry.filter((el) =>
+        (upper === '*' || el.tagName === upper) && el.parentNode !== null
+      );
     },
     addEventListener(type: string, handler: () => void, opts?: { once?: boolean }): void {
       const list = documentListeners.get(type) ?? [];
@@ -276,10 +291,15 @@ function defineTag(
   tag: string,
   supportsDetachedResume = true,
   hook: (state?: Record<string, unknown>) => void = () => {},
+  outcome = 1,
 ): void {
   class DefinedElement {}
   if (supportsDetachedResume) {
-    (DefinedElement.prototype as unknown as { [ACTIVATE]?: (state?: Record<string, unknown>) => void })[ACTIVATE] = hook;
+    (DefinedElement.prototype as unknown as { [ACTIVATE]?: (state?: Record<string, unknown>) => number })[ACTIVATE] =
+      (state) => {
+        hook(state);
+        return outcome;
+      };
   }
   definedTags.set(tag, DefinedElement);
   const resolve = whenDefinedResolvers.get(tag);
@@ -471,6 +491,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(b.startMarker?.parentNode, null, 'start marker removed');
     assert.equal(b.endMarker?.parentNode, null, 'end marker removed');
     assert.equal(counter.parentNode, b.root, 'activated root retained');
+    assert.equal(documentWalkCalls, 0, 'valid streams never scan the document');
   });
 
   test('merges inventory, css, and style checkpoint deltas cumulatively', async () => {
@@ -505,7 +526,7 @@ describe('streaming coordinator pipeline', () => {
     assert.deepEqual(webuiGlobal().css, ['a.css', 'b.css'], 'a repeated CSS delta is deduplicated');
     assert.deepEqual(webuiGlobal().styles, ['my-a', 'my-b'], 'a repeated style delta is deduplicated');
 
-    const empty = buildMarkerless(3, 1, { inventory: '' });
+    const empty = buildMarkerless(3, 1, {});
     enqueue(empty.sentinel);
     await flush();
     assert.equal(webuiGlobal().inventory, '03', 'an empty delta cannot erase prior bits');
@@ -513,7 +534,7 @@ describe('streaming coordinator pipeline', () => {
 
   test('ORs inventory bytes by position when checkpoint lengths differ', async () => {
     const first = buildBoundary(0, 0, [], { inventory: '01' });
-    const second = buildMarkerless(1, 1, { inventory: '0002' });
+    const second = buildBoundary(1, 0, [], { inventory: '0002' });
     enqueue(first.sentinel);
     await flush();
     enqueue(second.sentinel);
@@ -523,7 +544,7 @@ describe('streaming coordinator pipeline', () => {
   });
 
   test('accepts uppercase and lowercase ASCII inventory hex', async () => {
-    const boundary = buildMarkerless(0, 1, { inventory: '0123456789abcdefABCDEF' });
+    const boundary = buildBoundary(0, 0, [], { inventory: '0123456789abcdefABCDEF' });
     enqueue(boundary.sentinel);
     await flush();
 
@@ -546,7 +567,7 @@ describe('streaming coordinator pipeline', () => {
           __resetLifecycleForTests();
           beginStreamingGate();
         }
-        const boundary = buildMarkerless(0, 1, { inventory: invalidInventories[i] });
+        const boundary = buildBoundary(0, 0, [], { inventory: invalidInventories[i] });
         enqueue(boundary.sentinel);
         await flush();
         assert.equal(__isHaltedForTests(), true, `${JSON.stringify(invalidInventories[i])} must be rejected`);
@@ -558,7 +579,7 @@ describe('streaming coordinator pipeline', () => {
   });
 
   test('boundary-hydrated event is opt-in via the debug flag', async () => {
-    const b1 = buildBoundary(0, 1, [element('my-counter', { hook() {} })], { state: {} });
+    const b1 = buildMarkerless(0, 1, {});
     enqueue(b1.sentinel);
     await flush();
     assert.equal(boundaryEvents().length, 0, 'no event without the debug flag');
@@ -566,7 +587,7 @@ describe('streaming coordinator pipeline', () => {
     // With the flag on, exactly one CustomEvent carrying {sequence, terminal}.
     __resetStreamingCoordinatorForTests();
     (globalThis as unknown as { window: { __WEBUI_STREAMING_DEBUG__: boolean } }).window.__WEBUI_STREAMING_DEBUG__ = true;
-    const b2 = buildBoundary(0, 1, [element('my-counter', { hook() {} })], { state: {} });
+    const b2 = buildMarkerless(0, 1, {});
     enqueue(b2.sentinel);
     await flush();
 
@@ -576,7 +597,11 @@ describe('streaming coordinator pipeline', () => {
   });
 
   test('a malformed envelope halts and fully cleans its scaffold, keeping roots', async () => {
-    const root0 = element('my-root', { hook() {} });
+    let abandoned = 0;
+    const root0 = element('my-root', {
+      hook() {},
+      abandon() { abandoned++; },
+    });
     const b = buildRawBoundary(0, '[1,0,0,{', [root0]);
 
     enqueue(b.sentinel);
@@ -585,6 +610,8 @@ describe('streaming coordinator pipeline', () => {
     // The rejected boundary leaves no discoverable payload/markers, but its
     // SSR root stays in the tree.
     assertScaffoldCleaned(b);
+    assert.equal(abandoned, 1, 'fatal cleanup clears element-owned deferral');
+    assert.equal(documentWalkCalls > 0, true, 'failure may perform a bounded document sweep');
 
     // A boundary enqueued after the halt is dropped and fully cleaned too.
     const later = buildBoundary(1, 0, [element('my-counter', { hook() {} })], { state: {} });
@@ -660,6 +687,15 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(b.scriptEl.parentNode, null, 'payload script removed');
   });
 
+  test('a marker-bearing terminal boundary is rejected', async () => {
+    const b = buildBoundary(0, 1, [], {});
+    enqueue(b.sentinel);
+    await flush();
+
+    assert.equal(__isHaltedForTests(), true);
+    assertScaffoldCleaned(b);
+  });
+
   test('a nested island is activated exactly once in a single walk', async () => {
     const activated: string[] = [];
     const inner = element('my-inner', { hook() { activated.push('my-inner'); } });
@@ -675,7 +711,7 @@ describe('streaming coordinator pipeline', () => {
     enqueue(b.sentinel);
     await flush();
 
-    assert.deepEqual(activated.sort(), ['my-inner', 'my-outer']);
+    assert.deepEqual(activated, ['my-outer', 'my-inner']);
     assert.equal(activated.length, 2, 'each nested root activated exactly once');
   });
 
@@ -699,6 +735,82 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(hasWs(inner), false);
   });
 
+  test('an undefined outer blocks its defined child while siblings continue', async () => {
+    const activated: string[] = [];
+    const child = element('my-barrier-child', { hook() { activated.push('child'); } });
+    const outer = element('my-barrier-outer', {
+      hook() { activated.push('outer'); },
+      children: [child],
+    });
+    const sibling = element('my-barrier-sibling', { hook() { activated.push('sibling'); } });
+    const b = buildBoundary(0, 0, [outer, sibling], { state: {} });
+
+    predefine('my-barrier-child', 'my-barrier-sibling');
+    enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
+    await flush();
+
+    assert.deepEqual(activated, ['sibling']);
+    assert.equal(whenDefinedCalls.get('my-barrier-outer'), 1);
+    assert.equal(whenDefinedCalls.get('my-barrier-child'), undefined);
+
+    defineTag('my-barrier-outer');
+    await flush();
+
+    assert.deepEqual(activated, ['sibling', 'outer', 'child']);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('an undefined child gets no waiter until its undefined outer activates', async () => {
+    const activated: string[] = [];
+    const child = element('my-late-child', { hook() { activated.push('child'); } });
+    const outer = element('my-late-outer', {
+      hook() { activated.push('outer'); },
+      children: [child],
+    });
+    const b = buildBoundary(0, 0, [outer], { state: {} });
+
+    enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
+    await flush();
+    assert.deepEqual(activated, []);
+    assert.equal(whenDefinedCalls.get('my-late-outer'), 1);
+    assert.equal(whenDefinedCalls.get('my-late-child'), undefined);
+
+    defineTag('my-late-outer');
+    await flush();
+    assert.deepEqual(activated, ['outer']);
+    assert.equal(whenDefinedCalls.get('my-late-child'), 1);
+
+    defineTag('my-late-child');
+    await flush();
+    assert.deepEqual(activated, ['outer', 'child']);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('an undefined shadow host retains its shadow child behind the barrier', async () => {
+    const activated: string[] = [];
+    const child = element('my-late-shadow-child', { hook() { activated.push('child'); } });
+    const outer = element('my-late-shadow-outer', {
+      hook() { activated.push('outer'); },
+      shadowChildren: [child],
+    });
+    const b = buildBoundary(0, 0, [outer], { state: {} });
+
+    predefine('my-late-shadow-child');
+    enqueue(b.sentinel);
+    await flush();
+    assert.deepEqual(activated, []);
+
+    defineTag('my-late-shadow-outer');
+    await flush();
+    assert.deepEqual(activated, ['outer', 'child']);
+  });
+
   test('an unmarked third-party custom element is ignored by streaming activation', async () => {
     const activated: string[] = [];
     const thirdParty = element('lazy-icon');
@@ -708,10 +820,13 @@ describe('streaming coordinator pipeline', () => {
       },
       children: [thirdParty],
     });
-    const b = buildBoundary(0, 1, [webuiRoot], { state: {} });
+    const b = buildBoundary(0, 0, [webuiRoot], { state: {} });
 
     predefine('my-owned');
     enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
 
     assert.deepEqual(activated, ['my-owned']);
@@ -726,9 +841,12 @@ describe('streaming coordinator pipeline', () => {
     // Two instances of the same not-yet-defined tag.
     const a = element('my-late', { hook() { activated.push('a'); } });
     const c = element('my-late', { hook() { activated.push('c'); } });
-    const b = buildBoundary(0, 1, [a, c], { state: {} });
+    const b = buildBoundary(0, 0, [a, c], { state: {} });
 
     enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
 
     assert.deepEqual(activated, [], 'undefined tag is not activated until its class defines');
@@ -742,7 +860,7 @@ describe('streaming coordinator pipeline', () => {
 
     defineTag('my-late');
     await flush();
-    assert.deepEqual(activated.sort(), ['a', 'c'], 'both deferred instances activate once defined');
+    assert.deepEqual(activated, ['a', 'c'], 'both deferred instances activate once defined');
     lc = __getLifecycleStateForTests();
     assert.equal(lc.pendingLateActivations, 0, 'late-activation settled exactly once');
     assert.equal(__pendingTagWaiterCountForTests(), 0, 'waiter cleared');
@@ -764,8 +882,11 @@ describe('streaming coordinator pipeline', () => {
     const first = buildBoundary(0, 0, firstRoots, { state: { boundary: 0 } });
     enqueue(first.sentinel);
     await flush();
-    const second = buildBoundary(1, 1, secondRoots, { state: { boundary: 1 } });
+    const second = buildBoundary(1, 0, secondRoots, { state: { boundary: 1 } });
     enqueue(second.sentinel);
+    await flush();
+    const terminal = buildMarkerless(2, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
 
     assert.equal(whenDefinedCalls.get('my-many'), 1, 'one native promise is shared by the tag');
@@ -783,8 +904,11 @@ describe('streaming coordinator pipeline', () => {
   test('definition upgrades and activates an exact root that remains detached', async () => {
     let received: Record<string, unknown> | undefined;
     const late = element('my-detached', { attrs: { 'data-ws': '' } });
-    const b = buildBoundary(0, 1, [late], { state: { exact: true } });
+    const b = buildBoundary(0, 0, [late], { state: { exact: true } });
     enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
     detach(late);
 
@@ -805,8 +929,11 @@ describe('streaming coordinator pipeline', () => {
 
   test('a detached root reattached before whenDefined reacts resumes synchronously', async () => {
     const late = element('my-reattach', { attrs: { 'data-ws': '' } });
-    const b = buildBoundary(0, 1, [late], { state: { resumed: true } });
+    const b = buildBoundary(0, 0, [late], { state: { resumed: true } });
     enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
     detach(late);
 
@@ -834,8 +961,11 @@ describe('streaming coordinator pipeline', () => {
 
   test('a detached root whose defined class cannot resume is cleaned as a stream failure', async () => {
     const late = element('my-no-resume', { attrs: { 'data-ws': '' } });
-    const b = buildBoundary(0, 1, [late], { state: { abandoned: true } });
+    const b = buildBoundary(0, 0, [late], { state: { abandoned: true } });
     enqueue(b.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
     detach(late);
 
@@ -918,23 +1048,39 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__pendingTagWaiterCountForTests(), 0);
   });
 
-  test('a failed terminal commit does not dispatch hydration-complete', async () => {
-    // A terminal boundary whose bootstrap application throws: the stream halts
-    // and, crucially, the terminal is NOT marked reached, so completion never
-    // fires for a failed stream.
-    const win = (globalThis as unknown as { window: { __webui: Record<string, unknown> } }).window;
-    Object.defineProperty(win.__webui, 'boom', {
-      configurable: true,
-      set() {
-        throw new Error('bootstrap merge failed');
-      },
+  test('failure abandons a detached undefined outer and its retained child', async () => {
+    let outerAbandoned = 0;
+    let childAbandoned = 0;
+    const child = element('my-retained-child', {
+      hook() {},
+      abandon() { childAbandoned++; },
     });
+    const outer = element('my-retained-outer', {
+      hook() {},
+      abandon() { outerAbandoned++; },
+      children: [child],
+    });
+    const b = buildBoundary(0, 0, [outer], { state: {} });
+    enqueue(b.sentinel);
+    await flush();
+    detach(outer);
 
+    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    enqueue(bad.sentinel);
+    await flush();
+
+    assert.equal(outerAbandoned, 1);
+    assert.equal(childAbandoned, 1);
+    assert.equal(hasWs(outer), false);
+    assert.equal(hasWs(child), false);
+  });
+
+  test('a non-empty terminal record does not dispatch hydration-complete', async () => {
     const b = buildMarkerless(0, 1, { boom: 1 });
     enqueue(b.sentinel);
     await flush();
 
-    assert.equal(__isHaltedForTests(), true, 'a throwing terminal commit halts');
+    assert.equal(__isHaltedForTests(), true, 'a non-empty terminal record halts');
     const lc = __getLifecycleStateForTests();
     assert.equal(lc.terminalReached, false, 'terminal must not be marked reached on a failed commit');
     assert.equal(lc.completed, false, 'no hydration-complete for a failed stream');
@@ -980,7 +1126,7 @@ describe('streaming coordinator pipeline', () => {
     for (let i = 0; i < 10_001; i++) {
       roots.push(element('my-capped', { attrs: { 'data-ws': '' }, hook() {} }));
     }
-    const b = buildBoundary(0, 1, roots, { state: {} });
+    const b = buildBoundary(0, 0, roots, { state: {} });
     (window as unknown as { __WEBUI_STREAMING_DEBUG__: boolean }).__WEBUI_STREAMING_DEBUG__ = true;
     const previousError = console.error;
     console.error = () => {};
@@ -1018,7 +1164,7 @@ describe('streaming coordinator pipeline', () => {
     });
     children.push(late);
     const wrapper = element('div', { children });
-    const b = buildBoundary(0, 1, [wrapper], { state: {} });
+    const b = buildBoundary(0, 0, [wrapper], { state: {} });
     predefine('my-after-scan-cap');
     (window as unknown as { __WEBUI_STREAMING_DEBUG__: boolean }).__WEBUI_STREAMING_DEBUG__ = true;
     const previousError = console.error;
@@ -1086,12 +1232,15 @@ describe('streaming coordinator pipeline', () => {
   });
 
   test('a record after a committed terminal is rejected and never completes, even with an open waiter', async () => {
-    // A terminal boundary commits successfully but still has an undefined-tag
-    // root, so completion is gated on the late activation.
+    // A non-terminal boundary opens an undefined-tag waiter. The following
+    // canonical empty terminal commits, so completion is gated on activation.
     const activated: string[] = [];
     const open = element('my-open', { hook() { activated.push('x'); } });
-    const terminalB = buildBoundary(0, 1, [open], { state: {} });
-    enqueue(terminalB.sentinel);
+    const openBoundary = buildBoundary(0, 0, [open], { state: {} });
+    enqueue(openBoundary.sentinel);
+    await flush();
+    const terminal = buildMarkerless(1, 1, {});
+    enqueue(terminal.sentinel);
     await flush();
 
     let lc = __getLifecycleStateForTests();
@@ -1102,7 +1251,7 @@ describe('streaming coordinator pipeline', () => {
     // A malformed record arrives after the terminal: it must be rejected (its
     // scaffold cleaned + stream halted/aborted), and settling the abandoned
     // waiter during failure must NOT dispatch hydration-complete.
-    const post = buildRawBoundary(1, '[bad', []);
+    const post = buildRawBoundary(2, '[bad', []);
     enqueue(post.sentinel);
     await flush();
 
@@ -1156,6 +1305,27 @@ describe('streaming coordinator pipeline', () => {
     await flush();
     assert.deepEqual(activated, [], 'root abandoned by truncation is never activated');
     assert.equal(dispatchedEvents.some((e) => e.type === 'webui:hydration-complete'), false);
+  });
+
+  test('pre-sentinel truncation abandons roots found only by the failure walk', async () => {
+    __installTruncationGuardForTests();
+    let abandoned = 0;
+    const orphan = element('my-pre-sentinel', {
+      attrs: { 'data-ws': '' },
+      hook() {},
+      abandon() { abandoned++; },
+    });
+    const root = body();
+    link(root, [orphan]);
+
+    fireDomContentLoaded();
+    await flush();
+
+    assert.equal(__isHaltedForTests(), true);
+    assert.equal(abandoned, 1);
+    assert.equal(hasWs(orphan), false);
+    assert.equal(documentWalkCalls > 0, true);
+    assert.equal(__getLifecycleStateForTests().completed, false);
   });
 
   test('a truncation guard installed after DOMContentLoaded halts and cleans immediately', async () => {
@@ -1214,7 +1384,7 @@ describe('streaming coordinator pipeline', () => {
   test('boundary state is handed to the activation hook, never published globally', async () => {
     let received: Record<string, unknown> | undefined | 'unset' = 'unset';
     const root = element('my-direct', { hook(state) { received = state; } });
-    const b = buildBoundary(0, 1, [root], { state: { a: 1 } });
+    const b = buildBoundary(0, 0, [root], { state: { a: 1 } });
 
     predefine('my-direct');
     enqueue(b.sentinel);
@@ -1235,7 +1405,7 @@ describe('streaming coordinator pipeline', () => {
     await flush();
 
     const r1 = element('my-two', { hook(state) { received.push(state); } });
-    const b1 = buildBoundary(1, 1, [r1], { state: { which: 'second' } });
+    const b1 = buildBoundary(1, 0, [r1], { state: { which: 'second' } });
     enqueue(b1.sentinel);
     await flush();
 
@@ -1254,7 +1424,7 @@ describe('streaming coordinator pipeline', () => {
     // A later boundary commits with different state; the global handoff still
     // never carries state, and the delayed root must not pick up this one.
     const other = element('my-other', { hook() {} });
-    const b1 = buildBoundary(1, 1, [other], { state: { seq: 1 } });
+    const b1 = buildBoundary(1, 0, [other], { state: { seq: 1 } });
     predefine('my-other');
     enqueue(b1.sentinel);
     await flush();
@@ -1268,7 +1438,7 @@ describe('streaming coordinator pipeline', () => {
     let received: Record<string, unknown> | undefined | 'unset' = 'unset';
     const late = element('my-nostate', { hook(state) { received = state; } });
     // Bootstrap with no `state` key at all.
-    const b = buildBoundary(0, 1, [late], {});
+    const b = buildBoundary(0, 0, [late], {});
     enqueue(b.sentinel);
     await flush();
 
@@ -1344,20 +1514,49 @@ describe('streaming coordinator pipeline', () => {
 
   // ── Centralized successful-path data-ws removal (invokeActivationHook) ──
 
-  test('a committed defined root with NO activation hook still loses its data-ws marker', async () => {
-    // A plain defined element with no boundary-activate hook: the coordinator
-    // has nothing to call, but must still strip the compiler scaffolding.
+  test('a committed defined root with no activation hook is a fatal missing-template failure', async () => {
     const root = element('my-nohook', { attrs: { 'data-ws': '' } });
-    const b = buildBoundary(0, 1, [root], { state: {} });
+    const b = buildBoundary(0, 0, [root], { state: {} });
 
     predefine('my-nohook');
-    enqueue(b.sentinel);
-    await flush();
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      enqueue(b.sentinel);
+      await flush();
+    } finally {
+      console.error = previousError;
+    }
 
-    assert.equal(__isHaltedForTests(), false, 'a no-hook root is a clean commit, not a failure');
-    assert.equal(hasWs(root), false, 'data-ws stripped from a committed no-hook root');
+    assert.equal(__isHaltedForTests(), true);
+    assert.equal(__getLifecycleStateForTests().completed, false);
+    assert.equal(hasWs(root), false, 'fatal cleanup strips data-ws');
     assert.equal(root.parentNode, b.root, 'the root itself is retained');
     assert.equal(hasPending(root), false);
+  });
+
+  test('an explicit missing-template activation outcome halts without completion', async () => {
+    const root = element('my-missing-meta', {
+      attrs: { 'data-ws': '' },
+      activationOutcome: 3,
+      hook() {},
+    });
+    const b = buildBoundary(0, 0, [root], { state: {} });
+    predefine('my-missing-meta');
+
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      enqueue(b.sentinel);
+      await flush();
+    } finally {
+      console.error = previousError;
+    }
+
+    assert.equal(__isHaltedForTests(), true);
+    assert.equal(hasWs(root), false);
+    assert.equal(__getLifecycleStateForTests().completed, false);
+    assert.equal(dispatchedEvents.some((e) => e.type === 'webui:hydration-complete'), false);
   });
 
   test('a committed root whose activation hook THROWS still loses its data-ws marker and is isolated', async () => {
@@ -1369,7 +1568,7 @@ describe('streaming coordinator pipeline', () => {
       },
     });
     const ok = element('my-after', { attrs: { 'data-ws': '' }, hook() { survivor.push('my-after'); } });
-    const b = buildBoundary(0, 1, [thrower, ok], { state: {} });
+    const b = buildBoundary(0, 0, [thrower, ok], { state: {} });
 
     predefine('my-throw', 'my-after');
     const previousError = console.error;
@@ -1395,11 +1594,12 @@ describe('streaming coordinator pipeline', () => {
     let called = false;
     const host = element('my-optout', {
       attrs: { 'data-ws': '' },
+      activationOutcome: 2,
       hook() {
         called = true; // opts out: records the call but performs no activation
       },
     });
-    const b = buildBoundary(0, 1, [host], { state: {} });
+    const b = buildBoundary(0, 0, [host], { state: {} });
 
     predefine('my-optout');
     enqueue(b.sentinel);

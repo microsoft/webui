@@ -139,7 +139,11 @@ required.
 ### `protocol.renderStream(state, onChunk, options?): void`
 
 Renders with streaming output. Internal handler writes are coalesced around a
-16 KiB target before the callback crosses into JavaScript.
+16 KiB target before the callback crosses into JavaScript. The callback runs
+synchronously and its return value is ignored. In particular,
+`response.write()` returning `false` does not pause native rendering, so this
+API does not provide transport backpressure. A thrown callback error aborts
+rendering immediately and is rethrown to the caller.
 
 ```js
 protocol.renderStream(state, (chunk) => {

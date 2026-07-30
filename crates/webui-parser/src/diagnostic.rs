@@ -112,8 +112,9 @@ pub mod codes {
     pub const DUPLICATE_BOUNDARY_NAME: &str = "duplicate-boundary-name";
     /// A `<boundary>` is nested inside another `<boundary>`.
     pub const NESTED_BOUNDARY: &str = "nested-boundary";
-    /// A `<boundary>` would cut through a component, `<if>`, `<for>`,
-    /// or `<route>` scope instead of independently wrapping it.
+    /// A `<boundary>` would cut through component host content, a reusable
+    /// component template, an inert/raw-text HTML element, `<if>`, `<for>`, or
+    /// `<route>` instead of independently wrapping it.
     pub const BOUNDARY_CROSSES_SCOPE: &str = "boundary-crosses-scope";
     /// A `<boundary>` appears before `<body>` opens or after it closes.
     pub const BOUNDARY_OUTSIDE_BODY: &str = "boundary-outside-body";

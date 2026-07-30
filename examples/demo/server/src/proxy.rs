@@ -170,10 +170,34 @@ pub(crate) async fn proxy_handler(
         }
     };
 
+    if known_content_length_exceeds(response.headers(), MAX_BODY_SIZE) {
+        log::error!(
+            "Proxy response for {slug} exceeds the {MAX_BODY_SIZE} byte limit declared by Content-Length"
+        );
+        return HttpResponse::BadGateway().body(format!(
+            "App '{slug}' returned a response larger than the {MAX_BODY_SIZE} byte proxy limit"
+        ));
+    }
+
     // Build the response back to the client.
     let status = response.status();
     let mut builder = proxy_response_builder(status, response.headers());
     builder.body(LimitedBody::new(BodyStream::new(response), MAX_BODY_SIZE))
+}
+
+fn known_content_length_exceeds(headers: &HeaderMap, limit: usize) -> bool {
+    let Some(length) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return false;
+    };
+
+    match usize::try_from(length) {
+        Ok(length) => length > limit,
+        Err(_) => true,
+    }
 }
 
 fn proxy_response_builder(status: StatusCode, headers: &HeaderMap) -> HttpResponseBuilder {
@@ -498,5 +522,21 @@ mod tests {
                 "{name} was forwarded"
             );
         }
+    }
+
+    #[test]
+    fn rejects_only_known_oversized_content_lengths_early() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1025"));
+        assert!(known_content_length_exceeds(&headers, 1024));
+
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("1024"));
+        assert!(!known_content_length_exceeds(&headers, 1024));
+
+        // Unknown or malformed lengths still use the streaming limiter.
+        headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("invalid"));
+        assert!(!known_content_length_exceeds(&headers, 1024));
+        headers.remove(header::CONTENT_LENGTH);
+        assert!(!known_content_length_exceeds(&headers, 1024));
     }
 }

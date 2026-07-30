@@ -42,10 +42,9 @@ impl WebUIHandler {
         if needs_route_walk {
             // Only a component surface containing authored routes needs request
             // matching. Route-free surfaces use the startup-built integer graph.
-            let roots = context
-                .streaming
-                .as_ref()
-                .map_or(&[][..], |streaming| streaming.checkpoint_tags.as_slice());
+            let roots = context.streaming.as_ref().map_or(&[][..], |streaming| {
+                streaming.checkpoint_route_roots.as_slice()
+            });
             let reachable = crate::route_handler::collect_reachable_components_from_roots(
                 context.protocol,
                 roots,
@@ -206,6 +205,7 @@ impl WebUIHandler {
             let mut checkpoint_tags = checkpoint_tags;
             checkpoint_tags.clear();
             streaming.checkpoint_tags = checkpoint_tags;
+            streaming.checkpoint_route_roots.clear();
             new_template_tags.clear();
             streaming.template_tag_scratch = new_template_tags;
             css_hrefs.clear();

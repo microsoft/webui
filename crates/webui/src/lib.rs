@@ -132,6 +132,42 @@ pub fn prepare_projection_manifests(
     Ok(PreparedProjectionManifests { snapshot })
 }
 
+/// Resolve preload hints for compiler-generated entries using exact output
+/// identities and host-provided served URLs.
+///
+/// This is an internal orchestration hook for hosts such as `webui-press`.
+/// Resolution consumes the manifest's pre-sorted closures and performs no
+/// graph traversal or sorting.
+#[doc(hidden)]
+#[must_use]
+pub fn resolve_generated_module_preloads(
+    projection: &PreparedProjectionManifests,
+    existing_hrefs: &[String],
+    entry_outputs: &[&Path],
+    output_urls: &std::collections::BTreeMap<std::path::PathBuf, String>,
+) -> (Vec<String>, Vec<Diagnostic>) {
+    let mut resolved = module_preload::resolve_exact(
+        &projection.snapshot.entry_closures,
+        existing_hrefs,
+        entry_outputs,
+        output_urls,
+    );
+    (
+        std::mem::take(&mut resolved.hrefs),
+        std::mem::take(&mut resolved.warnings),
+    )
+}
+
+/// Return the exact physical outputs needed to map generated preload URLs.
+#[doc(hidden)]
+#[must_use]
+pub fn generated_module_preload_outputs(
+    projection: &PreparedProjectionManifests,
+    entry_outputs: &[&Path],
+) -> Vec<std::path::PathBuf> {
+    module_preload::exact_output_identities(&projection.snapshot.entry_closures, entry_outputs)
+}
+
 /// Create a pending projection source and its one-shot completer.
 #[doc(hidden)]
 #[must_use]
@@ -727,7 +763,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             }
             None => encode_state_surface(&artifact.navigation),
         };
-        component.navigation_mode = navigation_mode;
+        component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
     }
 
@@ -1157,7 +1193,7 @@ mod tests {
         assert_eq!(component.hydration_keys, vec!["count", "ctaHref", "name"]);
         assert_eq!(
             component.navigation_mode,
-            webui_protocol::StateProjectionMode::Keys as i32
+            Some(webui_protocol::StateProjectionMode::Keys as i32)
         );
         assert_eq!(component.navigation_keys, vec!["count", "ctaHref", "name"]);
     }
@@ -1197,7 +1233,7 @@ mod tests {
         assert!(component.hydration_keys.is_empty());
         assert_eq!(
             component.navigation_mode,
-            webui_protocol::StateProjectionMode::All as i32
+            Some(webui_protocol::StateProjectionMode::All as i32)
         );
 
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));

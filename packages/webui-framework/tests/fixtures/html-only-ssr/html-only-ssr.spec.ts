@@ -68,6 +68,26 @@ test.describe('HTML-only dormant host fixture', () => {
     )).toBe(1);
   });
 
+  test('fires hydratedCallback once when a static host wakes', async ({ page }) => {
+    const calls = await page.evaluate(() => {
+      const ctor = customElements.get('test-html-only') as
+        (CustomElementConstructor & { prototype: { hydratedCallback(): void } });
+      let hydratedCalls = 0;
+      ctor.prototype.hydratedCallback = () => {
+        hydratedCalls++;
+      };
+      const host = document.querySelector('test-html-only') as HTMLElement & {
+        setState(state: Record<string, unknown>): void;
+      };
+      host.setState({ status: 'Awake' });
+      host.remove();
+      document.body.appendChild(host);
+      return hydratedCalls;
+    });
+
+    expect(calls).toBe(1);
+  });
+
   test('preserves untouched SSR bindings when the first write omits their roots', async ({ page }) => {
     await page.evaluate(() => {
       const host = document.querySelector('test-html-only') as {

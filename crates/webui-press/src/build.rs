@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use console::style;
@@ -549,10 +550,17 @@ pub fn build_docs_with_cache(
     let bundler_config = config.bundler.clone();
     let config_dir_for_bundle = config_dir.to_path_buf();
     let content_dir_for_bundle = PathBuf::from(&config.content_dir);
+    let base_path_for_bundle = base_path.to_string();
     let dev_mode = cache.dev_mode;
+    // Published before the projection completer wakes page builds. This keeps
+    // parsing overlapped with esbuild while making exact generated URLs
+    // available before each protocol is handed to the renderer.
+    let generated_preloads = Arc::new(OnceLock::new());
+    let generated_preloads_for_bundle = Arc::clone(&generated_preloads);
     let bundle_thread = BundleThread::spawn(move || {
         match bundle_assets(&BundleOptions {
             site_dir: &site_dir_for_bundle,
+            base_path: &base_path_for_bundle,
             node_modules: node_modules.as_deref(),
             root_bundle: root_bundle_for_bundle.as_ref(),
             page_bundles: &page_bundles_for_bundle,
@@ -562,6 +570,14 @@ pub fn build_docs_with_cache(
             content_dir: &content_dir_for_bundle,
         }) {
             Ok(result) => {
+                if generated_preloads_for_bundle
+                    .set(result.preloads.clone())
+                    .is_err()
+                {
+                    let message = "Generated preload metadata was published twice".to_string();
+                    projection_completer.complete(Err(message.clone()));
+                    return Err(Error::Build(message));
+                }
                 projection_completer.complete(Ok(result.projection.clone()));
                 Ok(result)
             }
@@ -624,7 +640,7 @@ pub fn build_docs_with_cache(
         fs::write(page_tmp.join("index.html"), &page_html)
             .map_err(|e| Error::Io(format!("Cannot write page temp: {e}")))?;
 
-        let build_result = webui::build(BuildOptions {
+        let mut build_result = webui::build(BuildOptions {
             app_dir: page_tmp.clone(),
             entry: "index.html".to_string(),
             plugin: Some(webui::Plugin::WebUI),
@@ -634,6 +650,15 @@ pub fn build_docs_with_cache(
             ..BuildOptions::default()
         })
         .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
+        let preloads = generated_preloads.get().ok_or_else(|| {
+            Error::Build("Generated preload metadata was not published".to_string())
+        })?;
+        let (hrefs, mut preload_warnings) = preloads.resolve(
+            &build_result.protocol.module_preloads,
+            page_bundle_ids.get(&page.path).copied(),
+        );
+        build_result.protocol.module_preloads = hrefs;
+        build_result.warnings.append(&mut preload_warnings);
 
         total_bytes.fetch_add(
             build_result.protocol_bytes.len(),
@@ -758,7 +783,7 @@ pub fn build_docs_with_cache(
     fs::create_dir_all(&nf_tmp).map_err(|e| Error::Io(e.to_string()))?;
     fs::write(nf_tmp.join("index.html"), &not_found_html).map_err(|e| Error::Io(e.to_string()))?;
 
-    let nf_build = webui::build(BuildOptions {
+    let mut nf_build = webui::build(BuildOptions {
         app_dir: nf_tmp.clone(),
         entry: "index.html".to_string(),
         plugin: Some(webui::Plugin::WebUI),
@@ -768,6 +793,13 @@ pub fn build_docs_with_cache(
         ..BuildOptions::default()
     })
     .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
+    let preloads = generated_preloads
+        .get()
+        .ok_or_else(|| Error::Build("Generated preload metadata was not published".to_string()))?;
+    let (hrefs, mut preload_warnings) =
+        preloads.resolve(&nf_build.protocol.module_preloads, not_found_bundle_id);
+    nf_build.protocol.module_preloads = hrefs;
+    nf_build.warnings.append(&mut preload_warnings);
 
     if let Some(token_file) = token_file.as_ref() {
         inject_theme_tokens(&mut not_found_state, token_file, &nf_build.protocol.tokens)?;

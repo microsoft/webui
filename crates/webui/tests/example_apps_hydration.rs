@@ -114,7 +114,7 @@ fn contact_book_manager_without_manifest_preserves_full_state() {
     );
     assert_eq!(
         cb_app.navigation_mode,
-        webui_protocol::StateProjectionMode::All as i32
+        Some(webui_protocol::StateProjectionMode::All as i32)
     );
     assert!(cb_app.hydration_keys.is_empty());
     assert!(cb_app.navigation_keys.is_empty());
@@ -162,7 +162,7 @@ fn routes_example_without_manifest_preserves_full_state() {
     );
     assert_eq!(
         routes_app.navigation_mode,
-        webui_protocol::StateProjectionMode::All as i32
+        Some(webui_protocol::StateProjectionMode::All as i32)
     );
     assert!(routes_app.hydration_keys.is_empty());
     assert!(routes_app.navigation_keys.is_empty());

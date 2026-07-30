@@ -60,6 +60,23 @@ enum ArtifactIdentity {
 struct ValidatedFiles {
     manifest_values: BTreeMap<String, String>,
     identities: BTreeMap<ArtifactIdentity, String>,
+    physical_paths: BTreeMap<String, PathBuf>,
+}
+
+/// One entry output and its ordered static-import closure, retaining the
+/// manifest-relative names needed to derive browser URLs. The snapshot map is
+/// keyed separately by the entry's canonical physical path so independent
+/// manifests may use identical relative names without colliding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EntryClosure {
+    pub(crate) entry_key: String,
+    pub(crate) members: Vec<EntryClosureMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EntryClosureMember {
+    pub(crate) key: String,
+    pub(crate) identity: PathBuf,
 }
 
 #[derive(Debug, Default)]
@@ -70,7 +87,7 @@ pub(crate) struct ProjectionSnapshot {
     ///
     /// Kept verbatim because only the bundler knows output sizes; resolving
     /// these to servable URLs is [`crate::module_preload`]'s job.
-    pub(crate) entry_closures: BTreeMap<String, Vec<String>>,
+    pub(crate) entry_closures: BTreeMap<PathBuf, EntryClosure>,
     artifacts: BTreeMap<ArtifactIdentity, String>,
 }
 
@@ -88,7 +105,7 @@ pub(crate) fn load_and_merge(
 
     let mut components = BTreeMap::new();
     let mut artifacts = BTreeMap::new();
-    let mut entry_closures: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut entry_closures: BTreeMap<PathBuf, EntryClosure> = BTreeMap::new();
     for source in sources {
         let fragment = load_source(source)?;
         for (tag, entry) in &fragment.components {
@@ -100,19 +117,19 @@ pub(crate) fn load_and_merge(
                 ));
             }
         }
-        for (entry, closure) in &fragment.entry_closures {
+        for (entry_identity, closure) in &fragment.entry_closures {
             // Two fragments describing the same output must agree. Identical
             // repeats are fine (one bundler run feeding several manifests);
             // differing ones mean the fragments came from different builds,
             // and picking either would emit preloads for chunks that may not
             // exist.
-            match entry_closures.get(entry) {
-                Some(existing) if existing != closure => {
-                    return Err(conflicting_entry_closure(entry));
+            match entry_closures.get(entry_identity) {
+                Some(existing) if !same_closure_artifacts(existing, closure) => {
+                    return Err(conflicting_entry_closure(&closure.entry_key));
                 }
                 Some(_) => {}
                 None => {
-                    entry_closures.insert(entry.clone(), closure.clone());
+                    entry_closures.insert(entry_identity.clone(), closure.clone());
                 }
             }
         }
@@ -176,6 +193,7 @@ fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<ProjectionSnapshot, 
     let root = resolve_root(&manifest_path, &raw.root)?;
     let inputs = validate_files(path, &root, raw.inputs, ArtifactKind::Input)?;
     let outputs = validate_files(path, &root, raw.outputs, ArtifactKind::Output)?;
+    let entry_closures = qualify_entry_closures(path, raw.entry_closures, &outputs.physical_paths)?;
     let components = validate_components(
         path,
         raw.components,
@@ -199,7 +217,7 @@ fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<ProjectionSnapshot, 
         .collect();
     Ok(ProjectionSnapshot {
         components: runtime_components,
-        entry_closures: raw.entry_closures,
+        entry_closures,
         artifacts,
     })
 }
@@ -279,6 +297,7 @@ fn validate_files(
 ) -> Result<ValidatedFiles, WebUIError> {
     let mut values = BTreeMap::new();
     let mut identities = BTreeMap::new();
+    let mut physical_paths = BTreeMap::new();
 
     for (key, expected_hash) in declared {
         if projection_manifest::is_virtual_key(&key) {
@@ -327,6 +346,7 @@ fn validate_files(
             ));
         }
 
+        physical_paths.insert(key.clone(), canonical.clone());
         let identity = ArtifactIdentity::Physical(canonical);
         if identities.insert(identity, expected_hash.clone()).is_some() {
             return Err(invalid_field(
@@ -343,7 +363,54 @@ fn validate_files(
     Ok(ValidatedFiles {
         manifest_values: values,
         identities,
+        physical_paths,
     })
+}
+
+fn qualify_entry_closures(
+    manifest_path: &Path,
+    declared: BTreeMap<String, Vec<String>>,
+    outputs: &BTreeMap<String, PathBuf>,
+) -> Result<BTreeMap<PathBuf, EntryClosure>, WebUIError> {
+    let mut qualified = BTreeMap::new();
+    for (entry_key, members) in declared {
+        let Some(entry_identity) = outputs.get(&entry_key) else {
+            return Err(invalid_field(
+                manifest_path,
+                &format!("entryClosures references undeclared output '{entry_key}'"),
+            ));
+        };
+        let mut qualified_members = Vec::with_capacity(members.len());
+        for key in members {
+            let Some(identity) = outputs.get(&key) else {
+                return Err(invalid_field(
+                    manifest_path,
+                    &format!("entryClosures references undeclared output '{key}'"),
+                ));
+            };
+            qualified_members.push(EntryClosureMember {
+                key,
+                identity: identity.clone(),
+            });
+        }
+        qualified.insert(
+            entry_identity.clone(),
+            EntryClosure {
+                entry_key,
+                members: qualified_members,
+            },
+        );
+    }
+    Ok(qualified)
+}
+
+fn same_closure_artifacts(left: &EntryClosure, right: &EntryClosure) -> bool {
+    left.members.len() == right.members.len()
+        && left
+            .members
+            .iter()
+            .zip(&right.members)
+            .all(|(left, right)| left.identity == right.identity)
 }
 
 fn validate_components(
@@ -937,18 +1004,38 @@ mod tests {
         let first_json = build_valid_manifest_json(
             first_dir.path(),
             &[("src/card.ts", "first")],
-            &[("dist/index.js", "first-output")],
+            &[
+                ("dist/index.js", "first-output"),
+                ("chunks/shared.js", "first-shared"),
+            ],
             &[("first-card", "src/card.ts", &["dist/index.js"], &[], &[])],
         );
+        let mut first_manifest: ProjectionManifest = serde_json::from_str(&first_json).unwrap();
+        first_manifest.entry_closures.insert(
+            "dist/index.js".to_string(),
+            vec!["chunks/shared.js".to_string()],
+        );
+        first_manifest.build_id = first_manifest.compute_build_id();
+        let first_json = serde_json::to_string(&first_manifest).unwrap();
         let first = write_manifest(first_dir.path(), "projection.json", &first_json);
 
         let second_dir = TempDir::new().unwrap();
         let second_json = build_valid_manifest_json(
             second_dir.path(),
             &[("src/card.ts", "second")],
-            &[("dist/index.js", "second-output")],
+            &[
+                ("dist/index.js", "second-output"),
+                ("chunks/shared.js", "second-shared"),
+            ],
             &[("second-card", "src/card.ts", &["dist/index.js"], &[], &[])],
         );
+        let mut second_manifest: ProjectionManifest = serde_json::from_str(&second_json).unwrap();
+        second_manifest.entry_closures.insert(
+            "dist/index.js".to_string(),
+            vec!["chunks/shared.js".to_string()],
+        );
+        second_manifest.build_id = second_manifest.compute_build_id();
+        let second_json = serde_json::to_string(&second_manifest).unwrap();
         let second = write_manifest(second_dir.path(), "projection.json", &second_json);
 
         let merged = load_and_merge(&[first.into(), second.into()])
@@ -956,6 +1043,11 @@ mod tests {
             .unwrap();
         assert!(merged.components.contains_key("first-card"));
         assert!(merged.components.contains_key("second-card"));
+        assert_eq!(
+            merged.entry_closures.len(),
+            2,
+            "entry closure identity is canonical, not root-relative"
+        );
     }
 
     #[test]

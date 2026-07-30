@@ -45,8 +45,10 @@ message ComponentData {
   repeated string navigation_keys = 7;
   // How initial hydration state is selected for this component.
   StateProjectionMode hydration_mode = 8;
-  // How partial-navigation state is selected for this component.
-  StateProjectionMode navigation_mode = 9;
+  // How partial-navigation state is selected for this component. Presence is
+  // significant: protocols produced before projection metadata leave this
+  // absent, so handlers preserve full state instead of treating it as NONE.
+  optional StateProjectionMode navigation_mode = 9;
 }
 
 // Build-wide initial-state behavior.

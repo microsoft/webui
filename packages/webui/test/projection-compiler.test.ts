@@ -148,6 +148,105 @@ customElements.define('not-global-card', Card);
 
     assert.deepEqual(manifest.components, {});
   });
+
+  test("recognizes define calls separated from arguments by comments", async () => {
+    const moduleId = id("src/commented-define.ts");
+    const manifest = await compileProjection(
+      context([
+        {
+          id: moduleId,
+          kind: "file",
+          source: `
+import { WebUIElement } from '@microsoft/webui-framework';
+class Card extends WebUIElement {}
+Card.define /* keep this comment */ ('commented-card');
+`,
+          imports: [frameworkEdge()],
+        },
+      ])
+    );
+
+    assert.deepEqual(
+      manifest.components["commented-card"]?.hydrationKeys,
+      []
+    );
+  });
+
+  test("recognizes define calls after interpolated template literals", async () => {
+    const moduleId = id("src/template-before-define.ts");
+    const manifest = await compileProjection(
+      context([
+        {
+          id: moduleId,
+          kind: "file",
+          source: `
+import { WebUIElement } from '@microsoft/webui-framework';
+const label = \`card-\${String(1)}\`;
+class Card extends WebUIElement {}
+Card.define('template-card');
+void label;
+`,
+          imports: [frameworkEdge()],
+        },
+      ])
+    );
+
+    assert.deepEqual(
+      manifest.components["template-card"]?.hydrationKeys,
+      []
+    );
+  });
+
+  test("resolves immutable class and decorator aliases", async () => {
+    const moduleId = id("src/aliases.ts");
+    const manifest = await compileProjection(
+      context([
+        {
+          id: moduleId,
+          kind: "file",
+          source: `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+const obs = observable;
+class Card extends WebUIElement {
+  @obs value = '';
+}
+const Alias = Card;
+Alias.define('aliased-card');
+`,
+          imports: [frameworkEdge()],
+        },
+      ])
+    );
+
+    assert.deepEqual(
+      manifest.components["aliased-card"]?.hydrationKeys,
+      ["value"]
+    );
+  });
+
+  test("rejects mutable class-expression bindings", async () => {
+    const moduleId = id("src/mutable-class.ts");
+    await assert.rejects(
+      () =>
+        compileProjection(
+          context([
+            {
+              id: moduleId,
+              kind: "file",
+              source: `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+let Card = class extends WebUIElement {
+  @observable stale = '';
+};
+Card.define('mutable-card');
+`,
+              imports: [frameworkEdge()],
+            },
+          ])
+        ),
+      /PROJ-C009/
+    );
+  });
 });
 
 describe("projection manifest hashing", () => {

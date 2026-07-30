@@ -224,8 +224,10 @@ export interface ProjectionManifest {
    * excluded — those are meant to cost a round trip.
    *
    * The bundler is the only party that knows output sizes, so it sorts here
-   * and consumers use the order as given. Absent on manifests produced before
-   * this field existed.
+   * and consumers use the order as given. Every known entry is present, even
+   * when its closure is empty, so consumers can disambiguate equal basenames
+   * across merged builds. Absent on manifests produced before this field
+   * existed.
    */
   readonly entryClosures?: Readonly<Record<string, ReadonlyArray<string>>>;
 }

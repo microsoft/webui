@@ -120,6 +120,39 @@ export const used = padding.length;
 }
 
 describe("esbuildProjection", () => {
+  test("treats stdin as virtual even when sourcefile exists on disk", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(
+      path.join(root, "src", "entry.ts"),
+      `
+import { WebUIElement, observable } from '@microsoft/webui-framework';
+class DiskCard extends WebUIElement {
+  @observable diskOnly = '';
+}
+DiskCard.define('disk-card');
+`
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      stdin: {
+        contents: "export const fromStdin = true;\n",
+        sourcefile: "src/entry.ts",
+        resolveDir: root,
+        loader: "ts",
+      },
+      outfile: "dist/index.js",
+      bundle: true,
+      format: "esm",
+      write: true,
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.deepEqual(manifest.components, {});
+  });
+
   test("emits a code-split manifest from the same esbuild run", async (t) => {
     const root = await fixtureRoot();
     t.after(() => rm(root, { recursive: true, force: true }));
@@ -259,14 +292,50 @@ describe("esbuildProjection", () => {
     assert.deepEqual(validateManifestSchema(manifest), []);
 
     // `entry.ts` reaches `card.ts` only through `import()`. Preloading it would
-    // defeat the deferral the author asked for, so the closure must be empty
-    // and therefore omitted entirely.
-    const closure = Object.values(manifest.entryClosures ?? {}).flat();
-    assert.equal(
-      closure.some((member) => member.includes("card-")),
-      false,
-      "dynamic imports must not be preloaded"
+    // defeat the deferral the author asked for, so its retained ownership
+    // record must have an empty closure.
+    const closures = manifest.entryClosures ?? {};
+    const entryKey = Object.keys(closures).find((key) =>
+      key.endsWith("/entry.js")
     );
+    assert.ok(entryKey, "the configured entry must remain represented");
+    const closure = closures[entryKey]!;
+    assert.equal(closure.length, 0, "dynamic imports must not be preloaded");
+  });
+
+  test("suppresses closure members when publicPath changes served URLs", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeSharedChunkFixture(root);
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts", "src/island.ts"],
+      outdir: "dist",
+      bundle: true,
+      splitting: true,
+      format: "esm",
+      publicPath: "https://cdn.example.com/assets",
+      write: true,
+      alias: {
+        "@microsoft/webui-framework": FRAMEWORK_ENTRY,
+      },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    const closures = manifest.entryClosures ?? {};
+    const configuredEntries = Object.entries(closures).filter(
+      ([key]) => key.endsWith("/entry.js") || key.endsWith("/island.js")
+    );
+    assert.equal(configuredEntries.length, 2);
+    for (const [, closure] of configuredEntries) {
+      assert.deepEqual(
+        closure,
+        [],
+        "local metafile paths must not become same-origin CDN preload guesses"
+      );
+    }
   });
 
   test("hashes esbuild outputFiles when write is false", async (t) => {

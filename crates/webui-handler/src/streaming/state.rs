@@ -7,7 +7,7 @@
 //! bitsets are reused across checkpoints so a boundary commit allocates
 //! nothing on the steady-state path.
 
-use std::cell::Cell;
+use std::borrow::Cow;
 
 use webui_protocol::{web_ui_fragment::Fragment, WebUIProtocol};
 
@@ -18,8 +18,7 @@ use crate::{route_handler, structural_signal_value, HandlerError, Result, WebUIP
 pub(super) const BOUNDARY_START_PREFIX: &str = "boundary_start:";
 pub(super) const BOUNDARY_END_PREFIX: &str = "boundary_end:";
 
-pub(crate) struct StreamingRenderState<'data, 'stream> {
-    pub(super) dirty: &'stream Cell<bool>,
+pub(crate) struct StreamingRenderState<'data> {
     /// Startup-built component dependency graph. Route-free checkpoints use its
     /// integer edges instead of walking/cloning protocol fragments per request.
     pub(super) component_reachability: &'data route_handler::ComponentReachabilityIndex,
@@ -47,6 +46,10 @@ pub(crate) struct StreamingRenderState<'data, 'stream> {
     /// allocation-free per tag. The vector is cleared after commit while retaining
     /// capacity for the next checkpoint.
     pub(super) checkpoint_tags: Vec<&'data str>,
+    /// Route-dependent rendered roots paired with the route base active at
+    /// render time. This cold-path vector stays empty for route-free surfaces;
+    /// relative-route expansion cannot reconstruct these bases at commit time.
+    pub(super) checkpoint_route_roots: Vec<(&'data str, Cow<'data, str>)>,
     /// Dedup bitset (one bit per component index) marking tags already recorded
     /// into `checkpoint_tags` for the current checkpoint. Cleared and reused
     /// alongside `checkpoint_tags`.
@@ -102,7 +105,7 @@ pub(crate) fn validate_streaming_head_start(
 }
 
 pub(super) fn require_streaming_head_start(
-    context: &WebUIProcessContext<'_, '_, '_>,
+    context: &WebUIProcessContext<'_, '_>,
     before: &'static str,
 ) -> Result<()> {
     if context
@@ -118,7 +121,7 @@ pub(super) fn require_streaming_head_start(
 
 pub(super) fn increment_streaming_sequence(
     signal: &str,
-    streaming: &mut StreamingRenderState<'_, '_>,
+    streaming: &mut StreamingRenderState<'_>,
 ) -> Result<()> {
     streaming.next_sequence = streaming.next_sequence.checked_add(1).ok_or_else(|| {
         streaming_boundary_error(signal, "boundary sequence overflowed the platform limit")

@@ -127,6 +127,7 @@ window.__defineBenchIsland = function defineBenchIsland() {
   if (!customElements.get('bench-island')) {
     BenchIsland.define('bench-island');
   }
+  return BenchIsland;
 };
 `;
 

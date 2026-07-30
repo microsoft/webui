@@ -54,9 +54,11 @@ pub struct ComponentData {
     /// How initial hydration state is selected for this component.
     #[prost(enumeration = "StateProjectionMode", tag = "8")]
     pub hydration_mode: i32,
-    /// How partial-navigation state is selected for this component.
-    #[prost(enumeration = "StateProjectionMode", tag = "9")]
-    pub navigation_mode: i32,
+    /// How partial-navigation state is selected for this component. Presence is
+    /// significant: protocols produced before projection metadata leave this
+    /// absent, so handlers preserve full state instead of treating it as NONE.
+    #[prost(enumeration = "StateProjectionMode", optional, tag = "9")]
+    pub navigation_mode: ::core::option::Option<i32>,
 }
 /// Root protocol containing all fragment records and build metadata.
 #[derive(serde::Serialize, serde::Deserialize)]

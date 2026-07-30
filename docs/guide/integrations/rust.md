@@ -166,7 +166,7 @@ below.
 use std::sync::Arc;
 use std::time::Duration;
 use bytes::Bytes;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::StreamExt;
 use webui::streaming::{ChunkPool, StreamingWriter};
 use webui::{WebUIHandler, RenderOptions, ResponseWriter};
@@ -176,12 +176,23 @@ let chunk_pool = Arc::new(ChunkPool::new(
     256,                                       // ~1.25 MiB peak pool memory
     StreamingWriter::CHUNK_TARGET + 1024,
 ));
+let render_permits = Arc::new(Semaphore::new(4));
 
 // Per request:
+// Acquire before `spawn_blocking`; its internal queue is not an admission limit.
+let render_permit = match Arc::clone(&render_permits).try_acquire_owned() {
+    Ok(permit) => permit,
+    Err(_) => {
+        return HttpResponse::ServiceUnavailable()
+            .insert_header(("Retry-After", "1"))
+            .body("streaming render capacity is temporarily exhausted");
+    }
+};
 let (tx, rx) = mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
 actix_web::rt::task::spawn_blocking({
     let chunk_pool = Arc::clone(&chunk_pool);
     move || {
+        let _render_permit = render_permit;
         // `with_flush_timeout` bounds the slow-loris DoS surface to
         // `30s × concurrent_renders`. `end()` returns the typed error
         // from the final flush. Log truncated streams at debug.
@@ -213,10 +224,11 @@ pub trait FlushWriter: ResponseWriter {
 
 `render_streaming` accepts `&mut dyn FlushWriter`; `StreamingWriter` implements
 that trait. Each explicit boundary is completed, followed by its hydration
-checkpoint and a semantic flush. The final response also includes an in-order
-tail checkpoint when needed and a terminal checkpoint. The normal `render`
-method still accepts any `ResponseWriter` and does not progressively hydrate
-authored boundaries.
+checkpoint and a semantic flush. At `body_end`, any native or scriptless tail
+HTML is followed by one empty markerless terminal record and one final flush.
+The terminal record never repeats state or template metadata. The normal
+`render` method still accepts any `ResponseWriter` and does not progressively
+hydrate authored boundaries.
 
 The entry template must load its application module with an early
 `<script type="module" async>` in `<head>`, before boundary content. See
@@ -232,8 +244,14 @@ from roots rendered since the previous checkpoint, including descendants behind
 initially false conditions or empty repeats. Unrelated later boundaries remain
 excluded. Template metadata is sent only when first reachable, inventory still
 tracks only rendered SSR roots, and repeated instances receive checkpoint-local
-state without duplicate metadata. If an uncommitted tail exists, its checkpoint
-and the terminal flag share one payload and one flush.
+state without duplicate metadata. The final terminal envelope is always
+`[1,nextSequence,1,{}]`; its flush also commits preceding static tail bytes.
+
+The bounded channel limits bytes retained by a running render, but it does not
+bound how many requests can queue in Tokio's blocking pool. Acquire a
+process-wide permit with `try_acquire_owned()` before `spawn_blocking`, return
+HTTP 503 with `Retry-After` when saturated, and move the permit into the closure
+so it is held for the render's full lifetime.
 
 `FlushWriter::flush` means all currently buffered bytes were handed to the HTTP
 transport. It cannot force an HTTP adapter, compressor, reverse proxy, or CDN to

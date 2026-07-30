@@ -375,6 +375,7 @@ API.
 | `this.$emit(name, detail?)` | Dispatch a CustomEvent that bubbles up |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
+| `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
 | `defineComponentAssets(manifest)` | Define lazy component assets with `preload(tag)` and `create(tag)` |
 
@@ -596,7 +597,8 @@ Rules for code generation:
 - Boundaries commit and flush strictly in document order. A boundary does not
   make server work asynchronous and cannot replace an earlier region out of
   order. For a slow surface, emit a *complete* placeholder component in its own
-  early boundary and let it resolve its own data client-side after it hydrates;
+  early boundary and start its client-side work from `hydratedCallback()` after
+  it hydrates;
   do not stall the response waiting for it, which would delay every later
   boundary including the critical one.
 - Use `RenderOptions::with_nonce` for generated inline boundary scripts under
@@ -611,6 +613,19 @@ Rules for code generation:
   only rendered SSR roots, and unrelated later boundaries are excluded. State
   is passed directly to activation instead of being retained in
   `window.__webui.state`.
+- A streaming `.define(tag)` request waits for that tag's template metadata
+  before native custom-element definition, because browsers snapshot
+  `observedAttributes` at definition time. Undefined roots share one waiter per
+  tag. An undefined outer root blocks descendant activation and waiters until
+  the outer root activates.
+- `hydratedCallback()` runs synchronously exactly once after the first successful
+  ordinary hydration, client mount, streamed activation, or dormant static-host
+  wake. Use it for post-hydration setup; `connectedCallback()` can run before a
+  streamed boundary commits and can run again on reconnect.
+- `body_end` emits one empty markerless terminal envelope
+  `[1,nextSequence,1,{}]`. Its flush commits preceding static tail bytes without
+  repeating state or template metadata. Fatal stream cleanup is bounded and
+  suppresses `webui:hydration-complete`; valid commits never scan the document.
 - A semantic flush hands bytes to the HTTP transport. Server adapters,
   compression, proxies, and CDNs can still buffer them.
 
@@ -1153,19 +1168,22 @@ The handler resolves `tokens.light` from the state, outputting:
     state your TypeScript changes, and use template bindings for DOM output.
     Use `w-ref` only for imperative DOM access (focus, scroll, etc.).
 
-11. **No `@observable` writes before `super.connectedCallback()`.** During SSR
+11. **No `@observable` writes before hydration.** During SSR
     hydration the server-rendered DOM is trusted and not re-rendered, so a value
     set in a field initializer, the `constructor`, or before
     `super.connectedCallback()` cannot reach the DOM - the write is dropped and
     the runtime logs a `[WebUI] Hydration mismatch` warning. If the value must
     appear in the first render, put it in the SSR state JSON; otherwise assign it
-    after `super.connectedCallback()`. The call is a synchronous hydration
-    boundary: when it returns, that component's bindings, events, and `w-ref`
-    references are wired. Load definitions through a parser-inserted, non-async
-    ES module script or a classic `defer` script. A blocking classic script must
-    follow every SSR instance it may upgrade. Descendants must not structurally
-    mutate a containing WebUI component's SSR subtree before it hydrates, because
-    node insertion, removal, or reordering shifts compiled paths. The warning is
+    in `hydratedCallback()`. On buffered SSR and client-created mounts,
+    `super.connectedCallback()` hydrates synchronously, but streamed hosts can
+    return while still deferred. `hydratedCallback()` is the cross-mode signal:
+    it runs synchronously exactly once after the first successful hydration or
+    mount, and reconnects or callback exceptions do not retry it. Load buffered
+    definitions through a parser-inserted, non-async ES module script or a
+    classic `defer` script. A blocking classic script must follow every SSR
+    instance it may upgrade. Descendants must not structurally mutate a
+    containing WebUI component's SSR subtree before it hydrates, because node
+    insertion, removal, or reordering shifts compiled paths. The warning is
     development-only - it is
     stripped from production bundles via the `__WEBUI_DEV__` compile-time flag
     (`webui-press build` sets `__WEBUI_DEV__=false` automatically; self-bundled
@@ -1354,7 +1372,11 @@ The writer must implement `FlushWriter`, which extends `ResponseWriter` with
 `HandlerError::ClientDisconnected` or `HandlerError::StreamTimeout`. This API is
 Rust-only. The early async browser entry must import
 `@microsoft/webui-framework/streaming.js` before component registration
-modules.
+modules. Bound the number of renders before `spawn_blocking` with a process-wide
+`Semaphore::try_acquire_owned()` permit; bounded chunk channels do not bound
+Tokio's queued blocking tasks. At saturation, reject before spawning. The final
+flush writes one empty markerless `[1,nextSequence,1,{}]` terminal envelope
+after any static tail bytes.
 
 ### Node.js
 

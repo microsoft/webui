@@ -200,7 +200,8 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
     "target": "es2022",
     "external": [],
     "define": { "process.env.NODE_ENV": "\"production\"" },
-    "alias": { "~": "./src" }
+    "alias": { "~": "./src" },
+    "projectionManifests": ["../client/dist/webui-projection.json"]
   },
 
   "head": [
@@ -313,8 +314,10 @@ Every entry in `head[]` is rendered into `<head>` with attributes sorted alphabe
 | `external` | string array     | Package IDs to leave external. Aliased packages are always bundled. |
 | `define`   | object           | Compile-time replacements such as `process.env.NODE_ENV`. |
 | `alias`    | object           | Module ID aliases. Relative targets are resolved from `config.json`'s directory. |
+| `projectionManifests` | string array | Projection manifests for separately built bundles, resolved from `config.json` and watched by `serve`. |
 
 You usually do not need a `bundler` section. Add one only when you need a package externalized to a CDN, a compile-time define, or a local alias.
+Configured projection manifests are validated and merged even when the site has no local JavaScript entries.
 
 ---
 
@@ -444,6 +447,8 @@ import "@microsoft/webui-components/button.js";
 The template chrome uses a shared root script (`index.js`). Pages with no page-specific component scripts or bundled imports load only that root script. Pages with identical page-specific import sets reuse the same generated import group instead of emitting duplicate wrappers.
 
 All root and page entries are bundled in one esbuild build. If ten pages import the same package or local component runtime, esbuild can emit that dependency once as a shared chunk. Import-only page wrappers are collapsed after bundling, so generated pages link directly to the chunks they need instead of loading a `page-N.js` file that only re-imports the same chunks.
+
+Generated root and page entries also receive build-time `<link rel="modulepreload">` hints for their static-import closures. Hints preserve the bundler's size order and use the same cache-busting URLs as the generated scripts.
 
 `webui-press build` minifies bundled JavaScript. `webui-press serve` skips minification for faster rebuilds during local development.
 

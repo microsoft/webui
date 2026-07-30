@@ -15,6 +15,8 @@
 //! manifest reports each bundler entry's transitive static import closure,
 //! already ordered largest-first. This module joins them and produces the
 //! ordered, servable href list the handler writes into `<head>`.
+//! Compiler-generated entries use the same resolver with exact physical output
+//! identities and host-provided cache-busted URLs.
 //!
 //! **Order is the whole point.** Preloads are issued in document order over a
 //! shared connection, so a small chunk listed ahead of a large one delays the
@@ -23,8 +25,10 @@
 //! worse than emitting nothing, which is exactly why this is the framework's
 //! job and not the application author's.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::path::PathBuf;
 
+use crate::projection::EntryClosure;
 use webui_parser::codes;
 use webui_parser::Diagnostic;
 
@@ -53,7 +57,7 @@ pub(crate) struct ModulePreloads {
 /// deduplicated across entries by first occurrence, so a chunk shared by two
 /// entries is preloaded once at its earliest (largest) position.
 pub(crate) fn resolve(
-    entry_closures: &BTreeMap<String, Vec<String>>,
+    entry_closures: &BTreeMap<PathBuf, EntryClosure>,
     entry_srcs: &[String],
 ) -> ModulePreloads {
     let mut result = ModulePreloads::default();
@@ -66,9 +70,9 @@ pub(crate) fn resolve(
             continue;
         };
 
-        let mut matched: Option<&str> = None;
-        for key in entry_closures.keys() {
-            if file_name(key) != src_file {
+        let mut matched: Option<&EntryClosure> = None;
+        for closure in entry_closures.values() {
+            if file_name(&closure.entry_key) != src_file {
                 continue;
             }
             if matched.is_some() {
@@ -79,27 +83,23 @@ pub(crate) fn resolve(
                 matched = None;
                 break;
             }
-            matched = Some(key);
+            matched = Some(closure);
         }
-        let Some(entry_key) = matched else {
+        let Some(closure) = matched else {
             continue;
         };
 
-        let key_dir = &entry_key[..entry_key.len() - src_file.len()];
-        for member in &entry_closures[entry_key] {
-            // Rewriting the manifest's directory prefix to the URL's is the
-            // same resolution the browser performs for the entry's real
-            // `import` statements. A member outside that directory cannot be
-            // expressed this way, and a wrong href costs more than a missing
-            // one, so it is skipped.
-            let Some(relative) = member.strip_prefix(key_dir) else {
-                continue;
-            };
+        for member in &closure.members {
+            // Resolve from the entry's manifest-relative directory exactly as
+            // the browser resolves the entry's own import specifiers. Sibling
+            // output directories become safe `../` href segments rather than
+            // being silently discarded.
+            let relative = relative_member_path(&closure.entry_key, &member.key);
             if result.hrefs.len() == MAX_HINTS {
                 result.warnings.push(too_many_hints_warning(src));
                 return result;
             }
-            let href = concat_href(src_dir, relative);
+            let href = concat_href(src_dir, &relative);
             if !is_attribute_safe(&href) {
                 // The handler writes these straight into a quoted attribute
                 // with no per-request escaping, so anything that could close
@@ -115,6 +115,69 @@ pub(crate) fn resolve(
         }
     }
     result
+}
+
+/// Resolve compiler-generated entries through exact output identities.
+///
+/// Unlike authored script URLs, generated URLs may carry cache-busting query
+/// parameters. The host supplies the complete identity-to-URL map, so this
+/// path never strips parameters or guesses from a basename.
+pub(crate) fn resolve_exact(
+    entry_closures: &BTreeMap<PathBuf, EntryClosure>,
+    existing_hrefs: &[String],
+    entry_outputs: &[&std::path::Path],
+    output_urls: &BTreeMap<PathBuf, String>,
+) -> ModulePreloads {
+    let mut result = ModulePreloads {
+        hrefs: existing_hrefs.iter().take(MAX_HINTS).cloned().collect(),
+        warnings: Vec::new(),
+    };
+    for entry_output in entry_outputs {
+        let Some(closure) = entry_closures.get(*entry_output) else {
+            continue;
+        };
+        for member in &closure.members {
+            let Some(href) = output_urls.get(&member.identity) else {
+                // An incomplete map cannot prove a servable URL. Missing a
+                // hint is safer than synthesizing one from a filesystem path.
+                continue;
+            };
+            if result.hrefs.contains(href) {
+                continue;
+            }
+            if result.hrefs.len() == MAX_HINTS {
+                result
+                    .warnings
+                    .push(too_many_hints_warning(&closure.entry_key));
+                return result;
+            }
+            if !is_generated_attribute_safe(href) {
+                result.warnings.push(unsafe_href_warning(href));
+                continue;
+            }
+            result.hrefs.push(href.clone());
+        }
+    }
+    result
+}
+
+pub(crate) fn exact_output_identities(
+    entry_closures: &BTreeMap<PathBuf, EntryClosure>,
+    entry_outputs: &[&std::path::Path],
+) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut outputs = Vec::new();
+    for entry_output in entry_outputs {
+        let Some(closure) = entry_closures.get(*entry_output) else {
+            continue;
+        };
+        for member in &closure.members {
+            if seen.insert(member.identity.as_path()) {
+                outputs.push(member.identity.clone());
+            }
+        }
+    }
+    outputs
 }
 
 /// Split a script `src` into its directory prefix (with trailing separator)
@@ -149,15 +212,57 @@ fn concat_href(dir: &str, relative: &str) -> String {
     href
 }
 
+fn relative_member_path(entry: &str, member: &str) -> String {
+    let entry_dir = entry.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let common_segments = entry_dir
+        .split('/')
+        .zip(member.split('/'))
+        .take_while(|(left, right)| left == right)
+        .count();
+    let entry_segments = if entry_dir.is_empty() {
+        0
+    } else {
+        entry_dir.split('/').count()
+    };
+    let parent_segments = entry_segments.saturating_sub(common_segments);
+    let member_bytes = member
+        .split('/')
+        .skip(common_segments)
+        .map(str::len)
+        .sum::<usize>();
+    let remaining_segments = member.split('/').count().saturating_sub(common_segments);
+    let mut relative = String::with_capacity(
+        parent_segments * 3 + member_bytes + remaining_segments.saturating_sub(1),
+    );
+    for _ in 0..parent_segments {
+        relative.push_str("../");
+    }
+    for (index, segment) in member.split('/').skip(common_segments).enumerate() {
+        if index > 0 {
+            relative.push('/');
+        }
+        relative.push_str(segment);
+    }
+    relative
+}
+
 /// Whether an href can be written verbatim into a double-quoted HTML
 /// attribute.
 ///
 /// Deliberately an allow-list of what real bundler output contains rather than
 /// a deny-list of what breaks, so a character nobody anticipated fails closed.
 fn is_attribute_safe(href: &str) -> bool {
-    href.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'~' | b'+')
-    })
+    href.bytes().all(is_attribute_safe_byte)
+}
+
+fn is_generated_attribute_safe(href: &str) -> bool {
+    href.bytes()
+        .all(|byte| is_attribute_safe_byte(byte) || matches!(byte, b'?' | b'='))
+}
+
+#[inline]
+fn is_attribute_safe_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'~' | b'+')
 }
 
 /// Cold: at most one per rejected href, and only for a file name no bundler
@@ -206,14 +311,25 @@ fn too_many_hints_warning(src: &str) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::projection::{EntryClosure, EntryClosureMember};
+    use std::path::Path;
 
-    fn closures(pairs: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+    fn closures(pairs: &[(&str, &[&str])]) -> BTreeMap<PathBuf, EntryClosure> {
         pairs
             .iter()
             .map(|(entry, members)| {
                 (
-                    (*entry).to_string(),
-                    members.iter().map(|m| (*m).to_string()).collect(),
+                    PathBuf::from(entry),
+                    EntryClosure {
+                        entry_key: (*entry).to_string(),
+                        members: members
+                            .iter()
+                            .map(|member| EntryClosureMember {
+                                key: (*member).to_string(),
+                                identity: Path::new(member).to_path_buf(),
+                            })
+                            .collect(),
+                    },
                 )
             })
             .collect()
@@ -278,6 +394,21 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_owner_still_makes_a_basename_ambiguous() {
+        let map = closures(&[
+            ("apps/one/dist/index.js", &[]),
+            ("apps/two/dist/index.js", &["apps/two/dist/b.js"]),
+        ]);
+        let result = resolve(&map, &srcs(&["/index.js"]));
+
+        assert!(
+            result.hrefs.is_empty(),
+            "an entry with no imports still owns its basename"
+        );
+        assert_eq!(result.warnings.len(), 1);
+    }
+
+    #[test]
     fn an_unknown_entry_is_silently_skipped() {
         let map = closures(&[("d/a.js", &["d/shared.js"])]);
         let result = resolve(&map, &srcs(&["/vendor-analytics.js"]));
@@ -304,14 +435,20 @@ mod tests {
     }
 
     #[test]
-    fn members_outside_the_entry_directory_are_skipped() {
-        let map = closures(&[("d/a.js", &["d/inside.js", "elsewhere/outside.js"])]);
-        let result = resolve(&map, &srcs(&["/a.js"]));
+    fn members_in_sibling_output_directories_use_relative_hrefs() {
+        let map = closures(&[(
+            "app/dist/a.js",
+            &["app/dist/inside.js", "app/chunks/outside.js"],
+        )]);
+        let result = resolve(&map, &srcs(&["/static/dist/a.js"]));
 
         assert_eq!(
             result.hrefs,
-            ["/inside.js"],
-            "an unmappable member must not become a guessed href"
+            [
+                "/static/dist/inside.js",
+                "/static/dist/../chunks/outside.js"
+            ],
+            "the href must preserve the manifest's directory relationship"
         );
     }
 
@@ -319,7 +456,19 @@ mod tests {
     fn hints_are_capped_and_the_cap_is_reported() {
         let members: Vec<String> = (0..MAX_HINTS + 5).map(|i| format!("d/c{i}.js")).collect();
         let mut map = BTreeMap::new();
-        map.insert("d/a.js".to_string(), members);
+        map.insert(
+            PathBuf::from("d/a.js"),
+            EntryClosure {
+                entry_key: "d/a.js".to_string(),
+                members: members
+                    .into_iter()
+                    .map(|key| EntryClosureMember {
+                        identity: PathBuf::from(&key),
+                        key,
+                    })
+                    .collect(),
+            },
+        );
         let result = resolve(&map, &srcs(&["/a.js"]));
 
         assert_eq!(result.hrefs.len(), MAX_HINTS);
@@ -347,5 +496,61 @@ mod tests {
         assert!(resolve(&closures(&[("d/a.js", &["d/s.js"])]), &[])
             .hrefs
             .is_empty());
+    }
+
+    #[test]
+    fn compiler_generated_root_and_page_entries_use_exact_versioned_urls() {
+        let map = closures(&[
+            ("out/index.js", &["out/shared.js"]),
+            (
+                "out/assets/page-0.js",
+                &["out/assets/page.js", "out/shared.js"],
+            ),
+        ]);
+        let output_urls = BTreeMap::from([
+            (
+                PathBuf::from("out/shared.js"),
+                "/docs/shared.js?v=shared".to_string(),
+            ),
+            (
+                PathBuf::from("out/assets/page.js"),
+                "/docs/assets/page.js?v=page".to_string(),
+            ),
+            (
+                // A matching basename at the wrong identity must not be used.
+                PathBuf::from("other/shared.js"),
+                "/wrong/shared.js?v=wrong".to_string(),
+            ),
+        ]);
+        let entries = [Path::new("out/index.js"), Path::new("out/assets/page-0.js")];
+
+        assert_eq!(
+            exact_output_identities(&map, &entries),
+            [
+                PathBuf::from("out/shared.js"),
+                PathBuf::from("out/assets/page.js")
+            ]
+        );
+        let result = resolve_exact(&map, &[], &entries, &output_urls);
+
+        assert_eq!(
+            result.hrefs,
+            ["/docs/shared.js?v=shared", "/docs/assets/page.js?v=page"]
+        );
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn compiler_generated_entries_do_not_guess_missing_output_urls() {
+        let map = closures(&[("out/index.js", &["out/shared.js"])]);
+        let output_urls = BTreeMap::from([(
+            PathBuf::from("other/shared.js"),
+            "/wrong/shared.js?v=wrong".to_string(),
+        )]);
+
+        let result = resolve_exact(&map, &[], &[Path::new("out/index.js")], &output_urls);
+
+        assert!(result.hrefs.is_empty());
+        assert!(result.warnings.is_empty());
     }
 }

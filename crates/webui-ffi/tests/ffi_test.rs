@@ -190,7 +190,7 @@ fn render_partial_returns_templates_inventory_and_chain() {
         .or_default();
     search_page.hydration_mode = StateProjectionMode::Keys as i32;
     search_page.hydration_keys = vec!["query".to_string()];
-    search_page.navigation_mode = StateProjectionMode::Keys as i32;
+    search_page.navigation_mode = Some(StateProjectionMode::Keys as i32);
     search_page.navigation_keys = vec!["query".to_string()];
     protocol
         .components

@@ -52,20 +52,11 @@ pub(crate) struct LoadedApp {
 /// "boundary payload locality" contract in DESIGN.md ("Progressive Streaming
 /// Hydration").
 pub(crate) fn load(app_root: &Path, css: CssStrategy, base_path: &str) -> Result<LoadedApp> {
+    let projection_manifests = vec![required_projection_manifest(app_root)?];
     let theme_path = resolve_theme_path(THEME, app_root)
         .with_context(|| format!("Failed to resolve theme {THEME}"))?;
     let token_file = load_token_file(&theme_path)
         .with_context(|| format!("Failed to load theme tokens from {}", theme_path.display()))?;
-
-    // `main` already requires `dist/index.js`, so a served build always has
-    // the manifest. Tolerate its absence so `cargo check`/unit runs that
-    // never execute the client build still succeed.
-    let manifest_path = app_root.join("dist").join("webui-projection.json");
-    let projection_manifests = if manifest_path.is_file() {
-        vec![ProjectionManifestSource::Path(manifest_path)]
-    } else {
-        Vec::new()
-    };
 
     let build_result = build(BuildOptions {
         app_dir: app_root.join("src"),
@@ -112,6 +103,17 @@ pub(crate) fn css_strategy(value: &str) -> Result<CssStrategy> {
             anyhow::bail!("Unknown CSS strategy: {other}. Use \"link\", \"style\", or \"module\".")
         }
     }
+}
+
+fn required_projection_manifest(app_root: &Path) -> Result<ProjectionManifestSource> {
+    let path = app_root.join("dist").join("webui-projection.json");
+    if !path.is_file() {
+        anyhow::bail!(
+            "The streaming projection manifest is missing at '{}'. Run `pnpm build:client` from examples/app/streaming before starting the server.",
+            path.display()
+        );
+    }
+    Ok(ProjectionManifestSource::Path(path))
 }
 
 fn feed_post(post_id: &str, author: &str, text: &str, like_count: &str) -> Value {
@@ -162,7 +164,9 @@ fn feed_batches() -> Vec<Vec<Value>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{css_strategy, feed_batches};
+    use std::path::Path;
+
+    use super::{css_strategy, feed_batches, required_projection_manifest};
     use crate::pacing::FEED_BATCH_COUNT;
     use webui::CssStrategy;
 
@@ -185,6 +189,18 @@ mod tests {
     #[test]
     fn css_strategy_rejects_unknown_values() {
         assert!(css_strategy("bogus").is_err());
+    }
+
+    #[test]
+    fn projection_manifest_is_required() {
+        let result =
+            required_projection_manifest(Path::new("__missing_streaming_example_app_root__"));
+        let Err(error) = result else {
+            panic!("a missing projection manifest must fail");
+        };
+        let message = error.to_string();
+        assert!(message.contains("streaming projection manifest is missing"));
+        assert!(message.contains("pnpm build:client"));
     }
 
     /// The pacing schedule hard-codes how many gaps precede feed batches, so

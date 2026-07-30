@@ -883,6 +883,20 @@ struct QueuedFragment {
     route_base: String,
 }
 
+#[inline]
+fn mark_fragment_visited(
+    visited: &mut HashSet<(String, String)>,
+    queued: &QueuedFragment,
+    route_sensitive: bool,
+) -> bool {
+    let route_base = if route_sensitive {
+        queued.route_base.clone()
+    } else {
+        String::new()
+    };
+    visited.insert((queued.id.clone(), route_base))
+}
+
 /// Shared context for route child walkers, bundling common parameters
 /// to stay within the 5-argument clippy limit.
 struct ChildWalkCtx<'a> {
@@ -921,16 +935,16 @@ fn collect_inventoryable_components(
 /// conservatively so a later client-side state change already has its metadata.
 pub(crate) fn collect_reachable_components_from_roots(
     protocol: &WebUIProtocol,
-    roots: &[&str],
+    roots: &[(&str, Cow<'_, str>)],
     request_path: &str,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
     let mut stack = Vec::with_capacity(roots.len());
-    for root in roots.iter().rev() {
+    for (root, route_base) in roots.iter().rev() {
         stack.push(QueuedFragment {
             id: (*root).to_string(),
             inventoryable: true,
-            route_base: "/".to_string(),
+            route_base: route_base.to_string(),
         });
     }
     collect_inventoryable_components_from_stack(protocol, Some(request_path), route_index, stack)
@@ -943,6 +957,7 @@ fn collect_inventoryable_components_from_stack(
     mut stack: Vec<QueuedFragment>,
 ) -> Vec<String> {
     let mut visited_fragments = HashSet::new();
+    let route_sensitive = request_path.is_some();
     // Preserve first-discovery (document/traversal) order so Link-strategy
     // CSS `<link>` tags are emitted in source order, not alphabetically.
     // `seen_components` dedups; `component_ids` keeps order (a plain
@@ -958,7 +973,7 @@ fn collect_inventoryable_components_from_stack(
             component_ids.push(queued.id.clone());
         }
 
-        if !visited_fragments.insert(queued.id.clone()) {
+        if !mark_fragment_visited(&mut visited_fragments, &queued, route_sensitive) {
             continue;
         }
 
@@ -1222,7 +1237,7 @@ pub fn collect_nested_route_params(
     }];
 
     while let Some(queued) = stack.pop() {
-        if queued.id.is_empty() || !visited_fragments.insert(queued.id.clone()) {
+        if queued.id.is_empty() || !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
         }
 
@@ -1383,7 +1398,7 @@ fn collect_inventory_and_chain(
             component_ids.push(queued.id.clone());
         }
 
-        if !visited_fragments.insert(queued.id.clone()) {
+        if !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
         }
 
@@ -2017,7 +2032,7 @@ pub(crate) fn collect_route_chain(
     }];
 
     while let Some(queued) = stack.pop() {
-        if queued.id.is_empty() || !visited_fragments.insert(queued.id.clone()) {
+        if queued.id.is_empty() || !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
         }
 
@@ -2252,7 +2267,7 @@ mod tests {
                     .iter()
                     .map(|key| (*key).to_string())
                     .collect(),
-                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                navigation_mode: Some(webui_protocol::StateProjectionMode::Keys as i32),
                 navigation_keys: hydration_keys
                     .iter()
                     .map(|key| (*key).to_string())
@@ -2267,7 +2282,7 @@ mod tests {
         let mut prepared = prepared_partial_protocol(&[]);
         let protocol = &mut prepared.protocol;
         if let Some(component) = protocol.components.get_mut("home-page") {
-            component.navigation_mode = webui_protocol::StateProjectionMode::All as i32;
+            component.navigation_mode = Some(webui_protocol::StateProjectionMode::All as i32);
             component.navigation_keys.clear();
         }
         prepared
@@ -3037,6 +3052,48 @@ mod tests {
     }
 
     #[test]
+    fn request_reachability_visits_reused_route_component_at_each_base() {
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "shared-shell".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::route("details", "detail-page")],
+                },
+            ),
+            (
+                "detail-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Detail</p>")],
+                },
+            ),
+        ]));
+        for tag in ["shared-shell", "detail-page"] {
+            protocol
+                .components
+                .entry(tag.to_string())
+                .or_default()
+                .template = "<template></template>".to_string();
+        }
+        let route_index = CompiledRouteIndex::new(&protocol);
+        let roots = [
+            ("shared-shell", Cow::Borrowed("/other")),
+            ("shared-shell", Cow::Borrowed("/account")),
+        ];
+
+        let reachable = collect_reachable_components_from_roots(
+            &protocol,
+            &roots,
+            "/account/details",
+            &route_index,
+        );
+
+        assert!(
+            reachable.iter().any(|tag| tag == "detail-page"),
+            "the second route base must not be hidden by fragment-id deduplication: {reachable:?}"
+        );
+    }
+
+    #[test]
     fn component_reachability_index_is_lazy() {
         let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([(
             "comp-a".to_string(),
@@ -3508,7 +3565,7 @@ mod tests {
             "items-page".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Items</p>","th":1}"#.into(),
-                navigation_mode: webui_protocol::StateProjectionMode::Keys as i32,
+                navigation_mode: Some(webui_protocol::StateProjectionMode::Keys as i32),
                 navigation_keys: vec!["items".into(), "title".into()],
                 ..Default::default()
             },
@@ -3557,6 +3614,7 @@ mod tests {
             webui_protocol::ComponentData {
                 hydration_mode: webui_protocol::StateProjectionMode::Keys as i32,
                 hydration_keys: vec!["title".into()],
+                navigation_mode: Some(webui_protocol::StateProjectionMode::None as i32),
                 ..Default::default()
             },
         );
@@ -3596,6 +3654,7 @@ mod tests {
             "static-card".to_string(),
             webui_protocol::ComponentData {
                 template_json: r#"{"h":"<p>Static</p>","th":1}"#.into(),
+                navigation_mode: Some(webui_protocol::StateProjectionMode::None as i32),
                 ..Default::default()
             },
         );

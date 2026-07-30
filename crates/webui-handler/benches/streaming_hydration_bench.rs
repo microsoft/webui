@@ -278,8 +278,8 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
             .contains(&format!("[1,{boundaries},1,{{}}]")),
         "streaming output is missing the terminal envelope"
     );
-    // With no dirty tail after the final boundary, the empty terminal record is
-    // the last envelope and no coalesced terminal checkpoint carries a bootstrap.
+    // The empty terminal record is always the last envelope and never carries a
+    // bootstrap, regardless of native or scriptless tail bytes.
     // Every envelope (each boundary commit plus the terminal) opens with the
     // boundary sentinel prefix, so the prefix count equals boundaries + 1.
     assert_eq!(

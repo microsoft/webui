@@ -560,17 +560,24 @@ When the framework detects this it logs a development warning naming the propert
 super.connectedCallback() to a value that differs from the server-rendered DOM…
 ```
 
-Follow one rule to stay correct:
+Follow these rules to stay correct:
 
 - **A value that must appear in the first render belongs in the SSR state.** Provide it in the JSON state so the server renders it; the client then hydrates against a matching DOM.
-- **Assign anything else after `super.connectedCallback()`**, where `@observable` writes flow through live bindings.
+- **Assign post-hydration state from `hydratedCallback()`**, where
+  `@observable` writes flow through live bindings on ordinary, streamed, and
+  client-created components.
 
-WebUI treats `super.connectedCallback()` as a synchronous component hydration
-boundary. When it returns, that component's bindings, events, and `w-ref`
-references are wired. On a normal buffered page, this relies on loading authored
-component code with a parser-inserted, non-async ES module script or a classic
-`defer` script. If a classic script blocks parsing, place it after every SSR
-instance it may upgrade. An opt-in
+On a normal buffered page or client-created mount,
+`super.connectedCallback()` hydrates synchronously. A progressive streaming host
+can connect while its `data-ws` boundary is incomplete, however, so the same call
+returns while hydration is still deferred. `hydratedCallback()` is the
+cross-mode lifecycle: WebUI invokes it synchronously exactly once after the
+first successful hydration or mount. Its once-latch is set before author code,
+so reconnecting the element or throwing from the callback does not retry it.
+
+Buffered pages rely on loading authored component code with a parser-inserted,
+non-async ES module script or a classic `defer` script. If a classic script
+blocks parsing, place it after every SSR instance it may upgrade. An opt-in
 [progressive streaming page](/guide/concepts/hydration#progressive-streaming-hydration)
 instead loads an early async module and gates each component until its complete
 streaming boundary commits.
@@ -583,13 +590,14 @@ can shift compiled paths before WebUI wires them.
 export class MyCounter extends WebUIElement {
   @observable count = 0;
 
-  connectedCallback(): void {
-    // ✗ Wrong: runs before hydration, so it is dropped and warns.
+  constructor() {
+    super();
+    // ✗ Wrong: this runs before hydration, so the write is dropped and warns.
     // this.count = 3;
+  }
 
-    super.connectedCallback();
-
-    // ✓ Correct: runs after hydration and updates the DOM reactively.
+  protected override hydratedCallback(): void {
+    // ✓ Correct: this hook runs after hydration in every mode.
     this.count = 3;
   }
 }
