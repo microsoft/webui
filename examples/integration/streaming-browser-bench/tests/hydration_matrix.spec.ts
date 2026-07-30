@@ -95,11 +95,12 @@ const PEAK_HEAP_ABS_FLOOR_BYTES = 512 * 1024;
 const PEAK_HEAP_TOLERANCE_PCT = 15;
 /** Deterministic production coordinator size caps. Raising either requires
  *  explicit review because every streaming application pays these bytes.
- *  Typed checkpoints, retained-root state records, strict record validation,
- *  and terminal cleanup add ~1.9KiB minified / ~650B gzip over the final-only
- *  coordinator. The caps leave under 4% headroom, so further growth still fails. */
-const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 12 * 1024;
-const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 4_224;
+ *  Typed checkpoints, retained-root state records, and terminal cleanup add
+ *  ~1.9KiB minified / ~650B gzip over the final-only coordinator; trusting our
+ *  own serializer instead of re-validating its output gives ~1.2KiB / ~440B
+ *  back. The caps leave under 4% headroom, so further growth still fails. */
+const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 10_880;
+const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 3_840;
 /** Marginal elapsed-time cap per added boundary. The relative allowance scales
  *  with slower hosts while the absolute floor absorbs sub-millisecond noise. */
 const COORDINATOR_MARGINAL_ABS_CAP_MS = 0.25;
@@ -281,11 +282,11 @@ test.describe('progressive streaming hydration matrix', () => {
     expect(coordinatorTokensIn(fixtures.streaming.code).length).toBeGreaterThan(0);
     expect(
       fixtures.streamingIncrementalBytes,
-      'streaming coordinator incremental minified bytes stay within the reviewed 12KiB cap',
+      'streaming coordinator incremental minified bytes stay within the reviewed 10.625KiB cap',
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES);
     expect(
       fixtures.streamingIncrementalGzipBytes,
-      'streaming coordinator incremental gzip bytes stay within the reviewed 4.125KiB cap',
+      'streaming coordinator incremental gzip bytes stay within the reviewed 3.75KiB cap',
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_GZIP_CAP_BYTES);
 
     const bundle: BundleSizes = {

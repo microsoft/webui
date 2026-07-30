@@ -33,10 +33,15 @@ export function applyBoundaryBootstrap(
   }
 }
 
-function mergeInventory(existing: unknown, delta: unknown): string {
-  validateInventory(existing, 'existing');
-  validateInventory(delta, 'boundary');
-  const current = existing ?? '';
+/**
+ * OR two hexadecimal inventory bitsets digit by digit.
+ *
+ * Both operands come from the Rust checkpoint serializer, so the digits are
+ * trusted. The `typeof` guard only recovers the static type that the
+ * `[key: string]: unknown` index signature on `Window['__webui']` erases.
+ */
+function mergeInventory(existing: unknown, delta: string | undefined): string {
+  const current = typeof existing === 'string' ? existing : '';
   const next = delta ?? '';
   const length = Math.max(current.length, next.length);
   let merged = '';
@@ -48,66 +53,19 @@ function mergeInventory(existing: unknown, delta: unknown): string {
   return merged;
 }
 
-function validateInventory(
-  value: unknown,
-  source: string,
-): asserts value is string | undefined {
-  if (value === undefined) return;
-  if (typeof value !== 'string' || value.length % 2 !== 0) {
-    invalidInventory(source);
-  }
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (
-      !(
-        (code >= 48 && code <= 57) ||
-        (code >= 65 && code <= 70) ||
-        (code >= 97 && code <= 102)
-      )
-    ) {
-      invalidInventory(source);
-    }
-  }
-}
-
-function invalidInventory(source: string): never {
-  throw new Error(
-    `${source} inventory must be an even-length hexadecimal string`,
-  );
-}
-
+/** Append the entries of one checkpoint's CSS or style delta not seen yet. */
 function appendUniqueStrings(
   target: NonNullable<Window['__webui']>,
   key: 'css' | 'styles',
-  delta: unknown,
+  delta: string[] | undefined,
 ): void {
-  requireStringArray(delta, `boundary ${key}`);
+  if (!delta) return;
   const existing = target[key];
-  if (existing !== undefined) requireStringArray(existing, `existing ${key}`);
-
-  const cumulative = existing ?? [];
+  const cumulative = Array.isArray(existing) ? (existing as string[]) : [];
   for (let i = 0; i < delta.length; i++) {
     if (cumulative.indexOf(delta[i]) === -1) {
       cumulative.push(delta[i]);
     }
   }
-  if (!existing) target[key] = cumulative;
-}
-
-function requireStringArray(
-  value: unknown,
-  source: string,
-): asserts value is string[] {
-  if (!Array.isArray(value)) {
-    invalidStringArray(source);
-  }
-  for (let i = 0; i < value.length; i++) {
-    if (typeof value[i] !== 'string') {
-      invalidStringArray(source);
-    }
-  }
-}
-
-function invalidStringArray(source: string): never {
-  throw new Error(`${source} must be an array of strings`);
+  if (cumulative !== existing) target[key] = cumulative;
 }

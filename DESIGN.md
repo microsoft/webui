@@ -1759,7 +1759,9 @@ contract rather than introduce a parallel one.
    exactly one markerless `[1, sequence, 3, 0, {}]` after all scriptless tail
    bytes. A record arriving after it is corruption: it is rejected, its
    scaffolding released, and the stream is halted without disturbing the
-   successful completion the terminal record already drove.
+   successful completion the terminal record already drove. The empty terminal
+   payload binds the *emitter*; a reader ignores unrecognized terminal payload
+   fields rather than halting a page that has already fully rendered (rule 21).
 3. **Self-sufficient records.** Given all prior records, a record carries
    everything needed to commit itself: its own template delta, inventory delta,
    and projected state. A record never forward-references a later one, so a
@@ -1869,6 +1871,28 @@ contract rather than introduce a parallel one.
     `FlushWriter` and never silently degrades to buffering. Every shell,
     checkpoint, update, and terminal write flushes through the same transport,
     preserving its backpressure and disconnect errors.
+
+**Compatibility**
+
+20. **The reader validates transport and version, not its own serializer.**
+    A record is written by this repository's handler and read back by this
+    repository's coordinator, so the coordinator re-derives nothing the
+    serializer already guaranteed. Exactly three conditions are checked before
+    the tuple is trusted: `JSON.parse` success, which is a *complete*
+    truncation detector because every proper prefix of a JSON array is invalid
+    JSON (rule 3 seen from the transport side); a five-element array, so
+    destructuring is total; and `version`. Everything past those is document
+    state rather than record shape, and is enforced where it is actually
+    known — the coordinator halts the stream on a sequence or target mismatch,
+    and commits inside an error boundary so any payload defect fails closed
+    instead of hydrating partially.
+21. **`version` is the only compatibility mechanism.** Because rule 20 removes
+    per-field checks, a stale cached client reads an unrecognized `kind` as a
+    final checkpoint. Any new record kind, tuple shape, or incompatible payload
+    meaning must therefore bump `version`, which is gated before any element is
+    read. Purely additive payload fields do not bump it and are ignored by
+    older readers, which is what makes tolerating an unexpected terminal
+    payload (rule 2) safe rather than lax.
 
 ### Directive spelling and the structural signal namespace
 
@@ -2260,8 +2284,12 @@ optimization of delivery timing, not a correctness requirement of the format.
 
 ### Limits, errors, and malformed input
 
-- Payload size, pending-boundary count, root count, and template count are
-  each capped; exceeding a cap is a stream error, not a silent truncation.
+- Client-side caps bound *work*, not record shape: queued boundaries, retained
+  updatable boundaries, retained update roots, pending undefined roots,
+  elements walked per boundary, marker-scan nodes, and the payload-script
+  lookback. Exceeding a cap is a stream error, not a silent truncation. Record
+  size and template count are not capped client-side — they are properties of
+  our own serializer, which rule 20 does not re-check.
 - Exact roots waiting on undefined custom-element classes are cumulatively
   capped across checkpoints; exceeding that retention cap also fails the stream.
 - A malformed/truncated boundary (missing closing marker, bad sequence

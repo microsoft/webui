@@ -135,7 +135,7 @@ comments, `[data-ws]`), no globally-published streamed state
 (`window.__webui.state` stays unset), the ordinary bundle contains no coordinator
 tokens (`webui-hydrate` / `data-webui-boundary`), measured component CPU is
 non-zero, distinct boundary-local states reach only their own real activation
-hooks, and the streaming entry adds no more than 12 KiB minified / 4.125 KiB
+hooks, and the streaming entry adds no more than 10.625 KiB minified / 3.75 KiB
 gzip. Esbuild output is deterministic and the cap retains under 4% headroom, so
 further growth still fails.
 

@@ -785,27 +785,19 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(webuiGlobal().inventory, '0123456789abcdefabcdef');
   });
 
-  test('rejects non-ASCII-hex inventory characters deterministically', async () => {
-    // Characters immediately around each accepted ASCII range, plus whitespace
-    // and non-ASCII digits, guard the explicit char-code checks.
-    const invalidInventories = ['0/', '0:', '0@', '0G', '0`', '0g', '0 ', '0é', '０0'];
+  test('halts the stream when a checkpoint payload is not an object', async () => {
+    // The envelope parser no longer re-validates fields written by our own
+    // serializer, so a structurally impossible payload is caught by the commit
+    // path's error boundary instead. The stream must still fail closed.
     const previousError = console.error;
     console.error = () => {};
     try {
-      for (let i = 0; i < invalidInventories.length; i++) {
-        if (i > 0) {
-          installGlobals();
-          elementRegistry = [];
-          __resetStreamingCoordinatorForTests();
-          __resetLifecycleForTests();
-          beginStreamingGate();
-        }
-        const boundary = buildBoundary(0, 0, [], { inventory: invalidInventories[i] });
-        enqueue(boundary.sentinel);
-        await flush();
-        assert.equal(__isHaltedForTests(), true, `${JSON.stringify(invalidInventories[i])} must be rejected`);
-        assert.equal(__getLifecycleStateForTests().completed, false);
-      }
+      const boundary = buildBoundary(0, 0, [], null as unknown as object);
+      enqueue(boundary.sentinel);
+      await flush();
+
+      assert.equal(__isHaltedForTests(), true);
+      assert.equal(__getLifecycleStateForTests().completed, false);
     } finally {
       console.error = previousError;
     }
@@ -1308,18 +1300,21 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(hasWs(child), false);
   });
 
-  test('a non-empty terminal record does not dispatch hydration-complete', async () => {
+  test('a terminal record with an unexpected payload still completes', async () => {
+    // The terminal path reads no payload fields, so an unrecognized one is
+    // ignored rather than halting a page that has already rendered and
+    // hydrated. Incompatible terminal semantics must bump the envelope
+    // version instead of relying on a per-field check here.
     const b = buildMarkerless(0, 1, { boom: 1 });
     enqueue(b.sentinel);
     await flush();
 
-    assert.equal(__isHaltedForTests(), true, 'a non-empty terminal record halts');
+    assert.equal(__isHaltedForTests(), false, 'an unknown terminal field is tolerated');
     const lc = __getLifecycleStateForTests();
-    assert.equal(lc.terminalReached, false, 'terminal must not be marked reached on a failed commit');
-    assert.equal(lc.completed, false, 'no hydration-complete for a failed stream');
+    assert.equal(lc.terminalReached, true, 'terminal is reached');
+    assert.equal(lc.completed, true, 'hydration still completes');
     assert.equal(lc.pendingBoundaries, 0, 'the pending boundary still settles');
-    assert.equal(dispatchedEvents.some((e) => e.type === 'webui:hydration-complete'), false);
-    // Scaffolding is still removed even on the failed commit path.
+    assert.equal(dispatchedEvents.some((e) => e.type === 'webui:hydration-complete'), true);
     assert.equal(b.sentinel.parentNode, null, 'sentinel removed');
     assert.equal(b.scriptEl.parentNode, null, 'payload script removed');
   });

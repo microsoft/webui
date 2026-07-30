@@ -174,10 +174,20 @@ or depend on generated scaffolding.
 At `body_end`, the handler emits one markerless empty terminal envelope:
 `[1,nextSequence,3,0,{}]`. Its flush also commits any preceding native or static
 tail HTML, but terminal records never repeat template metadata or state. A
-malformed, truncated, or oversized stream logs an error, suppresses
+truncated or malformed stream, or one exceeding a client work bound such as the
+queued-boundary or marker-scan limit, logs an error, suppresses
 `webui:hydration-complete`, and releases discoverable deferred state within
 fixed bounds. Valid commits perform no document-wide scan; a bounded sweep is a
 fatal-cleanup fallback only.
+
+The client trusts records past three checks, because the same WebUI version
+wrote them: `JSON.parse` (which alone detects any truncation, since a cut-off
+record is never valid JSON), a five-element array, and the envelope `version`.
+Everything else is enforced where it is actually knowable — a sequence or
+boundary-target mismatch halts the stream, and a defective payload fails the
+commit closed. Unrecognized *additive* payload fields are ignored rather than
+fatal, so a cached older bundle keeps working against a newer server; anything
+incompatible bumps `version` instead.
 
 ### CSP and delivery
 

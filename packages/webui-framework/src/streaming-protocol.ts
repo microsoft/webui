@@ -4,9 +4,6 @@
 import type { TemplateMeta } from './template.js';
 
 const SUPPORTED_VERSION = 1;
-const MAX_BOUNDARY_PAYLOAD_CHARS = 2_000_000;
-const MAX_TEMPLATES_PER_BOUNDARY = 500;
-const MAX_STATE_UPDATE_KEYS = 10_000;
 
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {
@@ -57,17 +54,22 @@ function invalid(reason: string): ParseBoundaryEnvelopeResult {
 }
 
 /**
- * Parse and structurally validate one boundary envelope.
+ * Parse one boundary envelope written by the Rust checkpoint serializer.
  *
- * Sequence ordering is document state and is checked by the coordinator.
+ * Only two failure modes are real, so only two are checked. A response cut off
+ * mid-record leaves a proper prefix of a JSON array, and every proper prefix of
+ * a JSON array is invalid JSON, which makes `JSON.parse` a complete truncation
+ * detector. Separately, the client bundle is HTTP-cached and can therefore be
+ * older than the server that produced the response, so the version is gated
+ * before any element of the tuple is trusted.
+ *
+ * Past those checks the tuple was written by our own serializer and is not
+ * re-validated. That makes `version` load-bearing: any new record kind or tuple
+ * shape must bump it, because a stale client reads an unrecognized kind as a
+ * final checkpoint. Sequence and target ordering are document state and are
+ * checked by the coordinator, which fails the stream closed on a mismatch.
  */
 export function parseBoundaryEnvelope(text: string): ParseBoundaryEnvelopeResult {
-  if (text.length > MAX_BOUNDARY_PAYLOAD_CHARS) {
-    return invalid(
-      `boundary payload exceeds ${MAX_BOUNDARY_PAYLOAD_CHARS} characters`,
-    );
-  }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -80,61 +82,9 @@ export function parseBoundaryEnvelope(text: string): ParseBoundaryEnvelopeResult
       'boundary envelope must be a 5-element [version, recordSequence, kind, target, payload] array',
     );
   }
-
-  const [version, recordSequence, kind, target, payload] = parsed;
-
-  if (version !== SUPPORTED_VERSION) {
+  if (parsed[0] !== SUPPORTED_VERSION) {
     return invalid(
-      `unsupported boundary envelope version ${JSON.stringify(version)}`,
-    );
-  }
-  if (!Number.isInteger(recordSequence) || recordSequence < 0) {
-    return invalid('record sequence must be a non-negative integer');
-  }
-  const kindNumber = kind as number;
-  if (
-    !Number.isInteger(kindNumber) ||
-    kindNumber < RECORD_KIND_FINAL_CHECKPOINT ||
-    kindNumber > RECORD_KIND_TERMINAL
-  ) {
-    return invalid('boundary record kind must be 0, 1, 2, or 3');
-  }
-  if (!Number.isInteger(target) || target < 0) {
-    return invalid('boundary target must be a non-negative integer');
-  }
-  if (
-    typeof payload !== 'object' ||
-    payload === null ||
-    Array.isArray(payload)
-  ) {
-    return invalid('boundary record payload must be an object');
-  }
-  if (
-    kind === RECORD_KIND_TERMINAL &&
-    (target !== 0 || Object.keys(payload).length !== 0)
-  ) {
-    return invalid('terminal boundary record must target 0 with an empty payload');
-  }
-
-  const templates =
-    kind === RECORD_KIND_FINAL_CHECKPOINT ||
-    kind === RECORD_KIND_UPDATABLE_CHECKPOINT
-      ? (payload as BoundaryBootstrap).templates
-      : undefined;
-  if (
-    templates &&
-    Object.keys(templates).length > MAX_TEMPLATES_PER_BOUNDARY
-  ) {
-    return invalid(
-      `boundary declares more than ${MAX_TEMPLATES_PER_BOUNDARY} templates`,
-    );
-  }
-  if (
-    kind === RECORD_KIND_STATE_UPDATE &&
-    Object.keys(payload).length > MAX_STATE_UPDATE_KEYS
-  ) {
-    return invalid(
-      `state update declares more than ${MAX_STATE_UPDATE_KEYS} keys`,
+      `unsupported boundary envelope version ${JSON.stringify(parsed[0])}`,
     );
   }
 
