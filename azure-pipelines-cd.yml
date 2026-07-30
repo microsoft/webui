@@ -1,7 +1,9 @@
 trigger: none
 pr: none
 
-# Set targetReleaseTag to a v-prefixed GitHub tag in the pipeline variables before running.
+# Optional: set targetReleaseTag to a v-prefixed GitHub tag for manual reprocessing.
+variables:
+  targetReleaseTag: ''
 
 schedules:
   - cron: '0 * * * *'
@@ -54,7 +56,17 @@ extends:
             persistCredentials: "true"
 
           - task: DownloadGitHubRelease@0
-            displayName: Download target GitHub release
+            displayName: Download latest GitHub release
+            condition: and(succeeded(), eq(variables['targetReleaseTag'], ''))
+            inputs:
+              connection: fast
+              userRepository: microsoft/webui
+              defaultVersionType: 'latest'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          - task: DownloadGitHubRelease@0
+            displayName: Download pinned GitHub release
+            condition: and(succeeded(), ne(variables['targetReleaseTag'], ''))
             inputs:
               connection: fast
               userRepository: microsoft/webui
@@ -123,12 +135,12 @@ extends:
               version: '8.x'
 
           - task: DownloadGitHubRelease@0
-            displayName: Download target GitHub release artifacts
+            displayName: Download checked GitHub release artifacts
             inputs:
               connection: fast
               userRepository: microsoft/webui
               defaultVersionType: 'specificTag'
-              version: '$(targetReleaseTag)'
+              version: '$(releaseTag)'
               downloadPath: '$(System.ArtifactsDirectory)'
 
           # Stage downloaded files in the directories expected by
