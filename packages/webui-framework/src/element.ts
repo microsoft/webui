@@ -32,10 +32,11 @@ import type {
   ScopeFrame,
   TemplateInstance,
 } from './element/types.js';
+import { NON_BUBBLING_EVENTS } from './element/non-bubbling-events.js';
 
 type EventHandler = (...args: unknown[]) => unknown;
 
-type DelegatedEventEntry = {
+type EventEntry = {
   target: Element;
   method: EventHandler;
   args: CompiledEventArgs;
@@ -90,7 +91,15 @@ export class WebUIElement extends TemplateElement {
     this.$wireRefs(root);
   }
 
-  /** Wire element events as one delegated listener per event name. */
+  /**
+   * Wire element events.
+   *
+   * Bubbling events use one delegated listener per event name on the component
+   * render root — a single listener serves every binding of that event in the
+   * block.  Events that do not bubble ({@link NON_BUBBLING_EVENTS}) never reach
+   * that listener, so each of their bindings gets a direct listener on the
+   * element it is bound to.
+   */
   private $wireEvents(
     instance: TemplateInstance,
     root: Node,
@@ -103,18 +112,22 @@ export class WebUIElement extends TemplateElement {
     const delegateTarget = this.shadowRoot ?? this;
     for (let i = 0; i < groups.length; i++) {
       const [eventName, bindings] = groups[i];
-      const bucket = this.$resolveDelegatedEvents(root, bindings, resolver, scope);
-      this.$addDelegatedEvent(instance, delegateTarget, eventName, bucket);
+      const bucket = this.$resolveEventBindings(root, bindings, resolver, scope);
+      if (NON_BUBBLING_EVENTS.has(eventName)) {
+        this.$addDirectEvents(instance, eventName, bucket);
+      } else {
+        this.$addDelegatedEvent(instance, delegateTarget, eventName, bucket);
+      }
     }
   }
 
-  private $resolveDelegatedEvents(
+  private $resolveEventBindings(
     root: Node,
     bindings: CompiledEventBindingMeta[],
     resolver: (root: Node, path: TemplateNodePath) => Node | null,
     scope?: ScopeFrame,
-  ): DelegatedEventEntry[] {
-    const entries: DelegatedEventEntry[] = [];
+  ): EventEntry[] {
+    const entries: EventEntry[] = [];
     for (let i = 0; i < bindings.length; i++) {
       const [handlerName, args, target, usesEvent] = bindings[i];
       const el = resolver(root, target);
@@ -145,7 +158,7 @@ export class WebUIElement extends TemplateElement {
     instance: TemplateInstance,
     target: EventTarget,
     eventName: string,
-    entries: DelegatedEventEntry[],
+    entries: EventEntry[],
   ): void {
     if (entries.length === 0) return;
     const listener = (event: Event): void => {
@@ -155,7 +168,7 @@ export class WebUIElement extends TemplateElement {
     this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
   }
 
-  private $dispatchDelegatedEvent(entries: DelegatedEventEntry[], event: Event): void {
+  private $dispatchDelegatedEvent(entries: EventEntry[], event: Event): void {
     let current = event.target as Node | null;
     while (current) {
       for (let i = 0; i < entries.length; i++) {
@@ -165,6 +178,28 @@ export class WebUIElement extends TemplateElement {
         }
       }
       current = current.parentNode;
+    }
+  }
+
+  /**
+   * Attach one listener per bound element.  Used for events that do not bubble
+   * ({@link NON_BUBBLING_EVENTS}) and therefore never reach the delegated
+   * listener on the render root.  `event.currentTarget` is natively correct
+   * here, so the delegated `currentTarget` override is not applied.
+   */
+  private $addDirectEvents(
+    instance: TemplateInstance,
+    eventName: string,
+    entries: EventEntry[],
+  ): void {
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const target = entry.target;
+      const listener = (event: Event): void => {
+        this.$callEventHandler(entry.method, entry.args, event, entry.scope);
+      };
+      target.addEventListener(eventName, listener);
+      this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
     }
   }
 

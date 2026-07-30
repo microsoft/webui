@@ -353,7 +353,9 @@ On reactive flip:
 
 Two flavours:
 
-- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element, installs one delegated listener per event name, and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time.
+- **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. How the listener is attached depends on whether the event propagates:
+  - **Bubbling events** — one delegated listener per event name on the component render root. The handler is matched at dispatch time by walking up from `event.target`, and `event.currentTarget` is temporarily overridden to the bound element for handlers that take `e`.
+  - **Non-bubbling events** (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media events, … — see `src/element/non-bubbling-events.ts`) — one direct listener per bound element. These events never reach the render root, so delegation would silently drop them. `event.currentTarget` is already correct here and is left untouched.
 - **Root events** (`re` field): attached to the host element rather than the shadow root. Used for `@custom-event` on the component's `<template>` root.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.

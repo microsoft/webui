@@ -1,0 +1,10 @@
+{
+  "clicks": 0,
+  "focuses": 0,
+  "blurs": 0,
+  "errors": 0,
+  "enters": 0,
+  "lastRowId": "",
+  "lastCurrentTarget": "",
+  "items": [{ "id": "a" }, { "id": "b" }]
+}
