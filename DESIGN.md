@@ -2405,15 +2405,20 @@ five-field envelope.
 Each record is capped at 2,000,000 bytes before the newline. The decoder scans
 incrementally and retains only its pending byte buffer. A capacity-one command
 channel connects the async backend reader to one blocking Rust response owner;
-the existing capacity-four `StreamingWriter` channel bounds browser output.
-The CLI validates the initial shell, constructs the compiled streaming plan, and
-renders the shell through its first semantic flush before committing a success
-response to the browser. Malformed control input, invalid entry plans, and shell
-rendering failures therefore produce an HTTP error rather than an empty 200.
+the existing capacity-four `StreamingWriter` channel bounds live browser output.
+While validating the initial shell, the CLI concurrently drains that channel
+into a zero-copy staging list capped at 4,000,000 bytes. It constructs the
+compiled streaming plan and renders through the first semantic flush before
+committing a success response, then prepends the staged chunks to the live
+stream. Malformed control input, invalid entry plans, shell rendering failures,
+and shells over the precommit cap therefore produce an HTTP error rather than an
+empty 200.
 Consequently backpressure propagates from the browser transport through the Rust
 renderer and API response. The backend must also honor its HTTP writer's
 backpressure signal and bound concurrent admitted streams before writing the
-success response.
+success response. Dropping the browser response cancels backend ingestion,
+which drops the capacity-one command sender and wakes a renderer waiting for its
+next command.
 
 An unsupported version, malformed record, invalid order, unknown boundary,
 renderer failure, or truncated stream closes the response and is logged. A

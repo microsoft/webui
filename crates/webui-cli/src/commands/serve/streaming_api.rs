@@ -4,7 +4,9 @@
 //! Host-control stream consumed from a `webui serve --api-port` backend.
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use actix_web::http::header::{HeaderMap, CONTENT_TYPE};
@@ -26,6 +28,7 @@ pub(super) const ACCEPT: &str = "application/x-webui-stream, application/json";
 
 const VERSION: u8 = 1;
 const MAX_RECORD_BYTES: usize = 2_000_000;
+const MAX_INITIAL_SHELL_BYTES: usize = 4_000_000;
 const INITIAL_RECORD_CAPACITY: usize = 4 * 1024;
 
 pub(super) struct StateDefaults {
@@ -176,6 +179,18 @@ enum ApiStreamError {
     RendererStopped { record: usize },
 }
 
+#[derive(Debug, Error)]
+enum ShellInitializationError {
+    #[error("{0}")]
+    Render(String),
+    #[error("WebUI streaming renderer stopped during initialization")]
+    RendererStopped,
+    #[error(
+        "WebUI initial streaming shell exceeds the 4,000,000-byte precommit limit; reduce the initial state or move content behind a boundary"
+    )]
+    TooLarge,
+}
+
 struct RecordDecoder {
     bytes: BytesMut,
     next_record: usize,
@@ -308,6 +323,53 @@ pub(super) fn is_stream(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case(MEDIA_TYPE))
 }
 
+struct BrowserHtmlStream {
+    initial: std::vec::IntoIter<Bytes>,
+    live: tokio_stream::wrappers::ReceiverStream<Bytes>,
+    cancel: Option<oneshot::Sender<()>>,
+}
+
+impl BrowserHtmlStream {
+    fn new(initial: Vec<Bytes>, live: mpsc::Receiver<Bytes>, cancel: oneshot::Sender<()>) -> Self {
+        Self {
+            initial: initial.into_iter(),
+            live: tokio_stream::wrappers::ReceiverStream::new(live),
+            cancel: Some(cancel),
+        }
+    }
+
+    fn cancel(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+}
+
+impl Stream for BrowserHtmlStream {
+    type Item = Result<Bytes, actix_web::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if let Some(chunk) = this.initial.next() {
+            return Poll::Ready(Some(Ok(chunk)));
+        }
+        match Pin::new(&mut this.live).poll_next(cx) {
+            Poll::Ready(Some(chunk)) => Poll::Ready(Some(Ok(chunk))),
+            Poll::Ready(None) => {
+                this.cancel();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for BrowserHtmlStream {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 pub(super) async fn render<S>(
     mut backend: S,
     config: RenderConfig,
@@ -321,6 +383,7 @@ where
     let (ready_tx, ready_rx) = oneshot::channel();
     let render_route_path = config.route_path.clone();
     let ingest_route_path = config.route_path.clone();
+    let initialization_route_path = config.route_path.clone();
     let mut decoder = RecordDecoder::new();
     let mut ingest = CommandIngest {
         sender: command_tx,
@@ -348,32 +411,87 @@ where
         }
     });
 
-    match ready_rx.await {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => {
+    let (initial_html, html_rx) = match stage_initial_shell(ready_rx, html_rx).await {
+        Ok(output) => output,
+        Err(error) => {
+            log::error!(
+                "streaming API initialization failed for {initialization_route_path}: {error}"
+            );
             return HttpResponse::InternalServerError()
                 .content_type("text/plain; charset=utf-8")
-                .body(error);
+                .body(error.to_string());
         }
-        Err(_) => {
-            return HttpResponse::InternalServerError()
-                .content_type("text/plain; charset=utf-8")
-                .body("WebUI streaming renderer stopped during initialization");
-        }
-    }
+    };
 
+    let (cancel_tx, cancel_rx) = oneshot::channel();
     actix_web::rt::spawn(async move {
-        if let Err(error) = ingest_remaining(backend, decoder, ingest).await {
-            log::error!("streaming API command stream failed for {ingest_route_path}: {error}");
+        tokio::select! {
+            result = ingest_remaining(backend, decoder, ingest) => {
+                if let Err(error) = result {
+                    log::error!(
+                        "streaming API command stream failed for {ingest_route_path}: {error}"
+                    );
+                }
+            }
+            _ = cancel_rx => {}
         }
     });
 
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(html_rx).map(Ok::<Bytes, actix_web::Error>);
+    let stream = BrowserHtmlStream::new(initial_html, html_rx, cancel_tx);
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .insert_header(("Cache-Control", "no-store"))
         .streaming(stream)
+}
+
+async fn stage_initial_shell(
+    mut ready: oneshot::Receiver<Result<(), String>>,
+    mut html: mpsc::Receiver<Bytes>,
+) -> Result<(Vec<Bytes>, mpsc::Receiver<Bytes>), ShellInitializationError> {
+    let mut initial = Vec::with_capacity(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+    let mut total = 0usize;
+    loop {
+        tokio::select! {
+            result = &mut ready => {
+                validate_renderer_ready(result)?;
+                while let Ok(chunk) = html.try_recv() {
+                    stage_initial_chunk(&mut initial, &mut total, chunk)?;
+                }
+                return Ok((initial, html));
+            }
+            chunk = html.recv() => {
+                let Some(chunk) = chunk else {
+                    validate_renderer_ready(ready.await)?;
+                    return Ok((initial, html));
+                };
+                stage_initial_chunk(&mut initial, &mut total, chunk)?;
+            }
+        }
+    }
+}
+
+fn validate_renderer_ready(
+    result: Result<Result<(), String>, oneshot::error::RecvError>,
+) -> Result<(), ShellInitializationError> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(ShellInitializationError::Render(error)),
+        Err(_) => Err(ShellInitializationError::RendererStopped),
+    }
+}
+
+fn stage_initial_chunk(
+    initial: &mut Vec<Bytes>,
+    total: &mut usize,
+    chunk: Bytes,
+) -> Result<(), ShellInitializationError> {
+    let next_total = total.saturating_add(chunk.len());
+    if next_total > MAX_INITIAL_SHELL_BYTES {
+        return Err(ShellInitializationError::TooLarge);
+    }
+    *total = next_total;
+    initial.push(chunk);
+    Ok(())
 }
 
 fn run_renderer(
@@ -548,6 +666,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actix_web::body::to_bytes;
     use actix_web::http::header::HeaderValue;
     use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
 
@@ -580,6 +699,47 @@ mod tests {
             "index.html".to_owned(),
             FragmentList { fragments },
         )]));
+        render_config(document)
+    }
+
+    fn valid_streaming_config(shell_fragments: Vec<WebUIFragment>) -> RenderConfig {
+        fn structural(value: &str) -> WebUIFragment {
+            let mut signal = String::with_capacity(value.len() + 9);
+            signal.push_str("}}}webui:");
+            signal.push_str(value);
+            WebUIFragment::signal(signal, true)
+        }
+
+        let mut fragments = Vec::with_capacity(shell_fragments.len() + 11);
+        fragments.extend([
+            WebUIFragment::raw("<html><head>"),
+            structural("head_start"),
+            structural("head_end"),
+            WebUIFragment::raw("</head><body>"),
+            structural("body_start"),
+        ]);
+        fragments.extend(shell_fragments);
+        fragments.extend([
+            structural("boundary_start:0"),
+            WebUIFragment::raw("<main>ready</main>"),
+            structural("boundary_end:0"),
+            structural("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ]);
+        let mut document = WebUIProtocol::new(HashMap::from([(
+            "index.html".to_owned(),
+            FragmentList { fragments },
+        )]));
+        document.streaming_boundaries.insert(
+            "index.html".to_owned(),
+            webui_protocol::StreamingBoundaryList {
+                names: vec!["content".to_owned()],
+            },
+        );
+        render_config(document)
+    }
+
+    fn render_config(document: WebUIProtocol) -> RenderConfig {
         RenderConfig {
             protocol: Arc::new(Protocol::new(document)),
             entry: "index.html".to_owned(),
@@ -590,6 +750,30 @@ mod tests {
                 StreamingWriter::DEFAULT_CHANNEL_CAPACITY,
                 StreamingWriter::CHUNK_TARGET + 1024,
             )),
+        }
+    }
+
+    struct StalledBackend {
+        shell: Option<Bytes>,
+        dropped: Option<oneshot::Sender<()>>,
+    }
+
+    impl Stream for StalledBackend {
+        type Item = Result<Bytes, String>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            match self.shell.take() {
+                Some(shell) => Poll::Ready(Some(Ok(shell))),
+                None => Poll::Pending,
+            }
+        }
+    }
+
+    impl Drop for StalledBackend {
+        fn drop(&mut self) {
+            if let Some(dropped) = self.dropped.take() {
+                let _ = dropped.send(());
+            }
         }
     }
 
@@ -714,6 +898,89 @@ mod tests {
             response.status(),
             actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+
+    #[actix_web::test]
+    async fn initial_shell_larger_than_the_live_channel_is_staged_without_deadlock() {
+        let shell_bytes =
+            (StreamingWriter::DEFAULT_CHANNEL_CAPACITY + 1) * StreamingWriter::CHUNK_TARGET;
+        let shell_fragments = (0..=StreamingWriter::DEFAULT_CHANNEL_CAPACITY)
+            .map(|_| WebUIFragment::raw("~".repeat(StreamingWriter::CHUNK_TARGET)))
+            .collect();
+        let chunks = tokio_stream::iter([Ok::<Bytes, String>(Bytes::from_static(
+            br#"{"type":"shell","version":1,"state":{}}
+{"type":"boundary","name":"content"}
+{"type":"finish"}
+"#,
+        ))]);
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            render(chunks, valid_streaming_config(shell_fragments), defaults()),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("initial shell staging deadlocked"));
+        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
+
+        let body = tokio::time::timeout(Duration::from_secs(2), to_bytes(response.into_body()))
+            .await
+            .unwrap_or_else(|_| panic!("staged response did not finish"))
+            .unwrap_or_else(|error| panic!("failed to read staged response: {error}"));
+        assert_eq!(memchr::memchr_iter(b'~', &body).count(), shell_bytes);
+        let shell_position = body
+            .iter()
+            .position(|byte| *byte == b'~')
+            .unwrap_or_else(|| panic!("staged shell bytes are missing"));
+        let boundary_position = body
+            .windows(b"<main>ready</main>".len())
+            .position(|window| window == b"<main>ready</main>")
+            .unwrap_or_else(|| panic!("boundary output is missing"));
+        assert!(shell_position < boundary_position);
+    }
+
+    #[actix_web::test]
+    async fn initial_shell_over_precommit_limit_is_rejected() {
+        let chunks = tokio_stream::iter([Ok::<Bytes, String>(Bytes::from_static(
+            br#"{"type":"shell","version":1,"state":{}}
+"#,
+        ))]);
+        let shell = WebUIFragment::raw("x".repeat(MAX_INITIAL_SHELL_BYTES + 1));
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            render(chunks, valid_streaming_config(vec![shell]), defaults()),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("oversized initial shell timed out"));
+        assert_eq!(
+            response.status(),
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let body = to_bytes(response.into_body())
+            .await
+            .unwrap_or_else(|error| panic!("failed to read error response: {error}"));
+        assert!(String::from_utf8_lossy(&body).contains("4,000,000-byte precommit limit"));
+    }
+
+    #[actix_web::test]
+    async fn dropping_browser_response_cancels_stalled_backend() {
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let backend = StalledBackend {
+            shell: Some(Bytes::from_static(
+                br#"{"type":"shell","version":1,"state":{}}
+"#,
+            )),
+            dropped: Some(dropped_tx),
+        };
+
+        let response = render(backend, valid_streaming_config(Vec::new()), defaults()).await;
+        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
+
+        drop(response);
+        tokio::time::timeout(Duration::from_secs(1), dropped_rx)
+            .await
+            .unwrap_or_else(|_| panic!("stalled backend was not cancelled"))
+            .unwrap_or_else(|_| panic!("backend drop signal was lost"));
     }
 
     #[test]

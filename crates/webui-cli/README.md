@@ -70,7 +70,8 @@ Features:
 - HMR polling at `/hmr` when `--watch` is enabled
 - API proxy when `--api-port` is set. Backends may return JSON state or a
   versioned, newline-delimited `application/x-webui-stream` control response;
-  the CLI retains the Rust renderer and bounded browser transport.
+  the CLI retains the Rust renderer, caps precommit shell staging at 4,000,000
+  bytes, and cancels the backend when the browser disconnects.
 
 ### `webui inspect`
 

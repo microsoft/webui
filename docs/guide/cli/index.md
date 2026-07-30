@@ -288,9 +288,11 @@ backend can return a versioned NDJSON control stream:
 The CLI keeps the compiled protocol and browser transport. Boundary names
 resolve once to integer handles, a capacity-one command channel preserves
 backpressure, and each record is capped at 2,000,000 bytes. Omitted boundary or
-finish state reuses the shell state. The backend must honor its HTTP writer's
-backpressure signal and cap concurrent streams. Returning JSON retains the
-ordinary buffered behavior. See
+finish state reuses the shell state. Before HTTP 200, initial shell chunks are
+staged without copying up to a 4,000,000-byte limit; larger shells return an
+error. Dropping the browser response cancels the backend stream. The backend
+must honor its HTTP writer's backpressure signal and cap concurrent streams.
+Returning JSON retains the ordinary buffered behavior. See
 [`<boundary>`](/guide/concepts/directives/boundary) and
 `examples/app/streaming`.
 
