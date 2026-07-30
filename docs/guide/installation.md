@@ -188,3 +188,54 @@ pnpm add @microsoft/webui-router
 The router works with both WebUI Framework (`@microsoft/webui-framework`) and `@microsoft/fast-element` 3.x components. It's a separate package because it's only needed for apps with client-side navigation.
 
 See the [Routing guide](/guide/concepts/routing) for setup and usage.
+
+## AI Coding Agents
+
+WebUI publishes its framework reference as an installable [agent skill](https://agentskills.io). Installing it gives Claude Code, GitHub Copilot, Cursor, Codex, and other supported agents the authoring rules WebUI expects — template-first structure, CSS-owned styling, opt-in JavaScript — so generated code follows them instead of falling back to React habits.
+
+<webui-press-tabs>
+<webui-press-tab slot="tab" active>npm</webui-press-tab>
+<webui-press-tab slot="tab">yarn</webui-press-tab>
+<webui-press-tab slot="tab">pnpm</webui-press-tab>
+<webui-press-tab-panel active>
+
+```bash
+npx skills add microsoft/webui --skill webui-ai-reference
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+yarn dlx skills add microsoft/webui --skill webui-ai-reference
+```
+
+</webui-press-tab-panel>
+<webui-press-tab-panel>
+
+```bash
+pnpm dlx skills add microsoft/webui --skill webui-ai-reference
+```
+
+</webui-press-tab-panel>
+</webui-press-tabs>
+
+The skill is written to `.agents/skills/webui-ai-reference/` and linked into each selected agent's own directory, such as `.claude/skills/`. Useful flags:
+
+| Flag | Effect |
+| ---- | ------ |
+| `-g` | Install once for every project on your machine instead of the current one |
+| `-a <agent>` | Target specific agents, for example `-a claude-code`. Defaults to prompting |
+| `-l` | List what the repository publishes without installing anything |
+
+To try the reference in a single session without installing it:
+
+```bash
+npx skills use microsoft/webui@webui-ai-reference | claude
+```
+
+<webui-blockquote appearance="tip" title="Read it yourself" icon="💡">
+
+The skill is the same document served at [AI Reference](/ai). Read it directly when you want the rules and the anti-patterns without wiring up an agent.
+
+</webui-blockquote>

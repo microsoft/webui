@@ -9,6 +9,10 @@ description: Authoritative WebUI framework reference for generating correct appl
 > **Single-page reference for LLMs.** Everything an AI coding assistant needs to
 > generate correct WebUI code. Read the Rules first - they are the constraints
 > that most often get violated. Deep-dive links are indexed at the bottom.
+>
+> Install this reference into your agent with
+> `npx skills add microsoft/webui --skill webui-ai-reference` - see
+> [AI Coding Agents](/guide/installation#ai-coding-agents).
 
 ## Rules
 
