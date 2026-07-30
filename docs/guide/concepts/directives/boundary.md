@@ -144,10 +144,12 @@ entry — a full round trip on the critical path.
 That round trip cancels out what splitting saves. On `examples/app/streaming`
 over a throttled link, splitting alone was a wash: 1074 ms composer
 time-to-interactive bundled versus 1061 ms split. Adding
-`<link rel="modulepreload">` for the shared chunk recovers it — 956 ms, a
-10.9% win — but only in the right order. Preloads are issued in document order
-and share the connection, so listing a 284-byte chunk ahead of a 35 KB one
-delays the long pole behind it and gives the whole win back (1076 ms).
+`<link rel="modulepreload">` for the shared chunk recovers it — a 7-11% win,
+measured back to back against one binary — but only in the right order.
+Preloads are issued in document order and share the connection, so listing a
+284-byte chunk ahead of a 35 KB one delays the long pole behind it and gives
+the whole win back (1076 ms). Getting the order wrong is worse than emitting
+nothing, which is exactly why it is not yours to hand-write.
 
 You do not write those hints, and you could not: your bundler content-hashes
 the filenames. Pass your bundler's projection manifest to the build and WebUI

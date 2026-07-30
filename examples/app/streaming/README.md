@@ -89,8 +89,7 @@ it after downloading and parsing `index.js`, and that waterfall costs a round
 trip.
 
 Measured over a throttled link (100 ms RTT, 1.6 Mbps, deterministic pacing,
-12 cold contexts, median composer time-to-interactive; per-run spreads were
-~25 ms and did not overlap):
+12 cold contexts, median composer time-to-interactive):
 
 | Variant                        | Critical JS | Composer interactive |
 | ------------------------------ | ----------- | -------------------- |
@@ -98,6 +97,14 @@ Measured over a throttled link (100 ms RTT, 1.6 Mbps, deterministic pacing,
 | Island split, no preload hint  | 45,912 B    | 1061 ms              |
 | Island split, hint smallest-first | 45,912 B | 1076 ms              |
 | Island split, hint largest-first  | 45,912 B | **956 ms**           |
+
+Treat those absolute figures as machine-specific. What reproduces is the
+*relative* result, and only a same-sitting A/B shows it: comparing a fresh run
+against a stored number from another day measures the machine, not the change.
+Re-running the last two rows back to back against one binary, toggling only
+whether the hints are emitted, gives 1144 ms without them and 1068 ms with
+them — a 6.7% win whose per-run ranges barely touch (`[1085, 1230]` against
+`[1041, 1103]`, so the hinted *worst* run still beats the unhinted median).
 
 Two things are worth taking away. Splitting alone is a wash: 648 bytes cannot
 pay for a round trip, and it would be a straight loss for an island much
