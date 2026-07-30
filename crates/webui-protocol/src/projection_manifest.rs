@@ -684,16 +684,29 @@ mod tests {
         assert_ne!(unordered.compute_build_id(), one.compute_build_id());
 
         // Closures are largest-first, so member order is load order and must be
-        // covered by the build ID rather than normalized away.
-        let a = manifest_with_closures(BTreeMap::from([(
+        // covered by the build ID rather than normalized away. Both arms are
+        // kept valid, so this proves the property for closures a real build can
+        // emit rather than for self-referential ones `validate` rejects.
+        let mut a = manifest_with_closures(BTreeMap::new());
+        a.outputs.insert(
+            "dist/shared.js".to_string(),
+            format!("sha256:{}", "5".repeat(64)),
+        );
+        let mut b = a.clone();
+        a.entry_closures = BTreeMap::from([(
             "dist/index.js".to_string(),
-            vec!["dist/chunk.js".to_string(), "dist/index.js".to_string()],
-        )]));
-        let b = manifest_with_closures(BTreeMap::from([(
+            vec!["dist/chunk.js".to_string(), "dist/shared.js".to_string()],
+        )]);
+        b.entry_closures = BTreeMap::from([(
             "dist/index.js".to_string(),
-            vec!["dist/index.js".to_string(), "dist/chunk.js".to_string()],
-        )]));
+            vec!["dist/shared.js".to_string(), "dist/chunk.js".to_string()],
+        )]);
         assert_ne!(a.compute_build_id(), b.compute_build_id());
+
+        a.build_id = a.compute_build_id();
+        b.build_id = b.compute_build_id();
+        assert!(a.validate().is_ok());
+        assert!(b.validate().is_ok());
     }
 
     #[test]
