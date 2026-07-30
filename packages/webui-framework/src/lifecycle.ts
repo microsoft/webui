@@ -90,6 +90,7 @@ export function hydrationStart(): void {
  * When the last component finishes, fires the global event + measure.
  */
 export function hydrationEnd(): void {
+  if (pendingCount === 0) return;
   pendingCount--;
   tryComplete();
 }
@@ -120,6 +121,7 @@ export function markBoundaryPending(): void {
  * `terminal` is true for the boundary carrying the terminal record.
  */
 export function markBoundaryCommitted(terminal: boolean): void {
+  if (pendingBoundaries === 0) return;
   pendingBoundaries--;
   if (terminal) terminalReached = true;
   tryComplete();
@@ -139,6 +141,7 @@ export function markLateActivationPending(): void {
  * defined and its deferred roots were activated, or the wait was abandoned).
  */
 export function settleLateActivation(): void {
+  if (pendingLateActivations === 0) return;
   pendingLateActivations--;
   tryComplete();
 }
@@ -150,8 +153,12 @@ export function settleLateActivation(): void {
  * still being processed.
  */
 function tryComplete(): void {
-  if (completed || streamingGateAborted || pendingCount > 0) return;
-  if (streamingGateActive && (!terminalReached || pendingBoundaries > 0 || pendingLateActivations > 0)) return;
+  if (completed || streamingGateAborted || pendingCount !== 0) return;
+  if (
+    streamingGateActive &&
+    (!terminalReached || pendingBoundaries !== 0 || pendingLateActivations !== 0)
+  )
+    return;
 
   completed = true;
   // A streaming page with no components at all reaches terminal without ever

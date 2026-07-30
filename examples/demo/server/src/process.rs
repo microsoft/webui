@@ -55,6 +55,8 @@ fn spawn_app_server(app: &AppEntry) -> anyhow::Result<Child> {
             servedir,
             state,
             theme,
+            css,
+            projection_manifests,
         } => {
             let mut cmd = Command::new("webui");
             cmd.arg("serve")
@@ -71,6 +73,12 @@ fn spawn_app_server(app: &AppEntry) -> anyhow::Result<Child> {
             }
             if let Some(theme) = theme {
                 cmd.arg("--theme").arg(theme);
+            }
+            if let Some(css) = css {
+                cmd.arg("--css").arg(css);
+            }
+            for manifest in projection_manifests {
+                cmd.arg("--projection-manifest").arg(manifest);
             }
             if let Some(api_port) = app.api_port {
                 cmd.arg("--api-port").arg(api_port.to_string());

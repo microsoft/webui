@@ -96,6 +96,7 @@ describe('hydration lifecycle — non-streaming pages', () => {
       lifecycle.hydrationEnd();
       lifecycle.hydrationEnd();
       assert.equal(dispatched.length, 1);
+      assert.equal(lifecycle.__getLifecycleStateForTests().pendingCount, 0);
     });
   });
 });
@@ -154,6 +155,21 @@ describe('hydration lifecycle — streaming gate', () => {
       // No hydrationStart()/hydrationEnd() calls — no components on this page.
       assert.doesNotThrow(() => lifecycle.markBoundaryCommitted(true));
       assert.equal(dispatched.length, 1);
+    });
+  });
+
+  test('unmatched completion signals do not underflow or open the gate', async () => {
+    const lifecycle = await freshLifecycle();
+    withPerformanceAndWindow((dispatched) => {
+      lifecycle.beginStreamingGate();
+      lifecycle.markBoundaryCommitted(true);
+      lifecycle.settleLateActivation();
+
+      const state = lifecycle.__getLifecycleStateForTests();
+      assert.equal(state.pendingBoundaries, 0);
+      assert.equal(state.pendingLateActivations, 0);
+      assert.equal(state.terminalReached, false);
+      assert.equal(dispatched.length, 0);
     });
   });
 });

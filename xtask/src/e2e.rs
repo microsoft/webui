@@ -135,8 +135,8 @@ const SUITES: &[PlaywrightSuite] = &[
     PlaywrightSuite {
         name: "streaming",
         dir: "examples/app/streaming",
-        ports: &[3020],
-        scripts: &["start:server"],
+        ports: &[3030, 3020],
+        scripts: &["start:test-api", "start:test-server"],
         build_client: true,
         pre_script: None,
         test_script: "test",

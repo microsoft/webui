@@ -67,7 +67,8 @@ bindings or routing work.
 WebUI can hydrate an explicit, complete entry-page region while the document
 is still loading. Author a
 [`<boundary>`](/guide/concepts/directives/boundary), then serve the page
-with the Rust `WebUIHandler::render_streaming` API.
+with the Rust `WebUIHandler::render_streaming` API or a versioned backend
+control stream through `webui serve --api-port`.
 
 ```html
 <head>

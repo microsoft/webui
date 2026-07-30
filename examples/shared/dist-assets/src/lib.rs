@@ -109,7 +109,10 @@ pub fn is_content_hashed(relative: &str) -> bool {
     if !name.ends_with(".js") && !name.ends_with(".js.map") {
         return false;
     }
-    let stem = name.split('.').next().unwrap_or("");
+    let stem = name
+        .strip_suffix(".js.map")
+        .or_else(|| name.strip_suffix(".js"))
+        .unwrap_or("");
     stem.rsplit('-').next().is_some_and(|hash| {
         hash.len() == 8
             && hash
@@ -174,6 +177,8 @@ mod tests {
         assert!(is_content_hashed("chunk-NKNSLYVV.js"));
         assert!(is_content_hashed("chunk-3QJD3BDH.js.map"));
         assert!(is_content_hashed("mp-page-home-UFH4TZ7P.js"));
+        assert!(is_content_hashed("app.v2-ABCDEFGH.js"));
+        assert!(is_content_hashed("app.v2-ABCDEFGH.js.map"));
         assert!(!is_content_hashed("index.js"));
         assert!(!is_content_hashed("index.js.map"));
         assert!(!is_content_hashed("feed-item.css"));

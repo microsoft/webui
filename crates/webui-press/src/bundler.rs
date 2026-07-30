@@ -1098,22 +1098,22 @@ fn page_script_paths(
     }
 }
 
-fn next_rebuild_nonce_hex() -> String {
+fn next_rebuild_suffix_hex() -> String {
     format!(
         "{:x}",
         BUNDLE_REBUILD_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     )
 }
 
-fn bundle_temp_path(site_dir: &Path, nonce: &str) -> PathBuf {
+fn bundle_temp_path(site_dir: &Path, unique_suffix: &str) -> PathBuf {
     site_dir.join(format!(
-        ".webui-press-bundle-{}-{nonce}",
+        ".webui-press-bundle-{}-{unique_suffix}",
         std::process::id()
     ))
 }
 
-fn resolved_bundle_temp_path(site_dir: &Path, nonce: &str) -> Result<PathBuf> {
-    Ok(bundle_temp_path(&absolute_path(site_dir)?, nonce))
+fn resolved_bundle_temp_path(site_dir: &Path, unique_suffix: &str) -> Result<PathBuf> {
+    Ok(bundle_temp_path(&absolute_path(site_dir)?, unique_suffix))
 }
 
 fn external_projection_sources(opts: &BundleOptions<'_>) -> Vec<webui::ProjectionManifestSource> {
@@ -1463,8 +1463,8 @@ pub(crate) fn bundle_assets(opts: &BundleOptions<'_>) -> Result<BundleResult> {
     let allowed_roots = allowed_script_roots(opts.config_dir, opts.content_dir)?;
 
     // Create a temp directory for the bundler entry files.
-    let nonce = next_rebuild_nonce_hex();
-    let bundle_tmp = resolved_bundle_temp_path(opts.site_dir, &nonce)?;
+    let unique_suffix = next_rebuild_suffix_hex();
+    let bundle_tmp = resolved_bundle_temp_path(opts.site_dir, &unique_suffix)?;
     if bundle_tmp.exists() {
         fs::remove_dir_all(&bundle_tmp).ok();
     }

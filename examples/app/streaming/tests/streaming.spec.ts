@@ -18,7 +18,7 @@ import { test, expect, type Page } from '@playwright/test';
  * | 3           | feed batch 2  | jittered 500-1000ms                  |
  * | 4           | feed batch 3  | jittered 500-1000ms                  |
  *
- * The server (`server/src/main.rs`) paces only the gaps that precede feed
+ * The Node API (`server/src/pacing.ts`) paces only the gaps that precede feed
  * batches, bounded by `--feed-delay-min-ms` / `--feed-delay-max-ms`, so
  * delivery order is observable over real network timing. A weather state
  * record may consume a response sequence between any two checkpoints. These tests never
@@ -63,7 +63,7 @@ async function release(
   session: string,
   gate: 'feed' | 'weather' | 'all',
 ): Promise<void> {
-  const response = await page.request.post(`/__test/${session}/${gate}`);
+  const response = await page.request.post(`/api/__test/${session}/${gate}`);
   expect(response.ok(), `release ${gate} for ${session}`).toBe(true);
 }
 

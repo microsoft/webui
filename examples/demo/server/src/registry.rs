@@ -26,6 +26,9 @@ pub(crate) struct ServerConfig {
     pub args: Option<Vec<String>>,
     pub state: Option<String>,
     pub theme: Option<String>,
+    pub css: Option<String>,
+    #[serde(rename = "projection-manifest", default)]
+    pub projection_manifests: Vec<String>,
 }
 
 /// Optional API server configuration.
@@ -66,6 +69,8 @@ pub(crate) enum AppRunConfig {
         servedir: String,
         state: Option<String>,
         theme: Option<String>,
+        css: Option<String>,
+        projection_manifests: Vec<String>,
     },
     CustomBinary {
         binary: String,
@@ -128,6 +133,8 @@ pub(crate) fn discover(apps_dir: &Path, base_port: u16) -> anyhow::Result<Vec<Ap
                 servedir: config.server.servedir.unwrap_or_else(|| "dist".to_string()),
                 state: config.server.state,
                 theme: config.server.theme,
+                css: config.server.css,
+                projection_manifests: config.server.projection_manifests,
             },
             "custom-binary" => AppRunConfig::CustomBinary {
                 binary: config.server.binary.ok_or_else(|| {
@@ -161,4 +168,36 @@ pub(crate) fn discover(apps_dir: &Path, base_port: u16) -> anyhow::Result<Vec<Ap
     }
 
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webui_cli_config_accepts_projection_manifests_and_css() {
+        let config: AppConfig = toml::from_str(
+            r#"
+name = "Streaming"
+description = "Streaming"
+backend = "node"
+
+[server]
+type = "webui-cli"
+css = "style"
+projection-manifest = ["dist/webui-projection.json"]
+
+[api]
+type = "node"
+entry = "server/dist/index.js"
+"#,
+        )
+        .unwrap_or_else(|error| panic!("config failed to parse: {error}"));
+
+        assert_eq!(config.server.css.as_deref(), Some("style"));
+        assert_eq!(
+            config.server.projection_manifests,
+            ["dist/webui-projection.json"]
+        );
+    }
 }

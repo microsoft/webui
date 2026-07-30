@@ -68,6 +68,8 @@ source = "src"                      # Source directory
 servedir = "dist"                   # Static assets directory
 state = "data/state.json"           # Optional state file
 theme = "@microsoft/webui-examples-theme"  # Optional theme
+css = "style"                             # Optional CSS strategy
+projection-manifest = ["dist/webui-projection.json"] # Optional, repeatable CLI values
 
 # Optional: separate API server
 [api]

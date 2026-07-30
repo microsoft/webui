@@ -24,7 +24,10 @@ application DOM. A normal `WebUIHandler::render` call renders its children as
 usual without enabling progressive hydration. Use
 `WebUIHandler::render_streaming` with a `FlushWriter` to commit every checkpoint
 as final, or use `WebUIHandler::stream_response` when the host controls boundary
-timing and later state updates.
+timing and later state updates. Node and other HTTP backends can instead return
+the versioned `application/x-webui-stream` control format to
+`webui serve --api-port`; the CLI retains the Rust response session and bounded
+browser transport.
 
 The async browser entry must install the streaming coordinator before importing
 component registration modules:
@@ -231,8 +234,8 @@ returns in `BuildResult::css_files` rather than writing to your client
 bundler's output directory. `webui build` writes them to disk and `webui serve`
 serves them for you, but a **custom server must serve them itself** — otherwise
 the markup and preload hints are correct while every stylesheet URL 404s and
-the page renders unstyled. See
-`examples/app/streaming/server/src/assets.rs::insert_generated_css`.
+the page renders unstyled. The streaming example delegates this responsibility
+to `webui serve`.
 :::
 
 WebUI applies one strategy per build, so a page whose critical boundary wants

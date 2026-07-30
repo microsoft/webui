@@ -656,9 +656,10 @@ removal, or reordering shifts compiled paths.
 ### Progressive streaming hydration
 
 Use `<boundary>` only when the Rust server calls
-`WebUIHandler::render_streaming` or `WebUIHandler::stream_response` with a
-`FlushWriter`. The directive is removed at compile time and emits no
-application DOM wrapper.
+`WebUIHandler::render_streaming` / `WebUIHandler::stream_response` with a
+`FlushWriter`, or when an API backend returns the versioned
+`application/x-webui-stream` control format to `webui serve --api-port`. The
+directive is removed at compile time and emits no application DOM wrapper.
 
 ```html
 <head>
@@ -708,8 +709,10 @@ Malformed directives use stable diagnostics:
 `duplicate-boundary-name`, `nested-boundary`, `boundary-crosses-scope`, and
 `authored-webui-hydrate`.
 
-Dynamic append streams, out-of-order replacement, router-stream reuse, non-Rust
-host sessions, and declarative partial updates are not part of this contract.
+Dynamic append streams, out-of-order replacement, router-stream reuse, direct
+Node/FFI/WASM response sessions, and declarative partial updates are not part of
+this contract. Node can drive the CLI bridge, but the CLI remains the Rust
+session and transport owner.
 
 ### Lazy component mounting
 
@@ -1081,6 +1084,20 @@ page.write_shell(&state)?;
 page.write_boundary(critical, &state, BoundaryMode::Final)?;
 page.finish(&state)?;
 ```
+
+With `webui serve --api-port`, a Node or other HTTP backend can return
+newline-delimited control records instead:
+
+```text
+{"type":"shell","version":1,"state":{...}}
+{"type":"boundary","name":"critical-composer"}
+{"type":"finish"}
+```
+
+Honor HTTP write backpressure and cap concurrent streams. The CLI uses a
+capacity-one command channel, resolves boundary names once, and keeps the
+compiled protocol plus browser-facing bytes in Rust. Returning JSON keeps the
+buffered state path.
 
 Equivalent APIs exist for WebAssembly, Python (FFI), Go (cgo), and C#. For
 `Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2` backed by

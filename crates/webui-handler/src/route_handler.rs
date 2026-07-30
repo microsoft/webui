@@ -35,7 +35,7 @@ pub struct Protocol {
     protocol: WebUIProtocol,
     component_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
-    streaming_plans: HashMap<String, crate::streaming::StreamingEntryPlan>,
+    streaming_plans: HashMap<String, crate::streaming::PreparedStreamingEntryPlan>,
     route_index: CompiledRouteIndex,
     legacy_structural_signals: bool,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
@@ -63,7 +63,7 @@ impl Protocol {
                 protocol.fragments.get(entry).map(|fragments| {
                     (
                         entry.clone(),
-                        crate::streaming::StreamingEntryPlan::new(
+                        crate::streaming::PreparedStreamingEntryPlan::new(
                             entry,
                             &fragments.fragments,
                             protocol.streaming_boundaries.get(entry),
@@ -109,8 +109,10 @@ impl Protocol {
     pub(crate) fn streaming_plan(
         &self,
         entry_id: &str,
-    ) -> Option<&crate::streaming::StreamingEntryPlan> {
-        self.streaming_plans.get(entry_id)
+    ) -> crate::Result<Option<&crate::streaming::StreamingEntryPlan>> {
+        self.streaming_plans
+            .get(entry_id)
+            .map_or(Ok(None), |plan| plan.resolve().map(Some))
     }
 
     pub(crate) fn streaming_boundary_names(&self, entry_id: &str) -> &[String] {

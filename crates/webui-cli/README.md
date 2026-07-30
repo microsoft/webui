@@ -52,7 +52,7 @@ webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--port <PORT>] [--api-por
 | `--state` | *(none)* | JSON state file for rendering |
 | `--servedir` | *(none)* | Static assets directory served at `/*` |
 | `--port` | `3000` | Server port |
-| `--api-port` | *(none)* | Proxy API requests to this port |
+| `--api-port` | *(none)* | Proxy API requests; JSON provides buffered state and `application/x-webui-stream` drives progressive boundaries |
 | `--plugin` | *(none)* | Plugin identifier (see [Plugins](https://microsoft.github.io/webui/guide/concepts/plugins/) for available identifiers) |
 | `--watch` | off | Enable file watching + HMR |
 | `--asset-file-name-template` | `[name].[ext]` | Emitted asset filename template. Tokens: `[name]`, `[hash]`, `[ext]` |
@@ -68,7 +68,9 @@ Features:
 - Serves static files from `--servedir`
 - JSON partials for client-side navigation (`Accept: application/json`)
 - HMR polling at `/hmr` when `--watch` is enabled
-- API proxy when `--api-port` is set
+- API proxy when `--api-port` is set. Backends may return JSON state or a
+  versioned, newline-delimited `application/x-webui-stream` control response;
+  the CLI retains the Rust renderer and bounded browser transport.
 
 ### `webui inspect`
 

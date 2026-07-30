@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod streaming_api;
+
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
 use anyhow::{Context, Result};
 use clap::Args;
@@ -689,7 +691,7 @@ async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
         .map_err(|e| format!("API body error: {e}"))?;
     let json: Value = serde_json::from_slice(&body).map_err(|e| format!("API JSON error: {e}"))?;
     // Expect { "state": { ... } }, fall back to entire response
-    Ok(json.get("state").cloned().unwrap_or(json))
+    Ok(extract_api_state(json))
 }
 
 /// Resolve state for a request: try API proxy first, then fall back to file state.
@@ -769,50 +771,155 @@ async fn render_page_response(
         return HttpResponse::InternalServerError().body("Protocol not available");
     };
     let plugin = context.plugin;
-
-    let mut state = resolve_state(context, request_path).await;
-
-    // Inject route params (nested) into state for SSR
-    if let Value::Object(ref mut map) = state {
-        let nested_params =
-            webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
-        for (k, v) in &nested_params {
-            map.insert(k.clone(), Value::String(v.clone()));
-        }
-    }
-
-    // Livereload script as Arc<str> so the producer thread holds a
-    // single cheap clone, not a per-request String.
     let livereload_script: Option<Arc<str>> =
         context.livereload.as_ref().map(|lr| lr.client_script_arc());
-    let route_path = route_path.to_string();
-    let chunk_pool = Arc::clone(&context.chunk_pool);
+    let route_params =
+        webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
+
+    let mut state = if let Some(api_port) = context.api_port {
+        let client = awc::Client::new();
+        let url = format!("http://127.0.0.1:{api_port}{request_path}");
+        match client
+            .get(&url)
+            .insert_header(("Accept", streaming_api::ACCEPT))
+            .send()
+            .await
+        {
+            Ok(mut response) if streaming_api::is_stream(response.headers()) => {
+                let status = response.status();
+                if !status.is_success() {
+                    return match response.body().await {
+                        Ok(body) => HttpResponse::build(status)
+                            .content_type("text/plain; charset=utf-8")
+                            .body(body),
+                        Err(error) => HttpResponse::BadGateway()
+                            .body(format!("API stream body error: {error}")),
+                    };
+                }
+                let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
+                let defaults = streaming_state_defaults(context, route_params);
+                return streaming_api::render(
+                    backend,
+                    streaming_api::RenderConfig {
+                        protocol: proto,
+                        entry,
+                        route_path: route_path.to_owned(),
+                        plugin,
+                        body_inject: livereload_script,
+                        chunk_pool: Arc::clone(&context.chunk_pool),
+                    },
+                    defaults,
+                )
+                .await;
+            }
+            Ok(mut response) => match response.body().await {
+                Ok(body) => match parse_api_state(&body) {
+                    Ok(state) => state,
+                    Err(error) => {
+                        log_api_state_warning(&error);
+                        fallback_state(context)
+                    }
+                },
+                Err(error) => {
+                    log_api_state_warning(&format!("API body error: {error}"));
+                    fallback_state(context)
+                }
+            },
+            Err(error) => {
+                log_api_state_warning(&format!("API proxy error: {error}"));
+                fallback_state(context)
+            }
+        }
+    } else {
+        fallback_state(context)
+    };
+
+    let defaults = streaming_state_defaults(context, route_params);
+    defaults.apply(&mut state);
+    render_buffered_page(
+        streaming_api::RenderConfig {
+            protocol: proto,
+            entry,
+            route_path: route_path.to_owned(),
+            plugin,
+            body_inject: livereload_script,
+            chunk_pool: Arc::clone(&context.chunk_pool),
+        },
+        state,
+    )
+}
+
+fn parse_api_state(body: &[u8]) -> Result<Value, String> {
+    let json: Value =
+        serde_json::from_slice(body).map_err(|error| format!("API JSON error: {error}"))?;
+    Ok(extract_api_state(json))
+}
+
+fn extract_api_state(mut json: Value) -> Value {
+    if let Value::Object(object) = &mut json {
+        if let Some(state) = object.remove("state") {
+            return state;
+        }
+    }
+    json
+}
+
+fn fallback_state(context: &ServerContext) -> Value {
+    context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.state_data.clone())
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+}
+
+fn streaming_state_defaults(
+    context: &ServerContext,
+    route_params: HashMap<String, String>,
+) -> streaming_api::StateDefaults {
+    let token_css = context
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| state.token_css.clone());
+    streaming_api::StateDefaults::new(
+        token_css,
+        context.base_path.as_deref().unwrap_or("/").to_owned(),
+        route_params,
+    )
+}
+
+fn log_api_state_warning(message: &str) {
+    eprintln!("  {} {message}", console::style("\u{26a0}").yellow());
+}
+
+fn render_buffered_page(config: streaming_api::RenderConfig, state: Value) -> HttpResponse {
+    let route_path_for_log = config.route_path.clone();
 
     // Bounded channel: backpressure when client is slow, no unbounded
     // memory growth. Capacity is in chunks (≈ 4 KB each).
     let (tx, rx) =
         tokio::sync::mpsc::channel::<bytes::Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
-    let route_path_for_log = route_path.clone();
     actix_web::rt::task::spawn_blocking(move || {
         // 30 s flush deadline caps slow-loris DoS: an attacker can pin
         // a render thread for at most 30 s per chunk, then we abort
         // and free the thread.
         // Pool-acquired chunk buffers recycle across requests — steady-
         // state RPS does not allocate fresh chunk Vec per flush.
-        let mut writer = StreamingWriter::new_pooled(tx, chunk_pool)
+        let mut writer = StreamingWriter::new_pooled(tx, Arc::clone(&config.chunk_pool))
             .with_flush_timeout(std::time::Duration::from_secs(30));
         // Build RenderOptions with optional body_inject for livereload.
         // The handler emits the inject string at the structural
         // body_end boundary identified by the parser — zero scan cost,
         // no risk of false-marker mis-firing on `</body>` literals
         // appearing inside HTML comments / srcdoc / inline scripts.
-        let opts_owner = RenderOptions::new(&entry, &route_path);
-        let opts = match livereload_script.as_deref() {
+        let opts_owner = RenderOptions::new(&config.entry, &config.route_path);
+        let opts = match config.body_inject.as_deref() {
             Some(script) => opts_owner.with_body_inject(script),
             None => opts_owner,
         };
-        let handler = create_handler(plugin);
-        if let Err(e) = handler.render(&proto, &state, &opts, &mut writer) {
+        let handler = create_handler(config.plugin);
+        if let Err(e) = handler.render(&config.protocol, &state, &opts, &mut writer) {
             // Status 200 + headers are already on the wire — we cannot
             // return an HTTP error. Log the detail so ops sees it;
             // emit a fixed HTML comment so an attacker-controlled

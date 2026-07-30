@@ -1818,6 +1818,7 @@ dependencies = [
  "console",
  "expand-tilde",
  "log",
+ "memchr",
  "microsoft-webui",
  "microsoft-webui-dev-server",
  "microsoft-webui-discovery",
@@ -1825,8 +1826,10 @@ dependencies = [
  "microsoft-webui-protocol",
  "microsoft-webui-tokens",
  "mime_guess",
+ "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-stream",
 ]
@@ -3003,24 +3006,6 @@ dependencies = [
  "serde",
  "tokio",
  "tokio-stream",
-]
-
-[[package]]
-name = "streaming-example-server"
-version = "0.0.0"
-dependencies = [
- "actix-web",
- "anyhow",
- "bytes",
- "clap",
- "futures-util",
- "microsoft-webui",
- "microsoft-webui-handler",
- "microsoft-webui-tokens",
- "serde_json",
- "tokio",
- "tokio-stream",
- "webui-example-dist-assets",
 ]
 
 [[package]]

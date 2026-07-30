@@ -8,7 +8,10 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use super::error::{boundary_order_error, unknown_boundary_name_error};
+use super::error::{
+    boundary_not_updatable_error, boundary_order_error, state_update_type_error,
+    unknown_boundary_name_error,
+};
 use super::state::increment_streaming_record_sequence;
 use super::{
     flush_streaming_transport, validate_streaming_head_start, StreamingEntryPlan,
@@ -69,6 +72,7 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     next_boundary: usize,
     shell_written: bool,
     finished: bool,
+    failed: bool,
     local_vars: HashMap<String, Value>,
     component_attrs: HashMap<String, Value>,
     route_base: Cow<'a, str>,
@@ -117,16 +121,14 @@ impl WebUIHandler {
             .get(options.entry_id)
             .ok_or_else(|| HandlerError::MissingFragment(options.entry_id.to_string()))?;
         validate_streaming_head_start(document, options.entry_id)?;
-        let plan = protocol.streaming_plan(options.entry_id).map_or_else(
-            || {
-                ResponsePlan::Request(StreamingEntryPlan::new(
-                    options.entry_id,
-                    &fragments.fragments,
-                    None,
-                ))
-            },
-            ResponsePlan::Shared,
-        );
+        let plan = match protocol.streaming_plan(options.entry_id)? {
+            Some(plan) => ResponsePlan::Shared(plan),
+            None => ResponsePlan::Request(StreamingEntryPlan::new(
+                options.entry_id,
+                &fragments.fragments,
+                None,
+            )?),
+        };
         let inventory_bytes = protocol.component_index().len().div_ceil(8);
         let entry_route = crate::route_renderer::find_best_route_match(
             &fragments.fragments,
@@ -149,6 +151,7 @@ impl WebUIHandler {
             next_boundary: 0,
             shell_written: false,
             finished: false,
+            failed: false,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
             route_base: Cow::Borrowed("/"),
@@ -222,6 +225,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
     }
 
     fn write_shell_internal(&mut self, state: &Value, flush: bool) -> Result<()> {
+        self.require_open("write_shell")?;
         if self.shell_written {
             return Err(boundary_order_error(
                 "write_shell",
@@ -229,13 +233,17 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             ));
         }
         let shell_end = self.plan.get().shell_end();
-        self.run_range(state, 0..shell_end)?;
+        let result = self.run_range(state, 0..shell_end);
+        self.poison_on_error(&result);
+        result?;
         self.cursor = shell_end;
         self.shell_written = true;
         if flush && !self.body_ended() {
-            self.with_context(state, |_handler, context| {
+            let result = self.with_context(state, |_handler, context| {
                 flush_streaming_transport(context)
-            })?;
+            });
+            self.poison_on_error(&result);
+            result?;
         }
         Ok(())
     }
@@ -274,7 +282,9 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             ));
         }
         self.streaming.checkpoint_updatable = mode == BoundaryMode::Updatable;
-        self.run_range(state, self.cursor..range.end)?;
+        let result = self.run_range(state, self.cursor..range.end);
+        self.poison_on_error(&result);
+        result?;
         self.cursor = range.end;
         self.next_boundary += 1;
         Ok(())
@@ -290,18 +300,33 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
                 "the target boundary has not committed yet",
             ));
         }
-        self.with_context(state, |handler, context| {
+        if !state.is_object() {
+            return Err(state_update_type_error());
+        }
+        if self
+            .streaming
+            .update_plans
+            .get(target)
+            .and_then(Option::as_ref)
+            .is_none()
+        {
+            return Err(boundary_not_updatable_error(target));
+        }
+        let result = self.with_context(state, |handler, context| {
             let record_sequence = context
                 .streaming
                 .as_ref()
                 .map_or(0, |streaming| streaming.next_record_sequence);
             handler.emit_streaming_state_update(record_sequence, target, context)?;
             increment_streaming_record_sequence("state_update", super::streaming_state(context)?)
-        })
+        });
+        self.poison_on_error(&result);
+        result
     }
 
     /// Render the document tail, emit the terminal record, and end the writer.
     pub fn finish(mut self, state: &Value) -> Result<()> {
+        self.require_usable("finish")?;
         if self.finished {
             return Err(boundary_order_error(
                 "finish",
@@ -337,6 +362,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
     }
 
     fn require_open(&self, operation: &str) -> Result<()> {
+        self.require_usable(operation)?;
         if self.finished || self.body_ended() {
             Err(boundary_order_error(
                 operation,
@@ -344,6 +370,23 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             ))
         } else {
             Ok(())
+        }
+    }
+
+    fn require_usable(&self, operation: &str) -> Result<()> {
+        if self.failed {
+            return Err(boundary_order_error(
+                operation,
+                "the streaming response is unusable after a previous render or transport failure; \
+                 start a new response because bytes may already have been sent",
+            ));
+        }
+        Ok(())
+    }
+
+    fn poison_on_error<T>(&mut self, result: &Result<T>) {
+        if result.is_err() {
+            self.failed = true;
         }
     }
 

@@ -8925,6 +8925,8 @@ mod tests {
         output: String,
         flushes: Vec<usize>,
         fail_flush: bool,
+        fail_flush_at: Option<usize>,
+        flush_attempts: usize,
         ended: bool,
     }
 
@@ -8942,7 +8944,9 @@ mod tests {
 
     impl FlushWriter for FlushTestWriter {
         fn flush(&mut self) -> Result<()> {
-            if self.fail_flush {
+            let attempt = self.flush_attempts;
+            self.flush_attempts += 1;
+            if self.fail_flush || self.fail_flush_at == Some(attempt) {
                 return Err(HandlerError::ClientDisconnected);
             }
             self.flushes.push(self.output.len());
@@ -9528,8 +9532,7 @@ mod tests {
             }
             other => panic!("expected post-terminal rejection, got {other:?}"),
         }
-        assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
-        assert!(streaming.output.contains("[1,0,3,0,"));
+        assert!(streaming.output.is_empty());
         assert!(!streaming.output.contains("<!--wb:0-->"));
 
         let mut ordinary = TestWriter::new();
@@ -9623,6 +9626,77 @@ mod tests {
         disjoint_streaming_protocol_ext(hosts, true)
     }
 
+    fn streaming_plan_validation_protocol(signals: &[&str], names: &[&str]) -> Protocol {
+        let mut entry = vec![
+            WebUIFragment::raw("<html><head>"),
+            structural_fragment("head_start"),
+            structural_fragment("head_end"),
+            WebUIFragment::raw("</head><body>"),
+            structural_fragment("body_start"),
+        ];
+        entry.extend(signals.iter().map(structural_fragment));
+        entry.extend([
+            structural_fragment("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ]);
+
+        let mut document = WebUIProtocol::new(HashMap::from([(
+            "index.html".to_string(),
+            FragmentList { fragments: entry },
+        )]));
+        document.streaming_boundaries.insert(
+            "index.html".to_string(),
+            webui_protocol::StreamingBoundaryList {
+                names: names.iter().map(|name| (*name).to_string()).collect(),
+            },
+        );
+        Protocol::new(document)
+    }
+
+    #[test]
+    fn streaming_response_rejects_cached_malformed_boundary_plan_before_writing() {
+        let protocol =
+            streaming_plan_validation_protocol(&["boundary_start:0", "boundary_end:1"], &["one"]);
+        let handler = WebUIHandler::new();
+        let mut writer = FlushTestWriter::default();
+        let options = RenderOptions::new("index.html", "/");
+
+        let error = match handler.stream_response(&protocol, &options, &mut writer) {
+            Ok(_) => panic!("malformed boundary plan unexpectedly opened a response"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, HandlerError::StreamingBoundary(_)),
+            "error: {error}"
+        );
+        assert!(writer.output.is_empty());
+        assert!(writer.flushes.is_empty());
+    }
+
+    #[test]
+    fn streaming_response_rejects_boundary_name_count_mismatch_before_writing() {
+        let protocol = streaming_plan_validation_protocol(
+            &["boundary_start:0", "boundary_end:0"],
+            &["one", "two"],
+        );
+        let handler = WebUIHandler::new();
+        let mut writer = FlushTestWriter::default();
+        let options = RenderOptions::new("index.html", "/");
+
+        let error = match handler.stream_response(&protocol, &options, &mut writer) {
+            Ok(_) => panic!("mismatched boundary names unexpectedly opened a response"),
+            Err(error) => error,
+        };
+
+        assert!(
+            matches!(error, HandlerError::Invariant(_)),
+            "error: {error}"
+        );
+        assert!(writer.output.is_empty());
+        assert!(writer.flushes.is_empty());
+    }
+
     #[test]
     fn streaming_response_interleaves_projected_updates_with_later_boundaries() {
         let protocol = disjoint_streaming_protocol(&["comp-a", "comp-b"]);
@@ -9674,6 +9748,42 @@ mod tests {
         let update = &writer.output[update_start..update_end];
         assert!(!update.contains("inventory"));
         assert!(!update.contains("templates"));
+    }
+
+    #[test]
+    fn streaming_response_is_poisoned_after_partial_boundary_flush_failure() {
+        let protocol = disjoint_streaming_protocol(&["comp-a"]);
+        let handler = WebUIHandler::new();
+        let mut writer = FlushTestWriter {
+            fail_flush_at: Some(1),
+            ..FlushTestWriter::default()
+        };
+        let options = RenderOptions::new("index.html", "/");
+        let mut response = handler
+            .stream_response(&protocol, &options, &mut writer)
+            .unwrap();
+        let boundary = response.boundary("boundary-0").unwrap();
+        response.write_shell(&test_json!({})).unwrap();
+
+        let first_error = response
+            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
+            .unwrap_err();
+        assert!(matches!(first_error, HandlerError::ClientDisconnected));
+
+        let retry_error = response
+            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
+            .unwrap_err();
+        assert!(
+            retry_error
+                .to_string()
+                .contains("unusable after a previous render or transport failure"),
+            "error: {retry_error}"
+        );
+
+        drop(response);
+        assert_eq!(writer.output.matches("<!--wb:0-->").count(), 1);
+        assert_eq!(writer.flushes.len(), 1);
+        assert!(!writer.ended);
     }
 
     #[test]
@@ -9964,21 +10074,15 @@ mod tests {
 
     #[test]
     fn pending_streaming_root_is_rejected_at_structural_ends() {
-        let pending_host = || {
+        let protocol = streaming_root_validation_protocol(
             vec![
                 WebUIFragment::raw("<comp-a"),
                 structural_fragment("streaming_root:comp-a"),
                 WebUIFragment::raw(">"),
-            ]
-        };
-        for tail in [
+            ],
             vec![structural_fragment("boundary_end:0")],
-            vec![structural_fragment("body_end")],
-            Vec::new(),
-        ] {
-            let protocol = streaming_root_validation_protocol(pending_host(), tail);
-            assert_streaming_root_error(&protocol, "streaming_root:comp-a", "is misplaced");
-        }
+        );
+        assert_streaming_root_error(&protocol, "streaming_root:comp-a", "is misplaced");
     }
 
     #[test]

@@ -9,7 +9,62 @@ use webui_protocol::{web_ui_fragment::Fragment, StreamingBoundaryList, WebUIFrag
 
 use super::error::{parse_boundary_sequence, streaming_boundary_error};
 use super::state::{BOUNDARY_END_PREFIX, BOUNDARY_START_PREFIX};
-use crate::{structural_signal_value, HandlerError, Result};
+use crate::{structural_signal_value, HandlerError, Result, StreamingBoundaryError};
+
+pub(crate) struct PreparedStreamingEntryPlan {
+    result: std::result::Result<StreamingEntryPlan, StreamingEntryPlanError>,
+}
+
+enum StreamingEntryPlanError {
+    Boundary { signal: String, reason: String },
+    Invariant(String),
+}
+
+impl StreamingEntryPlanError {
+    fn capture(error: HandlerError) -> Self {
+        match error {
+            HandlerError::StreamingBoundary(error) => Self::Boundary {
+                signal: error.signal,
+                reason: error.reason,
+            },
+            HandlerError::Invariant(message) => Self::Invariant(message),
+            error => Self::Invariant(error.to_string()),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn to_handler_error(&self) -> HandlerError {
+        match self {
+            Self::Boundary { signal, reason } => {
+                HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+                    signal: signal.clone(),
+                    reason: reason.clone(),
+                }))
+            }
+            Self::Invariant(message) => HandlerError::Invariant(message.clone()),
+        }
+    }
+}
+
+impl PreparedStreamingEntryPlan {
+    pub(crate) fn new(
+        entry_id: &str,
+        fragments: &[WebUIFragment],
+        names: Option<&StreamingBoundaryList>,
+    ) -> Self {
+        Self {
+            result: StreamingEntryPlan::new(entry_id, fragments, names)
+                .map_err(StreamingEntryPlanError::capture),
+        }
+    }
+
+    pub(crate) fn resolve(&self) -> Result<&StreamingEntryPlan> {
+        self.result
+            .as_ref()
+            .map_err(StreamingEntryPlanError::to_handler_error)
+    }
+}
 
 pub(crate) struct StreamingEntryPlan {
     shell_end: usize,
@@ -21,20 +76,15 @@ impl StreamingEntryPlan {
         _entry_id: &str,
         fragments: &[WebUIFragment],
         names: Option<&StreamingBoundaryList>,
-    ) -> Self {
-        match Self::try_new(fragments, names) {
-            Ok(plan) => plan,
-            Err(_) => Self {
-                shell_end: fragments.len(),
-                boundaries: Vec::new(),
-            },
-        }
+    ) -> Result<Self> {
+        Self::try_new(fragments, names)
     }
 
     fn try_new(fragments: &[WebUIFragment], names: Option<&StreamingBoundaryList>) -> Result<Self> {
         let mut boundaries = Vec::new();
         let mut active = None;
         let mut next_id = 0usize;
+        let mut body_ended = false;
 
         for (index, fragment) in fragments.iter().enumerate() {
             let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
@@ -43,6 +93,22 @@ impl StreamingEntryPlan {
             let Some(value) = structural_signal_value(signal) else {
                 continue;
             };
+            if body_ended {
+                return Err(streaming_boundary_error(
+                    value,
+                    "structural signal arrived after the body_end terminal record",
+                ));
+            }
+            if value == "body_end" {
+                if let Some((id, _)) = active {
+                    return Err(streaming_boundary_error(
+                        value,
+                        &format!("body ended while boundary {id} was still open"),
+                    ));
+                }
+                body_ended = true;
+                continue;
+            }
             if let Some(raw_id) = value.strip_prefix(BOUNDARY_START_PREFIX) {
                 let id = parse_boundary_sequence(value, raw_id)?;
                 if active.is_some() {
@@ -54,7 +120,7 @@ impl StreamingEntryPlan {
                 if id != next_id {
                     return Err(streaming_boundary_error(
                         value,
-                        "boundary IDs must be contiguous and declaration ordered",
+                        &format!("expected boundary sequence {next_id}, received {id}"),
                     ));
                 }
                 active = Some((id, index));

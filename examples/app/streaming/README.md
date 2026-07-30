@@ -17,11 +17,11 @@ batch's `feed-item` islands hydrating independently as their own
 # Install JS dependencies
 pnpm install
 
-# Build client JS + check the server compiles
+# Build client JS and the Node API
 pnpm build
 
-# Run the custom Actix server (real webui::build + stream_response)
-pnpm start:server
+# Run the Node API, client watcher, and webui serve together
+pnpm start
 
 # Run the Playwright suite
 pnpm test
@@ -41,14 +41,32 @@ instruction instead of silently falling back to full-state payloads.
 | 3           | feed batch 2  | jittered 500-1000 ms   |
 | 4           | feed batch 3  | jittered 500-1000 ms   |
 
-The feed gaps are bounded by `--feed-delay-min-ms` (500) and
+The Node API feed gaps are bounded by `--feed-delay-min-ms` (500) and
 `--feed-delay-max-ms` (1000) and are re-rolled per request, so repeated loads
 do not look mechanically identical. The forecast resolves independently, so its
 state record can appear between any two feed checkpoints:
 
 ```bash
-cargo run -p streaming-example-server -- --feed-delay-min-ms 200 --feed-delay-max-ms 400
+pnpm start:api -- --feed-delay-min-ms 200 --feed-delay-max-ms 400
 ```
+
+For an HTML request, `webui serve` advertises
+`Accept: application/x-webui-stream, application/json`. The API selects
+streaming with the first media type and writes versioned NDJSON commands:
+
+```text
+{"type":"shell","version":1,"state":{...}}
+{"type":"boundary","name":"weather-shell","mode":"updatable"}
+{"type":"boundary","name":"composer-ready"}
+{"type":"update","name":"weather-shell","state":{...}}
+{"type":"finish"}
+```
+
+Node controls readiness and order, but does not render WebUI. The CLI resolves
+each name once to an integer boundary handle and owns the compiled protocol,
+`StreamingResponse`, pooled `StreamingWriter`, and browser-facing record
+format. A capacity-one command channel and Node's `response.write()` / `drain`
+contract propagate backpressure across the loopback bridge.
 
 ### Why weather uses a state record
 
@@ -115,8 +133,9 @@ the 284-byte chunk ahead of the 35 KiB one delays the long pole and gives back
 the entire win.
 
 This example now sits in the bottom row, and it does not do anything to get
-there. `server/src/app.rs` passes `dist/webui-projection.json` into the build
-(it already did, for state projection), and WebUI emits the hints itself:
+there. `build-client.mjs` emits `dist/webui-projection.json`, `webui serve`
+consumes it for state projection and preload discovery, and WebUI emits the
+hints itself:
 
 ```html
 <link rel="modulepreload" href="./chunk-WKHXE3QO.js"><!-- 35,827 B -->
@@ -131,13 +150,15 @@ statically, which makes it critical regardless of who else wants it.
 
 ### Trying the CSS strategies
 
-The server accepts `--css style|module|link`. It defaults to `style` because a
-critical boundary should paint styled with zero extra round trips, and it
-serves the compiler-generated stylesheets in memory so `link` and `module`
-work too:
+`webui serve` accepts `--css style|module|link`. This example's
+`start:server` script selects `style` because a critical boundary should paint
+with zero extra round trips. The CLI serves compiler-generated stylesheets in
+memory, so `link` and `module` work too:
 
 ```bash
-cargo run -p streaming-example-server -- --css module
+cargo run -p microsoft-webui-cli -- serve ./src \
+  --plugin=webui --projection-manifest ./dist/webui-projection.json \
+  --servedir ./dist --api-port 3030 --port 3020 --css module
 ```
 
 Measured here (four feed items, cold context, 100 ms RTT): `style` is 12,228 B
@@ -148,18 +169,18 @@ by the application bundle, not by CSS. See
 
 ### How it stays deterministic
 
-The server (`server/src/main.rs`) creates the real, opt-in
-`WebUIHandler::stream_response` session over a real `StreamingWriter`. One
-admitted blocking worker owns both objects for the response lifetime. A bounded
-async command channel applies backpressure to ready backend work, while
-`server/src/pacing.rs` races weather readiness against each feed delay and sends
-commands in completion order. No envelope or transport chunk is manufactured or
-split by the example.
+`server/src/pacing.ts` races weather readiness against each feed delay and
+writes commands in completion order. `server/src/stream-protocol.ts` emits one
+record per semantic write, honors Node HTTP backpressure, and ends immediately
+after `finish`. The API caps concurrent admitted streams before sending a 200
+response.
 
-The server is split so the streaming call is the first thing you read:
-`main.rs` is the routes and `render_page`, `pacing.rs` is the demo-only
-timing, `app.rs` is the protocol build and sample data, and `assets.rs` is
-the cache-header policy for `dist/`.
+Inside `webui serve`, one blocking worker owns the real
+`WebUIHandler::stream_response` and `StreamingWriter` for the response
+lifetime. The async API reader feeds it through a capacity-one command channel;
+the existing capacity-four browser channel and 30-second flush timeout remain
+in force. The example never manufactures browser envelopes or duplicates
+protocol rendering in JavaScript.
 
 Three feed batches are three explicit `<boundary>` groups — WebUI does not
 implement an open-ended `<webui-stream>` directive. The feed's `<section>`

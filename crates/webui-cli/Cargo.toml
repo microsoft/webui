@@ -24,13 +24,16 @@ microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.19" }
 microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.19" }
 clap = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 console = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 actix-web = { workspace = true }
 awc = { workspace = true }
 expand-tilde = { workspace = true }
 mime_guess = { workspace = true }
 bytes = { workspace = true }
+memchr = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }

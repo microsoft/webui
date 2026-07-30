@@ -167,6 +167,9 @@ Each layer of the architecture contributes to the overall performance profile:
   boundaries need no graph walk. Request-local buffers retain capacity for
   reuse. The separately imported streaming coordinator passes this ephemeral
   state directly to components and removes checkpoint scaffolding after commit.
+  `webui serve --api-port` can translate a capacity-one, versioned backend
+  control stream into the same Rust session, preserving browser-to-backend
+  backpressure without exposing a callback-heavy Node renderer session.
   Hosts must also bound concurrent blocking renders before calling
   `spawn_blocking`; channel backpressure bounds bytes after a task starts, not
   the runtime's queued blocking-task count. Reject saturation before spawning

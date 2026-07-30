@@ -247,7 +247,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
-| `--api-port <PORT>` | Proxy route requests to your API server on this port. Encoded paths and queries are forwarded unchanged. | *(none)* |
+| `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
@@ -272,6 +272,27 @@ normalized), while still preserving the query string. All other request paths
 forward their encoded path and query unchanged. Do not double-encode route
 parameters for development. For example, `%2F` remains part of one parameter
 instead of becoming a path separator.
+
+For progressive HTML, the server sends
+`Accept: application/x-webui-stream, application/json` to the API backend. A
+backend can return a versioned NDJSON control stream:
+
+```text
+{"type":"shell","version":1,"state":{"feedBatch1":[]}}
+{"type":"boundary","name":"weather-shell","mode":"updatable"}
+{"type":"boundary","name":"composer-ready"}
+{"type":"update","name":"weather-shell","state":{"status":"ready"}}
+{"type":"finish"}
+```
+
+The CLI keeps the compiled protocol and browser transport. Boundary names
+resolve once to integer handles, a capacity-one command channel preserves
+backpressure, and each record is capped at 2,000,000 bytes. Omitted boundary or
+finish state reuses the shell state. The backend must honor its HTTP writer's
+backpressure signal and cap concurrent streams. Returning JSON retains the
+ordinary buffered behavior. See
+[`<boundary>`](/guide/concepts/directives/boundary) and
+`examples/app/streaming`.
 
 After generated assets and `--servedir` files miss, route fallback is based on
 the `Accept` header. Requests that explicitly accept `text/html` or

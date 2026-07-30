@@ -8,12 +8,15 @@
     "build": "pnpm run build:deps && pnpm run build:client && pnpm run build:server",
     "build:deps": "pnpm --filter @microsoft/webui --filter @microsoft/webui-framework run build",
     "build:client": "node ./build-client.mjs",
-    "build:server": "cargo check -p streaming-example-server",
+    "build:server": "tsc -p server/tsconfig.json && esbuild server/src/index.ts --bundle --platform=node --format=esm --outfile=server/dist/index.js",
     "start:client": "pnpm run build:deps && node ./build-client.mjs --watch",
-    "start:server": "cargo run -p streaming-example-server -- --port 3020",
-    "start:test-server": "cargo run -p streaming-example-server -- --port 3020 --test-controls --max-concurrent-renders 16",
+    "start:api": "tsx watch server/src/index.ts --port 3030",
+    "start:test-api": "tsx server/src/index.ts --port 3030 --test-controls --max-concurrent-streams 16",
+    "start:server": "cargo run -p microsoft-webui-cli -- serve ./src --theme=@microsoft/webui-examples-theme --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --css style --port 3020 --api-port 3030 --watch",
+    "start:test-server": "cargo run -p microsoft-webui-cli -- serve ./src --theme=@microsoft/webui-examples-theme --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --css style --port 3020 --api-port 3030",
     "start": "cargo xtask dev streaming",
-    "test": "playwright test",
+    "test": "pnpm run test:server && playwright test",
+    "test:server": "tsx --test server/src/pacing.test.ts",
     "test:update-snapshots": "playwright test --update-snapshots"
   },
   "devDependencies": {
@@ -21,8 +24,10 @@
     "@microsoft/webui-examples-theme": "workspace:*",
     "@microsoft/webui-framework": "workspace:*",
     "@playwright/test": "catalog:",
+    "@types/node": "catalog:",
     "esbuild": "catalog:",
     "tslib": "catalog:",
+    "tsx": "^4.23.0",
     "typescript": "catalog:"
   }
 }

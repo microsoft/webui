@@ -3,9 +3,18 @@
 
 name = "Streaming"
 description = "Progressive streaming hydration: priority-ordered composer/weather/feed rendering over one open response"
-backend = "rust"
+backend = "node"
 
 [server]
-type = "custom-binary"
-binary = "streaming-example-server"
-args = ["--css", "style"]
+type = "webui-cli"
+plugin = "webui"
+source = "src"
+servedir = "dist"
+theme = "@microsoft/webui-examples-theme"
+css = "style"
+projection-manifest = ["dist/webui-projection.json"]
+
+[api]
+type = "node"
+entry = "server/dist/index.js"
+port-offset = 10

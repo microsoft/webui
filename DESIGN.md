@@ -2285,9 +2285,11 @@ optimization of delivery timing, not a correctness requirement of the format.
   behavior, byte-for-byte identical to a build with no streaming support.
 - `render()` and complete `renderPartial()` are unaffected by streaming.
 - Router JSON and NDJSON use independent response formats and are unaffected.
-- Host-driven response sessions are exposed only by the Rust handler. Existing
-  Node and WASM chunk callbacks are synchronous whole-render APIs, and the C ABI
-  returns buffered strings; none claim session or backpressure parity.
+- Direct host-driven response sessions are exposed only by the Rust handler.
+  `webui serve --api-port` additionally accepts a versioned, bounded control
+  stream from a Node or other HTTP backend while the CLI retains ownership of
+  the Rust session and browser transport. Existing Node and WASM addon callbacks
+  remain synchronous whole-render APIs, and the C ABI returns buffered strings.
 
 ### Performance invariants
 
@@ -2305,12 +2307,11 @@ released immediately after commit.
 ### Reference application: `examples/app/streaming`
 
 The end-to-end reference for this design. It follows the standard example
-layout (`src/`, `data/`, `tests/`, `playwright.config.ts`, `package.json` with
-a `test` script running `playwright test`) but uses a standalone Rust server
-(`examples/app/streaming/server/`, a workspace member alongside
-`examples/app/commerce/server`) rather than `webui-cli serve`, because the
-scenario requires host-controlled flush timing and paced data arrival rather
-than static protocol serving.
+layout (`src/`, `server/`, `tests/`, `playwright.config.ts`, and
+`package.json`). A Node TypeScript API owns backend readiness and record order.
+It returns a host-control stream to `webui serve --api-port`; the CLI owns the
+compiled protocol, `StreamingResponse`, blocking response worker, pooled
+`StreamingWriter`, and browser-facing bytes.
 
 It exercises the three boundary shapes this design supports:
 
@@ -2366,6 +2367,58 @@ Rust async hosts await data between calls and serialize commands onto the one
 worker that owns the response and transport. Concurrent calls to one session are
 not allowed.
 
+### API-proxy host-control stream
+
+For HTTP backends, `webui serve --api-port` advertises
+`Accept: application/x-webui-stream, application/json`. A backend selects
+progressive rendering by returning
+`Content-Type: application/x-webui-stream`; returning JSON keeps the ordinary
+buffered state path.
+
+The streaming body is UTF-8 newline-delimited JSON. Version 1 has four record
+shapes:
+
+```text
+{"type":"shell","version":1,"state":{...}}
+{"type":"boundary","name":"weather-shell","mode":"updatable"}
+{"type":"update","name":"weather-shell","state":{...}}
+{"type":"finish"}
+```
+
+- `shell` is the first record and appears exactly once. Its object-valued state
+  becomes the response's reusable base state.
+- `boundary` names the next compile-time boundary in document order. `mode` is
+  `final` when omitted or `updatable`. An optional object-valued `state`
+  applies only to that write; otherwise the base state is borrowed.
+- `update` requires object-valued patch state and targets an already committed
+  updatable boundary.
+- `finish` appears exactly once after all boundaries. Its optional state applies
+  only to the tail write; otherwise the base state is borrowed.
+
+The CLI injects resolved token CSS, `basePath`, and route parameters into shell
+and explicit boundary/finish states before rendering. Updates remain patches and
+receive no unrelated defaults. Boundary names exist only on this loopback
+control channel: the Rust response resolves each distinct name once to
+`BoundaryId`, and the browser wire remains the existing integer-targeted
+five-field envelope.
+
+Each record is capped at 2,000,000 bytes before the newline. The decoder scans
+incrementally and retains only its pending byte buffer. A capacity-one command
+channel connects the async backend reader to one blocking Rust response owner;
+the existing capacity-four `StreamingWriter` channel bounds browser output.
+The CLI validates the initial shell, constructs the compiled streaming plan, and
+renders the shell through its first semantic flush before committing a success
+response to the browser. Malformed control input, invalid entry plans, and shell
+rendering failures therefore produce an HTTP error rather than an empty 200.
+Consequently backpressure propagates from the browser transport through the Rust
+renderer and API response. The backend must also honor its HTTP writer's
+backpressure signal and bound concurrent admitted streams before writing the
+success response.
+
+An unsupported version, malformed record, invalid order, unknown boundary,
+renderer failure, or truncated stream closes the response and is logged. A
+non-success backend status is forwarded before browser streaming starts.
+
 Late state and late placement are different operations. A known component shell
 whose data is slow uses `update`: the live island receives a projected state
 patch through WebUI reactivity. Unknown or replacement markup requires deferred
@@ -2384,9 +2437,10 @@ declarative partial updates.
   response-session records.
 - Host scheduling is external. `StreamingResponse` methods are synchronous so a
   Rust server can dedicate a bounded worker and preserve transport backpressure.
-- Node, C FFI/.NET, and WASM do not expose host-driven response sessions. Their
-  existing synchronous chunk or buffered APIs have different lifetime and
-  backpressure contracts.
+- Node, C FFI/.NET, and WASM do not expose direct host-owned
+  `StreamingResponse` sessions. A Node or other HTTP backend can drive the
+  bounded `webui serve --api-port` control stream described above; the CLI
+  remains the response-session owner.
 - CSS strategy is selected per build, not per boundary.
 - Declarative partial updates and client-side DOM patch transports are not used.
   A slow known region is an updatable WebUI component; structure that cannot be
