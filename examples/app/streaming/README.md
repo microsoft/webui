@@ -83,9 +83,8 @@ it on `customElements.whenDefined('weather-panel')`, keeping
 changes for this; it is the same path any late definition takes.
 
 Splitting an island out has one hazard that matters more than the split
-itself, and it is why this example demonstrates the boundary-carried loader
-but not a preload strategy. The shared runtime chunk is a static import of
-`index.js`, so the preload scanner cannot see it — the browser only discovers
+itself. The shared runtime chunk is a static import of `index.js`, so the
+preload scanner cannot see it — without help the browser would only discover
 it after downloading and parsing `index.js`, and that waterfall costs a round
 trip.
 
@@ -108,16 +107,20 @@ shared chunk is what makes it pay, and its *order* matters more than the split
 the 284-byte chunk ahead of the 35 KiB one delays the long pole and gives back
 the entire win.
 
-The two hinted rows were measured with a throwaway build manifest and are
-recorded here as **motivation, not instruction**. Bundlers content-hash chunk
-filenames, so reproducing them means an application-owned bundler plugin, a
-manifest on disk, and a server that templates raw HTML into `<head>` — far too
-much ceremony to recommend, and the wrong layer besides. WebUI already knows
-each boundary's component closure and which build output defines each
-component, so it should emit these hints itself through the head-injection path
-it already uses for CSS. Until it does, this example ships the split without
-the hint: the architectural win (island code loads with its boundary) without
-pretending the time-to-interactive win is available to you.
+This example now sits in the bottom row, and it does not do anything to get
+there. `server/src/app.rs` passes `dist/webui-projection.json` into the build
+(it already did, for state projection), and WebUI emits the hints itself:
+
+```html
+<link rel="modulepreload" href="./chunk-WKHXE3QO.js"><!-- 35,827 B -->
+<link rel="modulepreload" href="./chunk-NKNSLYVV.js"><!--    284 B -->
+```
+
+Note what is *absent*: `weather-panel.js`. Its loader is inside a boundary, so
+the build treats it as deferred by definition and never hoists it onto the
+critical path — preloading it would undo exactly what splitting bought. The
+shared chunk it uses is still preloaded, because `index.js` also imports it
+statically, which makes it critical regardless of who else wants it.
 
 ### Trying the CSS strategies
 

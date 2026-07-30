@@ -134,12 +134,12 @@ the coordinator stashes that boundary's state on the root and waits on
 `webui:hydration-complete` stays open until then, and the script is authored
 content, so boundary teardown leaves it alone.
 
-::: warning Splitting an island is not yet a net win
+::: tip WebUI preloads the shared chunks for you
 Splitting an island into its own bundle entry makes your bundler hoist the
 framework runtime into a chunk your critical entry statically imports. The
-preload scanner cannot see that chunk behind your `<script>` tag, so the
-browser only discovers it after downloading and parsing the entry — a full
-round trip on the critical path.
+preload scanner cannot see that chunk behind your `<script>` tag, so without
+help the browser would only discover it after downloading and parsing the
+entry — a full round trip on the critical path.
 
 That round trip cancels out what splitting saves. On `examples/app/streaming`
 over a throttled link, splitting alone was a wash: 1074 ms composer
@@ -149,11 +149,16 @@ time-to-interactive bundled versus 1061 ms split. Adding
 and share the connection, so listing a 284-byte chunk ahead of a 35 KB one
 delays the long pole behind it and gives the whole win back (1076 ms).
 
-WebUI does not emit those hints yet, and you cannot write them yourself because
-your bundler content-hashes the filenames. Until it does, split an island out
-for the *architectural* benefit — code that loads with its boundary rather than
-ahead of the first interaction — and do not expect a time-to-interactive win.
-For a sub-kilobyte component the extra request is not worth it either way.
+You do not write those hints, and you could not: your bundler content-hashes
+the filenames. Pass your bundler's projection manifest to the build and WebUI
+emits them into `<head>` for you, ordered largest first. Islands are excluded
+automatically — a module loaded by a `<script>` **inside** a boundary is
+deferred on purpose, and preloading it would undo the split. A chunk your
+island shares with the critical entry still gets preloaded, because it is
+genuinely critical.
+
+For a sub-kilobyte component the extra request may still not be worth it;
+split for the architectural benefit first.
 :::
 
 Each checkpoint includes projected state and first-use metadata for the

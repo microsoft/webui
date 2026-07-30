@@ -22,6 +22,7 @@
 
 mod component_assets;
 mod error;
+mod module_preload;
 mod projection;
 pub mod server;
 pub mod streaming;
@@ -544,12 +545,16 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             source,
         })?;
 
+    // Read before anything else parses. Both accessors describe the *entry*
+    // template, and every top-level `parse()` starts a fresh namespace, so a
+    // later synthetic parse (asset roots, below) would silently zero them.
+    // They are also copied out because `token_analysis()` borrows the parser
+    // and the parser is consumed before the projection manifest is known.
+    let boundary_count = parser.boundary_count();
+    let module_entry_srcs = parser.module_entry_srcs().to_vec();
+
     let synthetic_asset_fragments =
         parse_component_asset_roots(&mut parser, &options.component_asset_roots)?;
-
-    // Copied out now: `token_analysis()` below borrows the parser, and the
-    // parser is consumed before the projection manifest is known.
-    let boundary_count = parser.boundary_count();
 
     let css_snapshot: Vec<(String, String)> = parser
         .component_registry()
@@ -621,6 +626,16 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             &options.entry,
             boundary_count,
         ));
+    }
+
+    // Resolve `modulepreload` hints once, at build time. The shared chunks an
+    // entry statically imports are named only inside that entry's bytes, so
+    // the preload scanner cannot find them; hinting them removes a serialized
+    // round trip. The handler writes the result verbatim.
+    if let Some(merged) = &merged_manifest {
+        let mut preloads = module_preload::resolve(&merged.entry_closures, &module_entry_srcs);
+        protocol.module_preloads = std::mem::take(&mut preloads.hrefs);
+        warnings.append(&mut preloads.warnings);
     }
 
     // Strict coverage applies only to scripted components that actually made

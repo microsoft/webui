@@ -15,15 +15,14 @@
  * the framework runtime into a chunk both entries share, so the island costs
  * only its own component code rather than a duplicated runtime.
  *
- * Splitting has one hazard worth naming, because it is the reason this pattern
- * is not yet a recommendation: the shared chunk is a static import of
- * `index.js`, so the preload scanner cannot discover it until `index.js` has
- * downloaded and parsed. That waterfall costs a round trip. A
- * `<link rel="modulepreload">` for each shared chunk removes it, but esbuild
- * content-hashes those filenames, so today an application would have to grow
- * its own build manifest and template it into `<head>` itself. WebUI should
- * emit those hints from the boundary's component closure instead — see the
- * README for the measurements that motivate it.
+ * Splitting has one hazard worth naming: the shared chunk is a static import
+ * of `index.js`, so the preload scanner cannot discover it until `index.js`
+ * has downloaded and parsed. That waterfall costs a round trip and cancels
+ * out what splitting saves. WebUI closes it automatically — the projection
+ * manifest this build writes records each entry's static import closure in
+ * descending output size, and the WebUI build turns that into size-ordered
+ * `<link rel="modulepreload">` hints. Nothing here has to opt in, and the
+ * island is excluded on its own because its loader lives inside a boundary.
  */
 import { runWebUIClientBuild } from "../../build-client.mjs";
 

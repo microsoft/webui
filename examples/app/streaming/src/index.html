@@ -82,6 +82,10 @@
         `customElements.whenDefined('weather-panel')` with this boundary's
         state stashed on it, and activates it the moment `.define()` runs.
         `webui:hydration-complete` waits for that.
+
+        Being *inside* the boundary is also what keeps this module out of the
+        build's `modulepreload` hints. Hinting it would put the island back on
+        the critical path and undo the split.
       -->
       <script type="module" async src="./weather-panel.js"></script>
       <weather-panel status="loading"></weather-panel>

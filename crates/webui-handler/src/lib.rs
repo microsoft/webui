@@ -1469,6 +1469,27 @@ impl WebUIHandler {
                 }
             }
 
+            // Compiler-resolved `modulepreload` hints for the shared chunks
+            // the page's module entries statically import. Those chunks are
+            // named only inside the entry's own bytes, so without this the
+            // browser must download and parse the entry before it can even
+            // discover them.
+            //
+            // Emitted after the CSS links on purpose: CSS is render-blocking
+            // and owns first paint, while these own first interaction, so the
+            // stylesheet requests go out first. The list arrives pre-ordered
+            // (largest chunk first) and pre-resolved from the build, so this
+            // is a straight write with no per-request work.
+            if !context.protocol.module_preloads.is_empty() {
+                for href in &context.protocol.module_preloads {
+                    context
+                        .writer
+                        .write("<link rel=\"modulepreload\" href=\"")?;
+                    context.writer.write(href)?;
+                    context.writer.write("\">")?;
+                }
+            }
+
             // Per-render `head_inject` HTML — image preloads, A/B test
             // markers, etc. supplied by the host via RenderOptions.
             // Emitted at the structural head_end boundary, after the
@@ -6994,6 +7015,85 @@ mod tests {
         assert!(
             !head_section.contains(r#"<link rel="stylesheet""#),
             "Shadow DOM should NOT emit <link rel=stylesheet> in <head>: {html}"
+        );
+    }
+
+    #[test]
+    fn test_module_preloads_emit_in_head_in_compiler_order() {
+        // The whole value of these hints is ordering: preloads are issued in
+        // document order over one connection, so the largest chunk must go
+        // first. The compiler sorts; the handler must not reorder or dedupe.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw(
+                        r#"<html><head><script type="module" async src="/index.js"></script>"#
+                            .to_string(),
+                    ),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.module_preloads = vec!["/chunk-big.js".to_string(), "/chunk-small.js".to_string()];
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        let head_end = html.find("</head>").expect("</head> missing");
+        let head = &html[..head_end];
+        assert!(
+            head.contains(
+                r#"<link rel="modulepreload" href="/chunk-big.js"><link rel="modulepreload" href="/chunk-small.js">"#
+            ),
+            "hints must appear in <head> in the compiler's order: {html}"
+        );
+    }
+
+    #[test]
+    fn test_no_module_preloads_emits_nothing() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>".to_string()),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        assert!(
+            !writer.get_content().contains("modulepreload"),
+            "a build without hints must be byte-identical to before"
         );
     }
 

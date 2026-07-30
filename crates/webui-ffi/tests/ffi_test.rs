@@ -722,6 +722,65 @@ fn handler_render_projects_state_to_component_hydration_keys() {
 }
 
 #[test]
+fn handler_render_emits_module_preloads_through_the_c_abi() {
+    // The compiler resolves hrefs and puts the finished list in the protocol,
+    // so every host gets boundary-aware preloading with no host-side code.
+    // This asserts that claim across the FFI boundary, order intact.
+    let mut fragments = HashMap::new();
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: vec![
+                WebUIFragment::raw("<html><head>"),
+                structural_fragment("head_end"),
+                WebUIFragment::raw("</head><body>"),
+                structural_fragment("body_end"),
+                WebUIFragment::raw("</body></html>"),
+            ],
+        },
+    );
+    let mut protocol = WebUIProtocol::new(fragments);
+    protocol.module_preloads = vec!["/chunk-big.js".to_string(), "/chunk-small.js".to_string()];
+    let proto_bytes = protocol.to_protobuf().expect("serialize test protocol");
+
+    unsafe {
+        let plugin_id = CString::new("webui").expect("static string");
+        let handler = webui_handler_create_with_plugin(plugin_id.as_ptr());
+        let prepared = prepare_protocol(&proto_bytes);
+
+        let c_json = CString::new("{}").expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            prepared,
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(
+            !ptr.is_null(),
+            "render returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+
+        let head_end = result.find("</head>").expect("</head> missing");
+        assert!(
+            result[..head_end].contains(
+                r#"<link rel="modulepreload" href="/chunk-big.js"><link rel="modulepreload" href="/chunk-small.js">"#
+            ),
+            "module preloads missing or reordered in <head>:\n{result}"
+        );
+    }
+}
+
+#[test]
 fn protocol_supports_repeated_full_renders() {
     let proto_bytes = build_protocol_with_hydration_keys(&["kept"]);
 

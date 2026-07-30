@@ -65,6 +65,12 @@ struct ValidatedFiles {
 #[derive(Debug, Default)]
 pub(crate) struct ProjectionSnapshot {
     pub(crate) components: BTreeMap<String, ComponentEntry>,
+    /// Per-entry transitive static import closure, in the manifest's own
+    /// build-root-relative key space and its own load order (largest first).
+    ///
+    /// Kept verbatim because only the bundler knows output sizes; resolving
+    /// these to servable URLs is [`crate::module_preload`]'s job.
+    pub(crate) entry_closures: BTreeMap<String, Vec<String>>,
     artifacts: BTreeMap<ArtifactIdentity, String>,
 }
 
@@ -82,6 +88,7 @@ pub(crate) fn load_and_merge(
 
     let mut components = BTreeMap::new();
     let mut artifacts = BTreeMap::new();
+    let mut entry_closures: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for source in sources {
         let fragment = load_source(source)?;
         for (tag, entry) in &fragment.components {
@@ -93,10 +100,27 @@ pub(crate) fn load_and_merge(
                 ));
             }
         }
+        for (entry, closure) in &fragment.entry_closures {
+            // Two fragments describing the same output must agree. Identical
+            // repeats are fine (one bundler run feeding several manifests);
+            // differing ones mean the fragments came from different builds,
+            // and picking either would emit preloads for chunks that may not
+            // exist.
+            match entry_closures.get(entry) {
+                Some(existing) if existing != closure => {
+                    return Err(conflicting_entry_closure(entry));
+                }
+                Some(_) => {}
+                None => {
+                    entry_closures.insert(entry.clone(), closure.clone());
+                }
+            }
+        }
         merge_artifact_refs(&mut artifacts, &fragment.artifacts)?;
     }
     Ok(Some(Arc::new(ProjectionSnapshot {
         components,
+        entry_closures,
         artifacts,
     })))
 }
@@ -175,6 +199,7 @@ fn load_fragment_bytes(path: &Path, bytes: &[u8]) -> Result<ProjectionSnapshot, 
         .collect();
     Ok(ProjectionSnapshot {
         components: runtime_components,
+        entry_closures: raw.entry_closures,
         artifacts,
     })
 }
@@ -395,6 +420,16 @@ fn conflicting_artifact_hash() -> WebUIError {
     projection_error(
         codes::CONFLICTING_HASH,
         "projection manifest fragments observed one canonical artifact with conflicting hashes",
+        "Rebuild all fragments from one consistent source/output snapshot.",
+    )
+}
+
+#[cold]
+#[inline(never)]
+fn conflicting_entry_closure(entry: &str) -> WebUIError {
+    projection_error(
+        codes::CONFLICTING_HASH,
+        format!("projection manifest fragments disagree on the import closure of output '{entry}'"),
         "Rebuild all fragments from one consistent source/output snapshot.",
     )
 }

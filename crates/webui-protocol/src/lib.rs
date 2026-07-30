@@ -329,6 +329,7 @@ impl WebUiProtocol {
             css_strategy: 0,
             dom_strategy: 0,
             initial_state_strategy: InitialStateStrategy::Full as i32,
+            module_preloads: Vec::new(),
         }
     }
 
@@ -341,6 +342,7 @@ impl WebUiProtocol {
             css_strategy: 0,
             dom_strategy: 0,
             initial_state_strategy: InitialStateStrategy::Full as i32,
+            module_preloads: Vec::new(),
         }
     }
 }
@@ -493,6 +495,39 @@ mod tests {
         let bytes = protocol.to_protobuf().expect("encode failed");
         let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
         assert_eq!(protocol, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_module_preloads_roundtrip_preserves_order() {
+        // Order is load-bearing: preloads are issued in document order over one
+        // connection, and a measured 125 ms swing separates largest-first from
+        // smallest-first. A reordering encoder would silently erase the win.
+        let mut protocol = sample_protocol();
+        protocol.module_preloads = vec![
+            "/chunk-big.js".to_string(),
+            "/chunk-mid.js".to_string(),
+            "/chunk-small.js".to_string(),
+        ];
+
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+
+        assert_eq!(decoded.module_preloads, protocol.module_preloads);
+        assert_eq!(protocol, decoded);
+    }
+
+    #[test]
+    fn test_protobuf_no_module_preloads_is_absent_from_the_wire() {
+        // Builds without hints must not pay a byte for the field.
+        let protocol = sample_protocol();
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+
+        assert!(decoded.module_preloads.is_empty());
+        assert!(
+            !bytes.windows(2).any(|w| w == [0x3a, 0x00]),
+            "an empty repeated field must not be encoded"
+        );
     }
 
     #[test]

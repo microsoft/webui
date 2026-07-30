@@ -239,6 +239,41 @@ test.describe('streaming priority hydration', () => {
     await expect(page.locator('weather-panel')).not.toHaveAttribute('data-ws', /.*/);
   });
 
+  test('the compiler preloads the critical entry shared chunks, largest first', async ({
+    page,
+  }) => {
+    await instrumentPage(page);
+    await page.goto('/');
+    await page.waitForFunction(() => window.__hydrationCompleteFired);
+
+    const preloads = await page.evaluate(() =>
+      Array.from(document.head.querySelectorAll<HTMLLinkElement>('link[rel="modulepreload"]')).map(
+        (link) => new URL(link.href).pathname,
+      ),
+    );
+
+    // The shared framework chunk is a *static* import of index.js, so the
+    // preload scanner cannot discover it until index.js has downloaded and
+    // parsed. That waterfall is what the hint removes.
+    expect(preloads.length).toBeGreaterThan(0);
+    for (const href of preloads) {
+      expect(href).toMatch(/\/chunk-[^/]+\.js$/);
+    }
+
+    // Order is the whole feature. Preloads are issued in document order over
+    // one connection, so a small chunk listed first delays the long pole and
+    // gives back the entire win (a measured 125 ms swing).
+    const sizes = await page.evaluate(
+      async (paths) =>
+        Promise.all(
+          paths.map(async (path) => (await (await fetch(path)).text()).length),
+        ),
+      preloads,
+    );
+    const descending = [...sizes].sort((a, b) => b - a);
+    expect(sizes).toEqual(descending);
+  });
+
   test('webui:hydration-complete fires only after the terminal boundary record', async ({ page }) => {
     await instrumentPage(page);
     await page.goto('/');

@@ -541,6 +541,19 @@ pub struct HtmlParser {
     /// time. `<td>`/`<th>`/`<caption>` reset it to `0` because those switch
     /// back to "in body" insertion rules.
     foster_context_depth: u32,
+
+    /// `src` of every authored `<script type="module">` outside any
+    /// `<boundary>`, in document order, from the current top-level parse.
+    ///
+    /// These are the page's critical module entries. The build resolves each
+    /// against the projection manifest to emit `<link rel="modulepreload">`
+    /// for the shared chunks they statically import, which the browser's
+    /// preload scanner cannot discover on its own.
+    ///
+    /// Scripts *inside* a boundary are deliberately excluded: an island loader
+    /// is meant to be requested only when the parser reaches its chunk, so
+    /// preloading it would undo the deferral the author asked for.
+    module_entry_srcs: Vec<String>,
 }
 
 struct BuiltComponentTemplate {
@@ -851,6 +864,7 @@ impl HtmlParser {
             body_depth: 0,
             structural_scopes: Vec::new(),
             foster_context_depth: 0,
+            module_entry_srcs: Vec::new(),
         }
     }
 
@@ -906,6 +920,21 @@ impl HtmlParser {
     #[must_use]
     pub fn boundary_count(&self) -> usize {
         self.boundary_sequence as usize
+    }
+
+    /// `src` of every authored `<script type="module">` outside any
+    /// `<boundary>`, in document order, from the most recent top-level
+    /// [`HtmlParser::parse`] call.
+    ///
+    /// These are the page's critical module entries — the ones whose shared
+    /// chunks belong in `<link rel="modulepreload">`. Island loaders placed
+    /// inside a boundary are excluded, because deferring them is the point.
+    ///
+    /// A `src` containing `{{` is skipped: it is a binding resolved per
+    /// request, so no build-time artifact can be matched to it.
+    #[must_use]
+    pub fn module_entry_srcs(&self) -> &[String] {
+        &self.module_entry_srcs
     }
 
     /// Take any post-parse artifacts captured by the parser plugin.
@@ -1121,6 +1150,7 @@ impl HtmlParser {
             self.body_depth = 0;
             self.structural_scopes.clear();
             self.foster_context_depth = 0;
+            self.module_entry_srcs.clear();
         }
         // Save the caller's fragment id and restore it before returning. A
         // component parse recurses through `enter_component_directive`
@@ -1521,6 +1551,9 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
+        if !self.in_boundary && element.name().eq_ignore_ascii_case("script") {
+            self.record_module_entry(element);
+        }
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
 
@@ -1548,6 +1581,37 @@ impl HtmlParser {
             });
         }
         Ok(())
+    }
+
+    /// Record an authored `<script type="module" src="...">` as a critical
+    /// module entry, so the build can preload the chunks it statically imports.
+    ///
+    /// Only bare, static `src` values qualify. A `{{binding}}` resolves per
+    /// request and cannot be matched to a build artifact, and a script without
+    /// `type="module"` has no ES module graph to preload. Both are skipped
+    /// silently rather than diagnosed, because either is a perfectly valid
+    /// thing to author — they just carry no preload information.
+    ///
+    /// The caller has already excluded scripts inside a `<boundary>`.
+    fn record_module_entry(&mut self, element: &Element<'_>) {
+        let Some(src) = element.attr("src") else {
+            return;
+        };
+        if src.is_empty() || src.contains("{{") {
+            return;
+        }
+        if !element
+            .attr("type")
+            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("module"))
+        {
+            return;
+        }
+        // Document order is meaningful and duplicates are near-impossible, so
+        // this stays a `Vec` scan rather than paying for a set.
+        if self.module_entry_srcs.iter().any(|seen| seen == src) {
+            return;
+        }
+        self.module_entry_srcs.push(src.to_string());
     }
 
     fn enter_head_element<'a>(
@@ -6198,6 +6262,67 @@ mod tests {
             starts,
             ["0", "1", "2"],
             "only integer sequences are emitted"
+        );
+    }
+
+    #[test]
+    fn module_entry_srcs_records_only_preloadable_critical_entries() {
+        let mut parser = HtmlParser::new();
+        let html = concat!(
+            "<head>",
+            // Recorded: a static, module-typed, non-boundary entry.
+            r#"<script type="module" async src="/index.js"></script>"#,
+            // Recorded: mixed case on the tag, and a padded/mixed-case `type`
+            // value, still identify a module. (Attribute *names* are matched
+            // case-sensitively here, as everywhere else in this parser.)
+            r#"<SCRIPT type=" Module " src="/late.js"></SCRIPT>"#,
+            // Skipped: classic scripts have no ES module graph to preload.
+            r#"<script src="/legacy.js"></script>"#,
+            // Skipped: no `src` means nothing to resolve.
+            r#"<script type="module">import "./x.js";</script>"#,
+            // Skipped: a per-request binding matches no build artifact.
+            r#"<script type="module" src="/{{bundle}}.js"></script>"#,
+            "</head>",
+            "<body>",
+            // Skipped: an island loader is deferred on purpose.
+            r#"<boundary name="weather">"#,
+            r#"<script type="module" async src="/weather-panel.js"></script>"#,
+            "</boundary>",
+            // Recorded once: a bottom-of-body entry is still critical, and a
+            // repeat of an already-seen src must not duplicate a hint.
+            r#"<script type="module" src="/index.js"></script>"#,
+            "</body>",
+        );
+        parser.parse("index.html", html).expect("parse");
+
+        assert_eq!(
+            parser.module_entry_srcs(),
+            ["/index.js", "/late.js"],
+            "only static module entries outside boundaries are preloadable"
+        );
+    }
+
+    #[test]
+    fn module_entry_srcs_reset_between_top_level_parses() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "a.html",
+                r#"<head><script type="module" src="/a.js"></script></head>"#,
+            )
+            .expect("parse a");
+        assert_eq!(parser.module_entry_srcs(), ["/a.js"]);
+
+        parser
+            .parse(
+                "b.html",
+                r#"<head><script type="module" src="/b.js"></script></head>"#,
+            )
+            .expect("parse b");
+        assert_eq!(
+            parser.module_entry_srcs(),
+            ["/b.js"],
+            "each entry owns its own critical modules"
         );
     }
 

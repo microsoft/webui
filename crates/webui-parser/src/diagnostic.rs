@@ -130,6 +130,21 @@ pub mod codes {
     /// the whole state object instead of its own components' keys.
     /// Severity: warning.
     pub const STREAMING_WITHOUT_PROJECTION: &str = "streaming-without-projection";
+    /// More than one build output shares the file name of an authored
+    /// `<script type="module" src>`, so its shared chunks cannot be preloaded
+    /// without guessing which output the URL serves.
+    /// Severity: warning.
+    pub const AMBIGUOUS_MODULE_ENTRY: &str = "ambiguous-module-entry";
+    /// A module entry's static import closure exceeded the `modulepreload`
+    /// hint cap. Preloads share one connection, so the remainder would delay
+    /// the entry they are meant to accelerate.
+    /// Severity: warning.
+    pub const EXCESSIVE_MODULE_PRELOADS: &str = "excessive-module-preloads";
+    /// A resolved `modulepreload` href contains characters that cannot be
+    /// written verbatim into an HTML attribute, so the hint was dropped rather
+    /// than emitted or escaped.
+    /// Severity: warning.
+    pub const UNSAFE_MODULE_PRELOAD: &str = "unsafe-module-preload";
 }
 
 /// A build-time template-authoring diagnostic.

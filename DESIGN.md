@@ -2096,72 +2096,59 @@ scaffolding — payload, sentinel, and marker pair — so the authored script
 survives.
 
 Splitting an island into a separate bundle entry is an application build
-concern rather than a protocol one, and it has a performance trap that WebUI
-does not yet close: the shared runtime chunk becomes a static import of the
-critical entry, invisible to the preload scanner, costing a round trip that
-erases what splitting saves. Removing it needs a
-`<link rel="modulepreload">` for each of the critical entry's chunks, ordered
-largest first, with the deferred island excluded. Because bundlers
-content-hash those filenames, an application cannot express the hints in its
-own HTML today.
+concern rather than a protocol one, and it used to carry a performance trap:
+the shared runtime chunk becomes a static import of the critical entry,
+invisible to the preload scanner, costing a round trip that erases what
+splitting saves. WebUI now closes that trap automatically. The build emits a
+`<link rel="modulepreload">` for each of the critical entry's shared chunks,
+ordered largest first, with deferred islands excluded.
 
-This is a gap in WebUI, not a pattern for applications to reimplement. The
-compiler already derives each boundary's component closure — that is how the
-template delta works — and the projection manifest records which build output
-*defines* each component. That is less than it sounds: it maps a tag to its
-defining entry, not to the closure of files the browser must fetch. Three
-inputs are missing, and all three are why this is future work rather than
-plumbing:
+Three inputs make this computable, and each is recorded where the build
+already had it in hand:
 
-- **Module sizes.** The manifest records `outputs` as path-to-hash pairs, so
-  "ordered largest first" cannot be computed from it. Ordering is not
-  incidental: `examples/app/streaming`'s README measures a 125 ms swing from
-  ordering alone, larger than the split itself. The bundler already reports
-  this — esbuild's `metafile.outputs[path].bytes` — and the adapter's
-  `buildMembership()` already iterates that object to read `.inputs`. The
-  field is discarded, not unavailable.
-- **Island exclusion.** Nothing in the protocol distinguishes a component
-  whose module the critical entry imports from one loaded by a `<script>`
-  inside a boundary. Preloading every reachable component's outputs would
-  therefore preload the island too — precisely the regression the hint exists
-  to remove. The parser already carries the state this needs: `in_boundary`
-  is maintained to reject nested boundaries, and a `<script type="module"
-  src>` seen while it is set is island-owned by definition. Exclusion must
-  subtract an island's *exclusive* closure rather than its whole closure —
-  a chunk shared with the critical entry stays critical.
-- **The output import graph.** A shared runtime chunk defines no component,
-  so it appears in no component's `outputs` — yet it is exactly the file the
-  hint must cover, because it is the static import the preload scanner cannot
-  see. In `examples/app/streaming` the critical entry's closure is 45,912 B,
-  of which the unmapped shared chunk is 35,827 B (78%); the mapped
-  `index.js` is 9,801 B and the scanner already finds it unaided. Emitting
-  hints from the component mapping alone would preload only what is already
-  preloaded and miss every byte that matters. The manifest must record
-  output-to-output import edges before a critical closure can be computed.
-  As with sizes these already exist upstream — `metafile.outputs[path]
-  .imports`, whose `kind` distinguishes a static import statement from a
-  dynamic `import()` that is *meant* to cost a round trip.
+- **Module sizes.** The bundler adapter reads `metafile.outputs[path].bytes`,
+  which it already iterates for `.inputs`. Ordering is not incidental:
+  `examples/app/streaming` measures a **125 ms swing from ordering alone**,
+  larger than the split itself, because preloads are issued in document order
+  over one shared connection. Only the bundler knows output sizes, so it sorts
+  once at build time and ships the answer.
+- **Island exclusion.** The parser maintains `in_boundary` to reject nested
+  boundaries, and a `<script type="module" src>` seen while it is set is
+  island-owned by definition. Only non-boundary module entries are recorded,
+  so an island loader is excluded without any subtraction pass. This matters:
+  preloading the island is precisely the regression the hint exists to remove.
+  A chunk the island *shares* with the critical entry still gets preloaded,
+  because it is genuinely critical.
+- **The output import graph.** A shared runtime chunk defines no component, so
+  it appears in no component's `outputs` — yet it is exactly the file the hint
+  must cover. In `examples/app/streaming` the critical entry's closure is
+  45,912 B, of which the unmapped shared chunk is 35,827 B (78%); the mapped
+  `index.js` is 9,801 B and the scanner already finds it unaided. The manifest
+  therefore records output-to-output edges in `entryClosures`, filtered to
+  `kind === "import-statement"` so a dynamic `import()` — which is *meant* to
+  cost a round trip — is never hoisted onto the critical path.
 
-None of the three requires deriving information the build does not have; each
-requires recording something already in hand at a seam the code already
-touches. What makes this future work rather than plumbing is the blast radius:
-`outputs` is `deny_unknown_fields` and feeds the manifest's deterministic ID,
-so extending it is a schema bump with conformance-fixture and canonicalization
-consequences.
+Two constraints govern the design. The closure is computed at **build time and
+shipped as an ordered list of finished hrefs** in `WebUIProtocol
+.module_preloads`, not shipped as a graph and traversed per request — so
+request-time emission is N writes against a precomputed slice, with no
+traversal, sorting, or scratch collections. And the hint set lives on the
+entry rather than on `ComponentData`, because a critical closure is a
+per-entry property.
 
-Two constraints govern the eventual design. The closure must be computed at
-**build time and shipped as an ordered list of hrefs**, not shipped as a graph
-and traversed per request — request-time emission is then N writes against a
-precomputed slice, with no traversal, sorting, or scratch collections. And the
-hint set belongs on the entry rather than on `ComponentData`, because a
-critical closure is a per-entry property; scoping v1 to the entry's
-route-independent closure captures the shared-runtime chunk that dominates the
-measurement while keeping request-time cost at exactly zero.
+Resolution joins the authored `src` URL to build-root-relative manifest keys.
+It fails safe throughout: an entry whose basename matches more than one
+manifest key emits nothing and warns, because a wrong preload costs a 404 and
+a wasted connection while a missing one costs only speed; an unrecognized
+`src` is skipped silently, since a third-party script is not a build mistake;
+cross-origin, protocol-relative, and query-bearing URLs are skipped because
+they do not describe a path the manifest covers; the list is capped so a
+runaway closure cannot starve the entry itself; and an href that cannot be
+written verbatim into an attribute is rejected at build time rather than
+escaped per request.
 
-Closing it is tracked with the per-boundary CSS strategy split, which shares
-the same priority mechanism. Until then `examples/app/streaming` demonstrates
-the boundary-carried island loader only, and its README records the
-measurements that justify closing the gap.
+The per-boundary CSS strategy split remains open and shares the same priority
+mechanism.
 
 **Commit.** For one boundary, the coordinator:
 
@@ -2295,9 +2282,11 @@ Scenario (mirrors #394 and the session plan's acceptance tests, unchanged):
 
 - Router generalization / client-navigation streaming records.
 - Host-language mirroring (Node, FFI/.NET, WASM) of the streaming API.
-- Boundary-aware module preload hints (see "Splitting an island into a
-  separate bundle entry" above), tracked with the per-boundary CSS strategy
-  split.
+- Per-boundary CSS strategy selection (`style` for the critical boundary's
+  components, `link` for components only later boundaries use). Boundary-aware
+  *module* preload hints shipped — see "Splitting an island into a separate
+  bundle entry" above — but the CSS half still needs a per-component protocol
+  field, a build option, and a handler branch.
 - Dynamic append/feed batch APIs (`<webui-stream>`, `page.append()`,
   `begin_append()` / `commit()`).
 - Out-of-order content delivery and either patch transport
