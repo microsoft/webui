@@ -47,6 +47,7 @@ pub type WebUIFragmentPlugin = WebUiFragmentPlugin;
 pub type WebUIFragmentRoute = WebUiFragmentRoute;
 pub type WebUIFragmentOutlet = WebUiFragmentOutlet;
 pub type ComponentData = proto::ComponentData;
+pub type StreamingBoundaryList = proto::StreamingBoundaryList;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
 pub type WebUIFragmentRecords = HashMap<String, FragmentList>;
@@ -330,6 +331,7 @@ impl WebUiProtocol {
             dom_strategy: 0,
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
+            streaming_boundaries: HashMap::new(),
         }
     }
 
@@ -343,6 +345,7 @@ impl WebUiProtocol {
             dom_strategy: 0,
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
+            streaming_boundaries: HashMap::new(),
         }
     }
 }
@@ -528,6 +531,30 @@ mod tests {
             !bytes.windows(2).any(|w| w == [0x3a, 0x00]),
             "an empty repeated field must not be encoded"
         );
+    }
+
+    #[test]
+    fn test_protobuf_streaming_boundary_names_roundtrip_in_declaration_order() {
+        let mut protocol = sample_protocol();
+        protocol.streaming_boundaries.insert(
+            "main".to_string(),
+            StreamingBoundaryList {
+                names: vec![
+                    "weather shell".to_string(),
+                    "composer/ready".to_string(),
+                    "feed:batch".to_string(),
+                ],
+            },
+        );
+
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+
+        assert_eq!(
+            decoded.streaming_boundaries["main"].names,
+            protocol.streaming_boundaries["main"].names
+        );
+        assert_eq!(protocol, decoded);
     }
 
     #[test]

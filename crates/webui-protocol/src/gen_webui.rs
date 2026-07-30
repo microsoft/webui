@@ -106,6 +106,21 @@ pub struct WebUiProtocol {
     /// them verbatim with no per-request work.
     #[prost(string, repeated, tag = "7")]
     pub module_preloads: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Free-form <boundary name> values keyed by entry fragment and stored in
+    /// declaration order. Hosts resolve a name once to its zero-based BoundaryId;
+    /// names never reach the rendered HTML response.
+    #[prost(map = "string, message", tag = "8")]
+    pub streaming_boundaries: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        StreamingBoundaryList,
+    >,
+}
+/// Ordered compile-time boundary names for one entry fragment.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StreamingBoundaryList {
+    #[prost(string, repeated, tag = "1")]
+    pub names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 #[derive(serde::Serialize, serde::Deserialize)]

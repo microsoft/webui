@@ -31,7 +31,13 @@ pub(crate) struct StreamingRenderState<'data> {
     /// Set only between a handler-generated route host's `data-ws` injection
     /// and its immediately following component render.
     pub(super) generated_root_ready: bool,
-    pub(super) next_sequence: usize,
+    /// Next compile-time boundary marker expected in the entry fragment.
+    pub(super) next_boundary_id: usize,
+    /// Next wire-record sequence. Updates consume record sequence numbers but
+    /// do not affect compile-time boundary IDs.
+    pub(super) next_record_sequence: usize,
+    /// Selected by the host immediately before rendering the next boundary.
+    pub(super) checkpoint_updatable: bool,
     pub(super) bootstrap_sent: bool,
     pub(super) body_ended: bool,
     pub(super) inventory: Vec<u8>,
@@ -46,10 +52,11 @@ pub(crate) struct StreamingRenderState<'data> {
     /// allocation-free per tag. The vector is cleared after commit while retaining
     /// capacity for the next checkpoint.
     pub(super) checkpoint_tags: Vec<&'data str>,
-    /// Route-dependent rendered roots paired with the route base active at
-    /// render time. This cold-path vector stays empty for route-free surfaces;
-    /// relative-route expansion cannot reconstruct these bases at commit time.
-    pub(super) checkpoint_route_roots: Vec<(&'data str, Cow<'data, str>)>,
+    /// Source-ordered roots for the request-aware checkpoint walk. `None` marks
+    /// a route-independent root; route-dependent roots retain the base active at
+    /// render time. The vector stays empty for route-free checkpoints and is
+    /// backfilled lazily when their first route-dependent root appears.
+    pub(super) checkpoint_walk_roots: Vec<(&'data str, Option<Cow<'data, str>>)>,
     /// Dedup bitset (one bit per component index) marking tags already recorded
     /// into `checkpoint_tags` for the current checkpoint. Cleared and reused
     /// alongside `checkpoint_tags`.
@@ -66,6 +73,14 @@ pub(crate) struct StreamingRenderState<'data> {
     pub(super) style_spec_scratch: Vec<&'data str>,
     /// Reusable integer DFS stack for expanding route-free checkpoint surfaces.
     pub(super) reachability_stack: Vec<u32>,
+    /// State projection retained only for boundaries explicitly committed as
+    /// updatable. Final boundaries retain no update metadata.
+    pub(super) update_plans: Vec<Option<StateUpdatePlan<'data>>>,
+}
+
+pub(super) struct StateUpdatePlan<'data> {
+    pub(super) requires_full_state: bool,
+    pub(super) keys: Vec<&'data str>,
 }
 
 pub(crate) fn validate_streaming_head_start(
@@ -105,7 +120,7 @@ pub(crate) fn validate_streaming_head_start(
 }
 
 pub(super) fn require_streaming_head_start(
-    context: &WebUIProcessContext<'_, '_>,
+    context: &WebUIProcessContext<'_, '_, '_>,
     before: &'static str,
 ) -> Result<()> {
     if context
@@ -119,12 +134,26 @@ pub(super) fn require_streaming_head_start(
     }
 }
 
-pub(super) fn increment_streaming_sequence(
+pub(super) fn increment_streaming_boundary_id(
     signal: &str,
     streaming: &mut StreamingRenderState<'_>,
 ) -> Result<()> {
-    streaming.next_sequence = streaming.next_sequence.checked_add(1).ok_or_else(|| {
+    streaming.next_boundary_id = streaming.next_boundary_id.checked_add(1).ok_or_else(|| {
         streaming_boundary_error(signal, "boundary sequence overflowed the platform limit")
     })?;
+    Ok(())
+}
+
+pub(super) fn increment_streaming_record_sequence(
+    signal: &str,
+    streaming: &mut StreamingRenderState<'_>,
+) -> Result<()> {
+    streaming.next_record_sequence =
+        streaming
+            .next_record_sequence
+            .checked_add(1)
+            .ok_or_else(|| {
+                streaming_boundary_error(signal, "record sequence overflowed the platform limit")
+            })?;
     Ok(())
 }

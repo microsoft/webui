@@ -7,6 +7,9 @@ import {
 import {
   activateDeferredTree,
 } from './streaming-deferred.js';
+import type {
+  PendingBoundaryUpdates,
+} from './streaming-deferred.js';
 
 /**
  * Activate marked roots in one allocation-free, parent-first range walk.
@@ -18,6 +21,7 @@ export function activateRootsBetween(
   startMarker: Comment,
   endMarker: Comment,
   state: Record<string, unknown> | undefined,
+  updates?: PendingBoundaryUpdates,
 ): void {
   const root = startMarker.parentNode;
   if (!root) {
@@ -31,6 +35,7 @@ export function activateRootsBetween(
     root,
     endMarker,
     state,
+    updates ? { updates, retainedRoots: updates.roots } : undefined,
   );
   if (!failure) return;
   abandonDeferredRange(startMarker, endMarker);

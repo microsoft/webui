@@ -14,15 +14,23 @@ use super::inventory::{
 use super::{flush_streaming_transport, streaming_state};
 use crate::plugin::WebUiTemplatePayload;
 use crate::{
-    collect_hydration_state_into, write_usize, write_webui_bootstrap, Result, StateSelection,
-    WebUIHandler, WebUIProcessContext, WebUiBootstrap,
+    collect_hydration_state_into, write_selected_state, write_usize, write_webui_bootstrap, Result,
+    StateSelection, WebUIHandler, WebUIProcessContext, WebUiBootstrap,
 };
+
+use super::state::StateUpdatePlan;
+
+pub(super) const RECORD_KIND_FINAL_CHECKPOINT: usize = 0;
+pub(super) const RECORD_KIND_UPDATABLE_CHECKPOINT: usize = 1;
+pub(super) const RECORD_KIND_STATE_UPDATE: usize = 2;
+pub(super) const RECORD_KIND_TERMINAL: usize = 3;
 
 impl WebUIHandler {
     pub(super) fn emit_streaming_checkpoint(
         &self,
-        sequence: usize,
-        terminal: bool,
+        record_sequence: usize,
+        boundary_id: usize,
+        updatable: bool,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         let first_checkpoint = context
@@ -43,7 +51,7 @@ impl WebUIHandler {
             // Only a component surface containing authored routes needs request
             // matching. Route-free surfaces use the startup-built integer graph.
             let roots = context.streaming.as_ref().map_or(&[][..], |streaming| {
-                streaming.checkpoint_route_roots.as_slice()
+                streaming.checkpoint_walk_roots.as_slice()
             });
             let reachable = crate::route_handler::collect_reachable_components_from_roots(
                 context.protocol,
@@ -162,8 +170,19 @@ impl WebUIHandler {
             context.writer.write("\"")?;
         }
         context.writer.write(">[1,")?;
-        write_usize(context.writer, sequence)?;
-        context.writer.write(if terminal { ",1," } else { ",0," })?;
+        write_usize(context.writer, record_sequence)?;
+        context.writer.write(",")?;
+        write_usize(
+            context.writer,
+            if updatable {
+                RECORD_KIND_UPDATABLE_CHECKPOINT
+            } else {
+                RECORD_KIND_FINAL_CHECKPOINT
+            },
+        )?;
+        context.writer.write(",")?;
+        write_usize(context.writer, boundary_id)?;
+        context.writer.write(",")?;
         let inventory = context
             .streaming
             .as_ref()
@@ -198,6 +217,20 @@ impl WebUIHandler {
         flush_streaming_transport(context)?;
         if let Some(streaming) = context.streaming.as_mut() {
             streaming.bootstrap_sent = true;
+            if updatable {
+                let target = boundary_id;
+                if streaming.update_plans.len() <= target {
+                    streaming.update_plans.resize_with(target + 1, || None);
+                }
+                streaming.update_plans[target] = Some(StateUpdatePlan {
+                    requires_full_state,
+                    keys: if requires_full_state {
+                        Vec::new()
+                    } else {
+                        state_key_scratch.clone()
+                    },
+                });
+            }
             state_key_scratch.clear();
             streaming.state_key_scratch = state_key_scratch;
             // Reset the exact-capture buffers for the next checkpoint, retaining
@@ -205,7 +238,7 @@ impl WebUIHandler {
             let mut checkpoint_tags = checkpoint_tags;
             checkpoint_tags.clear();
             streaming.checkpoint_tags = checkpoint_tags;
-            streaming.checkpoint_route_roots.clear();
+            streaming.checkpoint_walk_roots.clear();
             new_template_tags.clear();
             streaming.template_tag_scratch = new_template_tags;
             css_hrefs.clear();
@@ -220,7 +253,7 @@ impl WebUIHandler {
 
     pub(super) fn emit_streaming_terminal(
         &self,
-        sequence: usize,
+        record_sequence: usize,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         context
@@ -232,10 +265,62 @@ impl WebUIHandler {
             context.writer.write("\"")?;
         }
         context.writer.write(">[1,")?;
-        write_usize(context.writer, sequence)?;
+        write_usize(context.writer, record_sequence)?;
+        context.writer.write(",")?;
+        write_usize(context.writer, RECORD_KIND_TERMINAL)?;
         context
             .writer
-            .write(",1,{}]</script><webui-hydrate></webui-hydrate>")?;
+            .write(",0,{}]</script><webui-hydrate></webui-hydrate>")?;
+        flush_streaming_transport(context)
+    }
+
+    pub(super) fn emit_streaming_state_update(
+        &self,
+        record_sequence: usize,
+        boundary_id: usize,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if !context.state.is_object() {
+            return Err(super::error::state_update_type_error());
+        }
+        let Some(plan) = context
+            .streaming
+            .as_ref()
+            .and_then(|streaming| streaming.update_plans.get(boundary_id))
+            .and_then(Option::as_ref)
+        else {
+            return Err(super::error::boundary_not_updatable_error(boundary_id));
+        };
+
+        context
+            .writer
+            .write("<script type=\"application/json\" data-webui-boundary")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">[1,")?;
+        write_usize(context.writer, record_sequence)?;
+        context.writer.write(",")?;
+        write_usize(context.writer, RECORD_KIND_STATE_UPDATE)?;
+        context.writer.write(",")?;
+        write_usize(context.writer, boundary_id)?;
+        context.writer.write(",")?;
+        let selection = if plan.requires_full_state {
+            StateSelection::Full
+        } else {
+            StateSelection::BorrowedKeys(&plan.keys)
+        };
+        write_selected_state(
+            context.writer,
+            &mut context.json_scratch,
+            context.state,
+            &selection,
+        )?;
+        context
+            .writer
+            .write("]</script><webui-hydrate></webui-hydrate>")?;
         flush_streaming_transport(context)
     }
 }

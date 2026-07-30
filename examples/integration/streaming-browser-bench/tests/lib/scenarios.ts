@@ -15,7 +15,7 @@
  * coordinator (`packages/webui-framework/src/streaming.ts`) parses:
  *
  *   <!--wb:N--> <bench-island data-ws>...</bench-island> <!--/wb:N-->
- *   <script type="application/json" data-webui-boundary>[1,seq,terminal,bootstrap]</script>
+ *   <script type="application/json" data-webui-boundary>[1,seq,kind,target,payload]</script>
  *   <webui-hydrate></webui-hydrate>
  *
  * No whitespace is emitted between the `<!--/wb:N-->` end marker and the
@@ -37,7 +37,7 @@ export const TOTAL_ROOTS = 1500;
  * This counts only the bytes of the streamed `label` values (the dominant
  * projected state a real app would ship), summed across all boundaries. It
  * deliberately excludes the unavoidable per-boundary protocol/property overhead
- * — the `[1,seq,terminal,{...}]` envelope framing, the `templates` block (first
+ * — the `[1,seq,kind,target,{...}]` envelope framing, the `templates` block (first
  * boundary only), and the tiny fixed `note` property — because that overhead is
  * inherent to having more boundaries and is not "equal work" to hold constant.
  * It is therefore projected-state value bytes, not total wire bytes.
@@ -87,6 +87,11 @@ export interface StreamingScenario {
   readonly totalStateChars: number;
   /** Sum of live SSR roots (asserted equal across cases). */
   readonly totalRoots: number;
+}
+
+export interface StateUpdateScenario extends StreamingScenario {
+  readonly updateCount: number;
+  readonly finalLabel: string;
 }
 
 export interface OrdinaryScenario {
@@ -158,12 +163,13 @@ function boundaryFragment(
   label: string,
   layout: MarkerLayout,
   withTemplates: boolean,
+  kind: 0 | 1 = 0,
 ): string {
   const bootstrap: Record<string, unknown> = {
     state: { label, note: 'n' },
   };
   if (withTemplates) bootstrap.templates = { [ISLAND_TAG]: ISLAND_TEMPLATE };
-  const envelope = JSON.stringify([1, seq, 0, bootstrap]);
+  const envelope = JSON.stringify([1, seq, kind, seq, bootstrap]);
   const roots = layout === 'flat'
     ? flatRoots(cellStart, rootCount)
     : nestedRoots(cellStart, rootCount);
@@ -172,9 +178,25 @@ function boundaryFragment(
     + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
 }
 
-/** The terminal envelope: no markers, `terminal = 1`, empty bootstrap. */
+function stateUpdateFragment(
+  recordSequence: number,
+  boundaryId: number,
+  label: string,
+): string {
+  const envelope = JSON.stringify([
+    1,
+    recordSequence,
+    2,
+    boundaryId,
+    { label, note: 'n' },
+  ]);
+  return `<script type="application/json" data-webui-boundary>${envelope}</script>`
+    + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
+}
+
+/** The terminal envelope: no markers, terminal kind 3, empty payload. */
 function terminalFragment(seq: number): string {
-  const envelope = JSON.stringify([1, seq, 1, {}]);
+  const envelope = JSON.stringify([1, seq, 3, 0, {}]);
   return `<script type="application/json" data-webui-boundary>${envelope}</script>`
     + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
 }
@@ -184,6 +206,7 @@ function terminalFragment(seq: number): string {
 function templateSetupFragment(): string {
   const envelope = JSON.stringify([
     1,
+    0,
     0,
     0,
     { templates: { [ISLAND_TAG]: ISLAND_TEMPLATE } },
@@ -260,6 +283,7 @@ export function buildStateDeliveryScenario(
     cell += rootsPerBoundary;
     totalStateChars += label.length;
   }
+
   return {
     label: 'boundary-state delivery probe',
     boundaryCount: labels.length,
@@ -269,6 +293,40 @@ export function buildStateDeliveryScenario(
     terminal: terminalFragment(labels.length),
     totalStateChars,
     totalRoots: labels.length * rootsPerBoundary,
+  };
+}
+
+/** Build one updatable checkpoint followed by markerless server-state records. */
+export function buildStateUpdateScenario(
+  updateCount: number,
+  rootCount: number,
+): StateUpdateScenario {
+  const boundaries = new Array<string>(updateCount + 1);
+  boundaries[0] = boundaryFragment(
+    0,
+    0,
+    rootCount,
+    'initial',
+    'flat',
+    true,
+    1,
+  );
+  let finalLabel = 'initial';
+  for (let update = 1; update <= updateCount; update++) {
+    finalLabel = `update-${update}`;
+    boundaries[update] = stateUpdateFragment(update, 0, finalLabel);
+  }
+  return {
+    label: `${updateCount} server-state updates`,
+    boundaryCount: 1,
+    layout: 'flat',
+    timing: 'eager',
+    boundaries,
+    terminal: terminalFragment(updateCount + 1),
+    totalStateChars: 7,
+    totalRoots: rootCount,
+    updateCount,
+    finalLabel,
   };
 }
 

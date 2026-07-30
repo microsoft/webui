@@ -22,35 +22,36 @@
 mod checkpoint;
 mod error;
 mod inventory;
+mod plan;
 mod root;
+mod session;
 mod state;
-
-use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
 use crate::route_handler::Protocol;
 use crate::{
     FlushWriter, HandlerError, RenderOptions, ResponseWriter, Result, WebUIHandler,
-    WebUIProcessContext, INITIAL_KEY_CAPACITY,
+    WebUIProcessContext,
 };
 
 pub(crate) use error::streaming_boundary_error;
 pub(crate) use inventory::{record_checkpoint_tag, streaming_template_already_sent};
+pub(crate) use plan::StreamingEntryPlan;
 pub(crate) use root::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,
     prepare_generated_streaming_root, validate_pending_streaming_root,
     validate_streaming_root_opening, ComponentHostOrigin,
 };
+pub use session::{BoundaryId, BoundaryMode, StreamingResponse};
 pub(crate) use state::{validate_streaming_head_start, StreamingRenderState};
 
 use crate::write_usize;
 use error::parse_boundary_sequence;
 use root::process_streaming_root_signal;
 use state::{
-    increment_streaming_sequence, require_streaming_head_start, BOUNDARY_END_PREFIX,
-    BOUNDARY_START_PREFIX,
+    increment_streaming_boundary_id, increment_streaming_record_sequence,
+    require_streaming_head_start, BOUNDARY_END_PREFIX, BOUNDARY_START_PREFIX,
 };
 
 pub(crate) const STREAMING_MARKER: &str = "<meta name=\"webui-streaming\" content=\"1\">";
@@ -79,14 +80,16 @@ impl<W: FlushWriter + ?Sized> ResponseWriter for StreamingSink<'_, W> {
 }
 
 pub(super) fn streaming_state<'a, 'data>(
-    context: &'a mut WebUIProcessContext<'data, '_>,
+    context: &'a mut WebUIProcessContext<'data, '_, '_>,
 ) -> Result<&'a mut StreamingRenderState<'data>> {
-    context.streaming.as_mut().ok_or_else(|| {
+    context.streaming.as_deref_mut().ok_or_else(|| {
         HandlerError::Invariant("streaming signal processed outside a streaming render".to_string())
     })
 }
 
-pub(super) fn flush_streaming_transport(context: &mut WebUIProcessContext<'_, '_>) -> Result<()> {
+pub(super) fn flush_streaming_transport(
+    context: &mut WebUIProcessContext<'_, '_, '_>,
+) -> Result<()> {
     if context.streaming.is_none() {
         return Err(HandlerError::Invariant(
             "streaming flush requested outside a streaming render".to_string(),
@@ -101,7 +104,7 @@ impl WebUIHandler {
     pub(crate) fn process_streaming_signal<'data>(
         &self,
         value: &'data str,
-        context: &mut WebUIProcessContext<'data, '_>,
+        context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<bool> {
         if context
             .streaming
@@ -145,12 +148,12 @@ impl WebUIHandler {
                     &format!("nested boundary {sequence}; boundary {active} is still open"),
                 ));
             }
-            if sequence != streaming.next_sequence {
+            if sequence != streaming.next_boundary_id {
                 return Err(streaming_boundary_error(
                     value,
                     &format!(
                         "expected boundary sequence {}, received {sequence}",
-                        streaming.next_sequence
+                        streaming.next_boundary_id
                     ),
                 ));
             }
@@ -184,10 +187,19 @@ impl WebUIHandler {
             context.writer.write("<!--/wb:")?;
             write_usize(context.writer, sequence)?;
             context.writer.write("-->")?;
-            self.emit_streaming_checkpoint(sequence, false, context)?;
+            let (record_sequence, updatable) = {
+                let streaming = streaming_state(context)?;
+                (
+                    streaming.next_record_sequence,
+                    streaming.checkpoint_updatable,
+                )
+            };
+            self.emit_streaming_checkpoint(record_sequence, sequence, updatable, context)?;
             let streaming = streaming_state(context)?;
             streaming.active_boundary = None;
-            increment_streaming_sequence(value, streaming)?;
+            streaming.checkpoint_updatable = false;
+            increment_streaming_boundary_id(value, streaming)?;
+            increment_streaming_record_sequence(value, streaming)?;
             return Ok(true);
         }
         if value.starts_with("boundary_end") {
@@ -200,12 +212,12 @@ impl WebUIHandler {
 
         if value == "body_end" {
             require_streaming_head_start(context, "body_end")?;
-            let (active_boundary, body_ended, next_sequence) = {
+            let (active_boundary, body_ended, next_record_sequence) = {
                 let streaming = streaming_state(context)?;
                 (
                     streaming.active_boundary,
                     streaming.body_ended,
-                    streaming.next_sequence,
+                    streaming.next_record_sequence,
                 )
             };
             if let Some(active) = active_boundary {
@@ -226,9 +238,10 @@ impl WebUIHandler {
             // rootless tail never needs another template or state projection.
             // Keeping the envelope empty also prevents whitespace or a body
             // injection from re-sending complete state on legacy protocols.
-            self.emit_streaming_terminal(next_sequence, context)?;
+            self.emit_streaming_terminal(next_record_sequence, context)?;
             let streaming = streaming_state(context)?;
             streaming.body_ended = true;
+            increment_streaming_record_sequence(value, streaming)?;
             context.body_end_emitted = true;
             return Ok(true);
         }
@@ -251,77 +264,17 @@ impl WebUIHandler {
     pub fn render_streaming<'a, W: FlushWriter + ?Sized>(
         &self,
         protocol: &'a Protocol,
-        state: &'a Value,
+        state: &Value,
         options: &RenderOptions<'a>,
-        writer: &mut W,
+        writer: &'a mut W,
     ) -> Result<()> {
-        let document = protocol.protocol();
-        if !document.fragments.contains_key(options.entry_id) {
-            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
+        let mut response = self.stream_response(protocol, options, writer)?;
+        response.write_shell_buffered(state)?;
+        let boundary_count = response.boundary_count();
+        for boundary in 0..boundary_count {
+            let id = BoundaryId::from_index(boundary)?;
+            response.write_boundary(id, state, BoundaryMode::Final)?;
         }
-        validate_streaming_head_start(document, options.entry_id)?;
-
-        let inventory_bytes = protocol.component_index().len().div_ceil(8);
-        // Select the streaming sink once, here at render entry. It borrows the
-        // transport mutably and shares `dirty` with the render state; ordinary
-        // per-write output never sees this wrapper.
-        let mut sink = StreamingSink { transport: writer };
-        let mut context = WebUIProcessContext {
-            protocol: document,
-            legacy_structural_signals: protocol.legacy_structural_signals(),
-            state,
-            writer: &mut sink,
-            local_vars: HashMap::new(),
-            component_attrs: HashMap::new(),
-            request_path: options.request_path,
-            route_base: Cow::Borrowed("/"),
-            rendered_components: HashSet::new(),
-            plugin: self.plugin_factory.map(|factory| factory()),
-            route_children: Vec::new(),
-            entry_id: options.entry_id,
-            nonce: options.nonce.filter(|nonce| !nonce.is_empty()),
-            head_inject: options.head_inject.filter(|html| !html.is_empty()),
-            body_inject: options.body_inject.filter(|html| !html.is_empty()),
-            head_end_emitted: false,
-            component_index: protocol.component_index(),
-            body_end_emitted: false,
-            route_index: protocol.route_index(),
-            route_chain_index: 0,
-            streaming: Some(StreamingRenderState {
-                component_reachability: protocol.component_reachability(),
-                head_marker_emitted: false,
-                active_boundary: None,
-                pending_root: None,
-                generated_root_ready: false,
-                next_sequence: 0,
-                bootstrap_sent: false,
-                body_ended: false,
-                inventory: vec![0; inventory_bytes],
-                inventory_delta: vec![0; inventory_bytes],
-                inventory_hex: String::with_capacity(inventory_bytes * 2),
-                template_inventory: vec![0; inventory_bytes],
-                checkpoint_tags: Vec::new(),
-                checkpoint_route_roots: Vec::new(),
-                checkpoint_seen: vec![0; inventory_bytes],
-                checkpoint_needs_expansion: false,
-                state_key_scratch: Vec::with_capacity(INITIAL_KEY_CAPACITY),
-                template_tag_scratch: Vec::new(),
-                css_href_scratch: Vec::new(),
-                style_spec_scratch: Vec::new(),
-                reachability_stack: Vec::new(),
-            }),
-            json_scratch: Vec::new(),
-            scope_pool: Vec::new(),
-        };
-
-        self.process_fragment_id(options.entry_id, &mut context)?;
-        if !context
-            .streaming
-            .as_ref()
-            .is_some_and(|streaming| streaming.body_ended)
-        {
-            return Err(HandlerError::MissingStreamingBodyEnd);
-        }
-        context.writer.end()
+        response.finish(state)
     }
 }

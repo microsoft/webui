@@ -30,29 +30,48 @@ import {
   pendingUndefinedRootCountForTests,
   resetDeferredActivationForTests,
 } from './streaming-deferred.js';
+import type { PendingBoundaryUpdates } from './streaming-deferred.js';
 import {
   findBoundaryScript,
   findEndMarkerByPrefix,
   findStartMarkerByPrefix,
   removeBoundaryScaffolding,
   resolveBoundaryRange,
+  streamingErrorMessage,
 } from './streaming-dom.js';
 import type { HydrationRange } from './streaming-dom.js';
-import { parseBoundaryEnvelope } from './streaming-protocol.js';
+import {
+  parseBoundaryEnvelope,
+  RECORD_KIND_STATE_UPDATE,
+  RECORD_KIND_TERMINAL,
+  RECORD_KIND_UPDATABLE_CHECKPOINT,
+} from './streaming-protocol.js';
 import type { BoundaryBootstrap } from './streaming-protocol.js';
 
 const MAX_QUEUED_BOUNDARIES = 512;
+const MAX_UPDATABLE_BOUNDARIES = 128;
+const MAX_RETAINED_UPDATE_ROOTS = 50_000;
 const BOUNDARY_HYDRATED_EVENT = 'webui:boundary-hydrated';
 
 const queue: Element[] = [];
 let queueHead = 0;
 let pumpScheduled = false;
 let halted = false;
-let nextExpectedSequence = 0;
+let nextExpectedRecordSequence = 0;
+let nextExpectedBoundaryId = 0;
 let terminalCommitted = false;
 let pendingTerminalSequence: number | null = null;
 let terminalValidationScheduled = false;
 let coordinatorGeneration = 0;
+let retainedUpdateRoots = 0;
+
+type UpdatableBoundary = PendingBoundaryUpdates;
+
+type StateRoot = Element & {
+  setState?: (state: Record<string, unknown>) => void;
+};
+
+const updatableBoundaries = new Map<number, UpdatableBoundary>();
 
 configureStreamingFailureHandler(fail);
 
@@ -96,6 +115,7 @@ function fail(reason: string): void {
   // successful completion event while their failure cleanup drains.
   abortStreamingGate();
   abandonPendingWaiters();
+  clearUpdatableBoundaries();
   settlePendingTerminal(false);
   for (let i = queueHead; i < queue.length; i++) {
     discardRejectedBoundary(queue[i]);
@@ -153,20 +173,54 @@ function processSentinel(sentinel: Element): void {
     return;
   }
 
-  const [, sequence, terminal, bootstrap] = parsed.envelope;
-  if (sequence !== nextExpectedSequence) {
+  const [, sequence, kind, target, payload] = parsed.envelope;
+  if (sequence !== nextExpectedRecordSequence) {
     failBoundary(
       sentinel,
-      `expected boundary sequence ${nextExpectedSequence}, received ${sequence}`,
+      `expected streaming record sequence ${nextExpectedRecordSequence}, received ${sequence}`,
     );
     return;
   }
 
-  const resolved = resolveBoundaryRange(
-    scriptEl,
-    sequence,
-    terminal === 1,
-  );
+  if (kind === RECORD_KIND_STATE_UPDATE) {
+    const boundary = updatableBoundaries.get(target);
+    if (!boundary) {
+      failBoundary(
+        sentinel,
+        `state update targets boundary ${target}, which is not committed as updatable`,
+      );
+      return;
+    }
+    nextExpectedRecordSequence++;
+    commitStateUpdate(
+      boundary,
+      payload as Record<string, unknown>,
+      target,
+      sentinel,
+      scriptEl,
+    );
+    return;
+  }
+
+  if (kind === RECORD_KIND_TERMINAL) {
+    const resolved = resolveBoundaryRange(scriptEl, 0, true);
+    if (!resolved.ok) {
+      failBoundary(sentinel, resolved.reason);
+      return;
+    }
+    nextExpectedRecordSequence++;
+    commitTerminal(sequence, sentinel, scriptEl);
+    return;
+  }
+
+  if (target !== nextExpectedBoundaryId) {
+    failBoundary(
+      sentinel,
+      `expected boundary ID ${nextExpectedBoundaryId}, received ${target}`,
+    );
+    return;
+  }
+  const resolved = resolveBoundaryRange(scriptEl, target, false);
   if (!resolved.ok) {
     if (resolved.truncated) {
       if (resolved.start) {
@@ -185,22 +239,25 @@ function processSentinel(sentinel: Element): void {
     return;
   }
 
-  nextExpectedSequence++;
-  commitBoundary(
-    bootstrap,
+  nextExpectedRecordSequence++;
+  nextExpectedBoundaryId++;
+  commitCheckpoint(
+    payload as BoundaryBootstrap,
     resolved.range,
     sequence,
-    terminal === 1,
+    target,
+    kind === RECORD_KIND_UPDATABLE_CHECKPOINT,
     sentinel,
     scriptEl,
   );
 }
 
-function commitBoundary(
+function commitCheckpoint(
   bootstrap: BoundaryBootstrap,
   range: HydrationRange,
   sequence: number,
-  terminal: boolean,
+  target: number,
+  updatable: boolean,
   sentinel: Element,
   scriptEl: Element,
 ): void {
@@ -209,13 +266,24 @@ function commitBoundary(
   try {
     applyBoundaryBootstrap(bootstrap);
     if (range.start && range.end) {
-      activateRootsBetween(range.start, range.end, bootstrap.state);
+      const boundary: UpdatableBoundary | undefined = updatable
+        ? { roots: [], pendingRoots: 0 }
+        : undefined;
+      activateRootsBetween(
+        range.start,
+        range.end,
+        bootstrap.state,
+        boundary,
+      );
+      if (boundary) retainUpdatableBoundary(target, boundary);
+    } else if (updatable) {
+      retainUpdatableBoundary(target, { roots: [], pendingRoots: 0 });
     }
     committed = true;
   } catch (error) {
     fail(
       `error committing boundary ${sequence}: ${
-        error instanceof Error ? error.message : String(error)
+        streamingErrorMessage(error)
       }`,
     );
   } finally {
@@ -225,15 +293,87 @@ function commitBoundary(
       range.start,
       range.end,
     );
-    if (terminal && committed) {
-      terminalCommitted = true;
-      pendingTerminalSequence = sequence;
-      scheduleTerminalValidation();
-    } else {
-      if (committed) dispatchBoundaryHydrated(sequence, false);
-      markBoundaryCommitted(false);
-    }
+    if (committed) dispatchBoundaryHydrated(sequence, false);
+    markBoundaryCommitted(false);
   }
+}
+
+function retainUpdatableBoundary(
+  target: number,
+  boundary: UpdatableBoundary,
+): void {
+  if (updatableBoundaries.size >= MAX_UPDATABLE_BOUNDARIES) {
+    throw new Error(
+      `updatable boundary count exceeds ${MAX_UPDATABLE_BOUNDARIES}`,
+    );
+  }
+  if (
+    retainedUpdateRoots + boundary.roots.length >
+    MAX_RETAINED_UPDATE_ROOTS
+  ) {
+    throw new Error(
+      `retained update root count exceeds ${MAX_RETAINED_UPDATE_ROOTS}`,
+    );
+  }
+  retainedUpdateRoots += boundary.roots.length;
+  updatableBoundaries.set(target, boundary);
+}
+
+function commitStateUpdate(
+  boundary: UpdatableBoundary,
+  patch: Record<string, unknown>,
+  target: number,
+  sentinel: Element,
+  scriptEl: Element,
+): void {
+  try {
+    if (boundary.pendingRoots > 0) {
+      if (boundary.patch) {
+        Object.assign(boundary.patch, patch);
+      } else {
+        boundary.patch = Object.assign(
+          Object.create(null) as Record<string, unknown>,
+          patch,
+        );
+      }
+    }
+    for (let i = 0; i < boundary.roots.length; i++) {
+      const root = boundary.roots[i] as StateRoot;
+      if (root.hasAttribute('data-ws')) continue;
+      if (typeof root.setState !== 'function') {
+        throw new Error(
+          `activated <${root.tagName.toLowerCase()}> has no setState() method`,
+        );
+      }
+      root.setState(patch);
+    }
+  } catch (error) {
+    fail(
+      `error applying state update to boundary ${target}: ${
+        streamingErrorMessage(error)
+      }`,
+    );
+  } finally {
+    removeBoundaryScaffolding(sentinel, scriptEl, null, null);
+  }
+}
+
+function commitTerminal(
+  sequence: number,
+  sentinel: Element,
+  scriptEl: Element,
+): void {
+  markBoundaryPending();
+  removeBoundaryScaffolding(sentinel, scriptEl, null, null);
+  terminalCommitted = true;
+  pendingTerminalSequence = sequence;
+  clearUpdatableBoundaries();
+  scheduleTerminalValidation();
+}
+
+function clearUpdatableBoundaries(): void {
+  updatableBoundaries.clear();
+  retainedUpdateRoots = 0;
 }
 
 function dispatchBoundaryHydrated(
@@ -315,12 +455,14 @@ function onDomContentLoaded(generation: number): void {
 export function resetStreamingCoordinatorStateForTests(): void {
   resetDeferredActivationForTests();
   settlePendingTerminal(false);
+  clearUpdatableBoundaries();
   coordinatorGeneration++;
   queue.length = 0;
   queueHead = 0;
   pumpScheduled = false;
   halted = false;
-  nextExpectedSequence = 0;
+  nextExpectedRecordSequence = 0;
+  nextExpectedBoundaryId = 0;
   terminalCommitted = false;
   pendingTerminalSequence = null;
   terminalValidationScheduled = false;
@@ -328,6 +470,10 @@ export function resetStreamingCoordinatorStateForTests(): void {
 
 export function isStreamingHaltedForTests(): boolean {
   return halted;
+}
+
+export function streamingRetentionStateForTests(): readonly [number, number] {
+  return [updatableBoundaries.size, retainedUpdateRoots];
 }
 
 export {

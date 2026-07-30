@@ -1,19 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Delayed sample forecast endpoint for the independently hydrated weather
-//! island.
+//! Delayed server-side forecast producer for the updatable weather island.
 
 use std::sync::Arc;
 
-use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::{Map, Value};
 
 use crate::jitter::Jitter;
 use crate::test_controls::TestSession;
-use crate::{AppCtx, TEST_SESSION_COOKIE};
 
-/// Simulated backend latency bounds for `GET /api/weather`.
+/// Simulated backend latency bounds.
 pub(crate) const WEATHER_DELAY_MIN_MS: u64 = 700;
 const WEATHER_DELAY_MAX_MS: u64 = 1_400;
 
@@ -25,10 +22,10 @@ const FORECASTS: [(&str, &str); 4] = [
 ];
 const FORECAST_LOCATION: &str = "Redmond, WA";
 
-/// The panel's own deliberately slow data source.
-pub(crate) async fn weather_api(req: HttpRequest, ctx: web::Data<AppCtx>) -> HttpResponse {
+/// Resolve a forecast without creating a second browser request.
+pub(crate) async fn load_forecast(test_session: Option<Arc<TestSession>>) -> Value {
     let mut jitter = Jitter::from_clock();
-    if let Some(session) = test_session_from_cookie(&req, &ctx) {
+    if let Some(session) = test_session {
         session.wait_for_weather().await;
     } else {
         let delay = jitter.delay_ms(WEATHER_DELAY_MIN_MS, WEATHER_DELAY_MAX_MS);
@@ -36,19 +33,12 @@ pub(crate) async fn weather_api(req: HttpRequest, ctx: web::Data<AppCtx>) -> Htt
     }
 
     let (temperature, condition) = FORECASTS[jitter.index(FORECASTS.len())];
-    let mut forecast = Map::with_capacity(3);
+    let mut forecast = Map::with_capacity(4);
     forecast.insert("location".to_owned(), Value::from(FORECAST_LOCATION));
     forecast.insert("temperature".to_owned(), Value::from(temperature));
     forecast.insert("condition".to_owned(), Value::from(condition));
-
-    HttpResponse::Ok()
-        .insert_header(("Cache-Control", "no-store"))
-        .json(Value::Object(forecast))
-}
-
-fn test_session_from_cookie(req: &HttpRequest, ctx: &AppCtx) -> Option<Arc<TestSession>> {
-    let id = req.cookie(TEST_SESSION_COOKIE)?;
-    ctx.test_controls.as_ref()?.existing_session(id.value())
+    forecast.insert("status".to_owned(), Value::from("ready"));
+    Value::Object(forecast)
 }
 
 #[cfg(test)]

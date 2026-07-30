@@ -56,19 +56,10 @@
   <header>
     <h1>Home</h1>
     <!--
-      Weather represents expensive backend work whose data is not ready in
-      document order. Native HTML streaming is strictly in-order, so nothing
-      later in this response can reach back into an already-closed header —
-      and blocking this boundary until the forecast resolved would stall the
-      composer below, which is exactly the head-of-line blocking boundaries
-      exist to remove.
-
-      So this is the cheapest boundary on the page: it carries no server data
-      and commits immediately, which gets `weather-panel` hydrated while the
-      response is still open. The component then fetches its own forecast, so
-      the slow backend work overlaps the rest of the stream instead of
-      queueing behind it. See `weather-panel.ts`, and DESIGN.md's
-      "deferred boundary placement" note for the in-response alternative.
+      The shell commits immediately as an updatable boundary, so slow forecast
+      work cannot hold back the composer. When that server work finishes, the
+      same response sends a projected state record to this boundary; no client
+      request or DOM replacement is involved.
     -->
     <boundary name="weather-shell">
       <!--
@@ -80,7 +71,8 @@
         Loading it late is safe by construction: the boundary commits before
         the class exists, the coordinator parks the root on
         `customElements.whenDefined('weather-panel')` with this boundary's
-        state stashed on it, and activates it the moment `.define()` runs.
+        initial state stashed on it, merges any server update that won the
+        race, and activates it the moment `.define()` runs.
         `webui:hydration-complete` waits for that.
 
         Being *inside* the boundary is also what keeps this module out of the

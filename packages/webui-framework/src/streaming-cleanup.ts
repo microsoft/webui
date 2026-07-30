@@ -6,6 +6,7 @@ import {
   MAX_MARKER_SCAN_NODES,
   nextWithinRoot,
   safeRemoveAttribute,
+  streamingErrorMessage,
 } from './streaming-dom.js';
 import { STREAMED_HOST_ATTR } from './streaming-mode.js';
 
@@ -34,7 +35,7 @@ export function abandonDeferredElement(el: Element): void {
     console.error(
       `[WebUI] streaming: abandon failed for <${
         el.tagName?.toLowerCase?.() ?? '?'
-      }>: ${error instanceof Error ? error.message : String(error)}`,
+      }>: ${streamingErrorMessage(error)}`,
     );
   } finally {
     safeRemoveAttribute(el, STREAMED_HOST_ATTR);

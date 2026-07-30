@@ -69,7 +69,7 @@ roots (1500) and the **same** total projected state value bytes (24 KiB of
 `label` values); only the boundary count (and marker layout) changes. "Projected
 state value bytes" counts the streamed `label` values a real app would ship, and
 deliberately excludes unavoidable per-boundary protocol/property overhead (the
-`[1,seq,terminal,{...}]` envelope framing, the first-boundary `templates` block,
+`[1,seq,kind,target,{...}]` envelope framing, the first-boundary `templates` block,
 and the tiny fixed `note` property) - that overhead is inherent to having more
 boundaries, not equal work to hold constant. It is projected-state value bytes,
 not total wire bytes.
@@ -135,9 +135,9 @@ comments, `[data-ws]`), no globally-published streamed state
 (`window.__webui.state` stays unset), the ordinary bundle contains no coordinator
 tokens (`webui-hydrate` / `data-webui-boundary`), measured component CPU is
 non-zero, distinct boundary-local states reach only their own real activation
-hooks, and the streaming entry adds no more than 10 KiB minified / 3.5 KiB
-gzip (re-baselined from 7 KiB/2.5 KiB after the framework coordinator grew;
-esbuild output is deterministic so the gate still fails on further growth).
+hooks, and the streaming entry adds no more than 12 KiB minified / 4.125 KiB
+gzip. Esbuild output is deterministic and the cap retains under 4% headroom, so
+further growth still fails.
 
 Opt-in via `WEBUI_STREAMING_HYDRATION_ENFORCE=1` (noisy, off by default), each
 printing its effective cap:

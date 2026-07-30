@@ -22,7 +22,9 @@ WebUI parser plugin and the opt-in Rust streaming render path.
 The directive is removed at compile time. It does not add an element to the
 application DOM. A normal `WebUIHandler::render` call renders its children as
 usual without enabling progressive hydration. Use
-`WebUIHandler::render_streaming` with a `FlushWriter` to commit its checkpoints.
+`WebUIHandler::render_streaming` with a `FlushWriter` to commit every checkpoint
+as final, or use `WebUIHandler::stream_response` when the host controls boundary
+timing and later state updates.
 
 The async browser entry must install the streaming coordinator before importing
 component registration modules:
@@ -88,17 +90,16 @@ The build reports this as a `streaming-without-projection` warning.
 On the streaming example this single option cut the response from 19,403 to
 12,228 bytes, and steady-state feed checkpoints from 1,470 bytes to 35.
 
-Boundaries are committed only in document order. They do not start asynchronous
-server work, move later content ahead of earlier content, or replace an earlier
-skeleton with later same-response HTML.
+Boundary HTML is committed only in document order. Server work can run
+concurrently, and projected state-update records can arrive between boundary
+checkpoints. State updates target already committed updatable boundaries; they
+do not relocate server markup.
 
-### Slow surfaces: place the skeleton in its own boundary
+### Slow surfaces: stream the shell, then its state
 
-Because of that ordering rule, a region that depends on slow backend data must
-not stall the response — doing so delays every boundary after it, including the
-critical one. Give the slow surface a *complete* placeholder component inside
-its own early boundary instead, then let it resolve its own data after it
-hydrates:
+Give a slow region a complete component shell in an early boundary. Commit it as
+updatable so later boundaries are not blocked, then send its projected state
+when backend work finishes:
 
 ```html
 <header>
@@ -108,17 +109,25 @@ hydrates:
 </header>
 ```
 
-```typescript
-protected override hydratedCallback(): void {
-  void this.loadForecast(); // Runs once this boundary actually hydrates.
-}
+```rust
+let mut response = handler.stream_response(&protocol, &options, &mut writer)?;
+let weather = response.boundary("weather-shell")?;
+let composer = response.boundary("composer")?;
+
+response.write_shell(&page_state)?;
+response.write_boundary(weather, &loading_state, BoundaryMode::Updatable)?;
+response.write_boundary(composer, &composer_state, BoundaryMode::Final)?;
+
+// This can run after any amount of backend work. The record uses the
+// checkpoint's compiled projection and the same open HTML response.
+response.update(weather, &forecast_state)?;
 ```
 
-The boundary carries no server data, so it commits immediately and the next
-boundary follows in the same flush window. `examples/app/streaming` ships this
-exact pattern. Use `hydratedCallback()` rather than `connectedCallback()` for
-post-hydration work: a streamed element can connect while its boundary is still
-open, but `hydratedCallback()` runs synchronously exactly once after activation.
+The browser applies the patch through the component's `setState()` path. It does
+not rerun hydration or `hydratedCallback()`. If the island module has not defined
+the element yet, WebUI merges updates into the pending activation state and
+activates once with the newest values. `examples/app/streaming` demonstrates a
+forecast update arriving between feed batches with no browser fetch.
 
 ### Load an island's code with the island
 

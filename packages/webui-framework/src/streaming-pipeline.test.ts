@@ -44,6 +44,7 @@ interface FakeElement extends FakeNode {
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
   readonly textContent: string;
+  setState?: (state: Record<string, unknown>) => void;
   [ACTIVATE]?: (state?: Record<string, unknown>) => number;
   [ABANDON]?: () => void;
   [RESUME_PENDING]?: () => void;
@@ -106,6 +107,7 @@ interface ElementSpec {
   abandon?: () => void;
   children?: Array<FakeNode>;
   shadowChildren?: Array<FakeNode>;
+  setState?: (state: Record<string, unknown>) => void;
 }
 
 function element(tagName: string, spec: ElementSpec = {}): FakeElement {
@@ -146,6 +148,7 @@ function element(tagName: string, spec: ElementSpec = {}): FakeElement {
     };
   }
   if (spec.abandon) node[ABANDON] = spec.abandon;
+  if (spec.setState) node.setState = spec.setState;
   if (spec.shadowChildren) {
     const shadowRoot = {
       nodeType: 11,
@@ -340,6 +343,7 @@ const {
   __pendingUndefinedRootCountForTests,
   __elementHasPendingStateForTests,
   __installTruncationGuardForTests,
+  __streamingRetentionStateForTests,
 } = await import('./streaming.js');
 
 const {
@@ -413,7 +417,13 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
   const end = comment(`/wb:${sequence}`);
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([1, sequence, terminal, bootstrap]),
+    text: JSON.stringify([
+      1,
+      sequence,
+      terminal === 1 ? 3 : 0,
+      terminal === 1 ? 0 : sequence,
+      bootstrap,
+    ]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -425,7 +435,41 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
 function buildMarkerless(sequence: number, terminal: number, bootstrap: object): BuiltBoundary {
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([1, sequence, terminal, bootstrap]),
+    text: JSON.stringify([1, sequence, terminal === 1 ? 3 : 0, 0, bootstrap]),
+  });
+  const sentinel = element('webui-hydrate');
+  const root = body();
+  link(root, [scriptEl, sentinel]);
+  return { root, sentinel, scriptEl, startMarker: null, endMarker: null, roots: [] };
+}
+
+function buildUpdatableBoundary(
+  recordSequence: number,
+  boundaryId: number,
+  roots: FakeElement[],
+  bootstrap: object,
+): BuiltBoundary {
+  markStreamedRoots(roots);
+  const start = comment(`wb:${boundaryId}`);
+  const end = comment(`/wb:${boundaryId}`);
+  const scriptEl = element('script', {
+    attrs: { 'data-webui-boundary': '' },
+    text: JSON.stringify([1, recordSequence, 1, boundaryId, bootstrap]),
+  });
+  const sentinel = element('webui-hydrate');
+  const root = body();
+  link(root, [start, ...roots, end, scriptEl, sentinel]);
+  return { root, sentinel, scriptEl, startMarker: start, endMarker: end, roots };
+}
+
+function buildStateUpdate(
+  recordSequence: number,
+  boundaryId: number,
+  patch: Record<string, unknown>,
+): BuiltBoundary {
+  const scriptEl = element('script', {
+    attrs: { 'data-webui-boundary': '' },
+    text: JSON.stringify([1, recordSequence, 2, boundaryId, patch]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -492,6 +536,195 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(b.endMarker?.parentNode, null, 'end marker removed');
     assert.equal(counter.parentNode, b.root, 'activated root retained');
     assert.equal(documentWalkCalls, 0, 'valid streams never scan the document');
+  });
+
+  test('applies state updates without reactivating an updatable boundary', async () => {
+    const activations: Array<Record<string, unknown> | undefined> = [];
+    const updates: Array<Record<string, unknown>> = [];
+    const weather = element('weather-panel', {
+      hook(state) {
+        activations.push(state);
+      },
+      setState(state) {
+        updates.push(state);
+      },
+    });
+    predefine('weather-panel');
+
+    const checkpoint = buildUpdatableBoundary(
+      0,
+      0,
+      [weather],
+      { state: { status: 'loading' } },
+    );
+    enqueue(checkpoint.sentinel);
+    await flush();
+    assert.deepEqual(__streamingRetentionStateForTests(), [1, 1]);
+    const update = buildStateUpdate(1, 0, {
+      status: 'ready',
+      forecast: 'Sunny',
+    });
+    enqueue(update.sentinel);
+    await flush();
+    const terminal = buildMarkerless(2, 1, {});
+    enqueue(terminal.sentinel);
+    await flush();
+
+    assert.deepEqual(activations, [{ status: 'loading' }]);
+    assert.deepEqual(updates, [{ status: 'ready', forecast: 'Sunny' }]);
+    assertScaffoldCleaned(checkpoint);
+    assert.equal(update.sentinel.parentNode, null);
+    assert.equal(update.scriptEl.parentNode, null);
+    assert.equal(__isHaltedForTests(), false);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+    assert.deepEqual(
+      __streamingRetentionStateForTests(),
+      [0, 0],
+      'terminal releases retained boundary roots',
+    );
+  });
+
+  test('merges updates that arrive before an island definition into activation state', async () => {
+    const activations: Array<Record<string, unknown> | undefined> = [];
+    const updates: Array<Record<string, unknown>> = [];
+    const weather = element('weather-panel', {
+      hook(state) {
+        activations.push(state);
+      },
+      setState(state) {
+        updates.push(state);
+      },
+    });
+
+    const checkpoint = buildUpdatableBoundary(
+      0,
+      0,
+      [weather],
+      { state: { status: 'loading', location: 'Seattle' } },
+    );
+    enqueue(checkpoint.sentinel);
+    await flush();
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    enqueue(buildStateUpdate(2, 0, { forecast: 'Rain' }).sentinel);
+    await flush();
+
+    assert.deepEqual(activations, []);
+    assert.deepEqual(updates, []);
+    assert.equal(hasPending(weather), true);
+
+    defineTag('weather-panel');
+    await flush();
+    assert.deepEqual(activations, [{
+      status: 'ready',
+      location: 'Seattle',
+      forecast: 'Rain',
+    }]);
+    assert.deepEqual(updates, []);
+
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('updates nested roots retained behind an undefined outer island', async () => {
+    const outerActivations: Array<Record<string, unknown> | undefined> = [];
+    const innerActivations: Array<Record<string, unknown> | undefined> = [];
+    const outerUpdates: Array<Record<string, unknown>> = [];
+    const innerUpdates: Array<Record<string, unknown>> = [];
+    const inner = element('inner-panel', {
+      hook(state) {
+        innerActivations.push(state);
+      },
+      setState(state) {
+        innerUpdates.push(state);
+      },
+    });
+    const outer = element('outer-panel', {
+      children: [inner],
+      hook(state) {
+        outerActivations.push(state);
+      },
+      setState(state) {
+        outerUpdates.push(state);
+      },
+    });
+    predefine('inner-panel');
+
+    enqueue(buildUpdatableBoundary(
+      0,
+      0,
+      [outer],
+      { state: { status: 'loading' } },
+    ).sentinel);
+    await flush();
+    assert.deepEqual(
+      __streamingRetentionStateForTests(),
+      [1, 2],
+      'the outer barrier does not hide nested roots from bounded retention',
+    );
+
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    defineTag('outer-panel');
+    await flush();
+
+    assert.deepEqual(outerActivations, [{ status: 'ready' }]);
+    assert.deepEqual(innerActivations, [{ status: 'ready' }]);
+    assert.deepEqual(
+      __streamingRetentionStateForTests(),
+      [1, 2],
+      'definition preserves the complete retained update set',
+    );
+
+    enqueue(buildStateUpdate(2, 0, { forecast: 'Sunny' }).sentinel);
+    await flush();
+    assert.deepEqual(outerUpdates, [{ forecast: 'Sunny' }]);
+    assert.deepEqual(innerUpdates, [{ forecast: 'Sunny' }]);
+
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
+  });
+
+  test('rejects state updates for final boundaries', async () => {
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      const root = element('my-final', { hook() {}, setState() {} });
+      predefine('my-final');
+      enqueue(buildBoundary(0, 0, [root], { state: {} }).sentinel);
+      await flush();
+      const update = buildStateUpdate(1, 0, { value: 1 });
+      enqueue(update.sentinel);
+      await flush();
+
+      assert.equal(__isHaltedForTests(), true);
+      assert.equal(update.sentinel.parentNode, null);
+      assert.equal(update.scriptEl.parentNode, null);
+    } finally {
+      console.error = previousError;
+    }
+  });
+
+  test('halts when updatable-boundary retention exceeds its fixed limit', async () => {
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      for (let boundary = 0; boundary <= 128; boundary++) {
+        enqueue(buildUpdatableBoundary(boundary, boundary, [], {}).sentinel);
+      }
+      await flush();
+
+      assert.equal(__isHaltedForTests(), true);
+      assert.deepEqual(
+        __streamingRetentionStateForTests(),
+        [0, 0],
+        'failure releases every retained response reference',
+      );
+    } finally {
+      console.error = previousError;
+    }
   });
 
   test('merges inventory, css, and style checkpoint deltas cumulatively', async () => {
@@ -632,7 +865,7 @@ describe('streaming coordinator pipeline', () => {
   test('a missing start marker halts and cleans the end marker + payload', async () => {
     // End marker present but no matching start marker: reject + clean.
     const end = comment('/wb:0');
-    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([1, 0, 0, {}]) });
+    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([1, 0, 0, 0, {}]) });
     const sentinel = element('webui-hydrate');
     const root = body();
     link(root, [end, scriptEl, sentinel]);

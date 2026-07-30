@@ -10,17 +10,18 @@ import { test, expect, type Page } from '@playwright/test';
  *
  * Boundary sequence numbers follow document order:
  *
- * | Sequence | Boundary        | Gap before the *next* flush        |
- * | -------- | --------------- | ---------------------------------- |
- * | 0        | weather shell   | none — the composer must not wait   |
- * | 1        | composer        | jittered 500-1000ms                 |
- * | 2        | feed batch 1    | jittered 500-1000ms                 |
- * | 3        | feed batch 2    | jittered 500-1000ms                 |
- * | 4        | feed batch 3    | none — the response closes promptly |
+ * | Boundary ID | Boundary      | Delivery                            |
+ * | ----------- | ------------- | ----------------------------------- |
+ * | 0           | weather shell | immediate, then server-updatable     |
+ * | 1           | composer      | immediate                            |
+ * | 2           | feed batch 1  | jittered 500-1000ms                  |
+ * | 3           | feed batch 2  | jittered 500-1000ms                  |
+ * | 4           | feed batch 3  | jittered 500-1000ms                  |
  *
  * The server (`server/src/main.rs`) paces only the gaps that precede feed
  * batches, bounded by `--feed-delay-min-ms` / `--feed-delay-max-ms`, so
- * delivery order is observable over real network timing. These tests never
+ * delivery order is observable over real network timing. A weather state
+ * record may consume a response sequence between any two checkpoints. These tests never
  * sleep to assert ordering: they capture the client coordinator's own
  * `webui:boundary-hydrated` / `webui:hydration-complete` events
  * (`@microsoft/webui-framework`'s `streaming.ts` / `lifecycle.ts`) via
@@ -165,7 +166,7 @@ test.describe('streaming priority hydration', () => {
 
     const events = await boundaryEvents(page);
     const sequences = events.map((e) => e.sequence);
-    expect(sequences).toEqual(expect.arrayContaining([0, 1, 2, 3, 4]));
+    expect(events.filter((event) => !event.terminal)).toHaveLength(5);
     for (let i = 1; i < sequences.length; i++) {
       expect(sequences[i]).toBeGreaterThan(sequences[i - 1]);
     }
@@ -200,7 +201,9 @@ test.describe('streaming priority hydration', () => {
     }
   });
 
-  test('the weather panel hydrates first and resolves independently of the stream', async ({ page }) => {
+  test('weather state arrives between feed chunks on the original response', async ({ page }) => {
+    const requests: string[] = [];
+    page.on('request', (request) => requests.push(new URL(request.url()).pathname));
     await instrumentPage(page);
     const session = await gotoControlled(page);
 
@@ -212,14 +215,21 @@ test.describe('streaming priority hydration', () => {
     await expect(panel).toHaveAttribute('data-status', 'loading');
     await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toBeVisible();
 
-    // The forecast endpoint is deliberately slower than a feed gap, so this
-    // resolves through the component's own fetch rather than the stream.
+    await release(page, session, 'feed');
+    await expect(page.locator('feed-item[post-id="1"]')).not.toHaveAttribute('data-ws', /.*/);
+    await expect(page.locator('feed-item[post-id="3"]')).toHaveCount(0);
+
+    // Forecast readiness wins the race for the next response record, while
+    // feed batch 2 remains gated.
     const summary = page.locator('weather-panel [data-testid="weather-summary"]');
     await release(page, session, 'weather');
     await expect(summary).toBeVisible({ timeout: 15_000 });
     await expect(panel).toHaveAttribute('data-status', 'ready');
     await expect(page.locator('weather-panel [data-testid="weather-temperature"]')).not.toBeEmpty();
     await expect(page.locator('weather-panel [data-testid="weather-condition"]')).not.toBeEmpty();
+    await expect(page.locator('feed-item[post-id="3"]')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__dclFired)).toBe(false);
+    expect(requests.some((path) => path.endsWith('/api/weather'))).toBe(false);
 
     // The skeleton branch is torn down, not merely hidden.
     await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toHaveCount(0);

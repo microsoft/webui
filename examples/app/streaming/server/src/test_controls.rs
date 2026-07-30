@@ -5,7 +5,7 @@
 //! `--test-controls`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::watch;
 
@@ -45,26 +45,27 @@ impl TestControls {
 }
 
 pub(crate) struct TestSession {
-    released_feed_gaps: Mutex<usize>,
-    feed_ready: Condvar,
+    released_feed_gaps: watch::Sender<usize>,
     weather_released: watch::Sender<bool>,
 }
 
 impl TestSession {
     fn new() -> Self {
+        let (released_feed_gaps, _) = watch::channel(0);
         let (weather_released, _) = watch::channel(false);
         Self {
-            released_feed_gaps: Mutex::new(0),
-            feed_ready: Condvar::new(),
+            released_feed_gaps,
             weather_released,
         }
     }
 
-    pub(crate) fn wait_for_feed_gap(&self, gap: usize) {
+    pub(crate) async fn wait_for_feed_gap(&self, gap: usize) {
         let required = gap.saturating_add(1);
-        let mut released = lock_unpoisoned(&self.released_feed_gaps);
-        while *released < required {
-            released = wait_unpoisoned(&self.feed_ready, released);
+        let mut released = self.released_feed_gaps.subscribe();
+        while *released.borrow_and_update() < required {
+            if released.changed().await.is_err() {
+                return;
+            }
         }
     }
 
@@ -78,9 +79,8 @@ impl TestSession {
     }
 
     pub(crate) fn release_next_feed_gap(&self) {
-        let mut released = lock_unpoisoned(&self.released_feed_gaps);
-        *released = released.saturating_add(1);
-        self.feed_ready.notify_all();
+        self.released_feed_gaps
+            .send_modify(|released| *released = released.saturating_add(1));
     }
 
     pub(crate) fn release_weather(&self) {
@@ -88,10 +88,7 @@ impl TestSession {
     }
 
     pub(crate) fn release_all(&self) {
-        let mut released = lock_unpoisoned(&self.released_feed_gaps);
-        *released = usize::MAX;
-        self.feed_ready.notify_all();
-        drop(released);
+        self.released_feed_gaps.send_replace(usize::MAX);
         self.release_weather();
     }
 }
@@ -99,12 +96,6 @@ impl TestSession {
 fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn wait_unpoisoned<'a, T>(condvar: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
-    condvar
-        .wait(guard)
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -120,13 +111,13 @@ mod tests {
         assert!(controls.session("").is_none());
     }
 
-    #[test]
-    fn feed_releases_are_counted() {
+    #[tokio::test]
+    async fn feed_releases_are_counted() {
         let controls = TestControls::default();
         let session = controls
             .session("feed")
             .unwrap_or_else(|| panic!("valid session"));
         session.release_next_feed_gap();
-        session.wait_for_feed_gap(0);
+        session.wait_for_feed_gap(0).await;
     }
 }

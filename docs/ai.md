@@ -553,8 +553,9 @@ CSS is scoped per component via Shadow DOM. No CSS-in-JS.
 ## Progressive Streaming Hydration (Rust)
 
 Use `<boundary>` only when the Rust server calls
-`WebUIHandler::render_streaming` with a `FlushWriter`. The directive is removed
-at compile time and emits no application DOM wrapper.
+`WebUIHandler::render_streaming` or `WebUIHandler::stream_response` with a
+`FlushWriter`. The directive is removed at compile time and emits no application
+DOM wrapper.
 
 ```html
 <head>
@@ -585,7 +586,7 @@ Rules for code generation:
   inside reusable components, route-shell components, `<if>`, `<for>`,
   `<route>`, or another boundary. An entry-level boundary can fully wrap those
   complete scopes.
-- Every registered WebUI component rendered by `render_streaming` must be
+- Every registered WebUI component rendered in streaming mode must be
   inside an explicit boundary. Native HTML and unregistered static tail markup
   may remain outside.
 - Never author `<webui-hydrate>`. It is reserved generated runtime output.
@@ -594,13 +595,14 @@ Rules for code generation:
   modules. The default framework entry excludes the coordinator. A normal
   module is deferred until parsing completes and cannot provide early
   hydration. This loading requirement is not currently validated by the parser.
-- Boundaries commit and flush strictly in document order. A boundary does not
-  make server work asynchronous and cannot replace an earlier region out of
-  order. For a slow surface, emit a *complete* placeholder component in its own
-  early boundary and start its client-side work from `hydratedCallback()` after
-  it hydrates;
-  do not stall the response waiting for it, which would delay every later
-  boundary including the critical one.
+- Boundary HTML commits and flushes strictly in document order. For slow backend
+  state, commit a complete component shell as `BoundaryMode::Updatable`, then
+  call `StreamingResponse::update` when data resolves. Update records can
+  interleave between checkpoints on the original response. They apply through
+  `setState()` without rerunning hydration or `hydratedCallback()`.
+- Resolve free-form names once with `StreamingResponse::boundary`; hot writes
+  accept only integer `BoundaryId` handles. Use `write_shell`, ordered
+  `write_boundary`, interleavable `update`, then `finish`.
 - Use `RenderOptions::with_nonce` for generated inline boundary scripts under
   CSP. The policy must also allow the external application module.
 - `webui:boundary-hydrated` is emitted only when
@@ -623,7 +625,7 @@ Rules for code generation:
   wake. Use it for post-hydration setup; `connectedCallback()` can run before a
   streamed boundary commits and can run again on reconnect.
 - `body_end` emits one empty markerless terminal envelope
-  `[1,nextSequence,1,{}]`. Its flush commits preceding static tail bytes without
+  `[1,nextSequence,3,0,{}]`. Its flush commits preceding static tail bytes without
   repeating state or template metadata. Fatal stream cleanup is bounded and
   suppresses `webui:hydration-complete`; valid commits never scan the document.
 - A semantic flush hands bytes to the HTTP transport. Server adapters,
@@ -640,7 +642,7 @@ Do not generate these as usable APIs. They are not part of the current design:
   `begin_append()` / `commit()` APIs
 - Out-of-order same-response replacement
 - Router partial-navigation streaming reuse
-- Node, FFI/.NET, WASM, or other host-language streaming mirrors
+- Node, FFI/.NET, WASM, or other host-language response sessions
 - Declarative partial-update APIs
 
 ## Hydration Entry Point
@@ -1375,7 +1377,7 @@ Rust-only. The early async browser entry must import
 modules. Bound the number of renders before `spawn_blocking` with a process-wide
 `Semaphore::try_acquire_owned()` permit; bounded chunk channels do not bound
 Tokio's queued blocking tasks. At saturation, reject before spawning. The final
-flush writes one empty markerless `[1,nextSequence,1,{}]` terminal envelope
+flush writes one empty markerless `[1,nextSequence,3,0,{}]` terminal envelope
 after any static tail bytes.
 
 ### Node.js

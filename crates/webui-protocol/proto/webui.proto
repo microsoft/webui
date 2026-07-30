@@ -113,6 +113,15 @@ message WebUIProtocol {
   // The compiler resolves and sorts these at build time so the handler writes
   // them verbatim with no per-request work.
   repeated string module_preloads = 7;
+  // Free-form <boundary name> values keyed by entry fragment and stored in
+  // declaration order. Hosts resolve a name once to its zero-based BoundaryId;
+  // names never reach the rendered HTML response.
+  map<string, StreamingBoundaryList> streaming_boundaries = 8;
+}
+
+// Ordered compile-time boundary names for one entry fragment.
+message StreamingBoundaryList {
+  repeated string names = 1;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

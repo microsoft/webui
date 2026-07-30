@@ -6,6 +6,11 @@ export const MAX_ELEMENTS_PER_BOUNDARY = 10_000;
 export const MAX_MARKER_SCAN_NODES = 50_000;
 export const MAX_BOUNDARY_SCRIPT_SCAN = 8;
 
+/** Normalize an unknown exception for cold streaming diagnostics. */
+export function streamingErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 const BOUNDARY_START_PREFIX = 'wb:';
 const BOUNDARY_END_PREFIX = '/wb:';
 

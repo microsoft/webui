@@ -108,26 +108,18 @@ boundary. A normal module script is deferred until parsing completes and
 defeats early hydration. The parser currently validates boundary syntax and
 placement, but does not validate this script loading order.
 
-The server commits boundaries in document order. In this example the weather
-shell commits first and carries no server data, so it never delays the critical
-composer behind it; the composer is the first *interesting* interactive
-checkpoint, and the feed is a later explicit checkpoint.
+The server commits boundary HTML in document order. In this example the weather
+shell commits first as an updatable boundary, so it never delays the critical
+composer. The host starts forecast work concurrently and sends a projected state
+record to the weather boundary whenever it resolves, including between feed
+checkpoints.
 
-A boundary does not make data fetching asynchronous, and WebUI cannot send a
-later weather result back to replace an earlier region out of order. The
-recommended pattern for slow backend data is the one shown above: make the
-placeholder a **real component in a boundary of its own**, so it hydrates early
-and then resolves its own data client-side.
-
-```typescript
-protected override hydratedCallback(): void {
-  void this.loadForecast(); // Resolves after this boundary actually hydrates.
-}
-```
-
-That keeps the critical island's time to interactive independent of the slow
-surface. The alternative — waiting for the data before continuing the in-order
-response — delays every boundary after it, including the composer.
+The state record uses the original open HTML response. It invokes component
+reactivity without rerunning hydration or `hydratedCallback()`, and it does not
+replace or relocate server markup. If the weather class is still downloading,
+WebUI merges the patch into its pending activation state and activates once with
+the newest values. This keeps the critical island's time to interactive
+independent of the slow surface without a client fetch.
 
 See `examples/app/streaming` for a complete working version of this pattern.
 
@@ -172,13 +164,14 @@ WebUI dispatches these events on `window`:
   interactive boundary is ready.
 
 After a checkpoint commits, WebUI removes its generated payload, sentinel, and
-marker nodes, plus the temporary streamed-host identity. Boundary-local state is
-passed directly to each component and is not retained in
-`window.__webui.state`. Applications should not query or depend on generated
-scaffolding.
+marker nodes, plus the temporary streamed-host identity. Final boundaries
+release their root list immediately. Updatable boundaries retain only their root
+references and latest shallow patch until the terminal record. Boundary-local
+state is never copied into `window.__webui.state`. Applications should not query
+or depend on generated scaffolding.
 
 At `body_end`, the handler emits one markerless empty terminal envelope:
-`[1,nextSequence,1,{}]`. Its flush also commits any preceding native or static
+`[1,nextSequence,3,0,{}]`. Its flush also commits any preceding native or static
 tail HTML, but terminal records never repeat template metadata or state. A
 malformed, truncated, or oversized stream logs an error, suppresses
 `webui:hydration-complete`, and releases discoverable deferred state within
@@ -198,15 +191,15 @@ verify early delivery through the production path.
 
 ### Current limits
 
-Progressive streaming hydration is currently exposed only by the Rust handler.
-It is for one initial HTML response and is strictly in order. The following are
-not implemented APIs:
+Progressive streaming hydration is exposed by the Rust handler and browser
+coordinator. Boundary markup is strictly in authored order, while markerless
+state records can interleave. The following are not implemented APIs:
 
 - Dynamic `<webui-stream>`, `page.append()`, or
   `begin_append()` / `commit()` APIs
 - Out-of-order same-response replacement
 - Streaming reuse by router partial navigations
-- Node, FFI/.NET, WASM, or other host-language mirrors
+- Node, FFI/.NET, WASM, or other host-language response sessions
 - Declarative partial-update APIs
 
 ## Build-Time State Projection

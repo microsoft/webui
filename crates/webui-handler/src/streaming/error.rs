@@ -105,3 +105,87 @@ pub(super) fn generated_streaming_root_error(tag: &str) -> HandlerError {
         ),
     }))
 }
+
+#[cold]
+#[inline(never)]
+pub(super) fn boundary_not_updatable_error(boundary_id: usize) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: format!("state_update:{boundary_id}"),
+        reason: "the target boundary was committed as final; commit it with \
+                 BoundaryMode::Updatable before sending state updates"
+            .to_string(),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+pub(super) fn state_update_type_error() -> HandlerError {
+    HandlerError::TypeError(
+        "streaming state updates require a JSON object so projected keys can be \
+         applied through component setState()"
+            .to_string(),
+    )
+}
+
+#[cold]
+#[inline(never)]
+pub(super) fn boundary_order_error(operation: &str, reason: &str) -> HandlerError {
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: operation.to_string(),
+        reason: reason.to_string(),
+    }))
+}
+
+#[cold]
+#[inline(never)]
+pub(super) fn unknown_boundary_name_error(name: &str, valid: &[String]) -> HandlerError {
+    let suggestion = closest_name(name, valid);
+    let mut reason = format!("unknown boundary name `{name}`");
+    if let Some(suggestion) = suggestion {
+        reason.push_str("; did you mean `");
+        reason.push_str(suggestion);
+        reason.push_str("`?");
+    }
+    if !valid.is_empty() {
+        reason.push_str(" valid names: ");
+        for (index, candidate) in valid.iter().enumerate() {
+            if index != 0 {
+                reason.push_str(", ");
+            }
+            reason.push('`');
+            reason.push_str(candidate);
+            reason.push('`');
+        }
+    }
+    HandlerError::StreamingBoundary(Box::new(StreamingBoundaryError {
+        signal: name.to_string(),
+        reason,
+    }))
+}
+
+fn closest_name<'a>(target: &str, candidates: &'a [String]) -> Option<&'a str> {
+    candidates
+        .iter()
+        .min_by_key(|candidate| levenshtein(target, candidate))
+        .map(String::as_str)
+}
+
+fn levenshtein(left: &str, right: &str) -> usize {
+    let right_len = right.chars().count();
+    let mut previous: Vec<usize> = (0..=right_len).collect();
+    let mut current = vec![0; right_len + 1];
+    for (left_index, left_char) in left.chars().enumerate() {
+        current[0] = left_index + 1;
+        for (right_index, right_char) in right.chars().enumerate() {
+            current[right_index + 1] = if left_char == right_char {
+                previous[right_index]
+            } else {
+                1 + previous[right_index]
+                    .min(previous[right_index + 1])
+                    .min(current[right_index])
+            };
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+    previous[right_len]
+}

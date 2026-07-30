@@ -18,7 +18,7 @@ use crate::{HandlerError, Result, WebUIProcessContext};
 /// without an inventory bit are ignored (they carry no template or hydration
 /// state anyway).
 pub(crate) fn record_checkpoint_tag<'data>(
-    context: &mut WebUIProcessContext<'data, '_>,
+    context: &mut WebUIProcessContext<'data, '_, '_>,
     fragment_id: &str,
 ) {
     // Copy the `'data` index reference out first so the borrowed key outlives the
@@ -28,20 +28,36 @@ pub(crate) fn record_checkpoint_tag<'data>(
         return;
     };
     let tag: &'data str = tag.as_str();
-    let route_base = context.streaming.as_ref().and_then(|streaming| {
-        (streaming.component_reachability.is_route_dependent(index) == Some(true))
-            .then(|| context.route_base.clone())
+    let route_dependent = context.streaming.as_ref().is_some_and(|streaming| {
+        streaming.component_reachability.is_route_dependent(index) == Some(true)
     });
+    let route_base = route_dependent.then(|| context.route_base.clone());
     let Some(streaming) = context.streaming.as_mut() else {
         return;
     };
     if let Some(route_base) = route_base {
-        let already_recorded = streaming
-            .checkpoint_route_roots
-            .iter()
-            .any(|(root, base)| *root == tag && base.as_ref() == route_base.as_ref());
+        let already_recorded = streaming.checkpoint_walk_roots.iter().any(|(root, base)| {
+            *root == tag
+                && base
+                    .as_ref()
+                    .is_some_and(|base| base.as_ref() == route_base.as_ref())
+        });
         if !already_recorded {
-            streaming.checkpoint_route_roots.push((tag, route_base));
+            if streaming.checkpoint_walk_roots.is_empty() {
+                streaming
+                    .checkpoint_walk_roots
+                    .reserve(streaming.checkpoint_tags.len() + 1);
+                streaming.checkpoint_walk_roots.extend(
+                    streaming
+                        .checkpoint_tags
+                        .iter()
+                        .copied()
+                        .map(|root| (root, None)),
+                );
+            }
+            streaming
+                .checkpoint_walk_roots
+                .push((tag, Some(route_base)));
         }
     }
     let byte_index = (index / 8) as usize;
@@ -53,6 +69,9 @@ pub(crate) fn record_checkpoint_tag<'data>(
     }
     streaming.checkpoint_seen[byte_index] |= bit;
     streaming.checkpoint_tags.push(tag);
+    if !route_dependent && !streaming.checkpoint_walk_roots.is_empty() {
+        streaming.checkpoint_walk_roots.push((tag, None));
+    }
     if streaming.component_reachability.requires_expansion(index) != Some(false) {
         streaming.checkpoint_needs_expansion = true;
     }
@@ -139,6 +158,12 @@ pub(super) fn expand_static_checkpoint_reachability<'data>(
     streaming.checkpoint_tags.clear();
     streaming.checkpoint_seen.fill(0);
 
+    append_reachability_stack(streaming)?;
+
+    Ok(true)
+}
+
+fn append_reachability_stack<'data>(streaming: &mut StreamingRenderState<'data>) -> Result<()> {
     while let Some(index) = streaming.reachability_stack.pop() {
         let byte_index = usize::try_from(index / 8).map_err(|_| {
             HandlerError::Invariant("component reachability index does not fit usize".to_string())
@@ -170,7 +195,7 @@ pub(super) fn expand_static_checkpoint_reachability<'data>(
             .extend(dependencies.iter().rev().copied());
     }
 
-    Ok(true)
+    Ok(())
 }
 
 pub(super) fn replace_checkpoint_reachability<'data>(
@@ -270,7 +295,9 @@ mod tests {
             active_boundary: None,
             pending_root: None,
             generated_root_ready: false,
-            next_sequence: 0,
+            next_boundary_id: 0,
+            next_record_sequence: 0,
+            checkpoint_updatable: false,
             bootstrap_sent: false,
             body_ended: false,
             inventory: vec![0u8; 1],
@@ -278,7 +305,7 @@ mod tests {
             inventory_hex: String::new(),
             template_inventory: vec![0u8; 1],
             checkpoint_tags: Vec::new(),
-            checkpoint_route_roots: Vec::new(),
+            checkpoint_walk_roots: Vec::new(),
             checkpoint_seen: vec![0u8; 1],
             checkpoint_needs_expansion: false,
             state_key_scratch: Vec::new(),
@@ -286,6 +313,7 @@ mod tests {
             css_href_scratch: Vec::new(),
             style_spec_scratch: Vec::new(),
             reachability_stack: Vec::new(),
+            update_plans: Vec::new(),
         };
         let index = protocol.component_index();
 

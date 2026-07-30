@@ -540,6 +540,10 @@ pub struct HtmlParser {
     /// parse, so a duplicate name can be rejected.
     boundary_names: HashSet<String>,
 
+    /// `<boundary name>` values in declaration order for the current entry.
+    /// The build stores this table in `protocol.bin` for one cold host lookup.
+    boundary_names_in_order: Vec<String>,
+
     /// `true` while parsing is inside an open `<boundary>`, used to
     /// reject a nested boundary.
     in_boundary: bool,
@@ -888,6 +892,7 @@ impl HtmlParser {
             current_fragment_id: String::new(),
             boundary_sequence: 0,
             boundary_names: HashSet::new(),
+            boundary_names_in_order: Vec::new(),
             in_boundary: false,
             body_depth: 0,
             structural_scopes: Vec::new(),
@@ -949,6 +954,13 @@ impl HtmlParser {
     #[must_use]
     pub fn boundary_count(&self) -> usize {
         self.boundary_sequence as usize
+    }
+
+    /// Free-form `<boundary name>` values in declaration order from the most
+    /// recent top-level [`HtmlParser::parse`] call.
+    #[must_use]
+    pub fn boundary_names(&self) -> &[String] {
+        &self.boundary_names_in_order
     }
 
     /// `src` of every authored `<script type="module">` outside any
@@ -1175,6 +1187,7 @@ impl HtmlParser {
             // through an open boundary or `<if>`/`<for>` scope.
             self.boundary_sequence = 0;
             self.boundary_names.clear();
+            self.boundary_names_in_order.clear();
             self.in_boundary = false;
             self.body_depth = 0;
             self.structural_scopes.clear();
@@ -2126,6 +2139,7 @@ impl HtmlParser {
         if !self.boundary_names.insert(name.clone()) {
             return Err(self.duplicate_boundary_name_error(element, &name));
         }
+        self.boundary_names_in_order.push(name);
 
         let sequence = self.boundary_sequence;
         self.boundary_sequence += 1;
@@ -6272,11 +6286,11 @@ mod tests {
         assert_eq!(diag.error_code(), Some(codes::INVALID_BOUNDARY_NAME));
     }
 
-    /// Boundary names are an *authoring* concept: they are validated for
-    /// uniqueness and then discarded, so no identifier charset restriction may
-    /// creep in and no name may reach the wire. Only the integer sequence does.
+    /// Boundary names stay free-form and are exposed separately for the
+    /// protocol's cold name-to-handle table. Render fragments still carry only
+    /// integer IDs, so response bytes never repeat author names.
     #[test]
-    fn boundary_names_are_free_form_and_never_reach_fragments() {
+    fn boundary_names_are_free_form_ordered_and_absent_from_fragments() {
         let mut parser = HtmlParser::new();
         let html = concat!(
             "<body>",
@@ -6289,6 +6303,10 @@ mod tests {
             .parse("index.html", html)
             .expect("free-form boundary names must be accepted");
         assert_eq!(parser.boundary_count(), 3);
+        assert_eq!(
+            parser.boundary_names(),
+            ["above the fold", "feed/items #2", "ダッシュボード"]
+        );
 
         let records = parser.into_fragment_records();
         let fragments = &records

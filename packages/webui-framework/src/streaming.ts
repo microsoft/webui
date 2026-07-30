@@ -21,6 +21,7 @@ export {
   isStreamingHaltedForTests as __isHaltedForTests,
   pendingTagWaiterCountForTests as __pendingTagWaiterCountForTests,
   pendingUndefinedRootCountForTests as __pendingUndefinedRootCountForTests,
+  streamingRetentionStateForTests as __streamingRetentionStateForTests,
 } from './streaming-coordinator.js';
 export { installStreamingCoordinator } from './streaming-install.js';
 export { parseBoundaryEnvelope } from './streaming-protocol.js';

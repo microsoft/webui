@@ -35,6 +35,7 @@ pub struct Protocol {
     protocol: WebUIProtocol,
     component_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
+    streaming_plans: HashMap<String, crate::streaming::StreamingEntryPlan>,
     route_index: CompiledRouteIndex,
     legacy_structural_signals: bool,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
@@ -55,6 +56,22 @@ impl Protocol {
     pub fn new(protocol: WebUIProtocol) -> Self {
         let component_index = build_component_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
+        let streaming_plans = protocol
+            .streaming_boundaries
+            .keys()
+            .filter_map(|entry| {
+                protocol.fragments.get(entry).map(|fragments| {
+                    (
+                        entry.clone(),
+                        crate::streaming::StreamingEntryPlan::new(
+                            entry,
+                            &fragments.fragments,
+                            protocol.streaming_boundaries.get(entry),
+                        ),
+                    )
+                })
+            })
+            .collect();
         let legacy_structural_signals = !protocol.fragments.values().any(|list| {
             list.fragments.iter().any(|fragment| {
                 matches!(
@@ -69,6 +86,7 @@ impl Protocol {
             protocol,
             component_index,
             component_reachability: OnceLock::new(),
+            streaming_plans,
             route_index,
             legacy_structural_signals,
             template_metadata_cache: RwLock::new(HashMap::new()),
@@ -86,6 +104,20 @@ impl Protocol {
     pub(crate) fn component_reachability(&self) -> &ComponentReachabilityIndex {
         self.component_reachability
             .get_or_init(|| ComponentReachabilityIndex::new(&self.protocol, &self.component_index))
+    }
+
+    pub(crate) fn streaming_plan(
+        &self,
+        entry_id: &str,
+    ) -> Option<&crate::streaming::StreamingEntryPlan> {
+        self.streaming_plans.get(entry_id)
+    }
+
+    pub(crate) fn streaming_boundary_names(&self, entry_id: &str) -> &[String] {
+        self.protocol
+            .streaming_boundaries
+            .get(entry_id)
+            .map_or(&[], |boundaries| boundaries.names.as_slice())
     }
 
     pub(crate) fn route_index(&self) -> &CompiledRouteIndex {
@@ -935,7 +967,7 @@ fn collect_inventoryable_components(
 /// conservatively so a later client-side state change already has its metadata.
 pub(crate) fn collect_reachable_components_from_roots(
     protocol: &WebUIProtocol,
-    roots: &[(&str, Cow<'_, str>)],
+    roots: &[(&str, Option<Cow<'_, str>>)],
     request_path: &str,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
@@ -944,7 +976,7 @@ pub(crate) fn collect_reachable_components_from_roots(
         stack.push(QueuedFragment {
             id: (*root).to_string(),
             inventoryable: true,
-            route_base: route_base.to_string(),
+            route_base: route_base.as_deref().unwrap_or("/").to_string(),
         });
     }
     collect_inventoryable_components_from_stack(protocol, Some(request_path), route_index, stack)
@@ -3076,8 +3108,8 @@ mod tests {
         }
         let route_index = CompiledRouteIndex::new(&protocol);
         let roots = [
-            ("shared-shell", Cow::Borrowed("/other")),
-            ("shared-shell", Cow::Borrowed("/account")),
+            ("shared-shell", Some(Cow::Borrowed("/other"))),
+            ("shared-shell", Some(Cow::Borrowed("/account"))),
         ];
 
         let reachable = collect_reachable_components_from_roots(

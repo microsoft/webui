@@ -8,8 +8,8 @@ Progressive Streaming Hydration boundary contract from
 `DESIGN.md` ("Progressive Streaming Hydration"): a
 **`message-composer`** must paint and become
 interactive before `DOMContentLoaded` while the response is still open; a
-**`weather-panel`** shows its own skeleton and resolves itself off the
-stream; a three-batch **feed** streams in afterward, each
+**`weather-panel`** shows its own skeleton and receives server state through the
+same response; a three-batch **feed** streams in afterward, each
 batch's `feed-item` islands hydrating independently as their own
 `<boundary>` commits.
 
@@ -20,7 +20,7 @@ pnpm install
 # Build client JS + check the server compiles
 pnpm build
 
-# Run the custom Actix server (real webui::build + render_streaming)
+# Run the custom Actix server (real webui::build + stream_response)
 pnpm start:server
 
 # Run the Playwright suite
@@ -33,39 +33,35 @@ instruction instead of silently falling back to full-state payloads.
 
 ### Boundary order and pacing
 
-| Sequence | Boundary      | Gap before the *next* flush        |
-| -------- | ------------- | ---------------------------------- |
-| 0        | weather shell | none — the composer must not wait   |
-| 1        | composer      | jittered 500–1000 ms                |
-| 2        | feed batch 1  | jittered 500–1000 ms                |
-| 3        | feed batch 2  | jittered 500–1000 ms                |
-| 4        | feed batch 3  | none — the response closes promptly |
+| Boundary ID | Boundary      | Delivery               |
+| ----------- | ------------- | ---------------------- |
+| 0           | weather shell | immediate, updatable   |
+| 1           | composer      | immediate, final       |
+| 2           | feed batch 1  | jittered 500-1000 ms   |
+| 3           | feed batch 2  | jittered 500-1000 ms   |
+| 4           | feed batch 3  | jittered 500-1000 ms   |
 
 The feed gaps are bounded by `--feed-delay-min-ms` (500) and
 `--feed-delay-max-ms` (1000) and are re-rolled per request, so repeated loads
-do not look mechanically identical:
+do not look mechanically identical. The forecast resolves independently, so its
+state record can appear between any two feed checkpoints:
 
 ```bash
 cargo run -p streaming-example-server -- --feed-delay-min-ms 200 --feed-delay-max-ms 400
 ```
 
-### Why weather fetches instead of streaming
+### Why weather uses a state record
 
-Boundaries are delivered strictly in document order, so a header that has
-already been parsed cannot be filled from later in the same response. The
-weather boundary therefore ships a *complete* island immediately — a
-`weather-panel` in its `loading` state — and the component resolves its own
-forecast from `/api/weather` (deliberately slower than a feed gap) after it
-hydrates. That is the answer to slow backend data: never make the
-critical island wait, and never leave a skeleton that resolves to nothing.
+Boundary HTML is delivered strictly in document order, so the weather boundary
+ships a complete `weather-panel` in its `loading` state immediately. The host
+commits it as `BoundaryMode::Updatable`, starts forecast work concurrently, and
+calls `StreamingResponse::update` when the forecast resolves. The typed state
+record uses the same open response and the checkpoint's compiled projection.
 
-This is also why it is a boundary at all rather than plain markup: the panel
-has to hydrate before it can fetch, and boundary 0 gets it interactive without
-delaying the composer, which commits in the same flush window.
-
-Filling an earlier, already-closed region from later in the same response is
-the deferred-boundary placement work described in `DESIGN.md`; the
-`resolveBoundaryRange()` seam in `streaming.ts` exists for exactly that.
+The browser applies the patch through WebUI reactivity. It does not issue a
+second request, replace DOM, rerun hydration, or call `hydratedCallback()` again.
+If the island module is still loading, the coordinator merges the patch into
+pending activation state and hydrates once with the newest values.
 
 ### Loading an island's code with the island
 
@@ -152,15 +148,13 @@ by the application bundle, not by CSS. See
 
 ### How it stays deterministic
 
-The server (`server/src/main.rs`) calls the real, opt-in
-`WebUIHandler::render_streaming` over a real `StreamingWriter`. Because a
-fast in-process render would otherwise commit every boundary in the same
-scheduler tick, `server/src/pacing.rs` wraps the writer in a narrowly
-scoped, example-only `CheckpointPacedWriter`: it sleeps *after* delegating
-each flush to the real writer, so backpressure and disconnect propagation are
-unaffected — no envelope or chunk is ever manufactured or split by hand. The
-delay is chosen per flush index by a caller-supplied schedule, which is what
-lets the weather-to-composer gap stay at zero while the feed gaps are paced.
+The server (`server/src/main.rs`) creates the real, opt-in
+`WebUIHandler::stream_response` session over a real `StreamingWriter`. One
+admitted blocking worker owns both objects for the response lifetime. A bounded
+async command channel applies backpressure to ready backend work, while
+`server/src/pacing.rs` races weather readiness against each feed delay and sends
+commands in completion order. No envelope or transport chunk is manufactured or
+split by the example.
 
 The server is split so the streaming call is the first thing you read:
 `main.rs` is the routes and `render_page`, `pacing.rs` is the demo-only

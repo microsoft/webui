@@ -17,9 +17,12 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use serde_json::{json, Value};
 use std::hint::black_box;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{FlushWriter, Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{
+    BoundaryMode, FlushWriter, Protocol, RenderOptions, ResponseWriter, WebUIHandler,
+};
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
+use webui_protocol::StreamingBoundaryList;
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
 const BOUNDARY_COUNTS: &[usize] = &[1, 3, 10, 100];
@@ -133,6 +136,16 @@ fn parser_protocol(boundaries: usize) -> Protocol {
 
     let mut document = WebUIProtocol::new(parser.into_fragment_records());
     document.initial_state_strategy = InitialStateStrategy::Components as i32;
+    if boundaries > 0 {
+        document.streaming_boundaries.insert(
+            ENTRY_ID.to_string(),
+            StreamingBoundaryList {
+                names: (0..boundaries)
+                    .map(|index| format!("boundary-{index}"))
+                    .collect(),
+            },
+        );
+    }
     // Attach the benchmark's known component surface after parsing so the timed
     // protocol carries a deterministic hydration payload without depending on
     // the plugin's artifact pipeline.
@@ -263,7 +276,9 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
             "streaming output is missing boundary {sequence} end marker"
         );
         assert!(
-            streaming.output.contains(&format!("[1,{sequence},0,")),
+            streaming
+                .output
+                .contains(&format!("[1,{sequence},0,{sequence},")),
             "streaming output is missing boundary {sequence} envelope"
         );
     }
@@ -275,7 +290,7 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
     assert!(
         streaming
             .output
-            .contains(&format!("[1,{boundaries},1,{{}}]")),
+            .contains(&format!("[1,{boundaries},3,0,{{}}]")),
         "streaming output is missing the terminal envelope"
     );
     // The empty terminal record is always the last envelope and never carries a
@@ -287,7 +302,7 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         boundaries + 1,
         "each envelope opens with the boundary sentinel prefix"
     );
-    if let Some(terminal) = streaming.output.find(&format!("[1,{boundaries},1,{{}}]")) {
+    if let Some(terminal) = streaming.output.find(&format!("[1,{boundaries},3,0,{{}}]")) {
         if boundaries > 0 {
             match streaming
                 .output
@@ -366,6 +381,68 @@ fn verify_ordinary_render() -> usize {
     ordinary_writer.output.len()
 }
 
+fn render_state_updates(
+    handler: &WebUIHandler,
+    protocol: &Protocol,
+    state: &Value,
+    updates: usize,
+    writer: &mut BenchWriter,
+) {
+    let options = RenderOptions::new(ENTRY_ID, REQUEST_PATH);
+    let mut response = match handler.stream_response(protocol, &options, writer) {
+        Ok(response) => response,
+        Err(error) => panic!("starting streaming response failed: {error}"),
+    };
+    let boundary = match response.boundary("boundary-0") {
+        Ok(boundary) => boundary,
+        Err(error) => panic!("resolving benchmark boundary failed: {error}"),
+    };
+    if let Err(error) = response.write_shell(state) {
+        panic!("writing benchmark shell failed: {error}");
+    }
+    if let Err(error) = response.write_boundary(boundary, state, BoundaryMode::Updatable) {
+        panic!("writing benchmark boundary failed: {error}");
+    }
+    for _ in 0..updates {
+        if let Err(error) = response.update(boundary, state) {
+            panic!("writing benchmark state update failed: {error}");
+        }
+    }
+    if let Err(error) = response.finish(state) {
+        panic!("finishing benchmark response failed: {error}");
+    }
+}
+
+fn verify_state_updates(updates: usize) -> (Protocol, usize, usize) {
+    let protocol = parser_protocol(1);
+    let handler = hydration_handler();
+    let state = benchmark_state();
+    let mut writer = BenchWriter::new(updates + 3);
+    render_state_updates(&handler, &protocol, &state, updates, &mut writer);
+
+    assert_eq!(
+        writer.flushes.len(),
+        updates + 3,
+        "shell, checkpoint, updates, and terminal must flush independently",
+    );
+    assert_eq!(
+        occurrences(&writer.output, ",2,0,"),
+        updates,
+        "each update needs one typed state-update record",
+    );
+    assert_eq!(
+        occurrences(&writer.output, "\"serverOnly\""),
+        0,
+        "updates must reuse the compiled boundary projection",
+    );
+    println!(
+        "streaming_state_updates updates={updates}: output_bytes={}, flushes={}",
+        writer.output.len(),
+        writer.flushes.len(),
+    );
+    (protocol, writer.output.len(), writer.flushes.len())
+}
+
 fn bench_streaming_hydration(c: &mut Criterion) {
     let state = benchmark_state();
     let cases: Vec<StreamingCase> = BOUNDARY_COUNTS
@@ -442,6 +519,32 @@ fn bench_streaming_hydration(c: &mut Criterion) {
         );
     }
     group.finish();
+
+    let mut update_group = c.benchmark_group("streaming_state_updates");
+    for updates in [1usize, 10, 100] {
+        let (protocol, output_bytes, flushes) = verify_state_updates(updates);
+        update_group.throughput(Throughput::Bytes(output_bytes as u64));
+        update_group.bench_with_input(
+            BenchmarkId::from_parameter(updates),
+            &updates,
+            |b, &updates| {
+                let handler = hydration_handler();
+                let mut writer = BenchWriter::new(flushes);
+                b.iter(|| {
+                    writer.reset();
+                    render_state_updates(
+                        &handler,
+                        black_box(&protocol),
+                        black_box(&state),
+                        updates,
+                        &mut writer,
+                    );
+                    black_box((writer.output.len(), writer.flushes.len()));
+                });
+            },
+        );
+    }
+    update_group.finish();
 }
 
 criterion_group!(benches, bench_streaming_hydration);

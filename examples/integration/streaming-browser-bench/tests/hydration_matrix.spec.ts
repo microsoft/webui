@@ -36,6 +36,7 @@ import { test, expect, type Browser, type CDPSession, type Page } from '@playwri
 import {
   buildOrdinaryScenario,
   buildStateDeliveryScenario,
+  buildStateUpdateScenario,
   buildStreamingScenario,
   ordinaryBaseHtml,
   streamingBaseHtml,
@@ -94,13 +95,11 @@ const PEAK_HEAP_ABS_FLOOR_BYTES = 512 * 1024;
 const PEAK_HEAP_TOLERANCE_PCT = 15;
 /** Deterministic production coordinator size caps. Raising either requires
  *  explicit review because every streaming application pays these bytes.
- *  esbuild output is deterministic, so these track the real coordinator size
- *  with a small margin. Re-baselined from 7KiB/2.5KiB after the framework
- *  streaming coordinator grew (~6.6KiB -> ~8.9KiB minified) in concurrent
- *  framework work outside this package's scope; the gate is preserved (still
- *  fails on further growth), only the baseline number was refreshed to reality. */
-const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 10 * 1024;
-const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 3_584;
+ *  Typed checkpoints, retained-root state records, strict record validation,
+ *  and terminal cleanup add ~1.9KiB minified / ~650B gzip over the final-only
+ *  coordinator. The caps leave under 4% headroom, so further growth still fails. */
+const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 12 * 1024;
+const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 4_224;
 /** Marginal elapsed-time cap per added boundary. The relative allowance scales
  *  with slower hosts while the absolute floor absorbs sub-millisecond noise. */
 const COORDINATOR_MARGINAL_ABS_CAP_MS = 0.25;
@@ -282,11 +281,11 @@ test.describe('progressive streaming hydration matrix', () => {
     expect(coordinatorTokensIn(fixtures.streaming.code).length).toBeGreaterThan(0);
     expect(
       fixtures.streamingIncrementalBytes,
-      'streaming coordinator incremental minified bytes stay within the reviewed 10KiB cap',
+      'streaming coordinator incremental minified bytes stay within the reviewed 12KiB cap',
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES);
     expect(
       fixtures.streamingIncrementalGzipBytes,
-      'streaming coordinator incremental gzip bytes stay within the reviewed 3.5KiB cap',
+      'streaming coordinator incremental gzip bytes stay within the reviewed 4.125KiB cap',
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_GZIP_CAP_BYTES);
 
     const bundle: BundleSizes = {
@@ -449,7 +448,53 @@ test.describe('progressive streaming hydration matrix', () => {
       stateLabels.flatMap((label) => Array<string>(rootsPerStateBoundary).fill(label)),
     );
 
-    // ── 6. Deterministic streaming-jank guarantee ────────────────────
+    // ── 6. Server-state update throughput and retention ──────────────
+    const updateScenario = buildStateUpdateScenario(100, 100);
+    const updateElapsed: number[] = [];
+    const updatePeak: Array<number | null> = [];
+    const updateRetained: Array<number | null> = [];
+    const updateLongTask: Array<number | null> = [];
+    for (let run = 0; run < RUNS; run++) {
+      const result = await runOnce(
+        browser,
+        streamingBaseHtml(),
+        fixtures.streaming.code,
+        {
+          mode: 'streaming',
+          boundaries: updateScenario.boundaries,
+          terminal: updateScenario.terminal,
+          timing: 'eager',
+          expectedFinalLabel: updateScenario.finalLabel,
+        },
+      );
+      assertEnforcedHeapSamples(result, updateScenario.label, run);
+      assertDeterministic('streaming', result.metrics, updateScenario.totalRoots);
+      expect(
+        result.metrics.finalStateMatchCount,
+        'every retained root receives the final server-state record',
+      ).toBe(updateScenario.totalRoots);
+      expect(
+        result.errors,
+        `no browser console/page errors (${updateScenario.label})`,
+      ).toEqual([]);
+      updateElapsed.push(result.metrics.elapsedMs);
+      updatePeak.push(result.metrics.peakHeapDeltaBytes);
+      updateRetained.push(result.retainedHeapDeltaBytes);
+      updateLongTask.push(result.metrics.maxLongTaskMs);
+    }
+    const updateElapsedMedian = median(updateElapsed);
+    console.log(
+      `\nServer-state updates (${updateScenario.totalRoots} roots x ${updateScenario.updateCount} updates, median of ${RUNS}):`,
+    );
+    console.log(
+      `  elapsed=${fmtMs(updateElapsedMedian)}ms`
+      + ` records/ms=${(updateScenario.updateCount / updateElapsedMedian).toFixed(2)}`
+      + ` peak=${fmtBytes(medianNullable(updatePeak))}`
+      + ` retained=${fmtBytes(medianNullable(updateRetained))}`
+      + ` longtask=${fmtMs(medianNullable(updateLongTask))}`,
+    );
+
+    // ── 7. Deterministic streaming-jank guarantee ────────────────────
     // Spreading work across many boundaries/microtasks must avoid a single
     // >50ms long task. Long-task entries only exist for tasks over 50ms, so a
     // null reading means "no long task at all". This is the concrete streaming
@@ -463,14 +508,14 @@ test.describe('progressive streaming hydration matrix', () => {
       ).toBeLessThanOrEqual(50);
     }
 
-    // ── 7. Strict, opt-in performance / memory gates ─────────────────
+    // ── 8. Strict, opt-in performance / memory gates ─────────────────
     if (ENFORCE) {
       enforceStrictGates(rows);
     } else {
       console.log('\n[hydration] strict gates skipped (set WEBUI_STREAMING_HYDRATION_ENFORCE=1 to enforce).');
     }
 
-    // ── 8. Baseline save / compare ───────────────────────────────────
+    // ── 9. Baseline save / compare ───────────────────────────────────
     const plainRows: HydrationRow[] = rows.map(({
       cpuSamples,
       elapsedSamples,

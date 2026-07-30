@@ -3,16 +3,14 @@
 
 //! HTTP server for the streaming priority-hydration example.
 //!
-//! The whole point is [`render_page`] below: it is the opt-in
-//! `WebUIHandler::render_streaming` path over a real `StreamingWriter`,
+//! The whole point is [`render_page`] below: it is the host-driven
+//! `WebUIHandler::stream_response` path over a real `StreamingWriter`,
 //! following the boundary contract in DESIGN.md ("Progressive Streaming
 //! Hydration"). Everything else here is ordinary
 //! server wiring, and the two demo-only concerns are quarantined:
 //!
-//! - [`pacing`] holds the flush schedule and the [`FlushWriter`] adapter
-//!   that makes this app's composer / weather / feed priority ordering
-//!   observable over real network timing instead of completing in one
-//!   scheduler tick.
+//! - [`pacing`] races independently ready weather and feed work, then sends
+//!   bounded commands to the one blocking worker that owns the response.
 //! - [`app`] holds the protocol build and sample feed data, which look the
 //!   same in every WebUI example.
 
@@ -38,16 +36,13 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_stream::wrappers::ReceiverStream;
 use webui::streaming::{ChunkPool, StreamingWriter};
-use webui::{Protocol, WebUIHandler};
+use webui::{BoundaryMode, HandlerError, Protocol, RenderOptions, WebUIHandler};
 use webui_example_dist_assets::{load_dist_assets, CachedAsset};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::RenderOptions;
 
 use crate::assets::{asset_response, insert_generated_css};
-use crate::jitter::Jitter;
-use crate::pacing::{feed_gap, CheckpointPacedWriter};
+use crate::pacing::RenderCommand;
 use crate::test_controls::TestControls;
-use crate::weather::weather_api;
 
 const ENTRY: &str = "index.html";
 const TEST_SESSION_COOKIE: &str = "webui-stream-test";
@@ -63,11 +58,11 @@ struct AppCtx {
     assets: HashMap<String, CachedAsset>,
 }
 
-/// Stream `GET /` through `render_streaming`.
+/// Stream `GET /` through a host-controlled response session.
 ///
-/// The two lines that matter are the `StreamingWriter` construction and the
-/// `render_streaming` call. The rest is the actix plumbing any streaming
-/// response needs, plus this demo's artificial pacing.
+/// A bounded async producer races feed and forecast readiness. One blocking
+/// worker owns both the renderer and transport, so chunks stay ordered without
+/// locks and the browser receives backpressure through `StreamingWriter`.
 async fn render_page(req: HttpRequest, ctx: web::Data<AppCtx>) -> HttpResponse {
     let render_permit = match Arc::clone(&ctx.render_permits).try_acquire_owned() {
         Ok(permit) => permit,
@@ -88,37 +83,55 @@ async fn render_page(req: HttpRequest, ctx: web::Data<AppCtx>) -> HttpResponse {
     let test_session = test_id
         .as_deref()
         .and_then(|id| ctx.test_controls.as_ref()?.session(id));
-    let render_test_session = test_session.clone();
-
-    // Bounded channel: backpressure when the client is slow, no unbounded
-    // memory growth. The blocking render task is spawned but *not* awaited
-    // here — awaiting it would buffer the whole paced render (every
-    // checkpoint delay) before the response could start, defeating the
-    // entire point of streaming. Instead the task runs concurrently,
-    // pushing each boundary's bytes onto `tx` as `render_streaming` commits
-    // it, while the response below starts draining `rx` immediately.
+    // Both channels are bounded: transport backpressure caps response bytes,
+    // and command backpressure caps ready backend results.
     let (tx, rx) = mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+    let (command_tx, mut command_rx) = mpsc::channel(1);
+    let _driver = actix_web::rt::spawn(pacing::drive(
+        command_tx,
+        test_session.clone(),
+        feed_delay_min_ms,
+        feed_delay_max_ms,
+    ));
     actix_web::rt::task::spawn_blocking(move || {
         let _render_permit = render_permit;
         let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
-        let inner =
+        let mut writer =
             StreamingWriter::new_pooled(tx, pool).with_flush_timeout(Duration::from_secs(30));
-        // One generator per request, so a reload re-orders how the page
-        // fills in instead of replaying one hard-coded timeline.
-        let mut jitter = Jitter::from_clock();
-        let mut writer = CheckpointPacedWriter::new(inner, move |index| {
-            let Some(gap) = feed_gap(index) else {
-                return Duration::ZERO;
-            };
-            if let Some(session) = render_test_session.as_ref() {
-                session.wait_for_feed_gap(gap);
-                Duration::ZERO
-            } else {
-                jitter.delay_ms(feed_delay_min_ms, feed_delay_max_ms)
+        let result = (|| {
+            let opts = RenderOptions::new(ENTRY, "/");
+            let mut response = handler.stream_response(&protocol, &opts, &mut writer)?;
+            let weather = response.boundary("weather-shell")?;
+            let composer = response.boundary("composer-ready")?;
+            let feed = [
+                response.boundary("feed-batch-1")?,
+                response.boundary("feed-batch-2")?,
+                response.boundary("feed-batch-3")?,
+            ];
+
+            response.write_shell(&state)?;
+            response.write_boundary(weather, &state, BoundaryMode::Updatable)?;
+            response.write_boundary(composer, &state, BoundaryMode::Final)?;
+
+            while let Some(command) = command_rx.blocking_recv() {
+                match command {
+                    RenderCommand::Weather(forecast) => response.update(weather, &forecast)?,
+                    RenderCommand::Feed(index) => {
+                        let boundary = feed.get(index).copied().ok_or_else(|| {
+                            HandlerError::Invariant(format!(
+                                "streaming example received invalid feed batch {index}"
+                            ))
+                        })?;
+                        response.write_boundary(boundary, &state, BoundaryMode::Final)?;
+                    }
+                    RenderCommand::Finish => return response.finish(&state),
+                }
             }
-        });
-        let opts = RenderOptions::new(ENTRY, "/");
-        if let Err(err) = handler.render_streaming(&protocol, &state, &opts, &mut writer) {
+            Err(HandlerError::Writer(
+                "streaming example command producer stopped before finish".to_owned(),
+            ))
+        })();
+        if let Err(err) = result {
             // The response's status/headers are already on the wire by the
             // time this can fail — we cannot turn this into an HTTP error.
             // Log for operators; the client simply sees a truncated body.
@@ -286,7 +299,6 @@ async fn main() -> Result<()> {
         App::new()
             .app_data(ctx.clone())
             .route("/", web::get().to(render_page))
-            .route("/api/weather", web::get().to(weather_api))
             .route("/__test/{session}/feed", web::post().to(release_test_feed))
             .route(
                 "/__test/{session}/weather",

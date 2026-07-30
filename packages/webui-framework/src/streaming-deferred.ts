@@ -16,6 +16,7 @@ import {
   nextAfterSubtreeWithin,
   nextWithinRoot,
   safeRemoveAttribute,
+  streamingErrorMessage,
 } from './streaming-dom.js';
 import {
   PENDING_ROOT_CONNECTED,
@@ -48,7 +49,20 @@ let activationGeneration = 0;
 let failureHandler: ((reason: string) => void) | null = null;
 
 const PENDING_BOUNDARY_STATE = Symbol();
+const PENDING_BOUNDARY_UPDATES = Symbol();
 const NO_BOUNDARY_STATE: unique symbol = Symbol();
+
+/** One boundary-owned shallow patch shared by every deferred root. */
+export interface PendingBoundaryUpdates {
+  readonly roots: Element[];
+  pendingRoots: number;
+  patch?: Record<string, unknown>;
+}
+
+export interface DeferredActivationOptions {
+  updates?: PendingBoundaryUpdates;
+  retainedRoots?: Element[];
+}
 
 type PendingRoot = Element & {
   [PENDING_ROOT_CONNECTED]?: () => void;
@@ -72,6 +86,7 @@ function fail(reason: string): void {
 export function activateElement(
   el: Element,
   state: Record<string, unknown> | undefined,
+  updates?: PendingBoundaryUpdates,
 ): number {
   if (!el.hasAttribute(STREAMED_HOST_ATTR)) return ELEMENT_IGNORED;
   const tag = el.tagName.toLowerCase();
@@ -85,7 +100,7 @@ export function activateElement(
     return ELEMENT_LIMIT_FAILURE;
   }
 
-  stashPendingState(el, state);
+  stashPendingState(el, state, updates);
   let waiter = pendingTagWaiters.get(tag);
   if (!waiter) {
     waiter = { generation: activationGeneration, roots: new Set() };
@@ -116,7 +131,7 @@ function onTagDefined(tag: string, generation: number): void {
       } catch (error) {
         fail(
           `failed to upgrade detached <${tag}>: ${
-            error instanceof Error ? error.message : String(error)
+            streamingErrorMessage(error)
           }`,
         );
         return;
@@ -159,8 +174,10 @@ function activatePendingRoot(
   if (!waiter.roots.delete(el)) return;
   pendingUndefinedRoots--;
   delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
+  let updates: PendingBoundaryUpdates | undefined;
   try {
-    const state = takePendingState(el);
+    updates = takePendingUpdates(el);
+    const state = mergePendingUpdates(takePendingState(el), updates);
     const outcome = invokeActivationHook(el, state);
     if (outcome === ACTIVATION_MISSING_TEMPLATE) {
       abandonDeferredDescendants(el);
@@ -173,12 +190,14 @@ function activatePendingRoot(
       el,
       null,
       state,
+      updates ? { updates } : undefined,
     );
     if (failure) fail(failure);
   } catch (error) {
     abandonDeferredDescendants(el);
     reportActivationFailure(tag, error);
   } finally {
+    if (updates?.pendingRoots === 0) updates.patch = undefined;
     if (
       waiter.roots.size === 0 &&
       pendingTagWaiters.get(tag) === waiter
@@ -200,6 +219,7 @@ export function activateDeferredTree(
   root: Node,
   end: Node | null,
   state: Record<string, unknown> | undefined,
+  options?: DeferredActivationOptions,
 ): string | null {
   let node = first;
   let resumeAfterDeferred: Node | null = null;
@@ -211,6 +231,18 @@ export function activateDeferredTree(
       return `streaming boundary walk exceeds ${MAX_MARKER_SCAN_NODES} nodes`;
     }
     visited++;
+    if (node.nodeType === 1 /* ELEMENT_NODE */) {
+      const el = node as Element;
+      if (
+        options?.retainedRoots &&
+        el.hasAttribute(STREAMED_HOST_ATTR)
+      ) {
+        if (options.retainedRoots.length >= MAX_ELEMENTS_PER_BOUNDARY) {
+          return `updatable streaming boundary exceeds ${MAX_ELEMENTS_PER_BOUNDARY} roots`;
+        }
+        options.retainedRoots.push(el);
+      }
+    }
     if (
       skippingDeferredDescendants &&
       node !== resumeAfterDeferred
@@ -225,7 +257,11 @@ export function activateDeferredTree(
       }
       elements++;
       try {
-        const outcome = activateElement(node as Element, state);
+        const outcome = activateElement(
+          node as Element,
+          state,
+          options?.updates,
+        );
         if (outcome === ACTIVATION_MISSING_TEMPLATE) {
           return `template metadata missing while activating <${(
             node as Element
@@ -255,7 +291,7 @@ export function activateDeferredTree(
 function reportActivationFailure(tag: string, error: unknown): void {
   console.error(
     `[WebUI] streaming: late activation failed for <${tag}>: ${
-      error instanceof Error ? error.message : String(error)
+      streamingErrorMessage(error)
     }`,
   );
 }
@@ -276,6 +312,7 @@ export function abandonPendingWaiters(): void {
 
 function clearPendingRoot(el: Element): void {
   if (hasPendingState(el)) takePendingState(el);
+  takePendingUpdates(el);
   delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
   abandonDeferredDescendants(el);
   abandonDeferredElement(el);
@@ -284,9 +321,15 @@ function clearPendingRoot(el: Element): void {
 function stashPendingState(
   el: Element,
   state: Record<string, unknown> | undefined,
+  updates?: PendingBoundaryUpdates,
 ): void {
-  (el as unknown as Record<symbol, unknown>)[PENDING_BOUNDARY_STATE] =
+  const store = el as unknown as Record<symbol, unknown>;
+  store[PENDING_BOUNDARY_STATE] =
     state === undefined ? NO_BOUNDARY_STATE : state;
+  if (updates) {
+    store[PENDING_BOUNDARY_UPDATES] = updates;
+    updates.pendingRoots++;
+  }
 }
 
 function hasPendingState(el: Element): boolean {
@@ -305,6 +348,26 @@ function takePendingState(
   return stored === NO_BOUNDARY_STATE
     ? undefined
     : (stored as Record<string, unknown> | undefined);
+}
+
+function takePendingUpdates(el: Element): PendingBoundaryUpdates | undefined {
+  const store = el as unknown as Record<symbol, unknown>;
+  const updates = store[PENDING_BOUNDARY_UPDATES] as
+    | PendingBoundaryUpdates
+    | undefined;
+  delete store[PENDING_BOUNDARY_UPDATES];
+  if (updates) updates.pendingRoots--;
+  return updates;
+}
+
+function mergePendingUpdates(
+  state: Record<string, unknown> | undefined,
+  updates: PendingBoundaryUpdates | undefined,
+): Record<string, unknown> | undefined {
+  if (!updates?.patch) return state;
+  return state
+    ? { ...state, ...updates.patch }
+    : { ...updates.patch };
 }
 
 function invokeActivationHook(

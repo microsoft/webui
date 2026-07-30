@@ -30,6 +30,8 @@ export interface DriveConfig {
   /** Correctness-only: capture the exact boundary state handed to each real
    *  WebUIElement activation. Disabled for measured runs. */
   readonly captureBoundaryState?: boolean;
+  /** State-update benchmark: expected bound label after the final server patch. */
+  readonly expectedFinalLabel?: string;
   /** Ordinary only: SSR roots inserted after the baseline heap sample so
    *  peak-heap is measured on the same empty->populated transition as the
    *  streaming arms. The base document already contains `#webui-data`. */
@@ -73,6 +75,8 @@ export interface RunMetrics {
   streamedStatePopulated: boolean;
   /** Correctness-only labels observed by the real deferred activation hook. */
   receivedBoundaryLabels?: string[];
+  /** Roots whose bound text reflects the final server-state record. */
+  finalStateMatchCount?: number;
 }
 
 /**
@@ -278,6 +282,16 @@ export async function runScenario(config: DriveConfig): Promise<RunMetrics> {
   // sentinel. A non-hydrated root has no wired binding, so its text is unchanged.
   const REACTIVE_SENTINEL = '__bench_reactive_probe__';
   const islands = document.getElementsByTagName('bench-island');
+  let finalStateMatchCount: number | undefined;
+  if (config.expectedFinalLabel !== undefined) {
+    finalStateMatchCount = 0;
+    for (let i = 0; i < islands.length; i++) {
+      const span = islands[i].querySelector('span');
+      if (span?.textContent === config.expectedFinalLabel) {
+        finalStateMatchCount++;
+      }
+    }
+  }
   let verifiedReactiveCount = 0;
   for (let i = 0; i < islands.length; i++) {
     const el = islands[i] as unknown as {
@@ -304,5 +318,6 @@ export async function runScenario(config: DriveConfig): Promise<RunMetrics> {
     scaffoldDataWs: document.querySelectorAll('[data-ws]').length,
     streamedStatePopulated: !!(win.__webui && win.__webui.state !== undefined),
     receivedBoundaryLabels,
+    finalStateMatchCount,
   };
 }
