@@ -166,14 +166,21 @@ fn normalize_path_as_index(path: &str) -> &str {
 /// `rel_path` is the file's path relative to the content directory, using
 /// forward slashes (e.g. `guide/install.md`). A nav entry that claims this
 /// file via its `source` field wins outright, which lets a page keep a stable
-/// URL when its filename is dictated by an outside convention. Otherwise the
-/// URL is derived from the filesystem: `.md` is dropped, then a trailing
-/// `index` — or a filename that repeats its parent folder — collapses to the
-/// folder.
+/// URL when its filename is dictated by an outside convention. Any fragment
+/// (`#`) or query string (`?`) in the override link is stripped before the
+/// route is formed — they are navigation-only markers that cannot appear in a
+/// filesystem path and would break prev/next matching against normalized
+/// sidebar links. Otherwise the URL is derived from the filesystem: `.md` is
+/// dropped, then a trailing `index` — or a filename that repeats its parent
+/// folder — collapses to the folder.
 fn page_url_path(rel_path: &str, base_path: &str, sources: &HashMap<&str, &str>) -> String {
     let prefix = base_path.trim_end_matches('/');
 
-    if let Some(link) = sources.get(rel_path) {
+    if let Some(&link) = sources.get(rel_path) {
+        // Strip any fragment (#) or query (?) — they are navigation-only and
+        // cannot appear in a filesystem-derived route or match sidebar links.
+        let end = link.find(['#', '?']).unwrap_or(link.len());
+        let link = &link[..end];
         let cleaned = link.trim_matches('/');
         return if cleaned.is_empty() {
             format!("{prefix}/")
@@ -196,9 +203,18 @@ fn page_url_path(rel_path: &str, base_path: &str, sources: &HashMap<&str, &str>)
 /// Map each nav entry that declares a `source` file to its configured link.
 ///
 /// Keys are content-relative markdown paths; values are raw config links.
+/// Entries whose `link` starts with `http` are excluded because `source` is
+/// only meaningful for internal routes; pairing it with an external URL would
+/// produce an invalid route in `page_url_path`.
 fn nav_source_overrides(nav: &[NavLink]) -> HashMap<&str, &str> {
     nav.iter()
-        .filter_map(|item| Some((item.source.as_deref()?, item.link.as_str())))
+        .filter_map(|item| {
+            let source = item.source.as_deref()?;
+            if item.link.starts_with("http") {
+                return None;
+            }
+            Some((source, item.link.as_str()))
+        })
         .collect()
 }
 
@@ -813,6 +829,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn page_url_path_nav_source_strips_fragment_from_override() {
+        // A nav link like "/ai#rules" must route to "/ai", not "/ai#rules".
+        let map = sources(&[("ai/SKILL.md", "/ai#rules")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn page_url_path_nav_source_strips_query_from_override() {
+        // A nav link like "/ai?v=2" must route to "/ai", not "/ai?v=2".
+        let map = sources(&[("ai/SKILL.md", "/ai?v=2")]);
+        assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
     // --- nav_source_overrides ---------------------------------------------
 
     fn nav_link(text: &str, link: &str, source: Option<&str>) -> NavLink {
@@ -838,6 +868,24 @@ mod tests {
     #[test]
     fn nav_source_overrides_empty_nav_yields_no_overrides() {
         assert!(nav_source_overrides(&[]).is_empty());
+    }
+
+    #[test]
+    fn nav_source_overrides_excludes_external_link_with_source() {
+        // Accidentally pairing `source` with an external URL must be silently
+        // dropped so it never reaches `page_url_path` as a broken route.
+        let nav = vec![
+            nav_link("AI", "/ai", Some("ai/SKILL.md")),
+            nav_link(
+                "GitHub",
+                "https://github.com/microsoft/webui",
+                Some("github.md"),
+            ),
+        ];
+        let map = nav_source_overrides(&nav);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get("ai/SKILL.md"), Some(&"/ai"));
+        assert!(!map.contains_key("github.md"));
     }
 
     #[test]
