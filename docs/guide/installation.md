@@ -200,27 +200,27 @@ WebUI publishes its framework reference as an installable [agent skill](https://
 <webui-press-tab-panel active>
 
 ```bash
-npx skills add microsoft/webui --skill webui-ai-reference
+npx skills add microsoft/webui --skill webui-reference
 ```
 
 </webui-press-tab-panel>
 <webui-press-tab-panel>
 
 ```bash
-yarn dlx skills add microsoft/webui --skill webui-ai-reference
+yarn dlx skills add microsoft/webui --skill webui-reference
 ```
 
 </webui-press-tab-panel>
 <webui-press-tab-panel>
 
 ```bash
-pnpm dlx skills add microsoft/webui --skill webui-ai-reference
+pnpm dlx skills add microsoft/webui --skill webui-reference
 ```
 
 </webui-press-tab-panel>
 </webui-press-tabs>
 
-The skill lands in `.agents/skills/webui-ai-reference/`, which GitHub Copilot reads directly. Agents that keep their own folder, such as Claude Code, also get a copy in theirs. Useful flags:
+The skill lands in `.agents/skills/webui-reference/`, which GitHub Copilot reads directly. Agents that keep their own folder, such as Claude Code, also get a copy in theirs. Useful flags:
 
 | Flag | Effect |
 | ---- | ------ |
@@ -231,7 +231,7 @@ The skill lands in `.agents/skills/webui-ai-reference/`, which GitHub Copilot re
 To try the reference in a single session without installing it:
 
 ```bash
-npx skills use microsoft/webui@webui-ai-reference | copilot
+npx skills use microsoft/webui@webui-reference | copilot
 ```
 
 <webui-blockquote appearance="tip" title="Read it yourself" icon="💡">

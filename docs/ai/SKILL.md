@@ -1,6 +1,6 @@
 ---
 layout: page
-name: webui-ai-reference
+name: webui-reference
 description: Authoritative WebUI framework reference for generating correct application code - template-first authoring rules, template syntax, styling, interactivity, routing, state JSON, and anti-patterns.
 ---
 
@@ -11,7 +11,7 @@ description: Authoritative WebUI framework reference for generating correct appl
 > that most often get violated. Deep-dive links are indexed at the bottom.
 >
 > Install this reference into your agent with
-> `npx skills add microsoft/webui --skill webui-ai-reference` - see
+> `npx skills add microsoft/webui --skill webui-reference` - see
 > [AI Coding Agents](/guide/installation#ai-coding-agents).
 
 ## Rules
