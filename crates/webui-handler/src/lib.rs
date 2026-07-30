@@ -9153,14 +9153,14 @@ mod tests {
             .render_streaming(
                 &protocol,
                 &test_json!({ "count": 1 }),
-                &RenderOptions::new("index.html", "/").with_nonce("nonce-123"),
+                &RenderOptions::new("index.html", "/").with_nonce("test-nonce-123"),
                 &mut writer,
             )
             .unwrap();
 
         let boundary_end = writer.output.find("<!--/wb:0-->").expect("end marker");
         let envelope = writer.output[boundary_end..]
-            .find("data-webui-boundary nonce=\"nonce-123\"")
+            .find("data-webui-boundary nonce=\"test-nonce-123\"")
             .map(|index| index + boundary_end)
             .expect("nonce-bearing envelope");
         let functions = writer
@@ -9172,7 +9172,7 @@ mod tests {
             .find("<webui-hydrate>")
             .expect("hydration sentinel");
         assert!(boundary_end < envelope && envelope < functions && functions < sentinel);
-        assert!(writer.output.contains("<script nonce=\"nonce-123\">"));
+        assert!(writer.output.contains("<script nonce=\"test-nonce-123\">"));
     }
 
     #[test]
@@ -9426,7 +9426,7 @@ mod tests {
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
         });
-        let options = RenderOptions::new("index.html", "/").with_nonce("legacy-nonce");
+        let options = RenderOptions::new("index.html", "/").with_nonce("test-legacy-nonce");
         let mut writer = TestWriter::new();
 
         handler
@@ -9434,7 +9434,7 @@ mod tests {
             .unwrap();
 
         let html = writer.get_content();
-        assert!(html.contains(r#"<meta name="webui-nonce" content="legacy-nonce">"#));
+        assert!(html.contains(r#"<meta name="webui-nonce" content="test-legacy-nonce">"#));
         assert!(html.contains(r#"<script type="application/json" id="webui-data""#));
         assert!(html.contains("<p>legacy</p>"));
 
