@@ -74,6 +74,7 @@ extends:
               echo "Detected version: ${VERSION}"
               echo "##vso[task.setvariable variable=releaseVersion]${VERSION}"
               echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${VERSION}"
+              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]v${VERSION}"
             displayName: Extract version from downloaded artifacts
             name: resolveTag
 
@@ -101,6 +102,8 @@ extends:
     - stage: Package
       dependsOn: Check
       condition: and(succeeded(), or(eq(variables['Build.Reason'], 'Manual'), eq(dependencies.Check.outputs['CheckVersion.deploymentCheck.needsDeployment'], 'true')))
+      variables:
+        releaseTag: $[ stageDependencies.Check.CheckVersion.outputs['resolveTag.releaseTag'] ]
       jobs:
       - job: Deploy
         templateContext:
@@ -147,3 +150,4 @@ extends:
             displayName: Separate release artifacts
 
           - template: WebUI.Sign.PipelineTemplate.yml@webuiPipelines  # Template reference
+          - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
