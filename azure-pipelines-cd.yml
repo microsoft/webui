@@ -55,40 +55,80 @@ extends:
           - checkout: self
             persistCredentials: "true"
 
-          - task: DownloadGitHubRelease@0
-            displayName: Download latest GitHub release
-            condition: and(succeeded(), eq(variables['targetReleaseTag'], ''))
-            inputs:
-              connection: fast
-              userRepository: microsoft/webui
-              defaultVersionType: 'latest'
-              downloadPath: '$(System.ArtifactsDirectory)'
-
-          - task: DownloadGitHubRelease@0
-            displayName: Download pinned GitHub release
-            condition: and(succeeded(), ne(variables['targetReleaseTag'], ''))
-            inputs:
-              connection: fast
-              userRepository: microsoft/webui
-              defaultVersionType: 'specificTag'
-              version: '$(targetReleaseTag)'
-              downloadPath: '$(System.ArtifactsDirectory)'
-
-          # Extract the version number from the downloaded .crate filename,
-          # e.g. microsoft-webui-0.0.3.crate → 0.0.3
           - script: |
-              CRATE_FILE=$(ls "$(System.ArtifactsDirectory)"/microsoft-webui-*.crate 2>/dev/null | head -1)
-              if [ -z "$CRATE_FILE" ]; then
-                echo "##vso[task.logissue type=error]No microsoft-webui-*.crate file found in $(System.ArtifactsDirectory)"
+              set -euo pipefail
+
+              if command -v gh >/dev/null 2>&1; then
+                gh --version
+                exit 0
+              fi
+
+              echo "GitHub CLI is not preinstalled; installing it from the official apt repository."
+              sudo mkdir -p -m 755 /etc/apt/keyrings
+              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt-get update -qq
+              sudo apt-get install -y gh
+              gh --version
+            displayName: Ensure GitHub CLI is available
+
+          - script: |
+              set -euo pipefail
+
+              if [ -z "${GH_TOKEN:-}" ] \
+                || { [ "${GH_TOKEN:0:1}" = '$' ] && [ "${GH_TOKEN:1:1}" = '(' ]; }; then
+                echo "##vso[task.logissue type=error]GH_TOKEN is unavailable. Configure it as a secret Azure Pipeline variable with read access to microsoft/webui releases."
                 exit 1
               fi
-              VERSION=$(basename "$CRATE_FILE" .crate | sed 's/^microsoft-webui-//')
-              echo "Detected version: ${VERSION}"
+
+              REQUESTED_TAG="${TARGET_RELEASE_TAG:-}"
+              if [ -n "$REQUESTED_TAG" ]; then
+                case "$REQUESTED_TAG" in
+                  v?*) ;;
+                  *)
+                    echo "##vso[task.logissue type=error]targetReleaseTag must be a v-prefixed GitHub release tag, for example v0.0.19."
+                    exit 1
+                    ;;
+                esac
+
+                if ! RELEASE_TAG=$(gh release view "$REQUESTED_TAG" --repo microsoft/webui --json tagName --jq .tagName); then
+                  echo "##vso[task.logissue type=error]Unable to resolve pinned GitHub release ${REQUESTED_TAG}."
+                  exit 1
+                fi
+                if [ "$RELEASE_TAG" != "$REQUESTED_TAG" ]; then
+                  echo "##vso[task.logissue type=error]Pinned release resolved to unexpected tag ${RELEASE_TAG}; expected ${REQUESTED_TAG}."
+                  exit 1
+                fi
+              else
+                if ! RELEASE_TAG=$(gh release view --repo microsoft/webui --json tagName --jq .tagName); then
+                  echo "##vso[task.logissue type=error]Unable to resolve the latest microsoft/webui GitHub release."
+                  exit 1
+                fi
+              fi
+
+              case "$RELEASE_TAG" in
+                v?*) ;;
+                *)
+                  echo "##vso[task.logissue type=error]Resolved release tag ${RELEASE_TAG} is not v-prefixed."
+                  exit 1
+                  ;;
+              esac
+
+              VERSION="${RELEASE_TAG#v}"
+              echo "Resolved GitHub release: ${RELEASE_TAG}"
               echo "##vso[task.setvariable variable=releaseVersion]${VERSION}"
               echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${VERSION}"
-              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]v${VERSION}"
-            displayName: Extract version from downloaded artifacts
+              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${RELEASE_TAG}"
+            displayName: Resolve GitHub release
             name: resolveTag
+            env:
+              GH_TOKEN: $(GH_TOKEN)
+              GH_NO_UPDATE_NOTIFIER: '1'
+              GH_PROMPT_DISABLED: '1'
+              TARGET_RELEASE_TAG: $(targetReleaseTag)
 
           # Check whether this version has already been deployed by looking
           # for a "deployed/vX.Y.Z" git tag. This avoids external network
@@ -134,14 +174,96 @@ extends:
               packageType: sdk
               version: '8.x'
 
-          - task: DownloadGitHubRelease@0
-            displayName: Download checked GitHub release artifacts
-            inputs:
-              connection: fast
-              userRepository: microsoft/webui
-              defaultVersionType: 'specificTag'
-              version: '$(releaseTag)'
-              downloadPath: '$(System.ArtifactsDirectory)'
+          - script: |
+              set -euo pipefail
+
+              if command -v gh >/dev/null 2>&1; then
+                gh --version
+                exit 0
+              fi
+
+              echo "GitHub CLI is not preinstalled; installing it from the official apt repository."
+              sudo mkdir -p -m 755 /etc/apt/keyrings
+              wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+                | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+              sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+                | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+              sudo apt-get update -qq
+              sudo apt-get install -y gh
+              gh --version
+            displayName: Ensure GitHub CLI is available
+
+          - script: |
+              set -euo pipefail
+
+              if [ -z "${GH_TOKEN:-}" ] \
+                || { [ "${GH_TOKEN:0:1}" = '$' ] && [ "${GH_TOKEN:1:1}" = '(' ]; }; then
+                echo "##vso[task.logissue type=error]GH_TOKEN is unavailable. Configure it as a secret Azure Pipeline variable with read access to microsoft/webui releases."
+                exit 1
+              fi
+
+              RELEASE_TAG="${CHECKED_RELEASE_TAG:-}"
+              case "$RELEASE_TAG" in
+                v?*) ;;
+                *)
+                  echo "##vso[task.logissue type=error]Check did not provide a valid v-prefixed release tag."
+                  exit 1
+                  ;;
+              esac
+
+              if ! CONFIRMED_TAG=$(gh release view "$RELEASE_TAG" --repo microsoft/webui --json tagName --jq .tagName); then
+                echo "##vso[task.logissue type=error]Unable to verify checked GitHub release ${RELEASE_TAG}."
+                exit 1
+              fi
+              if [ "$CONFIRMED_TAG" != "$RELEASE_TAG" ]; then
+                echo "##vso[task.logissue type=error]Checked release ${RELEASE_TAG} resolved to unexpected tag ${CONFIRMED_TAG}."
+                exit 1
+              fi
+
+              if ! RELEASE_ID=$(gh release view "$RELEASE_TAG" --repo microsoft/webui --json databaseId --jq .databaseId); then
+                echo "##vso[task.logissue type=error]Unable to resolve the GitHub release ID for ${RELEASE_TAG}."
+                exit 1
+              fi
+
+              DOWNLOAD_DIR="${ARTIFACTS_DIR}/release-assets"
+              EXPECTED_ASSETS="${ARTIFACTS_DIR}/expected-release-assets.txt"
+              ACTUAL_ASSETS="${ARTIFACTS_DIR}/downloaded-release-assets.txt"
+              rm -rf "$DOWNLOAD_DIR"
+              mkdir -p "$DOWNLOAD_DIR"
+
+              if ! gh api --paginate "/repos/microsoft/webui/releases/${RELEASE_ID}/assets?per_page=100" --jq '.[].name' > "$EXPECTED_ASSETS"; then
+                echo "##vso[task.logissue type=error]Unable to list all assets for GitHub release ${RELEASE_TAG}."
+                exit 1
+              fi
+              LC_ALL=C sort -o "$EXPECTED_ASSETS" "$EXPECTED_ASSETS"
+
+              EXPECTED_COUNT=$(wc -l < "$EXPECTED_ASSETS" | tr -d ' ')
+              if [ "$EXPECTED_COUNT" -eq 0 ]; then
+                echo "##vso[task.logissue type=error]GitHub release ${RELEASE_TAG} has no downloadable assets."
+                exit 1
+              fi
+
+              if ! gh release download "$RELEASE_TAG" --repo microsoft/webui --dir "$DOWNLOAD_DIR"; then
+                echo "##vso[task.logissue type=error]Failed to download all assets for GitHub release ${RELEASE_TAG}."
+                exit 1
+              fi
+
+              find "$DOWNLOAD_DIR" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
+                | LC_ALL=C sort > "$ACTUAL_ASSETS"
+              if ! diff -u "$EXPECTED_ASSETS" "$ACTUAL_ASSETS"; then
+                echo "##vso[task.logissue type=error]Downloaded assets do not match the complete paginated asset list for ${RELEASE_TAG}."
+                exit 1
+              fi
+
+              echo "Downloaded all ${EXPECTED_COUNT} assets for ${RELEASE_TAG}."
+            displayName: Download all checked GitHub release artifacts
+            env:
+              ARTIFACTS_DIR: $(System.ArtifactsDirectory)
+              CHECKED_RELEASE_TAG: $(releaseTag)
+              GH_TOKEN: $(GH_TOKEN)
+              GH_NO_UPDATE_NOTIFIER: '1'
+              GH_PROMPT_DISABLED: '1'
 
           # Stage downloaded files in the directories expected by
           # WebUI.Sign.PipelineTemplate.yml: .tgz → npm, .crate → crates, and
