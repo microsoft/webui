@@ -232,6 +232,8 @@ extends:
               rm -rf "$DOWNLOAD_DIR"
               mkdir -p "$DOWNLOAD_DIR"
 
+              # FIXME(#22397): Remove this GitHub CLI workaround after DownloadGitHubRelease@0
+              # supports paginated release assets: https://github.com/microsoft/azure-pipelines-tasks/pull/22397
               if ! gh api --paginate "/repos/microsoft/webui/releases/${RELEASE_ID}/assets?per_page=100" --jq '.[].name' > "$EXPECTED_ASSETS"; then
                 echo "##vso[task.logissue type=error]Unable to list all assets for GitHub release ${RELEASE_TAG}."
                 exit 1
