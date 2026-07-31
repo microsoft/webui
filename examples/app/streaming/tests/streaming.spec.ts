@@ -8,7 +8,8 @@ import { test, expect, type Page } from '@playwright/test';
  * composer / weather / feed priority ordering, built on the boundary
  * contract in DESIGN.md ("Progressive Streaming Hydration").
  *
- * Boundary sequence numbers follow document order:
+ * Checkpoint boundary IDs follow document order. Response record sequence
+ * numbers also include state updates and the terminal record:
  *
  * | Boundary ID | Boundary      | Delivery                            |
  * | ----------- | ------------- | ----------------------------------- |
@@ -17,6 +18,10 @@ import { test, expect, type Page } from '@playwright/test';
  * | 2           | feed batch 1  | jittered 500-1000ms                  |
  * | 3           | feed batch 2  | jittered 500-1000ms                  |
  * | 4           | feed batch 3  | jittered 500-1000ms                  |
+ *
+ * In the full controlled release, the weather state update consumes response
+ * sequence 3 between feed batch 1 and feed batch 2; the terminal record follows
+ * the final checkpoint.
  *
  * The Node API (`server/src/pacing.ts`) paces only the gaps that precede feed
  * batches, bounded by `--feed-delay-min-ms` / `--feed-delay-max-ms`, so
@@ -32,6 +37,7 @@ import { test, expect, type Page } from '@playwright/test';
 interface BoundaryEvent {
   sequence: number;
   terminal: boolean;
+  kind: 'checkpoint' | 'update' | 'terminal';
   t: number;
 }
 
@@ -84,7 +90,7 @@ async function instrumentPage(page: Page): Promise<void> {
     window.__hydrationCompleteTime = -1;
 
     window.addEventListener('webui:boundary-hydrated', (event) => {
-      const detail = (event as CustomEvent<{ sequence: number; terminal: boolean }>).detail;
+      const detail = (event as CustomEvent<Omit<BoundaryEvent, 't'>>).detail;
       window.__boundaryEvents.push({ ...detail, t: performance.now() });
     });
     window.addEventListener('webui:hydration-complete', () => {
@@ -166,7 +172,8 @@ test.describe('streaming priority hydration', () => {
 
     const events = await boundaryEvents(page);
     const sequences = events.map((e) => e.sequence);
-    expect(events.filter((event) => !event.terminal)).toHaveLength(5);
+    expect(events.filter((event) => event.kind === 'checkpoint')).toHaveLength(5);
+    expect(events.filter((event) => event.kind === 'update')).toHaveLength(1);
     for (let i = 1; i < sequences.length; i++) {
       expect(sequences[i]).toBeGreaterThan(sequences[i - 1]);
     }
