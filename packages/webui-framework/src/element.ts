@@ -23,7 +23,6 @@ import {
 import type {
   CompiledEventArg,
   CompiledEventArgs,
-  CompiledEventBindingMeta,
   TemplateBlockMeta,
   TemplateMeta,
   TemplateNodePath,
@@ -32,17 +31,8 @@ import type {
   ScopeFrame,
   TemplateInstance,
 } from './element/types.js';
-import { NON_BUBBLING_EVENTS } from './element/non-bubbling-events.js';
 
 type EventHandler = (...args: unknown[]) => unknown;
-
-type EventEntry = {
-  target: Element;
-  method: EventHandler;
-  args: CompiledEventArgs;
-  usesEvent: boolean;
-  scope?: ScopeFrame;
-};
 
 /**
  * The interactive element base. Authored components extend this to gain event
@@ -94,11 +84,10 @@ export class WebUIElement extends TemplateElement {
   /**
    * Wire element events.
    *
-   * Bubbling events use one delegated listener per event name on the component
-   * render root — a single listener serves every binding of that event in the
-   * block.  Events that do not bubble ({@link NON_BUBBLING_EVENTS}) never reach
-   * that listener, so each of their bindings gets a direct listener on the
-   * element it is bound to.
+   * Listeners attach to the bound element, never the render root.
+   * `$wireEvents` runs once per block instance, so delegating would stack one
+   * listener per block on the same node and fire all of them per dispatch — and
+   * would never see non-bubbling events such as `focus`.
    */
   private $wireEvents(
     instance: TemplateInstance,
@@ -109,40 +98,16 @@ export class WebUIElement extends TemplateElement {
   ): void {
     const groups = meta.eg;
     if (!groups) return;
-    const delegateTarget = this.shadowRoot ?? this;
     for (let i = 0; i < groups.length; i++) {
       const [eventName, bindings] = groups[i];
-      const bucket = this.$resolveEventBindings(root, bindings, resolver, scope);
-      if (NON_BUBBLING_EVENTS.has(eventName)) {
-        this.$addDirectEvents(instance, eventName, bucket);
-      } else {
-        this.$addDelegatedEvent(instance, delegateTarget, eventName, bucket);
+      for (let j = 0; j < bindings.length; j++) {
+        const [handlerName, args, target] = bindings[j];
+        const el = resolver(root, target);
+        if (el && el.nodeType === 1) {
+          this.$addEvent(instance, el, eventName, handlerName, args, scope);
+        }
       }
     }
-  }
-
-  private $resolveEventBindings(
-    root: Node,
-    bindings: CompiledEventBindingMeta[],
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
-    scope?: ScopeFrame,
-  ): EventEntry[] {
-    const entries: EventEntry[] = [];
-    for (let i = 0; i < bindings.length; i++) {
-      const [handlerName, args, target, usesEvent] = bindings[i];
-      const el = resolver(root, target);
-      if (!el || el.nodeType !== 1) continue;
-      const method = (this as Record<string, unknown>)[handlerName];
-      if (typeof method !== 'function') continue;
-      entries.push({
-        target: el as Element,
-        method: method as EventHandler,
-        args,
-        usesEvent: usesEvent === 1,
-        scope,
-      });
-    }
-    return entries;
   }
 
   /** Wire root-level events on the host element (or shadow root when present). */
@@ -153,57 +118,7 @@ export class WebUIElement extends TemplateElement {
     }
   }
 
-  /** Attach one listener for all bindings of the same event name in an instance. */
-  private $addDelegatedEvent(
-    instance: TemplateInstance,
-    target: EventTarget,
-    eventName: string,
-    entries: EventEntry[],
-  ): void {
-    if (entries.length === 0) return;
-    const listener = (event: Event): void => {
-      this.$dispatchDelegatedEvent(entries, event);
-    };
-    target.addEventListener(eventName, listener);
-    this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
-  }
-
-  private $dispatchDelegatedEvent(entries: EventEntry[], event: Event): void {
-    let current = event.target as Node | null;
-    while (current) {
-      for (let i = 0; i < entries.length; i++) {
-        const entry = entries[i];
-        if (entry.target === current) {
-          this.$callEventHandler(entry.method, entry.args, event, entry.scope, entry.target, entry.usesEvent);
-        }
-      }
-      current = current.parentNode;
-    }
-  }
-
-  /**
-   * Attach one listener per bound element.  Used for events that do not bubble
-   * ({@link NON_BUBBLING_EVENTS}) and therefore never reach the delegated
-   * listener on the render root.  `event.currentTarget` is natively correct
-   * here, so the delegated `currentTarget` override is not applied.
-   */
-  private $addDirectEvents(
-    instance: TemplateInstance,
-    eventName: string,
-    entries: EventEntry[],
-  ): void {
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const target = entry.target;
-      const listener = (event: Event): void => {
-        this.$callEventHandler(entry.method, entry.args, event, entry.scope);
-      };
-      target.addEventListener(eventName, listener);
-      this.$addCleanup(instance, () => target.removeEventListener(eventName, listener));
-    }
-  }
-
-  /** Attach a direct listener for root-level event bindings. */
+  /** Attach a direct listener for an event binding. */
   private $addEvent(
     instance: TemplateInstance,
     target: EventTarget,
@@ -228,13 +143,7 @@ export class WebUIElement extends TemplateElement {
     args: CompiledEventArgs,
     event: Event,
     scope?: ScopeFrame,
-    currentTarget?: EventTarget,
-    usesEvent = false,
   ): void {
-    if (currentTarget && usesEvent) {
-      this.$callEventHandlerWithCurrentTarget(method, args, event, scope, currentTarget);
-      return;
-    }
     switch (args.length) {
       case 0:
         method.call(this);
@@ -268,29 +177,6 @@ export class WebUIElement extends TemplateElement {
         return;
       default:
         method.apply(this, this.$resolveEventArgs(args, event, scope));
-    }
-  }
-
-  private $callEventHandlerWithCurrentTarget(
-    method: EventHandler,
-    args: CompiledEventArgs,
-    event: Event,
-    scope: ScopeFrame | undefined,
-    currentTarget: EventTarget,
-  ): void {
-    const descriptor = Object.getOwnPropertyDescriptor(event, 'currentTarget');
-    Object.defineProperty(event, 'currentTarget', {
-      configurable: true,
-      value: currentTarget,
-    });
-    try {
-      this.$callEventHandler(method, args, event, scope);
-    } finally {
-      if (descriptor) {
-        Object.defineProperty(event, 'currentTarget', descriptor);
-      } else {
-        delete (event as { currentTarget?: EventTarget | null }).currentTarget;
-      }
     }
   }
 

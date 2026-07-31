@@ -2887,15 +2887,14 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   destination tag. Route chain JSON has no `client` capability flag.
 - Events are resolved from compiler-grouped `eg[]` metadata entries using path
   indices. The compiler groups element events by event name and marks handlers
-  that receive `e`, so the runtime installs one delegated listener per event
-  name on the component render root without regrouping or scanning event
-  arguments during hydration. Events that do not bubble — `focus`, `blur`,
-  `mouseenter`/`mouseleave`, `load`, `error`, `toggle`, media events, and the
-  rest of `src/element/non-bubbling-events.ts` — never reach the render root, so
-  the runtime wires those groups as direct listeners on each bound element
-  instead. It resolves handler
-  arguments against the scope captured when that block was rendered. Nested
-  conditional/repeat instances unregister their listeners when removed
+  that receive `e`, so the runtime installs listeners without regrouping or
+  scanning event arguments during hydration. Listeners attach to the bound
+  element, never the render root: `$wireEvents` runs once per block instance, so
+  delegating would stack one listener per block on the same node and fire all of
+  them per dispatch, and would never see non-bubbling events such as `focus`.
+  It resolves handler arguments against the scope
+  captured when that block was rendered. Nested conditional/repeat instances
+  unregister their listeners when removed
   so detached DOM is not retained. Root events from `re[]` attach directly to the
   host element or shadow root.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.

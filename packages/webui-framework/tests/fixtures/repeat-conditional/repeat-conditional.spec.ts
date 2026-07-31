@@ -51,7 +51,7 @@ test.describe('repeat conditional fixture', () => {
     await expect(page.locator('test-repeat-conditional .link').first()).toHaveAttribute('data-href', '/search/shirts');
   });
 
-  test('delegates repeat-scoped event handlers after structural updates', async ({ page }) => {
+  test('rewires repeat-scoped event handlers after structural updates', async ({ page }) => {
     await page.locator('test-repeat-conditional .switch').click();
     await page.locator('test-repeat-conditional .link').first().click();
 

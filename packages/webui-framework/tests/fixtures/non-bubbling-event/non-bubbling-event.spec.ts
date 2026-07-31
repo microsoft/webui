@@ -65,13 +65,74 @@ test.describe('non-bubbling event fixture', () => {
     expect(result.lastRowId).toBe('b:b');
   });
 
-  test('bubbling bindings still use delegation', async ({ page }) => {
+  test('bubbling bindings fire on their own element', async ({ page }) => {
     const result = await page.evaluate(() => {
       const host = document.querySelector('test-non-bubbling') as any;
       const root = host.shadowRoot ?? host;
       root.querySelector('.btn').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
       host.$flushUpdates();
       return host.clicks;
+    });
+
+    expect(result).toBe(1);
+  });
+
+  test('application-defined events fire even when dispatched without bubbles', async ({ page }) => {
+    // `new CustomEvent(name)` defaults to bubbles: false, and an app-defined
+    // name can never appear in a framework-shipped event list.
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('test-non-bubbling') as any;
+      const root = host.shadowRoot ?? host;
+      const widget = root.querySelector('.widget');
+      const picked = new CustomEvent('ui-picked');
+      widget.dispatchEvent(picked);
+      host.$flushUpdates();
+      return { picks: host.picks, bubbles: picked.bubbles };
+    });
+
+    expect(result.bubbles).toBe(false);
+    expect(result.picks).toBe(1);
+  });
+
+  test('platform events the framework cannot enumerate fire', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('test-non-bubbling') as any;
+      const root = host.shadowRoot ?? host;
+      root.querySelector('.widget').dispatchEvent(new Event('cuechange'));
+      host.$flushUpdates();
+      return host.cues;
+    });
+
+    expect(result).toBe(1);
+  });
+
+  test('a bubbling application-defined event still reaches its binding from a descendant', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('test-non-bubbling') as any;
+      const root = host.shadowRoot ?? host;
+      const widget = root.querySelector('.widget');
+      const child = document.createElement('span');
+      widget.appendChild(child);
+      child.dispatchEvent(new CustomEvent('ui-picked', { bubbles: true }));
+      host.$flushUpdates();
+      return host.picks;
+    });
+
+    expect(result).toBe(1);
+  });
+
+  test('a binding fires when an ancestor stops propagation before the render root', async ({ page }) => {
+    // A listener on the bound element runs during the target phase, before an
+    // ancestor can stop anything. One on the render root would be suppressed.
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('test-non-bubbling') as any;
+      const root = host.shadowRoot ?? host;
+      const guard = root.querySelector('.guard') as HTMLElement;
+      guard.addEventListener('click', (event: Event) => event.stopPropagation());
+      const button = root.querySelector('.guarded') as HTMLButtonElement;
+      button.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+      host.$flushUpdates();
+      return host.guardedClicks;
     });
 
     expect(result).toBe(1);

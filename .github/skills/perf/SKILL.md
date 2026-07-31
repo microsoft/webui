@@ -45,7 +45,7 @@ These apply to `packages/webui-framework` (the client-side Web Component runtime
 1. **Single-pass hydration.** The framework walks the DOM once to connect all bindings. No multi-pass scanning.
 2. **Path-indexed targeted updates.** When an `@observable` changes, only bindings referencing that property are visited - not the entire template.
 3. **DOM cloning over innerHTML.** Use `cloneNode(true)` from cached template fragments. Never use `innerHTML` for component creation.
-4. **Delegated events.** One listener per event type on the shadow root, not one closure per element. Reduces listener count by orders of magnitude.
+4. **Direct event listeners.** Attach to the bound element, never the shadow root. `$wireEvents` runs once per block instance, so delegating stacks one listener per block on the same node and fires all of them per dispatch — O(N) for no reduction in listener count.
 5. **Microtask coalescing.** Multiple property changes within the same synchronous block batch into a single DOM update via `queueMicrotask`.
 6. **Cursor-based repeat reconciliation.** `<for>` block updates use a diff algorithm that only calls `insertBefore` on nodes that actually moved. Append/prepend/remove are O(1).
 7. **No `for..in` on objects.** Use `Object.keys()` with an indexed `for` loop — faster and prototype-safe without needing `Object.hasOwn`. Applies to `setState`, `setInitialState`, and any code iterating user-provided objects.
