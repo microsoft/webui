@@ -413,6 +413,9 @@ importers:
       '@microsoft/webui':
         specifier: workspace:*
         version: link:../../../packages/webui
+      '@microsoft/webui-framework':
+        specifier: workspace:*
+        version: link:../../../packages/webui-framework
 
   examples/integration/node-addon-bench:
     dependencies:

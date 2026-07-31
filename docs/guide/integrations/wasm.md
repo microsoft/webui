@@ -46,6 +46,7 @@ deterministic indices, and binds the plugin once.
 |--------|-------------|
 | `render(stateJson, options?)` | Return complete rendered HTML as a string |
 | `renderStream(stateJson, onChunk, options?)` | Invoke callbacks coalesced around a 16 KiB target |
+| `streamResponse(options?)` | Open a progressive [`StreamingSession`](#streamingsession) returning one `Uint8Array` per call |
 | `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with active-route projected state |
 | `renderComponentTemplates(componentTags, inventoryHex)` | Return requested template payloads and updated inventory |
 | `tokens()` | Return CSS token names in build order |
@@ -53,6 +54,38 @@ deterministic indices, and binds the plugin once.
 For a complete static/CDN service worker example using this callback to write a
 `ReadableStream` and mirror `--theme` token injection in the browser, see
 [Serverless Architecture](/guide/serverless-architecture).
+
+### `StreamingSession`
+
+When the entry declares [`<boundary>` directives](/guide/concepts/directives/boundary),
+`streamResponse()` opens a session that returns bytes instead of writing them,
+which maps directly onto a `ReadableStream` controller in a service worker:
+
+```js
+const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
+const rows = session.boundary('rows');
+
+const body = new ReadableStream({
+  async start(controller) {
+    controller.enqueue(session.writeShell(baseState));
+    controller.enqueue(session.writeBoundary(rows, await loadRows()));
+    controller.enqueue(session.finish({}));
+    controller.close();
+  },
+});
+```
+
+| Member | Description |
+|--------|-------------|
+| `boundary(name)` | Resolve an authored boundary name to its integer handle |
+| `boundaryCount` / `finished` | Declared boundary count; whether `finish()` ran |
+| `writeShell(state)` | Document prefix through the first semantic flush |
+| `writeBoundary(id, state, mode?)` | One boundary's markup and checkpoint (`"final"` or `"updatable"`) |
+| `update(id, state)` | Projected state patch to an updatable boundary |
+| `finish(state)` | Tail checkpoint, terminal record, and document suffix |
+
+The API and its ordering rules are identical on Node, C, and C#, so the same
+server logic ports between them unchanged.
 
 ## Parser-only API
 
@@ -123,5 +156,5 @@ render time separately.
 | Protocol format | Protobuf binary | Protobuf bytes |
 | CSS strategy | Link by default, Style or Module when configured | Style for virtual file builds |
 | File I/O | Filesystem and component discovery sources | Virtual file map |
-| Streaming | Supported by native handlers | `Protocol.renderStream()` calls a batched JavaScript callback |
+| Streaming | Supported by native handlers | `Protocol.renderStream()` calls a batched JavaScript callback, and `Protocol.streamResponse()` returns progressive chunks |
 | Bundle choice | Native crates/addons | Handler-only, parser-only, or combined WASM |

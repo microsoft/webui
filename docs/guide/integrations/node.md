@@ -99,6 +99,7 @@ Deno.serve({ port: 3000 }, (req) => {
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
 | `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
 | `protocol.renderStream(state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
+| `protocol.streamResponse(options?)` | Open a [progressive streaming session](#progressive-streaming) that returns one `Buffer` per host call |
 | `protocol.renderPartial(state, entry, requestPath, inventory)` | Produce a complete partial-navigation JSON response |
 | `protocol.renderComponentTemplates(tags, inventory)` | Return on-demand template payloads |
 | `protocol.tokens()` | Return CSS token names in build order |
@@ -194,3 +195,81 @@ CLI fallback accepts manifest paths only.
 | `cssFileCount` | `number` | CSS files produced |
 | `protocolSizeBytes` | `number` | Protocol binary size |
 | `tokenCount` | `number` | CSS tokens discovered |
+
+## Progressive Streaming
+
+`renderStream()` is push-based: the native renderer decides when your callback
+runs, so a `false` result from `response.write()` cannot pause it. That is fine
+for whole-document rendering, but it cannot express a response your server paces.
+
+`protocol.streamResponse()` inverts that. It opens a **session** whose methods
+return the bytes they produced, so your server owns the socket, the write order,
+and the backpressure contract:
+
+```js
+import { once } from 'node:events';
+
+const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
+
+// Authored boundary names resolve to integer handles once, outside the loop.
+const status = session.boundary('job-status');
+const rows = session.boundary('rows');
+
+res.writeHead(200, {
+  'Content-Type': 'text/html; charset=utf-8',
+  'X-Accel-Buffering': 'no',
+});
+
+await write(res, session.writeShell(baseState));
+await write(res, session.writeBoundary(status, statusState, 'updatable'));
+await write(res, session.writeBoundary(rows, await loadRows()));
+
+// Patches an already-hydrated island on this same response.
+await write(res, session.update(status, { jobState: 'succeeded' }));
+res.end(session.finish({}));
+
+async function write(res, chunk) {
+  if (res.write(chunk)) return;
+  // An aborted client never emits 'drain', and surfaces as 'close', not
+  // 'error' — so waiting on 'drain' alone would hang forever.
+  await new Promise((ok, fail) => {
+    const done = (error) => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      if (error) fail(error);
+      else ok();
+    };
+    const onDrain = () => done();
+    const onClose = () => done(new Error('client disconnected'));
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+  });
+}
+```
+
+That `write` helper is the entire transport integration, which is why
+the same session drops into Express, Fastify, Hapi, or a raw socket unchanged.
+
+The page's entry template must declare
+[`<boundary>` directives](/guide/concepts/directives/boundary); `boundaryCount`
+reports how many it has.
+
+### StreamingSession
+
+| Member | Description |
+|--------|-------------|
+| `boundary(name)` | Resolve an authored boundary name to its integer handle. Throws with the valid names and a "did you mean …?" suggestion on a typo. |
+| `boundaryCount` | Number of boundaries the entry declares |
+| `finished` | Whether `finish()` has been called |
+| `writeShell(state)` | Bytes for the document prefix through the first semantic flush |
+| `writeBoundary(id, state, mode?)` | Bytes for one boundary's markup, metadata delta, and checkpoint. `mode` is `"final"` (default) or `"updatable"` |
+| `update(id, state)` | Bytes for a projected state patch to a boundary committed as `"updatable"` |
+| `finish(state)` | Bytes for the tail checkpoint, terminal record, and document suffix |
+
+Ordering is enforced: the shell first, boundaries in declaration order, updates
+only to updatable boundaries already committed, and `finish()` last. A rejected
+call throws and leaves the session usable, so invalid state does not cost you the
+response. Sessions are independent, so hold one per in-flight request.
+
+**Runnable example.** `examples/integration/node/streaming-server.js` is a
+complete `node:http` server built on this API, with no sidecar process.

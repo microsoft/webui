@@ -86,6 +86,29 @@ export interface ProtocolOptions {
   plugin?: string;
 }
 
+/**
+ * Whether a committed boundary may receive later state updates.
+ *
+ * `final` releases every boundary-local reference once the island hydrates.
+ * `updatable` retains the roots and projection so `update()` can patch them,
+ * so use it only for boundaries you actually intend to patch.
+ */
+export type BoundaryMode = "final" | "updatable";
+
+/** Per-response settings for a host-driven streaming session. */
+export interface StreamOptions {
+  /** Fragment ID to start rendering from (default: "index.html"). */
+  entry?: string;
+  /** URL path to match routes against (default: "/"). */
+  requestPath?: string;
+  /** CSP nonce applied to generated inline `<script>` tags. */
+  nonce?: string;
+  /** HTML injected at the structural `head_end` boundary. */
+  headInject?: string;
+  /** HTML injected at the structural `body_end` boundary. */
+  bodyInject?: string;
+}
+
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
   /** Module CSS `<style>` strings for the requested components. */
@@ -149,9 +172,28 @@ interface NativeProtocol {
     requestPath: string,
     onChunk: (html: string) => void,
   ): void;
+  streamResponse(
+    entry: string,
+    requestPath: string,
+    options?: {
+      nonce?: string;
+      headInject?: string;
+      bodyInject?: string;
+    },
+  ): NativeStreamingSession;
   renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
   renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
   tokens(): string[];
+}
+
+interface NativeStreamingSession {
+  readonly boundaryCount: number;
+  readonly finished: boolean;
+  boundary(name: string): number;
+  writeShell(stateJson: string): Buffer;
+  writeBoundary(boundary: number, stateJson: string, mode?: BoundaryMode): Buffer;
+  update(boundary: number, stateJson: string): Buffer;
+  finish(stateJson: string): Buffer;
 }
 
 let addon: NativeAddon | null = null;
@@ -358,6 +400,111 @@ export class Protocol {
   tokens(): string[] {
     return this.#native.tokens();
   }
+
+  /**
+   * Open a host-driven progressive response.
+   *
+   * Unlike {@link renderStream}, which pushes every chunk during one
+   * synchronous call, the returned session hands each chunk back so this
+   * server owns the socket, the write order, and backpressure.
+   */
+  streamResponse(options?: StreamOptions): StreamingSession {
+    return new StreamingSession(
+      this.#native.streamResponse(
+        options?.entry ?? "index.html",
+        options?.requestPath ?? "/",
+        {
+          nonce: options?.nonce,
+          headInject: options?.headInject,
+          bodyInject: options?.bodyInject,
+        },
+      ),
+    );
+  }
+}
+
+/**
+ * A progressive HTML response written one chunk at a time.
+ *
+ * Every method returns the bytes it produced instead of writing them, so the
+ * caller decides when they reach the socket and can await `drain` between
+ * chunks. The session holds no transport and never blocks on one.
+ *
+ * Ordering is enforced: the shell first, then each boundary exactly once in
+ * declaration order, `update()` only after its boundary commits as
+ * `updatable`, and `finish()` last. A violation throws before any byte is
+ * produced.
+ *
+ * ```js
+ * const session = protocol.streamResponse({ requestPath: req.url });
+ * const weather = session.boundary("weather-shell");
+ *
+ * res.write(session.writeShell(shellState));
+ * res.write(session.writeBoundary(weather, weatherShell, "updatable"));
+ *
+ * const forecast = await forecastReady;
+ * if (!res.write(session.update(weather, forecast))) {
+ *   await once(res, "drain");
+ * }
+ *
+ * res.end(session.finish({}));
+ * ```
+ */
+export class StreamingSession {
+  readonly #native: NativeStreamingSession;
+
+  /** @internal Created by {@link Protocol.streamResponse}. */
+  constructor(native: NativeStreamingSession) {
+    this.#native = native;
+  }
+
+  /** Number of compile-time boundaries declared by this entry. */
+  get boundaryCount(): number {
+    return this.#native.boundaryCount;
+  }
+
+  /** Whether the terminal record has been written. */
+  get finished(): boolean {
+    return this.#native.finished;
+  }
+
+  /**
+   * Resolve an authored boundary name to a stable integer handle.
+   *
+   * Resolve once outside the write loop; reusing the handle costs nothing.
+   * An unknown name throws with the valid names and a suggestion.
+   */
+  boundary(name: string): number {
+    return this.#native.boundary(name);
+  }
+
+  /** Render everything before the first boundary. */
+  writeShell(state: object | string): Buffer {
+    return this.#native.writeShell(toStateJson(state));
+  }
+
+  /** Render and commit the next boundary in declaration order. */
+  writeBoundary(
+    boundary: number,
+    state: object | string,
+    mode: BoundaryMode = "final",
+  ): Buffer {
+    return this.#native.writeBoundary(boundary, toStateJson(state), mode);
+  }
+
+  /** Push a projected state patch to a committed `updatable` boundary. */
+  update(boundary: number, state: object | string): Buffer {
+    return this.#native.update(boundary, toStateJson(state));
+  }
+
+  /** Render the document tail and emit the terminal record. */
+  finish(state: object | string = {}): Buffer {
+    return this.#native.finish(toStateJson(state));
+  }
+}
+
+function toStateJson(state: object | string): string {
+  return typeof state === "string" ? state : JSON.stringify(state);
 }
 
 /** Inspect protocol bytes and return JSON representation. */

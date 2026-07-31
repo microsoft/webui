@@ -153,8 +153,7 @@ parent-first hydration remains intact. `webui:hydration-complete` stays open
 until all definitions activate, and the script is authored content, so boundary
 teardown leaves it alone.
 
-::: tip WebUI preloads the shared chunks for you
-Splitting an island into its own bundle entry makes your bundler hoist the
+**WebUI preloads the shared chunks for you.** Splitting an island into its own bundle entry makes your bundler hoist the
 framework runtime into a chunk your critical entry statically imports. The
 preload scanner cannot see that chunk behind your `<script>` tag, so without
 help the browser would only discover it after downloading and parsing the
@@ -184,7 +183,6 @@ cross-origin URLs. The browser still discovers the imports normally.
 
 For a sub-kilobyte component the extra request may still not be worth it;
 split for the architectural benefit first.
-:::
 
 Each checkpoint includes projected state and first-use metadata for the
 component graph reachable from roots rendered in that boundary. This includes
@@ -192,6 +190,96 @@ initially hidden conditional/repeat descendants so they can appear after a
 client state change without a page-global bootstrap. Inventory remains limited
 to roots that actually rendered, and unrelated later boundaries remain
 excluded.
+
+## Drive the Response from Your Host
+
+Streaming is not Rust-only. Node, WASM, C, and C# open a **streaming session**
+whose methods *return* the bytes they produced instead of writing them, so your
+server keeps the socket and applies its own backpressure policy.
+
+**Node**
+
+```js
+import { once } from 'node:events';
+
+const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
+const weather = session.boundary('weather-shell');   // resolve names once
+const composer = session.boundary('composer');
+
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+await write(res, session.writeShell(pageState));
+await write(res, session.writeBoundary(weather, loadingState, 'updatable'));
+await write(res, session.writeBoundary(composer, composerState));
+
+await write(res, session.update(weather, await forecast));
+res.end(session.finish({}));
+
+async function write(res, chunk) {
+  if (res.write(chunk)) return;
+  // An aborted client never emits 'drain', and surfaces as 'close', not
+  // 'error' — so waiting on 'drain' alone would hang forever.
+  await new Promise((ok, fail) => {
+    const done = (error) => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      if (error) fail(error);
+      else ok();
+    };
+    const onDrain = () => done();
+    const onClose = () => done(new Error('client disconnected'));
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+  });
+}
+```
+
+**C#**
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+var weather = session.Boundary("weather-shell");
+var composer = session.Boundary("composer");
+
+Response.ContentType = "text/html; charset=utf-8";
+await Response.Body.WriteAsync(session.WriteShell(pageState));
+await Response.Body.WriteAsync(
+    session.WriteBoundary(weather, loadingState, BoundaryMode.Updatable));
+await Response.Body.WriteAsync(session.WriteBoundary(composer, composerState));
+await Response.Body.FlushAsync();
+
+await Response.Body.WriteAsync(session.Update(weather, await forecast));
+await Response.Body.WriteAsync(session.Finish("{}"));
+```
+
+**C**
+
+```c
+size_t len = 0;
+uint8_t *chunk = webui_streaming_session_write_shell(session, page_state, &len);
+if (!chunk) { /* webui_last_error() */ }
+send_all(socket, chunk, len);   /* the length is authoritative: not NUL-terminated */
+webui_free(chunk);
+```
+
+The rules are identical everywhere: resolve boundary names once, write the shell
+first, write boundaries in declaration order, `update` only boundaries committed
+as `updatable`, and `finish` last. A rejected call leaves the session usable, so
+bad input does not cost you the response.
+
+Rust servers can use the same session, or keep `stream_response`, which writes
+directly into a borrowed `ResponseWriter` and avoids the per-chunk buffer.
+
+**Two ways to run this.** Use a **session** when your server already terminates
+HTTP and wants WebUI as a library — see
+`examples/integration/node/streaming-server.js`. Use
+**`webui serve --api-port`** when you want your backend to own readiness and
+ordering while the CLI owns rendering, static assets, and the browser transport
+— see `examples/app/streaming`. Both are thin adapters over the same session, so
+ordering, projection, the wire format, and every diagnostic are shared.
+
+Whichever you pick, disable proxy buffering for the route
+(`X-Accel-Buffering: no` for nginx). A flush that a proxy coalesces is not a
+flush the browser sees.
 
 ## Pick a CSS Strategy for Streaming
 
@@ -228,15 +316,14 @@ unstyled.
   root is styled. Prefer it when repeat visits matter more than first-visit
   paint, or when the boundaries involved are low priority.
 
-::: warning Serve the generated stylesheets
-`link` and `module` reference component stylesheets, which the WebUI build
+**Serve the generated stylesheets.** `link` and `module` reference component
+stylesheets, which the WebUI build
 returns in `BuildResult::css_files` rather than writing to your client
 bundler's output directory. `webui build` writes them to disk and `webui serve`
 serves them for you, but a **custom server must serve them itself** — otherwise
 the markup and preload hints are correct while every stylesheet URL 404s and
 the page renders unstyled. The streaming example delegates this responsibility
 to `webui serve`.
-:::
 
 WebUI applies one strategy per build, so a page whose critical boundary wants
 `style` and whose repeated feed wants `link` must currently pick one. Choose for

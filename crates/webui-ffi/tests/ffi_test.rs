@@ -20,6 +20,11 @@ use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
     webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
     webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
+    webui_streaming_session_boundary, webui_streaming_session_boundary_count,
+    webui_streaming_session_create, webui_streaming_session_destroy,
+    webui_streaming_session_finish, webui_streaming_session_is_finished,
+    webui_streaming_session_update, webui_streaming_session_write_boundary,
+    webui_streaming_session_write_shell,
 };
 use webui_protocol::{
     FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
@@ -848,5 +853,390 @@ fn protocol_exposes_tokens() {
 fn protocol_destroy_null_is_safe() {
     unsafe {
         webui_protocol_destroy(std::ptr::null_mut());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests: host-driven streaming sessions
+// ---------------------------------------------------------------------------
+
+/// Build a two-boundary streaming entry with one hydrating component each.
+fn build_streaming_protocol() -> Vec<u8> {
+    let hosts = ["comp-a", "comp-b"];
+    let mut entry = vec![
+        WebUIFragment::raw("<!DOCTYPE html><html><head>"),
+        structural_fragment("head_start"),
+        structural_fragment("head_end"),
+        WebUIFragment::raw("</head><body>"),
+        structural_fragment("body_start"),
+    ];
+    for (sequence, host) in hosts.iter().enumerate() {
+        entry.push(structural_fragment(&format!("boundary_start:{sequence}")));
+        entry.push(WebUIFragment::raw(format!("<{host}")));
+        entry.push(structural_fragment(&format!("streaming_root:{host}")));
+        entry.push(WebUIFragment::raw(">"));
+        entry.push(WebUIFragment::component(*host));
+        entry.push(WebUIFragment::raw(format!("</{host}>")));
+        entry.push(structural_fragment(&format!("boundary_end:{sequence}")));
+    }
+    entry.push(structural_fragment("body_end"));
+    entry.push(WebUIFragment::raw("</body></html>"));
+
+    let mut fragments = HashMap::new();
+    fragments.insert("index.html".to_string(), FragmentList { fragments: entry });
+    for host in hosts {
+        fragments.insert(
+            host.to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(format!("<b>{host}</b>"))],
+            },
+        );
+    }
+
+    let mut document = WebUIProtocol::new(fragments);
+    document.initial_state_strategy = InitialStateStrategy::Components as i32;
+    document.streaming_boundaries.insert(
+        "index.html".to_string(),
+        webui_protocol::StreamingBoundaryList {
+            names: vec!["first".to_string(), "second".to_string()],
+        },
+    );
+    for (host, key) in hosts.iter().zip(["a_count", "b_count"]) {
+        document.components.insert(
+            (*host).to_string(),
+            webui_protocol::ComponentData {
+                template_json: format!(r#"{{"h":"<i>{host}</i>","th":1}}"#),
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec![key.to_string()],
+                ..Default::default()
+            },
+        );
+    }
+    document
+        .to_protobuf()
+        .expect("streaming protocol must serialize")
+}
+
+/// Drive one chunk-producing call and return its bytes plus the reported length.
+unsafe fn take_chunk(ptr: *mut std::os::raw::c_char, len: usize) -> String {
+    assert!(
+        !ptr.is_null(),
+        "streaming call failed: {}",
+        last_error_string().unwrap_or_else(|| "<none>".to_string())
+    );
+    let chunk = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+    assert_eq!(chunk.len(), len, "out_len must match the chunk byte length");
+    webui_free(ptr);
+    chunk
+}
+
+unsafe fn open_streaming_session(handler: *mut c_void, protocol: *mut c_void) -> *mut c_void {
+    let entry = CString::new("index.html").unwrap();
+    let path = CString::new("/").unwrap();
+    let session = webui_streaming_session_create(handler, protocol, entry.as_ptr(), path.as_ptr());
+    assert!(
+        !session.is_null(),
+        "session creation failed: {}",
+        last_error_string().unwrap_or_else(|| "<none>".to_string())
+    );
+    session
+}
+
+#[test]
+fn streaming_session_returns_one_chunk_per_call_through_the_c_abi() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create_with_plugin(CString::new("webui").unwrap().as_ptr());
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        assert_eq!(webui_streaming_session_boundary_count(session), 2);
+        assert!(!webui_streaming_session_is_finished(session));
+
+        let mut first = u32::MAX;
+        let mut second = u32::MAX;
+        assert!(webui_streaming_session_boundary(
+            session,
+            CString::new("first").unwrap().as_ptr(),
+            &mut first
+        ));
+        assert!(webui_streaming_session_boundary(
+            session,
+            CString::new("second").unwrap().as_ptr(),
+            &mut second
+        ));
+        assert_eq!(first, 0);
+        assert_eq!(second, 1);
+
+        let empty = CString::new("{}").unwrap();
+        let a_state = CString::new(r#"{"a_count":1}"#).unwrap();
+        let a_patch = CString::new(r#"{"a_count":7}"#).unwrap();
+        let b_state = CString::new(r#"{"b_count":2}"#).unwrap();
+
+        let mut document = String::new();
+        let mut len = 0usize;
+        document.push_str(&take_chunk(
+            webui_streaming_session_write_shell(session, empty.as_ptr(), &mut len),
+            len,
+        ));
+        document.push_str(&take_chunk(
+            webui_streaming_session_write_boundary(
+                session,
+                first,
+                a_state.as_ptr(),
+                true,
+                &mut len,
+            ),
+            len,
+        ));
+        document.push_str(&take_chunk(
+            webui_streaming_session_update(session, first, a_patch.as_ptr(), &mut len),
+            len,
+        ));
+        document.push_str(&take_chunk(
+            webui_streaming_session_write_boundary(
+                session,
+                second,
+                b_state.as_ptr(),
+                false,
+                &mut len,
+            ),
+            len,
+        ));
+        document.push_str(&take_chunk(
+            webui_streaming_session_finish(session, empty.as_ptr(), &mut len),
+            len,
+        ));
+
+        assert!(webui_streaming_session_is_finished(session));
+        assert!(document.starts_with("<!DOCTYPE html>"));
+        assert!(document.contains("<b>comp-a</b>"));
+        assert!(document.contains("<b>comp-b</b>"));
+        assert!(document.contains(r#"{"a_count":7}"#));
+        assert!(document.ends_with("</html>"));
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn streaming_session_accepts_a_null_out_len() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        let empty = CString::new("{}").unwrap();
+        let chunk =
+            webui_streaming_session_write_shell(session, empty.as_ptr(), std::ptr::null_mut());
+        assert!(!chunk.is_null());
+        webui_free(chunk);
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn streaming_session_reports_an_unknown_boundary_name() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        let mut boundary = u32::MAX;
+        let ok = webui_streaming_session_boundary(
+            session,
+            CString::new("firts").unwrap().as_ptr(),
+            &mut boundary,
+        );
+        assert!(!ok);
+        assert_eq!(boundary, u32::MAX, "out_boundary must stay untouched");
+        let error = last_error_string().unwrap_or_default();
+        assert!(error.contains("first"), "error: {error}");
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn streaming_session_rejects_out_of_order_and_post_finish_calls() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        let empty = CString::new("{}").unwrap();
+        let mut len = 0usize;
+        let shell = webui_streaming_session_write_shell(session, empty.as_ptr(), &mut len);
+        assert!(!shell.is_null());
+        webui_free(shell);
+
+        // Boundary 1 before boundary 0.
+        let chunk =
+            webui_streaming_session_write_boundary(session, 1, empty.as_ptr(), false, &mut len);
+        assert!(chunk.is_null());
+        let error = last_error_string().unwrap_or_default();
+        assert!(error.contains("order"), "error: {error}");
+
+        // The rejected call wrote nothing, so the response is still usable.
+        for boundary in [0u32, 1u32] {
+            let chunk = webui_streaming_session_write_boundary(
+                session,
+                boundary,
+                empty.as_ptr(),
+                false,
+                &mut len,
+            );
+            assert!(!chunk.is_null());
+            webui_free(chunk);
+        }
+        let tail = webui_streaming_session_finish(session, empty.as_ptr(), &mut len);
+        assert!(!tail.is_null());
+        webui_free(tail);
+
+        let after = webui_streaming_session_write_shell(session, empty.as_ptr(), &mut len);
+        assert!(after.is_null());
+        let error = last_error_string().unwrap_or_default();
+        assert!(error.contains("already finished"), "error: {error}");
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn streaming_session_survives_an_out_of_order_finish() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        let empty = CString::new("{}").unwrap();
+        let mut len = 0usize;
+        let shell = webui_streaming_session_write_shell(session, empty.as_ptr(), &mut len);
+        assert!(!shell.is_null());
+        webui_free(shell);
+
+        let first =
+            webui_streaming_session_write_boundary(session, 0, empty.as_ptr(), false, &mut len);
+        assert!(!first.is_null());
+        webui_free(first);
+
+        // Boundary 1 is still outstanding, so finish is rejected before it
+        // writes anything and the open response must survive.
+        let rejected = webui_streaming_session_finish(session, empty.as_ptr(), &mut len);
+        assert!(rejected.is_null());
+        let error = last_error_string().unwrap_or_default();
+        assert!(
+            error.contains("every boundary must be committed"),
+            "error: {error}"
+        );
+        assert!(!webui_streaming_session_is_finished(session));
+
+        let second =
+            webui_streaming_session_write_boundary(session, 1, empty.as_ptr(), false, &mut len);
+        assert!(!second.is_null());
+        webui_free(second);
+
+        let tail = webui_streaming_session_finish(session, empty.as_ptr(), &mut len);
+        assert!(!tail.is_null());
+        webui_free(tail);
+        assert!(webui_streaming_session_is_finished(session));
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn streaming_session_rejects_invalid_state_json() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create();
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        let broken = CString::new("{not json").unwrap();
+        let mut len = 0usize;
+        let chunk = webui_streaming_session_write_shell(session, broken.as_ptr(), &mut len);
+        assert!(chunk.is_null());
+        let error = last_error_string().unwrap_or_default();
+        assert!(error.contains("state JSON"), "error: {error}");
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
+    }
+}
+
+#[test]
+fn streaming_session_null_arguments_are_safe() {
+    unsafe {
+        let empty = CString::new("{}").unwrap();
+        let mut len = 0usize;
+
+        assert!(webui_streaming_session_create(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null()
+        )
+        .is_null());
+        assert!(webui_streaming_session_write_shell(
+            std::ptr::null_mut(),
+            empty.as_ptr(),
+            &mut len
+        )
+        .is_null());
+        assert!(!webui_streaming_session_boundary(
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null_mut()
+        ));
+        assert_eq!(webui_streaming_session_boundary_count(std::ptr::null()), 0);
+        // A handle that does not exist can never accept another call.
+        assert!(webui_streaming_session_is_finished(std::ptr::null()));
+        webui_streaming_session_destroy(std::ptr::null_mut());
+    }
+}
+
+#[test]
+fn streaming_session_applies_the_handler_nonce() {
+    let proto_bytes = build_streaming_protocol();
+    unsafe {
+        let handler = webui_handler_create_with_plugin(CString::new("webui").unwrap().as_ptr());
+        webui_handler_set_nonce(handler, CString::new("abc123").unwrap().as_ptr());
+        let protocol = prepare_protocol(&proto_bytes);
+        let session = open_streaming_session(handler, protocol);
+
+        let empty = CString::new("{}").unwrap();
+        let state = CString::new(r#"{"a_count":1}"#).unwrap();
+        let mut len = 0usize;
+        let mut document = take_chunk(
+            webui_streaming_session_write_shell(session, empty.as_ptr(), &mut len),
+            len,
+        );
+        document.push_str(&take_chunk(
+            webui_streaming_session_write_boundary(session, 0, state.as_ptr(), false, &mut len),
+            len,
+        ));
+
+        assert!(document.contains("abc123"), "document: {document}");
+
+        webui_streaming_session_destroy(session);
+        webui_protocol_destroy(protocol);
+        webui_handler_destroy(handler);
     }
 }

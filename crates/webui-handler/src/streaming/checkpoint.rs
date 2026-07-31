@@ -43,30 +43,51 @@ impl WebUIHandler {
         let component_index = context.component_index;
         let needs_route_walk = {
             let streaming = streaming_state(context)?;
-            commit_checkpoint_inventory(streaming, component_index)?;
-            !expand_static_checkpoint_reachability(streaming, component_index)?
+            commit_checkpoint_inventory(streaming)?;
+            !expand_static_checkpoint_reachability(streaming)?
         };
 
         if needs_route_walk {
             // Only a component surface containing authored routes needs request
             // matching. Route-free surfaces use the startup-built integer graph.
-            let roots = context.streaming.as_ref().map_or(&[][..], |streaming| {
-                streaming.checkpoint_walk_roots.as_slice()
-            });
-            let reachable = crate::route_handler::collect_reachable_components_from_roots(
-                context.protocol,
-                roots,
-                context.request_path,
-                context.route_index,
-            );
+            // The protocol references are copied out first so they do not borrow
+            // `context` across the mutable streaming-state borrow below.
+            let protocol = context.protocol;
+            let request_path = context.request_path;
+            let route_index = context.route_index;
+            let reachable = {
+                let streaming = streaming_state(context)?;
+                let reachability = streaming.component_reachability;
+                crate::route_handler::collect_reachable_components_from_roots(
+                    protocol,
+                    &streaming.checkpoint_walk_roots,
+                    reachability,
+                    request_path,
+                    route_index,
+                )
+            };
             replace_checkpoint_reachability(streaming_state(context)?, component_index, &reachable);
         }
 
-        // Move the reusable tag vector out so plugin/state code can borrow it
-        // without retaining a borrow of the render context.
-        let checkpoint_tags = {
+        // Move the reusable buffers out so plugin/state code can borrow them
+        // without retaining a borrow of the render context. Names are resolved
+        // once here; every downstream consumer reads them instead of re-hashing.
+        let (checkpoint_tags, checkpoint_names) = {
             let streaming = streaming_state(context)?;
-            std::mem::take(&mut streaming.checkpoint_tags)
+            let reachability = streaming.component_reachability;
+            let tags = std::mem::take(&mut streaming.checkpoint_tags);
+            let mut names = std::mem::take(&mut streaming.checkpoint_name_scratch);
+            names.clear();
+            names.reserve(tags.len());
+            for &index in &tags {
+                let Some(name) = reachability.name(index) else {
+                    return Err(crate::HandlerError::Invariant(
+                        "component reachability name is missing".to_string(),
+                    ));
+                };
+                names.push(name);
+            }
+            (tags, names)
         };
         let mut new_template_tags = {
             let streaming = streaming_state(context)?;
@@ -75,8 +96,8 @@ impl WebUIHandler {
         new_template_tags.clear();
         {
             let streaming = streaming_state(context)?;
-            for &name in &checkpoint_tags {
-                if mark_streaming_template_sent(streaming, component_index, name)? {
+            for (&index, &name) in checkpoint_tags.iter().zip(checkpoint_names.iter()) {
+                if mark_streaming_template_sent(streaming, index)? {
                     new_template_tags.push(name);
                 }
             }
@@ -122,7 +143,7 @@ impl WebUIHandler {
         };
         let requires_full_state = collect_hydration_state_into(
             context.protocol,
-            checkpoint_tags.iter().copied(),
+            checkpoint_names.iter().copied(),
             &mut state_key_scratch,
         );
         let chain = if first_checkpoint {
@@ -227,7 +248,7 @@ impl WebUIHandler {
                     keys: if requires_full_state {
                         Vec::new()
                     } else {
-                        state_key_scratch.clone()
+                        state_key_scratch.iter().copied().map(Box::from).collect()
                     },
                 });
             }
@@ -238,6 +259,9 @@ impl WebUIHandler {
             let mut checkpoint_tags = checkpoint_tags;
             checkpoint_tags.clear();
             streaming.checkpoint_tags = checkpoint_tags;
+            let mut checkpoint_names = checkpoint_names;
+            checkpoint_names.clear();
+            streaming.checkpoint_name_scratch = checkpoint_names;
             streaming.checkpoint_walk_roots.clear();
             new_template_tags.clear();
             streaming.template_tag_scratch = new_template_tags;
@@ -310,7 +334,7 @@ impl WebUIHandler {
         let selection = if plan.requires_full_state {
             StateSelection::Full
         } else {
-            StateSelection::BorrowedKeys(&plan.keys)
+            StateSelection::Keys(plan.keys.iter().map(Box::as_ref).collect())
         };
         write_selected_state(
             context.writer,

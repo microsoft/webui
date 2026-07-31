@@ -2355,11 +2355,13 @@ optimization of delivery timing, not a correctness requirement of the format.
   behavior, byte-for-byte identical to a build with no streaming support.
 - `render()` and complete `renderPartial()` are unaffected by streaming.
 - Router JSON and NDJSON use independent response formats and are unaffected.
-- Direct host-driven response sessions are exposed only by the Rust handler.
+- Host-driven response sessions are available from every host. Rust drives a
+  `StreamingResponse` that writes into a `ResponseWriter`; Node, WASM, C, and C#
+  drive a `StreamingSession` that returns each chunk's bytes to the caller.
   `webui serve --api-port` additionally accepts a versioned, bounded control
   stream from a Node or other HTTP backend while the CLI retains ownership of
-  the Rust session and browser transport. Existing Node and WASM addon callbacks
-  remain synchronous whole-render APIs, and the C ABI returns buffered strings.
+  the Rust session and browser transport. Existing whole-render APIs
+  (`render`, `renderStream`, `webui_handler_render`) are unchanged.
 
 ### Performance invariants
 
@@ -2437,6 +2439,56 @@ Rust async hosts await data between calls and serialize commands onto the one
 worker that owns the response and transport. Concurrent calls to one session are
 not allowed.
 
+### Host-owned streaming sessions
+
+Rust's `StreamingResponse` writes into a `ResponseWriter` it borrows for the
+life of the response. That is the right contract when WebUI and the transport
+are in the same address space and the same language, but it is not expressible
+across a language boundary: a napi/FFI/WASM host cannot lend a writer whose
+lifetime outlives a single call.
+
+Non-Rust hosts therefore drive `StreamingSession`, which owns its state and
+**returns** each chunk instead of writing it:
+
+| Host | Type | Chunk type |
+|------|------|-----------|
+| Rust | `webui_handler::StreamingSession` | `Vec<u8>` |
+| Node | `StreamingSession` from `@microsoft/webui` | `Buffer` |
+| WASM | `StreamingSession` from `@microsoft/webui-wasm` | `Uint8Array` |
+| C | `webui_streaming_session_*` | `uint8_t *` + length |
+| C# | `Microsoft.WebUI.StreamingSession` | `byte[]` |
+
+Every host has the same six operations — `boundary`, `writeShell`,
+`writeBoundary`, `update`, `finish`, plus the `boundaryCount` / `isFinished`
+observers — with identical ordering rules and identical diagnostics.
+
+This inverts exactly one thing, and it is the thing that matters: **the host
+owns the socket.** It decides when to write, how to signal backpressure, and
+what to do when the client disconnects, using its own runtime's idioms
+(`res.write()` plus `drain` on Node, `HttpResponse.Body.WriteAsync` plus
+`FlushAsync` on ASP.NET). WebUI never sees the transport, so it cannot get its
+backpressure or cancellation semantics wrong.
+
+The two topologies are complementary, not ranked:
+
+- **In-process** (`StreamingSession`) — the host already terminates HTTP and
+  wants WebUI as a library. One process, no loopback hop.
+- **API proxy** (`webui serve --api-port`) — the host owns backend readiness and
+  record ordering but wants the CLI to own rendering, static assets, and the
+  browser transport.
+
+Ordering, boundary identity, projection, the wire envelope, and every error are
+shared: both topologies are thin adapters over the same session.
+
+Because a session holds its own reference to the handler and the protocol,
+destruction order between the three is irrelevant, and a rejected call leaves
+the session usable so a host may recover from bad input without discarding the
+response.
+
+`examples/integration/node/streaming-server.js` is the reference in-process
+host: an ordinary `node:http` server, no sidecar, with the whole transport half
+expressed as one write helper that honours backpressure and client aborts.
+
 ### API-proxy host-control stream
 
 For HTTP backends, `webui serve --api-port` advertises
@@ -2510,12 +2562,11 @@ declarative partial updates.
   dynamic boundary API.
 - Router/client-navigation streams use their existing formats and do not reuse
   response-session records.
-- Host scheduling is external. `StreamingResponse` methods are synchronous so a
-  Rust server can dedicate a bounded worker and preserve transport backpressure.
-- Node, C FFI/.NET, and WASM do not expose direct host-owned
-  `StreamingResponse` sessions. A Node or other HTTP backend can drive the
-  bounded `webui serve --api-port` control stream described above; the CLI
-  remains the response-session owner.
+- Host scheduling is external. `StreamingResponse` and `StreamingSession`
+  methods are synchronous so a server can dedicate a bounded worker and preserve
+  transport backpressure.
+- Concurrent calls to one session are not allowed. Sessions are independent, so
+  a server may hold one per in-flight response.
 - CSS strategy is selected per build, not per boundary.
 - Declarative partial updates and client-side DOM patch transports are not used.
   A slow known region is an updatable WebUI component; structure that cannot be
@@ -3919,6 +3970,36 @@ header is at `crates/webui-ffi/include/webui_ffi.h`.
 | `webui_handler_destroy(handler)` | Destroy a handler. `NULL` is a safe no-op. |
 | `webui_free(ptr)` | Free a string returned by any render function. `NULL` is a safe no-op. |
 | `webui_last_error()` | Return per-thread error message. Caller must **not** free. |
+
+### Streaming session functions
+
+Progressive streaming is exposed as an **encoder**, not a writer: each call
+returns the bytes it produced and the host writes them to its own transport.
+That keeps the C ABI free of callbacks, keeps ownership of the socket with the
+host, and lets the host apply its own backpressure policy.
+
+| Function | Description |
+|----------|-------------|
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path, nonce, head_inject, body_inject)` | Open a session. The session clones its own references to the handler and protocol, so destruction order between the three is irrelevant. Optional arguments accept `NULL`. |
+| `webui_streaming_session_destroy(session)` | Destroy a session. `NULL` is a safe no-op. Destroying an unfinished session discards its pending output. |
+| `webui_streaming_session_boundary(session, name, out_id)` | Resolve an authored boundary name to its integer handle once, outside the write loop. Returns `false` and sets an error listing the valid names on an unknown name. |
+| `webui_streaming_session_boundary_count(session)` | Number of boundaries declared by the entry template. |
+| `webui_streaming_session_is_finished(session)` | Whether the terminal record has been written. |
+| `webui_streaming_session_write_shell(session, state_json, out_len)` | Produce the document prefix through the first semantic flush. |
+| `webui_streaming_session_write_boundary(session, boundary_id, state_json, mode, out_len)` | Produce one boundary's markup, metadata delta, and checkpoint. `mode` is `0` for final or `1` for updatable. |
+| `webui_streaming_session_update(session, boundary_id, state_json, out_len)` | Produce a projected state patch for a boundary already committed as updatable. |
+| `webui_streaming_session_finish(session, state_json, out_len)` | Produce the implicit tail checkpoint, the terminal record, and the document suffix. |
+
+Chunk-producing functions return a heap-allocated byte pointer plus its length
+through `out_len`, and are freed with `webui_free`. The length is authoritative:
+chunks are binary-safe and must never be treated as NUL-terminated. A `NULL`
+return means the call was rejected; `webui_last_error()` explains why. A
+rejected call leaves the session usable, so a host may recover from an invalid
+state document without discarding the response.
+
+Host parity: the same session shape is available as `StreamingSession` from
+Rust (`webui-handler`), Node (`Protocol.streamResponse`), WASM
+(`Protocol.streamResponse`), and C# (`WebUIHandler.StreamResponse`).
 
 The C ABI uses a typed opaque `webui_protocol_t *` with explicit
 `webui_protocol_create` / `webui_protocol_destroy` ownership because C has no

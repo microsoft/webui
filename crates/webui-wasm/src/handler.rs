@@ -6,12 +6,14 @@
 use crate::error::WasmError;
 use js_sys::{Function, Object, Reflect};
 use serde_json::Value;
+use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    HandlerError, Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler,
+    BoundaryId, BoundaryMode, HandlerError, Protocol as HandlerProtocol, RenderOptions,
+    ResponseWriter, SessionOptions, StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 #[cfg(test)]
 use webui_protocol::WebUIProtocol;
@@ -118,8 +120,8 @@ impl Default for WasmRenderOptions {
 /// A decoded protocol with reusable indices for repeated WASM renders.
 #[wasm_bindgen]
 pub struct Protocol {
-    inner: HandlerProtocol,
-    handler: WebUIHandler,
+    inner: Arc<HandlerProtocol>,
+    handler: Arc<WebUIHandler>,
 }
 
 #[wasm_bindgen]
@@ -132,8 +134,8 @@ impl Protocol {
         let inner = HandlerProtocol::from_protobuf(protocol_bytes)
             .map_err(|error| JsValue::from_str(&format!("Protocol error: {error}")))?;
         Ok(Self {
-            inner,
-            handler: create_handler(plugin),
+            inner: Arc::new(inner),
+            handler: Arc::new(create_handler(plugin)),
         })
     }
 
@@ -204,6 +206,156 @@ impl Protocol {
         serde_wasm_bindgen::to_value(self.inner.tokens())
             .map_err(|error| JsValue::from_str(&format!("Serialization error: {error}")))
     }
+
+    /// Open a host-driven progressive response for a streaming entry.
+    ///
+    /// Unlike `renderStream`, which pushes every chunk through one callback
+    /// during a single synchronous call, the returned session hands each chunk
+    /// back so the host owns the socket, the write order, and backpressure.
+    #[wasm_bindgen(js_name = streamResponse)]
+    pub fn stream_response(
+        &self,
+        entry: String,
+        request_path: String,
+        options: Option<Object>,
+    ) -> Result<StreamingSession, JsValue> {
+        let mut session_options = SessionOptions::new(entry, request_path);
+        if let Some(options) = options {
+            session_options.nonce = optional_string_property(&options, "nonce")?;
+            session_options.head_inject = optional_string_property(&options, "headInject")?;
+            session_options.body_inject = optional_string_property(&options, "bodyInject")?;
+        }
+
+        HandlerStreamingSession::new(
+            Arc::clone(&self.handler),
+            Arc::clone(&self.inner),
+            session_options,
+        )
+        .map(|inner| StreamingSession { inner })
+        .map_err(streaming_error)
+    }
+}
+
+/// A progressive HTML response driven one chunk at a time from JavaScript.
+///
+/// Every method returns the UTF-8 bytes it produced. Write them to the
+/// response and apply the host's own backpressure; the session holds no
+/// transport and never blocks on one.
+///
+/// ```js
+/// const session = protocol.streamResponse('index.html', '/');
+/// const weather = session.boundary('weather-shell');
+/// controller.enqueue(session.writeShell(shellState));
+/// controller.enqueue(session.writeBoundary(weather, weatherState, 'updatable'));
+/// controller.enqueue(session.update(weather, forecast));
+/// controller.enqueue(session.finish(tailState));
+/// ```
+#[wasm_bindgen]
+pub struct StreamingSession {
+    inner: HandlerStreamingSession,
+}
+
+#[wasm_bindgen]
+impl StreamingSession {
+    /// Resolve an authored boundary name to a stable integer handle.
+    ///
+    /// Resolve once outside the write loop; the handle costs nothing to reuse.
+    #[wasm_bindgen(js_name = boundary)]
+    pub fn boundary(&self, name: &str) -> Result<u32, JsValue> {
+        self.inner
+            .boundary(name)
+            .map(BoundaryId::raw)
+            .map_err(streaming_error)
+    }
+
+    /// Number of compile-time boundaries declared by this entry.
+    #[wasm_bindgen(getter, js_name = boundaryCount)]
+    pub fn boundary_count(&self) -> u32 {
+        // Boundary counts are bounded by the compiled entry, so this cannot
+        // exceed u32 in any protocol the build can produce.
+        u32::try_from(self.inner.boundary_count()).unwrap_or(u32::MAX)
+    }
+
+    /// Whether the terminal record has been written.
+    #[wasm_bindgen(getter, js_name = finished)]
+    pub fn finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// Render everything before the first boundary.
+    #[wasm_bindgen(js_name = writeShell)]
+    pub fn write_shell(&mut self, state_json: &str) -> Result<Vec<u8>, JsValue> {
+        let state = session_state(state_json)?;
+
+        self.inner.write_shell(&state).map_err(streaming_error)
+    }
+
+    /// Render and commit the next boundary in declaration order.
+    ///
+    /// `mode` is `"final"` (default) or `"updatable"`. Only updatable
+    /// boundaries accept later `update()` calls.
+    #[wasm_bindgen(js_name = writeBoundary)]
+    pub fn write_boundary(
+        &mut self,
+        boundary: u32,
+        state_json: &str,
+        mode: Option<String>,
+    ) -> Result<Vec<u8>, JsValue> {
+        let state = session_state(state_json)?;
+
+        let mode = parse_boundary_mode(mode.as_deref())?;
+        self.inner
+            .write_boundary(BoundaryId::from_raw(boundary), &state, mode)
+            .map_err(streaming_error)
+    }
+
+    /// Push a projected state patch to a committed updatable boundary.
+    #[wasm_bindgen(js_name = update)]
+    pub fn update(&mut self, boundary: u32, state_json: &str) -> Result<Vec<u8>, JsValue> {
+        let state = session_state(state_json)?;
+
+        self.inner
+            .update(BoundaryId::from_raw(boundary), &state)
+            .map_err(streaming_error)
+    }
+
+    /// Render the document tail and emit the terminal record.
+    #[wasm_bindgen(js_name = finish)]
+    pub fn finish(&mut self, state_json: &str) -> Result<Vec<u8>, JsValue> {
+        let state = session_state(state_json)?;
+
+        self.inner.finish(&state).map_err(streaming_error)
+    }
+}
+
+fn session_state(state_json: &str) -> Result<Value, JsValue> {
+    parse_state_json(state_json).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn parse_boundary_mode(mode: Option<&str>) -> Result<BoundaryMode, JsValue> {
+    match mode {
+        None | Some("final") => Ok(BoundaryMode::Final),
+        Some("updatable") => Ok(BoundaryMode::Updatable),
+        Some(other) => Err(JsValue::from_str(&format!(
+            "unknown boundary mode '{other}'; expected 'final' or 'updatable'"
+        ))),
+    }
+}
+
+fn streaming_error(error: HandlerError) -> JsValue {
+    JsValue::from_str(&error.to_string())
+}
+
+fn optional_string_property(options: &Object, key: &str) -> Result<Option<String>, JsValue> {
+    let value = Reflect::get(options, &JsValue::from_str(key))
+        .map_err(|_| JsValue::from_str(&format!("failed to read '{key}' option")))?;
+    if value.is_undefined() || value.is_null() {
+        return Ok(None);
+    }
+    value
+        .as_string()
+        .map(Some)
+        .ok_or_else(|| JsValue::from_str(&format!("'{key}' must be a string")))
 }
 
 #[cfg(test)]

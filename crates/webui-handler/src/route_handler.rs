@@ -967,16 +967,24 @@ fn collect_inventoryable_components(
 /// Collect the transitive client component surface rooted in this checkpoint's
 /// rendered tags. Conditional and empty-repeat branches are followed
 /// conservatively so a later client-side state change already has its metadata.
+///
+/// Roots arrive as startup-built component indexes so the caller's capture stays
+/// free of any protocol borrow; names are resolved here, on the uncommon
+/// request-aware path that already converts every root to an owned string.
 pub(crate) fn collect_reachable_components_from_roots(
     protocol: &WebUIProtocol,
-    roots: &[(&str, Option<Cow<'_, str>>)],
+    roots: &[(u32, Option<Box<str>>)],
+    reachability: &ComponentReachabilityIndex,
     request_path: &str,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
     let mut stack = Vec::with_capacity(roots.len());
     for (root, route_base) in roots.iter().rev() {
+        let Some(name) = reachability.name(*root) else {
+            continue;
+        };
         stack.push(QueuedFragment {
-            id: (*root).to_string(),
+            id: name.to_string(),
             inventoryable: true,
             route_base: route_base.as_deref().unwrap_or("/").to_string(),
         });
@@ -3109,14 +3117,18 @@ mod tests {
                 .template = "<template></template>".to_string();
         }
         let route_index = CompiledRouteIndex::new(&protocol);
+        let handler_protocol = Protocol::new(protocol.clone());
+        let reachability = handler_protocol.component_reachability();
+        let shell = handler_protocol.component_index()["shared-shell"];
         let roots = [
-            ("shared-shell", Some(Cow::Borrowed("/other"))),
-            ("shared-shell", Some(Cow::Borrowed("/account"))),
+            (shell, Some(Box::from("/other"))),
+            (shell, Some(Box::from("/account"))),
         ];
 
         let reachable = collect_reachable_components_from_roots(
             &protocol,
             &roots,
+            reachability,
             "/account/details",
             &route_index,
         );

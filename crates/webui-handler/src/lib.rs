@@ -42,7 +42,9 @@ use streaming::{
     validate_pending_streaming_root, validate_streaming_root_opening, ComponentHostOrigin,
     StreamingRenderState,
 };
-pub use streaming::{BoundaryId, BoundaryMode, StreamingResponse};
+pub use streaming::{
+    BoundaryId, BoundaryMode, BufferSink, SessionOptions, StreamingResponse, StreamingSession,
+};
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{
@@ -1980,6 +1982,7 @@ mod tests {
     use super::*;
     use crate::streaming::STREAMING_MARKER;
     use std::cell::RefCell;
+    use std::sync::Arc;
     use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
     use webui_protocol::{
         web_ui_fragment, ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator,
@@ -9748,6 +9751,181 @@ mod tests {
         let update = &writer.output[update_start..update_end];
         assert!(!update.contains("inventory"));
         assert!(!update.contains("templates"));
+    }
+
+    #[test]
+    fn owned_streaming_session_matches_borrowed_response_bytes() {
+        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a", "comp-b"]));
+        let handler = Arc::new(WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        }));
+
+        let mut writer = FlushTestWriter::default();
+        let options = RenderOptions::new("index.html", "/");
+        let mut response = handler
+            .stream_response(&protocol, &options, &mut writer)
+            .unwrap();
+        let first = response.boundary("boundary-0").unwrap();
+        let second = response.boundary("boundary-1").unwrap();
+        response.write_shell(&test_json!({})).unwrap();
+        response
+            .write_boundary(
+                first,
+                &test_json!({ "a_count": 1 }),
+                BoundaryMode::Updatable,
+            )
+            .unwrap();
+        response
+            .update(first, &test_json!({ "a_count": 7 }))
+            .unwrap();
+        response
+            .write_boundary(second, &test_json!({ "b_count": 2 }), BoundaryMode::Final)
+            .unwrap();
+        response.finish(&test_json!({})).unwrap();
+
+        let mut session = StreamingSession::new(
+            Arc::clone(&handler),
+            Arc::clone(&protocol),
+            SessionOptions::new("index.html", "/"),
+        )
+        .unwrap();
+        let session_first = session.boundary("boundary-0").unwrap();
+        let session_second = session.boundary("boundary-1").unwrap();
+        assert_eq!(session_first, first);
+        assert_eq!(session_second, second);
+        assert_eq!(session.boundary_count(), 2);
+
+        let chunks: Vec<Vec<u8>> = vec![
+            session.write_shell(&test_json!({})).unwrap(),
+            session
+                .write_boundary(
+                    session_first,
+                    &test_json!({ "a_count": 1 }),
+                    BoundaryMode::Updatable,
+                )
+                .unwrap(),
+            session
+                .update(session_first, &test_json!({ "a_count": 7 }))
+                .unwrap(),
+            session
+                .write_boundary(
+                    session_second,
+                    &test_json!({ "b_count": 2 }),
+                    BoundaryMode::Final,
+                )
+                .unwrap(),
+            session.finish(&test_json!({})).unwrap(),
+        ];
+
+        // One chunk per host call, matching the borrowed path's flush count.
+        assert_eq!(chunks.len(), writer.flushes.len());
+        assert!(session.is_finished());
+        let joined = String::from_utf8(chunks.concat()).unwrap();
+        assert_eq!(joined, writer.output);
+    }
+
+    #[test]
+    fn owned_streaming_session_rejects_use_after_finish() {
+        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
+        let handler = Arc::new(WebUIHandler::new());
+        let mut session =
+            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
+                .unwrap();
+        let boundary = session.boundary("boundary-0").unwrap();
+        session.write_shell(&test_json!({})).unwrap();
+        session
+            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
+            .unwrap();
+        session.finish(&test_json!({})).unwrap();
+
+        let error = session.write_shell(&test_json!({})).unwrap_err();
+        assert!(error.to_string().contains("already finished"));
+        assert!(session.finish(&test_json!({})).is_err());
+    }
+
+    #[test]
+    fn owned_streaming_session_surfaces_unknown_boundary_names() {
+        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
+        let handler = Arc::new(WebUIHandler::new());
+        let session =
+            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
+                .unwrap();
+        let error = session.boundary("boundary-O").unwrap_err().to_string();
+        assert!(error.contains("boundary-0"));
+    }
+
+    #[test]
+    fn owned_streaming_session_stays_usable_after_a_rejected_call() {
+        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
+        let handler = Arc::new(WebUIHandler::new());
+        let mut session =
+            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
+                .unwrap();
+        let boundary = session.boundary("boundary-0").unwrap();
+        session.write_shell(&test_json!({})).unwrap();
+        // Rejected before any byte is written, so the session is not poisoned.
+        assert!(session.update(boundary, &test_json!({ "a": 1 })).is_err());
+        assert!(!session.is_finished());
+        session
+            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
+            .unwrap();
+        session.finish(&test_json!({})).unwrap();
+    }
+
+    #[test]
+    fn owned_streaming_session_recovers_from_a_rejected_finish() {
+        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a", "comp-b"]));
+        let handler = Arc::new(WebUIHandler::new());
+        let mut session =
+            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
+                .unwrap();
+        let first = session.boundary("boundary-0").unwrap();
+        let second = session.boundary("boundary-1").unwrap();
+        session.write_shell(&test_json!({})).unwrap();
+        session
+            .write_boundary(first, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
+            .unwrap();
+
+        // Rejected before any byte is written, so the response must survive.
+        let error = session.finish(&test_json!({})).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("every boundary must be committed"),
+            "unexpected error: {error}"
+        );
+        assert!(!session.is_finished());
+
+        session
+            .write_boundary(second, &test_json!({ "b_count": 1 }), BoundaryMode::Final)
+            .unwrap();
+        let tail = session.finish(&test_json!({})).unwrap();
+        assert!(!tail.is_empty());
+        assert!(session.is_finished());
+    }
+
+    #[test]
+    fn owned_streaming_session_rejects_finish_before_the_shell() {
+        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
+        let handler = Arc::new(WebUIHandler::new());
+        let mut session =
+            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
+                .unwrap();
+        let boundary = session.boundary("boundary-0").unwrap();
+
+        let error = session.finish(&test_json!({})).unwrap_err();
+        assert!(
+            error.to_string().contains("write_shell must be called"),
+            "unexpected error: {error}"
+        );
+        assert!(!session.is_finished());
+
+        session.write_shell(&test_json!({})).unwrap();
+        session
+            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
+            .unwrap();
+        session.finish(&test_json!({})).unwrap();
+        assert!(session.is_finished());
     }
 
     #[test]

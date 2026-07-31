@@ -15,6 +15,10 @@ import {
 } from '@microsoft/webui';
 import type { ComponentTemplatesResponse } from '@microsoft/webui';
 import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer, get } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -56,6 +60,23 @@ before(() => {
   writeFileSync(join(appDir, 'lazy-panel.html'), '<p>{{title}}</p>');
   writeFileSync(join(appDir, 'lazy-panel.ts'), 'export {};');
   writeFileSync(join(appDir, 'index3.html'), '<app-shell></app-shell>');
+
+  writeFileSync(join(appDir, 'stream-item.html'), '<p class="item">{{label}}</p>');
+  writeFileSync(join(appDir, 'stream-item.ts'), 'export {};');
+  writeFileSync(join(appDir, 'index-stream.html'), `
+<!DOCTYPE html>
+<html>
+<head><script type="module" async src="./index.js"></script></head>
+<body>
+  <boundary name="first">
+    <stream-item label="{{firstLabel}}"></stream-item>
+  </boundary>
+  <boundary name="second">
+    <stream-item label="{{secondLabel}}"></stream-item>
+  </boundary>
+</body>
+</html>
+`);
 });
 
 after(() => {
@@ -218,6 +239,242 @@ describe('renderStream', () => {
       /chunk callback failed/,
     );
   });
+});
+
+describe('streamResponse', () => {
+  const streamOptions = { entry: 'index-stream.html', requestPath: '/' };
+
+  function streamingProtocol(): Protocol {
+    return new Protocol(
+      build({ appDir, entry: 'index-stream.html', plugin: 'webui' }).protocol,
+    );
+  }
+
+  test('returns one chunk per host call and reassembles a complete document', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    assert.equal(session.boundaryCount, 2);
+
+    const first = session.boundary('first');
+    const second = session.boundary('second');
+    assert.equal(first, 0);
+    assert.equal(second, 1);
+
+    const chunks = [
+      session.writeShell({}),
+      session.writeBoundary(first, { firstLabel: 'alpha' }, 'updatable'),
+      session.update(first, { firstLabel: 'alpha-2' }),
+      session.writeBoundary(second, { secondLabel: 'beta' }),
+      session.finish({}),
+    ];
+
+    for (const chunk of chunks) {
+      assert.ok(Buffer.isBuffer(chunk));
+    }
+    assert.equal(session.finished, true);
+
+    const html = Buffer.concat(chunks).toString('utf8');
+    assert.ok(html.includes('<!DOCTYPE html>'));
+    assert.ok(html.includes('alpha'));
+    assert.ok(html.includes('alpha-2'));
+    assert.ok(html.includes('beta'));
+    assert.ok(html.trimEnd().endsWith('</html>'));
+  });
+
+  test('renders every boundary exactly once into the reassembled document', () => {
+    const protocol = streamingProtocol();
+    const state = { firstLabel: 'alpha', secondLabel: 'beta' };
+
+    const session = protocol.streamResponse(streamOptions);
+    const streamed = Buffer.concat([
+      session.writeShell(state),
+      session.writeBoundary(session.boundary('first'), state),
+      session.writeBoundary(session.boundary('second'), state),
+      session.finish(state),
+    ]).toString('utf8');
+
+    // Streaming reorders delivery, never content.
+    assert.equal(streamed.match(/class="item"/g)?.length, 2);
+  });
+
+  test('rejects boundaries written out of declaration order', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    session.writeShell({});
+    assert.throws(
+      () => session.writeBoundary(session.boundary('second'), { secondLabel: 'beta' }),
+      /order/i,
+    );
+  });
+
+  test('rejects updates to a boundary committed as final', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    const first = session.boundary('first');
+    session.writeShell({});
+    session.writeBoundary(first, { firstLabel: 'alpha' });
+    assert.throws(() => session.update(first, { firstLabel: 'alpha-2' }), /updatable/i);
+  });
+
+  test('rejects an unknown boundary name with the valid names', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    assert.throws(() => session.boundary('firts'), /first/);
+  });
+
+  test('rejects an unknown boundary mode', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    session.writeShell({});
+    assert.throws(
+      () =>
+        session.writeBoundary(
+          session.boundary('first'),
+          { firstLabel: 'alpha' },
+          'sometimes' as 'final',
+        ),
+      /unknown boundary mode/,
+    );
+  });
+
+  test('rejects every call after finish', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    session.writeShell({});
+    session.writeBoundary(session.boundary('first'), { firstLabel: 'alpha' });
+    session.writeBoundary(session.boundary('second'), { secondLabel: 'beta' });
+    session.finish({});
+
+    assert.equal(session.finished, true);
+    assert.throws(() => session.writeShell({}), /already finished/);
+    assert.throws(() => session.finish({}), /already finished/);
+  });
+
+  test('an out-of-order finish leaves the session usable', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    session.writeShell({});
+    session.writeBoundary(session.boundary('first'), { firstLabel: 'alpha' });
+
+    // Rejected before any byte is written, so the open response survives.
+    assert.throws(() => session.finish({}), /every boundary must be committed/);
+    assert.equal(session.finished, false);
+
+    session.writeBoundary(session.boundary('second'), { secondLabel: 'beta' });
+    assert.ok(session.finish({}).length > 0);
+    assert.equal(session.finished, true);
+  });
+
+  test('keeps concurrent sessions independent', () => {
+    const protocol = streamingProtocol();
+    const a = protocol.streamResponse(streamOptions);
+    const b = protocol.streamResponse(streamOptions);
+
+    a.writeShell({});
+    b.writeShell({});
+    const fromA = a.writeBoundary(a.boundary('first'), { firstLabel: 'from-a' }).toString('utf8');
+    const fromB = b.writeBoundary(b.boundary('first'), { firstLabel: 'from-b' }).toString('utf8');
+
+    assert.ok(fromA.includes('from-a'));
+    assert.ok(!fromA.includes('from-b'));
+    assert.ok(fromB.includes('from-b'));
+    assert.ok(!fromB.includes('from-a'));
+  });
+});
+
+describe('streamResponse over node:http', () => {
+  const streamOptions = { entry: 'index-stream.html', requestPath: '/' };
+
+  /**
+   * Proves the property the session API exists for: an in-process Node server
+   * can hand bytes to the client while it is still producing the rest of the
+   * body.
+   *
+   * The synchronisation is a barrier rather than a timer, so the test cannot
+   * pass by accident. The server blocks after the first boundary until the
+   * client confirms it received it; if anything buffered the response, that
+   * handshake could never complete and the test would time out instead of
+   * silently asserting nothing.
+   */
+  test('delivers early boundaries to a real client before the response ends', async () => {
+    const protocol = new Protocol(
+      build({ appDir, entry: 'index-stream.html', plugin: 'webui' }).protocol,
+    );
+
+    let releaseServer: () => void = () => {};
+    const clientSawFirstBoundary = new Promise<void>((resolvePromise) => {
+      releaseServer = resolvePromise;
+    });
+
+    let serverError: unknown;
+    const server = createServer((_request, response) => {
+      void (async () => {
+        const session = protocol.streamResponse(streamOptions);
+        const first = session.boundary('first');
+        const second = session.boundary('second');
+
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        await write(response, session.writeShell({}));
+        await write(response, session.writeBoundary(first, { firstLabel: 'alpha' }));
+
+        // Only reached if the client already has the bytes above.
+        await clientSawFirstBoundary;
+
+        await write(response, session.writeBoundary(second, { secondLabel: 'beta' }));
+        response.end(session.finish({}));
+      })().catch((error: unknown) => {
+        serverError = error;
+        response.destroy();
+        releaseServer();
+      });
+    });
+
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const response = await new Promise<IncomingMessage>((resolvePromise, rejectPromise) => {
+        get({ host: '127.0.0.1', port, path: '/' }, resolvePromise).on('error', rejectPromise);
+      });
+      response.setEncoding('utf8');
+
+      let received = '';
+      let released = false;
+      let sawTailBeforeRelease = false;
+      for await (const chunk of response) {
+        received += chunk;
+        if (!released && received.includes('alpha')) {
+          // Latched: sampled exactly once, on the read that first sees the head.
+          sawTailBeforeRelease = received.includes('beta');
+          released = true;
+          releaseServer();
+        }
+      }
+
+      assert.equal(serverError, undefined);
+      // The tail arrived only after the client acknowledged the head.
+      assert.equal(sawTailBeforeRelease, false);
+      assert.ok(received.includes('alpha'));
+      assert.ok(received.includes('beta'));
+      assert.ok(received.trimEnd().endsWith('</html>'));
+    } finally {
+      server.close();
+      await once(server, 'close');
+    }
+  });
+
+  /** Mirrors the host write helper the Node example documents. */
+  async function write(response: ServerResponse, chunk: Buffer): Promise<void> {
+    if (response.write(chunk)) return;
+    // An aborted client never emits 'drain', and surfaces as 'close', not
+    // 'error', so a bare drain wait would hang this test forever.
+    await new Promise<void>((ok, fail) => {
+      const done = (error?: Error): void => {
+        response.off('drain', onDrain);
+        response.off('close', onClose);
+        if (error) fail(error);
+        else ok();
+      };
+      const onDrain = (): void => done();
+      const onClose = (): void => done(new Error('client disconnected'));
+      response.once('drain', onDrain);
+      response.once('close', onClose);
+    });
+  }
 });
 
 describe('renderComponentTemplates', () => {

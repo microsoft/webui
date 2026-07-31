@@ -30,4 +30,20 @@
     <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
           Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/projection-app --out &quot;$(OutDir)fixtures/projection-app/protocol.bin&quot; --plugin webui" />
   </Target>
+
+  <!--
+    Compile the streaming fixture app the same way. It declares two compile-time
+    boundaries, which is what StreamingSessionTests drives chunk by chunk. As
+    above, no projection manifest is supplied, so every checkpoint falls back to
+    the whole state object; the tests assert chunk framing and ordering, not
+    boundary-local projection.
+  -->
+  <Target Name="BuildStreamingFixtureProtocol"
+          BeforeTargets="Build"
+          Inputs="fixtures/streaming-app/index.html;fixtures/streaming-app/stream-item.html;fixtures/streaming-app/stream-item.ts"
+          Outputs="$(OutDir)fixtures/streaming-app/protocol.bin">
+    <MakeDir Directories="$(OutDir)fixtures/streaming-app" />
+    <Exec WorkingDirectory="$(MSBuildProjectDirectory)"
+          Command="cargo run --quiet -p microsoft-webui-cli -- build fixtures/streaming-app --out &quot;$(OutDir)fixtures/streaming-app/protocol.bin&quot; --plugin webui" />
+  </Target>
 </Project>

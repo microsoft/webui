@@ -28,11 +28,18 @@ pub struct IntegrationBuild {
 pub const INTEGRATION_BUILDS: &[IntegrationBuild] = &[
     IntegrationBuild {
         name: "node",
-        commands: &[BuildCommand {
-            cmd: "node",
-            args: &["--check", "index.js"],
-            cwd: Some("examples/integration/node"),
-        }],
+        commands: &[
+            BuildCommand {
+                cmd: "node",
+                args: &["--check", "index.js"],
+                cwd: Some("examples/integration/node"),
+            },
+            BuildCommand {
+                cmd: "node",
+                args: &["--check", "streaming-server.js"],
+                cwd: Some("examples/integration/node"),
+            },
+        ],
         run_commands: &[],
     },
     IntegrationBuild {

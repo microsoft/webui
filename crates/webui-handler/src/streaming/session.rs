@@ -12,7 +12,7 @@ use super::error::{
     boundary_not_updatable_error, boundary_order_error, state_update_type_error,
     unknown_boundary_name_error,
 };
-use super::state::increment_streaming_record_sequence;
+use super::state::{increment_streaming_record_sequence, StreamingProgress};
 use super::{
     flush_streaming_transport, validate_streaming_head_start, StreamingEntryPlan,
     StreamingRenderState, StreamingSink,
@@ -21,7 +21,7 @@ use crate::plugin::HandlerPlugin;
 use crate::route_handler::Protocol;
 use crate::{
     FlushWriter, HandlerError, RenderOptions, ResponseWriter, Result, WebUIHandler,
-    WebUIProcessContext, INITIAL_KEY_CAPACITY,
+    WebUIProcessContext,
 };
 
 /// Integer handle for a compile-time streaming boundary.
@@ -37,6 +37,22 @@ impl BoundaryId {
         u32::try_from(index)
             .map(Self)
             .map_err(|_| HandlerError::Invariant("boundary index exceeds u32".to_string()))
+    }
+
+    /// Rebuild a handle from the integer a foreign host round-tripped.
+    ///
+    /// Out-of-range values are rejected by the response, not here, so hosts
+    /// that pass an arbitrary integer get the same actionable ordering error a
+    /// Rust caller would.
+    #[must_use]
+    pub fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The integer a foreign host stores and passes back.
+    #[must_use]
+    pub fn raw(self) -> u32 {
+        self.0
     }
 
     fn index(self) -> usize {
@@ -102,6 +118,120 @@ impl ResponsePlan<'_> {
     }
 }
 
+/// The half of a [`StreamingResponse`] that carries no borrow.
+///
+/// A host-owned session parks this between calls and rebuilds the borrowed half
+/// from its retained protocol, so a response can outlive any single `&Protocol`
+/// borrow without self-referential storage. Every field here is either owned
+/// outright or reduced to an owned form (`route_base`, the streaming progress)
+/// precisely so that this type has no lifetime parameter.
+pub(super) struct ParkedResponse {
+    cursor: usize,
+    next_boundary: usize,
+    shell_written: bool,
+    finished: bool,
+    failed: bool,
+    local_vars: HashMap<String, Value>,
+    component_attrs: HashMap<String, Value>,
+    route_base: Box<str>,
+    rendered_components: HashSet<String>,
+    plugin: Option<Box<dyn HandlerPlugin>>,
+    route_children: Vec<webui_protocol::WebUiFragmentRoute>,
+    head_end_emitted: bool,
+    body_end_emitted: bool,
+    route_chain_index: usize,
+    entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
+    streaming: StreamingProgress,
+    json_scratch: Vec<u8>,
+    scope_pool: Vec<HashMap<String, Value>>,
+    /// Retained only for entries with no shared precomputed plan; shared plans
+    /// are re-resolved from the protocol on every rebuild.
+    request_plan: Option<StreamingEntryPlan>,
+}
+
+impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
+    /// Drop every borrow and keep the owned progress.
+    pub(super) fn park(self) -> ParkedResponse {
+        ParkedResponse {
+            cursor: self.cursor,
+            next_boundary: self.next_boundary,
+            shell_written: self.shell_written,
+            finished: self.finished,
+            failed: self.failed,
+            local_vars: self.local_vars,
+            component_attrs: self.component_attrs,
+            route_base: self.route_base.into_owned().into_boxed_str(),
+            rendered_components: self.rendered_components,
+            plugin: self.plugin,
+            route_children: self.route_children,
+            head_end_emitted: self.head_end_emitted,
+            body_end_emitted: self.body_end_emitted,
+            route_chain_index: self.route_chain_index,
+            entry_route: self.entry_route,
+            streaming: self.streaming.into_progress(),
+            json_scratch: self.json_scratch,
+            scope_pool: self.scope_pool,
+            request_plan: match self.plan {
+                ResponsePlan::Shared(_) => None,
+                ResponsePlan::Request(plan) => Some(plan),
+            },
+        }
+    }
+
+    /// Rebuild a borrowed response around parked progress.
+    pub(super) fn unpark(
+        parked: ParkedResponse,
+        handler: &'a WebUIHandler,
+        protocol: &'a Protocol,
+        options: &RenderOptions<'a>,
+        writer: &'a mut W,
+    ) -> Result<Self> {
+        let plan = match parked.request_plan {
+            Some(plan) => ResponsePlan::Request(plan),
+            None => match protocol.streaming_plan(options.entry_id)? {
+                Some(plan) => ResponsePlan::Shared(plan),
+                None => {
+                    return Err(HandlerError::Invariant(
+                        "streaming response plan disappeared between calls".to_string(),
+                    ))
+                }
+            },
+        };
+        Ok(Self {
+            handler,
+            protocol,
+            plan,
+            sink: StreamingSink { transport: writer },
+            request_path: options.request_path,
+            entry_id: options.entry_id,
+            nonce: options.nonce.filter(|nonce| !nonce.is_empty()),
+            head_inject: options.head_inject.filter(|html| !html.is_empty()),
+            body_inject: options.body_inject.filter(|html| !html.is_empty()),
+            cursor: parked.cursor,
+            next_boundary: parked.next_boundary,
+            shell_written: parked.shell_written,
+            finished: parked.finished,
+            failed: parked.failed,
+            local_vars: parked.local_vars,
+            component_attrs: parked.component_attrs,
+            route_base: Cow::Owned(parked.route_base.into_string()),
+            rendered_components: parked.rendered_components,
+            plugin: parked.plugin,
+            route_children: parked.route_children,
+            head_end_emitted: parked.head_end_emitted,
+            body_end_emitted: parked.body_end_emitted,
+            route_chain_index: parked.route_chain_index,
+            entry_route: parked.entry_route,
+            streaming: StreamingRenderState::from_progress(
+                parked.streaming,
+                protocol.component_reachability(),
+            ),
+            json_scratch: parked.json_scratch,
+            scope_pool: parked.scope_pool,
+        })
+    }
+}
+
 impl WebUIHandler {
     /// Start a host-driven progressive HTML response.
     ///
@@ -129,7 +259,7 @@ impl WebUIHandler {
                 None,
             )?),
         };
-        let inventory_bytes = protocol.component_index().len().div_ceil(8);
+        let component_count = protocol.component_index().len();
         let entry_route = crate::route_renderer::find_best_route_match(
             &fragments.fragments,
             options.request_path,
@@ -162,32 +292,10 @@ impl WebUIHandler {
             body_end_emitted: false,
             route_chain_index: 0,
             entry_route,
-            streaming: StreamingRenderState {
-                component_reachability: protocol.component_reachability(),
-                head_marker_emitted: false,
-                active_boundary: None,
-                pending_root: None,
-                generated_root_ready: false,
-                next_boundary_id: 0,
-                next_record_sequence: 0,
-                checkpoint_updatable: false,
-                bootstrap_sent: false,
-                body_ended: false,
-                inventory: vec![0; inventory_bytes],
-                inventory_delta: vec![0; inventory_bytes],
-                inventory_hex: String::with_capacity(inventory_bytes * 2),
-                template_inventory: vec![0; inventory_bytes],
-                checkpoint_tags: Vec::new(),
-                checkpoint_walk_roots: Vec::new(),
-                checkpoint_seen: vec![0; inventory_bytes],
-                checkpoint_needs_expansion: false,
-                state_key_scratch: Vec::with_capacity(INITIAL_KEY_CAPACITY),
-                template_tag_scratch: Vec::new(),
-                css_href_scratch: Vec::new(),
-                style_spec_scratch: Vec::new(),
-                reachability_stack: Vec::new(),
-                update_plans: Vec::new(),
-            },
+            streaming: StreamingRenderState::from_progress(
+                StreamingProgress::new(component_count),
+                protocol.component_reachability(),
+            ),
             json_scratch: Vec::new(),
             scope_pool: Vec::new(),
         })
@@ -326,25 +434,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
 
     /// Render the document tail, emit the terminal record, and end the writer.
     pub fn finish(mut self, state: &Value) -> Result<()> {
-        self.require_usable("finish")?;
-        if self.finished {
-            return Err(boundary_order_error(
-                "finish",
-                "the streaming response has already finished",
-            ));
-        }
-        if !self.shell_written {
-            return Err(boundary_order_error(
-                "finish",
-                "write_shell must be called before finish",
-            ));
-        }
-        if self.next_boundary != self.plan.get().boundary_count() {
-            return Err(boundary_order_error(
-                "finish",
-                "every boundary must be committed before finish",
-            ));
-        }
+        self.ensure_finishable()?;
         if !self.body_ended() {
             let fragment_count = self
                 .protocol
@@ -371,6 +461,34 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
         } else {
             Ok(())
         }
+    }
+
+    /// Validate that [`Self::finish`] may run, without consuming the response.
+    ///
+    /// Every check here runs before any byte is written, so a caller that
+    /// violates ordering can correct the sequence and finish later. Owned
+    /// sessions rely on that to re-park a response after a rejected `finish`.
+    pub(super) fn ensure_finishable(&self) -> Result<()> {
+        self.require_usable("finish")?;
+        if self.finished {
+            return Err(boundary_order_error(
+                "finish",
+                "the streaming response has already finished",
+            ));
+        }
+        if !self.shell_written {
+            return Err(boundary_order_error(
+                "finish",
+                "write_shell must be called before finish",
+            ));
+        }
+        if self.next_boundary != self.plan.get().boundary_count() {
+            return Err(boundary_order_error(
+                "finish",
+                "every boundary must be committed before finish",
+            ));
+        }
+        Ok(())
     }
 
     fn require_usable(&self, operation: &str) -> Result<()> {

@@ -13,31 +13,28 @@ use super::StreamingRenderState;
 use crate::{HandlerError, Result, WebUIProcessContext};
 
 /// Record a rendered component tag into the current checkpoint's exact capture
-/// set, deduplicated by the reusable bitset. The tag is borrowed from
-/// `component_index` (`&'data str`) so capture allocates nothing per tag. Tags
-/// without an inventory bit are ignored (they carry no template or hydration
-/// state anyway).
-pub(crate) fn record_checkpoint_tag<'data>(
-    context: &mut WebUIProcessContext<'data, '_, '_>,
+/// set, deduplicated by the reusable bitset. Only the startup-built component
+/// index is retained, so capture allocates nothing per tag and every consumer
+/// avoids re-hashing the tag name. Tags without an inventory bit are ignored
+/// (they carry no template or hydration state anyway).
+pub(crate) fn record_checkpoint_tag(
+    context: &mut WebUIProcessContext<'_, '_, '_>,
     fragment_id: &str,
 ) {
-    // Copy the `'data` index reference out first so the borrowed key outlives the
-    // subsequent mutable borrow of `context.streaming` (disjoint fields).
-    let index_map: &'data HashMap<String, u32> = context.component_index;
-    let Some((tag, &index)) = index_map.get_key_value(fragment_id) else {
+    let Some(&index) = context.component_index.get(fragment_id) else {
         return;
     };
-    let tag: &'data str = tag.as_str();
     let route_dependent = context.streaming.as_ref().is_some_and(|streaming| {
         streaming.component_reachability.is_route_dependent(index) == Some(true)
     });
-    let route_base = route_dependent.then(|| context.route_base.clone());
+    let route_base = route_dependent.then(|| context.route_base.as_ref().into());
     let Some(streaming) = context.streaming.as_mut() else {
         return;
     };
     if let Some(route_base) = route_base {
+        let route_base: Box<str> = route_base;
         let already_recorded = streaming.checkpoint_walk_roots.iter().any(|(root, base)| {
-            *root == tag
+            *root == index
                 && base
                     .as_ref()
                     .is_some_and(|base| base.as_ref() == route_base.as_ref())
@@ -57,7 +54,7 @@ pub(crate) fn record_checkpoint_tag<'data>(
             }
             streaming
                 .checkpoint_walk_roots
-                .push((tag, Some(route_base)));
+                .push((index, Some(route_base)));
         }
     }
     let byte_index = (index / 8) as usize;
@@ -68,9 +65,9 @@ pub(crate) fn record_checkpoint_tag<'data>(
         return;
     }
     streaming.checkpoint_seen[byte_index] |= bit;
-    streaming.checkpoint_tags.push(tag);
+    streaming.checkpoint_tags.push(index);
     if !route_dependent && !streaming.checkpoint_walk_roots.is_empty() {
-        streaming.checkpoint_walk_roots.push((tag, None));
+        streaming.checkpoint_walk_roots.push((index, None));
     }
     if streaming.component_reachability.requires_expansion(index) != Some(false) {
         streaming.checkpoint_needs_expansion = true;
@@ -80,15 +77,9 @@ pub(crate) fn record_checkpoint_tag<'data>(
 /// Commit the exact rendered tags to the cumulative DOM inventory and encode
 /// this checkpoint's delta. Template delivery is tracked separately because a
 /// reachable-but-unrendered descendant needs metadata without claiming live DOM.
-pub(super) fn commit_checkpoint_inventory(
-    streaming: &mut StreamingRenderState<'_>,
-    component_index: &HashMap<String, u32>,
-) -> Result<()> {
+pub(super) fn commit_checkpoint_inventory(streaming: &mut StreamingRenderState<'_>) -> Result<()> {
     streaming.inventory_delta.fill(0);
-    for &tag in &streaming.checkpoint_tags {
-        let Some(&index) = component_index.get(tag) else {
-            continue;
-        };
+    for &index in &streaming.checkpoint_tags {
         let byte_index = usize::try_from(index / 8).map_err(|_| {
             HandlerError::Invariant("component inventory index does not fit usize".to_string())
         })?;
@@ -127,17 +118,13 @@ pub(super) fn commit_checkpoint_inventory(
 ///
 /// Returns `false` without mutating the capture when any root can reach an
 /// authored route. Those uncommon surfaces require the request-aware fallback.
-pub(super) fn expand_static_checkpoint_reachability<'data>(
-    streaming: &mut StreamingRenderState<'data>,
-    component_index: &HashMap<String, u32>,
+pub(super) fn expand_static_checkpoint_reachability(
+    streaming: &mut StreamingRenderState<'_>,
 ) -> Result<bool> {
     if !streaming.checkpoint_needs_expansion {
         return Ok(true);
     }
-    for &tag in &streaming.checkpoint_tags {
-        let Some(&index) = component_index.get(tag) else {
-            continue;
-        };
+    for &index in &streaming.checkpoint_tags {
         match streaming.component_reachability.is_route_dependent(index) {
             Some(false) => {}
             Some(true) => return Ok(false),
@@ -150,11 +137,9 @@ pub(super) fn expand_static_checkpoint_reachability<'data>(
     }
 
     streaming.reachability_stack.clear();
-    for &tag in streaming.checkpoint_tags.iter().rev() {
-        if let Some(&index) = component_index.get(tag) {
-            streaming.reachability_stack.push(index);
-        }
-    }
+    streaming
+        .reachability_stack
+        .extend(streaming.checkpoint_tags.iter().rev().copied());
     streaming.checkpoint_tags.clear();
     streaming.checkpoint_seen.fill(0);
 
@@ -163,7 +148,7 @@ pub(super) fn expand_static_checkpoint_reachability<'data>(
     Ok(true)
 }
 
-fn append_reachability_stack<'data>(streaming: &mut StreamingRenderState<'data>) -> Result<()> {
+fn append_reachability_stack(streaming: &mut StreamingRenderState<'_>) -> Result<()> {
     while let Some(index) = streaming.reachability_stack.pop() {
         let byte_index = usize::try_from(index / 8).map_err(|_| {
             HandlerError::Invariant("component reachability index does not fit usize".to_string())
@@ -179,12 +164,7 @@ fn append_reachability_stack<'data>(streaming: &mut StreamingRenderState<'data>)
         }
         streaming.checkpoint_seen[byte_index] |= bit;
 
-        let Some(name) = streaming.component_reachability.name(index) else {
-            return Err(HandlerError::Invariant(
-                "component reachability name is missing".to_string(),
-            ));
-        };
-        streaming.checkpoint_tags.push(name);
+        streaming.checkpoint_tags.push(index);
         let Some(dependencies) = streaming.component_reachability.dependencies(index) else {
             return Err(HandlerError::Invariant(
                 "component reachability dependencies are missing".to_string(),
@@ -198,15 +178,15 @@ fn append_reachability_stack<'data>(streaming: &mut StreamingRenderState<'data>)
     Ok(())
 }
 
-pub(super) fn replace_checkpoint_reachability<'data>(
-    streaming: &mut StreamingRenderState<'data>,
-    component_index: &'data HashMap<String, u32>,
+pub(super) fn replace_checkpoint_reachability(
+    streaming: &mut StreamingRenderState<'_>,
+    component_index: &HashMap<String, u32>,
     reachable: &[String],
 ) {
     streaming.checkpoint_tags.clear();
     streaming.checkpoint_seen.fill(0);
     for name in reachable {
-        let Some((tag, &index)) = component_index.get_key_value(name) else {
+        let Some(&index) = component_index.get(name) else {
             continue;
         };
         let byte_index = (index / 8) as usize;
@@ -215,7 +195,7 @@ pub(super) fn replace_checkpoint_reachability<'data>(
             && streaming.checkpoint_seen[byte_index] & bit == 0
         {
             streaming.checkpoint_seen[byte_index] |= bit;
-            streaming.checkpoint_tags.push(tag.as_str());
+            streaming.checkpoint_tags.push(index);
         }
     }
 }
@@ -245,15 +225,14 @@ pub(crate) fn streaming_template_already_sent(
 
 /// Mark one component's template/CSS metadata as delivered.
 ///
+/// Takes the startup-built component index directly: the caller already holds
+/// it from the checkpoint capture, so no tag hash is repeated here.
+///
 /// Returns `true` exactly once per indexed component for this render.
 pub(super) fn mark_streaming_template_sent(
     streaming: &mut StreamingRenderState<'_>,
-    component_index: &HashMap<String, u32>,
-    tag: &str,
+    index: u32,
 ) -> Result<bool> {
-    let Some(&index) = component_index.get(tag) else {
-        return Ok(false);
-    };
     let byte_index = usize::try_from(index / 8).map_err(|_| {
         HandlerError::Invariant("component template index does not fit usize".to_string())
     })?;
@@ -289,41 +268,22 @@ mod tests {
             ]),
             Vec::new(),
         ));
-        let mut streaming = StreamingRenderState {
-            component_reachability: protocol.component_reachability(),
-            head_marker_emitted: true,
-            active_boundary: None,
-            pending_root: None,
-            generated_root_ready: false,
-            next_boundary_id: 0,
-            next_record_sequence: 0,
-            checkpoint_updatable: false,
-            bootstrap_sent: false,
-            body_ended: false,
-            inventory: vec![0u8; 1],
-            inventory_delta: vec![0u8; 1],
-            inventory_hex: String::new(),
-            template_inventory: vec![0u8; 1],
-            checkpoint_tags: Vec::new(),
-            checkpoint_walk_roots: Vec::new(),
-            checkpoint_seen: vec![0u8; 1],
-            checkpoint_needs_expansion: false,
-            state_key_scratch: Vec::new(),
-            template_tag_scratch: Vec::new(),
-            css_href_scratch: Vec::new(),
-            style_spec_scratch: Vec::new(),
-            reachability_stack: Vec::new(),
-            update_plans: Vec::new(),
-        };
+        let mut streaming = StreamingRenderState::from_progress(
+            super::super::state::StreamingProgress::new(2),
+            protocol.component_reachability(),
+        );
+        streaming.head_marker_emitted = true;
         let index = protocol.component_index();
+        let comp_a = index["comp-a"];
+        let comp_b = index["comp-b"];
 
         // First checkpoint: both tags become rendered and have metadata sent.
-        streaming.checkpoint_tags.push("comp-a");
-        streaming.checkpoint_tags.push("comp-b");
-        commit_checkpoint_inventory(&mut streaming, index).unwrap();
+        streaming.checkpoint_tags.push(comp_a);
+        streaming.checkpoint_tags.push(comp_b);
+        commit_checkpoint_inventory(&mut streaming).unwrap();
         assert_eq!(streaming.inventory_hex, "03");
-        assert!(mark_streaming_template_sent(&mut streaming, index, "comp-a").unwrap());
-        assert!(mark_streaming_template_sent(&mut streaming, index, "comp-b").unwrap());
+        assert!(mark_streaming_template_sent(&mut streaming, comp_a).unwrap());
+        assert!(mark_streaming_template_sent(&mut streaming, comp_b).unwrap());
         let capacity = streaming.checkpoint_tags.capacity();
         assert!(capacity >= 2);
 
@@ -333,10 +293,10 @@ mod tests {
         streaming.checkpoint_needs_expansion = false;
 
         // Second checkpoint: comp-a reused — no new metadata or DOM delta.
-        streaming.checkpoint_tags.push("comp-a");
-        commit_checkpoint_inventory(&mut streaming, index).unwrap();
+        streaming.checkpoint_tags.push(comp_a);
+        commit_checkpoint_inventory(&mut streaming).unwrap();
         assert_eq!(streaming.inventory_hex, "");
-        assert!(!mark_streaming_template_sent(&mut streaming, index, "comp-a").unwrap());
+        assert!(!mark_streaming_template_sent(&mut streaming, comp_a).unwrap());
         assert!(
             streaming.checkpoint_tags.capacity() >= capacity,
             "checkpoint tag buffer capacity must be reused, not reallocated"

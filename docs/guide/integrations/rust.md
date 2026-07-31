@@ -394,6 +394,35 @@ component.
 | `StreamingResponse::update(id, state)` | Sends projected object state to a committed updatable boundary |
 | `StreamingResponse::finish(state)` | Renders the tail, emits terminal, and ends the writer |
 
+`StreamingResponse` borrows a `ResponseWriter` for the life of the response,
+which is the cheapest shape when the transport lives in the same process and the
+same language.
+
+When you would rather own the bytes — for example to feed a channel, a test
+harness, or a transport whose writer cannot be borrowed for that long —
+`StreamingSession` offers the same six operations and returns a `Vec<u8>` per
+call instead:
+
+```rust
+let mut session = StreamingSession::new(
+    Arc::clone(&handler),
+    Arc::clone(&protocol),
+    SessionOptions::new("index.html", "/"),
+)?;
+let rows = session.boundary("rows")?;
+
+sink.send(session.write_shell(&shell_state)?)?;
+sink.send(session.write_boundary(rows, &rows_state, BoundaryMode::Final)?)?;
+sink.send(session.finish(&tail_state)?)?;
+```
+
+The session holds its own `Arc` clones, so it may outlive the bindings you
+created it from.
+
+This is the same type Node, WASM, C, and C# drive, so behaviour is identical
+across hosts. Prefer `stream_response` in Rust servers: it writes straight into
+the writer and avoids the per-chunk buffer.
+
 ### HandlerError variants
 
 | Variant | When |

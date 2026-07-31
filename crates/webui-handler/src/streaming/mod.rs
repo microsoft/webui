@@ -22,6 +22,7 @@
 mod checkpoint;
 mod error;
 mod inventory;
+mod owned;
 mod plan;
 mod root;
 mod session;
@@ -37,6 +38,7 @@ use crate::{
 
 pub(crate) use error::streaming_boundary_error;
 pub(crate) use inventory::{record_checkpoint_tag, streaming_template_already_sent};
+pub use owned::{BufferSink, SessionOptions, StreamingSession};
 pub(crate) use plan::{PreparedStreamingEntryPlan, StreamingEntryPlan};
 pub(crate) use root::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,

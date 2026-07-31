@@ -82,6 +82,38 @@ public sealed class WebUIHandler : IDisposable
     }
 
     /// <summary>
+    /// Opens a host-driven streaming response for a loaded protocol.
+    /// </summary>
+    /// <remarks>
+    /// <para>The returned session renders one chunk per call and hands the bytes
+    /// back, so the caller keeps ownership of the socket and decides when to
+    /// write and flush. WebUI never touches the transport, which is what makes
+    /// this usable from an existing ASP.NET pipeline.</para>
+    /// <para>The session holds its own reference to this handler and to
+    /// <paramref name="protocol"/>, so disposal order does not matter.</para>
+    /// </remarks>
+    /// <param name="protocol">Loaded protocol shared across requests.</param>
+    /// <param name="entryId">The entry identifier to render.</param>
+    /// <param name="requestPath">The HTTP request path.</param>
+    /// <returns>A session the caller must dispose.</returns>
+    /// <exception cref="ObjectDisposedException">
+    /// Thrown when the handler or protocol has been disposed.
+    /// </exception>
+    /// <exception cref="WebUIException">Thrown when the session cannot be opened.</exception>
+    public StreamingSession StreamResponse(
+        Protocol protocol,
+        string entryId,
+        string requestPath)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(protocol);
+        ArgumentNullException.ThrowIfNull(entryId);
+        ArgumentNullException.ThrowIfNull(requestPath);
+
+        return new StreamingSession(_handle, protocol.Handle, entryId, requestPath);
+    }
+
+    /// <summary>
     /// Releases the native handler resources.
     /// </summary>
     public void Dispose()

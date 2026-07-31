@@ -126,10 +126,8 @@ bytes remains avoidable work.
 Do not construct a new Node `Protocol` for every request. Keep one loaded
 instance for the server lifetime.
 
-::: warning Browser state is client-facing
-Never put credentials, private tokens, or other secrets in state rendered to
+**Browser state is client-facing.** Never put credentials, private tokens, or other secrets in state rendered to
 the browser.
-:::
 
 ## Why WebUI is Fast
 

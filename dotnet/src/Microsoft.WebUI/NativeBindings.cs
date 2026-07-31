@@ -64,6 +64,31 @@ internal static class NativeBindings
         }
     }
 
+    /// <summary>
+    /// SafeHandle wrapper for a host-driven native streaming session.
+    /// </summary>
+    internal sealed class WebUIStreamingSessionSafeHandle : SafeHandle
+    {
+        internal WebUIStreamingSessionSafeHandle()
+            : base(IntPtr.Zero, ownsHandle: true)
+        {
+        }
+
+        internal WebUIStreamingSessionSafeHandle(IntPtr handle)
+            : this()
+        {
+            SetHandle(handle);
+        }
+
+        public override bool IsInvalid => handle == IntPtr.Zero;
+
+        protected override bool ReleaseHandle()
+        {
+            webui_streaming_session_destroy_raw(handle);
+            return true;
+        }
+    }
+
     static NativeBindings()
     {
         NativeLibrary.SetDllImportResolver(
@@ -142,6 +167,73 @@ internal static class NativeBindings
     internal static extern IntPtr webui_protocol_tokens(
         WebUIProtocolSafeHandle protocolPtr);
 
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_streaming_session_create")]
+    private static extern IntPtr webui_streaming_session_create_raw(
+        WebUIHandlerSafeHandle handlerPtr,
+        WebUIProtocolSafeHandle protocolPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string entryId,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string requestPath);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_streaming_session_destroy")]
+    private static extern void webui_streaming_session_destroy_raw(IntPtr sessionPtr);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool webui_streaming_session_boundary(
+        WebUIStreamingSessionSafeHandle sessionPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string name,
+        out uint boundary);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint webui_streaming_session_boundary_count(
+        WebUIStreamingSessionSafeHandle sessionPtr);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    internal static extern bool webui_streaming_session_is_finished(
+        WebUIStreamingSessionSafeHandle sessionPtr);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_streaming_session_write_shell(
+        WebUIStreamingSessionSafeHandle sessionPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
+        out nuint outLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_streaming_session_write_boundary(
+        WebUIStreamingSessionSafeHandle sessionPtr,
+        uint boundary,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
+        [MarshalAs(UnmanagedType.U1)] bool updatable,
+        out nuint outLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_streaming_session_update(
+        WebUIStreamingSessionSafeHandle sessionPtr,
+        uint boundary,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
+        out nuint outLen);
+
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr webui_streaming_session_finish(
+        WebUIStreamingSessionSafeHandle sessionPtr,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
+        out nuint outLen);
+
+    internal static WebUIStreamingSessionSafeHandle CreateStreamingSession(
+        WebUIHandlerSafeHandle handler,
+        WebUIProtocolSafeHandle protocol,
+        string entryId,
+        string requestPath)
+    {
+        IntPtr handle = webui_streaming_session_create_raw(
+            handler,
+            protocol,
+            entryId,
+            requestPath);
+        return new WebUIStreamingSessionSafeHandle(handle);
+    }
+
     internal static WebUIHandlerSafeHandle CreateHandler(string? pluginId)
     {
         IntPtr handle = pluginId is null
@@ -176,6 +268,39 @@ internal static class NativeBindings
         try
         {
             return Marshal.PtrToStringUTF8(ptr);
+        }
+        finally
+        {
+            webui_free(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Copies a native UTF-8 chunk of a known length into a managed array and
+    /// frees the native memory. Returns <c>null</c> for
+    /// <see cref="System.IntPtr.Zero"/>.
+    /// </summary>
+    /// <remarks>
+    /// The length comes from the native call, so this never scans for a
+    /// terminator on the response hot path.
+    /// </remarks>
+    internal static byte[]? ReadAndFreeBytes(IntPtr ptr, nuint length)
+    {
+        if (ptr == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            if (length == 0)
+            {
+                return Array.Empty<byte>();
+            }
+
+            byte[] bytes = new byte[length];
+            Marshal.Copy(ptr, bytes, 0, (int)length);
+            return bytes;
         }
         finally
         {

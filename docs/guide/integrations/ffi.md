@@ -122,11 +122,9 @@ Set the CSP nonce for inline tags on a handler instance. When set, all subsequen
 
 The nonce is written verbatim — pass the raw base64 string without any encoding. The same value should appear in your `Content-Security-Policy` header.
 
-::: warning Thread Safety
-Concurrent render calls are supported after configuration. Do not call
+**Thread safety.** Concurrent render calls are supported after configuration. Do not call
 `webui_handler_set_nonce` or `webui_handler_destroy` while another operation is
 using the same handler.
-:::
 
 ### webui_protocol_create / webui_protocol_destroy
 
@@ -182,6 +180,58 @@ The explicit create/destroy pair is the C representation of the normal
 identity is not content identity, and hashing or copying on every request would
 erase the startup-only performance model.
 
+### Progressive streaming sessions
+
+A streaming session lets a C host render one response in chunks it writes
+itself. Every chunk function returns a heap byte pointer plus its length; WebUI
+never touches your socket, so backpressure and cancellation stay yours.
+
+```c
+webui_streaming_session_t *session = webui_streaming_session_create(
+    handler, protocol, "index.html", "/", NULL, NULL, NULL);
+
+uint32_t rows = 0;
+if (!webui_streaming_session_boundary(session, "rows", &rows)) {
+    fprintf(stderr, "%s\n", webui_last_error());  /* lists the valid names */
+}
+
+size_t len = 0;
+uint8_t *chunk = webui_streaming_session_write_shell(session, "{}", &len);
+if (chunk == NULL) {
+    fprintf(stderr, "%s\n", webui_last_error());
+} else {
+    send_all(socket, chunk, len);
+    webui_free(chunk);
+}
+
+/* ... write_boundary / update ... then: */
+chunk = webui_streaming_session_finish(session, "{}", &len);
+/* send + free */
+webui_streaming_session_destroy(session);
+```
+
+| Function | Result |
+|----------|--------|
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path, nonce, head_inject, body_inject)` | Session handle, or `NULL`. The last three arguments accept `NULL`. |
+| `webui_streaming_session_destroy(session)` | Releases the session. `NULL` is a safe no-op. |
+| `webui_streaming_session_boundary(session, name, out_id)` | `true` plus the integer handle, or `false` and an error listing the valid names |
+| `webui_streaming_session_boundary_count(session)` | Boundaries declared by the entry |
+| `webui_streaming_session_is_finished(session)` | Whether the terminal record was written |
+| `webui_streaming_session_write_shell(session, state_json, out_len)` | Document prefix through the first semantic flush |
+| `webui_streaming_session_write_boundary(session, id, state_json, mode, out_len)` | One boundary's markup and checkpoint. `mode` is `0` final, `1` updatable. |
+| `webui_streaming_session_update(session, id, state_json, out_len)` | Projected state patch for an updatable boundary |
+| `webui_streaming_session_finish(session, state_json, out_len)` | Tail checkpoint, terminal record, and document suffix |
+
+**Chunks are binary-safe.** Always use `*out_len`. Chunks are **not**
+NUL-terminated, and a checkpoint payload may legitimately contain a zero byte.
+Free every non-`NULL` chunk with `webui_free`.
+
+The session clones its own references to the handler and protocol, so you may
+destroy them in any order. A rejected call returns `NULL` but leaves the session
+usable, so bad state input does not cost you the response. See
+[Streaming Boundaries](/guide/concepts/directives/boundary) for the authoring
+side and the ordering rules.
+
 ## Error Handling
 
 The FFI uses thread-local error storage following the POSIX `dlerror()` pattern:
@@ -214,10 +264,12 @@ Two rules to remember:
 |---|---|---|
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
+| Streaming session chunks | Caller | `webui_free(ptr)` |
 | `webui_last_error` | Library (do **not** free) | Replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_handler_create_with_plugin` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_protocol_create` | Caller | `webui_protocol_destroy(ptr)` |
+| `webui_streaming_session_create` | Caller | `webui_streaming_session_destroy(ptr)` |
 
 ## Using Plugins
 
@@ -369,6 +421,25 @@ string html = handler.Render(
 Custom P/Invoke bindings should mirror this lifecycle and receive returned
 strings as `IntPtr`, copy them with `Marshal.PtrToStringUTF8`, then release them
 with `webui_free`.
+
+The package also wraps the streaming session, so an ASP.NET endpoint can pace a
+progressive response without touching the native ABI:
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+uint rows = session.Boundary("rows");
+
+Response.ContentType = "text/html; charset=utf-8";
+await Response.Body.WriteAsync(session.WriteShell("{}"));
+await Response.Body.FlushAsync();
+
+await Response.Body.WriteAsync(session.WriteBoundary(rows, await LoadRowsAsync()));
+await Response.Body.WriteAsync(session.Finish("{}"));
+```
+
+Each call returns a `byte[]`, so `HttpResponse.Body` keeps its own write and
+flush semantics. Failures throw `WebUIException` carrying the same diagnostic
+`webui_last_error()` would report.
 
 ## Other Languages
 

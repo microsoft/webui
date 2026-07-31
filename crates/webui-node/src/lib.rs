@@ -27,6 +27,8 @@
 //! protocol.renderStream(state, 'index.html', '/', (chunk) => process.stdout.write(chunk));
 //! ```
 
+use std::sync::Arc;
+
 use napi::bindgen_prelude::{Buffer, Function};
 use napi::Error as NapiError;
 use napi_derive::napi;
@@ -35,7 +37,8 @@ use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    HandlerError, Protocol as HandlerProtocol, RenderOptions, ResponseWriter, WebUIHandler,
+    BoundaryId, BoundaryMode, HandlerError, Protocol as HandlerProtocol, RenderOptions,
+    ResponseWriter, SessionOptions, StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 #[cfg(test)]
 use webui_protocol::WebUIProtocol;
@@ -243,8 +246,8 @@ pub fn inspect(protocol_data: Buffer) -> napi::Result<String> {
 /// selected hydration plugin is bound once at construction.
 #[napi]
 pub struct Protocol {
-    inner: HandlerProtocol,
-    handler: WebUIHandler,
+    inner: Arc<HandlerProtocol>,
+    handler: Arc<WebUIHandler>,
 }
 
 #[napi]
@@ -252,8 +255,8 @@ impl Protocol {
     /// Decode a protocol and bind its render plugin for repeated rendering.
     #[napi(constructor)]
     pub fn new(protocol_data: Buffer, plugin: Option<String>) -> napi::Result<Self> {
-        let inner = decode_protocol(&protocol_data)?;
-        let handler = create_handler(plugin)?;
+        let inner = Arc::new(decode_protocol(&protocol_data)?);
+        let handler = Arc::new(create_handler(plugin)?);
         Ok(Self { inner, handler })
     }
 
@@ -323,6 +326,154 @@ impl Protocol {
     pub fn tokens(&self) -> Vec<String> {
         self.inner.tokens().to_vec()
     }
+
+    /// Open a host-driven progressive response for a streaming entry.
+    ///
+    /// Unlike `renderStream`, which pushes every chunk during one synchronous
+    /// call, the returned session hands each chunk back so the Node server
+    /// owns the socket, the write order, and backpressure.
+    #[napi]
+    pub fn stream_response(
+        &self,
+        entry: String,
+        request_path: String,
+        options: Option<JsStreamOptions>,
+    ) -> napi::Result<StreamingSession> {
+        let options = options.unwrap_or_default();
+        let mut session_options = SessionOptions::new(entry, request_path);
+        session_options.nonce = options.nonce;
+        session_options.head_inject = options.head_inject;
+        session_options.body_inject = options.body_inject;
+        let inner = HandlerStreamingSession::new(
+            Arc::clone(&self.handler),
+            Arc::clone(&self.inner),
+            session_options,
+        )
+        .map_err(streaming_error)?;
+        Ok(StreamingSession { inner })
+    }
+}
+
+/// Optional per-response streaming settings.
+#[napi(object)]
+#[derive(Default)]
+pub struct JsStreamOptions {
+    /// CSP nonce applied to generated inline `<script>` tags.
+    pub nonce: Option<String>,
+    /// HTML injected at the structural `head_end` boundary.
+    pub head_inject: Option<String>,
+    /// HTML injected at the structural `body_end` boundary.
+    pub body_inject: Option<String>,
+}
+
+/// A progressive HTML response driven one chunk at a time from Node.
+///
+/// Every method returns the bytes it produced. Write them to the response and
+/// await `drain` whenever `write()` returns `false`; the session holds no
+/// transport and never blocks on one.
+///
+/// ```js
+/// const session = protocol.streamResponse('index.html', '/');
+/// const weather = session.boundary('weather-shell');
+/// res.write(session.writeShell(shellState));
+/// res.write(session.writeBoundary(weather, weatherState, 'updatable'));
+/// res.write(session.update(weather, forecast));
+/// res.end(session.finish(tailState));
+/// ```
+#[napi]
+pub struct StreamingSession {
+    inner: HandlerStreamingSession,
+}
+
+#[napi]
+impl StreamingSession {
+    /// Resolve an authored boundary name to a stable integer handle.
+    ///
+    /// Resolve once outside the write loop; the handle costs nothing to reuse.
+    #[napi]
+    pub fn boundary(&self, name: String) -> napi::Result<u32> {
+        self.inner
+            .boundary(&name)
+            .map(BoundaryId::raw)
+            .map_err(streaming_error)
+    }
+
+    /// Number of compile-time boundaries declared by this entry.
+    #[napi(getter)]
+    pub fn boundary_count(&self) -> u32 {
+        // Boundary counts are bounded by the compiled entry, so this cannot
+        // exceed u32 in any protocol the build can produce.
+        u32::try_from(self.inner.boundary_count()).unwrap_or(u32::MAX)
+    }
+
+    /// Whether the terminal record has been written.
+    #[napi(getter)]
+    pub fn finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// Render everything before the first boundary.
+    #[napi]
+    pub fn write_shell(&mut self, state_json: String) -> napi::Result<Buffer> {
+        let state = parse_state_json(&state_json)?;
+        self.inner
+            .write_shell(&state)
+            .map(Buffer::from)
+            .map_err(streaming_error)
+    }
+
+    /// Render and commit the next boundary in declaration order.
+    ///
+    /// `mode` is `"final"` (default) or `"updatable"`. Only updatable
+    /// boundaries accept later `update()` calls.
+    #[napi]
+    pub fn write_boundary(
+        &mut self,
+        boundary: u32,
+        state_json: String,
+        mode: Option<String>,
+    ) -> napi::Result<Buffer> {
+        let state = parse_state_json(&state_json)?;
+        let mode = parse_boundary_mode(mode.as_deref())?;
+        self.inner
+            .write_boundary(BoundaryId::from_raw(boundary), &state, mode)
+            .map(Buffer::from)
+            .map_err(streaming_error)
+    }
+
+    /// Push a projected state patch to a committed updatable boundary.
+    #[napi]
+    pub fn update(&mut self, boundary: u32, state_json: String) -> napi::Result<Buffer> {
+        let state = parse_state_json(&state_json)?;
+        self.inner
+            .update(BoundaryId::from_raw(boundary), &state)
+            .map(Buffer::from)
+            .map_err(streaming_error)
+    }
+
+    /// Render the document tail and emit the terminal record.
+    #[napi]
+    pub fn finish(&mut self, state_json: String) -> napi::Result<Buffer> {
+        let state = parse_state_json(&state_json)?;
+        self.inner
+            .finish(&state)
+            .map(Buffer::from)
+            .map_err(streaming_error)
+    }
+}
+
+fn parse_boundary_mode(mode: Option<&str>) -> napi::Result<BoundaryMode> {
+    match mode {
+        None | Some("final") => Ok(BoundaryMode::Final),
+        Some("updatable") => Ok(BoundaryMode::Updatable),
+        Some(other) => Err(NapiError::from_reason(format!(
+            "unknown boundary mode '{other}'; expected 'final' or 'updatable'"
+        ))),
+    }
+}
+
+fn streaming_error(error: HandlerError) -> NapiError {
+    NapiError::from_reason(error.to_string())
 }
 
 fn decode_protocol(protocol_data: &[u8]) -> napi::Result<HandlerProtocol> {

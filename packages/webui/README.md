@@ -151,6 +151,59 @@ protocol.renderStream(state, (chunk) => {
 });
 ```
 
+### `protocol.streamResponse(options?): StreamingSession`
+
+Opens a progressive streaming session for an entry that declares `<boundary>`
+directives. Unlike `renderStream`, the session **returns** each chunk, so your
+server keeps the socket, the write order, and the backpressure contract.
+
+```js
+import { once } from 'node:events';
+
+const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
+const status = session.boundary('job-status');   // resolve names once
+
+res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+await write(res, session.writeShell(baseState));
+await write(res, session.writeBoundary(status, statusState, 'updatable'));
+
+// Patches an already-hydrated island on this same response.
+await write(res, session.update(status, { jobState: 'succeeded' }));
+res.end(session.finish({}));
+
+async function write(res, chunk) {
+  if (res.write(chunk)) return;
+  // An aborted client never emits 'drain', and surfaces as 'close', not
+  // 'error' — so waiting on 'drain' alone would hang forever.
+  await new Promise((ok, fail) => {
+    const done = (error) => {
+      res.off('drain', onDrain);
+      res.off('close', onClose);
+      if (error) fail(error);
+      else ok();
+    };
+    const onDrain = () => done();
+    const onClose = () => done(new Error('client disconnected'));
+    res.once('drain', onDrain);
+    res.once('close', onClose);
+  });
+}
+```
+
+| Member | Returns | Description |
+|--------|---------|-------------|
+| `boundary(name)` | `number` | Integer handle for an authored boundary name |
+| `boundaryCount` | `number` | Boundaries declared by the entry |
+| `finished` | `boolean` | Whether `finish()` has been called |
+| `writeShell(state)` | `Buffer` | Document prefix through the first semantic flush |
+| `writeBoundary(id, state, mode?)` | `Buffer` | One boundary's markup and checkpoint (`'final'` \| `'updatable'`) |
+| `update(id, state)` | `Buffer` | Projected state patch to an updatable boundary |
+| `finish(state)` | `Buffer` | Tail checkpoint, terminal record, and document suffix |
+
+Ordering is enforced. A rejected call throws and leaves the session usable, so
+invalid state does not cost you the response. Sessions are independent — hold
+one per in-flight request.
+
 ### `inspect(protocol: Buffer): string`
 
 Returns a JSON representation of the protocol for debugging.

@@ -62,11 +62,25 @@ streaming with the first media type and writes versioned NDJSON commands:
 {"type":"finish"}
 ```
 
-Node controls readiness and order, but does not render WebUI. The CLI resolves
-each name once to an integer boundary handle and owns the compiled protocol,
-`StreamingResponse`, pooled `StreamingWriter`, and browser-facing record
-format. A capacity-one command channel and Node's `response.write()` / `drain`
-contract propagate backpressure across the loopback bridge.
+In this topology Node controls readiness and order, but does not render WebUI.
+The CLI resolves each name once to an integer boundary handle and owns the
+compiled protocol, `StreamingResponse`, pooled `StreamingWriter`, and
+browser-facing record format. A capacity-one command channel and Node's
+`response.write()` / `drain` contract propagate backpressure across the loopback
+bridge.
+
+**This is one of two supported topologies.** This example uses the
+**API-proxy** topology, which is the right fit when you want the CLI to own
+rendering, static assets, and the browser transport.
+
+If your Node service already terminates HTTP and you want WebUI **in-process**,
+call `protocol.streamResponse()` from `@microsoft/webui` instead: it returns one
+`Buffer` per call, so your own server writes the bytes. See
+[`examples/integration/node/streaming-server.js`](../../integration/node/README.md#in-process-progressive-streaming),
+which needs no sidecar. C, C#, and WASM expose the same session.
+
+Both topologies are thin adapters over the same Rust session, so boundary
+ordering, projection, the wire format, and every diagnostic are identical.
 
 ### Why weather uses a state record
 

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebUI in-process streaming</title>
+
+  <!--
+    The framework's streaming entry must be able to run while the response is
+    still open, so it loads `async` from `<head>`. It installs the streaming
+    coordinator, which activates each boundary as it commits and removes the
+    generated payload scripts, sentinels, and markers afterwards.
+  -->
+  <script type="module" async src="/framework/streaming-entry.js"></script>
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 44rem;
+      margin: 0 auto;
+      padding: 2rem;
+      line-height: 1.5;
+    }
+
+    section {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      margin-top: 1.5rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>In-process streaming</h1>
+
+  <!--
+    Committed immediately as an updatable boundary so the slow job below cannot
+    hold back the rest of the page. When the job finishes, the server sends a
+    projected state record to this same boundary on this same response.
+  -->
+  <boundary name="job-status">
+    <job-status state="{{jobState}}" detail="{{jobDetail}}"></job-status>
+  </boundary>
+
+  <section aria-label="Log">
+    <boundary name="log-batch-1">
+      <for each="line in batch1">
+        <log-line level="{{line.level}}" text="{{line.text}}"></log-line>
+      </for>
+    </boundary>
+
+    <boundary name="log-batch-2">
+      <for each="line in batch2">
+        <log-line level="{{line.level}}" text="{{line.text}}"></log-line>
+      </for>
+    </boundary>
+
+    <boundary name="log-batch-3">
+      <for each="line in batch3">
+        <log-line level="{{line.level}}" text="{{line.text}}"></log-line>
+      </for>
+    </boundary>
+  </section>
+</body>
+</html>
