@@ -18,6 +18,7 @@ use thiserror::Error;
 pub mod plugin;
 
 /// Bundler-neutral state-projection manifest contract.
+#[cfg(feature = "projection-manifest")]
 pub mod projection_manifest;
 
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.

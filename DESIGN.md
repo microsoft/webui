@@ -2389,9 +2389,11 @@ pub projection_manifests: Vec<ProjectionManifestSource>,
 ```
 
 Schema parsing, canonical ordering/reference validation, and build-ID
-recomputation live in `webui-protocol::projection_manifest` so native and WASM
-hosts share one contract. `webui` adds filesystem root, symlink, and stale
-input/output validation for path and inline native sources.
+recomputation live in `webui-protocol::projection_manifest` behind the
+opt-in `projection-manifest` feature so native and WASM build-time hosts share
+one contract without adding SHA-256 dependencies to handler-only consumers.
+`webui` adds filesystem root, symlink, and stale input/output validation for
+path and inline native sources.
 
 The handler runtime never reads manifest files. Protocol fields are the sole
 runtime source of projection metadata.
