@@ -110,7 +110,7 @@ export class WebUIElement extends TemplateElement {
     }
   }
 
-  /** Wire root-level events on the host element (or shadow root when present). */
+  /** Wire root-level events on the shadow root when present, otherwise the host element. */
   private $wireRoot(instance: TemplateInstance, re: [string, string, CompiledEventArgs][]): void {
     const target = this.shadowRoot ?? this;
     for (let i = 0; i < re.length; i++) {
