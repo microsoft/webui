@@ -374,8 +374,8 @@ knowing:
 - **Non-bubbling events work.** `@focus`, `@blur`, `@mouseenter`, `@load`,
   `@error`, and `@toggle` fire normally. A shared root listener could never see
   them, because those events do not travel up the tree.
-- **`stopPropagation()` behaves as written.** An ancestor stopping an event
-  cannot suppress a handler bound to the element the event started on.
+- **`stopPropagation()` behaves as written.** An ancestor stopping an event as it
+  bubbles cannot suppress a handler bound to the element the event started on.
 
 Dispatch cost does not grow with the number of rows a `<for>` renders. If you do
 want a single listener instead of one per row for a very long list, use root host

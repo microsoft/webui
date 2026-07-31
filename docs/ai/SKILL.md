@@ -269,8 +269,8 @@ parsed in templates. An `@event` requires a `.ts` file on that component.
 
 Each `@event` gets its own listener on the element it is written on - bindings
 are never delegated to a shared root. Non-bubbling events (`@focus`, `@blur`,
-`@mouseenter`, `@load`, `@error`, `@toggle`) therefore work, and
-`stopPropagation()` on an ancestor cannot suppress them.
+`@mouseenter`, `@load`, `@error`, `@toggle`) therefore work, and an ancestor's
+bubble-phase `stopPropagation()` cannot suppress them.
 
 ### DOM references
 
