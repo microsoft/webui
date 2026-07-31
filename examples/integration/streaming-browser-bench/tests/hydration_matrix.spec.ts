@@ -98,9 +98,14 @@ const PEAK_HEAP_TOLERANCE_PCT = 15;
  *  Typed checkpoints, retained-root state records, and terminal cleanup add
  *  ~1.9KiB minified / ~650B gzip over the final-only coordinator; trusting our
  *  own serializer instead of re-validating its output gives ~1.2KiB / ~440B
- *  back. The caps leave under 4% headroom, so further growth still fails. */
-const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 10_880;
-const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 3_840;
+ *  back. Commit `performance.mark`s and the opt-in time-sliced drain add ~650B
+ *  minified / ~260B gzip: the marks are unconditional because a consumer that
+ *  loads after hydration cannot have subscribed in time, and the drain is the
+ *  only way to keep hydration off one long task when an intermediary coalesces
+ *  the response. The caps leave under 3% headroom, so further growth still
+ *  fails. */
+const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 11_520;
+const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 4_096;
 /** Marginal elapsed-time cap per added boundary. The relative allowance scales
  *  with slower hosts while the absolute floor absorbs sub-millisecond noise. */
 const COORDINATOR_MARGINAL_ABS_CAP_MS = 0.25;

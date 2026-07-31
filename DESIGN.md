@@ -2251,9 +2251,48 @@ parser's sentinel-upgrade callback. No per-boundary timer, observer, or root
 listener is created. `webui:hydration-complete` fires only after the
 terminal record and zero pending boundaries. Truncated or malformed streams
 abort that completion gate and release discoverable generated scaffolding within
-the configured bounds. `webui:boundary-hydrated` is emitted only when
-`window.__WEBUI_STREAMING_DEBUG__ === true`, avoiding a `CustomEvent` allocation
-per checkpoint in production.
+the configured bounds.
+
+#### Commit observability
+
+Every commit is recorded twice, for two different consumers:
+
+- A `performance.mark()` is emitted **unconditionally**: `webui:boundary:<id>`
+  for a checkpoint, `webui:boundary:<id>:update` for a projected state update,
+  and `webui:streaming:terminal` for the terminal. Marks are not gated on the
+  debug flag because they are read *retroactively* — an analytics or RUM script
+  that loads after hydration can still call
+  `performance.getEntriesByType('mark')`, whereas a listener must be installed
+  before the first checkpoint commits and the coordinator is a separate async
+  entry, so early boundaries are easy to miss. They cost one call per commit,
+  which is O(boundaries), not O(roots).
+- `webui:boundary-hydrated` is emitted only when
+  `window.__WEBUI_STREAMING_DEBUG__ === true`, avoiding a `CustomEvent`
+  allocation per commit in production. Its `detail` is
+  `{ sequence, terminal, kind }`, where `kind` is `'checkpoint'`, `'update'`,
+  or `'terminal'`.
+
+Marks are keyed by the integer boundary ID, never the authored name, because
+rule 18 keeps name strings off the wire. The ID is the boundary's declaration
+index, so it is a stable build-time constant that resolves back to the authored
+name offline through the build manifest.
+
+#### Drain policy
+
+The pump drains its queue in one uninterrupted pass by default: that finishes
+hydration soonest and keeps `webui:hydration-complete` early, which is right
+when boundaries arrive spread across the response.
+
+Setting `window.__WEBUI_STREAMING_SLICE_MS__` to a positive millisecond budget
+opts into a time-sliced drain that yields to the renderer (`scheduler.yield()`
+where available, otherwise a task) whenever the budget is exhausted. This
+matters when an intermediary coalesces the response so every boundary lands in
+one chunk — the single long hydration task streaming exists to avoid. It costs
+total hydration time and delays the last boundary's interactivity, so it is
+opt-in rather than the default. Record order, per-boundary validation, and the
+single-terminal contract are unchanged; the drain holds the pump open across
+its yields so a sentinel that arrives mid-drain joins the same pass and the
+terminal cannot settle early.
 
 ### Flush contract
 

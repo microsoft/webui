@@ -154,15 +154,63 @@ delivery.
 
 WebUI dispatches these events on `window`:
 
-- `webui:boundary-hydrated` after each checkpoint commits only when
+- `webui:boundary-hydrated` after each commit, only when
   `window.__WEBUI_STREAMING_DEBUG__ === true`. Its `CustomEvent.detail` contains
-  `{ sequence, terminal }`. Sequence numbers are response order, not authored
-  boundary names. Keep this diagnostics flag off in production to avoid one
-  event allocation per checkpoint.
+  `{ sequence, terminal, kind }`, where `kind` is `"checkpoint"`, `"update"`, or
+  `"terminal"`. Sequence numbers are response order, not authored boundary
+  names. Keep this diagnostics flag off in production to avoid one event
+  allocation per commit.
 - `webui:hydration-complete` once the empty terminal record has arrived and no
   component or boundary remains pending. On a streaming page, it means the
   complete response hydration lifecycle is done, not merely that the first
   interactive boundary is ready.
+
+### Measuring commits in production
+
+Events require a listener installed before the first commit, which is often
+impossible: the coordinator is a separate async entry, so an analytics or RUM
+script can easily load after early boundaries have already hydrated. WebUI
+therefore also emits a `performance.mark()` for every commit, with no flag and
+no listener:
+
+| Mark | Emitted when |
+| --- | --- |
+| `webui:boundary:<id>` | A checkpoint commits |
+| `webui:boundary:<id>:update` | A projected state update is applied |
+| `webui:streaming:terminal` | The terminal record settles |
+
+Because marks sit in the performance timeline, they can be read at any later
+point:
+
+```js
+const commits = performance
+  .getEntriesByType("mark")
+  .filter((entry) => entry.name.startsWith("webui:"));
+```
+
+`<id>` is the integer boundary ID, not the authored name — name strings never
+reach the response. The ID is the boundary's declaration index, so your build
+manifest maps it back to the authored name offline.
+
+### Hydrating across several tasks
+
+By default the coordinator drains its queue in one pass, which reaches
+interactivity soonest. That assumes boundaries arrive spread across the
+response. If an intermediary buffers and coalesces the response, they can all
+arrive at once and hydrate in a single long task — exactly what streaming is
+meant to avoid.
+
+Set a millisecond budget to make the coordinator yield to the browser between
+boundaries instead:
+
+```js
+window.__WEBUI_STREAMING_SLICE_MS__ = 5;
+```
+
+Set it before the application entry runs. It trades total hydration time and
+the last boundary's interactivity for responsiveness during hydration, so leave
+it unset unless you have measured a long task. Record order and every
+correctness guarantee are unchanged.
 
 After a checkpoint commits, WebUI removes its generated payload, sentinel, and
 marker nodes, plus the temporary streamed-host identity. Final boundaries

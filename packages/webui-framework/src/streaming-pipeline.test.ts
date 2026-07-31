@@ -329,6 +329,13 @@ async function flush(): Promise<void> {
   await new Promise<void>((r) => queueMicrotask(r));
 }
 
+/** Drain macrotask turns, which a time-sliced drain yields across. */
+async function settle(turns = 12): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await new Promise<void>((r) => setTimeout(r, 0));
+  }
+}
+
 function boundaryEvents(): Array<{ type: string; detail?: unknown }> {
   return dispatchedEvents.filter((e) => e.type === 'webui:boundary-hydrated');
 }
@@ -903,7 +910,124 @@ describe('streaming coordinator pipeline', () => {
 
     const evts = boundaryEvents();
     assert.equal(evts.length, 1);
-    assert.deepEqual(evts[0].detail, { sequence: 0, terminal: true });
+    assert.deepEqual(evts[0].detail, {
+      sequence: 0,
+      terminal: true,
+      kind: 'terminal',
+    });
+  });
+
+  test('a slice budget yields between boundaries instead of hydrating in one task', async () => {
+    (globalThis as unknown as { window: { __WEBUI_STREAMING_DEBUG__: boolean } })
+      .window.__WEBUI_STREAMING_DEBUG__ = true;
+    // Sub-millisecond, so the deadline is passed after every boundary and the
+    // drain yields at each one. `performance.now()` is what makes this
+    // expressible; `Date.now()`'s 1 ms resolution could never trip it.
+    (globalThis as unknown as { window: { __WEBUI_STREAMING_SLICE_MS__: number } })
+      .window.__WEBUI_STREAMING_SLICE_MS__ = 0.0001;
+
+    const roots = ['a', 'b', 'c'].map((n) => element(`feed-${n}`, { hook() {} }));
+    for (const n of ['a', 'b', 'c']) predefine(`feed-${n}`);
+
+    // All four arrive together, as they would behind a coalescing proxy.
+    for (let i = 0; i < 3; i++) {
+      enqueue(buildBoundary(i, 0, [roots[i]], { state: {} }).sentinel);
+    }
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+
+    await flush();
+    assert.ok(
+      boundaryEvents().length < 4,
+      'the drain released the thread rather than committing all four in one task',
+    );
+    assert.equal(
+      dispatchedEvents.some((e) => e.type === 'webui:hydration-complete'),
+      false,
+      'the terminal does not settle while the queue is still draining',
+    );
+
+    await settle();
+
+    assert.deepEqual(
+      boundaryEvents().map((e) => (e.detail as { sequence: number }).sequence),
+      [0, 1, 2, 3],
+      'slicing preserves record order',
+    );
+    assert.equal(
+      dispatchedEvents.filter((e) => e.type === 'webui:hydration-complete').length,
+      1,
+      'completion still fires exactly once, after the last boundary',
+    );
+  });
+
+  test('a coordinator reset abandons an in-flight sliced drain', async () => {
+    (globalThis as unknown as { window: { __WEBUI_STREAMING_SLICE_MS__: number } })
+      .window.__WEBUI_STREAMING_SLICE_MS__ = 0.0001;
+
+    const roots = ['x', 'y', 'z'].map((n) => element(`feed-${n}`, { hook() {} }));
+    for (const n of ['x', 'y', 'z']) predefine(`feed-${n}`);
+    for (let i = 0; i < 3; i++) {
+      enqueue(buildBoundary(i, 0, [roots[i]], { state: {} }).sentinel);
+    }
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+
+    await flush();
+    __resetStreamingCoordinatorForTests();
+    await settle();
+
+    assert.equal(
+      dispatchedEvents.some((e) => e.type === 'webui:hydration-complete'),
+      false,
+      'the abandoned drain does not complete the superseded document',
+    );
+  });
+  test('a state update commit is observable, not just checkpoints', async () => {
+    (globalThis as unknown as { window: { __WEBUI_STREAMING_DEBUG__: boolean } })
+      .window.__WEBUI_STREAMING_DEBUG__ = true;
+    const panel = element('weather-panel', { hook() {}, setState() {} });
+    predefine('weather-panel');
+
+    const checkpoint = buildUpdatableBoundary(0, 0, [panel], {
+      state: { status: 'loading' },
+    });
+    enqueue(checkpoint.sentinel);
+    await flush();
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+
+    assert.deepEqual(
+      boundaryEvents().map((e) => (e.detail as { kind: string }).kind),
+      ['checkpoint', 'update', 'terminal'],
+      'the update commit reports its own signal',
+    );
+  });
+
+  test('every commit is marked in the performance timeline without a listener', async () => {
+    // No debug flag: marks must not be gated on it, because a consumer that
+    // loads after hydration cannot have registered a listener in time.
+    performance.clearMarks();
+    const panel = element('weather-panel', { hook() {}, setState() {} });
+    predefine('weather-panel');
+
+    const checkpoint = buildUpdatableBoundary(0, 0, [panel], {
+      state: { status: 'loading' },
+    });
+    enqueue(checkpoint.sentinel);
+    await flush();
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+
+    assert.equal(boundaryEvents().length, 0, 'marks are not the debug event');
+    assert.deepEqual(
+      performance.getEntriesByType('mark').map((entry) => entry.name),
+      ['webui:boundary:0', 'webui:boundary:0:update', 'webui:streaming:terminal'],
+      'checkpoint, update, and terminal are each readable after the fact',
+    );
+    performance.clearMarks();
   });
 
   test('a malformed envelope halts and fully cleans its scaffold, keeping roots', async () => {

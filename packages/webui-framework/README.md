@@ -145,8 +145,16 @@ normal applications pay no streaming bundle or initialization cost.
 Each committed boundary receives its own ephemeral state object directly during
 activation. The coordinator does not publish that state to
 `window.__webui.state`, and it removes generated checkpoint scaffolding after
-commit. Set `window.__WEBUI_STREAMING_DEBUG__ = true` only when tooling needs the
-diagnostic `webui:boundary-hydrated` event.
+commit. Every commit also emits a `performance.mark()` — `webui:boundary:<id>`,
+`webui:boundary:<id>:update`, or `webui:streaming:terminal` — which needs no
+flag and no listener, so tooling that loads after hydration can still read it.
+Set `window.__WEBUI_STREAMING_DEBUG__ = true` only when tooling needs the live
+`webui:boundary-hydrated` event as well.
+
+Set `window.__WEBUI_STREAMING_SLICE_MS__` to a positive millisecond budget to
+make the coordinator yield between boundaries instead of draining its queue in
+one pass. That is for pages where an intermediary coalesces the response into a
+single chunk; it costs total hydration time, so leave it unset otherwise.
 
 ### Property binding lifecycle
 

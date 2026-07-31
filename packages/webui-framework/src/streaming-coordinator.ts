@@ -52,10 +52,22 @@ const MAX_QUEUED_BOUNDARIES = 512;
 const MAX_UPDATABLE_BOUNDARIES = 128;
 const MAX_RETAINED_UPDATE_ROOTS = 50_000;
 const BOUNDARY_HYDRATED_EVENT = 'webui:boundary-hydrated';
+/** `performance.mark()` label prefix. The suffix is the compile-time boundary
+ *  ID — its declaration index — so a mark resolves back to the authored
+ *  `<boundary name>` through the build manifest without any name string ever
+ *  reaching the wire (rule 18). */
+const BOUNDARY_MARK_PREFIX = 'webui:boundary:';
+const UPDATE_MARK_SUFFIX = ':update';
+const TERMINAL_MARK = 'webui:streaming:terminal';
+
+/** Captured once: marks and the slice clock must not re-resolve per commit. */
+const perf = (globalThis as { performance?: Performance }).performance;
 
 const queue: Element[] = [];
 let queueHead = 0;
 let pumpScheduled = false;
+/** True only while a time-sliced drain is yielding between boundaries. */
+let slicedDrainActive = false;
 let halted = false;
 let nextExpectedRecordSequence = 0;
 let nextExpectedBoundaryId = 0;
@@ -96,7 +108,26 @@ export function enqueueStreamingSentinel(sentinel: Element): void {
   }
 }
 
+/**
+ * Drain the queue.
+ *
+ * The default is a single uninterrupted pass: it finishes hydration soonest
+ * and keeps `webui:hydration-complete` early, which is the right trade for the
+ * common case where boundaries arrive spread across the response.
+ *
+ * Setting `window.__WEBUI_STREAMING_SLICE_MS__` to a positive millisecond
+ * budget opts into a time-sliced drain instead. That matters when an
+ * intermediary coalesces the response and every boundary lands in one chunk —
+ * precisely the single long hydration task streaming exists to avoid. It costs
+ * total hydration time and delays the last boundary's interactivity, so it is
+ * opt-in rather than the default.
+ */
 function drainQueue(): void {
+  const budget = sliceBudgetMs();
+  if (budget > 0) {
+    void drainSliced(budget);
+    return;
+  }
   pumpScheduled = false;
   while (queueHead < queue.length) {
     const sentinel = queue[queueHead];
@@ -106,6 +137,64 @@ function drainQueue(): void {
   queue.length = 0;
   queueHead = 0;
   scheduleTerminalValidation();
+}
+
+/** Opt-in millisecond slice budget; `0` keeps the batched drain. */
+function sliceBudgetMs(): number {
+  const raw = (window as unknown as { __WEBUI_STREAMING_SLICE_MS__?: unknown })
+    .__WEBUI_STREAMING_SLICE_MS__;
+  return typeof raw === 'number' && raw > 0 ? raw : 0;
+}
+
+function nowMs(): number {
+  return perf ? perf.now() : Date.now();
+}
+
+/**
+ * Hand the frame back after each `budget` of commit work.
+ *
+ * A microtask per boundary would not help — the whole microtask checkpoint
+ * drains before the renderer regains control — so this yields with
+ * `scheduler.yield()` (or a task) to actually release the main thread.
+ *
+ * `pumpScheduled` stays true for the whole pass so a sentinel enqueued during
+ * a yield joins this drain instead of starting a second, interleaved one. It
+ * also keeps `validatePendingTerminal` deferring until the queue is truly
+ * drained, so a sliced drain cannot settle the terminal early.
+ */
+async function drainSliced(budget: number): Promise<void> {
+  const generation = coordinatorGeneration;
+  slicedDrainActive = true;
+  let deadline = nowMs() + budget;
+  while (queueHead < queue.length) {
+    const sentinel = queue[queueHead];
+    queueHead++;
+    if (!halted) processSentinel(sentinel);
+    if (nowMs() >= deadline) {
+      await yieldToRenderer();
+      // A reset or a fresh document during the yield abandons this pass.
+      if (generation !== coordinatorGeneration) {
+        slicedDrainActive = false;
+        return;
+      }
+      deadline = nowMs() + budget;
+    }
+  }
+  slicedDrainActive = false;
+  pumpScheduled = false;
+  queue.length = 0;
+  queueHead = 0;
+  scheduleTerminalValidation();
+}
+
+function yieldToRenderer(): Promise<void> {
+  const scheduler = (globalThis as {
+    scheduler?: { yield?: () => Promise<void> };
+  }).scheduler;
+  if (scheduler?.yield) return scheduler.yield();
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 function fail(reason: string): void {
@@ -196,6 +285,7 @@ function processSentinel(sentinel: Element): void {
       boundary,
       payload as Record<string, unknown>,
       target,
+      sequence,
       sentinel,
       scriptEl,
     );
@@ -293,7 +383,9 @@ function commitCheckpoint(
       range.start,
       range.end,
     );
-    if (committed) dispatchBoundaryHydrated(sequence, false);
+    if (committed) {
+      notifyCommit(`${BOUNDARY_MARK_PREFIX}${target}`, sequence, 'checkpoint');
+    }
     markBoundaryCommitted(false);
   }
 }
@@ -323,6 +415,7 @@ function commitStateUpdate(
   boundary: UpdatableBoundary,
   patch: Record<string, unknown>,
   target: number,
+  sequence: number,
   sentinel: Element,
   scriptEl: Element,
 ): void {
@@ -356,6 +449,11 @@ function commitStateUpdate(
         );
       }
     }
+    notifyCommit(
+      `${BOUNDARY_MARK_PREFIX}${target}${UPDATE_MARK_SUFFIX}`,
+      sequence,
+      'update',
+    );
   } catch (error) {
     fail(
       `error applying state update to boundary ${target}: ${
@@ -385,10 +483,22 @@ function clearUpdatableBoundaries(): void {
   retainedUpdateRoots = 0;
 }
 
-function dispatchBoundaryHydrated(
-  sequence: number,
-  terminal: boolean,
-): void {
+/**
+ * Record one committed boundary.
+ *
+ * The `performance.mark()` is unconditional and carries no listener
+ * requirement: a consumer that loads after hydration finished still reads
+ * every commit back out of the performance timeline. That is the property an
+ * event cannot have — the coordinator installs from a separate async entry, so
+ * a listener registered by application code races the first commits and
+ * silently misses them.
+ *
+ * The `CustomEvent` stays debug-gated. It is the live-observation surface;
+ * `kind` distinguishes an initial hydration from a later state update, which
+ * never rehydrates (rule 15).
+ */
+function notifyCommit(mark: string, sequence: number, kind: string): void {
+  perf?.mark(mark);
   if (
     (window as unknown as { __WEBUI_STREAMING_DEBUG__?: boolean })
       .__WEBUI_STREAMING_DEBUG__ !== true
@@ -397,7 +507,7 @@ function dispatchBoundaryHydrated(
   }
   window.dispatchEvent(
     new CustomEvent(BOUNDARY_HYDRATED_EVENT, {
-      detail: { sequence, terminal },
+      detail: { sequence, terminal: kind === 'terminal', kind },
     }),
   );
 }
@@ -405,7 +515,12 @@ function dispatchBoundaryHydrated(
 function scheduleTerminalValidation(): void {
   if (
     pendingTerminalSequence === null ||
-    terminalValidationScheduled
+    terminalValidationScheduled ||
+    // A sliced drain yields on macrotasks, but this validation reschedules
+    // itself on a microtask while the queue is non-empty. Arming it mid-drain
+    // would spin the microtask checkpoint forever and starve the yield. The
+    // drain arms it once, after the queue is drained.
+    slicedDrainActive
   ) {
     return;
   }
@@ -429,7 +544,7 @@ function settlePendingTerminal(success: boolean): void {
   const sequence = pendingTerminalSequence;
   if (sequence === null) return;
   pendingTerminalSequence = null;
-  if (success) dispatchBoundaryHydrated(sequence, true);
+  if (success) notifyCommit(TERMINAL_MARK, sequence, 'terminal');
   markBoundaryCommitted(success);
 }
 
@@ -469,6 +584,7 @@ export function resetStreamingCoordinatorStateForTests(): void {
   queue.length = 0;
   queueHead = 0;
   pumpScheduled = false;
+  slicedDrainActive = false;
   halted = false;
   nextExpectedRecordSequence = 0;
   nextExpectedBoundaryId = 0;

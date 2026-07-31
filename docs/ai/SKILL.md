@@ -698,9 +698,16 @@ directive is removed at compile time and emits no application DOM wrapper.
   use integer `BoundaryId` handles. Call `write_shell`, ordered
   `write_boundary`, interleavable `update`, then `finish`.
 - `webui:boundary-hydrated` is emitted only when
-  `window.__WEBUI_STREAMING_DEBUG__ === true`.
+  `window.__WEBUI_STREAMING_DEBUG__ === true`; its `detail.kind` is
+  `checkpoint`, `update`, or `terminal`. Every commit also emits an
+  unconditional `performance.mark()` (`webui:boundary:<id>`,
+  `webui:boundary:<id>:update`, `webui:streaming:terminal`) that tooling can
+  read retroactively without a listener.
   `webui:hydration-complete` fires only after the terminal record and all
   pending hydration work complete.
+- `window.__WEBUI_STREAMING_SLICE_MS__` opts into a time-sliced drain that
+  yields between boundaries. Use it only when an intermediary coalesces the
+  response into one chunk; it costs total hydration time.
 - A semantic flush hands bytes to the HTTP transport. Server adapters,
   compression, proxies, and CDNs can still buffer them.
 
