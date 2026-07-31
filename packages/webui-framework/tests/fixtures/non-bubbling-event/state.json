@@ -4,6 +4,9 @@
   "blurs": 0,
   "errors": 0,
   "enters": 0,
+  "picks": 0,
+  "cues": 0,
+  "guardedClicks": 0,
   "lastRowId": "",
   "lastCurrentTarget": "",
   "items": [{ "id": "a" }, { "id": "b" }]
