@@ -121,7 +121,7 @@ extends:
         templateContext:
           outputs:
             - output: pipelineArtifact
-              targetPath: '$(Build.ArtifactStagingDirectory)'
+              targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_nuget'
               artifactName: nuget_packages
               displayName: Publish signed NuGet packages
         steps:
