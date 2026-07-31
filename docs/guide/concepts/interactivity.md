@@ -110,7 +110,9 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 </template>
 ```
 
-When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - event listeners on the shadow root itself that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above). This is the delegated event pattern for parent-child communication.
+When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - event listeners on the shadow root itself that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
+
+Root host events only see events that **bubble**. `this.$emit()` dispatches with `bubbles: true`, so emitted events reach the root. A hand-built `new CustomEvent('my-event')` defaults to `bubbles: false` and will never arrive - bind it on the child element instead, or pass `{ bubbles: true }` yourself.
 
 Decorators define how properties behave and how they connect to the template.
 
@@ -363,6 +365,22 @@ selectItem(id: string, e: MouseEvent): void {
 </for>
 ```
 
+### How Event Bindings Are Wired
+
+Every `@event` gets its own listener on the element it is written on. Bindings
+are never delegated to a shared root listener, which has two consequences worth
+knowing:
+
+- **Non-bubbling events work.** `@focus`, `@blur`, `@mouseenter`, `@load`,
+  `@error`, and `@toggle` fire normally. A shared root listener could never see
+  them, because those events do not travel up the tree.
+- **`stopPropagation()` behaves as written.** An ancestor stopping an event
+  cannot suppress a handler bound to the element the event started on.
+
+Dispatch cost does not grow with the number of rows a `<for>` renders. If you do
+want a single listener instead of one per row for a very long list, use root host
+events and find the row yourself with `e.composedPath()`.
+
 ### Custom Events and Parent-Child Communication
 
 Components communicate upward by emitting custom events with `this.$emit()`:
@@ -375,7 +393,7 @@ export class ColorPicker extends WebUIElement {
 
   selectColor(color: string): void {
     this.selectedColor = color;
-    this.$emit('color-change', { detail: { color } });
+    this.$emit('color-change', { color });
   }
 }
 ```

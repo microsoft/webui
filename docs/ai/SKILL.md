@@ -267,6 +267,11 @@ Handler arguments can be `e`, dotted component or repeat-scope paths, or
 string/number/boolean/null literals. Nested JavaScript expressions are not
 parsed in templates. An `@event` requires a `.ts` file on that component.
 
+Each `@event` gets its own listener on the element it is written on - bindings
+are never delegated to a shared root. Non-bubbling events (`@focus`, `@blur`,
+`@mouseenter`, `@load`, `@error`, `@toggle`) therefore work, and
+`stopPropagation()` on an ancestor cannot suppress them.
+
 ### DOM references
 
 ```html
@@ -308,8 +313,14 @@ Include it only when you need root host events on the shadow root itself:
 </template>
 ```
 
-Root host events catch custom events bubbling up from child components. This is
-the delegated event pattern for parent-child communication.
+Root host events catch custom events bubbling up from child components. They see
+only events that bubble; `this.$emit()` sets `bubbles: true`, but a hand-built
+`new CustomEvent(name)` defaults to `bubbles: false` and will never reach the
+root - bind that on the child element instead.
+
+One root listener also serves an arbitrarily large `<for>`, so this is the way
+to trade per-row listeners for a single handler on a very long list. Use
+`e.composedPath()` to find the row that was hit.
 
 ### Outlet
 

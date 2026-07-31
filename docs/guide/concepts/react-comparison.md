@@ -288,7 +288,7 @@ import { WebUIElement } from '@microsoft/webui-framework';
 
 export class ColorPicker extends WebUIElement {
   selectColor(color: string): void {
-    this.$emit('color-change', { detail: { color } });
+    this.$emit('color-change', { color });
   }
 }
 
