@@ -299,7 +299,8 @@ Omit it for most components:
 <p>{{description}}</p>
 ```
 
-Include it only when you need root host events on the shadow root itself:
+Include it only when you need root host events on the component root (the shadow
+root when present, otherwise the host element):
 
 ```html
 <!-- todo-app.html -->

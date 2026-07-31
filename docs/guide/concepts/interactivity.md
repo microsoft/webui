@@ -110,7 +110,7 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 </template>
 ```
 
-When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - event listeners on the shadow root itself that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
+When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - listeners on the component root (the shadow root when present, otherwise the host element) that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
 
 Root host events only see events that **bubble**. `this.$emit()` dispatches with `bubbles: true`, so emitted events reach the root. A hand-built `new CustomEvent('my-event')` defaults to `bubbles: false` and will never arrive - bind it on the child element instead, or pass `{ bubbles: true }` yourself.
 
