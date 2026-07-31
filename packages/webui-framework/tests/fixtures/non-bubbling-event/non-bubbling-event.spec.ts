@@ -138,6 +138,32 @@ test.describe('non-bubbling event fixture', () => {
     expect(result).toBe(1);
   });
 
+  test('listeners are removed when a repeat block instance is removed', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('test-non-bubbling') as any;
+      const root = host.shadowRoot ?? host;
+      const removed = root.querySelectorAll('.row-input')[1] as HTMLInputElement;
+
+      // Positive control: the same node, same dispatch, before its block is torn down.
+      removed.dispatchEvent(new FocusEvent('focus'));
+      host.$flushUpdates();
+      const before = host.lastRowId;
+
+      host.items = [{ id: 'a' }];
+      host.$flushUpdates();
+
+      host.lastRowId = '';
+      removed.dispatchEvent(new FocusEvent('focus'));
+      host.$flushUpdates();
+
+      return { before, rows: root.querySelectorAll('.row-input').length, after: host.lastRowId };
+    });
+
+    expect(result.before).toBe('b:b');
+    expect(result.rows).toBe(1);
+    expect(result.after).toBe('');
+  });
+
   test('listeners are removed when the component disconnects', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const host = document.querySelector('test-non-bubbling') as any;
