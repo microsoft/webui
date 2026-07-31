@@ -340,12 +340,21 @@ function commitStateUpdate(
     for (let i = 0; i < boundary.roots.length; i++) {
       const root = boundary.roots[i] as StateRoot;
       if (root.hasAttribute('data-ws')) continue;
-      if (typeof root.setState !== 'function') {
-        throw new Error(
-          `activated <${root.tagName.toLowerCase()}> has no setState() method`,
+      // Mirrors `reportActivationFailure`: an application component's own
+      // change handler throwing degrades that root only. Halting here would
+      // let one app-level bug strand every later boundary on the page.
+      try {
+        if (typeof root.setState !== 'function') {
+          throw new Error('no setState() method');
+        }
+        root.setState(patch);
+      } catch (error) {
+        console.error(
+          `[WebUI] streaming: state update failed for <${
+            root.tagName.toLowerCase()
+          }>: ${streamingErrorMessage(error)}`,
         );
       }
-      root.setState(patch);
     }
   } catch (error) {
     fail(

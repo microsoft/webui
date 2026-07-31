@@ -584,6 +584,91 @@ describe('streaming coordinator pipeline', () => {
     );
   });
 
+  test('a throwing setState degrades one root without halting the stream', async () => {
+    const previousError = console.error;
+    const errors: string[] = [];
+    console.error = (message?: unknown) => {
+      errors.push(String(message));
+    };
+    try {
+      const updates: Array<Record<string, unknown>> = [];
+      const activations: Array<Record<string, unknown> | undefined> = [];
+      // An application component whose own change handler throws.
+      const weather = element('weather-panel', {
+        hook() {},
+        setState() {
+          throw new Error('boom');
+        },
+      });
+      // A healthy sibling inside the same boundary.
+      const stats = element('stat-panel', {
+        hook() {},
+        setState(state) {
+          updates.push(state);
+        },
+      });
+      const late = element('late-panel', {
+        hook(state) {
+          activations.push(state);
+        },
+      });
+      predefine('weather-panel', 'stat-panel', 'late-panel');
+
+      const checkpoint = buildUpdatableBoundary(
+        0,
+        0,
+        [weather, stats],
+        { state: { status: 'loading' } },
+      );
+      enqueue(checkpoint.sentinel);
+      await flush();
+
+      enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+      await flush();
+
+      // A later boundary must still hydrate.
+      const second = buildUpdatableBoundary(2, 1, [late], { state: { n: 1 } });
+      enqueue(second.sentinel);
+      await flush();
+      assert.equal(
+        __isHaltedForTests(),
+        false,
+        `stream halted after the failing update; errors=${errors.join('|')}`,
+      );
+
+      const terminal = buildMarkerless(3, 1, {});
+      enqueue(terminal.sentinel);
+      await flush();
+
+      assert.equal(
+        errors.some((message) =>
+          message.includes('state update failed for <weather-panel>')
+        ),
+        true,
+        'the failing root is reported',
+      );
+      assert.deepEqual(
+        updates,
+        [{ status: 'ready' }],
+        'a healthy sibling in the same boundary still receives the patch',
+      );
+      assert.deepEqual(
+        activations,
+        [{ n: 1 }],
+        'a later boundary still hydrates',
+      );
+      assert.equal(__isHaltedForTests(), false);
+      assert.equal(__getLifecycleStateForTests().completed, true);
+      assert.deepEqual(
+        __streamingRetentionStateForTests(),
+        [0, 0],
+        'terminal still releases retained boundary roots',
+      );
+    } finally {
+      console.error = previousError;
+    }
+  });
+
   test('merges updates that arrive before an island definition into activation state', async () => {
     const activations: Array<Record<string, unknown> | undefined> = [];
     const updates: Array<Record<string, unknown>> = [];

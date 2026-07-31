@@ -1839,7 +1839,10 @@ contract rather than introduce a parallel one.
     bounded shallow patch is queued per target and applied immediately after
     activation. A state update may reference only an earlier updatable
     checkpoint; forward references and updates to final checkpoints are fatal
-    protocol errors.
+    protocol errors. An application component whose `setState()` or change
+    handler throws degrades that root alone: the failure is reported and the
+    walk continues to the remaining targets, matching activation, because one
+    component's bug must never strand later boundaries.
 
 **Compile time**
 
