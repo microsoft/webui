@@ -516,7 +516,7 @@ fn build_and_render(
     // errors in lazily loaded components (which are not in the SSR tree) fail
     // the dev build instead of being silently skipped.
     build_options.component_asset_roots = config.component_asset_roots.clone();
-    build_options.component_asset_metafile = config.metafile.is_some();
+    build_options.metafile = config.metafile.is_some();
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
     let token_css = match config.token_file.as_ref() {
         Some(token_file) => Some(
@@ -569,12 +569,9 @@ fn build_and_render(
     };
 
     if let Some(path) = &config.metafile {
-        let metafile = build_result
-            .component_asset_metafile
-            .as_deref()
-            .ok_or_else(|| {
-                anyhow::anyhow!("component asset metafile was requested but not generated")
-            })?;
+        let metafile = build_result.metafile.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("component asset metafile was requested but not generated")
+        })?;
         write_atomic(path, metafile)?;
     }
 

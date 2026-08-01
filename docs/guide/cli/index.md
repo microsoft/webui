@@ -94,21 +94,21 @@ template also references them. A build containing both component assets and a
 `<route>` fails with `component-assets-with-routes`; use the router's normal
 partial-navigation pipeline for routed components.
 
-Assets are strict version 2 ESM graph modules. Entry-reachable components stay
-in `protocol.bin` and the application bundle, and become external prerequisites
-instead of being copied. A dependency used by one asset root stays inline in
-that root. Dependencies shared by the same two or more roots are emitted once
-as `chunk-<first-sorted-component>.webui.js`, and each root dynamically imports
-the chunks it needs. Requested-root order does not change ownership, bytes, or
+Assets are ESM graph modules. Entry-reachable components stay in `protocol.bin`
+and the application bundle, and become external prerequisites instead of being
+copied. A dependency used by one asset root stays inline in that root.
+Dependencies shared by the same two or more roots are emitted once as
+`chunk-<first-sorted-component>.webui.js`, and each root dynamically imports the
+chunks it needs. Requested-root order does not change ownership, bytes, or
 hashes. Asset-only records are removed from `protocol.bin`.
 
 `--metafile` writes esbuild-compatible `inputs` and `outputs`, including every
 root-to-chunk `dynamic-import` edge and exact byte attribution. It can be opened
-directly in an esbuild bundle analyzer and used to populate the loader's
-`modulepreload` URLs. The metafile path is collision-checked with protocol, CSS,
-root, and chunk outputs before any files are written.
+directly in an esbuild bundle analyzer or consumed by build tooling. The
+metafile path is collision-checked with protocol, CSS, root, and chunk outputs
+before any files are written.
 
-FAST plugin builds can emit the same version 2 graph with `<f-template>`
+FAST plugin builds can emit the same graph with `<f-template>`
 payloads, but need a FAST-owned runtime loader. Every module intentionally omits
 inventory state because a static CDN asset cannot know the page's loaded
 template bitset. Use `--asset-file-name-template "[name]-[hash].[ext]"` for
@@ -131,7 +131,6 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const mailAssets = defineComponentAssets({
   'mail-thread': {
     asset: '/mail-thread.webui.js',
-    modulepreload: ['/chunk-mail-message.webui.js'],
     module: () => import('./mail-thread/mail-thread.js'),
     data: async () => await (await fetch('/mail-thread-data.json')).json(),
   },

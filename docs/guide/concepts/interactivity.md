@@ -426,13 +426,12 @@ webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread
 ```
 
-Each requested root writes a strict version 2 ESM graph module such as
-`<tag>.webui.js` next to `protocol.bin`. Entry-reachable dependencies remain in
-the application bundle and protocol. Dependencies used by one requested root
-stay inline, while dependencies used by the same set of two or more roots are
-emitted once as `chunk-<component>.webui.js` and dynamically imported by those
-roots. Asset-only fragments and component records do not remain in
-`protocol.bin`.
+Each requested root writes an ESM graph module such as `<tag>.webui.js` next to
+`protocol.bin`. Entry-reachable dependencies remain in the application bundle
+and protocol. Dependencies used by one requested root stay inline, while
+dependencies used by the same set of two or more roots are emitted once as
+`chunk-<component>.webui.js` and dynamically imported by those roots. Asset-only
+fragments and component records do not remain in `protocol.bin`.
 
 Static component assets and `<route>` cannot be used in the same build. Use
 `@microsoft/webui-router` for routed components, or use component assets for
@@ -477,21 +476,20 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
     asset: '/settings-dialog.webui.js',
-    modulepreload: ['/chunk-dialog-field.webui.js'],
     module: () => import('./settings-dialog/settings-dialog.js'),
     data: async () => await (await fetch('/settings-dialog-data.json')).json(),
   },
 });
 ```
 
-`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. Populate
-`modulepreload` from that root's dynamic imports in the esbuild-compatible
-`--metafile`; the loader inserts those links before importing the root, avoiding
-a request waterfall. `preload(tag)` starts the component's template graph,
-styles, JavaScript module, and optional data together. Components can then fetch
-their own data in their class code and expose it through `@observable` fields
-when JavaScript needs to read or mutate it. Concurrent roots deduplicate shared
-chunk imports by resolved URL.
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. Keep only
+stable root inputs in the manifest; generated chunk filenames can change as the
+dependency graph changes, and each root asset already carries its dynamic
+imports. `preload(tag)` starts the component's template graph, styles,
+JavaScript module, and optional data together. Components can then fetch their
+own data in their class code and expose it through `@observable` fields when
+JavaScript needs to read or mutate it. Concurrent roots deduplicate shared chunk
+imports by resolved URL.
 `create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the

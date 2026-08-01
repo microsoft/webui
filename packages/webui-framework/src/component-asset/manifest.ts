@@ -8,8 +8,6 @@ export type ComponentAssetState = Record<string, unknown>;
 export interface ComponentAssetManifestEntry<Data extends ComponentAssetState = ComponentAssetState> {
   /** Static component asset module emitted by `webui build --emit-component-assets`. */
   asset: string | URL;
-  /** Shared chunk URLs to modulepreload before importing the root asset. */
-  modulepreload?: readonly (string | URL)[];
   /** JavaScript module that defines/registers the custom element class. */
   module?: () => Promise<unknown>;
   /** Optional data request kicked off in parallel with asset/module loading. */

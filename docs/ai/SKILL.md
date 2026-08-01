@@ -612,7 +612,7 @@ MyComponent.define('my-component');
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Lazy version 2 component graphs with `preload(tag)` / `create(tag)` |
+| `defineComponentAssets(manifest)` | Lazy component asset graphs with `preload(tag)` / `create(tag)` |
 
 ### Custom events
 
@@ -766,7 +766,6 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
     asset: '/settings-dialog.webui.js',
-    modulepreload: ['/chunk-dialog-field.webui.js'],
     module: () => import('./settings-dialog/settings-dialog.js'),
   },
 });
@@ -777,13 +776,13 @@ async onOpenSettings(): Promise<void> {
 }
 ```
 
-Version 2 assets keep entry-owned templates external, inline dependencies used
-by one asset root, and split dependencies shared by multiple roots into
-deduplicated dynamic chunks. Populate `modulepreload` from the root's metafile
-imports so `preload(tag)` starts shared requests before the root import.
-`create(tag)` waits for the template graph and module, then creates the element.
-The normal entry bundle must load first. Component assets cannot be combined
-with `<route>`; use the router for routed components.
+Assets keep entry-owned templates external, inline dependencies used by one
+asset root, and split dependencies shared by multiple roots into deduplicated
+dynamic chunks. Do not copy generated chunk filenames into the manifest; each
+root asset carries its own dynamic imports. `create(tag)` waits for the template
+graph and module, then creates the element. The normal entry bundle must load
+first. Component assets cannot be combined with `<route>`; use the router for
+routed components.
 
 ## Routing
 

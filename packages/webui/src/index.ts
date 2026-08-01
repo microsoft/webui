@@ -23,7 +23,7 @@ export interface BuildOptions {
   /** Root component tags emitted as static `.webui.js` ESM assets. */
   componentAssetRoots?: string[];
   /** Generate and return an esbuild-compatible component asset metafile. */
-  componentAssetMetafile?: boolean;
+  metafile?: boolean;
   /** Emitted asset filename template for Link-mode CSS and component assets. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
   /** Optional base URL/path prefix for Link-mode CSS hrefs. */
@@ -64,7 +64,7 @@ export interface BuildResult {
   /** Static component asset files as alternating [filename, content, ...]. */
   componentAssetFiles: string[];
   /** Esbuild-compatible component asset metafile JSON when requested. */
-  componentAssetMetafile?: string;
+  metafile?: string;
   /** Non-fatal build advisories as plain diagnostic strings. */
   warnings: string[];
   /** Build statistics. */
@@ -152,7 +152,7 @@ interface NativeAddon {
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];
-    componentAssetMetafile?: boolean;
+    metafile?: boolean;
     cssFileNameTemplate?: string;
     cssPublicBase?: string;
     projectionManifests?: string[];

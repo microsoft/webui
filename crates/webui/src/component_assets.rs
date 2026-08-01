@@ -50,7 +50,7 @@ impl ComponentAssetGraph {
     }
 }
 
-/// Render a version 2 static component asset graph.
+/// Render a static component asset graph.
 ///
 /// Entry-reachable components remain external prerequisites. Components used
 /// by one requested root stay inline, while components with an identical
@@ -71,7 +71,7 @@ pub fn render_component_assets(
     if roots.is_empty() {
         if emit_metafile {
             return Err(WebUIError::InvalidBuildOptions(
-                "component_asset_metafile requires at least one component_asset_root".to_string(),
+                "metafile requires at least one component_asset_root".to_string(),
             ));
         }
         return Ok(ComponentAssetGraph {

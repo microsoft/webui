@@ -9,13 +9,9 @@
  */
 
 import { loadComponentAsset } from './component-asset/loader.js';
-import {
-  registerModulePreloads,
-} from './component-asset/resources.js';
 import type {
   ComponentAssetCreateOptions,
   ComponentAssetManifest,
-  ComponentAssetManifestEntry,
   ComponentAssetPreload,
   ComponentAssetRegistry,
   ComponentAssetState,
@@ -48,7 +44,7 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     }
 
     const next: ComponentAssetPreload<Data> = {
-      asset: preloadComponentAsset(tag, entry),
+      asset: loadComponentAsset(tag, entry.asset),
     };
     if (entry.module) {
       next.module = entry.module();
@@ -88,14 +84,6 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
   }
 
   return { preload, create };
-}
-
-function preloadComponentAsset(
-  tag: string,
-  entry: ComponentAssetManifestEntry,
-): Promise<void> {
-  registerModulePreloads(entry.modulepreload);
-  return loadComponentAsset(tag, entry.asset);
 }
 
 async function waitForElementResources(pending: ComponentAssetPreload): Promise<void> {

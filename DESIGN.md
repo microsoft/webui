@@ -420,12 +420,11 @@ cannot change output names or bytes. Filename templates are ASCII-only and
 reject URL delimiters such as `#`, `%`, and `?`, along with path separators,
 whitespace, control characters, and Windows-reserved filename characters.
 
-Every module default-exports a strict version 2 asset object:
+Every module default-exports an asset object. The relevant graph fields are:
 
 ```js
 export default {
   type: "webui-component-asset",
-  version: 2,
   kind: "root",
   root: "mail-thread",
   components: ["mail-thread"],
@@ -465,31 +464,32 @@ edges use `kind: "dynamic-import"`. The option requires component asset roots.
 The CLI validates the metafile path against every other output before writing;
 `serve --watch` replaces it atomically only after a successful rebuild and
 preserves the previous valid graph after failures. Rust and Node builds opt in
-with `component_asset_metafile` / `componentAssetMetafile` and receive the JSON
-in the matching build-result field.
+with `metafile` and receive the JSON in the matching build-result field.
 
 Static component asset runtimes are framework-owned. The WebUI Framework
 loader lives at `@microsoft/webui-framework/component-asset.js`, is not
-re-exported from the framework root, and accepts exactly version 2. It imports
-the root even when its root template is already registered because the graph
-may still require chunks. After reading root metadata, it verifies entry-owned
-prerequisites before starting chunk requests, imports all missing chunks
-concurrently, validates every root/chunk template, condition closure index, and
-import map before mutating the global registry or DOM, then registers chunks
-before the root and verifies the complete closure. A malformed graph registers
-none of its payloads. Resolved root and chunk URLs share global in-flight deduplication.
-Module-style import maps use the page's CSP nonce and are deduplicated against
-`window.__webui.styles`.
+re-exported from the framework root, and accepts compiler-emitted asset objects.
+It imports the root even when its root template is already registered because
+the graph may still require chunks. After reading root metadata, it verifies
+entry-owned prerequisites before starting chunk requests, imports all missing
+chunks concurrently, validates graph envelopes and coverage, resolves condition
+closure indexes against each asset's own closure arrays, and parses import maps
+before mutating the global registry or DOM. It then registers chunks before the
+root and verifies the complete closure. Serialized template tuples are
+compiler-owned and are not revalidated in the browser. A malformed graph
+registers none of its payloads. Resolved root and chunk URLs share global
+in-flight deduplication. Module-style import maps use the page's CSP nonce and
+are deduplicated against `window.__webui.styles`.
 
-`defineComponentAssets()` manifest entries may provide `modulepreload` URLs
-from the metafile's root imports. `preload(tag)` inserts deduplicated,
-nonce-aware `<link rel="modulepreload">` elements synchronously before the root
-import, then starts the root asset, component class module, and optional data
-request. `create(tag)` waits for asset/module work, mounts without blocking on
-data by default, and can opt into bounded data blocking with
+`defineComponentAssets()` manifest entries provide the stable root asset URL
+plus optional component class and data loaders. Shared chunk filenames do not
+belong in authored manifests; each generated root asset carries its own dynamic
+imports. `preload(tag)` starts the root asset, component class module, and
+optional data request. `create(tag)` waits for asset/module work, mounts without
+blocking on data by default, and can opt into bounded data blocking with
 `{ awaitData: true, dataTimeoutMs }`.
 
-FAST plugin builds can emit the version 2 graph with trusted `<f-template>`
+FAST plugin builds can emit the same graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
 
 **Navigation cache:** The client router exposes an optional tagged navigation

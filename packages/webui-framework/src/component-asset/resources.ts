@@ -2,7 +2,6 @@
 // Licensed under the MIT license.
 
 const injectedAssetStyles = new Set<string>();
-const injectedModulePreloads = new Set<string>();
 let assetStylesSeeded = false;
 
 interface WebUIAssetGlobal {
@@ -21,23 +20,6 @@ export function prepareAssetStyles(templateStyles: readonly string[]): PreparedA
     prepared[i] = parseImportMap(templateStyles[i]);
   }
   return prepared;
-}
-
-/** Add deduplicated module preload links before a root module import starts. */
-export function registerModulePreloads(urls: readonly (string | URL)[] | undefined): void {
-  if (!urls || urls.length === 0) return;
-  const nonce = readNonce();
-  for (let i = 0; i < urls.length; i++) {
-    const href = new URL(urls[i], document.baseURI).href;
-    if (injectedModulePreloads.has(href)) continue;
-    injectedModulePreloads.add(href);
-
-    const link = document.createElement('link');
-    link.rel = 'modulepreload';
-    link.href = href;
-    if (nonce) link.nonce = nonce;
-    document.head.appendChild(link);
-  }
 }
 
 /** Read the configured CSP nonce used by component asset resources. */

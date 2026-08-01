@@ -265,7 +265,7 @@ pub struct BuildOptions {
     /// the entry fragment and therefore are not rendered during initial SSR.
     pub component_asset_roots: Vec<String>,
     /// Whether to serialize an esbuild-compatible component asset metafile.
-    pub component_asset_metafile: bool,
+    pub metafile: bool,
     /// Emitted asset filename template using `[name]`, `[hash]`, and `[ext]`.
     ///
     /// Applies to Link-mode CSS files and static component assets.
@@ -316,7 +316,7 @@ impl Default for BuildOptions {
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
-            component_asset_metafile: false,
+            metafile: false,
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::default(),
@@ -357,7 +357,7 @@ pub struct BuildResult {
     /// Populated when [`BuildOptions::component_asset_roots`] is non-empty.
     pub component_asset_files: Vec<ComponentAssetFile>,
     /// Esbuild-compatible component asset metafile JSON when requested.
-    pub component_asset_metafile: Option<String>,
+    pub metafile: Option<String>,
     /// Component client template payloads.
     /// Includes templates for all components encountered during parsing,
     /// including route-referenced components.
@@ -424,7 +424,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
         protocol_bytes,
         css_files: raw.css_files,
         component_asset_files: raw.component_asset_files,
-        component_asset_metafile: raw.component_asset_metafile,
+        metafile: raw.metafile,
         component_templates: raw.component_templates,
         warnings: raw.warnings,
         stats,
@@ -498,7 +498,7 @@ struct RawBuildOutput {
     protocol: WebUIProtocol,
     css_files: Vec<(String, String)>,
     component_asset_files: Vec<ComponentAssetFile>,
-    component_asset_metafile: Option<String>,
+    metafile: Option<String>,
     component_templates: Vec<ComponentTemplateArtifact>,
     warnings: Vec<Diagnostic>,
     fragment_count: usize,
@@ -771,7 +771,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         &options.entry,
         &options.component_asset_roots,
         &options.css_file_name_template,
-        options.component_asset_metafile,
+        options.metafile,
     )?;
     component_asset_graph.retain_entry_protocol(&mut protocol);
     // Strict projection coverage applies to scripted components retained in the
@@ -799,7 +799,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         protocol,
         css_files,
         component_asset_files,
-        component_asset_metafile: component_asset_graph.metafile,
+        metafile: component_asset_graph.metafile,
         component_templates,
         warnings,
         fragment_count,
@@ -1825,7 +1825,7 @@ mod tests {
     }
 
     #[test]
-    fn test_component_asset_metafile_describes_dynamic_import_graph() {
+    fn test_metafile_describes_dynamic_import_graph() {
         let app = create_app_dir(&[
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<p>Entry</p>"),
@@ -1836,10 +1836,10 @@ mod tests {
         let mut options = default_options(app.path());
         options.plugin = Some(Plugin::WebUI);
         options.component_asset_roots = vec!["root-a".to_string(), "root-b".to_string()];
-        options.component_asset_metafile = true;
+        options.metafile = true;
 
         let result = build(options).unwrap();
-        let metafile = result.component_asset_metafile.as_deref().unwrap();
+        let metafile = result.metafile.as_deref().unwrap();
         let value: serde_json::Value = serde_json::from_str(metafile).unwrap();
         assert!(value["inputs"]
             .get("webui:component/shared-detail")

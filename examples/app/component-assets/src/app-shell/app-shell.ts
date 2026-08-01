@@ -7,12 +7,10 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 const assets = defineComponentAssets({
   'lazy-panel': {
     asset: './lazy-panel.webui.js',
-    modulepreload: ['./chunk-shared-detail.webui.js'],
     data: async () => await (await fetch('./lazy-panel-data.json')).json(),
   },
   'secondary-panel': {
     asset: './secondary-panel.webui.js',
-    modulepreload: ['./chunk-shared-detail.webui.js'],
   },
 });
 

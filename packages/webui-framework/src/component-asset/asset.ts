@@ -19,7 +19,7 @@ export interface ComponentAssetImport {
   load: () => Promise<unknown>;
 }
 
-/** Version 2 WebUI Framework component asset emitted by `webui build --emit-component-assets`. */
+/** WebUI Framework component asset emitted by `webui build --emit-component-assets`. */
 export interface ComponentAsset {
   type: 'webui-component-asset';
   version: 2;

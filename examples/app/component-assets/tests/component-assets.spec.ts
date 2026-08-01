@@ -79,12 +79,6 @@ test.describe('static component assets', () => {
     expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'shared-chunk')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(0);
-    expect(lazyRequests.indexOf('shared-chunk')).toBeLessThan(
-      lazyRequests.indexOf('secondary-asset'),
-    );
-    await expect(
-      page.locator('link[rel="modulepreload"][href$="chunk-shared-detail.webui.js"]'),
-    ).toHaveCount(1);
 
     await page.getByRole('button', { name: 'Load lazy panel' }).click();
     await expect(page.locator('lazy-panel')).toHaveCount(1);
@@ -121,9 +115,6 @@ test.describe('static component assets', () => {
     expect(countLazyRequests(lazyRequests, 'lazy-asset')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'secondary-asset')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'shared-chunk')).toBe(1);
-    await expect(
-      page.locator('link[rel="modulepreload"][href$="chunk-shared-detail.webui.js"]'),
-    ).toHaveCount(1);
     expect(countLazyRequests(lazyRequests, 'module')).toBe(0);
     expect(countLazyRequests(lazyRequests, 'data')).toBe(1);
     expect(countLazyRequests(lazyRequests, 'css')).toBeGreaterThanOrEqual(1);

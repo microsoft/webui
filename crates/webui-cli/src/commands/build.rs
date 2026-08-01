@@ -169,7 +169,7 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     let mut build_options = args.app_args.to_build_options(&app);
     build_options.component_asset_roots = args.emit_component_assets.clone();
-    build_options.component_asset_metafile = metafile.is_some();
+    build_options.metafile = metafile.is_some();
     build_options.theme = args
         .theme
         .as_deref()
@@ -196,7 +196,7 @@ fn run(args: &BuildArgs) -> Result<()> {
         })?;
     }
     if let Some(path) = &metafile {
-        let content = result.component_asset_metafile.as_deref().ok_or_else(|| {
+        let content = result.metafile.as_deref().ok_or_else(|| {
             anyhow::anyhow!("component asset metafile was requested but not generated")
         })?;
         if let Some(parent) = path

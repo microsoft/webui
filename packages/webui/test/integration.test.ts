@@ -108,14 +108,14 @@ describe('build', () => {
       entry: 'index3.html',
       plugin: 'webui',
       componentAssetRoots: ['lazy-panel'],
-      componentAssetMetafile: true,
+      metafile: true,
     });
     assert.equal(result.componentAssetFiles.length, 2); // [filename, content]
     assert.equal(result.componentAssetFiles[0], 'lazy-panel.webui.js');
     assert.match(result.componentAssetFiles[1], /webui-component-asset/);
-    assert.ok(result.componentAssetMetafile);
-    const metafile: Metafile = JSON.parse(result.componentAssetMetafile);
-    const analysis = await analyzeMetafile(metafile);
+    assert.ok(result.metafile);
+    const parsedMetafile: Metafile = JSON.parse(result.metafile);
+    const analysis = await analyzeMetafile(parsedMetafile);
     assert.match(analysis, /lazy-panel\.webui\.js/);
   });
 
