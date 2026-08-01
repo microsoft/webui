@@ -386,67 +386,110 @@ values into the response. FFI, Node, WASM, and .NET expose only the complete
 
 **Cache control:** The server can include `cacheControl: { staleTime: number }` in the partial response to override the client's default stale time for this specific route.
 
-**Static component assets:** `webui build --emit-component-assets mail-thread,compose-page`
-emits CDN-loadable component asset files next to `protocol.bin`. The flag is a
-strict comma-separated allowlist of root component tags; every tag must be a
-discovered lowercase kebab-case component with WebUI template metadata. Static
-component asset runtimes are framework-owned: the WebUI Framework loader lives at
-`@microsoft/webui-framework/component-asset.js`; a FAST runtime should define its
-own asset loader rather than making the core `@microsoft/webui` package know
-plugin details. Asset roots are parsed into the protocol through synthetic
-non-entry fragments, so they do not become reachable from the SSR entry tree and
-are not included in the initial SSR bootstrap unless the entry graph also
-references them. `webui serve --emit-component-assets` parses and validates the
-same roots on every dev build — surfacing their HTML and theme-token errors even
-though they are outside the SSR tree — and serves the compiled modules from
-memory. Asset generation is parallelized across requested roots. Each root produces one
-standard ESM module, `<tag>.webui.js`, by default. Use
-`--asset-file-name-template "[name]-[hash].[ext]"` for CDN-cacheable CSS and
-component asset names; `[hash]` is the emitted file's SHA-256 content hash
-truncated to 8 hex characters and `[ext]` resolves to `webui.js` for component
-assets. Programmatic Rust builds expose the rendered files through
-`BuildResult::component_asset_files`; `build_to_disk()` and the CLI validate
-protocol/CSS/component-asset filenames as one output set before writing any
-file. The module default-exports:
+**Static component asset graph:** `webui build --emit-component-assets
+mail-thread,compose-page` emits CDN-loadable component asset modules next to
+`protocol.bin`. The flag is a strict comma-separated allowlist of root tags;
+every tag must be a discovered lowercase kebab-case component with template
+metadata. Component assets cannot be combined with `<route>` directives. That
+invalid mode fails with the stable `component-assets-with-routes` diagnostic
+because route branches belong to the SSR/navigation graph.
+
+The build computes the entry and requested-root dependency closures without
+evaluating runtime state. It follows component edges, `<if>`, `<for>`, and
+attribute-template edges. Ownership is deterministic and independent of the
+order supplied to `--emit-component-assets`:
+
+- Components reachable from the normal entry remain owned by the application's
+  entry bundle and `protocol.bin`. Asset modules list them as external
+  prerequisites and never copy or import them.
+- A non-entry component needed by one requested root stays inline in that
+  root's module.
+- Non-entry components needed by the same set of two or more roots are emitted
+  once in a flat shared chunk. Different consumer sets produce different
+  chunks. A chunk's logical name is `chunk-<first-sorted-component>`.
+- Every root directly imports all chunks that it needs. Shared chunks never
+  import other shared chunks.
+
+For example, two roots that both need `mail-message` emit
+`mail-thread.webui.js`, `compose-page.webui.js`, and
+`chunk-mail-message.webui.js`. Requested roots remain graph entry points even
+when all their payload components are shared. With
+`--asset-file-name-template "[name]-[hash].[ext]"`, each root's content hash
+includes its final hashed chunk filenames. Root allowlist order therefore
+cannot change output names or bytes. Filename templates are ASCII-only and
+reject URL delimiters such as `#`, `%`, and `?`, along with path separators,
+whitespace, control characters, and Windows-reserved filename characters.
+
+Every module default-exports a strict version 2 asset object:
 
 ```js
 export default {
   type: "webui-component-asset",
-  version: 1,
-  components: ["mail-thread", "mail-message"],
+  version: 2,
+  kind: "root",
+  root: "mail-thread",
+  components: ["mail-thread"],
+  requiredComponents: ["app-shell", "mail-message", "mail-thread"],
+  externalComponents: ["app-shell"],
+  imports: [{
+    components: ["mail-message"],
+    href: new URL("./chunk-mail-message.webui.js", import.meta.url).href,
+    load: () => import("./chunk-mail-message.webui.js")
+  }],
   templateStyles: [],
-  templates: {},
-  templateFunctions: {
-    "mail-thread": [function(v, s) { return !!v("hasMessages", s); }]
-  }
+  templates: {}
 };
 ```
 
-The component list is the conservative dependency closure for the requested root:
-component edges, `<if>`, `<for>`, attribute-template edges, and all nested
-`<route>` branches are followed without evaluating runtime state. The JSON file
-is inert data and intentionally omits `inventory`: a build-time static asset does
-not know the page's current loaded bitset, so consumers must not replace
-`window.__webui.inventory` with asset-local state. Component-local condition
-closures are carried in the same ESM request as `templateFunctions`, so the
-template asset, component class chunk, and component data request can all start
-in parallel from the manifest. CSS module importmaps still use the page's current
-CSP nonce when materialized by the optional
-`@microsoft/webui-framework/component-asset.js` `defineComponentAssets()`
-manifest loader. The manifest loader exposes `preload(tag)` to start asset,
-module, and data work, and `create(tag)` to create the element after
-template/module work is ready. This loader is not re-exported from the framework
-root package entrypoint, keeping it out of normal framework bundles unless an app
-imports the optional subpath. The loader uses the manifest tag as the
-registered-template fast path, so hashed asset filenames still skip importing when
-`window.__webui.templates[tag]` already exists. Otherwise it deduplicates
-in-flight imports by resolved asset URL and deduplicates module-style importmaps
-against `window.__webui.styles` plus previously injected asset styles.
-`create(tag)` waits for the asset/module, mounts without blocking on data by
-default, and applies data later; callers can opt into bounded data blocking with
+`components` names the payload installed by that module,
+`requiredComponents` is the root's complete conservative closure,
+`externalComponents` names entry-owned prerequisites, and `imports` carries
+real dynamic import edges to shared chunks. A chunk uses `kind: "chunk"`,
+omits `root`, and has an empty `imports` array. The payload intentionally omits
+`inventory`: a static build cannot know the page's loaded template bitset.
+Every required component must have exactly one local payload, external
+prerequisite, or chunk import, and a root must include itself in
+`requiredComponents`. The framework loader rejects malformed coverage before
+registering any payload.
+
+Asset-only fragments and component records are available while the graph is
+rendered, then removed before `protocol.bin` is serialized. The protocol keeps
+only entry-reachable records, while Link-mode CSS needed by emitted assets is
+still written. The application entry bundle remains application-owned and is
+never emitted or fetched by the asset graph.
+
+`--metafile <path>` writes an esbuild-compatible `inputs`/`outputs` graph for
+the emitted roots and chunks. Virtual inputs use
+`webui:component/<tag>`, root outputs carry `entryPoint`, and root-to-chunk
+edges use `kind: "dynamic-import"`. The option requires component asset roots.
+The CLI validates the metafile path against every other output before writing;
+`serve --watch` replaces it atomically only after a successful rebuild and
+preserves the previous valid graph after failures. Rust and Node builds opt in
+with `component_asset_metafile` / `componentAssetMetafile` and receive the JSON
+in the matching build-result field.
+
+Static component asset runtimes are framework-owned. The WebUI Framework
+loader lives at `@microsoft/webui-framework/component-asset.js`, is not
+re-exported from the framework root, and accepts exactly version 2. It imports
+the root even when its root template is already registered because the graph
+may still require chunks. After reading root metadata, it verifies entry-owned
+prerequisites before starting chunk requests, imports all missing chunks
+concurrently, validates every root/chunk template, condition closure index, and
+import map before mutating the global registry or DOM, then registers chunks
+before the root and verifies the complete closure. A malformed graph registers
+none of its payloads. Resolved root and chunk URLs share global in-flight deduplication.
+Module-style import maps use the page's CSP nonce and are deduplicated against
+`window.__webui.styles`.
+
+`defineComponentAssets()` manifest entries may provide `modulepreload` URLs
+from the metafile's root imports. `preload(tag)` inserts deduplicated,
+nonce-aware `<link rel="modulepreload">` elements synchronously before the root
+import, then starts the root asset, component class module, and optional data
+request. `create(tag)` waits for asset/module work, mounts without blocking on
+data by default, and can opt into bounded data blocking with
 `{ awaitData: true, dataTimeoutMs }`.
 
-FAST plugin builds can emit the same ESM asset shape with trusted `<f-template>`
+FAST plugin builds can emit the version 2 graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
 
 **Navigation cache:** The client router exposes an optional tagged navigation
@@ -1179,8 +1222,9 @@ webui build ./templates --out ./dist --plugin=<name>
 webui build ./templates --out ./dist --asset-file-name-template="[name]-[hash].[ext]" --css-public-base="https://cdn.example.com/assets"
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread,compose-page
 webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread --asset-file-name-template="[name]-[hash].[ext]"
+webui build ./templates --out ./dist --plugin=webui --emit-component-assets mail-thread,compose-page --metafile=./dist/component-assets-meta.json
 webui serve ./templates --state ./data/state.json --plugin=<name>
-webui serve ./templates --state ./data/state.json --plugin=webui --emit-component-assets mail-thread,compose-page --watch
+webui serve ./templates --state ./data/state.json --plugin=webui --emit-component-assets mail-thread,compose-page --metafile=./dist/component-assets-meta.json --watch
 ```
 
 `webui serve` performs a preflight bind check on its configured HTTP port and

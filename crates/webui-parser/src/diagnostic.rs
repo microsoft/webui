@@ -146,6 +146,8 @@ pub mod codes {
     /// than emitted or escaped.
     /// Severity: warning.
     pub const UNSAFE_MODULE_PRELOAD: &str = "unsafe-module-preload";
+    /// Static component assets were requested for a graph containing `<route>`.
+    pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
 }
 
 /// A build-time template-authoring diagnostic.

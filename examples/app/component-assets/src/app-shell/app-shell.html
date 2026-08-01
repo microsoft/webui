@@ -3,12 +3,15 @@
   <h1>{{title}}</h1>
   <asset-badge label="Shared SSR component"></asset-badge>
   <p class="summary">
-    The lazy panel's compiled template is emitted as a static .webui.json asset
-    and loaded only when this button is clicked. The badge above is the same
-    shared component used inside the lazy panel, but this template intentionally
-    does not contain a lazy-panel tag.
+    Two lazy roots share one lazy-only detail component. Their generated root
+    assets load that payload from one shared chunk, while the SSR badge remains
+    owned by the entry protocol.
   </p>
 
-  <button @click="{openPanel()}">Load lazy panel</button>
+  <div class="actions">
+    <button @click="{openPanel()}">Load lazy panel</button>
+    <button @click="{openSecondaryPanel()}">Load secondary panel</button>
+  </div>
   <div class="panel-slot" w-ref="{panelSlot}"></div>
+  <div class="panel-slot" w-ref="{secondaryPanelSlot}"></div>
 </section>

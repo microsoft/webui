@@ -23,7 +23,8 @@ let result = build(BuildOptions {
 
 // result.protocol_bytes — serialized protocol (protobuf binary)
 // result.css_files — extracted component CSS files
-// result.component_asset_files — static `.webui.js` ESM component assets
+// result.component_asset_files — version 2 root/chunk `.webui.js` assets
+// result.component_asset_metafile — optional esbuild-compatible graph JSON
 // result.stats — build timing and fragment counts
 ```
 
@@ -73,10 +74,20 @@ use the WebUI plugin:
 BuildOptions {
     app_dir: "src".into(),
     plugin: Some(Plugin::WebUI),
-    component_asset_roots: vec!["settings-dialog".into()],
+    component_asset_roots: vec![
+        "settings-dialog".into(),
+        "mail-thread".into(),
+    ],
+    component_asset_metafile: true,
     ..BuildOptions::default()
 }
 ```
+
+Entry-reachable dependencies remain external to the version 2 asset graph,
+single-root dependencies stay inline, and dependencies shared by the same
+multi-root consumer set are emitted once as flat dynamic chunks. Asset-only
+component records are removed from `protocol.bin`. Component assets cannot be
+combined with `<route>`.
 
 `LegalComments::Inline` is the default and preserves legal CSS comments
 containing `@license` or `@preserve`, or starting with `/*!` or `//!`. Use

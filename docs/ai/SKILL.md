@@ -612,7 +612,7 @@ MyComponent.define('my-component');
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Lazy component assets with `preload(tag)` / `create(tag)` |
+| `defineComponentAssets(manifest)` | Lazy version 2 component graphs with `preload(tag)` / `create(tag)` |
 
 ### Custom events
 
@@ -756,7 +756,8 @@ Without `@microsoft/webui-router`, prebuild the asset and mount it into a
 
 ```bash
 webui build ./src --out ./dist --plugin=webui \
-  --emit-component-assets settings-dialog
+  --emit-component-assets settings-dialog \
+  --metafile ./dist/component-assets-meta.json
 ```
 
 ```typescript
@@ -765,6 +766,7 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
     asset: '/settings-dialog.webui.js',
+    modulepreload: ['/chunk-dialog-field.webui.js'],
     module: () => import('./settings-dialog/settings-dialog.js'),
   },
 });
@@ -775,9 +777,13 @@ async onOpenSettings(): Promise<void> {
 }
 ```
 
-`preload(tag)` starts the template asset, JS chunk, and data fetch in parallel
-as soon as the user expresses intent. `create(tag)` waits for the template asset
-and module, then creates the element.
+Version 2 assets keep entry-owned templates external, inline dependencies used
+by one asset root, and split dependencies shared by multiple roots into
+deduplicated dynamic chunks. Populate `modulepreload` from the root's metafile
+imports so `preload(tag)` starts shared requests before the root import.
+`create(tag)` waits for the template graph and module, then creates the element.
+The normal entry bundle must load first. Component assets cannot be combined
+with `<route>`; use the router for routed components.
 
 ## Routing
 
@@ -1042,7 +1048,8 @@ webui inspect ./dist/protocol.bin
 
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--dom <shadow|light>`, `--components`, `--theme`,
-`--projection-manifest`, `--emit-component-assets`, `--format json`.
+`--projection-manifest`, `--emit-component-assets`, `--metafile`,
+`--format json`.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

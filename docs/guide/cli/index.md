@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -49,14 +49,15 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
+| `--metafile <PATH>` | Write an esbuild-compatible component asset graph. Requires `--emit-component-assets`. | *(none)* |
 | `--theme <VALUE>` | Design token theme to validate against: a JSON file path or npm package name. Missing required tokens fail the build. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files and static component assets. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
 | `--legal-comments <MODE>` | Legal comment handling: `inline` preserves legal CSS comments, `none` strips all comments | `inline` |
 
-Path inputs for `APP`, `--state`, `--servedir`, and
-`--projection-manifest` support absolute paths, relative paths, `~/...`, and
-`file://...` URI-style values.
+Path inputs for `APP`, `--state`, `--servedir`, `--projection-manifest`, and
+`--metafile` support absolute paths, relative paths, `~/...`, and `file://...`
+URI-style values.
 
 **CSS Modes:**
 
@@ -70,35 +71,49 @@ For long-lived CDN/browser caching, include `[hash]` in
 `--asset-file-name-template`. `[hash]` is the emitted file's SHA-256 content hash
 truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
 `--css-public-base` only changes the CSS href stored in `protocol.bin` and
-emitted in `<link>` tags.
+emitted in `<link>` tags. Templates must be ASCII filenames. URL delimiters
+(`#`, `%`, and `?`), path separators, whitespace, control characters, and
+Windows-reserved filename characters are rejected.
 
 **Component assets:**
 
 Use `--emit-component-assets` with the WebUI plugin to prebuild CDN-loadable
-template assets for components that are not included in initial SSR, such as
-route branches or dialogs loaded without `@microsoft/webui-router`:
+template assets for deferred UI such as dialogs loaded without
+`@microsoft/webui-router`:
 
 ```bash
 webui build ./my-app --out ./dist --plugin=webui \
-  --emit-component-assets mail-thread,compose-page
+  --emit-component-assets mail-thread,compose-page \
+  --metafile ./dist/component-assets-meta.json
 ```
 
 The flag is a strict comma-separated allowlist. Every tag must be a discovered
 lowercase kebab-case component. Requested roots are compiled through synthetic
 non-entry fragments, so they do not become part of initial SSR unless your entry
-template also references them. Assets are emitted to the same output folder as
-standard ESM modules, for example `mail-thread.webui.js`. Each module
-default-exports plugin-specific template/style metadata and includes compiled
-WebUI condition closures in the same request. FAST plugin builds can emit the
-same module shape with `<f-template>` payloads, but need a FAST-owned runtime
-loader rather than the WebUI Framework loader. Asset emission is parallelized
-across requested root tags. The module intentionally omits inventory state
-because a static CDN asset cannot know the page's current loaded template bitset.
-Use `--asset-file-name-template "[name]-[hash].[ext]"` for long-lived CDN
-caching; `[hash]` is the emitted asset module's SHA-256 content hash truncated
-to 8 hex characters. Protocol, CSS, and component asset filenames are validated
-as one output set before any files are written, so collisions fail without
-leaving partial output.
+template also references them. A build containing both component assets and a
+`<route>` fails with `component-assets-with-routes`; use the router's normal
+partial-navigation pipeline for routed components.
+
+Assets are strict version 2 ESM graph modules. Entry-reachable components stay
+in `protocol.bin` and the application bundle, and become external prerequisites
+instead of being copied. A dependency used by one asset root stays inline in
+that root. Dependencies shared by the same two or more roots are emitted once
+as `chunk-<first-sorted-component>.webui.js`, and each root dynamically imports
+the chunks it needs. Requested-root order does not change ownership, bytes, or
+hashes. Asset-only records are removed from `protocol.bin`.
+
+`--metafile` writes esbuild-compatible `inputs` and `outputs`, including every
+root-to-chunk `dynamic-import` edge and exact byte attribution. It can be opened
+directly in an esbuild bundle analyzer and used to populate the loader's
+`modulepreload` URLs. The metafile path is collision-checked with protocol, CSS,
+root, and chunk outputs before any files are written.
+
+FAST plugin builds can emit the same version 2 graph with `<f-template>`
+payloads, but need a FAST-owned runtime loader. Every module intentionally omits
+inventory state because a static CDN asset cannot know the page's loaded
+template bitset. Use `--asset-file-name-template "[name]-[hash].[ext]"` for
+long-lived CDN caching; `[hash]` is each module's SHA-256 content hash truncated
+to 8 hex characters.
 
 Load an asset before creating the component:
 
@@ -116,6 +131,7 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const mailAssets = defineComponentAssets({
   'mail-thread': {
     asset: '/mail-thread.webui.js',
+    modulepreload: ['/chunk-mail-message.webui.js'],
     module: () => import('./mail-thread/mail-thread.js'),
     data: async () => await (await fetch('/mail-thread-data.json')).json(),
   },
@@ -124,7 +140,9 @@ export const mailAssets = defineComponentAssets({
 
 Keep the lazy component tag out of SSR-reachable templates unless it should be
 eligible for initial SSR. Use a mount element or another non-HTML trigger, then
-create the custom element with `mailAssets.create(...)`.
+create the custom element with `mailAssets.create(...)`. The application must
+load its normal entry bundle before component assets because entry-reachable
+dependencies are external prerequisites.
 
 **Comment handling:**
 
@@ -229,7 +247,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -249,6 +267,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to compile as static WebUI component assets, matching `webui build`. Their templates and CSS are parsed and validated on every build, and the compiled `<tag>.webui.js` modules are served from memory. | *(none)* |
+| `--metafile <PATH>` | Atomically replace an esbuild-compatible component asset graph after each successful build. Requires `--emit-component-assets`. | *(none)* |
 | `--theme <VALUE>` | Design token theme: a path to a JSON file or an npm package name. Missing required tokens fail the build; resolved tokens are injected into the render state. | *(none)* |
 | `--asset-file-name-template <TEMPLATE>` | Emitted asset filename template for Link-mode CSS files. Tokens: `[name]`, `[hash]`, `[ext]` | `[name].[ext]` |
 | `--css-public-base <BASE>` | Optional public URL/path prefix for Link-mode CSS hrefs | *(none)* |
@@ -353,12 +372,15 @@ token is also absent from every theme it is surfaced as a non-fatal
 a `did you mean …?` suggestion) since it is usually a typo.
 
 `--emit-component-assets` behaves identically on `serve` and `build`: each listed
-root is parsed and validated on every build — its template and CSS are checked
+root is parsed and validated on every build - its template and CSS are checked
 for HTML and theme-token errors even though the component is not part of the
-initial SSR tree — so authoring mistakes in lazily loaded components fail the dev
-build instead of being silently skipped. The compiled `<tag>.webui.js` modules
-are served from memory (and rebuilt on change under `--watch`), so no separate
-`webui build` step or `--out` directory is needed during development.
+initial SSR tree - so authoring mistakes in lazily loaded components fail the
+dev build instead of being silently skipped. Root and shared chunk modules are
+served from memory (and rebuilt on change under `--watch`), so no separate
+`webui build` step or `--out` directory is needed during development. With
+`--metafile`, a successful rebuild atomically replaces the graph; a failed
+rebuild leaves the last valid metafile untouched. The metafile itself is ignored
+by the watcher to prevent rebuild loops.
 
 In `serve --watch`, rebuild failures are sticky: the terminal and live-reload
 SSE report the error, and refreshing the page returns the latest rebuild error
@@ -370,7 +392,7 @@ successful rebuild clears the error and reloads connected browsers.
 | Path | Description |
 |------|-------------|
 | `/` or `/index.html` | Rendered HTML with live-reload script |
-| `/<tag>.webui.js` | In-memory static component assets emitted by `--emit-component-assets` (served as JS modules) |
+| `/*.webui.js` | In-memory root and shared component assets emitted by `--emit-component-assets` |
 | `/*` | Static files from `--servedir` (when provided) |
 | `/*` with `Accept: text/html`, `application/xhtml+xml`, or `application/json` at q > 0 after asset misses | SPA route fallback (highest q wins; JSON wins exact ties) |
 | Missing JS, CSS, image, and wildcard-only asset requests | 404 |

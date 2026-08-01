@@ -418,31 +418,41 @@ This pattern keeps components decoupled - the child doesn't know who is listenin
 
 ## Loading Static Component Assets
 
-When you are not using `@microsoft/webui-router`, components hidden behind
-inactive routes or deferred UI can still be loaded from static files. Build the
-root components as assets:
+When you are not using `@microsoft/webui-router`, deferred UI can still be
+loaded from static files. Build the root components as assets:
 
 ```bash
 webui build ./src --out ./dist --plugin=webui \
   --emit-component-assets settings-dialog,mail-thread
 ```
 
-Each requested root writes one ESM module such as `<tag>.webui.js` next to
-`protocol.bin`. The module carries the component's template, styles, and
-dependency closure; it does not contain route inventory state.
+Each requested root writes a strict version 2 ESM graph module such as
+`<tag>.webui.js` next to `protocol.bin`. Entry-reachable dependencies remain in
+the application bundle and protocol. Dependencies used by one requested root
+stay inline, while dependencies used by the same set of two or more roots are
+emitted once as `chunk-<component>.webui.js` and dynamically imported by those
+roots. Asset-only fragments and component records do not remain in
+`protocol.bin`.
+
+Static component assets and `<route>` cannot be used in the same build. Use
+`@microsoft/webui-router` for routed components, or use component assets for
+non-routed deferred UI.
 
 During development, pass the same flag to `webui serve` so these roots are
 validated and served without a separate build step:
 
 ```bash
 webui serve ./src --state ./data/state.json --plugin=webui \
-  --emit-component-assets settings-dialog,mail-thread --watch
+  --emit-component-assets settings-dialog,mail-thread \
+  --metafile ./component-assets-meta.json --watch
 ```
 
 The dev server parses and validates each root on every build. HTML and
 theme-token errors in a lazily loaded component fail the build instead of being
-missed because the component is outside the initial route tree. The dev server
-serves `<tag>.webui.js` from memory and rebuilds it on change.
+missed because the component is outside the initial SSR tree. The dev server
+serves roots and shared chunks from memory and rebuilds them on change. A
+successful watch build atomically replaces `--metafile`; a failed build
+preserves the previous valid graph.
 
 Load the asset before creating or revealing the component:
 
@@ -467,17 +477,21 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
     asset: '/settings-dialog.webui.js',
+    modulepreload: ['/chunk-dialog-field.webui.js'],
     module: () => import('./settings-dialog/settings-dialog.js'),
     data: async () => await (await fetch('/settings-dialog-data.json')).json(),
   },
 });
 ```
 
-`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`.
-`preload(tag)` starts the component's template, styles, JavaScript module, and
-optional data together. Components can then fetch their own data in their class
-code and expose it through `@observable` fields when JavaScript needs to read or
-mutate it. Concurrent requests for the same asset share one in-flight load.
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. Populate
+`modulepreload` from that root's dynamic imports in the esbuild-compatible
+`--metafile`; the loader inserts those links before importing the root, avoiding
+a request waterfall. `preload(tag)` starts the component's template graph,
+styles, JavaScript module, and optional data together. Components can then fetch
+their own data in their class code and expose it through `@observable` fields
+when JavaScript needs to read or mutate it. Concurrent roots deduplicate shared
+chunk imports by resolved URL.
 `create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
@@ -486,7 +500,10 @@ fetch in parallel.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the
-initial SSR graph instead of being loaded only from the static asset.
+initial SSR graph instead of being loaded only from the static asset. Always
+load the normal application entry bundle first; component assets treat all
+entry-reachable templates as external prerequisites and fail clearly when one
+is missing.
 
 ## Styling
 

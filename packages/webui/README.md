@@ -36,10 +36,11 @@ Compiles an application directory of HTML templates into a binary protocol.
 const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
-  css: "link",           // CSS strategy: "link" or "style"
+  css: "link",           // CSS strategy: "link", "style", or "module"
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
   componentAssetRoots: ["settings-dialog"], // Static .webui.js asset roots
+  componentAssetMetafile: true, // Return an esbuild-compatible asset graph
   cssFileNameTemplate: "[name]-[hash].[ext]", // CSS/component asset filename template
   cssPublicBase: "https://cdn.example.com/assets", // Optional CDN/public href base
   theme: "./themes/brand.json", // Optional design-token theme validation
@@ -49,9 +50,16 @@ const result = build({
 // result.protocol  - Buffer containing the compiled protocol
 // result.cssFiles  - Array of [filename, content, ...] pairs
 // result.componentAssetFiles - Array of [filename, ESM content, ...] pairs
+// result.componentAssetMetafile - Optional esbuild-compatible graph JSON
 // result.warnings  - Array of non-fatal build advisory diagnostics
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
+
+Static component assets use a version 2 root/chunk graph. Entry-reachable
+dependencies remain external, dependencies used by one root stay inline, and
+dependencies with an identical multi-root consumer set are emitted once as
+dynamic chunks. Asset-only records are omitted from `result.protocol`.
+Component assets cannot be combined with `<route>`.
 
 When `theme` is provided, every required CSS token must exist in the theme
 after local and ancestor custom-property definitions are excluded. A `var()`

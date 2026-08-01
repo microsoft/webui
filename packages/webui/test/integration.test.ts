@@ -14,13 +14,14 @@ import {
   Protocol,
 } from '@microsoft/webui';
 import type { ComponentTemplatesResponse } from '@microsoft/webui';
-import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { once } from 'node:events';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { analyzeMetafile, type Metafile } from 'esbuild';
 
 let appDir: string;
 
@@ -83,6 +84,14 @@ after(() => {
   rmSync(appDir, { recursive: true, force: true });
 });
 
+test('published package includes every module imported by its root entry', () => {
+  const packageJson = JSON.parse(
+    readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+  ) as { files?: string[] };
+  assert.ok(packageJson.files?.includes('dist/build-fallback.*'));
+  assert.ok(packageJson.files?.includes('dist/component-assets.*'));
+});
+
 describe('build', () => {
   test('returns protocol and stats', () => {
     const result = build({ appDir });
@@ -101,16 +110,21 @@ describe('build', () => {
     assert.equal(result.stats.cssFileCount, 1);
   });
 
-  test('emits static component asset files', () => {
+  test('emits static component asset files and an analyzable metafile', async () => {
     const result = build({
       appDir,
       entry: 'index3.html',
       plugin: 'webui',
       componentAssetRoots: ['lazy-panel'],
+      componentAssetMetafile: true,
     });
     assert.equal(result.componentAssetFiles.length, 2); // [filename, content]
     assert.equal(result.componentAssetFiles[0], 'lazy-panel.webui.js');
     assert.match(result.componentAssetFiles[1], /webui-component-asset/);
+    assert.ok(result.componentAssetMetafile);
+    const metafile: Metafile = JSON.parse(result.componentAssetMetafile);
+    const analysis = await analyzeMetafile(metafile);
+    assert.match(analysis, /lazy-panel\.webui\.js/);
   });
 
   test('throws on missing appDir', () => {

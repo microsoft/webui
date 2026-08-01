@@ -51,14 +51,13 @@ import {
 
 import type {
   CompiledConditionFn,
-  SerializedCompiledCondition,
-  TemplateBlockMeta,
-  TemplateCondition,
   TemplateMeta,
 } from './template-types.js';
+import { validateAndNormalizeTemplate } from './template-validation.js';
 
 const WEBUI_DATA_ID = 'webui-data';
 const normalizedTemplates = new WeakSet<TemplateMeta>();
+const assetValidatedTemplates = new WeakSet<TemplateMeta>();
 let webuiDataLoaded = false;
 
 interface PendingTemplateDefinition {
@@ -73,6 +72,7 @@ function acceptTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
 ): boolean {
+  prepareTemplateData(templates, templateFns);
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
@@ -87,9 +87,7 @@ function acceptTemplateData(
   const names = Object.keys(templates);
   for (let i = 0; i < names.length; i++) {
     const tag = names[i];
-    const meta = templates[tag];
-    w.__webui.templates[tag] = meta;
-    normalizeTemplate(tag, meta);
+    w.__webui.templates[tag] = templates[tag];
   }
   for (let i = 0; i < names.length; i++) {
     const pending = pendingTemplateDefinitions.get(names[i]);
@@ -158,6 +156,60 @@ export function registerTemplateData(
 }
 
 /**
+ * Validate and normalize a complete template batch before registry mutation.
+ *
+ * Dynamic registrations use this preflight so malformed metadata cannot leave
+ * a partially registered global template set.
+ */
+export function prepareTemplateData(
+  templates: Record<string, unknown>,
+  templateFns?: Record<string, unknown>,
+): asserts templates is Record<string, TemplateMeta> {
+  const names = Object.keys(templates);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    const meta = templates[name];
+    const candidateFns = templateFns?.[name];
+    if (candidateFns !== undefined && !isConditionFunctionArray(candidateFns)) {
+      throw new Error(`[WebUI] Template condition closures for <${name}> must be an array of functions.`);
+    }
+    normalizeTemplate(name, meta, candidateFns);
+  }
+}
+
+/**
+ * Strictly validate component asset templates against asset-local closures.
+ *
+ * Unlike streamed and SSR template registration, asset validation never falls
+ * back to closures already present in the page-wide registry.
+ */
+export function prepareAssetTemplateData(
+  templates: Record<string, unknown>,
+  templateFns?: Record<string, unknown>,
+): asserts templates is Record<string, TemplateMeta> {
+  const names = Object.keys(templates);
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    const meta = templates[name];
+    const known = templateObject(meta);
+    if (known && assetValidatedTemplates.has(known)) continue;
+
+    const candidateFns = templateFns?.[name];
+    if (candidateFns !== undefined && !isConditionFunctionArray(candidateFns)) {
+      throw new Error(`[WebUI] Template condition closures for <${name}> must be an array of functions.`);
+    }
+    const normalized = validateAndNormalizeTemplate(
+      name,
+      meta,
+      candidateFns ?? [],
+      false,
+    );
+    normalizedTemplates.add(normalized);
+    assetValidatedTemplates.add(normalized);
+  }
+}
+
+/**
  * Hold an authored custom-element definition until streamed metadata arrives.
  *
  * Internal to the framework package; the public registration surface remains
@@ -197,42 +249,28 @@ function loadWebUIDataBlock(): void {
   webuiDataLoaded = true;
 }
 
-function normalizeTemplate(name: string, meta: TemplateMeta): void {
-  if (normalizedTemplates.has(meta)) return;
-  const fns = window.__webui?.templateFns?.[name] ?? [];
-  const stack: TemplateBlockMeta[] = [meta];
-  while (stack.length > 0) {
-    const block = stack.pop();
-    if (!block) continue;
-    if (block.a) {
-      for (let i = 0; i < block.a.length; i++) {
-        const attr = block.a[i];
-        if (attr[1] === 2) normalizeCondition(name, attr[2], fns);
-      }
-    }
-    if (block.c) {
-      for (let i = 0; i < block.c.length; i++) {
-        normalizeCondition(name, block.c[i][0], fns);
-      }
-    }
-    const children = (block as TemplateMeta).b;
-    if (children) {
-      for (let i = 0; i < children.length; i++) stack.push(children[i]);
-    }
-  }
-  normalizedTemplates.add(meta);
+function normalizeTemplate(
+  name: string,
+  meta: unknown,
+  suppliedFns?: CompiledConditionFn[],
+): void {
+  const known = templateObject(meta);
+  if (known && normalizedTemplates.has(known)) return;
+  const fns = suppliedFns ?? window.__webui?.templateFns?.[name] ?? [];
+  normalizedTemplates.add(
+    validateAndNormalizeTemplate(name, meta, fns, true),
+  );
 }
 
-function normalizeCondition(
-  tagName: string,
-  condition: TemplateCondition,
-  fns: CompiledConditionFn[],
-): void {
-  const first = condition[0];
-  if (typeof first === 'function') return;
-  const fn = fns[first];
-  if (typeof fn !== 'function') {
-    throw new Error(`[WebUI] Missing condition closure ${first} for <${tagName}>.`);
-  }
-  (condition as SerializedCompiledCondition as unknown as [CompiledConditionFn, string[]])[0] = fn;
+function templateObject(value: unknown): TemplateMeta | undefined {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    ? value as TemplateMeta
+    : undefined;
+}
+
+function isConditionFunctionArray(value: unknown): value is CompiledConditionFn[] {
+  return Array.isArray(value)
+    && value.every(candidate => typeof candidate === 'function');
 }

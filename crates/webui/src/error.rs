@@ -52,6 +52,10 @@ pub enum WebUIError {
     #[error("Invalid build options: {0}")]
     InvalidBuildOptions(String),
 
+    /// Static component asset graph failure with a structured diagnostic.
+    #[error("{0}")]
+    ComponentAssets(Box<webui_parser::Diagnostic>),
+
     /// Bundler-neutral state projection manifest failure: malformed schema,
     /// stale/missing input or output file, build-ID mismatch, conflicting or
     /// duplicate fragment ownership, missing scripted-component coverage, or

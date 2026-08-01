@@ -335,18 +335,43 @@ delivery from a cancelled or stalled stream.
 | `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
-| `plugin` | `Option<String>` | `None` | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
+| `plugin` | `Option<Plugin>` | `None` | Parser plugin (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
+| `component_asset_metafile` | `bool` | `false` | Generate an esbuild-compatible component asset graph in the build result |
 | `projection_manifests` | `Vec<ProjectionManifestSource>` | `[]` | Disk, inline, or prepared projection fragments; empty preserves full state |
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
-`BuildResult::component_asset_files` contains rendered static component asset
-modules. `build_to_disk()` validates `protocol.bin`, CSS files, and component
-assets as one output set before writing, so filename collisions fail without
-leaving partial output.
+`BuildResult::component_asset_files` contains version 2 root and shared chunk
+modules. Entry-reachable dependencies remain in the protocol and are external
+prerequisites; single-root dependencies stay inline; dependencies with an
+identical multi-root consumer set are emitted once in a shared chunk. Asset-only
+protocol records are pruned after the files are rendered. Component assets
+cannot be combined with `<route>`.
+
+Set `component_asset_metafile: true` to populate
+`BuildResult::component_asset_metafile` with esbuild-compatible JSON:
+
+```rust
+let result = webui::build(BuildOptions {
+    app_dir: "src".into(),
+    plugin: Some(Plugin::WebUI),
+    component_asset_roots: vec!["settings-dialog".into(), "mail-thread".into()],
+    component_asset_metafile: true,
+    ..BuildOptions::default()
+})?;
+
+if let Some(metafile) = result.component_asset_metafile {
+    std::fs::write("dist/component-assets-meta.json", metafile)?;
+}
+```
+
+Root outputs in the metafile have `entryPoint` records and
+`dynamic-import` edges to shared chunks. `build_to_disk()` validates
+`protocol.bin`, CSS files, and component assets as one output set before
+writing, so filename collisions fail without leaving partial output.
 
 Load themes with `webui::resolve_theme_path()` and `webui::load_token_file()`.
 When `theme` is set, missing required CSS tokens fail as parser diagnostics

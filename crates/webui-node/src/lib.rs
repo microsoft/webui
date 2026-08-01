@@ -71,6 +71,8 @@ pub struct JsBuildResult {
     pub css_files: Vec<String>,
     /// Static component asset files as alternating [filename, content, filename, content, ...].
     pub component_asset_files: Vec<String>,
+    /// Esbuild-compatible component asset metafile JSON when requested.
+    pub component_asset_metafile: Option<String>,
     /// Non-fatal build advisories (plain text), e.g. CSS tokens used only with a
     /// literal `var()` fallback and absent from every theme.
     pub warnings: Vec<String>,
@@ -104,6 +106,8 @@ pub struct JsBuildOptions {
     pub components: Option<Vec<String>>,
     /// Root component tags emitted as static `.webui.js` ESM assets.
     pub component_asset_roots: Option<Vec<String>>,
+    /// Generate and return an esbuild-compatible component asset metafile.
+    pub component_asset_metafile: Option<bool>,
     /// Link-mode CSS filename template using [name], [hash], [ext].
     pub css_file_name_template: Option<String>,
     /// Optional base URL/path prefix for Link-mode css hrefs.
@@ -183,6 +187,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         plugin,
         components: options.components.unwrap_or_default(),
         component_asset_roots: options.component_asset_roots.unwrap_or_default(),
+        component_asset_metafile: options.component_asset_metafile.unwrap_or(false),
         css_file_name_template: options
             .css_file_name_template
             .unwrap_or_else(|| webui::DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string()),
@@ -212,6 +217,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         protocol: Buffer::from(result.protocol_bytes),
         css_files,
         component_asset_files,
+        component_asset_metafile: result.component_asset_metafile,
         warnings,
         stats: JsBuildStats {
             duration_ms: result.stats.duration.as_secs_f64() * 1000.0,
@@ -912,6 +918,7 @@ mod tests {
             plugin: Some("webui".to_string()),
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -968,6 +975,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -996,6 +1004,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1018,6 +1027,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1043,6 +1053,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1070,6 +1081,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1107,6 +1119,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1139,6 +1152,7 @@ mod tests {
             plugin: Some("webui".to_string()),
             components: None,
             component_asset_roots: Some(vec!["lazy-panel".to_string()]),
+            component_asset_metafile: Some(true),
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1153,6 +1167,13 @@ mod tests {
         assert_eq!(result.component_asset_files[0], "lazy-panel.webui.js");
         assert!(result.component_asset_files[1].contains("webui-component-asset"));
         assert!(result.component_asset_files[1].contains("export default asset;"));
+        let metafile = result
+            .component_asset_metafile
+            .as_deref()
+            .expect("requested metafile must be returned");
+        let parsed: serde_json::Value = serde_json::from_str(metafile).unwrap();
+        assert!(parsed["inputs"].get("webui:component/lazy-panel").is_some());
+        assert!(parsed["outputs"].get("lazy-panel.webui.js").is_some());
     }
 
     #[test]
@@ -1174,6 +1195,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: Some("none".to_string()),
@@ -1199,6 +1221,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: Some("linked".to_string()),
@@ -1225,6 +1248,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1255,6 +1279,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,
@@ -1284,6 +1309,7 @@ mod tests {
             plugin: None,
             components: None,
             component_asset_roots: None,
+            component_asset_metafile: None,
             css_file_name_template: None,
             css_public_base: None,
             legal_comments: None,

@@ -27,7 +27,7 @@ mod projection;
 pub mod server;
 pub mod streaming;
 
-pub use component_assets::{render_component_assets, ComponentAssetFile};
+pub use component_assets::{render_component_assets, ComponentAssetFile, ComponentAssetGraph};
 pub use error::WebUIError;
 
 // Re-export core types from downstream crates
@@ -264,6 +264,8 @@ pub struct BuildOptions {
     /// dependency closures can be emitted later, but they are not connected to
     /// the entry fragment and therefore are not rendered during initial SSR.
     pub component_asset_roots: Vec<String>,
+    /// Whether to serialize an esbuild-compatible component asset metafile.
+    pub component_asset_metafile: bool,
     /// Emitted asset filename template using `[name]`, `[hash]`, and `[ext]`.
     ///
     /// Applies to Link-mode CSS files and static component assets.
@@ -314,6 +316,7 @@ impl Default for BuildOptions {
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
+            component_asset_metafile: false,
             css_file_name_template: DEFAULT_CSS_FILE_NAME_TEMPLATE.to_string(),
             css_public_base: None,
             legal_comments: LegalComments::default(),
@@ -353,6 +356,8 @@ pub struct BuildResult {
     ///
     /// Populated when [`BuildOptions::component_asset_roots`] is non-empty.
     pub component_asset_files: Vec<ComponentAssetFile>,
+    /// Esbuild-compatible component asset metafile JSON when requested.
+    pub component_asset_metafile: Option<String>,
     /// Component client template payloads.
     /// Includes templates for all components encountered during parsing,
     /// including route-referenced components.
@@ -419,6 +424,7 @@ pub fn build(options: BuildOptions) -> Result<BuildResult, WebUIError> {
         protocol_bytes,
         css_files: raw.css_files,
         component_asset_files: raw.component_asset_files,
+        component_asset_metafile: raw.component_asset_metafile,
         component_templates: raw.component_templates,
         warnings: raw.warnings,
         stats,
@@ -492,6 +498,7 @@ struct RawBuildOutput {
     protocol: WebUIProtocol,
     css_files: Vec<(String, String)>,
     component_asset_files: Vec<ComponentAssetFile>,
+    component_asset_metafile: Option<String>,
     component_templates: Vec<ComponentTemplateArtifact>,
     warnings: Vec<Diagnostic>,
     fragment_count: usize,
@@ -641,8 +648,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     for fragment_id in synthetic_asset_fragments {
         fragment_records.remove(&fragment_id);
     }
-    let fragment_count: usize = fragment_records.values().map(|v| v.fragments.len()).sum();
-
     // Resolve projection only after template compilation. Ordinary path/inline
     // builds pay the same validation cost, while orchestrators can overlap
     // parser work with an in-flight client bundle through a pending source.
@@ -681,21 +686,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         let mut preloads = module_preload::resolve(&merged.entry_closures, &module_entry_srcs);
         protocol.module_preloads = std::mem::take(&mut preloads.hrefs);
         warnings.append(&mut preloads.warnings);
-    }
-
-    // Strict coverage applies only to scripted components that actually made
-    // it into the compiled protocol/route closure (i.e. their fragment was
-    // emitted). Scripted components discovered but never compiled into a
-    // route/fragment do not require manifest coverage.
-    if let Some(merged) = &merged_manifest {
-        let compiled_scripted_tags: Vec<&str> = component_templates
-            .iter()
-            .filter(|artifact| {
-                artifact.is_scripted && protocol.fragments.contains_key(&artifact.tag_name)
-            })
-            .map(|artifact| artifact.tag_name.as_str())
-            .collect();
-        projection::validate_coverage(&merged.components, &compiled_scripted_tags)?;
     }
 
     // Record build-wide strategies so the handler can decide rendering behavior.
@@ -776,17 +766,40 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.navigation_keys = navigation_keys;
     }
 
-    let component_asset_files = component_assets::render_component_assets(
+    let component_asset_graph = component_assets::render_component_assets(
         &protocol,
+        &options.entry,
         &options.component_asset_roots,
         &options.css_file_name_template,
+        options.component_asset_metafile,
     )?;
+    component_asset_graph.retain_entry_protocol(&mut protocol);
+    // Strict projection coverage applies to scripted components retained in the
+    // entry protocol. Asset-only roots use their static template payloads and
+    // never participate in protocol projection.
+    if let Some(merged) = &merged_manifest {
+        let entry_scripted_tags: Vec<&str> = component_templates
+            .iter()
+            .filter(|artifact| {
+                artifact.is_scripted && protocol.fragments.contains_key(&artifact.tag_name)
+            })
+            .map(|artifact| artifact.tag_name.as_str())
+            .collect();
+        projection::validate_coverage(&merged.components, &entry_scripted_tags)?;
+    }
+    let fragment_count = protocol
+        .fragments
+        .values()
+        .map(|fragments| fragments.fragments.len())
+        .sum();
+    let component_asset_files = component_asset_graph.files;
     validate_generated_file_names(&css_files, &component_asset_files)?;
 
     Ok(RawBuildOutput {
         protocol,
         css_files,
         component_asset_files,
+        component_asset_metafile: component_asset_graph.metafile,
         component_templates,
         warnings,
         fragment_count,
@@ -1638,8 +1651,14 @@ mod tests {
             .contains(r#""type":"webui-component-asset""#));
         assert!(result.component_asset_files[0]
             .content
+            .contains(r#""version":2"#));
+        assert!(result.component_asset_files[0]
+            .content
+            .contains(r#""kind":"root""#));
+        assert!(result.component_asset_files[0]
+            .content
             .contains(r#""templateFunctions":{"lazy-panel":"#));
-        assert!(result.protocol.fragments.contains_key("lazy-panel"));
+        assert!(!result.protocol.fragments.contains_key("lazy-panel"));
         assert!(
             !result
                 .protocol
@@ -1648,6 +1667,230 @@ mod tests {
                 .any(|key| key.starts_with("__webui_asset_root_")),
             "synthetic asset root fragments must not be serialized"
         );
+    }
+
+    #[test]
+    fn test_build_splits_shared_assets_and_keeps_them_out_of_protocol() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<entry-badge></entry-badge>"),
+            ("entry-badge.html", "<span>Entry</span>"),
+            (
+                "lazy-panel.html",
+                "<entry-badge></entry-badge><shared-detail></shared-detail><panel-only></panel-only>",
+            ),
+            (
+                "secondary-panel.html",
+                "<entry-badge></entry-badge><shared-detail></shared-detail><secondary-only></secondary-only>",
+            ),
+            ("shared-detail.html", "<p>Shared</p>"),
+            ("panel-only.html", "<p>Panel</p>"),
+            ("secondary-only.html", "<p>Secondary</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots =
+            vec!["lazy-panel".to_string(), "secondary-panel".to_string()];
+
+        let result = build(options).unwrap();
+
+        for tag in [
+            "lazy-panel",
+            "secondary-panel",
+            "shared-detail",
+            "panel-only",
+            "secondary-only",
+        ] {
+            assert!(
+                !result.protocol.fragments.contains_key(tag),
+                "asset-only fragment <{tag}> must not be serialized"
+            );
+            assert!(
+                !result.protocol.components.contains_key(tag),
+                "asset-only component <{tag}> must not be serialized"
+            );
+        }
+        assert!(result.protocol.fragments.contains_key("app-shell"));
+        assert!(result.protocol.components.contains_key("entry-badge"));
+
+        let names: Vec<&str> = result
+            .component_asset_files
+            .iter()
+            .map(|file| file.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "lazy-panel.webui.js",
+                "secondary-panel.webui.js",
+                "chunk-shared-detail.webui.js",
+            ]
+        );
+        let lazy = &result.component_asset_files[0].content;
+        assert!(lazy.contains(r#""version":2"#));
+        assert!(lazy.contains(r#""kind":"root""#));
+        assert!(lazy.contains(r#""externalComponents":["entry-badge"]"#));
+        assert!(lazy
+            .contains(r#""href":new URL("./chunk-shared-detail.webui.js",import.meta.url).href"#));
+        assert!(lazy.contains(r#"import("./chunk-shared-detail.webui.js")"#));
+        assert!(!lazy.contains(r#""templates":{"entry-badge":"#));
+        assert!(!lazy.contains(r#""templates":{"shared-detail":"#));
+
+        let chunk = &result.component_asset_files[2].content;
+        assert!(chunk.contains(r#""kind":"chunk""#));
+        assert!(chunk.contains(r#""components":["shared-detail"]"#));
+        assert!(chunk.contains(r#""templates":{"shared-detail":"#));
+    }
+
+    #[test]
+    fn test_component_asset_graph_groups_each_consumer_set() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            (
+                "root-a.html",
+                "<shared-ab></shared-ab><shared-all></shared-all><only-a></only-a>",
+            ),
+            (
+                "root-b.html",
+                "<shared-ab></shared-ab><shared-all></shared-all><only-b></only-b>",
+            ),
+            ("root-c.html", "<shared-all></shared-all><only-c></only-c>"),
+            ("shared-ab.html", "<p>AB</p>"),
+            ("shared-all.html", "<p>All</p>"),
+            ("only-a.html", "<p>A</p>"),
+            ("only-b.html", "<p>B</p>"),
+            ("only-c.html", "<p>C</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec![
+            "root-a".to_string(),
+            "root-b".to_string(),
+            "root-c".to_string(),
+        ];
+
+        let result = build(options).unwrap();
+        let names: Vec<&str> = result
+            .component_asset_files
+            .iter()
+            .map(|file| file.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "root-a.webui.js",
+                "root-b.webui.js",
+                "root-c.webui.js",
+                "chunk-shared-ab.webui.js",
+                "chunk-shared-all.webui.js",
+            ]
+        );
+        assert!(result.component_asset_files[0]
+            .content
+            .contains(r#""components":["only-a","root-a"]"#));
+        assert!(result.component_asset_files[3]
+            .content
+            .contains(r#""components":["shared-ab"]"#));
+        assert!(result.component_asset_files[4]
+            .content
+            .contains(r#""components":["shared-all"]"#));
+    }
+
+    #[test]
+    fn test_component_asset_graph_is_root_order_independent_with_hashed_imports() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("root-a.html", "<shared-detail></shared-detail>"),
+            ("root-b.html", "<shared-detail></shared-detail>"),
+            ("shared-detail.html", "<p>Shared</p>"),
+        ]);
+        let build_files = |roots: Vec<String>| {
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.component_asset_roots = roots;
+            options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+            build(options).unwrap().component_asset_files
+        };
+
+        let forward = build_files(vec!["root-a".to_string(), "root-b".to_string()]);
+        let reverse = build_files(vec!["root-b".to_string(), "root-a".to_string()]);
+
+        assert_eq!(forward, reverse);
+        let chunk_name = &forward[2].name;
+        assert!(chunk_name.starts_with("chunk-shared-detail-"));
+        assert!(forward[0].content.contains(chunk_name));
+        assert!(forward[1].content.contains(chunk_name));
+    }
+
+    #[test]
+    fn test_component_asset_metafile_describes_dynamic_import_graph() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("root-a.html", "<shared-detail></shared-detail>"),
+            ("root-b.html", "<shared-detail></shared-detail>"),
+            ("shared-detail.html", "<p>Shared</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["root-a".to_string(), "root-b".to_string()];
+        options.component_asset_metafile = true;
+
+        let result = build(options).unwrap();
+        let metafile = result.component_asset_metafile.as_deref().unwrap();
+        let value: serde_json::Value = serde_json::from_str(metafile).unwrap();
+        assert!(value["inputs"]
+            .get("webui:component/shared-detail")
+            .is_some());
+        assert_eq!(
+            value["outputs"]["root-a.webui.js"]["entryPoint"],
+            "webui:component/root-a"
+        );
+        assert_eq!(
+            value["outputs"]["root-a.webui.js"]["imports"][0]["path"],
+            "chunk-shared-detail.webui.js"
+        );
+        assert_eq!(
+            value["outputs"]["root-a.webui.js"]["imports"][0]["kind"],
+            "dynamic-import"
+        );
+        assert_eq!(
+            value["inputs"]["webui:component/root-a"]["imports"][0]["kind"],
+            "dynamic-import"
+        );
+        assert_eq!(
+            value["outputs"]["chunk-shared-detail.webui.js"]["bytes"],
+            result.component_asset_files[2].content.len()
+        );
+    }
+
+    #[test]
+    fn test_component_assets_reject_routes_with_stable_diagnostic() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                r#"<route path="/" component="app-shell" exact />"#,
+            ),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+
+        let error = build(options).unwrap_err();
+        match error {
+            WebUIError::ComponentAssets(diagnostic) => {
+                assert_eq!(
+                    diagnostic.error_code(),
+                    Some(webui_parser::codes::COMPONENT_ASSETS_WITH_ROUTES)
+                );
+                assert!(diagnostic.help_text().is_some());
+            }
+            other => panic!("expected route diagnostic, received {other}"),
+        }
     }
 
     #[test]
@@ -2109,6 +2352,33 @@ mod tests {
         assert!(!result.protocol.fragments.contains_key("unused-card"));
         let component = result.protocol.components.get("demo-card").unwrap();
         assert_eq!(component.hydration_keys, vec!["name"]);
+    }
+
+    #[test]
+    fn test_build_allows_asset_only_scripted_component_without_projection_coverage() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("lazy-panel.html", "<p>{{title}}</p>"),
+            ("lazy-panel.ts", "export {};"),
+        ]);
+        let manifest_json =
+            projection::test_support::build_valid_manifest_json(app.path(), &[], &[], &[]);
+        let manifest = projection::test_support::write_manifest(
+            app.path(),
+            "webui-projection.json",
+            &manifest_json,
+        );
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+        options.projection_manifests = vec![manifest.into()];
+
+        let result = build(options).unwrap();
+
+        assert_eq!(result.component_asset_files.len(), 1);
+        assert!(!result.protocol.fragments.contains_key("lazy-panel"));
+        assert!(!result.protocol.components.contains_key("lazy-panel"));
     }
 
     #[test]

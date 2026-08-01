@@ -40,6 +40,7 @@ describe('template registry helpers', () => {
     const fn = (): boolean => true;
     const template = {
       h: '<p></p>',
+      b: [{ h: '<span></span>' }],
       c: [[[0, ['ready']], 0, [[], 0]]],
     } as unknown as TemplateMeta;
 
@@ -68,6 +69,7 @@ describe('template registry helpers', () => {
     const fn = (): boolean => false;
     const template = {
       h: '<p></p>',
+      b: [{ h: '<span></span>' }],
       c: [[[0, ['ready']], 0, [[], 0]]],
     } as unknown as TemplateMeta;
 
@@ -115,7 +117,7 @@ describe('template registry helpers', () => {
           getElementById(id: string) {
             if (id !== 'webui-data') return null;
             return {
-              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>","c":[[[0,["ready"]],0,[[],0]]]}}}',
+              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[[],0]]]}}}',
               remove() { removed = true; },
             };
           },

@@ -1,10 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod output_paths;
+
 use anyhow::{Context, Result};
 use clap::Args;
 use expand_tilde::expand_tilde;
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use std::path::{Path, PathBuf};
 use super::common::*;
 use crate::utils::error::CliError;
 use crate::utils::output;
+use output_paths::OutputPathSet;
 
 #[derive(Args)]
 pub struct BuildArgs {
@@ -27,6 +29,10 @@ pub struct BuildArgs {
     /// Comma-separated root component tags to emit as static CDN-loadable assets
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
+
+    /// Write an esbuild-compatible component asset metafile
+    #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
+    pub metafile: Option<PathBuf>,
 
     /// Design token theme to validate against: a JSON file path or npm package name.
     /// Missing unresolved CSS tokens fail the build.
@@ -59,27 +65,38 @@ fn resolve_out(out: &Path) -> (PathBuf, OsString) {
 }
 
 fn validate_output_file_names(
+    out_dir: &Path,
     protocol_name: &std::ffi::OsStr,
     result: &webui::BuildResult,
+    metafile: Option<&Path>,
 ) -> Result<()> {
-    let mut names =
-        HashSet::with_capacity(1 + result.css_files.len() + result.component_asset_files.len());
-    names.insert(protocol_name.to_os_string());
+    let mut paths = OutputPathSet::with_capacity(
+        1 + result.css_files.len()
+            + result.component_asset_files.len()
+            + usize::from(metafile.is_some()),
+    );
+    paths.insert(&out_dir.join(protocol_name))?;
     for (name, _) in &result.css_files {
-        let name = OsString::from(name);
-        if !names.insert(name.clone()) {
+        if !paths.insert(&out_dir.join(name))? {
             anyhow::bail!(
                 "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
-                name.to_string_lossy()
+                name
             );
         }
     }
     for file in &result.component_asset_files {
-        let name = OsString::from(&file.name);
-        if !names.insert(name.clone()) {
+        if !paths.insert(&out_dir.join(&file.name))? {
             anyhow::bail!(
                 "output filename collision for '{}'. Adjust --asset-file-name-template to include [ext] or another unique asset-type segment.",
-                name.to_string_lossy()
+                file.name
+            );
+        }
+    }
+    if let Some(metafile) = metafile {
+        if !paths.insert(metafile)? {
+            anyhow::bail!(
+                "metafile output '{}' collides with another build output. Choose a distinct --metafile path.",
+                metafile.display()
             );
         }
     }
@@ -103,6 +120,13 @@ fn run(args: &BuildArgs) -> Result<()> {
     let out = expand_tilde(&args.out)
         .with_context(|| format!("Failed to expand output path: {}", args.out.display()))?
         .into_owned();
+    let metafile = args
+        .metafile
+        .as_deref()
+        .map(expand_tilde)
+        .transpose()
+        .with_context(|| "Failed to expand metafile path")?
+        .map(std::borrow::Cow::into_owned);
 
     let app = app_input
         .canonicalize()
@@ -135,6 +159,9 @@ fn run(args: &BuildArgs) -> Result<()> {
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
     }
+    if let Some(ref metafile) = metafile {
+        output::field("Metafile", &metafile.display());
+    }
     if let Some(ref theme) = args.theme {
         output::field("Theme", theme);
     }
@@ -142,13 +169,14 @@ fn run(args: &BuildArgs) -> Result<()> {
 
     let mut build_options = args.app_args.to_build_options(&app);
     build_options.component_asset_roots = args.emit_component_assets.clone();
+    build_options.component_asset_metafile = metafile.is_some();
     build_options.theme = args
         .theme
         .as_deref()
         .map(|theme| load_theme(theme, &app))
         .transpose()?;
     let result = webui::build(build_options).with_context(|| "Build failed")?;
-    validate_output_file_names(&protocol_name, &result)?;
+    validate_output_file_names(&out_dir, &protocol_name, &result, metafile.as_deref())?;
 
     fs::create_dir_all(&out_dir)
         .with_context(|| format!("Failed to create {}", out_dir.display()))?;
@@ -166,6 +194,19 @@ fn run(args: &BuildArgs) -> Result<()> {
                 out_dir.display()
             )
         })?;
+    }
+    if let Some(path) = &metafile {
+        let content = result.component_asset_metafile.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("component asset metafile was requested but not generated")
+        })?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
+        }
+        fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     }
     let stats = result.stats;
 
@@ -202,7 +243,10 @@ fn run(args: &BuildArgs) -> Result<()> {
         ));
     }
 
-    let files_written = 1 + stats.css_file_count + result.component_asset_files.len();
+    let files_written = 1
+        + stats.css_file_count
+        + result.component_asset_files.len()
+        + usize::from(metafile.is_some());
     output::success(&format!(
         "Wrote {}",
         console::style(Path::new(&protocol_name).display()).bold()
@@ -240,6 +284,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
         },
         out: out.to_path_buf(),
         emit_component_assets: Vec::new(),
+        metafile: None,
         theme: None,
     })
 }
@@ -349,6 +394,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -388,6 +434,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            metafile: Some(out_dir.path().join("component-assets.meta.json")),
             theme: None,
         })
         .unwrap();
@@ -408,7 +455,8 @@ mod tests {
 
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":1"#));
+        assert!(asset.contains(r#""version":2"#));
+        assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
         assert!(asset.contains(r#""components":["mail-message","mail-thread"]"#));
@@ -416,6 +464,11 @@ mod tests {
         assert!(asset.contains(r#""mail-thread":"#));
         assert!(asset.contains(r#""templateFunctions":{"mail-thread":"#));
         assert!(asset.contains("export default asset;"));
+
+        let metafile =
+            fs::read_to_string(out_dir.path().join("component-assets.meta.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&metafile).unwrap();
+        assert!(value["outputs"].get("mail-thread.webui.js").is_some());
     }
 
     #[test]
@@ -442,11 +495,231 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string(), "mail-thread".to_string()],
+            metafile: None,
             theme: None,
         });
 
         assert!(result.is_err());
         assert!(!out_dir.path().join("protocol.bin").exists());
+    }
+
+    #[test]
+    fn test_build_rejects_metafile_output_collision_before_writing() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let out_dir = TempDir::new().unwrap();
+        let collision = out_dir.path().join("lazy-panel.webui.js");
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: vec!["lazy-panel".to_string()],
+            metafile: Some(collision.clone()),
+            theme: None,
+        });
+
+        assert!(result.is_err());
+        assert!(!out_dir.path().join("protocol.bin").exists());
+        assert!(!collision.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_build_rejects_metafile_collision_through_output_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let root = TempDir::new().unwrap();
+        let real_out = root.path().join("dist");
+        let linked_out = root.path().join("dist-link");
+        fs::create_dir(&real_out).unwrap();
+        symlink(&real_out, &linked_out).unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: linked_out,
+            emit_component_assets: vec!["lazy-panel".to_string()],
+            metafile: Some(real_out.join("protocol.bin")),
+            theme: None,
+        });
+
+        assert!(result.is_err());
+        assert!(!real_out.join("protocol.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_build_resolves_parent_segments_after_symlinks_for_collisions() {
+        use std::os::unix::fs::symlink;
+
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let nested = target.join("nested");
+        let linked = root.path().join("linked");
+        fs::create_dir_all(&nested).unwrap();
+        symlink(&nested, &linked).unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: linked.join(".."),
+            emit_component_assets: vec!["lazy-panel".to_string()],
+            metafile: Some(target.join("protocol.bin")),
+            theme: None,
+        });
+
+        assert!(result.is_err());
+        assert!(!target.join("protocol.bin").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_build_resolves_dangling_output_symlinks_for_collisions() {
+        use std::os::unix::fs::symlink;
+
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let root = TempDir::new().unwrap();
+        let out = root.path().join("dist");
+        let metafile_alias = root.path().join("metafile-alias");
+        fs::create_dir(&out).unwrap();
+        symlink(out.join("protocol.bin"), &metafile_alias).unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out,
+            emit_component_assets: vec!["lazy-panel".to_string()],
+            metafile: Some(metafile_alias),
+            theme: None,
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_rejects_metafile_collision_through_hard_link() {
+        let app_dir = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+        ]);
+        let root = TempDir::new().unwrap();
+        let out = root.path().join("dist");
+        let protocol = out.join("protocol.bin");
+        let metafile = root.path().join("component-assets.meta.json");
+        fs::create_dir(&out).unwrap();
+        fs::write(&protocol, "original protocol").unwrap();
+        fs::hard_link(&protocol, &metafile).unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out,
+            emit_component_assets: vec!["lazy-panel".to_string()],
+            metafile: Some(metafile),
+            theme: None,
+        });
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_to_string(protocol).unwrap(), "original protocol");
+    }
+
+    #[test]
+    fn test_build_rejects_metafile_without_component_assets() {
+        let app_dir = create_app_dir(&[("index.html", "<p>Entry</p>")]);
+        let out_dir = TempDir::new().unwrap();
+
+        let result = run(&BuildArgs {
+            app_args: AppArgs {
+                app: app_dir.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: None,
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            out: out_dir.path().to_path_buf(),
+            emit_component_assets: Vec::new(),
+            metafile: Some(out_dir.path().join("meta.json")),
+            theme: None,
+        });
+
+        let error = result.unwrap_err();
+        assert!(format!("{error:#}").contains("requires at least one component_asset_root"));
+        assert!(!out_dir.path().join("protocol.bin").exists());
+        assert!(!out_dir.path().join("meta.json").exists());
     }
 
     #[test]
@@ -473,6 +746,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["fast-card".to_string()],
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -481,7 +755,8 @@ mod tests {
         assert!(asset_path.exists());
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":1"#));
+        assert!(asset.contains(r#""version":2"#));
+        assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""templateFunctionModule""#));
         assert!(!asset.contains(r#""templateFunctions""#));
@@ -513,6 +788,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: vec!["mail-thread".to_string()],
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -650,6 +926,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -736,6 +1013,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -819,6 +1097,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -873,6 +1152,7 @@ mod tests {
             },
             out: out_dir.path().to_path_buf(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: Some(
                 app_dir
                     .path()
@@ -914,6 +1194,7 @@ mod tests {
             },
             out: custom_path.clone(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: None,
         })
         .unwrap();
@@ -952,6 +1233,7 @@ mod tests {
             },
             out: nested.clone(),
             emit_component_assets: Vec::new(),
+            metafile: None,
             theme: None,
         })
         .unwrap();

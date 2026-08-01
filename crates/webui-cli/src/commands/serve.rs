@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod metafile;
 mod streaming_api;
 
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
@@ -30,6 +31,9 @@ use webui_protocol::WebUIProtocol;
 use super::common::*;
 use crate::utils::error::CliError;
 use crate::utils::output;
+#[cfg(test)]
+use metafile::temp_directory as metafile_temp_directory;
+use metafile::write_atomic;
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -74,6 +78,10 @@ pub struct ServeArgs {
     #[arg(long, value_delimiter = ',', value_name = "TAGS")]
     pub emit_component_assets: Vec<String>,
 
+    /// Write an esbuild-compatible component asset metafile after each successful build
+    #[arg(long, value_name = "PATH", requires = "emit_component_assets")]
+    pub metafile: Option<PathBuf>,
+
     /// Base path for sub-path deployment (e.g., `/commerce/`).
     /// Emits a `<base href>` tag and makes asset paths relative so the
     /// app can be served behind a reverse proxy under a sub-path.
@@ -87,6 +95,7 @@ struct ServePaths {
     app_dir: PathBuf,
     state_file: Option<PathBuf>,
     serve_dir: Option<PathBuf>,
+    metafile: Option<PathBuf>,
 }
 
 impl ServePaths {
@@ -164,10 +173,27 @@ impl ServePaths {
             ));
         }
 
+        let metafile = args
+            .metafile
+            .as_deref()
+            .map(expand_tilde)
+            .transpose()
+            .with_context(|| "Failed to expand metafile path")?
+            .map(std::borrow::Cow::into_owned)
+            .map(|path| {
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    std::env::current_dir().map(|current| current.join(path))
+                }
+            })
+            .transpose()?;
+
         Ok(Self {
             app_dir,
             state_file,
             serve_dir,
+            metafile,
         })
     }
 
@@ -279,6 +305,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         state_file: paths.state_file.clone(),
         token_file,
         component_asset_roots: args.emit_component_assets.clone(),
+        metafile: paths.metafile.clone(),
         base_path: args.base_path.clone(),
     };
 
@@ -302,6 +329,9 @@ fn run(args: &ServeArgs) -> Result<()> {
     output::field("CSS", &args.app_args.css);
     if !args.emit_component_assets.is_empty() {
         output::field("Component assets", &args.emit_component_assets.join(", "));
+    }
+    if let Some(ref metafile) = paths.metafile {
+        output::field("Metafile", &metafile.display());
     }
     if let Some(api_port) = args.api_port {
         output::field("API Port", &api_port);
@@ -455,6 +485,8 @@ struct RenderConfig {
     /// Parsed and validated on every build so their authoring errors surface in
     /// the dev server, even though they are not part of the initial SSR tree.
     component_asset_roots: Vec<String>,
+    /// Atomic metafile destination updated only after a successful build and render.
+    metafile: Option<PathBuf>,
     /// Base path for sub-path deployment (e.g., `/commerce/`).
     base_path: Option<String>,
 }
@@ -484,6 +516,7 @@ fn build_and_render(
     // errors in lazily loaded components (which are not in the SSR tree) fail
     // the dev build instead of being silently skipped.
     build_options.component_asset_roots = config.component_asset_roots.clone();
+    build_options.component_asset_metafile = config.metafile.is_some();
     let build_result = webui::build(build_options).with_context(|| "Build failed")?;
     let token_css = match config.token_file.as_ref() {
         Some(token_file) => Some(
@@ -535,6 +568,16 @@ fn build_and_render(
         None => writer.buf,
     };
 
+    if let Some(path) = &config.metafile {
+        let metafile = build_result
+            .component_asset_metafile
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!("component asset metafile was requested but not generated")
+            })?;
+        write_atomic(path, metafile)?;
+    }
+
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
     let component_assets: HashMap<String, String> = build_result
         .component_asset_files
@@ -551,6 +594,17 @@ fn build_and_render(
         token_css,
         warnings: build_result.warnings,
     })
+}
+
+fn watcher_ignore_paths(metafile: Option<&std::path::Path>) -> Vec<PathBuf> {
+    let mut ignore = webui_dev_server::default_ignore_paths();
+    if let Ok(out_dir) = std::env::current_dir() {
+        ignore.push(out_dir.join("dist"));
+    }
+    if let Some(metafile) = metafile {
+        ignore.extend(metafile::watch_ignore_paths(metafile));
+    }
+    ignore
 }
 
 fn create_handler(plugin: Option<Plugin>) -> WebUIHandler {
@@ -1372,6 +1426,7 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
     let mut seen: HashSet<String> = initial_warnings.into_iter().collect();
     let state_for_rebuild = Arc::clone(&state);
     let retry_state = Arc::clone(&state);
+    let metafile_ignore = render_config.metafile.clone();
     let tick_tx = webui_dev_server::spawn_rebuild_worker(livereload, move || {
         let warnings =
             rebuild_and_update_state(&render_config, &lr_for_inject, &state_for_rebuild)?;
@@ -1383,11 +1438,7 @@ fn start_file_watcher(config: WatcherConfig) -> Result<webui_dev_server::Watcher
             .is_ok_and(|state| state.rebuild_error.is_some())
     });
 
-    let mut ignore = webui_dev_server::default_ignore_paths();
-    // Also ignore the build output dir if it lives under a watched root.
-    if let Ok(out_dir) = std::env::current_dir() {
-        ignore.push(out_dir.join("dist"));
-    }
+    let ignore = watcher_ignore_paths(metafile_ignore.as_deref());
 
     spawn_watcher(
         WatchConfig {
@@ -1646,6 +1697,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1676,6 +1728,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1712,6 +1765,7 @@ mod tests {
                 state_file: Some(app.path().join("state.json")),
                 token_file: None,
                 component_asset_roots: Vec::new(),
+                metafile: None,
                 base_path: None,
             };
             build_and_render(&config, None).unwrap().html
@@ -1762,6 +1816,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let BuildRenderResult { html, .. } = build_and_render(&config, None).unwrap();
@@ -1802,6 +1857,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -1829,6 +1885,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let result = build_and_render(&config, None).unwrap();
@@ -1855,6 +1912,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let hmr = LiveReload::new(HMR_ENDPOINT);
@@ -2219,6 +2277,7 @@ mod tests {
             state_file: Some(app.path().join("state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let lr = LiveReload::new(HMR_ENDPOINT);
@@ -2239,6 +2298,7 @@ mod tests {
             app_dir: dir.path().to_path_buf(),
             state_file: Some(dir.path().join("state.json")),
             serve_dir: Some(dir.path().join("public")),
+            metafile: None,
         };
         let watched = paths.watch_paths();
         assert_eq!(watched.len(), 2);
@@ -2268,6 +2328,7 @@ mod tests {
             state_file: Some(manifest_dir.join("../../examples/app/hello-world/data/state.json")),
             token_file: None,
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let lr = LiveReload::new(HMR_ENDPOINT);
@@ -2570,6 +2631,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let state = Arc::new(Mutex::new(SharedState {
@@ -2638,6 +2700,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
         let state = Arc::new(Mutex::new(SharedState {
@@ -2702,6 +2765,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: Vec::new(),
+            metafile: None,
             base_path: None,
         };
 
@@ -2743,6 +2807,7 @@ mod tests {
             state_file: None,
             token_file: None,
             component_asset_roots: vec!["lazy-panel".to_string()],
+            metafile: None,
             base_path: None,
         };
         let result = build_and_render(&config, None).unwrap();
@@ -2756,6 +2821,66 @@ mod tests {
                 )
             });
         assert!(asset.contains("webui-component-asset"), "asset: {asset}");
+    }
+
+    #[test]
+    fn test_successful_rebuild_replaces_metafile_and_failure_preserves_it() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<div></div>"),
+            ("lazy-panel.html", "<p>First</p>"),
+        ]);
+        let metafile = app.path().join("component-assets.meta.json");
+        let config = RenderConfig {
+            app_args: AppArgs {
+                app: app.path().to_path_buf(),
+                entry: "index.html".to_string(),
+                css: CssStrategy::Link,
+                dom: DomStrategy::Shadow,
+                plugin: Some(Plugin::WebUI),
+                components: Vec::new(),
+                projection_manifests: Vec::new(),
+                asset_file_name_template: DEFAULT_ASSET_FILE_NAME_TEMPLATE.to_string(),
+                css_public_base: None,
+                legal_comments: LegalComments::Inline,
+            },
+            app_dir: app.path().to_path_buf(),
+            state_file: None,
+            token_file: None,
+            component_asset_roots: vec!["lazy-panel".to_string()],
+            metafile: Some(metafile.clone()),
+            base_path: None,
+        };
+
+        build_and_render(&config, None).unwrap();
+        let first = fs::read_to_string(&metafile).unwrap();
+        fs::write(
+            app.path().join("lazy-panel.html"),
+            "<p>Second and larger</p>",
+        )
+        .unwrap();
+        build_and_render(&config, None).unwrap();
+        let second = fs::read_to_string(&metafile).unwrap();
+        assert_ne!(first, second);
+
+        fs::write(
+            app.path().join("lazy-panel.html"),
+            r#"<if condition="ready"><p>Broken</if>"#,
+        )
+        .unwrap();
+        assert!(build_and_render(&config, None).is_err());
+        assert_eq!(fs::read_to_string(&metafile).unwrap(), second);
+        let ignored = watcher_ignore_paths(Some(&metafile));
+        assert!(ignored.contains(&metafile::watch_ignore_paths(&metafile)[1]));
+        assert!(!metafile_temp_directory(&metafile).exists());
+        assert!(
+            fs::read_dir(app.path()).unwrap().all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")),
+            "atomic writes must not leave temporary files"
+        );
     }
 
     #[test]
@@ -2793,6 +2918,7 @@ mod tests {
                 )]),
             }),
             component_asset_roots: roots,
+            metafile: None,
             base_path: None,
         };
 

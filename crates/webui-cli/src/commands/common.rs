@@ -65,6 +65,7 @@ impl AppArgs {
             plugin: self.plugin,
             components: self.components.clone(),
             component_asset_roots: Vec::new(),
+            component_asset_metafile: false,
             css_file_name_template: self.asset_file_name_template.clone(),
             css_public_base: self.css_public_base.clone(),
             legal_comments: self.legal_comments,

@@ -38,6 +38,9 @@ tokio = { workspace = true }
 tokio-stream = { workspace = true }
 log = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.20" }

@@ -2,9 +2,7 @@
 // Licensed under the MIT license.
 
 import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import nodePath from "node:path";
+import { buildWithCli } from "./build-fallback.js";
 import { resolve, platformKey } from "./platform.js";
 
 const require = createRequire(import.meta.url);
@@ -25,6 +23,8 @@ export interface BuildOptions {
   components?: string[];
   /** Root component tags emitted as static `.webui.js` ESM assets. */
   componentAssetRoots?: string[];
+  /** Generate and return an esbuild-compatible component asset metafile. */
+  componentAssetMetafile?: boolean;
   /** Emitted asset filename template for Link-mode CSS and component assets. Tokens: [name], [hash], [ext]. */
   cssFileNameTemplate?: string;
   /** Optional base URL/path prefix for Link-mode CSS hrefs. */
@@ -66,6 +66,8 @@ export interface BuildResult {
   cssFiles: string[];
   /** Static component asset files as alternating [filename, content, ...]. */
   componentAssetFiles: string[];
+  /** Esbuild-compatible component asset metafile JSON when requested. */
+  componentAssetMetafile?: string;
   /** Non-fatal build advisories as plain diagnostic strings. */
   warnings: string[];
   /** Build statistics. */
@@ -153,6 +155,7 @@ interface NativeAddon {
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];
+    componentAssetMetafile?: boolean;
     cssFileNameTemplate?: string;
     cssPublicBase?: string;
     projectionManifests?: string[];
@@ -256,77 +259,7 @@ export function build(options: BuildOptions): BuildResult {
       "[webui] Cannot build: no native addon or CLI binary available.",
     );
   }
-
-  const args = ["build", options.appDir ?? "."];
-  if (options.entry) args.push("--entry", options.entry);
-  if (options.css) args.push("--css", options.css);
-  if (options.plugin) args.push("--plugin", options.plugin);
-  if (options.components) {
-    for (const c of options.components) {
-      args.push("--components", c);
-    }
-  }
-  if (options.projectionManifests) {
-    for (const manifest of options.projectionManifests) {
-      args.push("--projection-manifest", manifest);
-    }
-  }
-  if (
-    options.projectionManifestObjects &&
-    options.projectionManifestObjects.length > 0
-  ) {
-    throw new Error(
-      "[webui] Inline projection manifest objects require the native addon; write the manifest and pass projectionManifests when using the CLI fallback."
-    );
-  }
-  if (options.componentAssetRoots && options.componentAssetRoots.length > 0) {
-    args.push("--emit-component-assets", options.componentAssetRoots.join(","));
-  }
-  if (options.cssFileNameTemplate) {
-    args.push("--css-file-name-template", options.cssFileNameTemplate);
-  }
-  if (options.cssPublicBase) {
-    args.push("--css-public-base", options.cssPublicBase);
-  }
-  if (options.theme) args.push("--theme", options.theme);
-  if (options.outDir) args.push("--out", options.outDir);
-
-  execFileSync(binPath, args, { stdio: "inherit" });
-
-  // CLI fallback does not return in-memory protocol.
-  if (options.outDir) {
-    const protocol = fs.readFileSync(nodePath.join(options.outDir, "protocol.bin"));
-    return {
-      protocol,
-      cssFiles: [],
-      componentAssetFiles: readComponentAssetFiles(options.outDir),
-      warnings: [],
-      stats: emptyStats(),
-    };
-  }
-
-  return {
-    protocol: Buffer.alloc(0),
-    cssFiles: [],
-    componentAssetFiles: [],
-    warnings: [],
-    stats: emptyStats(),
-  };
-}
-
-function readComponentAssetFiles(outDir: string): string[] {
-  const files: string[] = [];
-  const entries = fs.readdirSync(outDir, { withFileTypes: true });
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
-    if (!entry.isFile()) continue;
-    const name = entry.name;
-    const path = nodePath.join(outDir, name);
-    const content = fs.readFileSync(path, "utf8");
-    if (!content.startsWith("const asset=") || !content.includes("webui-component-asset")) continue;
-    files.push(name, content);
-  }
-  return files;
+  return buildWithCli(binPath, options);
 }
 
 // ── Runtime protocol API ─────────────────────────────────────────────
@@ -517,14 +450,3 @@ export function inspect(protocolData: Buffer): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-function emptyStats(): BuildStats {
-  return {
-    durationMs: 0,
-    fragmentCount: 0,
-    componentCount: 0,
-    cssFileCount: 0,
-    protocolSizeBytes: 0,
-    tokenCount: 0,
-  };
-}

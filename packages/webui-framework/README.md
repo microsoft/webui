@@ -251,17 +251,25 @@ import { defineComponentAssets } from '@microsoft/webui-framework/component-asse
 export const settingsAssets = defineComponentAssets({
   'settings-dialog': {
     asset: '/settings-dialog.webui.js',
+    modulepreload: ['/chunk-dialog-field.webui.js'],
     module: () => import('./settings-dialog/settings-dialog.js'),
     data: async () => await (await fetch('/settings-dialog-data.json')).json(),
   },
 });
 ```
 
-The asset module carries the component's template and style payload. Use
-`preload(tag)` to start template, module, and optional data work early, then
-`create(tag)` to create the element after template/module work is ready.
-Concurrent asset requests share one in-flight load and CSS module styles are
-deduped. `create(tag)` does not block on optional data by default. Use
+The strict version 2 asset graph keeps entry-owned templates external, leaves
+single-root dependencies inline, and emits dependencies shared by multiple
+roots once as flat dynamic chunks. Component assets cannot be combined with
+`<route>`. Load the normal entry bundle first so external prerequisites are
+registered.
+
+Use the CLI's esbuild-compatible `--metafile` to copy a root's shared chunk URLs
+into `modulepreload`. `preload(tag)` inserts deduplicated preload links before
+the root import, then starts template, module, and optional data work.
+Concurrent roots share in-flight chunk imports by resolved URL and CSS module
+styles are deduped. `create(tag)` creates the element after template/module work
+is ready and does not block on optional data by default. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting.
 
@@ -602,7 +610,7 @@ interface TemplateMeta {
   eg?: [event, [[handler, argSpecs, targetPath, usesEvent?]]][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
   sa?: string;                         // Adopted stylesheet specifier
-  sd?: boolean;                        // Shadow DOM flag for client-created
+  sd?: 1;                              // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
   tr?: string[];                       // Template state roots
   ta?: string[];                       // Host attributes aligned with tr

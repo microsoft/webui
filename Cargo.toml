@@ -66,6 +66,7 @@ time = { version = "0.3", features = ["local-offset", "formatting", "macros"] }
 which = "8.0.4"
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem",
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
 ] }

@@ -83,6 +83,7 @@ fn template_diagnostic(err: &anyhow::Error) -> Option<&Diagnostic> {
                 source: ParserError::Template(diag),
                 ..
             }) => Some(&**diag),
+            Some(WebUIError::ComponentAssets(diag) | WebUIError::Projection(diag)) => Some(&**diag),
             _ => None,
         })
 }

@@ -119,7 +119,9 @@ pub fn exit_code(err: &anyhow::Error) -> i32 {
         return match web {
             webui::WebUIError::Parse { .. }
             | webui::WebUIError::Serialization(_)
-            | webui::WebUIError::InvalidBuildOptions(_) => 65,
+            | webui::WebUIError::InvalidBuildOptions(_)
+            | webui::WebUIError::ComponentAssets(_)
+            | webui::WebUIError::Projection(_) => 65,
             webui::WebUIError::Io { .. } => 74,
             _ => 1,
         };
