@@ -16,7 +16,7 @@
     "start:test-server": "cargo run -p microsoft-webui-cli -- serve ./src --theme=@microsoft/webui-examples-theme --plugin=webui --projection-manifest ./dist/webui-projection.json --servedir ./dist --css style --port 3020 --api-port 3030",
     "start": "cargo xtask dev streaming",
     "test": "pnpm run test:server && playwright test",
-    "test:server": "tsx --test server/src/pacing.test.ts",
+    "test:server": "tsx --test server/src/*.test.ts",
     "test:update-snapshots": "playwright test --update-snapshots"
   },
   "devDependencies": {

@@ -384,6 +384,28 @@ function predefine(...tags: string[]): void {
   for (const tag of tags) definedTags.set(tag, class {});
 }
 
+/** Patches queued for late activation accumulate in a null-prototype object
+ *  (network-supplied keys must never reach `Object.prototype`), so copy them
+ *  into plain objects before strict deep-equality assertions. Keys are defined
+ *  rather than assigned so a `__proto__` key stays an own data property instead
+ *  of silently retargeting the copy's prototype and hiding a pollution bug. */
+function plainPatches(
+  patches: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return patches.map((patch) => {
+    const plain: Record<string, unknown> = {};
+    for (const key of Object.keys(patch)) {
+      Object.defineProperty(plain, key, {
+        value: patch[key],
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    return plain;
+  });
+}
+
 // ── Boundary DOM builders ────────────────────────────────────────────
 
 interface BuiltBoundary {
@@ -676,7 +698,7 @@ describe('streaming coordinator pipeline', () => {
     }
   });
 
-  test('merges updates that arrive before an island definition into activation state', async () => {
+  test('replays updates that arrive before an island definition after activation', async () => {
     const activations: Array<Record<string, unknown> | undefined> = [];
     const updates: Array<Record<string, unknown>> = [];
     const weather = element('weather-panel', {
@@ -708,15 +730,154 @@ describe('streaming coordinator pipeline', () => {
     defineTag('weather-panel');
     await flush();
     assert.deepEqual(activations, [{
-      status: 'ready',
+      status: 'loading',
       location: 'Seattle',
-      forecast: 'Rain',
     }]);
-    assert.deepEqual(updates, []);
+    assert.deepEqual(
+      plainPatches(updates),
+      [{
+        status: 'ready',
+        forecast: 'Rain',
+      }],
+    );
 
     enqueue(buildMarkerless(3, 1, {}).sentinel);
     await flush();
     assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('a root whose activation fails never receives later updates', async () => {
+    const previousError = console.error;
+    const errors: string[] = [];
+    console.error = (message?: unknown) => {
+      errors.push(String(message));
+    };
+    try {
+      const brokenUpdates: Array<Record<string, unknown>> = [];
+      const healthyUpdates: Array<Record<string, unknown>> = [];
+      const broken = element('broken-panel', {
+        hook() {
+          throw new Error('activation exploded');
+        },
+        setState(state) {
+          brokenUpdates.push(state);
+        },
+      });
+      const healthy = element('healthy-panel', {
+        hook() {},
+        setState(state) {
+          healthyUpdates.push(state);
+        },
+      });
+
+      enqueue(buildUpdatableBoundary(
+        0,
+        0,
+        [broken, healthy],
+        { state: { status: 'loading' } },
+      ).sentinel);
+      await flush();
+
+      defineTag('broken-panel');
+      defineTag('healthy-panel');
+      await flush();
+
+      assert.equal(
+        errors.some((message) =>
+          message.includes('late activation failed for <broken-panel>')
+        ),
+        true,
+        'the failing activation is reported',
+      );
+
+      enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+      await flush();
+
+      // `data-ws` is stripped on the throwing path too, so inferring liveness
+      // from its absence would deliver this update to an inert root forever.
+      assert.deepEqual(
+        brokenUpdates,
+        [],
+        'a root that never activated is not an update target',
+      );
+      assert.deepEqual(
+        plainPatches(healthyUpdates),
+        [{ status: 'ready' }],
+        'its healthy sibling still receives the patch',
+      );
+      assert.equal(__isHaltedForTests(), false);
+
+      enqueue(buildMarkerless(2, 1, {}).sentinel);
+      await flush();
+      assert.equal(__getLifecycleStateForTests().completed, true);
+      assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
+    } finally {
+      console.error = previousError;
+    }
+  });
+
+  test('one boundary mixing live and deferred roots updates both exactly once', async () => {
+    const liveUpdates: Array<Record<string, unknown>> = [];
+    const lateUpdates: Array<Record<string, unknown>> = [];
+    const live = element('live-panel', {
+      hook() {},
+      setState(state) {
+        liveUpdates.push(state);
+      },
+    });
+    const late = element('late-panel', {
+      hook() {},
+      setState(state) {
+        lateUpdates.push(state);
+      },
+    });
+    predefine('live-panel');
+
+    enqueue(buildUpdatableBoundary(
+      0,
+      0,
+      [live, late],
+      { state: { status: 'loading' } },
+    ).sentinel);
+    await flush();
+
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    assert.deepEqual(
+      plainPatches(liveUpdates),
+      [{ status: 'ready' }],
+      'the already-defined root updates immediately',
+    );
+    assert.deepEqual(lateUpdates, [], 'the deferred root waits');
+
+    defineTag('late-panel');
+    await flush();
+    assert.deepEqual(
+      plainPatches(lateUpdates),
+      [{ status: 'ready' }],
+      'the deferred root replays the queued patch exactly once on activation',
+    );
+    assert.deepEqual(
+      plainPatches(liveUpdates),
+      [{ status: 'ready' }],
+      'activating a sibling does not re-deliver the patch to a live root',
+    );
+
+    enqueue(buildStateUpdate(2, 0, { forecast: 'Sunny' }).sentinel);
+    await flush();
+    assert.deepEqual(
+      plainPatches(liveUpdates),
+      [{ status: 'ready' }, { forecast: 'Sunny' }],
+    );
+    assert.deepEqual(
+      plainPatches(lateUpdates),
+      [{ status: 'ready' }, { forecast: 'Sunny' }],
+      'both roots converge on the same final state',
+    );
+
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
   });
 
   test('updates nested roots retained behind an undefined outer island', async () => {
@@ -761,8 +922,8 @@ describe('streaming coordinator pipeline', () => {
     defineTag('outer-panel');
     await flush();
 
-    assert.deepEqual(outerActivations, [{ status: 'ready' }]);
-    assert.deepEqual(innerActivations, [{ status: 'ready' }]);
+    assert.deepEqual(outerActivations, [{ status: 'loading' }]);
+    assert.deepEqual(innerActivations, [{ status: 'loading' }]);
     assert.deepEqual(
       __streamingRetentionStateForTests(),
       [1, 2],
@@ -771,12 +932,120 @@ describe('streaming coordinator pipeline', () => {
 
     enqueue(buildStateUpdate(2, 0, { forecast: 'Sunny' }).sentinel);
     await flush();
-    assert.deepEqual(outerUpdates, [{ forecast: 'Sunny' }]);
-    assert.deepEqual(innerUpdates, [{ forecast: 'Sunny' }]);
+    assert.deepEqual(
+      plainPatches(outerUpdates),
+      [{ status: 'ready' }, { forecast: 'Sunny' }],
+    );
+    assert.deepEqual(
+      plainPatches(innerUpdates),
+      [{ status: 'ready' }, { forecast: 'Sunny' }],
+    );
 
     enqueue(buildMarkerless(3, 1, {}).sentinel);
     await flush();
     assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
+  });
+
+  test('a queued patch that throws degrades one root without stranding its retained descendants', async () => {
+    const previousError = console.error;
+    const errors: string[] = [];
+    console.error = (message?: unknown) => {
+      errors.push(String(message));
+    };
+    try {
+      const innerActivations: Array<Record<string, unknown> | undefined> = [];
+      const innerUpdates: Array<Record<string, unknown>> = [];
+      const inner = element('inner-panel', {
+        hook(state) {
+          innerActivations.push(state);
+        },
+        setState(state) {
+          innerUpdates.push(state);
+        },
+      });
+      // The late-defining outer island's own change handler throws while
+      // replaying the patch queued during its deferral.
+      const outer = element('outer-panel', {
+        children: [inner],
+        hook() {},
+        setState() {
+          throw new Error('boom');
+        },
+      });
+      predefine('inner-panel');
+
+      enqueue(buildUpdatableBoundary(
+        0,
+        0,
+        [outer],
+        { state: { status: 'loading' } },
+      ).sentinel);
+      await flush();
+      enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+      await flush();
+
+      defineTag('outer-panel');
+      await flush();
+
+      assert.equal(
+        errors.some((message) =>
+          message.includes('state update failed for <outer-panel>')
+        ),
+        true,
+        'the throwing root is reported as a state-update failure',
+      );
+      assert.deepEqual(
+        innerActivations,
+        [{ status: 'loading' }],
+        'the retained descendant still activates behind the failed patch',
+      );
+      assert.deepEqual(
+        plainPatches(innerUpdates),
+        [{ status: 'ready' }],
+        'the retained descendant still receives the queued patch',
+      );
+      assert.equal(hasWs(inner), false);
+      assert.equal(__isHaltedForTests(), false);
+
+      enqueue(buildMarkerless(2, 1, {}).sentinel);
+      await flush();
+      assert.equal(__getLifecycleStateForTests().completed, true);
+    } finally {
+      console.error = previousError;
+    }
+  });
+
+  test('a dormant compiler-owned host still receives its queued patch', async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    // A static host opts out of boundary-commit activation but must stay a
+    // valid update target: an explicit state write is exactly what wakes it,
+    // and the immediate commit path already writes to it.
+    const staticHost = element('static-panel', {
+      hook() {},
+      activationOutcome: 2,
+      setState(state) {
+        updates.push(state);
+      },
+    });
+
+    enqueue(buildUpdatableBoundary(
+      0,
+      0,
+      [staticHost],
+      { state: { status: 'loading' } },
+    ).sentinel);
+    await flush();
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    assert.deepEqual(updates, [], 'the patch waits while the tag is undefined');
+
+    defineTag('static-panel');
+    await flush();
+    assert.deepEqual(plainPatches(updates), [{ status: 'ready' }]);
+
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+    assert.equal(__getLifecycleStateForTests().completed, true);
   });
 
   test('rejects state updates for final boundaries', async () => {

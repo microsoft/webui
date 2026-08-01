@@ -35,7 +35,7 @@ export function activateRootsBetween(
     root,
     endMarker,
     state,
-    updates ? { updates, retainedRoots: updates.roots } : undefined,
+    updates ? { updates, countRetention: true } : undefined,
   );
   if (!failure) return;
   abandonDeferredRange(startMarker, endMarker);

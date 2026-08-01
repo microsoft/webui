@@ -1118,6 +1118,12 @@ capacity-one command channel, resolves boundary names once, and keeps the
 compiled protocol plus browser-facing bytes in Rust. Returning JSON keeps the
 buffered state path.
 
+If the backend refuses a stream request (non-success status such as a `503`
+from its own concurrency cap), no boundary was ever sent, so `webui serve` logs
+one warning and renders the page from fallback state rather than replacing the
+app with the upstream error body. A failure *after* the stream is live still
+fails the response, because boundaries already flushed cannot be rewound.
+
 Equivalent APIs exist for WebAssembly, Python (FFI), Go (cgo), and C#. For
 `Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.

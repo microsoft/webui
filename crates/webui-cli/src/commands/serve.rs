@@ -785,32 +785,36 @@ async fn render_page_response(
             .send()
             .await
         {
-            Ok(mut response) if streaming_api::is_stream(response.headers()) => {
+            Ok(response) if streaming_api::is_stream(response.headers()) => {
                 let status = response.status();
                 if !status.is_success() {
-                    return match response.body().await {
-                        Ok(body) => HttpResponse::build(status)
-                            .content_type("text/plain; charset=utf-8")
-                            .body(body),
-                        Err(error) => HttpResponse::BadGateway()
-                            .body(format!("API stream body error: {error}")),
-                    };
+                    // The upstream refused before writing a single record, so no
+                    // boundary has reached the browser and rule 19's "never
+                    // degrade a live stream to buffering" does not apply. Treat
+                    // it like any other pre-stream acquisition failure and
+                    // render the page from fallback state, rather than handing
+                    // the browser a raw upstream error body in place of the app.
+                    log_api_state_warning(&format!(
+                        "API stream unavailable (HTTP {status}); rendering with fallback state"
+                    ));
+                    fallback_state(context)
+                } else {
+                    let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
+                    let defaults = streaming_state_defaults(context, route_params);
+                    return streaming_api::render(
+                        backend,
+                        streaming_api::RenderConfig {
+                            protocol: proto,
+                            entry,
+                            route_path: route_path.to_owned(),
+                            plugin,
+                            body_inject: livereload_script,
+                            chunk_pool: Arc::clone(&context.chunk_pool),
+                        },
+                        defaults,
+                    )
+                    .await;
                 }
-                let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
-                let defaults = streaming_state_defaults(context, route_params);
-                return streaming_api::render(
-                    backend,
-                    streaming_api::RenderConfig {
-                        protocol: proto,
-                        entry,
-                        route_path: route_path.to_owned(),
-                        plugin,
-                        body_inject: livereload_script,
-                        chunk_pool: Arc::clone(&context.chunk_pool),
-                    },
-                    defaults,
-                )
-                .await;
             }
             Ok(mut response) => match response.body().await {
                 Ok(body) => match parse_api_state(&body) {
@@ -1464,6 +1468,7 @@ fn rebuild_and_update_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actix_web::body::to_bytes;
     use actix_web::http::StatusCode;
     use actix_web::test as actix_test;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2034,6 +2039,91 @@ mod tests {
             .collect();
         assert_eq!(*captured_targets.lock().unwrap(), expected);
         handle.stop(true).await;
+    }
+
+    fn start_stream_status_server(status: StatusCode) -> (u16, actix_web::dev::ServerHandle) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(move || {
+            App::new().default_service(web::to(move || async move {
+                HttpResponse::build(status)
+                    .content_type("application/x-webui-stream")
+                    .body("streaming render capacity is temporarily exhausted")
+            }))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        (port, handle)
+    }
+
+    fn streaming_fallback_context(api_port: u16) -> web::Data<ServerContext> {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw(
+                    "<html><body><main>fallback rendered</main></body></html>",
+                )],
+            },
+        );
+        let protocol = Arc::new(Protocol::new(WebUIProtocol::with_tokens(
+            fragments,
+            Vec::new(),
+        )));
+        web::Data::new(ServerContext {
+            state: Arc::new(Mutex::new(SharedState {
+                rendered_html: String::new(),
+                css_files: HashMap::new(),
+                component_assets: HashMap::new(),
+                protocol: Some(protocol),
+                state_data: Some(Value::Object(serde_json::Map::new())),
+                token_css: None,
+                rebuild_error: None,
+                entry: "index.html".to_string(),
+            })),
+            livereload: None,
+            assets_dir: None,
+            api_port: Some(api_port),
+            plugin: None,
+            base_path: None,
+            chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
+                4,
+                StreamingWriter::CHUNK_TARGET + 1024,
+            )),
+        })
+    }
+
+    /// A streaming API that refuses the request never produced a stream, so the
+    /// dev server must degrade to a buffered render exactly like it does for a
+    /// connection error — not hand the browser a raw upstream error body.
+    #[actix_web::test]
+    async fn test_streaming_api_error_status_degrades_to_a_rendered_page() {
+        for status in [
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let (port, handle) = start_stream_status_server(status);
+            let context = streaming_fallback_context(port);
+
+            let response = render_page_response(&context, "/", "/").await;
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "upstream {status} must not surface as the page status",
+            );
+            let body = to_bytes(response.into_body()).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(
+                body.contains("fallback rendered"),
+                "upstream {status} must still render the page, got: {body}",
+            );
+            handle.stop(true).await;
+        }
     }
 
     fn fallback_kind_for_accept(accept: &str) -> SpaFallbackKind {

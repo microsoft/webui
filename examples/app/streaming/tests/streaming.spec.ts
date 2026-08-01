@@ -117,6 +117,12 @@ test.describe('streaming priority hydration', () => {
     if (session) await release(page, session, 'all');
   });
 
+  test('identifies the streaming home page', async ({ page }) => {
+    await page.goto('/');
+
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Streaming Home');
+  });
+
   test('composer paints and becomes interactive before DOMContentLoaded', async ({ page }) => {
     await instrumentPage(page);
     // 'commit' resolves as soon as the navigation's response headers are
@@ -240,6 +246,24 @@ test.describe('streaming priority hydration', () => {
 
     // The skeleton branch is torn down, not merely hidden.
     await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toHaveCount(0);
+  });
+
+  test('applies a weather update that arrives before the deferred island activates', async ({ page }) => {
+    await page.route('**/weather-panel.js', async (route) => {
+      const response = await route.fetch();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.fulfill({ response });
+    });
+    const session = await gotoControlled(page);
+    await release(page, session, 'all');
+
+    await expect(page.locator('weather-panel [data-testid="weather-summary"]')).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator('weather-panel [data-testid="weather-panel"]')).toHaveAttribute(
+      'data-status',
+      'ready',
+    );
   });
 
   test('the weather island loads its own module from inside its boundary', async ({ page }) => {
@@ -397,3 +421,198 @@ test.describe('streaming priority hydration', () => {
     expect(responseEnd).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Reload recovery.
+ *
+ * A reload is the hardest case for streaming hydration: the previous stream is
+ * aborted mid-flight, the module graph is already warm in the HTTP cache, and a
+ * fresh document begins committing boundaries before its islands are defined.
+ * That reorders activation against delivery in ways a cold first load never
+ * does, which is exactly where a boundary can be left holding a root that never
+ * came alive.
+ *
+ * These tests assert the user-visible contract rather than internals: after the
+ * dust settles the weather island is `ready`, its skeleton branch is gone, the
+ * feed is fully painted, no boundary scaffolding survives, and nothing threw.
+ */
+test.describe('streaming reload recovery', () => {
+  // Every session this block opens, so teardown can release all of them. A
+  // gated session whose stream is abandoned mid-flight keeps its slot against
+  // `--max-concurrent-streams` until something releases its gates, so leaving
+  // even one behind slowly starves the shared test API.
+  const openedSessions = new WeakMap<Page, Set<string>>();
+
+  function trackSession(page: Page, session: string): string {
+    let sessions = openedSessions.get(page);
+    if (!sessions) {
+      sessions = new Set<string>();
+      openedSessions.set(page, sessions);
+    }
+    sessions.add(session);
+    return session;
+  }
+
+  test.afterEach(async ({ page }) => {
+    for (const session of openedSessions.get(page) ?? []) {
+      // A session the API never created 404s here, which is fine: nothing to
+      // release. Teardown must not fail the test it is cleaning up after.
+      await page.request.post(`/api/__test/${session}/all`).catch(() => undefined);
+    }
+  });
+
+  /** Fail loudly on any uncaught error or console error the page reports. */
+  function trackPageErrors(page: Page): string[] {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console: ${message.text()}`);
+    });
+    return errors;
+  }
+
+  /**
+   * Navigate and resolve once the document's stream is provably underway.
+   *
+   * `waitUntil: 'commit'` resolves on the CLI's response headers, which the CLI
+   * can emit before the API has seen the request and created the test session.
+   * Releasing a gate at that point races session creation and 404s. The
+   * composer ships in an immediate, ungated boundary, so its presence is proof
+   * the API is streaming this document and the session exists.
+   */
+  async function gotoStreaming(page: Page, session: string): Promise<void> {
+    trackSession(page, session);
+    await page.goto(`/?test=${session}`, { waitUntil: 'commit' });
+    await page.locator('message-composer').waitFor({ state: 'attached', timeout: 15_000 });
+  }
+
+  /** The full post-hydration contract for a healthy streamed document. */
+  async function expectFullyHydrated(page: Page): Promise<void> {
+    const panel = page.locator('weather-panel [data-testid="weather-panel"]');
+    await expect(panel).toHaveAttribute('data-status', 'ready', { timeout: 15_000 });
+    await expect(page.locator('weather-panel [data-testid="weather-summary"]')).toBeVisible();
+    await expect(page.locator('weather-panel [data-testid="weather-temperature"]')).not.toBeEmpty();
+    // The skeleton is torn down, not hidden: a surviving skeleton means the
+    // island re-rendered the branch the server had already replaced.
+    await expect(page.locator('weather-panel [data-testid="weather-skeleton"]')).toHaveCount(0);
+
+    // Every feed batch landed, so no checkpoint was dropped by the reload.
+    await expect(page.locator('feed-item')).toHaveCount(4);
+
+    // `data-ws` is the coordinator's work marker. Its absence here means every
+    // root it marked was resolved -- activated, or explicitly abandoned --
+    // rather than left parked forever waiting on a stream that is gone.
+    await expect(page.locator('[data-ws]')).toHaveCount(0);
+    await expect(page.locator('webui-hydrate')).toHaveCount(0);
+    await expect(page.locator('script[data-webui-boundary]')).toHaveCount(0);
+  }
+
+  // The island's module can arrive before, during, or after its boundary
+  // commits. The bug this locks in only appeared inside a narrow timing band,
+  // so sweep across it instead of trusting one delay to land there.
+  for (const delayMs of [0, 60, 200, 400]) {
+    test(`reloads cleanly with the island module delayed ${delayMs}ms`, async ({ page }) => {
+      const errors = trackPageErrors(page);
+      await page.route('**/weather-panel*.js', async (route) => {
+        const response = await route.fetch();
+        if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await route.fulfill({ response });
+      });
+
+      const first = `band-${delayMs}-${process.pid}-${sessionCounter++}`;
+      await gotoStreaming(page, first);
+      await release(page, first, 'all');
+      await expectFullyHydrated(page);
+
+      // Reload onto a fresh session so the second document is paced like a
+      // real one instead of replaying an already-drained session instantly.
+      await gotoStreaming(page, `${first}-r`);
+      await release(page, `${first}-r`, 'all');
+      await expectFullyHydrated(page);
+
+      expect(errors, 'reload produced page errors').toEqual([]);
+    });
+  }
+
+  test('recovers when a reload interrupts a stream that is still open', async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await instrumentPage(page);
+
+    // Commit the first document and let only feed batch 1 through, so the
+    // response is provably still open when the reload aborts it.
+    const first = `interrupt-${process.pid}-${sessionCounter++}`;
+    await gotoStreaming(page, first);
+    await release(page, first, 'feed');
+    await page.waitForFunction(() => window.__boundaryEvents.some((e) => e.sequence === 2));
+    expect(await page.evaluate(() => window.__hydrationCompleteFired)).toBe(false);
+
+    await gotoStreaming(page, `${first}-r`);
+    await release(page, `${first}-r`, 'all');
+
+    await page.waitForFunction(() => window.__hydrationCompleteFired, undefined, {
+      timeout: 15_000,
+    });
+    await expectFullyHydrated(page);
+    expect(errors, 'interrupted reload produced page errors').toEqual([]);
+  });
+
+  test('survives rapid consecutive reloads', async ({ page }) => {
+    const errors = trackPageErrors(page);
+    const base = `rapid-${process.pid}-${sessionCounter++}`;
+
+    // Navigate away repeatedly without ever letting a document finish. Each
+    // abort leaves the coordinator holding parked roots for a document that
+    // is being torn down -- the sequence behind the original blank-page report.
+    for (let index = 0; index < 5; index++) {
+      const session = trackSession(page, `${base}-${index}`);
+      await page.goto(`/?test=${session}`, { waitUntil: 'commit' });
+      // Open this document's gates immediately. The browser has already moved
+      // on, so nothing here changes what the client sees -- it just lets the
+      // orphaned server stream run to completion and give its slot back,
+      // instead of parking on a gate no one will ever open. A real server
+      // paces on timers, so it drains this way on its own.
+      await page.request.post(`/api/__test/${session}/all`).catch(() => undefined);
+    }
+
+    await gotoStreaming(page, `${base}-final`);
+    await release(page, `${base}-final`, 'all');
+
+    await expectFullyHydrated(page);
+    expect(errors, 'rapid reloads produced page errors').toEqual([]);
+  });
+
+  test('renders the app when the API refuses to open a stream', async ({ page }) => {
+    const errors = trackPageErrors(page);
+
+    // `?refuse=1` returns the identical 503 a saturated server sends. The CLI
+    // must degrade to a rendered page rather than proxying the upstream error
+    // body, which would surface as a text/plain error where the app should be.
+    const response = await page.goto('/?refuse=1');
+    expect(response?.status()).toBe(200);
+    expect(response?.headers()['content-type']).toContain('text/html');
+
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Streaming Home');
+    expect(await page.content()).not.toContain('streaming render capacity');
+
+    // The critical bundle still hydrates, so the shell is genuinely usable and
+    // not just static markup that happens to parse.
+    const input = page.locator('message-composer input.composer-input');
+    await expect(input).toBeVisible();
+    await input.fill('Usable even without a stream');
+    await page.locator('message-composer button.composer-submit').click();
+    await expect(page.locator('message-composer [data-testid="composer-posted"]')).toHaveText(
+      'Posted: Usable even without a stream',
+    );
+
+    // Degrading means no server data arrived, so the island stays in its
+    // loading branch. That is the honest state -- not an error, and not
+    // fabricated content.
+    await expect(page.locator('weather-panel [data-testid="weather-panel"]')).toHaveAttribute(
+      'data-status',
+      'loading',
+    );
+    await expect(page.locator('feed-item')).toHaveCount(0);
+    expect(errors, 'the degraded page produced errors').toEqual([]);
+  });
+});
+

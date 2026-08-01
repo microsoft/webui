@@ -77,9 +77,7 @@ export class TestControls {
     if (existing) {
       return existing;
     }
-    if (this.#sessions.size >= MAX_SESSIONS) {
-      return undefined;
-    }
+    this.#evictOldest();
     const session = new TestSession();
     this.#sessions.set(id, session);
     return session;
@@ -87,6 +85,32 @@ export class TestControls {
 
   existingSession(id: string): TestSession | undefined {
     return this.#sessions.get(id);
+  }
+
+  /**
+   * Keep the session table bounded without ever refusing a new run.
+   *
+   * Playwright reuses an already-running API across suite runs, so this process
+   * accumulates sessions for as long as a developer keeps it up. A hard cap
+   * would start rejecting every new session after a few hundred tests, which
+   * surfaces as unrelated tests failing on a 400 rather than as an obvious
+   * capacity error. Map iteration is insertion-ordered, so the first key is the
+   * oldest session.
+   */
+  #evictOldest(): void {
+    while (this.#sessions.size >= MAX_SESSIONS) {
+      const oldest = this.#sessions.keys().next();
+      if (oldest.done === true) {
+        return;
+      }
+      const evicted = this.#sessions.get(oldest.value);
+      this.#sessions.delete(oldest.value);
+      // An evicted session can still have a stream parked on one of its gates,
+      // and nothing can reach it to release it once it leaves the table. Open
+      // its gates on the way out so that stream finishes and gives back its
+      // slot against --max-concurrent-streams.
+      evicted?.releaseAll();
+    }
   }
 }
 

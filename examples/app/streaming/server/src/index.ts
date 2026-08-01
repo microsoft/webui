@@ -63,9 +63,11 @@ async function renderPage(
     sendJson(response, { state: STREAMING_STATE });
     return;
   }
-  if (activeStreams >= options.maxConcurrentStreams) {
-    response.setHeader('Content-Type', WEBUI_STREAM_MEDIA_TYPE);
-    sendText(response, 503, 'streaming render capacity is temporarily exhausted');
+  if (
+    activeStreams >= options.maxConcurrentStreams ||
+    (options.testControls && url.searchParams.get('refuse') === '1')
+  ) {
+    sendCapacityRefusal(response);
     return;
   }
 
@@ -101,6 +103,18 @@ async function renderPage(
     response.off('close', abortOnDisconnect);
     activeStreams--;
   }
+}
+
+/**
+ * Refuse a stream before any record is written.
+ *
+ * Shared by the real capacity guard and the `?refuse=1` test control so an
+ * end-to-end test observes the identical response a saturated server sends,
+ * rather than a parallel code path that could drift from it.
+ */
+function sendCapacityRefusal(response: ServerResponse): void {
+  response.setHeader('Content-Type', WEBUI_STREAM_MEDIA_TYPE);
+  sendText(response, 503, 'streaming render capacity is temporarily exhausted');
 }
 
 function resolveTestSession(url: URL, response: ServerResponse): TestSession | undefined {

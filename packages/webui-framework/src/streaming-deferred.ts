@@ -23,6 +23,7 @@ import {
   STREAMED_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
+import { applyStateUpdate } from './streaming-state.js';
 
 const ACTIVATION_ACTIVATED = 1;
 const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
@@ -54,14 +55,31 @@ const NO_BOUNDARY_STATE: unique symbol = Symbol();
 
 /** One boundary-owned shallow patch shared by every deferred root. */
 export interface PendingBoundaryUpdates {
+  /**
+   * Live roots only — a root joins on successful activation and never joins
+   * otherwise. `data-ws` cannot answer this: it is a work marker the
+   * coordinator strips on success, on hook throw, and on abandon alike, so its
+   * absence means "finished with", not "activated".
+   */
   readonly roots: Element[];
+  /**
+   * Marked roots seen by the checkpoint scan, including ones still deferred or
+   * destined to fail. Bounds retention pessimistically so a boundary cannot
+   * grow past its budget by activating roots after it was retained.
+   */
+  retained: number;
   pendingRoots: number;
   patch?: Record<string, unknown>;
 }
 
 export interface DeferredActivationOptions {
   updates?: PendingBoundaryUpdates;
-  retainedRoots?: Element[];
+  /**
+   * Set only by the checkpoint scan, which owns the boundary's retention
+   * budget. A late activation re-walks a subtree the scan already counted, so
+   * counting there again would charge the same roots twice.
+   */
+  countRetention?: boolean;
 }
 
 type PendingRoot = Element & {
@@ -82,13 +100,38 @@ function fail(reason: string): void {
   failureHandler(reason);
 }
 
-/** Activate one marked root or retain it behind one per-tag definition waiter. */
-export function activateElement(
+/**
+ * Deliver a replayed patch, halting when the target cannot accept one.
+ *
+ * Only successfully activated roots reach this, and `setState` is defined on
+ * `TemplateElement` itself, so a missing one means something registered a
+ * boundary activation hook without the reactive surface behind it. The
+ * coordinator has already promised this boundary an update it can no longer
+ * deliver, and a page that silently drops every future update is worse than a
+ * loud stop.
+ */
+function requireStateUpdate(
+  el: Element,
+  patch: Record<string, unknown>,
+): void {
+  if (applyStateUpdate(el, patch)) return;
+  fail(
+    `<${el.tagName.toLowerCase()}> activated without a setState() method`,
+  );
+}
+
+/**
+ * Activate one marked root or retain it behind one per-tag definition waiter.
+ *
+ * The caller has already confirmed the `STREAMED_HOST_ATTR` marker. Re-reading
+ * it here would double the attribute lookups on the boundary scan, which is the
+ * hottest loop in streaming hydration.
+ */
+function activateMarkedElement(
   el: Element,
   state: Record<string, unknown> | undefined,
   updates?: PendingBoundaryUpdates,
 ): number {
-  if (!el.hasAttribute(STREAMED_HOST_ATTR)) return ELEMENT_IGNORED;
   const tag = el.tagName.toLowerCase();
   if (tag.indexOf('-') === -1) return ELEMENT_IGNORED;
 
@@ -177,13 +220,20 @@ function activatePendingRoot(
   let updates: PendingBoundaryUpdates | undefined;
   try {
     updates = takePendingUpdates(el);
-    const state = mergePendingUpdates(takePendingState(el), updates);
+    const state = takePendingState(el);
     const outcome = invokeActivationHook(el, state);
     if (outcome === ACTIVATION_MISSING_TEMPLATE) {
       abandonDeferredDescendants(el);
       abandonDeferredElement(el);
       fail(`template metadata missing while activating <${tag}>`);
       return;
+    }
+    // Parent first, and before the descendant walk: this root's own patch may
+    // tear down the branch its retained descendants live in, and activating a
+    // root inside an already-discarded branch is worse than never reaching it.
+    if (updates) {
+      updates.roots.push(el);
+      if (updates.patch) requireStateUpdate(el, updates.patch);
     }
     const failure = activateDeferredTree(
       firstNodeWithin(el),
@@ -221,6 +271,11 @@ export function activateDeferredTree(
   state: Record<string, unknown> | undefined,
   options?: DeferredActivationOptions,
 ): string | null {
+  // Hoisted out of the walk: these are read once per node otherwise, and this
+  // loop runs over every node of every boundary.
+  const updates = options?.updates;
+  const countRetention =
+    options?.countRetention === true && updates !== undefined;
   let node = first;
   let resumeAfterDeferred: Node | null = null;
   let skippingDeferredDescendants = false;
@@ -231,17 +286,16 @@ export function activateDeferredTree(
       return `streaming boundary walk exceeds ${MAX_MARKER_SCAN_NODES} nodes`;
     }
     visited++;
-    if (node.nodeType === 1 /* ELEMENT_NODE */) {
-      const el = node as Element;
-      if (
-        options?.retainedRoots &&
-        el.hasAttribute(STREAMED_HOST_ATTR)
-      ) {
-        if (options.retainedRoots.length >= MAX_ELEMENTS_PER_BOUNDARY) {
-          return `updatable streaming boundary exceeds ${MAX_ELEMENTS_PER_BOUNDARY} roots`;
-        }
-        options.retainedRoots.push(el);
+    const isElement = node.nodeType === 1 /* ELEMENT_NODE */;
+    // One attribute read per element, shared by the retention count below and
+    // the activation call further down.
+    const marked = isElement &&
+      (node as Element).hasAttribute(STREAMED_HOST_ATTR);
+    if (countRetention && marked) {
+      if (updates.retained >= MAX_ELEMENTS_PER_BOUNDARY) {
+        return `updatable streaming boundary exceeds ${MAX_ELEMENTS_PER_BOUNDARY} roots`;
       }
+      updates.retained++;
     }
     if (
       skippingDeferredDescendants &&
@@ -251,34 +305,47 @@ export function activateDeferredTree(
       continue;
     }
     skippingDeferredDescendants = false;
-    if (node.nodeType === 1 /* ELEMENT_NODE */) {
+    if (isElement) {
       if (elements >= MAX_ELEMENTS_PER_BOUNDARY) {
         return `streaming boundary exceeds ${MAX_ELEMENTS_PER_BOUNDARY} elements`;
       }
       elements++;
-      try {
-        const outcome = activateElement(
-          node as Element,
-          state,
-          options?.updates,
-        );
-        if (outcome === ACTIVATION_MISSING_TEMPLATE) {
-          return `template metadata missing while activating <${(
-            node as Element
-          ).tagName.toLowerCase()}>`;
+      // An unmarked element is never a streaming root, so it never needs the
+      // call at all -- and in a typical boundary most elements are unmarked.
+      if (marked) {
+        const el = node as Element;
+        try {
+          const outcome = activateMarkedElement(el, state, updates);
+          if (outcome === ACTIVATION_MISSING_TEMPLATE) {
+            return `template metadata missing while activating <${
+              el.tagName.toLowerCase()
+            }>`;
+          }
+          if (outcome === ELEMENT_LIMIT_FAILURE) {
+            return `pending undefined root count exceeds ${MAX_PENDING_UNDEFINED_ROOTS}`;
+          }
+          if (outcome === ELEMENT_DEFERRED) {
+            resumeAfterDeferred = nextAfterSubtreeWithin(node, root);
+            skippingDeferredDescendants = true;
+          } else if (
+            updates &&
+            (outcome === ACTIVATION_ACTIVATED ||
+              outcome === ACTIVATION_STATIC_HOST_OPT_OUT)
+          ) {
+            // Joining here, on a known-good outcome, is what keeps a failed or
+            // ignored element out of the update set for the life of the page.
+            updates.roots.push(el);
+            // Replayed rather than merged into hydration state: `$hydrate` wires
+            // bindings against the server's bytes without evaluating them, so
+            // seeding a post-render value first would bind the old branch while
+            // the element believed it held the new one.
+            if (updates.patch) {
+              requireStateUpdate(el, updates.patch);
+            }
+          }
+        } catch (error) {
+          reportActivationFailure(el.tagName.toLowerCase(), error);
         }
-        if (outcome === ELEMENT_LIMIT_FAILURE) {
-          return `pending undefined root count exceeds ${MAX_PENDING_UNDEFINED_ROOTS}`;
-        }
-        if (outcome === ELEMENT_DEFERRED) {
-          resumeAfterDeferred = nextAfterSubtreeWithin(node, root);
-          skippingDeferredDescendants = true;
-        }
-      } catch (error) {
-        reportActivationFailure(
-          (node as Element).tagName.toLowerCase(),
-          error,
-        );
       }
     }
     node = nextWithinRoot(node, root);
@@ -358,16 +425,6 @@ function takePendingUpdates(el: Element): PendingBoundaryUpdates | undefined {
   delete store[PENDING_BOUNDARY_UPDATES];
   if (updates) updates.pendingRoots--;
   return updates;
-}
-
-function mergePendingUpdates(
-  state: Record<string, unknown> | undefined,
-  updates: PendingBoundaryUpdates | undefined,
-): Record<string, unknown> | undefined {
-  if (!updates?.patch) return state;
-  return state
-    ? { ...state, ...updates.patch }
-    : { ...updates.patch };
 }
 
 function invokeActivationHook(

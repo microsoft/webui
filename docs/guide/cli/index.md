@@ -296,6 +296,14 @@ Returning JSON retains the ordinary buffered behavior. See
 [`<boundary>`](/guide/concepts/directives/boundary) and
 `examples/app/streaming`.
 
+If the backend is unreachable, returns state the server cannot parse, or answers
+a stream request with a non-success status such as `503` from its concurrency
+cap, `webui serve` logs one warning and still renders the page from fallback
+state. A refused request never started a stream, so it degrades the same way an
+unreachable backend does instead of replacing your app with the upstream error
+body. A failure that occurs *after* the stream is live still fails the response,
+because boundaries already sent to the browser cannot be rewound.
+
 After generated assets and `--servedir` files miss, route fallback is based on
 the `Accept` header. Requests that explicitly accept `text/html` or
 `application/xhtml+xml` receive the SSR document, and requests that explicitly

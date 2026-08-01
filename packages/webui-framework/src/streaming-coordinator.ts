@@ -47,6 +47,7 @@ import {
   RECORD_KIND_UPDATABLE_CHECKPOINT,
 } from './streaming-protocol.js';
 import type { BoundaryBootstrap } from './streaming-protocol.js';
+import { applyStateUpdate } from './streaming-state.js';
 
 const MAX_QUEUED_BOUNDARIES = 512;
 const MAX_UPDATABLE_BOUNDARIES = 128;
@@ -78,10 +79,6 @@ let coordinatorGeneration = 0;
 let retainedUpdateRoots = 0;
 
 type UpdatableBoundary = PendingBoundaryUpdates;
-
-type StateRoot = Element & {
-  setState?: (state: Record<string, unknown>) => void;
-};
 
 const updatableBoundaries = new Map<number, UpdatableBoundary>();
 
@@ -357,7 +354,7 @@ function commitCheckpoint(
     applyBoundaryBootstrap(bootstrap);
     if (range.start && range.end) {
       const boundary: UpdatableBoundary | undefined = updatable
-        ? { roots: [], pendingRoots: 0 }
+        ? { roots: [], retained: 0, pendingRoots: 0 }
         : undefined;
       activateRootsBetween(
         range.start,
@@ -367,7 +364,11 @@ function commitCheckpoint(
       );
       if (boundary) retainUpdatableBoundary(target, boundary);
     } else if (updatable) {
-      retainUpdatableBoundary(target, { roots: [], pendingRoots: 0 });
+      retainUpdatableBoundary(target, {
+        roots: [],
+        retained: 0,
+        pendingRoots: 0,
+      });
     }
     committed = true;
   } catch (error) {
@@ -400,14 +401,14 @@ function retainUpdatableBoundary(
     );
   }
   if (
-    retainedUpdateRoots + boundary.roots.length >
+    retainedUpdateRoots + boundary.retained >
     MAX_RETAINED_UPDATE_ROOTS
   ) {
     throw new Error(
       `retained update root count exceeds ${MAX_RETAINED_UPDATE_ROOTS}`,
     );
   }
-  retainedUpdateRoots += boundary.roots.length;
+  retainedUpdateRoots += boundary.retained;
   updatableBoundaries.set(target, boundary);
 }
 
@@ -431,21 +432,12 @@ function commitStateUpdate(
       }
     }
     for (let i = 0; i < boundary.roots.length; i++) {
-      const root = boundary.roots[i] as StateRoot;
-      if (root.hasAttribute('data-ws')) continue;
-      // Mirrors `reportActivationFailure`: an application component's own
-      // change handler throwing degrades that root only. Halting here would
-      // let one app-level bug strand every later boundary on the page.
-      try {
-        if (typeof root.setState !== 'function') {
-          throw new Error('no setState() method');
-        }
-        root.setState(patch);
-      } catch (error) {
-        console.error(
-          `[WebUI] streaming: state update failed for <${
+      const root = boundary.roots[i];
+      if (!applyStateUpdate(root, patch)) {
+        throw new Error(
+          `<${
             root.tagName.toLowerCase()
-          }>: ${streamingErrorMessage(error)}`,
+          }> activated without a setState() method`,
         );
       }
     }

@@ -1197,6 +1197,16 @@ and query unchanged. Encoded slashes such as `%2F` therefore remain inside one
 route segment, and encoded spaces, percent signs, and UTF-8 bytes reach
 development backends with the same representation used by production clients.
 
+Backend failures degrade uniformly. Whether the API is unreachable, returns a
+body that is not parseable state, or answers a stream request with a non-success
+status, `webui serve` logs one warning and renders the page from fallback state.
+A refused stream request is an *acquisition* failure — no record has been written
+and no boundary has reached the browser — so it is handled like any other
+pre-stream failure rather than surfacing the upstream error body in place of the
+application. This is distinct from rule 19: once a stream is live, a mid-stream
+transport failure still fails the response, because already-committed boundaries
+cannot be rewound into a buffered render.
+
 After generated assets and `--servedir` files miss, `webui serve` uses request
 intent rather than path punctuation to decide whether to run the SPA route
 fallback. Fallback runs only when `Accept` explicitly includes `text/html` or
@@ -1819,7 +1829,19 @@ contract rather than introduce a parallel one.
     and root references immediately. An updatable checkpoint retains only its
     bounded root array until the terminal record or fatal cleanup, when all
     update targets and queued state are released together. Final boundaries pay
-    no target-map or root-retention cost.
+    no target-map or root-retention cost. That array holds **live roots only**:
+    a root joins when it activates successfully, so one that was ignored,
+    failed, or was abandoned is never an update target and its element is not
+    kept alive by the boundary. Liveness is never inferred from `data-ws`,
+    which rule 9 strips on rejection and abandonment as well as on activation,
+    and which would therefore mark an inert root as ready to receive. The
+    retention budget is charged separately, at scan time, against every marked
+    root the checkpoint saw, so activating a root after its boundary was
+    retained can never grow that boundary past its bound. Delivering an update
+    to a live root is consequently an array walk with no DOM access. Because
+    `setState()` is defined on `TemplateElement` itself, a live root missing it
+    is a framework invariant violation and halts the stream rather than
+    reporting the same failure on every later update.
 13. **Bounded terminal failure.** On malformed, truncated, or overflow input
     the coordinator releases every discoverable scaffold and pending reference
     within its configured bounds, balances the pending-boundary count, and
@@ -1836,12 +1858,20 @@ contract rather than introduce a parallel one.
     `setState()` path on each target root. It does not rerun
     `$activateDeferredSSR()`, template wiring, or `hydratedCallback()`. If the
     target class is not defined or its boundary is still activating, one
-    bounded shallow patch is queued per target and applied immediately after
-    activation. A state update may reference only an earlier updatable
+    bounded shallow patch is queued per target and replayed through that same
+    `setState()` path immediately after the root activates - never merged into
+    the state the root hydrates from. Hydration wires bindings against the
+    server's bytes without evaluating them, so seeding a post-render value
+    first would bind the branch the DOM actually shows while the element
+    believed it held the new one, and the next equal-valued write would skip
+    the patch entirely. A root retained behind an undefined ancestor is
+    patched after its own activation, parent first.
+    A state update may reference only an earlier updatable
     checkpoint; forward references and updates to final checkpoints are fatal
     protocol errors. An application component whose `setState()` or change
     handler throws degrades that root alone: the failure is reported and the
-    walk continues to the remaining targets, matching activation, because one
+    walk continues to the remaining targets, including the retained
+    descendants of a throwing root, because one
     component's bug must never strand later boundaries.
 
 **Compile time**
