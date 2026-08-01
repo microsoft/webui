@@ -3384,9 +3384,10 @@ await build({
 
 The package serializes inline objects once at the NAPI boundary. NAPI receives
 paths plus `{path, json}` records and performs all validation on the Rust side;
-it never depends on compiler or esbuild packages. The CLI fallback supports
-paths and rejects inline objects with an actionable message rather than
-silently writing files.
+it never depends on compiler or esbuild packages. The Node API requires the
+platform-specific native addon and propagates resolution or loading failures.
+It never silently invokes the CLI; filesystem builds use `webui build`
+explicitly.
 
 #### WASM
 

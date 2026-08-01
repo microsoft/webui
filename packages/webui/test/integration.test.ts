@@ -14,7 +14,7 @@ import {
   Protocol,
 } from '@microsoft/webui';
 import type { ComponentTemplatesResponse } from '@microsoft/webui';
-import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -82,14 +82,6 @@ before(() => {
 
 after(() => {
   rmSync(appDir, { recursive: true, force: true });
-});
-
-test('published package includes every module imported by its root entry', () => {
-  const packageJson = JSON.parse(
-    readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
-  ) as { files?: string[] };
-  assert.ok(packageJson.files?.includes('dist/build-fallback.*'));
-  assert.ok(packageJson.files?.includes('dist/component-assets.*'));
 });
 
 describe('build', () => {

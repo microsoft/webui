@@ -2,8 +2,7 @@
 // Licensed under the MIT license.
 
 import { createRequire } from "node:module";
-import { buildWithCli } from "./build-fallback.js";
-import { resolve, platformKey } from "./platform.js";
+import { packageName, platformKey, resolve } from "./platform.js";
 
 const require = createRequire(import.meta.url);
 
@@ -29,8 +28,6 @@ export interface BuildOptions {
   cssFileNameTemplate?: string;
   /** Optional base URL/path prefix for Link-mode CSS hrefs. */
   cssPublicBase?: string;
-  /** Output directory (used by CLI fallback for build-to-disk). */
-  outDir?: string;
   /** Design token theme: a JSON file path or npm package name. */
   theme?: string;
   /** Projection manifest file paths, merged in order. */
@@ -199,39 +196,44 @@ interface NativeStreamingSession {
   finish(stateJson: string): Buffer;
 }
 
-let addon: NativeAddon | null = null;
-let fallbackWarned = false;
+let addon: NativeAddon | undefined;
 
-function loadAddon(): NativeAddon | null {
+function loadAddon(): NativeAddon {
   if (addon) return addon;
 
   const addonPath = resolve("addon");
-  if (addonPath) {
-    try {
-      // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
-      if (addonPath.endsWith(".node")) {
-        addon = require(addonPath) as NativeAddon;
-      } else {
-        const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
-        process.dlopen(m, addonPath);
-        addon = m.exports;
-      }
-      return addon;
-    } catch {
-      // Fall through to WASM.
-    }
+  if (!addonPath) {
+    throw new Error(
+      `[webui] Native addon not found for ${platformKey()}. ${addonInstallHelp()} ` +
+        'The Node API does not fall back to the CLI; invoke "webui" explicitly for filesystem builds.',
+    );
   }
-  return null;
+
+  try {
+    // .node files load via require(), native libs (.dylib/.so/.dll) via dlopen
+    if (addonPath.endsWith(".node")) {
+      addon = require(addonPath) as NativeAddon;
+    } else {
+      const m: { exports: NativeAddon } = { exports: {} as NativeAddon };
+      process.dlopen(m, addonPath);
+      addon = m.exports;
+    }
+  } catch (cause) {
+    throw new Error(
+      `[webui] Failed to load native addon at ${addonPath}. ${addonInstallHelp()}`,
+      { cause },
+    );
+  }
+  return addon;
 }
 
-function warnFallback(): void {
-  if (fallbackWarned) return;
-  fallbackWarned = true;
-  console.warn(
-    `[webui] Native addon not available for ${platformKey()}. ` +
-      `Using WASM fallback — performance may be degraded.\n` +
-      `Install the platform-specific package for optimal performance.`,
-  );
+function addonInstallHelp(): string {
+  try {
+    return `Reinstall ${packageName()} or set WEBUI_ADDON_PATH to a compatible addon.`;
+  } catch (error) {
+    const platformError = error instanceof Error ? error.message : String(error);
+    return `${platformError} Set WEBUI_ADDON_PATH to a compatible addon.`;
+  }
 }
 
 // ── Build API ────────────────────────────────────────────────────────
@@ -239,27 +241,21 @@ function warnFallback(): void {
 /** Build a WebUI application from an app directory. */
 export function build(options: BuildOptions): BuildResult {
   const native = loadAddon();
-  if (native?.build) {
-    const { projectionManifestObjects, ...nativeOptions } = options;
-    return native.build({
-      ...nativeOptions,
-      projectionManifestObjects: projectionManifestObjects?.map(
-        ({ path, manifest }) => ({
-          path,
-          json: JSON.stringify(manifest),
-        })
-      ),
-    });
-  }
-
-  // Fallback: shell out to CLI binary.
-  const binPath = resolve("bin");
-  if (!binPath) {
+  if (typeof native.build !== "function") {
     throw new Error(
-      "[webui] Cannot build: no native addon or CLI binary available.",
+      `[webui] Native addon is incompatible: build() is required. ${addonInstallHelp()}`,
     );
   }
-  return buildWithCli(binPath, options);
+  const { projectionManifestObjects, ...nativeOptions } = options;
+  return native.build({
+    ...nativeOptions,
+    projectionManifestObjects: projectionManifestObjects?.map(
+      ({ path, manifest }) => ({
+        path,
+        json: JSON.stringify(manifest),
+      })
+    ),
+  });
 }
 
 // ── Runtime protocol API ─────────────────────────────────────────────
@@ -274,12 +270,10 @@ export class Protocol {
   readonly #native: NativeProtocol;
 
   constructor(protocolData: Buffer, options?: ProtocolOptions) {
-    const native = loadAddon();
-    const NativeProtocol = native?.Protocol;
+    const NativeProtocol = loadAddon().Protocol;
     if (!NativeProtocol) {
-      warnFallback();
       throw new Error(
-        "[webui] Native addon is incompatible: Protocol is required.",
+        `[webui] Native addon is incompatible: Protocol is required. ${addonInstallHelp()}`,
       );
     }
     this.#native = new NativeProtocol(protocolData, options?.plugin);
@@ -443,10 +437,12 @@ function toStateJson(state: object | string): string {
 /** Inspect protocol bytes and return JSON representation. */
 export function inspect(protocolData: Buffer): string {
   const native = loadAddon();
-  if (native?.inspect) {
-    return native.inspect(protocolData);
+  if (typeof native.inspect !== "function") {
+    throw new Error(
+      `[webui] Native addon is incompatible: inspect() is required. ${addonInstallHelp()}`,
+    );
   }
-  throw new Error("[webui] inspect() requires the native addon.");
+  return native.inspect(protocolData);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

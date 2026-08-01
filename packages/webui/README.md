@@ -10,7 +10,11 @@ High-performance server-side rendering framework. Compiles HTML templates into a
 npm install @microsoft/webui
 ```
 
-The package automatically installs the correct platform-specific native binary for your OS and architecture (Windows, macOS, Linux - x64 and arm64).
+The package automatically installs the correct platform-specific native binary
+for your OS and architecture (Windows, macOS, Linux - x64 and arm64). The Node
+API requires that native addon and surfaces loading errors directly. It never
+falls back to a subprocess. Use the `webui` CLI explicitly for filesystem
+builds.
 
 ## Quick start
 
@@ -44,7 +48,6 @@ const result = build({
   cssFileNameTemplate: "[name]-[hash].[ext]", // CSS/component asset filename template
   cssPublicBase: "https://cdn.example.com/assets", // Optional CDN/public href base
   theme: "./themes/brand.json", // Optional design-token theme validation
-  outDir: "./dist",      // Output directory for CLI fallback
 });
 
 // result.protocol  - Buffer containing the compiled protocol
