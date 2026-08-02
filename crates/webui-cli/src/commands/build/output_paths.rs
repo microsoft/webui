@@ -122,6 +122,9 @@ fn file_identity(path: &Path) -> std::io::Result<Option<FileIdentity>> {
 }
 
 #[cfg(windows)]
+// The workspace denies `unsafe_code` by default; this Windows-only function is the sole
+// place in `webui-cli` that needs it, to call `GetFileInformationByHandle` via `windows-sys`.
+#[allow(unsafe_code)]
 fn file_identity(path: &Path) -> std::io::Result<Option<FileIdentity>> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
