@@ -76,7 +76,7 @@ function seedAssetStyleSet(): void {
 
 function parseImportMap(scriptMarkup: string): Record<string, string> {
   const trimmed = scriptMarkup.trim();
-  if (!trimmed.startsWith('<script')) {
+  if (!trimmed.startsWith('<script type="importmap"')) {
     throw new Error('[WebUI] Component asset templateStyles entry must be a <script type="importmap"> tag.');
   }
   const openTagEnd = trimmed.indexOf('>');

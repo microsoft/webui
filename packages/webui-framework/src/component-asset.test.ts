@@ -109,6 +109,51 @@ describe('component asset helpers', () => {
     }
   });
 
+  test('manifest preload rejects non-importmap template styles', async () => {
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      createElement() {
+        return { type: '', nonce: '', textContent: '' };
+      },
+      getElementById() {
+        return null;
+      },
+      head: {
+        appendChild(script: ScriptMock) {
+          return script;
+        },
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'invalid-style-card': {
+          asset: assetObjectModule({
+            ...componentAsset({
+              'invalid-style-card': { h: '<p>Invalid style</p>' },
+            }),
+            templateStyles: [
+              '<script type="application/json">{"imports":{"invalid-style-card":"data:text/css,body%7B%7D"}}</script>',
+            ],
+          }),
+        },
+      });
+
+      await assert.rejects(
+        assets.preload('invalid-style-card').asset,
+        /must be a <script type="importmap"> tag/,
+      );
+      assert.equal(window.__webui?.templates, undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
   test('manifest preload registers template functions from the asset module', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
