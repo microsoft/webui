@@ -312,9 +312,9 @@ trace IDs.
 
 ### Reserved `$webui` state channel
 
-`with_state_inject(true)` enables a reserved top-level `"$webui"` object in the
-render state that carries the same boundary HTML without a Rust-only builder,
-so non-Rust hosts get the capability through the state JSON they already send:
+A reserved top-level `"$webui"` object in the render state carries the same
+boundary HTML without a Rust-only builder, so non-Rust hosts get the capability
+through the state JSON they already send:
 
 ```json
 {
@@ -331,7 +331,7 @@ than an error. The key is stripped from the hydration payload, so it never
 reaches the client. Values are emitted after `with_head_inject` /
 `with_body_inject` at the same boundary.
 
-> **Safety:** disabled by default. Values are written verbatim with no escaping, so only enable it when your application fully owns the state object — never for state merged from request input.
+> **Safety:** values are written verbatim with no escaping, exactly like `with_head_inject`. Never let request-derived data reach `$webui`.
 
 ### Typed streaming errors
 
@@ -429,7 +429,6 @@ component.
 | `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` tags (including the `<script type="importmap">` tags that register Module-strategy CSS). Empty string normalises to `None`. |
 | `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
 | `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
-| `with_state_inject(bool)` | builder | Opt in to the reserved `"$webui"` state object (`headEnd`, `bodyStart`, `bodyEnd`). Default `false`. |
 
 ### Host-driven streaming
 

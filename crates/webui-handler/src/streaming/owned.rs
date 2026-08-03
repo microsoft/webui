@@ -70,11 +70,6 @@ pub struct SessionOptions {
     pub head_inject: Option<String>,
     /// Optional HTML injected at the structural `body_end` boundary.
     pub body_inject: Option<String>,
-    /// Opt in to the reserved [`crate::STATE_INJECT_KEY`] state namespace.
-    ///
-    /// Default `false`. See [`crate::RenderOptions::state_inject`] for the
-    /// contract and the XSS warning that makes it default-off.
-    pub state_inject: bool,
 }
 
 impl SessionOptions {
@@ -87,7 +82,6 @@ impl SessionOptions {
             nonce: None,
             head_inject: None,
             body_inject: None,
-            state_inject: false,
         }
     }
 }
@@ -303,6 +297,5 @@ fn render_options(options: &SessionOptions) -> RenderOptions<'_> {
         nonce: options.nonce.as_deref(),
         head_inject: options.head_inject.as_deref(),
         body_inject: options.body_inject.as_deref(),
-        state_inject: options.state_inject,
     }
 }

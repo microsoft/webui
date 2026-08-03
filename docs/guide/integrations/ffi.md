@@ -126,29 +126,25 @@ The nonce is written verbatim — pass the raw base64 string without any encodin
 `webui_handler_set_nonce` or `webui_handler_destroy` while another operation is
 using the same handler.
 
-### webui_handler_set_state_inject
+### Reserved `$webui` state channel
 
-```c
-void webui_handler_set_state_inject(void *handler_ptr, bool enabled);
+A top-level `$webui` object in the render state JSON passed to
+`webui_handler_render` (or a streaming session) may carry `headEnd`,
+`bodyStart`, and `bodyEnd` strings, each emitted **raw** at the matching
+structural boundary (before `</head>`, after `<body>`, before `</body>`):
+
+```json
+{"$webui": {"headEnd": "<meta name=\"x\">", "bodyEnd": "<script src=\"/a.js\"></script>"}}
 ```
 
-Enable the reserved `$webui` state inject channel on a handler instance. When
-enabled, a top-level `$webui` object in the render state JSON may carry
-`headEnd`, `bodyStart`, and `bodyEnd` strings, each emitted **raw** at the
-matching structural boundary (before `</head>`, after `<body>`, before
-`</body>`). Members that are missing, `null`, empty, or not strings are
-ignored. The `$webui` key is stripped from the client hydration payload.
+Members that are missing, `null`, empty, or not strings are ignored rather than
+an error. The `$webui` key is stripped from the client hydration payload, so it
+never reaches the DOM. No extra API call is needed — it travels on the state
+JSON hosts already send.
 
-- `handler_ptr`, pointer returned by `webui_handler_create`.
-- `enabled`, `true` to enable the channel, `false` (the default) to disable it.
-
-**Safety.** Disabled by default because it turns the state channel into a
-raw-HTML sink: the values are written verbatim with no escaping. Only enable it
-when the render state is fully host-owned; never enable it for state derived
-from untrusted request input.
-
-**Thread safety.** Same contract as `webui_handler_set_nonce` — do not call it
-concurrently with any other operation on the same handler.
+**Safety.** The values are written verbatim with no escaping, exactly like the
+Rust `head_inject` / `body_inject` options. Never let untrusted request input
+reach the `$webui` key.
 
 ### webui_protocol_create / webui_protocol_destroy
 

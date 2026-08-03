@@ -88,7 +88,6 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     /// honoured. Captured from `RenderOptions` for the life of the response;
     /// the values themselves are re-resolved per call because each call
     /// borrows its own state value.
-    state_inject: bool,
     cursor: usize,
     next_boundary: usize,
     shell_written: bool,
@@ -215,7 +214,6 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             nonce: options.nonce.filter(|nonce| !nonce.is_empty()),
             head_inject: options.head_inject.filter(|html| !html.is_empty()),
             body_inject: options.body_inject.filter(|html| !html.is_empty()),
-            state_inject: options.state_inject,
             cursor: parked.cursor,
             next_boundary: parked.next_boundary,
             shell_written: parked.shell_written,
@@ -287,7 +285,6 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|nonce| !nonce.is_empty()),
             head_inject: options.head_inject.filter(|html| !html.is_empty()),
             body_inject: options.body_inject.filter(|html| !html.is_empty()),
-            state_inject: options.state_inject,
             cursor: 0,
             next_boundary: 0,
             shell_written: false,
@@ -563,7 +560,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_index: self.protocol.component_index(),
             head_inject: self.head_inject,
             body_inject: self.body_inject,
-            state_inject: crate::StateInject::resolve(state, self.state_inject),
+            state_inject: crate::StateInject::resolve(state),
             head_end_emitted: self.head_end_emitted,
             body_start_emitted: self.body_start_emitted,
             body_end_emitted: self.body_end_emitted,

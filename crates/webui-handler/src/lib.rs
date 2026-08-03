@@ -240,25 +240,6 @@ pub struct RenderOptions<'a> {
     /// snippets, OpenTelemetry trace IDs, etc.
     /// Same structural-boundary guarantee as [`head_inject`](Self::head_inject).
     pub body_inject: Option<&'a str>,
-    /// Opt in to the reserved [`STATE_INJECT_KEY`] state namespace.
-    ///
-    /// Default `false`. When enabled, the render state's reserved
-    /// `"$webui"` object may supply additional raw HTML at the
-    /// `head_end`, `body_start`, and `body_end` structural boundaries —
-    /// the same channel as [`head_inject`](Self::head_inject) /
-    /// [`body_inject`](Self::body_inject), but reachable from every host
-    /// language without a per-host API, because the state JSON already
-    /// crosses the FFI, Node, and WASM boundaries.
-    ///
-    /// # Safety (XSS warning)
-    ///
-    /// This is default-off on purpose. The values are written **verbatim
-    /// with no escaping**, so enabling it turns the render state into a
-    /// raw-HTML sink. Only enable it when the host fully controls the
-    /// state object; an application that merges request-derived data into
-    /// its state would otherwise let an attacker-supplied `"$webui"` field
-    /// inject script into the response.
-    pub state_inject: bool,
 }
 
 /// Reserved top-level state key carrying host-supplied boundary HTML.
@@ -275,8 +256,8 @@ pub struct RenderOptions<'a> {
 /// | `bodyStart` | immediately after `<body>` |
 /// | `bodyEnd` | immediately before `</body>` |
 ///
-/// The key is stripped from the client hydration payload, and the whole
-/// channel is inert unless [`RenderOptions::state_inject`] is enabled.
+/// The key is always honored — it is part of the render state the host
+/// already supplies — and is stripped from the client hydration payload.
 pub const STATE_INJECT_KEY: &str = "$webui";
 
 /// Host-supplied boundary HTML resolved once per render from
@@ -295,15 +276,11 @@ pub(crate) struct StateInject<'state> {
 impl<'state> StateInject<'state> {
     /// Resolve the reserved namespace from a render state value.
     ///
-    /// Returns the empty set when the caller has not opted in, when the key
-    /// is absent, or when any member is missing, null, empty, or not a
-    /// string. Malformed input is inert rather than an error: the reserved
+    /// Returns the empty set when the key is absent, or when any member is
+    /// missing, null, empty, or not a string. Malformed input is inert rather than an error: the reserved
     /// key is an optional side channel, and a render must not fail because a
     /// host wrote the wrong shape into it.
-    pub(crate) fn resolve(state: &'state Value, enabled: bool) -> Self {
-        if !enabled {
-            return Self::default();
-        }
+    pub(crate) fn resolve(state: &'state Value) -> Self {
         let Some(Value::Object(map)) = state.get(STATE_INJECT_KEY) else {
             return Self::default();
         };
@@ -330,7 +307,6 @@ impl<'a> RenderOptions<'a> {
             nonce: None,
             head_inject: None,
             body_inject: None,
-            state_inject: false,
         }
     }
 
@@ -375,19 +351,6 @@ impl<'a> RenderOptions<'a> {
     #[must_use]
     pub fn with_body_inject(mut self, html: &'a str) -> Self {
         self.body_inject = if html.is_empty() { None } else { Some(html) };
-        self
-    }
-
-    /// Enable the reserved [`STATE_INJECT_KEY`] state namespace.
-    ///
-    /// # Safety (XSS warning)
-    ///
-    /// See [`state_inject`](Self::state_inject). The reserved values are
-    /// written verbatim with **no escaping**, so only enable this when the
-    /// host fully controls the render state.
-    #[must_use]
-    pub fn with_state_inject(mut self, enabled: bool) -> Self {
-        self.state_inject = enabled;
         self
     }
 }
@@ -445,8 +408,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
     pub(crate) body_inject: Option<&'protocol str>,
     /// Host HTML resolved once per render from the reserved
-    /// [`STATE_INJECT_KEY`] state namespace. Empty unless the caller set
-    /// [`RenderOptions::state_inject`]. Emitted after the built-in
+    /// [`STATE_INJECT_KEY`] state namespace. Emitted after the built-in
     /// emissions and after the corresponding `RenderOptions` inject at each
     /// structural boundary.
     pub(crate) state_inject: StateInject<'state>,
@@ -2116,7 +2078,7 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
-            state_inject: StateInject::resolve(state, options.state_inject),
+            state_inject: StateInject::resolve(state),
             head_end_emitted: false,
             body_start_emitted: false,
             component_index: protocol.component_index(),
@@ -8695,7 +8657,7 @@ mod tests {
     }
 
     fn state_inject_options<'a>() -> RenderOptions<'a> {
-        RenderOptions::new("index.html", "/").with_state_inject(true)
+        RenderOptions::new("index.html", "/")
     }
 
     fn render_with(protocol: &WebUIProtocol, state: &Value, options: &RenderOptions<'_>) -> String {
@@ -8747,23 +8709,6 @@ mod tests {
     }
 
     #[test]
-    fn state_inject_is_inert_without_opt_in() {
-        let protocol = build_all_boundaries_protocol();
-        let state = test_json!({
-            "$webui": {
-                "headEnd": "<meta name=he>",
-                "bodyStart": "<span id=bs></span>",
-                "bodyEnd": "<script>be</script>",
-            }
-        });
-        // Default options: `state_inject` is false.
-        let html = render_with(&protocol, &state, &RenderOptions::new("index.html", "/"));
-        assert!(!html.contains("<meta name=he>"));
-        assert!(!html.contains("<span id=bs></span>"));
-        assert!(!html.contains("<script>be</script>"));
-    }
-
-    #[test]
     fn state_inject_follows_render_options_inject() {
         let protocol = build_all_boundaries_protocol();
         let state = test_json!({
@@ -8771,8 +8716,7 @@ mod tests {
         });
         let options = RenderOptions::new("index.html", "/")
             .with_head_inject("<!--opt-he-->")
-            .with_body_inject("<!--opt-be-->")
-            .with_state_inject(true);
+            .with_body_inject("<!--opt-be-->");
         let html = render_with(&protocol, &state, &options);
 
         let opt_he = html.find("<!--opt-he-->").expect("option headEnd missing");
@@ -9551,7 +9495,7 @@ mod tests {
                 "bodyEnd": "<script>be</script>",
             }
         });
-        let options = RenderOptions::new("index.html", "/").with_state_inject(true);
+        let options = RenderOptions::new("index.html", "/");
 
         let mut ordinary = TestWriter::new();
         WebUIHandler::new()
@@ -9589,7 +9533,7 @@ mod tests {
     }
 
     #[test]
-    fn streaming_state_inject_requires_opt_in() {
+    fn streaming_state_inject_emits_and_strips_reserved_key() {
         let entry = vec![
             WebUIFragment::raw("<html><head>"),
             structural_fragment("head_start"),
@@ -9613,7 +9557,7 @@ mod tests {
                 &mut writer,
             )
             .unwrap();
-        assert!(!writer.output.contains("<script>be</script>"));
+        assert!(writer.output.contains("<script>be</script>"));
         assert!(!writer.output.contains("$webui"));
     }
 

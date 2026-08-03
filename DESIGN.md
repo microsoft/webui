@@ -676,10 +676,6 @@ pub struct RenderOptions<'a> {
     /// Optional HTML emitted at the structural `body_end` boundary —
     /// same contract as `head_inject`.
     pub body_inject: Option<&'a str>,
-    /// Opt in to the reserved `"$webui"` state namespace —
-    /// see [Reserved State Inject Channel](#reserved-state-inject-channel).
-    /// Default `false`.
-    pub state_inject: bool,
 }
 
 /// Reserved top-level state key carrying host-supplied boundary HTML.
@@ -690,7 +686,6 @@ impl<'a> RenderOptions<'a> {
     pub fn with_nonce(self, nonce: &'a str) -> Self;
     pub fn with_head_inject(self, html: &'a str) -> Self;
     pub fn with_body_inject(self, html: &'a str) -> Self;
-    pub fn with_state_inject(self, enabled: bool) -> Self;
 }
 
 impl WebUIHandler {
@@ -939,12 +934,11 @@ rather than an error**. Values are emitted after WebUI's own emissions at
 the same boundary, and after `head_inject` / `body_inject`, once per render
 (the same defensive dedup as the Rust inject fields).
 
-- **Opt-in only.** The channel is disabled unless
-  `RenderOptions::state_inject` is `true` (`webui_handler_set_state_inject`
-  over FFI). It is default-off because the values are written **verbatim
-  with no escaping**: enabling it turns the state channel into a raw-HTML
-  sink, so it must only be used when the host fully controls the state
-  object. State merged from request input must never enable it.
+- **Host owns escaping.** Like `head_inject` / `body_inject`, the values are
+  written **verbatim with no escaping**. The render state is host-supplied,
+  so the reserved key is honored with no extra flag; hosts that merge
+  request-derived data into their state must not let untrusted input reach
+  `$webui`.
 - **Never hydrated.** `$webui` is stripped from the client hydration
   payload for both full and projected state, so boundary HTML is never
   re-serialized into the DOM.
