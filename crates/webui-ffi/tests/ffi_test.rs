@@ -18,13 +18,13 @@ use std::ffi::{c_void, CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_set_nonce, webui_handler_set_state_inject, webui_last_error, webui_protocol_create,
-    webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
-    webui_streaming_session_boundary, webui_streaming_session_boundary_count,
-    webui_streaming_session_create, webui_streaming_session_destroy,
-    webui_streaming_session_finish, webui_streaming_session_is_finished,
-    webui_streaming_session_update, webui_streaming_session_write_boundary,
-    webui_streaming_session_write_shell,
+    webui_handler_render, webui_handler_set_nonce, webui_handler_set_state_inject,
+    webui_last_error, webui_protocol_create, webui_protocol_destroy, webui_protocol_render_partial,
+    webui_protocol_tokens, webui_streaming_session_boundary,
+    webui_streaming_session_boundary_count, webui_streaming_session_create,
+    webui_streaming_session_destroy, webui_streaming_session_finish,
+    webui_streaming_session_is_finished, webui_streaming_session_update,
+    webui_streaming_session_write_boundary, webui_streaming_session_write_shell,
 };
 use webui_protocol::{
     FragmentList, InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,

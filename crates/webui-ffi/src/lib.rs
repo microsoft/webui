@@ -146,7 +146,7 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
     let context = Box::new(HandlerContext {
         handler: Arc::new(handler),
         nonce: None,
-            state_inject: false,
+        state_inject: false,
     });
     Box::into_raw(context) as *mut c_void
 }
@@ -196,7 +196,7 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
     let context = Box::new(HandlerContext {
         handler: Arc::new(handler),
         nonce: None,
-            state_inject: false,
+        state_inject: false,
     });
     Box::into_raw(context) as *mut c_void
 }
@@ -319,7 +319,6 @@ pub unsafe extern "C" fn webui_handler_set_nonce(handler_ptr: *mut c_void, nonce
         }
     }
 }
-
 
 /// Enable or disable the reserved `$webui` state inject channel.
 ///

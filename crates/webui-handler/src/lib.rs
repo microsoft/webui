@@ -8737,7 +8737,11 @@ mod tests {
             "bodyEnd must precede </body>: {html}"
         );
 
-        for needle in ["<meta name=he>", "<span id=bs></span>", "<script>be</script>"] {
+        for needle in [
+            "<meta name=he>",
+            "<span id=bs></span>",
+            "<script>be</script>",
+        ] {
             assert_eq!(html.matches(needle).count(), 1, "duplicated {needle}");
         }
     }
@@ -8844,7 +8848,9 @@ mod tests {
         );
         // Per the documented precedence the injected HTML is emitted after
         // the built-in hydration block, and still before `</body>`.
-        let inject = html.find("<script>secret</script>").expect("inject missing");
+        let inject = html
+            .find("<script>secret</script>")
+            .expect("inject missing");
         let body_close = html.find("</body>").expect("</body> missing");
         assert!(
             data_end < inject && inject < body_close,
@@ -8860,7 +8866,10 @@ mod tests {
         write_selected_state(&mut sink, &mut scratch, &state, &StateSelection::Full).unwrap();
         let json = sink.get_content();
         assert!(!json.contains("$webui"), "reserved key leaked: {json}");
-        assert!(json.contains("\"a\":1") && json.contains("\"z\":2"), "{json}");
+        assert!(
+            json.contains("\"a\":1") && json.contains("\"z\":2"),
+            "{json}"
+        );
     }
 
     #[test]
@@ -9532,10 +9541,8 @@ mod tests {
             structural_fragment("body_end"),
             WebUIFragment::raw("</body></html>"),
         ];
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList { fragments: entry },
-        )]);
+        let fragments =
+            HashMap::from([("index.html".to_string(), FragmentList { fragments: entry })]);
         let protocol = Protocol::new(WebUIProtocol::new(fragments));
         let state = test_json!({
             "$webui": {
@@ -9567,7 +9574,10 @@ mod tests {
             let body_close = html.find("</body>").expect("</body> missing");
             assert!(head_end < head_close, "headEnd misplaced: {html}");
             assert!(body_start < main, "bodyStart misplaced: {html}");
-            assert!(main < body_end && body_end < body_close, "bodyEnd misplaced: {html}");
+            assert!(
+                main < body_end && body_end < body_close,
+                "bodyEnd misplaced: {html}"
+            );
         }
 
         // The streaming response still terminates with its single empty
@@ -9589,10 +9599,8 @@ mod tests {
             structural_fragment("body_end"),
             WebUIFragment::raw("</body></html>"),
         ];
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList { fragments: entry },
-        )]);
+        let fragments =
+            HashMap::from([("index.html".to_string(), FragmentList { fragments: entry })]);
         let protocol = Protocol::new(WebUIProtocol::new(fragments));
         let state = test_json!({ "$webui": { "bodyEnd": "<script>be</script>" } });
 

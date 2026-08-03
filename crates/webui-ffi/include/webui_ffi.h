@@ -113,6 +113,30 @@ void webui_protocol_destroy(webui_protocol_t *protocol_ptr);
 void webui_handler_set_nonce(void *handler_ptr, const char *nonce);
 
 /**
+ * Enable or disable the reserved `$webui` state inject channel.
+ *
+ * When enabled, a top-level `$webui` object in the render state may carry
+ * `headEnd`, `bodyStart`, and `bodyEnd` strings. Each is written **raw**
+ * (not escaped) at the matching structural boundary, after WebUI's own
+ * emissions. The `$webui` key itself is stripped from the hydration payload.
+ *
+ * This is **disabled by default** because it turns the state channel into a
+ * raw-HTML sink. Only enable it when the render state is fully host-owned;
+ * never enable it for state derived from untrusted request input.
+ *
+ * # Thread Safety
+ *
+ * Callers must not call this concurrently with any other operation on the
+ * same `handler_ptr`.
+ *
+ * # Safety
+ *
+ * * `handler_ptr` must be a valid pointer returned by [`webui_handler_create`].
+ * * Caller must ensure exclusive access to `handler_ptr` (no concurrent calls).
+ */
+void webui_handler_set_state_inject(void *handler_ptr, bool enabled);
+
+/**
  * Render using a protocol previously returned by [`webui_protocol_create`].
  *
  * # Safety
