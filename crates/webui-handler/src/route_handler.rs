@@ -37,11 +37,6 @@ pub struct Protocol {
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     streaming_plans: HashMap<String, crate::streaming::PreparedStreamingEntryPlan>,
     route_index: CompiledRouteIndex,
-    /// Lazily detected pre-namespace structural signals. Computed at most once
-    /// per protocol, on the first render, so loading a protocol never pays for
-    /// a full fragment walk. Scanning stops at the first namespaced signal, so
-    /// a current document exits almost immediately.
-    stale_structural_signal: OnceLock<Option<(String, &'static str)>>,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
 }
 
@@ -82,7 +77,6 @@ impl Protocol {
             component_reachability: OnceLock::new(),
             streaming_plans,
             route_index,
-            stale_structural_signal: OnceLock::new(),
             template_metadata_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -118,57 +112,6 @@ impl Protocol {
 
     pub(crate) fn route_index(&self) -> &CompiledRouteIndex {
         &self.route_index
-    }
-
-    /// Reject documents built before compiler-owned structural signals moved
-    /// into the `}}}webui:` namespace.
-    ///
-    /// The handler no longer interprets unprefixed `head_end` / `body_start` /
-    /// `body_end` signals, so such a document would render without its
-    /// hydration block or CSP nonce and give no indication why. The scan runs
-    /// at most once per protocol and short-circuits on the first namespaced
-    /// signal, which every current document carries in its entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`HandlerError::StaleStructuralSignals`] when the document has
-    /// no namespaced signal but does carry a pre-namespace one.
-    pub(crate) fn ensure_current_structural_signals(&self) -> crate::Result<()> {
-        match self
-            .stale_structural_signal
-            .get_or_init(|| self.find_stale_structural_signal())
-        {
-            Some((entry_id, signal)) => Err(stale_structural_signals(entry_id, signal)),
-            None => Ok(()),
-        }
-    }
-
-    fn find_stale_structural_signal(&self) -> Option<(String, &'static str)> {
-        let mut stale = None;
-        for (entry_id, list) in &self.protocol.fragments {
-            for fragment in &list.fragments {
-                let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
-                    continue;
-                };
-                if !signal.raw {
-                    continue;
-                }
-                if signal.value.starts_with(crate::STRUCTURAL_SIGNAL_PREFIX) {
-                    // A namespaced signal proves the document is current;
-                    // no unprefixed value in it can be compiler-owned.
-                    return None;
-                }
-                if stale.is_none() {
-                    if let Some(found) = crate::STALE_STRUCTURAL_SIGNALS
-                        .iter()
-                        .find(|candidate| **candidate == signal.value)
-                    {
-                        stale = Some((entry_id.clone(), *found));
-                    }
-                }
-            }
-        }
-        stale
     }
 
     /// Borrow the build-time CSS token list.
@@ -963,15 +906,6 @@ fn invalid_state_json(message: &str) -> HandlerError {
 #[inline(never)]
 fn partial_serialize_error(message: &str) -> HandlerError {
     HandlerError::Rendering(format!("failed to serialize partial response: {message}"))
-}
-
-#[cold]
-#[inline(never)]
-fn stale_structural_signals(entry_id: &str, signal: &'static str) -> HandlerError {
-    HandlerError::StaleStructuralSignals(Box::new(crate::StaleStructuralSignalsError {
-        entry_id: entry_id.to_string(),
-        signal,
-    }))
 }
 
 #[cold]

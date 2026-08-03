@@ -130,30 +130,6 @@ pub enum HandlerError {
     /// A malformed protocol emitted streaming initialization more than once.
     #[error("streaming protocol emitted duplicate `head_start` signals")]
     DuplicateStreamingHeadStart,
-
-    /// A protocol was compiled before compiler-owned structural signals moved
-    /// into the `}}}webui:` namespace.
-    ///
-    /// The payload is boxed for the same reason as
-    /// [`StreamingBoundary`](Self::StreamingBoundary): this is a cold,
-    /// load-time-only variant and must not widen [`HandlerError`], which is
-    /// threaded through the hot render path as `Result<(), HandlerError>`.
-    #[error(
-        "protocol `{}` uses the removed unnamespaced structural signal `{}`\n\
-         help: this document was built by an older compiler; rebuild it with `webui build`",
-        .0.entry_id,
-        .0.signal
-    )]
-    StaleStructuralSignals(Box<StaleStructuralSignalsError>),
-}
-
-/// Boxed payload for [`HandlerError::StaleStructuralSignals`].
-#[derive(Debug)]
-pub struct StaleStructuralSignalsError {
-    /// Entry fragment that carried the stale signal.
-    pub entry_id: String,
-    /// The stale signal value that was found.
-    pub signal: &'static str,
 }
 
 /// Boxed payload for [`HandlerError::StreamingBoundary`].
@@ -464,12 +440,6 @@ pub(crate) fn structural_signal_value(
     }
     signal.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
 }
-
-/// Structural signal values that a pre-namespace compiler emitted unprefixed.
-///
-/// Retained only so [`Protocol`] can reject such documents with an actionable
-/// rebuild diagnostic; the handler never interprets these values.
-pub(crate) const STALE_STRUCTURAL_SIGNALS: [&str; 3] = ["head_end", "body_start", "body_end"];
 
 /// Maximum scope maps retained in the request-local pool. Small: sibling
 /// component roots rarely nest deeply, so the cap keeps retained capacity bounded.
@@ -2060,7 +2030,6 @@ impl WebUIHandler {
         if !document.fragments.contains_key(options.entry_id) {
             return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
         }
-        protocol.ensure_current_structural_signals()?;
         let mut context = WebUIProcessContext {
             protocol: document,
             state,
@@ -9862,70 +9831,10 @@ mod tests {
         assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
     }
 
-    /// Replaces the removed legacy-compatibility test. Pre-namespace
-    /// documents are no longer rendered at all: silently dropping the
-    /// hydration block and CSP nonce would be far worse than a loud,
-    /// actionable rebuild diagnostic.
+    /// Only `}}}webui:`-namespaced signals are compiler-owned, so an
+    /// unprefixed `body_end` is ordinary authored content.
     #[test]
-    fn stale_unnamespaced_structural_signals_demand_a_rebuild() {
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>"),
-                    WebUIFragment::signal("head_end".to_string(), true),
-                    WebUIFragment::raw("</head><body>"),
-                    WebUIFragment::signal("body_start".to_string(), true),
-                    WebUIFragment::raw("<p>legacy</p>"),
-                    WebUIFragment::signal("body_end".to_string(), true),
-                    WebUIFragment::raw("</body></html>"),
-                ],
-            },
-        )]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = TestWriter::new();
-
-        let error = handler
-            .render(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .expect_err("stale protocol must not render");
-
-        let HandlerError::StaleStructuralSignals(details) = &error else {
-            panic!("expected StaleStructuralSignals, got {error:?}");
-        };
-        assert_eq!(details.entry_id, "index.html");
-        let message = error.to_string();
-        assert!(
-            message.contains("webui build"),
-            "diagnostic must tell the caller how to fix it: {message}"
-        );
-
-        // The check is memoised, so a second render must report identically
-        // rather than succeeding once the OnceLock is populated.
-        let mut second = TestWriter::new();
-        assert!(matches!(
-            handler.render(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/"),
-                &mut second,
-            ),
-            Err(HandlerError::StaleStructuralSignals(_))
-        ));
-    }
-
-    /// A document that carries namespaced signals is current, so an
-    /// unprefixed `body_end` inside it is ordinary content and must not
-    /// trigger the stale-protocol diagnostic.
-    #[test]
-    fn namespaced_protocol_is_never_flagged_stale() {
+    fn unnamespaced_signal_is_ordinary_content() {
         let fragments = HashMap::from([(
             "index.html".to_string(),
             FragmentList {
