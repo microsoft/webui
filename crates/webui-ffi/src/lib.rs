@@ -74,6 +74,10 @@ struct HandlerContext {
     handler: Arc<WebUIHandler>,
     /// CSP nonce for inline `<script>` tags (set via `webui_handler_set_nonce`).
     nonce: Option<String>,
+    /// Opt-in for the reserved `$webui` state inject channel (see
+    /// `webui_handler_set_state_inject`). Default `false`: state JSON is
+    /// never treated as raw HTML unless the host explicitly asks for it.
+    state_inject: bool,
 }
 
 /// Opaque decoded protocol context shared across repeated host calls.
@@ -142,6 +146,7 @@ pub extern "C" fn webui_handler_create() -> *mut c_void {
     let context = Box::new(HandlerContext {
         handler: Arc::new(handler),
         nonce: None,
+            state_inject: false,
     });
     Box::into_raw(context) as *mut c_void
 }
@@ -191,6 +196,7 @@ pub unsafe extern "C" fn webui_handler_create_with_plugin(plugin_id: *const c_ch
     let context = Box::new(HandlerContext {
         handler: Arc::new(handler),
         nonce: None,
+            state_inject: false,
     });
     Box::into_raw(context) as *mut c_void
 }
@@ -314,6 +320,41 @@ pub unsafe extern "C" fn webui_handler_set_nonce(handler_ptr: *mut c_void, nonce
     }
 }
 
+
+/// Enable or disable the reserved `$webui` state inject channel.
+///
+/// When enabled, a top-level `$webui` object in the render state may carry
+/// `headEnd`, `bodyStart`, and `bodyEnd` strings. Each is written **raw**
+/// (not escaped) at the matching structural boundary, after WebUI's own
+/// emissions. The `$webui` key itself is stripped from the hydration payload.
+///
+/// This is **disabled by default** because it turns the state channel into a
+/// raw-HTML sink. Only enable it when the render state is fully host-owned;
+/// never enable it for state derived from untrusted request input.
+///
+/// # Thread Safety
+///
+/// Callers must not call this concurrently with any other operation on the
+/// same `handler_ptr`.
+///
+/// # Safety
+///
+/// * `handler_ptr` must be a valid pointer returned by [`webui_handler_create`].
+/// * Caller must ensure exclusive access to `handler_ptr` (no concurrent calls).
+#[no_mangle]
+pub unsafe extern "C" fn webui_handler_set_state_inject(handler_ptr: *mut c_void, enabled: bool) {
+    clear_last_error();
+
+    if handler_ptr.is_null() {
+        set_last_error("handler_ptr is null");
+        return;
+    }
+
+    // SAFETY: caller guarantees handler_ptr is valid and exclusively owned.
+    let context = unsafe { &mut *(handler_ptr as *mut HandlerContext) };
+    context.state_inject = enabled;
+}
+
 // ---------------------------------------------------------------------------
 // FFI: protocol rendering
 // ---------------------------------------------------------------------------
@@ -413,6 +454,7 @@ unsafe fn render_decoded_protocol(
     if let Some(ref nonce) = context.nonce {
         options = options.with_nonce(nonce);
     }
+    options = options.with_state_inject(context.state_inject);
 
     let mut writer = StringResponseWriter::new();
     match context
@@ -719,6 +761,7 @@ pub unsafe extern "C" fn webui_streaming_session_create(
 
         let mut options = SessionOptions::new(entry, path);
         options.nonce = handler_context.nonce.clone();
+        options.state_inject = handler_context.state_inject;
 
         match StreamingSession::new(
             Arc::clone(&handler_context.handler),

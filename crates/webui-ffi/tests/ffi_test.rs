@@ -18,7 +18,7 @@ use std::ffi::{c_void, CStr, CString};
 // against the rlib and call the `pub extern "C"` functions.
 use webui_ffi::{
     webui_free, webui_handler_create, webui_handler_create_with_plugin, webui_handler_destroy,
-    webui_handler_render, webui_handler_set_nonce, webui_last_error, webui_protocol_create,
+    webui_handler_render, webui_handler_set_nonce, webui_handler_set_state_inject, webui_last_error, webui_protocol_create,
     webui_protocol_destroy, webui_protocol_render_partial, webui_protocol_tokens,
     webui_streaming_session_boundary, webui_streaming_session_boundary_count,
     webui_streaming_session_create, webui_streaming_session_destroy,
@@ -415,6 +415,91 @@ fn build_protocol_with_body_end() -> Vec<u8> {
         ..Default::default()
     };
     protocol.to_protobuf().expect("serialize test protocol")
+}
+
+/// The reserved `$webui` state channel must work end-to-end through the
+/// existing `webui_handler_render` symbol: hosts get boundary injection with
+/// no new per-string C API, and the reserved key never leaks into the
+/// hydration payload.
+#[test]
+fn state_inject_channel_needs_no_new_render_symbol() {
+    let proto_bytes = build_protocol_with_body_end();
+
+    unsafe {
+        let handler = webui_handler_create();
+        let prepared = prepare_protocol(&proto_bytes);
+
+        webui_handler_set_state_inject(handler, true);
+
+        let c_json = CString::new(
+            r#"{"$webui":{"headEnd":"<meta name='he'>","bodyEnd":"<script>be</script>"}}"#,
+        )
+        .expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            prepared,
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(
+            !ptr.is_null(),
+            "render returned NULL: {}",
+            last_error_string().unwrap_or_else(|| "<none>".to_string())
+        );
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+
+        let head_end = result.find("<meta name='he'>").expect("headEnd missing");
+        let head_close = result.find("</head>").expect("</head> missing");
+        let body_end = result.find("<script>be</script>").expect("bodyEnd missing");
+        let body_close = result.find("</body>").expect("</body> missing");
+        assert!(head_end < head_close, "headEnd misplaced:\n{result}");
+        assert!(body_end < body_close, "bodyEnd misplaced:\n{result}");
+        assert!(
+            !result.contains("$webui"),
+            "reserved key must never reach the hydration payload:\n{result}"
+        );
+
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
+}
+
+/// Without the explicit opt-in, a `$webui` object in the state is inert.
+#[test]
+fn state_inject_is_disabled_by_default() {
+    let proto_bytes = build_protocol_with_body_end();
+
+    unsafe {
+        let handler = webui_handler_create();
+        let prepared = prepare_protocol(&proto_bytes);
+
+        let c_json =
+            CString::new(r#"{"$webui":{"bodyEnd":"<script>be</script>"}}"#).expect("static string");
+        let c_entry = CString::new("index.html").expect("static string");
+        let c_path = CString::new("/").expect("static string");
+
+        let ptr = webui_handler_render(
+            handler,
+            prepared,
+            c_json.as_ptr(),
+            c_entry.as_ptr(),
+            c_path.as_ptr(),
+        );
+        assert!(!ptr.is_null());
+        let result = CStr::from_ptr(ptr).to_string_lossy().into_owned();
+        webui_free(ptr);
+
+        assert!(!result.contains("<script>be</script>"), "got:\n{result}");
+        assert!(!result.contains("$webui"), "got:\n{result}");
+
+        webui_protocol_destroy(prepared);
+        webui_handler_destroy(handler);
+    }
 }
 
 #[test]
