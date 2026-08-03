@@ -130,6 +130,30 @@ pub enum HandlerError {
     /// A malformed protocol emitted streaming initialization more than once.
     #[error("streaming protocol emitted duplicate `head_start` signals")]
     DuplicateStreamingHeadStart,
+
+    /// A protocol was compiled before compiler-owned structural signals moved
+    /// into the `}}}webui:` namespace.
+    ///
+    /// The payload is boxed for the same reason as
+    /// [`StreamingBoundary`](Self::StreamingBoundary): this is a cold,
+    /// load-time-only variant and must not widen [`HandlerError`], which is
+    /// threaded through the hot render path as `Result<(), HandlerError>`.
+    #[error(
+        "protocol `{}` uses the removed unnamespaced structural signal `{}`\n\
+         help: this document was built by an older compiler; rebuild it with `webui build`",
+        .0.entry_id,
+        .0.signal
+    )]
+    StaleStructuralSignals(Box<StaleStructuralSignalsError>),
+}
+
+/// Boxed payload for [`HandlerError::StaleStructuralSignals`].
+#[derive(Debug)]
+pub struct StaleStructuralSignalsError {
+    /// Entry fragment that carried the stale signal.
+    pub entry_id: String,
+    /// The stale signal value that was found.
+    pub signal: &'static str,
 }
 
 /// Boxed payload for [`HandlerError::StreamingBoundary`].
@@ -216,6 +240,84 @@ pub struct RenderOptions<'a> {
     /// snippets, OpenTelemetry trace IDs, etc.
     /// Same structural-boundary guarantee as [`head_inject`](Self::head_inject).
     pub body_inject: Option<&'a str>,
+    /// Opt in to the reserved [`STATE_INJECT_KEY`] state namespace.
+    ///
+    /// Default `false`. When enabled, the render state's reserved
+    /// `"$webui"` object may supply additional raw HTML at the
+    /// `head_end`, `body_start`, and `body_end` structural boundaries —
+    /// the same channel as [`head_inject`](Self::head_inject) /
+    /// [`body_inject`](Self::body_inject), but reachable from every host
+    /// language without a per-host API, because the state JSON already
+    /// crosses the FFI, Node, and WASM boundaries.
+    ///
+    /// # Safety (XSS warning)
+    ///
+    /// This is default-off on purpose. The values are written **verbatim
+    /// with no escaping**, so enabling it turns the render state into a
+    /// raw-HTML sink. Only enable it when the host fully controls the
+    /// state object; an application that merges request-derived data into
+    /// its state would otherwise let an attacker-supplied `"$webui"` field
+    /// inject script into the response.
+    pub state_inject: bool,
+}
+
+/// Reserved top-level state key carrying host-supplied boundary HTML.
+///
+/// Namespaced with a leading `$` so it cannot collide with an ordinary
+/// application state field, and so authored `{{{body_end}}}` bindings keep
+/// resolving as plain state keys.
+///
+/// Recognized members, each an optional string:
+///
+/// | Member | Emitted at |
+/// | --- | --- |
+/// | `headEnd` | immediately before `</head>` |
+/// | `bodyStart` | immediately after `<body>` |
+/// | `bodyEnd` | immediately before `</body>` |
+///
+/// The key is stripped from the client hydration payload, and the whole
+/// channel is inert unless [`RenderOptions::state_inject`] is enabled.
+pub const STATE_INJECT_KEY: &str = "$webui";
+
+/// Host-supplied boundary HTML resolved once per render from
+/// [`STATE_INJECT_KEY`].
+///
+/// Resolution happens when the render context is built, so each structural
+/// hook costs one `Option` check instead of a state map lookup. Every field
+/// borrows from the caller's state value — no clone, no allocation.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct StateInject<'state> {
+    pub(crate) head_end: Option<&'state str>,
+    pub(crate) body_start: Option<&'state str>,
+    pub(crate) body_end: Option<&'state str>,
+}
+
+impl<'state> StateInject<'state> {
+    /// Resolve the reserved namespace from a render state value.
+    ///
+    /// Returns the empty set when the caller has not opted in, when the key
+    /// is absent, or when any member is missing, null, empty, or not a
+    /// string. Malformed input is inert rather than an error: the reserved
+    /// key is an optional side channel, and a render must not fail because a
+    /// host wrote the wrong shape into it.
+    pub(crate) fn resolve(state: &'state Value, enabled: bool) -> Self {
+        if !enabled {
+            return Self::default();
+        }
+        let Some(Value::Object(map)) = state.get(STATE_INJECT_KEY) else {
+            return Self::default();
+        };
+        let field = |name: &str| {
+            map.get(name)
+                .and_then(Value::as_str)
+                .filter(|html| !html.is_empty())
+        };
+        Self {
+            head_end: field("headEnd"),
+            body_start: field("bodyStart"),
+            body_end: field("bodyEnd"),
+        }
+    }
 }
 
 impl<'a> RenderOptions<'a> {
@@ -228,6 +330,7 @@ impl<'a> RenderOptions<'a> {
             nonce: None,
             head_inject: None,
             body_inject: None,
+            state_inject: false,
         }
     }
 
@@ -274,6 +377,19 @@ impl<'a> RenderOptions<'a> {
         self.body_inject = if html.is_empty() { None } else { Some(html) };
         self
     }
+
+    /// Enable the reserved [`STATE_INJECT_KEY`] state namespace.
+    ///
+    /// # Safety (XSS warning)
+    ///
+    /// See [`state_inject`](Self::state_inject). The reserved values are
+    /// written verbatim with **no escaping**, so only enable this when the
+    /// host fully controls the render state.
+    #[must_use]
+    pub fn with_state_inject(mut self, enabled: bool) -> Self {
+        self.state_inject = enabled;
+        self
+    }
 }
 
 /// The main WebUI handler that processes protocols and renders them.
@@ -287,10 +403,6 @@ pub struct WebUIHandler {
 /// Context object for processing WebUI fragments
 pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) protocol: &'protocol WebUIProtocol,
-    /// Whether this runtime document predates namespaced compiler signals.
-    /// Legacy compatibility is ordinary-render-only; streaming preflight still
-    /// requires the namespaced `head_start` introduced with boundaries.
-    pub(crate) legacy_structural_signals: bool,
     pub(crate) state: &'state Value,
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: HashMap<String, Value>,
@@ -332,6 +444,12 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// `</body>`), after the built-in template metadata emissions.
     /// Same zero-copy borrow as [`head_inject`](Self::head_inject).
     pub(crate) body_inject: Option<&'protocol str>,
+    /// Host HTML resolved once per render from the reserved
+    /// [`STATE_INJECT_KEY`] state namespace. Empty unless the caller set
+    /// [`RenderOptions::state_inject`]. Emitted after the built-in
+    /// emissions and after the corresponding `RenderOptions` inject at each
+    /// structural boundary.
+    pub(crate) state_inject: StateInject<'state>,
     /// Tracks whether the `head_end` hook has already fired in this
     /// render. Defends against malformed protocols that emit the
     /// signal more than once (e.g., a template with multiple `<head>`
@@ -339,6 +457,11 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// preload `<link>` tags, and the CSP `<meta>` nonce would be
     /// duplicated, which can be a CSP-bypass / cache-bloat vector.
     pub(crate) head_end_emitted: bool,
+    /// Tracks whether the `body_start` hook has already fired in this
+    /// render. Defends against malformed protocols emitting the signal
+    /// twice — without this, state-supplied `bodyStart` HTML would be
+    /// duplicated.
+    pub(crate) body_start_emitted: bool,
     /// Tracks whether the `body_end` hook has already fired in this
     /// render. Defends against malformed protocols emitting the
     /// signal twice — without this, hydration `<script>` blocks and
@@ -380,15 +503,11 @@ pub(crate) fn structural_signal_value(
     signal.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
 }
 
-fn legacy_structural_signal_value(signal: &webui_protocol::WebUIFragmentSignal) -> Option<&str> {
-    if !signal.raw {
-        return None;
-    }
-    match signal.value.as_str() {
-        "head_end" | "body_start" | "body_end" => Some(signal.value.as_str()),
-        _ => None,
-    }
-}
+/// Structural signal values that a pre-namespace compiler emitted unprefixed.
+///
+/// Retained only so [`Protocol`] can reject such documents with an actionable
+/// rebuild diagnostic; the handler never interprets these values.
+pub(crate) const STALE_STRUCTURAL_SIGNALS: [&str; 3] = ["head_end", "body_start", "body_end"];
 
 /// Maximum scope maps retained in the request-local pool. Small: sibling
 /// component roots rarely nest deeply, so the cap keeps retained capacity bounded.
@@ -593,6 +712,52 @@ impl Serialize for ProjectedState<'_> {
 /// Buffering the projected bytes and escaping once is measurably faster than
 /// streaming through a per-token `io::Write` adapter, and the projected buffer
 /// is tiny in the common case.
+/// Serialize a state object with the reserved [`STATE_INJECT_KEY`] entry
+/// omitted.
+///
+/// The reserved key carries host-supplied boundary HTML, not application
+/// state, so it must never reach the client hydration payload — shipping it
+/// would both duplicate the markup as a JSON string and expose the host's
+/// inject channel to client code. Filtering happens during serialization so
+/// the state tree is never cloned.
+struct StateWithoutReservedKey<'a> {
+    value: &'a Value,
+}
+
+impl Serialize for StateWithoutReservedKey<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Value::Object(map) = self.value else {
+            return self.value.serialize(serializer);
+        };
+        let mut out = serializer.serialize_map(Some(map.len().saturating_sub(1)))?;
+        for (key, value) in map {
+            if key == STATE_INJECT_KEY {
+                continue;
+            }
+            out.serialize_entry(key, value)?;
+        }
+        out.end()
+    }
+}
+
+/// Write the complete state, stripping the reserved inject key when present.
+///
+/// The membership test is a single map lookup and the common case — no
+/// reserved key — takes the original zero-overhead path unchanged.
+fn write_full_state(
+    writer: &mut dyn ResponseWriter,
+    scratch: &mut Vec<u8>,
+    state: &Value,
+) -> Result<()> {
+    if matches!(state, Value::Object(map) if map.contains_key(STATE_INJECT_KEY)) {
+        return write_script_safe_json(writer, scratch, &StateWithoutReservedKey { value: state });
+    }
+    write_script_safe_json(writer, scratch, state)
+}
+
 pub(crate) fn write_selected_state(
     writer: &mut dyn ResponseWriter,
     scratch: &mut Vec<u8>,
@@ -600,7 +765,7 @@ pub(crate) fn write_selected_state(
     selection: &StateSelection<'_>,
 ) -> Result<()> {
     let keys = match selection {
-        StateSelection::Full => return write_script_safe_json(writer, scratch, state),
+        StateSelection::Full => return write_full_state(writer, scratch, state),
         StateSelection::Keys(keys) => keys.as_slice(),
         StateSelection::BorrowedKeys(keys) => *keys,
     };
@@ -620,7 +785,7 @@ pub(crate) fn write_selected_state(
         let selects_entire_map =
             keys.len() == map.len() && keys.iter().copied().eq(map.keys().map(String::as_str));
         if selects_entire_map {
-            return write_script_safe_json(writer, scratch, state);
+            return write_full_state(writer, scratch, state);
         }
     }
     write_script_safe_json(writer, scratch, &ProjectedState { value: state, keys })
@@ -1430,13 +1595,7 @@ impl WebUIHandler {
         signal: &'data webui_protocol::WebUIFragmentSignal,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
-        let structural_value = structural_signal_value(signal).or_else(|| {
-            context
-                .legacy_structural_signals
-                .then(|| legacy_structural_signal_value(signal))
-                .flatten()
-        });
-        let Some(structural_value) = structural_value else {
+        let Some(structural_value) = structural_signal_value(signal) else {
             return self.process_state_signal(signal, context);
         };
 
@@ -1531,6 +1690,23 @@ impl WebUIHandler {
             // built-in nonce + CSS-link emissions, so host injects
             // appear immediately before `</head>`.
             if let Some(html) = context.head_inject {
+                context.writer.write(html)?;
+            }
+
+            // Reserved-state `headEnd` HTML, last at this boundary so a
+            // host that sets both channels gets a deterministic order:
+            // built-in emissions, then `RenderOptions`, then state.
+            if let Some(html) = context.state_inject.head_end {
+                context.writer.write(html)?;
+            }
+        }
+
+        // Hook: emit state-supplied HTML immediately after `<body>`.
+        // Guarded by its own dedup flag so a malformed protocol emitting
+        // the signal twice cannot duplicate the injected markup.
+        if structural_value == "body_start" && !context.body_start_emitted {
+            context.body_start_emitted = true;
+            if let Some(html) = context.state_inject.body_start {
                 context.writer.write(html)?;
             }
         }
@@ -1684,6 +1860,12 @@ impl WebUIHandler {
             // hydration plugin is active. Appears immediately before
             // `</body>`.
             if let Some(html) = context.body_inject {
+                context.writer.write(html)?;
+            }
+
+            // Reserved-state `bodyEnd` HTML, last at this boundary. Same
+            // precedence as `head_end`: built-ins, `RenderOptions`, state.
+            if let Some(html) = context.state_inject.body_end {
                 context.writer.write(html)?;
             }
         }
@@ -1916,9 +2098,9 @@ impl WebUIHandler {
         if !document.fragments.contains_key(options.entry_id) {
             return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
         }
+        protocol.ensure_current_structural_signals()?;
         let mut context = WebUIProcessContext {
             protocol: document,
-            legacy_structural_signals: protocol.legacy_structural_signals(),
             state,
             writer,
             local_vars: HashMap::new(),
@@ -1934,7 +2116,9 @@ impl WebUIHandler {
             nonce: options.nonce.filter(|s| !s.is_empty()),
             head_inject: options.head_inject.filter(|s| !s.is_empty()),
             body_inject: options.body_inject.filter(|s| !s.is_empty()),
+            state_inject: StateInject::resolve(state, options.state_inject),
             head_end_emitted: false,
+            body_start_emitted: false,
             component_index: protocol.component_index(),
             body_end_emitted: false,
             route_index: protocol.route_index(),
@@ -9409,8 +9593,12 @@ mod tests {
         assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
     }
 
+    /// Replaces the removed legacy-compatibility test. Pre-namespace
+    /// documents are no longer rendered at all: silently dropping the
+    /// hydration block and CSP nonce would be far worse than a loud,
+    /// actionable rebuild diagnostic.
     #[test]
-    fn ordinary_render_preserves_legacy_unnamespaced_structural_hooks() {
+    fn stale_unnamespaced_structural_signals_demand_a_rebuild() {
         let fragments = HashMap::from([(
             "index.html".to_string(),
             FragmentList {
@@ -9429,28 +9617,70 @@ mod tests {
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
         });
-        let options = RenderOptions::new("index.html", "/").with_nonce("test-legacy-nonce");
         let mut writer = TestWriter::new();
 
-        handler
-            .render(&protocol, &test_json!({}), &options, &mut writer)
-            .unwrap();
-
-        let html = writer.get_content();
-        assert!(html.contains(r#"<meta name="webui-nonce" content="test-legacy-nonce">"#));
-        assert!(html.contains(r#"<script type="application/json" id="webui-data""#));
-        assert!(html.contains("<p>legacy</p>"));
-
-        let mut streaming = FlushTestWriter::default();
-        assert!(matches!(
-            handler.render_streaming(
+        let error = handler
+            .render(
                 &protocol,
                 &test_json!({}),
                 &RenderOptions::new("index.html", "/"),
-                &mut streaming,
+                &mut writer,
+            )
+            .expect_err("stale protocol must not render");
+
+        let HandlerError::StaleStructuralSignals(details) = &error else {
+            panic!("expected StaleStructuralSignals, got {error:?}");
+        };
+        assert_eq!(details.entry_id, "index.html");
+        let message = error.to_string();
+        assert!(
+            message.contains("webui build"),
+            "diagnostic must tell the caller how to fix it: {message}"
+        );
+
+        // The check is memoised, so a second render must report identically
+        // rather than succeeding once the OnceLock is populated.
+        let mut second = TestWriter::new();
+        assert!(matches!(
+            handler.render(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut second,
             ),
-            Err(HandlerError::MissingStreamingHeadStart { .. })
+            Err(HandlerError::StaleStructuralSignals(_))
         ));
+    }
+
+    /// A document that carries namespaced signals is current, so an
+    /// unprefixed `body_end` inside it is ordinary content and must not
+    /// trigger the stale-protocol diagnostic.
+    #[test]
+    fn namespaced_protocol_is_never_flagged_stale() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>"),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body>"),
+                    WebUIFragment::signal("body_end".to_string(), false),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        )]);
+        let protocol = Protocol::new(WebUIProtocol::new(fragments));
+        let mut writer = TestWriter::new();
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                &test_json!({ "body_end": "content" }),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .expect("current protocol must render");
+        assert!(writer.get_content().contains("content"));
     }
 
     #[test]

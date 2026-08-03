@@ -37,7 +37,11 @@ pub struct Protocol {
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     streaming_plans: HashMap<String, crate::streaming::PreparedStreamingEntryPlan>,
     route_index: CompiledRouteIndex,
-    legacy_structural_signals: bool,
+    /// Lazily detected pre-namespace structural signals. Computed at most once
+    /// per protocol, on the first render, so loading a protocol never pays for
+    /// a full fragment walk. Scanning stops at the first namespaced signal, so
+    /// a current document exits almost immediately.
+    stale_structural_signal: OnceLock<Option<(String, &'static str)>>,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
 }
 
@@ -72,23 +76,13 @@ impl Protocol {
                 })
             })
             .collect();
-        let legacy_structural_signals = !protocol.fragments.values().any(|list| {
-            list.fragments.iter().any(|fragment| {
-                matches!(
-                    fragment.fragment.as_ref(),
-                    Some(Fragment::Signal(signal))
-                        if signal.raw
-                            && signal.value.starts_with(crate::STRUCTURAL_SIGNAL_PREFIX)
-                )
-            })
-        });
         Self {
             protocol,
             component_index,
             component_reachability: OnceLock::new(),
             streaming_plans,
             route_index,
-            legacy_structural_signals,
+            stale_structural_signal: OnceLock::new(),
             template_metadata_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -126,8 +120,55 @@ impl Protocol {
         &self.route_index
     }
 
-    pub(crate) fn legacy_structural_signals(&self) -> bool {
-        self.legacy_structural_signals
+    /// Reject documents built before compiler-owned structural signals moved
+    /// into the `}}}webui:` namespace.
+    ///
+    /// The handler no longer interprets unprefixed `head_end` / `body_start` /
+    /// `body_end` signals, so such a document would render without its
+    /// hydration block or CSP nonce and give no indication why. The scan runs
+    /// at most once per protocol and short-circuits on the first namespaced
+    /// signal, which every current document carries in its entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HandlerError::StaleStructuralSignals`] when the document has
+    /// no namespaced signal but does carry a pre-namespace one.
+    pub(crate) fn ensure_current_structural_signals(&self) -> crate::Result<()> {
+        match self
+            .stale_structural_signal
+            .get_or_init(|| self.find_stale_structural_signal())
+        {
+            Some((entry_id, signal)) => Err(stale_structural_signals(entry_id, signal)),
+            None => Ok(()),
+        }
+    }
+
+    fn find_stale_structural_signal(&self) -> Option<(String, &'static str)> {
+        let mut stale = None;
+        for (entry_id, list) in &self.protocol.fragments {
+            for fragment in &list.fragments {
+                let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
+                    continue;
+                };
+                if !signal.raw {
+                    continue;
+                }
+                if signal.value.starts_with(crate::STRUCTURAL_SIGNAL_PREFIX) {
+                    // A namespaced signal proves the document is current;
+                    // no unprefixed value in it can be compiler-owned.
+                    return None;
+                }
+                if stale.is_none() {
+                    if let Some(found) = crate::STALE_STRUCTURAL_SIGNALS
+                        .iter()
+                        .find(|candidate| **candidate == signal.value)
+                    {
+                        stale = Some((entry_id.clone(), *found));
+                    }
+                }
+            }
+        }
+        stale
     }
 
     /// Borrow the build-time CSS token list.
@@ -676,7 +717,6 @@ enum SelectedRawState<'de> {
     Full(&'de RawValue),
     Keys(ProjectedRawState<'de>),
 }
-
 impl Serialize for SelectedRawState<'_> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -738,6 +778,13 @@ fn select_raw_state<'de>(
 ) -> Result<SelectedRawState<'de>, HandlerError> {
     let state_keys = match selection {
         StateSelection::Full => {
+            // The reserved inject key carries host HTML, never application
+            // state, so it must not reach the client here either. The
+            // substring probe keeps the overwhelmingly common case — no
+            // reserved key — on the zero-copy passthrough.
+            if state_json.contains(RESERVED_STATE_KEY_PROBE) {
+                return strip_reserved_raw_state(state_json).map(SelectedRawState::Keys);
+            }
             return serde_json::from_str::<&RawValue>(state_json)
                 .map(SelectedRawState::Full)
                 .map_err(|error| invalid_state_json(&error.to_string()));
@@ -746,6 +793,74 @@ fn select_raw_state<'de>(
         StateSelection::BorrowedKeys(keys) => *keys,
     };
     project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
+}
+
+/// Quoted form of [`crate::STATE_INJECT_KEY`] used to cheaply probe raw JSON.
+///
+/// The probe is only a fast negative filter — a match still goes through the
+/// real JSON parser, so a false positive (the literal appearing in a value)
+/// costs correctness nothing. The assertion below keeps it in sync with the
+/// canonical constant.
+const RESERVED_STATE_KEY_PROBE: &str = "\"$webui\"";
+
+const _: () = assert!(
+    matches!(
+        crate::STATE_INJECT_KEY.as_bytes(),
+        [b'$', b'w', b'e', b'b', b'u', b'i']
+    ),
+    "RESERVED_STATE_KEY_PROBE must stay in sync with STATE_INJECT_KEY"
+);
+
+/// Re-emit a raw state object with the reserved inject key removed.
+fn strip_reserved_raw_state(state_json: &str) -> Result<ProjectedRawState<'_>, HandlerError> {
+    let mut deserializer = serde_json::Deserializer::from_str(state_json);
+    let projected = ReservedFilteredRawStateSeed
+        .deserialize(&mut deserializer)
+        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    deserializer
+        .end()
+        .map_err(|error| invalid_state_json(&error.to_string()))?;
+    Ok(projected)
+}
+
+struct ReservedFilteredRawStateSeed;
+
+impl<'de> DeserializeSeed<'de> for ReservedFilteredRawStateSeed {
+    type Value = ProjectedRawState<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ReservedFilteredRawStateVisitor)
+    }
+}
+
+struct ReservedFilteredRawStateVisitor;
+
+impl<'de> Visitor<'de> for ReservedFilteredRawStateVisitor {
+    type Value = ProjectedRawState<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON object")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> = Vec::new();
+        while let Some(key) = map.next_key_seed(BorrowedString)? {
+            if key.as_ref() == crate::STATE_INJECT_KEY {
+                map.next_value_seed(ValidJson)?;
+                continue;
+            }
+            let value: &'de RawValue = map.next_value()?;
+            validate_json_inner(value.get()).map_err(serde::de::Error::custom)?;
+            entries.push((key, value));
+        }
+        Ok(ProjectedRawState { entries })
+    }
 }
 
 struct ProjectedRawStateSeed<'a> {
@@ -848,6 +963,15 @@ fn invalid_state_json(message: &str) -> HandlerError {
 #[inline(never)]
 fn partial_serialize_error(message: &str) -> HandlerError {
     HandlerError::Rendering(format!("failed to serialize partial response: {message}"))
+}
+
+#[cold]
+#[inline(never)]
+fn stale_structural_signals(entry_id: &str, signal: &'static str) -> HandlerError {
+    HandlerError::StaleStructuralSignals(Box::new(crate::StaleStructuralSignalsError {
+        entry_id: entry_id.to_string(),
+        signal,
+    }))
 }
 
 #[cold]

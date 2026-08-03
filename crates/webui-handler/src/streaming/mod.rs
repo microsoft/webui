@@ -234,6 +234,13 @@ impl WebUIHandler {
             if let Some(html) = context.body_inject {
                 context.writer.write(html)?;
             }
+            // Reserved-state `bodyEnd` HTML, in the same relative position as
+            // the ordinary render path: after the host `RenderOptions` inject
+            // and before the terminal record, so both modes agree byte for
+            // byte on ordering.
+            if let Some(html) = context.state_inject.body_end {
+                context.writer.write(html)?;
+            }
 
             // The terminal flush commits any raw/native tail bytes. Registered
             // component hosts cannot appear outside an explicit boundary, so a
