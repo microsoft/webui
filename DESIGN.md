@@ -676,13 +676,21 @@ pub struct RenderOptions<'a> {
     /// Optional HTML emitted at the structural `body_end` boundary —
     /// same contract as `head_inject`.
     pub body_inject: Option<&'a str>,
+    /// Opt in to the reserved `"$webui"` state namespace —
+    /// see [Reserved State Inject Channel](#reserved-state-inject-channel).
+    /// Default `false`.
+    pub state_inject: bool,
 }
+
+/// Reserved top-level state key carrying host-supplied boundary HTML.
+pub const STATE_INJECT_KEY: &str = "$webui";
 
 impl<'a> RenderOptions<'a> {
     pub fn new(entry_id: &'a str, request_path: &'a str) -> Self;
     pub fn with_nonce(self, nonce: &'a str) -> Self;
     pub fn with_head_inject(self, html: &'a str) -> Self;
     pub fn with_body_inject(self, html: &'a str) -> Self;
+    pub fn with_state_inject(self, enabled: bool) -> Self;
 }
 
 impl WebUIHandler {
@@ -910,6 +918,44 @@ HttpResponse::Ok()
   served over loopback it doesn't help. See `BENCHMARKS.md` for the
   full measurement suite (criterion + custom-allocator + HTTP-level +
   Playwright browser).
+
+### Reserved State Inject Channel
+
+`RenderOptions::with_head_inject` / `with_body_inject` are Rust-only. Hosts
+that reach WebUI through FFI, Node, or WASM already pass a JSON state
+object across the boundary, so the same capability is exposed there through
+a **reserved top-level state key** (`STATE_INJECT_KEY = "$webui"`) instead
+of a new per-host API symbol:
+
+| Member | Emitted at |
+| --- | --- |
+| `headEnd` | immediately before `</head>` |
+| `bodyStart` | immediately after `<body>` |
+| `bodyEnd` | immediately before `</body>` |
+
+Each member is optional and must be a string; anything else (non-object
+`$webui`, `null`, empty string, wrong type, unknown member) is **inert
+rather than an error**. Values are emitted after WebUI's own emissions at
+the same boundary, and after `head_inject` / `body_inject`, once per render
+(the same defensive dedup as the Rust inject fields).
+
+- **Opt-in only.** The channel is disabled unless
+  `RenderOptions::state_inject` is `true` (`webui_handler_set_state_inject`
+  over FFI). It is default-off because the values are written **verbatim
+  with no escaping**: enabling it turns the state channel into a raw-HTML
+  sink, so it must only be used when the host fully controls the state
+  object. State merged from request input must never enable it.
+- **Never hydrated.** `$webui` is stripped from the client hydration
+  payload for both full and projected state, so boundary HTML is never
+  re-serialized into the DOM.
+- **Zero-copy.** The members are resolved once when the render context is
+  built and stored as `Option<&str>` borrowed from the caller's state, so
+  each structural hook costs one `Option` check — no map lookup, no clone.
+- **Mode parity.** Buffered, streaming, and owned-streaming renders emit
+  the same bytes at the same boundaries.
+
+The `$` prefix keeps the key from colliding with ordinary application state
+and keeps authored `{{{bodyEnd}}}` bindings resolving as plain state keys.
 
 ### Handler Plugin System
 The handler supports framework-specific hydration plugins. Plugins receive lifecycle

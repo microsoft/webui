@@ -310,6 +310,29 @@ trace IDs.
 
 > **Safety:** the HTML is written verbatim, no escaping. Untrusted input is a direct XSS vector. Pre-escape with `webui_handler::encode_safe` (re-exported for this purpose) if your content path may include user data.
 
+### Reserved `$webui` state channel
+
+`with_state_inject(true)` enables a reserved top-level `"$webui"` object in the
+render state that carries the same boundary HTML without a Rust-only builder,
+so non-Rust hosts get the capability through the state JSON they already send:
+
+```json
+{
+  "$webui": {
+    "headEnd": "<link rel=\"preload\" as=\"image\" href=\"/hero.avif\">",
+    "bodyStart": "<!-- after <body> -->",
+    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+  }
+}
+```
+
+Every member is optional and must be a string; anything else is ignored rather
+than an error. The key is stripped from the hydration payload, so it never
+reaches the client. Values are emitted after `with_head_inject` /
+`with_body_inject` at the same boundary.
+
+> **Safety:** disabled by default. Values are written verbatim with no escaping, so only enable it when your application fully owns the state object — never for state merged from request input.
+
 ### Typed streaming errors
 
 `StreamingWriter` returns `HandlerError::ClientDisconnected` (receiver dropped)
@@ -406,6 +429,7 @@ component.
 | `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` tags (including the `<script type="importmap">` tags that register Module-strategy CSS). Empty string normalises to `None`. |
 | `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
 | `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
+| `with_state_inject(bool)` | builder | Opt in to the reserved `"$webui"` state object (`headEnd`, `bodyStart`, `bodyEnd`). Default `false`. |
 
 ### Host-driven streaming
 
