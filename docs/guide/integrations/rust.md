@@ -328,8 +328,9 @@ through the state JSON they already send:
 
 Every member is optional and must be a string; anything else is ignored rather
 than an error. The key is stripped from the hydration payload, so it never
-reaches the client. Values are emitted after `with_head_inject` /
-`with_body_inject` at the same boundary.
+reaches the client. `headEnd` is emitted after `with_head_inject`, and `bodyEnd`
+is emitted after `with_body_inject`. `bodyStart` has no corresponding
+`RenderOptions` injection.
 
 > **Safety:** values are written verbatim with no escaping, exactly like `with_head_inject`. Never let request-derived data reach `$webui`.
 

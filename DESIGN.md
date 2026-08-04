@@ -930,9 +930,10 @@ of a new per-host API symbol:
 
 Each member is optional and must be a string; anything else (non-object
 `$webui`, `null`, empty string, wrong type, unknown member) is **inert
-rather than an error**. Values are emitted after WebUI's own emissions at
-the same boundary, and after `head_inject` / `body_inject`, once per render
-(the same defensive dedup as the Rust inject fields).
+rather than an error**. Values are emitted after WebUI's own emissions at the
+same boundary. `headEnd` follows `head_inject`, `bodyEnd` follows `body_inject`,
+and `bodyStart` has no corresponding `RenderOptions` injection. Each is emitted
+once per render (the same defensive dedup as the Rust inject fields).
 
 - **Host owns escaping.** Like `head_inject` / `body_inject`, the values are
   written **verbatim with no escaping**. The render state is host-supplied,

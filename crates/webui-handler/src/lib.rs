@@ -384,8 +384,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) body_inject: Option<&'protocol str>,
     /// Host HTML resolved once per render from the reserved
     /// [`STATE_INJECT_KEY`] state namespace. Emitted after the built-in
-    /// emissions and after the corresponding `RenderOptions` inject at each
-    /// structural boundary.
+    /// emissions at each structural boundary, and after the corresponding
+    /// `RenderOptions` inject at `head_end` and `body_end`.
     pub(crate) state_inject: StateInject<'state>,
     /// Tracks whether the `head_end` hook has already fired in this
     /// render. Defends against malformed protocols that emit the

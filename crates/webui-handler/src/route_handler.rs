@@ -739,7 +739,11 @@ fn select_raw_state<'de>(
     project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
 }
 
-/// Detect literal or Unicode-escaped spellings of the reserved state key.
+/// Detect literal or Unicode-escaped spellings of the top-level reserved key.
+///
+/// The fast candidate scan preserves the common no-match path. Structural
+/// depth is checked only when a candidate exists, so nested application keys
+/// do not force full-state reserialization.
 fn contains_reserved_state_key(state_json: &str) -> bool {
     let bytes = state_json.as_bytes();
     let mut search_start = 0;
@@ -749,11 +753,57 @@ fn contains_reserved_state_key(state_json: &str) -> bool {
             && bytes[candidate - 1] == b'"'
             && matches_reserved_state_key(bytes, candidate)
         {
-            return true;
+            return contains_top_level_reserved_state_key(bytes);
         }
         search_start = candidate + 1;
     }
     false
+}
+
+fn contains_top_level_reserved_state_key(bytes: &[u8]) -> bool {
+    let Some(mut cursor) = bytes.iter().position(|byte| !byte.is_ascii_whitespace()) else {
+        return false;
+    };
+    if bytes[cursor] != b'{' {
+        return false;
+    }
+
+    cursor += 1;
+    let mut depth = 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => {
+                if depth == 1 && matches_reserved_state_key(bytes, cursor + 1) {
+                    return true;
+                }
+                cursor = skip_json_string(bytes, cursor + 1);
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                cursor += 1;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+                cursor += 1;
+            }
+            _ => cursor += 1,
+        }
+    }
+    false
+}
+
+fn skip_json_string(bytes: &[u8], mut cursor: usize) -> usize {
+    while let Some(relative_index) = memchr2(b'"', b'\\', &bytes[cursor..]) {
+        cursor += relative_index;
+        if bytes[cursor] == b'"' {
+            return cursor + 1;
+        }
+        cursor = (cursor + 2).min(bytes.len());
+    }
+    bytes.len()
 }
 
 fn matches_reserved_state_key(bytes: &[u8], mut cursor: usize) -> bool {
@@ -2499,6 +2549,26 @@ mod tests {
             );
             assert!(!output.contains("<script>secret</script>"), "{output}");
         }
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_nested_reserved_key_bytes() {
+        let prepared = prepared_full_state_partial_protocol();
+        let output = prepared
+            .render_partial(
+                r#"{"outer": { "$webui": {"bodyEnd": "application data"} }, "value": 1e2}"#,
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+
+        assert!(
+            output.contains(
+                r#""state":{"outer": { "$webui": {"bodyEnd": "application data"} }, "value": 1e2}"#
+            ),
+            "{output}"
+        );
     }
 
     #[test]
