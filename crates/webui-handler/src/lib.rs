@@ -609,6 +609,9 @@ impl Serialize for ProjectedState<'_> {
         if self.keys.len() < map.len() {
             let mut previous = None;
             for key in self.keys {
+                if *key == STATE_INJECT_KEY {
+                    continue;
+                }
                 if previous == Some(*key) {
                     continue;
                 }
@@ -619,6 +622,9 @@ impl Serialize for ProjectedState<'_> {
             }
         } else {
             for (key, value) in map {
+                if key == STATE_INJECT_KEY {
+                    continue;
+                }
                 if self
                     .keys
                     .binary_search_by(|candidate| candidate.cmp(&key.as_str()))
@@ -8772,6 +8778,73 @@ mod tests {
     }
 
     #[test]
+    fn projected_hydration_strips_reserved_state_inject_key() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><body>"),
+                    WebUIFragment::component("app-shell"),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>"),
+                ],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+            },
+        );
+        let mut document = WebUIProtocol::new(fragments);
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        document.components.insert(
+            "app-shell".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec![STATE_INJECT_KEY.to_string(), "visible".to_string()],
+                ..Default::default()
+            },
+        );
+        let state = test_json!({
+            "$webui": { "bodyEnd": "<script>secret</script>" },
+            "serverOnly": "drop",
+            "visible": "keep",
+        });
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = TestWriter::new();
+
+        handler
+            .render(
+                &Protocol::new(document),
+                &state,
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        let html = writer.get_content();
+        let data_start = html
+            .find(r#"<script type="application/json" id="webui-data""#)
+            .expect("hydration block missing");
+        let data_end = html[data_start..]
+            .find("</script>")
+            .map(|offset| data_start + offset)
+            .expect("hydration block never closes");
+        let payload = &html[data_start..data_end];
+
+        assert!(
+            !payload.contains(STATE_INJECT_KEY),
+            "reserved key leaked: {payload}"
+        );
+        assert!(payload.contains(r#""visible":"keep""#), "{payload}");
+        assert!(!payload.contains("serverOnly"), "{payload}");
+        assert!(html.contains("<script>secret</script>"), "{html}");
+    }
+
+    #[test]
     fn write_selected_state_strips_reserved_key_from_full_state() {
         let state = test_json!({ "a": 1, "$webui": { "bodyEnd": "<b>x</b>" }, "z": 2 });
         let mut sink = TestWriter::new();
@@ -8783,6 +8856,27 @@ mod tests {
             json.contains("\"a\":1") && json.contains("\"z\":2"),
             "{json}"
         );
+    }
+
+    #[test]
+    fn write_selected_state_strips_reserved_key_from_borrowed_projection() {
+        let state = test_json!({
+            "$webui": { "bodyEnd": "<b>x</b>" },
+            "keep": 1,
+        });
+        let keys = [STATE_INJECT_KEY, "keep", "missing"];
+        let mut sink = TestWriter::new();
+        let mut scratch = Vec::new();
+
+        write_selected_state(
+            &mut sink,
+            &mut scratch,
+            &state,
+            &StateSelection::BorrowedKeys(&keys),
+        )
+        .unwrap();
+
+        assert_eq!(sink.get_content(), r#"{"keep":1}"#);
     }
 
     #[test]

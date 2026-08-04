@@ -841,7 +841,9 @@ impl<'de> Visitor<'de> for ProjectedRawStateVisitor<'_> {
         let mut entries: Vec<(Cow<'de, str>, &'de RawValue)> =
             Vec::with_capacity(self.state_keys.len());
         while let Some(key) = map.next_key_seed(BorrowedString)? {
-            if self.state_keys.binary_search(&key.as_ref()).is_err() {
+            if key.as_ref() == crate::STATE_INJECT_KEY
+                || self.state_keys.binary_search(&key.as_ref()).is_err()
+            {
                 map.next_value_seed(ValidJson)?;
                 continue;
             }
@@ -2404,6 +2406,23 @@ mod tests {
 
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"]["value"], 100.0);
+    }
+
+    #[test]
+    fn partial_state_projection_strips_reserved_inject_key() {
+        let prepared = prepared_partial_protocol(&[crate::STATE_INJECT_KEY, "value"]);
+        let output = prepared
+            .render_partial(
+                r#"{"$webui":{"bodyEnd":"<script>secret</script>"},"serverOnly":"drop","value":1}"#,
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(parsed["state"], serde_json::json!({"value": 1}));
+        assert!(!output.contains("<script>secret</script>"), "{output}");
     }
 
     #[test]

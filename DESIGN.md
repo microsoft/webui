@@ -2027,15 +2027,14 @@ All compiler-owned structural signal values use the internal wire namespace
 `}}}webui:boundary_start:0`). The parser's authored double/triple bindings
 cannot produce a value beginning with `}}}` because those bytes close the
 binding; CSS comment bindings also reject braces in paths. The handler strips
-this prefix only from raw signals before interpreting structure. In protocols
-that contain this namespace, unprefixed values such as authored
-`{{{head_start}}}` and `{{{streaming_root}}}` always remain ordinary public
-state keys. For complete-response compatibility, a runtime protocol containing
-no namespaced structural signal recognizes only the unnamespaced
-`head_end`, `body_start`, and `body_end` hooks. Such a protocol
+this prefix only from raw signals before interpreting structure. Unprefixed
+values such as authored `{{{head_start}}}`, `{{{head_end}}}`,
+`{{{body_start}}}`, `{{{body_end}}}`, and `{{{streaming_root}}}` always remain
+ordinary public state keys. Protocols built before this namespace therefore no
+longer receive structural hooks and must be rebuilt. Such a protocol also
 cannot enter streaming mode because it lacks namespaced `head_start`, boundary,
-and streamed-root signals and must be rebuilt first. This namespace is an
-internal parser/handler contract, not author syntax.
+and streamed-root signals. This namespace is an internal parser/handler
+contract, not author syntax.
 
 Boundary validation — unique static `name`, no nesting, outermost entry
 template only, and "must not cut through a component, native raw/inert content,
