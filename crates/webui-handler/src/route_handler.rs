@@ -9,6 +9,7 @@
 //! attribute-template edges without evaluating runtime state.
 
 use crate::{route_matcher, route_renderer, HandlerError, StateSelection};
+use memchr::memchr2;
 use route_matcher::CompiledRouteIndex;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -723,9 +724,9 @@ fn select_raw_state<'de>(
         StateSelection::Full => {
             // The reserved inject key carries host HTML, never application
             // state, so it must not reach the client here either. The
-            // substring probe keeps the overwhelmingly common case — no
-            // reserved key — on the zero-copy passthrough.
-            if state_json.contains(RESERVED_STATE_KEY_PROBE) {
+            // candidate probe keeps the overwhelmingly common case - no
+            // reserved key - on the zero-copy passthrough.
+            if contains_reserved_state_key(state_json) {
                 return strip_reserved_raw_state(state_json).map(SelectedRawState::Keys);
             }
             return serde_json::from_str::<&RawValue>(state_json)
@@ -738,21 +739,62 @@ fn select_raw_state<'de>(
     project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
 }
 
-/// Quoted form of [`crate::STATE_INJECT_KEY`] used to cheaply probe raw JSON.
-///
-/// The probe is only a fast negative filter — a match still goes through the
-/// real JSON parser, so a false positive (the literal appearing in a value)
-/// costs correctness nothing. The assertion below keeps it in sync with the
-/// canonical constant.
-const RESERVED_STATE_KEY_PROBE: &str = "\"$webui\"";
+/// Detect literal or Unicode-escaped spellings of the reserved state key.
+fn contains_reserved_state_key(state_json: &str) -> bool {
+    let bytes = state_json.as_bytes();
+    let mut search_start = 0;
+    while let Some(relative_index) = memchr2(b'$', b'\\', &bytes[search_start..]) {
+        let candidate = search_start + relative_index;
+        if candidate > 0
+            && bytes[candidate - 1] == b'"'
+            && matches_reserved_state_key(bytes, candidate)
+        {
+            return true;
+        }
+        search_start = candidate + 1;
+    }
+    false
+}
 
-const _: () = assert!(
-    matches!(
-        crate::STATE_INJECT_KEY.as_bytes(),
-        [b'$', b'w', b'e', b'b', b'u', b'i']
-    ),
-    "RESERVED_STATE_KEY_PROBE must stay in sync with STATE_INJECT_KEY"
-);
+fn matches_reserved_state_key(bytes: &[u8], mut cursor: usize) -> bool {
+    for expected in crate::STATE_INJECT_KEY.bytes() {
+        if bytes.get(cursor).is_some_and(|byte| *byte == expected) {
+            cursor += 1;
+        } else if matches_unicode_escape(bytes, cursor, expected) {
+            cursor += 6;
+        } else {
+            return false;
+        }
+    }
+
+    if bytes.get(cursor) != Some(&b'"') {
+        return false;
+    }
+    cursor += 1;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+        cursor += 1;
+    }
+    bytes.get(cursor) == Some(&b':')
+}
+
+fn matches_unicode_escape(bytes: &[u8], cursor: usize, expected: u8) -> bool {
+    let Some(escape) = bytes.get(cursor..cursor.saturating_add(6)) else {
+        return false;
+    };
+    escape[..4] == *b"\\u00"
+        && decode_hex_nibble(escape[4]).is_some_and(|high| {
+            decode_hex_nibble(escape[5]).is_some_and(|low| (high << 4) | low == expected)
+        })
+}
+
+fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
 
 /// Re-emit a raw state object with the reserved inject key removed.
 fn strip_reserved_raw_state(state_json: &str) -> Result<ProjectedRawState<'_>, HandlerError> {
@@ -2437,6 +2479,26 @@ mod tests {
             )
             .unwrap();
         assert!(output.contains(r#""state":{"serverOnly":"keep","value":1e2}"#));
+    }
+
+    #[test]
+    fn uncertain_partial_surface_strips_escaped_reserved_inject_key() {
+        let prepared = prepared_full_state_partial_protocol();
+        for state in [
+            r#"{"\u0024webui":{"bodyEnd":"<script>secret</script>"},"serverOnly":"keep","value":1}"#,
+            r#"{"$\u0077\u0065\u0062\u0075\u0069":{"bodyEnd":"<script>secret</script>"},"serverOnly":"keep","value":1}"#,
+        ] {
+            let output = prepared
+                .render_partial(state, "index.html", "/", "")
+                .unwrap();
+            let parsed: Value = serde_json::from_str(&output).unwrap();
+
+            assert_eq!(
+                parsed["state"],
+                serde_json::json!({"serverOnly": "keep", "value": 1})
+            );
+            assert!(!output.contains("<script>secret</script>"), "{output}");
+        }
     }
 
     #[test]

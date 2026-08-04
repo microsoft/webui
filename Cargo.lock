@@ -1893,6 +1893,7 @@ name = "microsoft-webui-handler"
 version = "0.0.21"
 dependencies = [
  "criterion",
+ "memchr",
  "microsoft-webui-expressions",
  "microsoft-webui-parser",
  "microsoft-webui-protocol",
