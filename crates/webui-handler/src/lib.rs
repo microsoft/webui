@@ -220,9 +220,8 @@ pub struct RenderOptions<'a> {
 
 /// Reserved top-level state key carrying host-supplied boundary HTML.
 ///
-/// Namespaced with a leading `$` so it cannot collide with an ordinary
-/// application state field, and so authored `{{{body_end}}}` bindings keep
-/// resolving as plain state keys.
+/// The leading `$` marks this key as reserved host metadata rather than
+/// ordinary application state.
 ///
 /// Recognized members, each an optional string:
 ///

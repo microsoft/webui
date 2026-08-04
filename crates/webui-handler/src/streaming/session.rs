@@ -84,10 +84,7 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     nonce: Option<&'a str>,
     head_inject: Option<&'a str>,
     body_inject: Option<&'a str>,
-    /// Whether the reserved [`crate::STATE_INJECT_KEY`] state namespace is
-    /// honoured. Captured from `RenderOptions` for the life of the response;
-    /// the values themselves are re-resolved per call because each call
-    /// borrows its own state value.
+    /// Index of the next entry fragment to write.
     cursor: usize,
     next_boundary: usize,
     shell_written: bool,
