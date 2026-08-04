@@ -9,11 +9,7 @@
  */
 
 import {
-  mkdir,
-  open,
   readFile,
-  rename,
-  rm,
 } from "node:fs/promises";
 import * as path from "node:path";
 import type {
@@ -34,14 +30,19 @@ import {
   createDiagnostic,
 } from "../diagnostics.js";
 import type { ProjectionDiagnostic } from "../diagnostics.js";
+import { compareUtf8 } from "../manifest.js";
+import { ProjectionSession } from "../session.js";
 import {
-  compareUtf8,
-  serializeManifestCanonical,
-} from "../manifest.js";
-import {
-  compileProjection,
-  preloadProjectionCompiler,
-} from "../loader.js";
+  adapterError,
+  commonAncestor,
+  comparePaths,
+  nearestPackageName,
+  packageNameFromSpecifier,
+  parseVersion,
+  pathKey,
+  readPhysicalSource,
+  samePath,
+} from "./shared.js";
 
 /** Configuration for the official esbuild projection adapter. */
 export interface EsbuildProjectionOptions {
@@ -62,8 +63,6 @@ interface InputRecord {
   readonly packageName: string | undefined;
 }
 
-let temporaryFileSequence = 0;
-
 /** Create the official esbuild projection plugin. */
 export function esbuildProjection(
   options: EsbuildProjectionOptions = {}
@@ -73,12 +72,9 @@ export function esbuildProjection(
     setup(build) {
       build.initialOptions.metafile = true;
       const versionError = validateEsbuildVersion(build.esbuild.version);
-      const compilerLoad = versionError
-        ? Promise.resolve(undefined)
-        : preloadProjectionCompiler().then(
-            () => undefined,
-            (error: unknown) => error
-          );
+      const session = versionError
+        ? undefined
+        : new ProjectionSession();
       if (versionError) {
         build.onStart(() => ({
           errors: [diagnosticMessage(versionError)],
@@ -86,11 +82,9 @@ export function esbuildProjection(
       }
 
       build.onEnd(async (result) => {
-        if (result.errors.length > 0 || versionError) return;
+        if (result.errors.length > 0 || versionError || !session) return;
         try {
-          const compilerError = await compilerLoad;
-          if (compilerError !== undefined) throw compilerError;
-          await emitProjectionManifest(build, result, options);
+          await emitProjectionManifest(build, result, options, session);
         } catch (error: unknown) {
           return {
             errors: errorMessages(error),
@@ -104,7 +98,8 @@ export function esbuildProjection(
 async function emitProjectionManifest(
   build: PluginBuild,
   result: BuildResult,
-  options: EsbuildProjectionOptions
+  options: EsbuildProjectionOptions,
+  session: ProjectionSession
 ): Promise<void> {
   const profile = process.env["WEBUI_PROJECTION_PROFILE"] === "1";
   const profileStart = profile ? performance.now() : 0;
@@ -179,16 +174,11 @@ async function emitProjectionManifest(
     bundlerName: "esbuild",
     bundlerVersion: build.esbuild.version,
   };
-  const manifest = await compileProjection(context);
-  const compiled = profile ? performance.now() : 0;
-  await writeAtomic(
-    manifestPath,
-    serializeManifestCanonical(manifest)
-  );
+  await session.finalize(context);
   if (profile) {
     const finished = performance.now();
     console.error(
-      `[webui-projection] graph=${(graphReady - profileStart).toFixed(1)}ms compile=${(compiled - graphReady).toFixed(1)}ms write=${(finished - compiled).toFixed(1)}ms total=${(finished - profileStart).toFixed(1)}ms`
+      `[webui-projection] graph=${(graphReady - profileStart).toFixed(1)}ms finalize=${(finished - graphReady).toFixed(1)}ms total=${(finished - profileStart).toFixed(1)}ms`
     );
   }
 }
@@ -295,18 +285,6 @@ async function loadInputRecords(
     );
   }
   return resolved;
-}
-
-async function readPhysicalSource(
-  filePath: string
-): Promise<string | undefined> {
-  try {
-    const bytes = await readFile(filePath);
-    return bytes.toString("utf8");
-  } catch (error: unknown) {
-    if (isMissingFile(error)) return undefined;
-    throw error;
-  }
 }
 
 function sourceForStdin(
@@ -491,141 +469,8 @@ async function loadOutputContents(
   return contents;
 }
 
-async function nearestPackageName(
-  filePath: string,
-  cache: Map<string, string | undefined>
-): Promise<string | undefined> {
-  let directory = path.dirname(filePath);
-  const visited: string[] = [];
-  while (true) {
-    if (cache.has(directory)) {
-      const cached = cache.get(directory);
-      for (const value of visited) cache.set(value, cached);
-      return cached;
-    }
-    visited.push(directory);
-    const packagePath = path.join(directory, "package.json");
-    try {
-      const text = await readFile(packagePath, "utf8");
-      const parsed = JSON.parse(text) as { name?: unknown };
-      const name =
-        typeof parsed.name === "string" && parsed.name.length > 0
-          ? parsed.name
-          : undefined;
-      for (const value of visited) cache.set(value, name);
-      return name;
-    } catch (error: unknown) {
-      if (!isMissingFile(error)) {
-        throw adapterError(
-          `could not read package identity from '${packagePath}'`,
-          error instanceof Error ? error.message : String(error)
-        );
-      }
-    }
-    const parent = path.dirname(directory);
-    if (parent === directory) {
-      for (const value of visited) cache.set(value, undefined);
-      return undefined;
-    }
-    directory = parent;
-  }
-}
-
-function packageNameFromSpecifier(
-  specifier: string
-): string | undefined {
-  if (
-    specifier.length === 0 ||
-    specifier.startsWith(".") ||
-    specifier.startsWith("/") ||
-    path.isAbsolute(specifier)
-  ) {
-    return undefined;
-  }
-  const segments = specifier.split("/");
-  if (specifier.startsWith("@")) {
-    return segments.length >= 2
-      ? `${segments[0]}/${segments[1]}`
-      : undefined;
-  }
-  return segments[0];
-}
-
 function virtualModuleId(metafileId: string): string {
   return `\0esbuild:${metafileId}`;
-}
-
-function commonAncestor(paths: ReadonlyArray<string>): string {
-  if (paths.length === 0) {
-    throw adapterError(
-      "esbuild produced no physical projection artifacts",
-      "Provide at least one physical output file."
-    );
-  }
-  let ancestor = path.dirname(path.resolve(paths[0]!));
-  for (let index = 1; index < paths.length; index++) {
-    const directory = path.dirname(path.resolve(paths[index]!));
-    while (!isWithin(ancestor, directory)) {
-      const parent = path.dirname(ancestor);
-      if (parent === ancestor) {
-        throw adapterError(
-          "projection inputs and outputs do not share a filesystem root",
-          "Keep one bundler invocation on a single filesystem volume."
-        );
-      }
-      ancestor = parent;
-    }
-  }
-  return ancestor;
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const relative = path.relative(root, candidate);
-  return (
-    relative.length === 0 ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${path.sep}`) &&
-      !path.isAbsolute(relative))
-  );
-}
-
-function comparePaths(left: string, right: string): number {
-  return Buffer.compare(
-    Buffer.from(left, "utf8"),
-    Buffer.from(right, "utf8")
-  );
-}
-
-function samePath(left: string, right: string): boolean {
-  return pathKey(left) === pathKey(right);
-}
-
-function pathKey(value: string): string {
-  const resolved = path.resolve(value);
-  return process.platform === "win32"
-    ? resolved.toLowerCase()
-    : resolved;
-}
-
-async function writeAtomic(
-  manifestPath: string,
-  contents: string
-): Promise<void> {
-  await mkdir(path.dirname(manifestPath), { recursive: true });
-  const sequence = temporaryFileSequence++;
-  const temporaryPath = `${manifestPath}.tmp-${process.pid}-${sequence}`;
-  try {
-    const handle = await open(temporaryPath, "wx");
-    try {
-      await handle.writeFile(contents, "utf8");
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await rename(temporaryPath, manifestPath);
-  } finally {
-    await rm(temporaryPath, { force: true });
-  }
 }
 
 function validateEsbuildVersion(
@@ -643,31 +488,6 @@ function validateEsbuildVersion(
     });
   }
   return undefined;
-}
-
-function parseVersion(
-  value: string
-): { major: number; minor: number; patch: number } | undefined {
-  const segments = value.split(".");
-  if (segments.length < 3) return undefined;
-  const major = Number(segments[0]);
-  const minor = Number(segments[1]);
-  const patchText = segments[2]!;
-  let end = 0;
-  while (
-    end < patchText.length &&
-    patchText.charCodeAt(end) >= 48 &&
-    patchText.charCodeAt(end) <= 57
-  ) {
-    end++;
-  }
-  if (end === 0) return undefined;
-  const patch = Number(patchText.slice(0, end));
-  return Number.isInteger(major) &&
-    Number.isInteger(minor) &&
-    Number.isInteger(patch)
-    ? { major, minor, patch }
-    : undefined;
 }
 
 function errorMessages(error: unknown): PartialMessage[] {
@@ -707,19 +527,4 @@ function diagnosticMessage(
         }),
     detail: diagnostic,
   };
-}
-
-function adapterError(
-  title: string,
-  help: string
-): ProjectionError {
-  return new ProjectionError([
-    createDiagnostic("PROJ-C013", { help: `${title}. ${help}` }),
-  ]);
-}
-
-function isMissingFile(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const code = (error as Error & { code?: unknown }).code;
-  return code === "ENOENT" || code === "ENOTDIR";
 }

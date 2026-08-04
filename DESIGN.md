@@ -2739,28 +2739,47 @@ runtime dependency.
 
 ### Package architecture
 
-The `@microsoft/webui` package exposes one build-only subpath:
+The `@microsoft/webui` package exposes focused build-only subpaths:
 
 ```typescript
-import { compileProjection, esbuildProjection } from '@microsoft/webui/projection.js';
+import {
+  compileProjection,
+  ProjectionSession,
+} from '@microsoft/webui/projection/core.js';
+import { esbuildProjection } from '@microsoft/webui/projection/esbuild.js';
+import { rspackProjection } from '@microsoft/webui/projection/rspack.js';
+import { runConformanceSuite } from '@microsoft/webui/projection/testing.js';
 ```
 
 The root `@microsoft/webui` entry does **not** import or re-export the
 projection subpath so that render/build consumers do not load compiler or
 adapter code.
 
+`@microsoft/webui/projection.js` remains a backward-compatible facade that
+re-exports core, testing, and esbuild symbols. New integrations use the focused
+subpaths so bundler-specific types never enter the core declaration graph.
+Rspack remains isolated to its dedicated subpath and is not added to the legacy
+facade.
+
 Internal source organization:
 
 ```text
 packages/webui/src/projection/
   index.ts          — public subpath barrel
+  core.ts           — bundler-neutral public compiler/finalizer barrel
+  esbuild.ts        — esbuild-only public adapter barrel
+  rspack.ts         — Rspack-only public adapter barrel
+  testing.ts        — adapter conformance public barrel
   compiler.ts       — TypeScript AST analysis and symbol graph
   graph.ts          — normalized module graph types and adapter SPI
   manifest.ts       — manifest schema types and serialization
-  loader.ts         — manifest loading and filesystem validation
+  loader.ts         — lazy TypeScript/compiler loading and peer diagnostics
+  session.ts        — shared compile/serialize/atomic-finalize lifecycle
   diagnostics.ts    — stable diagnostic codes and error types
   adapters/
     esbuild.ts      — supported esbuild adapter
+    rspack.ts       — supported Rspack adapter
+    shared.ts       — filesystem, package, path, and version helpers
   fixtures/
     conformance.ts  — adapter conformance test helpers and reference cases
 ```
@@ -2772,26 +2791,30 @@ implementation and the Rust manifest consumer must satisfy.
 ### Optional peer dependency policy
 
 `typescript` and each officially supported bundler are optional peer
-dependencies of `@microsoft/webui`. The supported bundler is esbuild:
+dependencies of `@microsoft/webui`. The supported bundlers are esbuild and
+Rspack:
 
 ```json
 {
   "peerDependencies": {
+    "@rspack/core": "^2.0.1",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   },
   "peerDependenciesMeta": {
+    "@rspack/core": { "optional": true },
     "esbuild": { "optional": true },
     "typescript": { "optional": true }
   }
 }
 ```
 
-**`esbuild` must not be a direct dependency and must not be bundled into
-`@microsoft/webui`.** The application owns the esbuild installation and version.
-Importing or invoking `@microsoft/webui/projection.js` without the required
-peer produces an actionable diagnostic (`PROJ-P001`/`PROJ-P002`; see
-[Diagnostic codes](#projection-diagnostic-codes)).
+**Bundlers must not be direct dependencies or be bundled into
+`@microsoft/webui`.** The application owns the bundler installation and version.
+Invoking a focused adapter with an unsupported peer produces an actionable
+diagnostic (`PROJ-P002` for esbuild and `PROJ-P004` for Rspack; see
+[Diagnostic codes](#projection-diagnostic-codes)). Compiler loading uses
+`PROJ-P001` for an unsupported TypeScript peer.
 
 Both peers are optional so users importing only the root build/render API do
 not receive dependency warnings for compiler tooling they do not use.
@@ -2901,8 +2924,8 @@ parsed as projection semantics.
 2. Populate `ModuleGraph`, retaining specifier-to-resolved-target edges.
 3. Populate `OutputMembership` from the bundler's emitted output→input map.
 4. Provide raw source text and exact emitted output bytes.
-5. Invoke `compileProjection(ctx)` (see below).
-6. Write the returned `ProjectionManifest` atomically to `manifestPath`.
+5. Invoke `ProjectionSession.finalize(ctx)`.
+6. Translate projection diagnostics into the bundler's native error model.
 
 **Compiler responsibilities (not adapter responsibilities):**
 
@@ -2912,6 +2935,55 @@ parsed as projection semantics.
 - `define()` association.
 - Manifest serialization.
 - Diagnostic reporting.
+
+### Projection finalization session
+
+`ProjectionSession` is the shared lifecycle around a complete immutable
+`AdapterContext`:
+
+```typescript
+const session = new ProjectionSession();
+const manifest = await session.finalize(context);
+```
+
+It preloads the TypeScript-backed compiler, serializes overlapping finalizations
+in invocation order, calls the pure `compileProjection()` function, writes the
+canonical compact JSON to a temporary file in the manifest directory, syncs and
+closes that file, then atomically renames it over the previous manifest. A
+compile or temporary-write failure leaves the previous manifest intact, and a
+later watch rebuild may reuse the same session.
+
+The session never owns bundler hooks, graph/source/output collection,
+manifest-path or build-root derivation, package resolution, bundler version
+validation, native diagnostic formatting, or cross-build graph caches. Adapters
+must invoke `finalize()` in compilation order.
+
+### Bundler adapter portability limit
+
+The normalized context is reusable; bundler plugin objects are not. An esbuild
+`Plugin` uses `setup()` and esbuild callbacks, while Rspack uses
+`apply(compiler)` and Tapable hooks. A generic wrapper can share registration
+convenience but cannot create graph facts the underlying bundler does not expose.
+
+An official adapter is conformant only when supported bundler APIs prove:
+
+1. every authored import/re-export specifier and its exact resolved target;
+2. the exact analyzable source used by that compilation;
+3. final post-tree-shake output-to-original-module membership, including
+   concatenated modules and multiple asset kinds;
+4. exact final output bytes.
+
+Rspack 2.x exposes the required facts through supported compilation objects.
+The adapter reads authored requests and targets from `module.dependencies` plus
+`moduleGraph`, expands every `ConcatenatedModule.modules` wrapper found in
+`chunkGraph` membership, and reads final asset sources in `afterEmit`. Duplicate
+`esm import` and `esm import specifier` records are collapsed by authored
+request, preferring a resolved base edge. Physical source is read from the
+resolved resource because `NormalModule.originalSource()` is loader-transformed.
+Virtual IDs use `libIdent({ context })` and never embed the workspace root.
+
+The adapter does not use experimental Rsdoctor hooks, chunk/file cross-products,
+emitted-code parsing, or resolution heuristics.
 
 ### TypeScript AST semantic rules
 
@@ -3506,6 +3578,7 @@ No color in diagnostic data; color is added only by `webui-cli` output layer.
 | `PROJ-P001` | error | Required peer `typescript` is absent or below the supported range |
 | `PROJ-P002` | error | Required peer `esbuild` is absent or below the supported range (esbuild adapter only) |
 | `PROJ-P003` | warning | Peer is present but above the tested range; results may differ |
+| `PROJ-P004` | error | Required peer `@rspack/core` is absent or below the supported range (Rspack adapter only) |
 
 #### Manifest diagnostics (PROJ-M*)
 
@@ -3563,6 +3636,12 @@ The Rust manifest consumer enforces the following before parsing manifest JSON:
 
 The canonical conformance test helpers and reference cases live in
 `packages/webui/src/projection/fixtures/conformance.ts`.
+
+These fixtures validate compiler behavior after an `AdapterContext` has been
+constructed. They do not prove that a real bundler adapter extracted exact
+native graph facts. Every official adapter additionally requires black-box
+bundler tests for resolution aliases, externals, tree shaking, code splitting,
+concatenation, output bytes, watch failure/recovery, and optional-peer isolation.
 
 #### Required fixture scenarios
 
@@ -3710,9 +3789,10 @@ The esbuild adapter:
    files during `onEnd` for `write: true` (esbuild has completed writes before
    `onEnd`).
 8. Chooses the common ancestor of the manifest, physical inputs, and outputs
-   as `rootDir`, constructs `AdapterContext`, and calls the shared compiler.
-9. Writes canonical compact JSON to a same-directory temporary file, flushes
-   it, and atomically renames it over the manifest.
+   as `rootDir`, constructs `AdapterContext`, and calls
+   `ProjectionSession.finalize()`.
+9. The shared session writes canonical compact JSON to a same-directory
+   temporary file, flushes it, and atomically renames it over the manifest.
 10. If the build or projection compiler has errors, the manifest is **not**
    written. An existing stale
    manifest from a prior run is left in place (not deleted).
@@ -3724,6 +3804,66 @@ A single `esbuild.build()` call with `metafile: true` and code splitting is
 fully supported. External components are absent from the application fragment
 and produce their own fragment when built separately with the same adapter.
 The adapter handles all outputs in one `onEnd` pass.
+
+### Rspack adapter specification
+
+The Rspack adapter is implemented in
+`packages/webui/src/projection/adapters/rspack.ts` and exported only from
+`@microsoft/webui/projection/rspack.js`.
+
+```typescript
+import type { Compilation, Compiler } from '@rspack/core';
+
+export interface RspackProjectionOptions {
+  /** Defaults to `<output.path>/webui-projection.json`. */
+  manifest?: string;
+  /**
+   * Runs after the manifest is atomically installed. Rspack awaits the result.
+   */
+  afterManifest?: (result: RspackProjectionResult) => void | Promise<void>;
+}
+
+export interface RspackProjectionResult {
+  readonly manifest: ProjectionManifest;
+  readonly context: AdapterContext;
+  readonly manifestPath: string;
+  readonly compiler: Compiler;
+  readonly compilation: Compilation;
+}
+
+export function rspackProjection(
+  options?: RspackProjectionOptions
+): { apply(compiler: Compiler): void };
+```
+
+The Rspack adapter:
+
+1. Validates `compiler.rspack.rspackVersion` against `^2.0.1`
+   (`PROJ-P004`) and keeps one `ProjectionSession` per compiler for watch
+   rebuild ordering and recovery.
+2. Groups original module instances by canonical physical or virtual ID.
+   `ConcatenatedModule` wrappers never become graph nodes.
+3. Walks `module.dependencies` and nested `AsyncDependenciesBlock` values
+   iteratively. Duplicate base/specifier records collapse by authored request
+   and static/dynamic kind; a resolved target wins over an unresolved duplicate,
+   then a base dependency wins over a specifier record.
+4. Marks `ExternalModule` targets external and proves bundled package identity
+   from the resolved file's nearest `package.json`.
+5. Reads authored UTF-8 disk source for physical modules. Loader-transformed
+   `originalSource()` is used only for virtual modules, whose IDs come from
+   root-relative `libIdent({ context })`.
+6. Expands concatenation wrappers from each chunk iteratively and assigns their
+   original modules only to JavaScript files in that chunk. Code-split chunks
+   therefore retain independent component ownership.
+7. Hashes exact final `compilation.getAsset(name).source.buffer()` bytes in
+   `afterEmit`; it never re-reads emitted JavaScript from disk.
+8. Preserves an existing manifest as a marked compilation asset before
+   `output.clean`, removes that temporary asset from the compilation view after
+   emit, then calls `ProjectionSession.finalize()` only after a successful emit.
+   A projection failure leaves the previous valid manifest intact.
+9. Awaits `afterManifest` after atomic installation. This is the sequencing
+   point for rebuilding `protocol.bin` with `--projection-manifest` before a
+   dependent SSR build. Callback rejection becomes a Rspack compilation error.
 
 ### webui-press integration
 

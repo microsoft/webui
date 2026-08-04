@@ -23,7 +23,7 @@
     "build": "tsc",
     "postbuild": "node dist/install.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",
-    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js"
+    "test": "tsc --project tsconfig.test.json && node --test dist/test/integration.test.js dist/test/native-addon-loading.test.js dist/test/projection-conformance.test.js dist/test/projection-compiler.test.js dist/test/projection-esbuild.test.js dist/test/projection-peers.test.js dist/test/projection-session.test.js dist/test/projection-rspack.test.js"
   },
   "engines": {
     "node": ">=18"
@@ -46,6 +46,30 @@
         "types": "./dist/projection/index.d.ts",
         "default": "./dist/projection/index.js"
       }
+    },
+    "./projection/core.js": {
+      "import": {
+        "types": "./dist/projection/core.d.ts",
+        "default": "./dist/projection/core.js"
+      }
+    },
+    "./projection/esbuild.js": {
+      "import": {
+        "types": "./dist/projection/esbuild.d.ts",
+        "default": "./dist/projection/esbuild.js"
+      }
+    },
+    "./projection/rspack.js": {
+      "import": {
+        "types": "./dist/projection/rspack.d.ts",
+        "default": "./dist/projection/rspack.js"
+      }
+    },
+    "./projection/testing.js": {
+      "import": {
+        "types": "./dist/projection/testing.d.ts",
+        "default": "./dist/projection/testing.js"
+      }
     }
   },
   "optionalDependencies": {
@@ -57,10 +81,14 @@
     "@microsoft/webui-win32-x64": "workspace:*"
   },
   "peerDependencies": {
+    "@rspack/core": "^2.0.1",
     "esbuild": "^0.28.1",
     "typescript": "^6.0.3"
   },
   "peerDependenciesMeta": {
+    "@rspack/core": {
+      "optional": true
+    },
     "esbuild": {
       "optional": true
     },
@@ -69,6 +97,7 @@
     }
   },
   "devDependencies": {
+    "@rspack/core": "catalog:",
     "@types/node": "catalog:",
     "esbuild": "catalog:",
     "typescript": "catalog:"

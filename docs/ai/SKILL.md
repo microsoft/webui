@@ -1082,6 +1082,10 @@ Full flag tables, exit codes, and the error-code list:
 Add `@microsoft/webui-router` for client-side navigation. Passing
 `--projection-manifest` narrows hydration state to exactly the `@observable` and
 `@attr` fields your bundle uses; omitting it keeps full state.
+Generate the manifest from the same client compilation with
+`esbuildProjection()` or `rspackProjection()`. For Rspack, use the awaited
+`afterManifest` callback to rebuild `protocol.bin` before a dependent SSR bundle
+runs. See [Hydration](/guide/concepts/hydration#build-time-state-projection).
 
 ## Server integration
 

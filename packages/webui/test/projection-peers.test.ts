@@ -20,6 +20,10 @@ import type {
   OnStartResult,
   PluginBuild,
 } from "esbuild";
+import type { Compiler } from "@rspack/core";
+import {
+  rspackProjection,
+} from "@microsoft/webui/projection/rspack.js";
 
 describe("projection optional peers", () => {
   test("reports PROJ-P001 when TypeScript is absent", async () => {
@@ -92,6 +96,32 @@ describe("projection optional peers", () => {
     assert.equal(result?.errors?.[0]?.id, "PROJ-P002");
   });
 
+  test("reports PROJ-P004 for an incompatible application Rspack", () => {
+    let onCompilation:
+      | ((compilation: { errors: Error[] }) => void)
+      | undefined;
+    const plugin = rspackProjection();
+    const fakeCompiler = {
+      rspack: { rspackVersion: "1.0.0" },
+      hooks: {
+        thisCompilation: {
+          tap(
+            _name: string,
+            callback: (compilation: { errors: Error[] }) => void
+          ) {
+            onCompilation = callback;
+          },
+        },
+      },
+    } as unknown as Compiler;
+
+    plugin.apply(fakeCompiler);
+    assert.ok(onCompilation);
+    const compilation = { errors: [] as Error[] };
+    onCompilation(compilation);
+    assert.equal(compilation.errors[0]?.name, "PROJ-P004");
+  });
+
   test("root entry does not import projection tooling", async () => {
     const rootEntry = await readFile(
       path.resolve("dist", "index.js"),
@@ -100,5 +130,43 @@ describe("projection optional peers", () => {
     assert.equal(rootEntry.includes("/projection/"), false);
     assert.equal(rootEntry.includes("typescript"), false);
     assert.equal(rootEntry.includes("esbuild"), false);
+  });
+
+  test("core projection entry does not import bundler adapters", async () => {
+    const coreEntry = await readFile(
+      path.resolve("dist", "projection", "core.js"),
+      "utf8"
+    );
+    assert.equal(coreEntry.includes("/adapters/"), false);
+    assert.equal(coreEntry.includes("esbuild"), false);
+    assert.equal(coreEntry.includes("@rspack/core"), false);
+  });
+
+  test("Rspack projection entry has no runtime bundler import", async () => {
+    const rspackEntry = await readFile(
+      path.resolve("dist", "projection", "adapters", "rspack.js"),
+      "utf8"
+    );
+    assert.equal(
+      rspackEntry.includes('from "@rspack/core"') ||
+        rspackEntry.includes("from '@rspack/core'"),
+      false
+    );
+    assert.equal(rspackEntry.includes("esbuild"), false);
+  });
+
+  test("dedicated projection subpaths expose isolated APIs", async () => {
+    const [core, esbuildAdapter, rspackAdapter, testing] =
+      await Promise.all([
+      import("@microsoft/webui/projection/core.js"),
+      import("@microsoft/webui/projection/esbuild.js"),
+      import("@microsoft/webui/projection/rspack.js"),
+      import("@microsoft/webui/projection/testing.js"),
+    ]);
+    assert.equal(typeof core.ProjectionSession, "function");
+    assert.equal(typeof core.compileProjection, "function");
+    assert.equal(typeof esbuildAdapter.esbuildProjection, "function");
+    assert.equal(typeof rspackAdapter.rspackProjection, "function");
+    assert.equal(typeof testing.runConformanceSuite, "function");
   });
 });

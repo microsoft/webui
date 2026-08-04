@@ -72,18 +72,31 @@ Misspelled literal-fallback tokens are returned as non-fatal warnings.
 
 ### Optional state projection
 
-The build-only `@microsoft/webui/projection.js` subpath exposes the
-bundler-neutral projection compiler and the supported esbuild adapter. esbuild
-and TypeScript are optional peer dependencies, so applications that do not use
-projection do not install or load them:
+The build-only projection subpaths keep the bundler-neutral compiler separate
+from bundler adapters:
+
+| Subpath | Purpose |
+|---|---|
+| `@microsoft/webui/projection/core.js` | `AdapterContext`, compiler, manifest API, and `ProjectionSession` |
+| `@microsoft/webui/projection/esbuild.js` | Supported esbuild adapter |
+| `@microsoft/webui/projection/rspack.js` | Supported Rspack adapter |
+| `@microsoft/webui/projection/testing.js` | Shared conformance fixtures for adapter authors |
+| `@microsoft/webui/projection.js` | Backward-compatible core + esbuild facade |
+
+esbuild, Rspack, and TypeScript are optional peer dependencies, so applications
+install only the peers used by their selected adapter:
 
 ```bash
 npm install -D esbuild typescript
 ```
 
+The compatible `@microsoft/webui/projection.js` facade does not export Rspack.
+Importing the focused Rspack subpath keeps projects without `@rspack/core`
+unaffected.
+
 ```js
 import * as esbuild from "esbuild";
-import { esbuildProjection } from "@microsoft/webui/projection.js";
+import { esbuildProjection } from "@microsoft/webui/projection/esbuild.js";
 
 await esbuild.build({
   entryPoints: ["src/index.ts"],
@@ -107,10 +120,55 @@ surfaces into `protocol.bin`. The adapter uses esbuild's resolved graph and
 emitted output membership, so code splitting, dynamic imports, output hashes,
 and external bundles remain application-owned.
 
-Other bundler adapters can use the exported `AdapterContext`,
-`compileProjection()`, and conformance fixtures without importing esbuild. The
-package currently ships and supports `esbuildProjection()` as its official
-adapter.
+Other bundler adapters can construct an exact `AdapterContext` and use the
+shared finalization lifecycle without importing esbuild:
+
+```js
+import { ProjectionSession } from "@microsoft/webui/projection/core.js";
+
+const session = new ProjectionSession();
+await session.finalize(context);
+```
+
+`ProjectionSession` compiles, canonically serializes, and atomically replaces
+the manifest. The adapter still owns graph extraction, path/root derivation,
+bundler version checks, and native diagnostic presentation. Import
+`runConformanceSuite` from `@microsoft/webui/projection/testing.js` to verify the
+normalized compiler contract.
+
+An esbuild plugin cannot be passed to Rspack because their plugin APIs differ,
+so WebUI provides a native Rspack adapter:
+
+```bash
+npm install -D @rspack/core@^2.0.1 typescript
+```
+
+```typescript
+import { fileURLToPath } from 'node:url';
+import { rspackProjection } from '@microsoft/webui/projection/rspack.js';
+import { rebuildProtocol } from './build-protocol.js';
+
+export default {
+  output: { path: fileURLToPath(new URL('./dist', import.meta.url)) },
+  plugins: [
+    rspackProjection({
+      manifest: './dist/webui-projection.json',
+      afterManifest: ({ manifestPath }) =>
+        rebuildProtocol({ projectionManifest: manifestPath }),
+    }),
+  ],
+};
+```
+
+The adapter reads Rspack 2.x's dependency graph, expands concatenated modules,
+preserves code-split chunk membership, and hashes exact in-memory asset bytes
+after emit. It canonicalizes package identity and virtual IDs, handles
+externals, and removes duplicate dependency records without parsing output text.
+
+`afterManifest` runs after atomic manifest replacement and is awaited by Rspack.
+Use it to rebuild `protocol.bin` with the new manifest before starting a
+dependent SSR bundle. If the callback rejects, the compilation fails. The
+callback receives `{ manifest, context, manifestPath, compiler, compilation }`.
 
 With no manifest, WebUI performs no JavaScript analysis and preserves full
 state. Once any manifest is supplied, coverage is strict: every scripted

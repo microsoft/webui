@@ -268,9 +268,8 @@ TypeScript. The application bundles its browser code first, and a bundler
 adapter emits `webui-projection.json` from the same resolved graph and output
 membership that produced the browser chunks.
 
-The projection compiler contract is bundler-neutral. The
-`@microsoft/webui/projection.js` subpath currently includes the supported
-esbuild adapter:
+The projection compiler contract is bundler-neutral. WebUI ships supported
+esbuild and Rspack adapters. With esbuild:
 
 ```bash
 npm install -D esbuild typescript
@@ -279,7 +278,7 @@ npm install -D esbuild typescript
 ```js
 // build-client.mjs
 import * as esbuild from 'esbuild';
-import { esbuildProjection } from '@microsoft/webui/projection.js';
+import { esbuildProjection } from '@microsoft/webui/projection/esbuild.js';
 
 await esbuild.build({
   entryPoints: ['src/index.ts'],
@@ -363,10 +362,40 @@ The adapter runs inside the application's existing esbuild invocation. It does
 not start a second bundler run, and it does not constrain chunking, dynamic
 imports, external modules, or output naming.
 
-Other bundlers are not coupled to esbuild. A Vite, Rollup, Rolldown, webpack,
-Rspack, or other adapter can construct the exported `AdapterContext`, call
-`compileProjection()`, and run the exported conformance suite. The official
-package currently ships and supports the esbuild adapter.
+For Rspack 2.x, use its native adapter:
+
+```typescript
+import { rspackProjection } from '@microsoft/webui/projection/rspack.js';
+import { rebuildProtocol } from './build-protocol.js';
+
+export default {
+  plugins: [
+    rspackProjection({
+      manifest: './dist/webui-projection.json',
+      afterManifest: ({ manifestPath }) =>
+        rebuildProtocol({ projectionManifest: manifestPath }),
+    }),
+  ],
+};
+```
+
+The Rspack adapter reads the actual dependency and chunk graphs, expands
+concatenated wrappers, removes duplicate import records, handles externals,
+retains code-split output membership, canonicalizes package and virtual module
+identity, and hashes exact in-memory asset bytes after emit.
+
+`afterManifest` runs after atomic manifest replacement and is awaited by Rspack.
+Use it to rebuild `protocol.bin` with that manifest before a dependent SSR
+bundle runs. A rejected callback fails the compilation.
+
+Bundler plugins remain non-interchangeable: an esbuild plugin cannot be passed
+to Rspack, and a generic Unplugin wrapper does not expose the exact final graph
+facts required by projection. Other adapter authors import the normalized
+contract and finalizer from `@microsoft/webui/projection/core.js`, then run the
+fixtures from `@microsoft/webui/projection/testing.js`. `ProjectionSession`
+compiles and atomically writes a complete `AdapterContext`; it never infers
+missing bundler facts. Without a conformant adapter, omit the projection
+manifest and WebUI preserves full state.
 
 ## State Sent to the Browser
 

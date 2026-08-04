@@ -69,6 +69,11 @@ export const PROJECTION_CODES = {
   P002: "PROJ-P002",
   /** Peer is present but above the tested range; results may differ. */
   P003: "PROJ-P003",
+  /**
+   * Required peer `@rspack/core` is absent or below the supported range
+   * (Rspack adapter only).
+   */
+  P004: "PROJ-P004",
 
   // Manifest diagnostics
   /** Manifest file is missing or unreadable. */
@@ -179,6 +184,7 @@ export const CODE_SEVERITY: Readonly<Record<ProjectionCode, DiagnosticSeverity>>
   "PROJ-P001": "error",
   "PROJ-P002": "error",
   "PROJ-P003": "warning",
+  "PROJ-P004": "error",
   "PROJ-M001": "error",
   "PROJ-M002": "error",
   "PROJ-M003": "error",
@@ -216,6 +222,7 @@ export const CODE_TITLES: Readonly<Record<ProjectionCode, string>> = {
   "PROJ-P001": "Required peer 'typescript' is absent or below the supported range",
   "PROJ-P002": "Required peer 'esbuild' is absent or below the supported range",
   "PROJ-P003": "Peer is present but above the tested range",
+  "PROJ-P004": "Required peer '@rspack/core' is absent or below the supported range",
   "PROJ-M001": "Manifest file is missing or unreadable",
   "PROJ-M002": "Manifest schema version is unsupported",
   "PROJ-M003": "Declared input file hash does not match current file content",
