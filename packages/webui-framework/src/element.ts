@@ -182,7 +182,9 @@ export class WebUIElement extends TemplateElement {
   }
 
   override disconnectedCallback(): void {
-    disconnectLazyHydration(this);
+    if ((this.constructor as typeof WebUIElement).hydration === 'visible') {
+      disconnectLazyHydration(this);
+    }
     super.disconnectedCallback();
   }
 

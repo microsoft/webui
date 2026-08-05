@@ -94,9 +94,9 @@ function observeStreamed(
 
 /** Stop observing a disconnected component without losing reconnect eligibility. */
 function disconnect(target: LazyHydrationTarget): void {
+  if (!observedTargets.delete(target)) return;
   advanceActivationGeneration(target);
   settleInitialObservation(target);
-  if (!observedTargets.delete(target)) return;
   observer?.unobserve(target);
   removeWakeListenersWhenIdle();
 }
@@ -123,7 +123,7 @@ export function installVisibleHydrationCoordinator(): void {
   });
 }
 
-/** Test-only: allow re-installation across coordinator unit tests. */
+/** Test-only: clear the installer latch for the idempotency unit test. */
 export function __resetVisibleHydrationCoordinatorForTests(): void {
   installed = false;
 }

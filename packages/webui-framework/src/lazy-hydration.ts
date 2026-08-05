@@ -55,10 +55,8 @@ let coordinator: VisibleHydrationCoordinator | undefined;
 /**
  * Install the shared visible-hydration coordinator. Called once, by
  * `installVisibleHydrationCoordinator()` in `visible-hydration-coordinator.ts`
- * (via the optional `visible-hydration.js` entry). Safe to call again with an
- * equivalent implementation — re-registering is a no-op in practice, since
- * ESM module caching means the installer body itself only runs once per
- * module graph.
+ * (via the optional `visible-hydration.js` entry). A later registration
+ * replaces the implementation, which supports isolated coordinator tests.
  */
 export function registerVisibleHydrationCoordinator(
   impl: VisibleHydrationCoordinator,

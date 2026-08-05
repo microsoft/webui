@@ -118,6 +118,23 @@ describe('WebUIElement.hydration — eager default', () => {
     const el = new EagerItem();
     assert.equal(shouldDefer(el), false);
   });
+
+  test('an ordinary component skips coordinator disconnect bookkeeping', () => {
+    __resetLazyHydrationContractForTests();
+    let disconnectCalls = 0;
+    registerVisibleHydrationCoordinator(
+      fakeCoordinator({
+        disconnect: () => {
+          disconnectCalls++;
+        },
+      }),
+    );
+
+    class EagerItem extends WebUIElement {}
+    const el = new EagerItem();
+    el.disconnectedCallback();
+    assert.equal(disconnectCalls, 0);
+  });
 });
 
 describe('WebUIElement.hydration — "visible" opt-in', () => {
