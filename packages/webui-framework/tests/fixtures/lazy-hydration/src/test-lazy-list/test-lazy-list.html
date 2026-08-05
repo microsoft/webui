@@ -8,3 +8,13 @@
     <test-lazy-item key="{{item.id}}" label="{{item.label}}" count="{{item.count}}"></test-lazy-item>
   </for>
 </div>
+<div class="explicit-undefined-items">
+  <for each="value in explicitUndefinedItems">
+    <span class="explicit-undefined-item" data-value="{{value}}">{{value}}</span>
+  </for>
+</div>
+<div class="sparse-items">
+  <for each="value in sparseItems">
+    <span class="sparse-item" data-value="{{value}}">{{value}}</span>
+  </for>
+</div>

@@ -63,6 +63,7 @@ export class TestLazyItem extends WebUIElement {
   @observable note = '';
   @observable sameValue = '';
   @observable focusCount = 0;
+  @observable hoverCount = 0;
 
   protected override hydratedCallback(): void {
     this.setAttribute('data-hydrated', '');
@@ -75,6 +76,10 @@ export class TestLazyItem extends WebUIElement {
 
   recordFocus(): void {
     this.focusCount++;
+  }
+
+  recordHover(): void {
+    this.hoverCount++;
   }
 }
 TestLazyItem.define('test-lazy-item');
@@ -103,6 +108,8 @@ export class TestLazyList extends WebUIElement {
   @observable items: LazyListItem[] = [];
   @observable showSummary = true;
   @observable summary = '';
+  @observable explicitUndefinedItems: Array<string | undefined> = [];
+  @observable sparseItems: Array<string | undefined> = [];
 
   protected override hydratedCallback(): void {
     this.setAttribute('data-hydrated', '');
@@ -122,6 +129,29 @@ export class TestLazyList extends WebUIElement {
   }
 }
 TestLazyList.define('test-lazy-list');
+
+export class TestLazyImage extends WebUIElement {
+  static override readonly hydration = 'visible';
+
+  @observable imageStatus = 'pending';
+  image!: HTMLImageElement;
+
+  protected override hydratedCallback(): void {
+    this.setAttribute('data-hydrated', '');
+    if (this.image.complete) {
+      this.imageStatus = this.image.naturalWidth > 0 ? 'loaded' : 'error';
+    }
+  }
+
+  recordImageLoad(): void {
+    this.imageStatus = 'loaded';
+  }
+
+  recordImageError(): void {
+    this.imageStatus = 'error';
+  }
+}
+TestLazyImage.define('test-lazy-image');
 
 window.__lazyHydrationPendingCount = (): number =>
   __getLifecycleStateForTests().pendingCount;

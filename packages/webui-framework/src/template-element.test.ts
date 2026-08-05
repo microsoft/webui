@@ -325,6 +325,29 @@ describe('TemplateElement — streamed-host activation ownership', () => {
   });
 });
 
+describe('TemplateElement — scoped state availability', () => {
+  test('uses scope knownness when an item value is explicitly undefined', () => {
+    const el = new TemplateElement();
+
+    assert.equal(
+      el.$hasStateRoot('item', {
+        name: 'item',
+        value: undefined,
+        known: true,
+      }),
+      true,
+    );
+    assert.equal(
+      el.$hasStateRoot('item.label', {
+        name: 'item',
+        value: 'trusted SSR value',
+        known: false,
+      }),
+      false,
+    );
+  });
+});
+
 describe('TemplateElement — hydration lifecycle exceptions', () => {
   test('a real streamed activation throw balances lifecycle and does not wedge terminal completion', () => {
     class ThrowingStateElement extends TemplateElement {

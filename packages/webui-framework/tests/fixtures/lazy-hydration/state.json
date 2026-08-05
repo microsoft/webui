@@ -1,8 +1,12 @@
 {
   "serverOnly": "Server only",
   "note": "SSR note",
+  "hoverCount": 0,
   "showSummary": true,
   "summary": "12 items",
+  "imageStatus": "pending",
+  "explicitUndefinedItems": ["Explicit SSR value"],
+  "sparseItems": ["Sparse SSR value"],
   "items": [
     { "id": 0, "label": "Item 0", "count": 0 },
     { "id": 1, "label": "Item 1", "count": 1 },

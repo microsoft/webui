@@ -83,7 +83,9 @@ ActivityRow.define('activity-row');
 
 WebUI keeps the SSR content visible and hydrates each instance within 200px of
 the viewport or immediately on interaction. Client-created components remain
-eager.
+eager. After a successful mount, reconnect also stays eager and preserves
+current client state rather than replaying SSR bootstrap state. Captured pointer
+hover activates a pending component before its first `@mouseenter` handler.
 
 Keep priority instances eager:
 
@@ -94,6 +96,30 @@ Keep priority instances eager:
 Use `hydratedCallback()` for setup that requires bindings or refs. If the
 optional entry or `IntersectionObserver` is unavailable, WebUI falls back to
 eager hydration. Keep the default eager mode for small, fully visible groups.
+
+### Images in deferred components
+
+Visible hydration delays JavaScript bindings, not image fetching. Use
+`loading="lazy"`, `srcset`, `sizes`, and explicit image dimensions.
+
+An `@load` or `@error` event may fire before a deferred component hydrates. If
+component state depends on it, bind the image with `w-ref` and reconcile its
+current status in `hydratedCallback()`:
+
+```typescript
+@observable imageState = 'pending';
+image!: HTMLImageElement;
+
+protected override hydratedCallback(): void {
+  if (this.image.complete) this.updateImageState();
+}
+
+updateImageState(): void {
+  this.imageState = this.image.naturalWidth > 0 ? 'loaded' : 'error';
+}
+```
+
+Call the same idempotent method from `@load` and `@error`.
 
 ## Progressive Streaming Hydration
 

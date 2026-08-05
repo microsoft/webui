@@ -12,7 +12,8 @@
 
     test-lazy-item,
     test-lazy-parent,
-    test-lazy-list {
+    test-lazy-list,
+    test-lazy-image {
       display: block;
     }
 
@@ -55,6 +56,16 @@
       top: 3800px;
     }
 
+    #early-image,
+    #early-image-error {
+      position: absolute;
+      top: 5200px;
+    }
+
+    #early-image-error {
+      top: 5400px;
+    }
+
     #streamed {
       position: absolute;
       top: 6200px;
@@ -94,6 +105,8 @@
   <test-lazy-parent id="nested" label="Nested"></test-lazy-parent>
   <test-lazy-item id="reconnect" label="Reconnect" count="0"></test-lazy-item>
   <test-lazy-list id="list-root"></test-lazy-list>
+  <test-lazy-image id="early-image"></test-lazy-image>
+  <test-lazy-image id="early-image-error"></test-lazy-image>
   <test-lazy-item id="streamed" data-ws label="Streamed SSR" count="1"></test-lazy-item>
 </body>
 </html>

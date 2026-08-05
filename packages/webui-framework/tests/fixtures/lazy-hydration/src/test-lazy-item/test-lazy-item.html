@@ -8,3 +8,6 @@
 </button>
 <input class="focus-target" @focus="{recordFocus()}" aria-label="Focus target">
 <output class="focus-count">{{focusCount}}</output>
+<div class="hover-target" @mouseenter="{recordHover()}">
+  Hover <output class="hover-count">{{hoverCount}}</output>
+</div>

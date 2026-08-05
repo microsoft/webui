@@ -3894,22 +3894,27 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   observer keeps a strong `Set` only for currently connected targets so it can
   unobserve and remove global listeners, while weak state retains reconnect
   eligibility without retaining detached elements. Observation generations
-  reject queued or delivered records from an earlier connection. If a hydrated
-  instance remains detached through the teardown microtask, reconnect rewires
-  marker-safe templates in place. Templates containing conditionals or repeats
-  remount from the instance's current state instead of attempting to reclaim
-  SSR ranges whose closing markers were already removed.
+  reject queued or delivered records from an earlier connection. A successful
+  mount latch survives delayed disconnect teardown. Reconnect therefore skips
+  fresh-SSR bootstrap replay and visibility deferral, rewires marker-safe DOM
+  in place, and reconciles available current client state while retaining
+  unknown trusted values. Templates containing conditionals or repeats remount
+  from the instance's current state instead of attempting to reclaim SSR ranges
+  whose closing markers were already removed. Client-created visible-strategy
+  instances follow the same eager reconnect path.
 - Lazy intersection batches enqueue each composed ancestor as an individual
   parent-first work item and run synchronously until they consume an 8ms budget.
   Remaining targets continue through
   `scheduler.postTask(..., { priority: "user-visible" })`, with one shared
   `MessageChannel` fallback. A rejected scheduler task reports the error and
   drains the retained queue through `MessageChannel`. Small batches incur no
-  scheduling hop. Shared capture listeners for `pointerdown`, `focus`,
-  `keydown`, and `click` activate pending ancestors before target handling and
-  are installed only while connected lazy targets exist. Composed ancestry
-  follows assigned slots and shadow hosts. One failed activation is reported
-  without abandoning other visible work.
+  scheduling hop. Shared capture listeners for `pointerover`, `pointerdown`,
+  `focus`, `keydown`, and `click` activate pending ancestors before target
+  handling and are installed only while connected lazy targets exist.
+  `pointerover` lets the first hover sequence install a direct `mouseenter`
+  handler without also subscribing to `mouseover`. Composed ancestry follows
+  assigned slots and shadow hosts. One failed activation is reported without
+  abandoning other visible work.
 - State writes after an instance enters lazy deferral are stored in its normal
   authored or hidden template state. A lazily allocated root-name `Set`
   prevents older ordinary or boundary-local bootstrap values from overwriting
@@ -3921,10 +3926,20 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   root keeps its complete trusted SSR value on replay and every later reactive
   or structural binding pass until that root is supplied; WebUI never
   substitutes an unknown dependency with an empty string. An explicitly
-  supplied `undefined` is known state: it clears text and reconciles a repeat as
-  empty. This covers `setState`, compiled parent-to-child writes, attributes,
-  and repeat reconciliation without a separate initial mount implementation.
-  It does not alter pre-`super` hydration mismatch behavior.
+  supplied `undefined` is known state: scope availability comes from the repeat
+  frame's knownness, so explicit and sparse `undefined` items clear text and
+  attributes while genuinely unknown SSR item scopes remain untouched. A root
+  repeat supplied as `undefined` reconciles as empty. This covers `setState`,
+  compiled parent-to-child writes, attributes, and repeat reconciliation
+  without a separate initial mount implementation. It does not alter
+  pre-`super` hydration mismatch behavior.
+- Native image fetching and `loading="lazy"` use browser-owned scheduling that
+  is independent of the hydration observer. Direct `@load` / `@error` listeners
+  begin at hydration; the runtime does not replay an earlier one-shot resource
+  event because a native event racing listener installation could then dispatch
+  twice. Components that derive state from image completion reconcile
+  `HTMLImageElement.complete` and `naturalWidth` in `hydratedCallback()`. Native
+  events after hydration retain their normal repeated listener semantics.
 - A streamed lazy root reports a successful boundary activation without walking
   its DOM. It retains the boundary state by reference, joins the coordinator's
   root set when its boundary is updatable, accepts later shallow patches through

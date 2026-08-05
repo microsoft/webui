@@ -287,7 +287,8 @@ export class TemplateElement extends HTMLElement {
   private $meta?: TemplateMeta;
   private $ready = false;
   private $hydrated = false;
-  private $hydratedCallbackCalled = false;
+  /** Retained across teardown so reconnect is never mistaken for fresh SSR. */
+  private $hasMounted = false;
   private $deferredSSR = false;
   private $activatingDeferredSSR = false;
   /** True once a repeat produced an SSR item scope whose collection state is
@@ -435,7 +436,11 @@ export class TemplateElement extends HTMLElement {
     // A genuinely client-created empty element made during the streaming
     // window has no `data-ws` and falls through to mount normally below — the
     // marker, not an empty-subtree heuristic, is what distinguishes the two.
-    if (isStreamingHydrationMode() && this.hasAttribute(STREAMED_HOST_ATTR)) {
+    if (
+      !this.$hasMounted &&
+      isStreamingHydrationMode() &&
+      this.hasAttribute(STREAMED_HOST_ATTR)
+    ) {
       this.$deferredSSR = true;
       this.$ready = true;
       const resume = (this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void })[PENDING_ROOT_CONNECTED];
@@ -456,7 +461,16 @@ export class TemplateElement extends HTMLElement {
     // Under WebUI's loading contract, deferred scripts run after parsing and
     // blocking scripts follow every component instance they may upgrade.
     // Mount synchronously so super.connectedCallback() is the hydration boundary.
-    this.$mount(meta, false);
+    if (this.$hasMounted) {
+      this.$remount(meta);
+    } else {
+      this.$mount(meta, false);
+    }
+  }
+
+  /** Rewire retained DOM, or rebuild structural DOM, from current client state. */
+  private $remount(meta: TemplateMeta): void {
+    this.$mount(meta, false, undefined, false, true);
   }
 
   /** Mount the component after children are available. */
@@ -465,13 +479,14 @@ export class TemplateElement extends HTMLElement {
     forceSSR: boolean,
     ssrState?: Record<string, unknown>,
     hasBoundaryState = false,
+    reconnecting = false,
   ): void {
     if (this.$hydrated) return;
 
     // Auto-detect shadow vs light DOM
     const hasShadow = !!this.shadowRoot;
     const wantShadow = hasShadow || !!meta.sd;
-    const remountStructuralTemplate = this.$hydratedCallbackCalled &&
+    const remountStructuralTemplate = reconnecting &&
       ((meta.c?.length ?? 0) !== 0 || (meta.r?.length ?? 0) !== 0);
 
     let root: Node;
@@ -508,7 +523,12 @@ export class TemplateElement extends HTMLElement {
       isSSR = false;
     }
 
-    if (isSSR && !forceSSR && this.$shouldDeferSSRHydration()) {
+    if (
+      isSSR &&
+      !forceSSR &&
+      !reconnecting &&
+      this.$shouldDeferSSRHydration()
+    ) {
       this.$meta = meta;
       this.$deferredSSR = true;
       this.$ready = true;
@@ -527,7 +547,7 @@ export class TemplateElement extends HTMLElement {
         // global `window.__webui.state` handoff. Passing a boundary's state as-is
         // (even when undefined) keeps a stateless streamed boundary from falling
         // back to a later boundary's global state.
-        if (this.$shouldApplySSRBootstrapState()) {
+        if (!reconnecting && this.$shouldApplySSRBootstrapState()) {
           this.$applySSRState(
             hasBoundaryState ? ssrState : window.__webui?.state,
           );
@@ -544,6 +564,18 @@ export class TemplateElement extends HTMLElement {
       this.$ready = true;
       this.$syncAuthoredAttributes();
       if (isSSR && this.$deferredWrites) this.$replayDeferredWrites();
+      if (isSSR && reconnecting) {
+        // Retained DOM is client-owned after the first mount. Reconcile roots
+        // that are still available while preserving trusted values for any
+        // template-only state the client never received.
+        this.$updateBindings(
+          this.$root.texts,
+          this.$root.attrs,
+          this.$root.conds,
+          this.$root.repeats,
+          true,
+        );
+      }
 
       // SSR only: warn when a pre-ready write left an observable disagreeing
       // with the server-rendered DOM. Client-created components have no SSR
@@ -800,10 +832,10 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $notifyHydrated(): void {
-    if (this.$hydratedCallbackCalled) return;
+    if (this.$hasMounted) return;
     // Latch before author code so an exception can never turn reconnect into a
     // retry of a lifecycle that has already been entered.
-    this.$hydratedCallbackCalled = true;
+    this.$hasMounted = true;
     this.hydratedCallback();
   }
 
@@ -2133,7 +2165,7 @@ export class TemplateElement extends HTMLElement {
     return dotWalk(this.$resolveComponentRoot(path.substring(0, dot)), path, dot + 1);
   }
 
-  /** Return whether a deferred host received the root needed by a repeat. */
+  /** Return whether a binding path's scope or component root is available. */
   $hasStateRoot(path: string, scope?: ScopeFrame): boolean {
     let frame = scope;
     while (frame) {
@@ -2141,7 +2173,7 @@ export class TemplateElement extends HTMLElement {
         || (path.length > frame.name.length
           && path.charCodeAt(frame.name.length) === 46
           && path.startsWith(frame.name))) {
-        return frame.value !== undefined;
+        return frame.known !== false;
       }
       frame = frame.parent;
     }

@@ -221,6 +221,79 @@ test.describe('component lazy hydration', () => {
     await expect(page.locator('#offscreen .focus-count')).toHaveText('1');
   });
 
+  test('installs the first mouseenter handler during captured pointerover', async ({ page }) => {
+    await installControllableObserver(page);
+    await page.goto(FIXTURE);
+    const host = page.locator('#offscreen');
+    await expect(host).not.toHaveAttribute('data-hydrated', '');
+
+    await host.locator('.hover-target').hover();
+
+    await expect(host).toHaveAttribute('data-hydrated', '');
+    await expect(host.locator('.hover-count')).toHaveText('1');
+  });
+
+  test('reconciles images that complete or fail before deferred hydration', async ({ page }) => {
+    await installControllableObserver(page);
+    await page.goto(FIXTURE);
+    const host = page.locator('#early-image');
+    const image = host.locator('.image');
+    const errorHost = page.locator('#early-image-error');
+    const errorImage = errorHost.locator('.image');
+    await expect(host).not.toHaveAttribute('data-hydrated', '');
+    await expect(errorHost).not.toHaveAttribute('data-hydrated', '');
+    await expect(host.locator('.image-status')).toHaveText('pending');
+    await errorImage.evaluate((element) => {
+      (element as HTMLImageElement).src =
+        '/lazy-hydration/missing-before-hydration.gif';
+    });
+
+    await expect.poll(() =>
+      image.evaluate((element) => (element as HTMLImageElement).complete)
+    ).toBe(true);
+    expect(
+      await image.evaluate(
+        (element) => (element as HTMLImageElement).naturalWidth,
+      ),
+    ).toBeGreaterThan(0);
+    await expect.poll(() =>
+      errorImage.evaluate((element) => {
+        const target = element as HTMLImageElement;
+        return target.complete && target.naturalWidth === 0;
+      })
+    ).toBe(true);
+    await expect(host.locator('.image-status')).toHaveText('pending');
+    await expect(errorHost.locator('.image-status')).toHaveText('pending');
+
+    await page.evaluate(() => {
+      const target = document.getElementById('early-image');
+      const errorTarget = document.getElementById('early-image-error');
+      const trigger = (
+        window as unknown as {
+          __triggerLazyIntersections?: (targets: Element[]) => void;
+        }
+      ).__triggerLazyIntersections;
+      if (!target || !errorTarget || !trigger) {
+        throw new Error('lazy image target is missing');
+      }
+      trigger([target, errorTarget]);
+    });
+
+    await expect(host).toHaveAttribute('data-hydrated', '');
+    await expect(errorHost).toHaveAttribute('data-hydrated', '');
+    await expect(host.locator('.image-status')).toHaveText('loaded');
+    await expect(errorHost.locator('.image-status')).toHaveText('error');
+
+    await image.evaluate((element) => {
+      element.dispatchEvent(new Event('error'));
+    });
+    await expect(host.locator('.image-status')).toHaveText('error');
+    await image.evaluate((element) => {
+      element.dispatchEvent(new Event('load'));
+    });
+    await expect(host.locator('.image-status')).toHaveText('loaded');
+  });
+
   test('activates nested lazy components parent-first', async ({ page }) => {
     await page.goto(FIXTURE);
 
@@ -275,21 +348,63 @@ test.describe('component lazy hydration', () => {
     await expect(page.locator('#reconnect .note')).toHaveText('Detached update');
   });
 
-  test('rehydrates after a mounted component is destroyed while detached', async ({ page }) => {
+  test('preserves live state and hydrates immediately after mounted teardown', async ({ page }) => {
+    await installControllableObserver(page);
     await page.goto(FIXTURE);
-    await expect(page.locator('#visible')).toHaveAttribute('data-hydrated', '');
-
-    await page.locator('#visible').evaluate(async (element) => {
-      const parent = element.parentNode;
-      element.remove();
-      await Promise.resolve();
-      parent?.appendChild(element);
+    await page.evaluate(() => {
+      const target = document.getElementById('reconnect');
+      const trigger = (
+        window as unknown as {
+          __triggerLazyIntersections?: (targets: Element[]) => void;
+        }
+      ).__triggerLazyIntersections;
+      if (!target || !trigger) throw new Error('reconnect lazy target is missing');
+      trigger([target]);
     });
-    await page.locator('#visible button').evaluate((button) => {
+    await expect(page.locator('#reconnect')).toHaveAttribute('data-hydrated', '');
+
+    const state = await page.locator('#reconnect').evaluate(async (element) => {
+      const host = element as HTMLElement & {
+        note: string;
+        $deferredSSR: boolean;
+        $flushUpdates(): void;
+        $hydrated: boolean;
+      };
+      host.note = 'Live reconnect state';
+      host.$flushUpdates();
+      const bootstrap = window as unknown as {
+        __webui?: { state?: Record<string, unknown> };
+      };
+      const webui = bootstrap.__webui ??= {};
+      (webui.state ??= {}).note = 'Stale bootstrap state';
+      const parent = host.parentNode;
+      const next = host.nextSibling;
+      if (!parent) throw new Error('reconnect lazy parent is missing');
+      host.remove();
+      await Promise.resolve();
+      const tornDown = !host.$hydrated;
+      parent.insertBefore(host, next);
+      return {
+        deferred: host.$deferredSSR,
+        hydrated: host.$hydrated,
+        note: host.note,
+        text: host.shadowRoot?.querySelector('.note')?.textContent,
+        tornDown,
+      };
+    });
+
+    expect(state).toEqual({
+      deferred: false,
+      hydrated: true,
+      note: 'Live reconnect state',
+      text: 'Live reconnect state',
+      tornDown: true,
+    });
+    await page.locator('#reconnect button').evaluate((button) => {
       (button as HTMLElement).click();
     });
 
-    await expect(page.locator('#visible .count')).toHaveText('1');
+    await expect(page.locator('#reconnect .count')).toHaveText('1');
   });
 
   test('remounts repeat and conditional structures after delayed reconnect', async ({ page }) => {
@@ -362,6 +477,39 @@ test.describe('component lazy hydration', () => {
     await expect(last).toHaveAttribute('data-hydrated', '');
     await expect(last.locator('.label')).toHaveText('Updated 11');
     await expect(last.locator('.count')).toHaveText('22');
+  });
+
+  test('clears scoped text and attributes for explicit and sparse undefined items', async ({ page }) => {
+    await installControllableObserver(page);
+    await page.goto(FIXTURE);
+    const list = page.locator('#list-root');
+    await expect(list).not.toHaveAttribute('data-hydrated', '');
+    await expect(list.locator('.explicit-undefined-item')).toHaveText(
+      'Explicit SSR value',
+    );
+    await expect(list.locator('.sparse-item')).toHaveText('Sparse SSR value');
+
+    await list.evaluate((element) => {
+      const host = element as HTMLElement & {
+        explicitUndefinedItems: Array<string | undefined>;
+        sparseItems: Array<string | undefined>;
+      };
+      host.explicitUndefinedItems = [undefined];
+      host.sparseItems = new Array<string | undefined>(1);
+      host.dispatchEvent(new PointerEvent('pointerdown', {
+        bubbles: true,
+        composed: true,
+      }));
+    });
+
+    await expect(list).toHaveAttribute('data-hydrated', '');
+    await expect(list.locator('.explicit-undefined-item')).toHaveText('');
+    await expect(list.locator('.explicit-undefined-item')).toHaveAttribute(
+      'data-value',
+      '',
+    );
+    await expect(list.locator('.sparse-item')).toHaveText('');
+    await expect(list.locator('.sparse-item')).toHaveAttribute('data-value', '');
   });
 
   test('retains streamed state and lets newer patches win before visibility', async ({ page }) => {
@@ -786,6 +934,50 @@ test.describe('component lazy hydration', () => {
     expect(hydratedSynchronously).toBe(true);
     await expect(page.locator('#client-created .label')).toHaveText('Client');
     await expect(page.locator('#client-created .count')).toHaveText('4');
+  });
+
+  test('reconnects client-created components eagerly after teardown', async ({ page }) => {
+    await installControllableObserver(page);
+    await page.goto(FIXTURE);
+
+    const state = await page.evaluate(async () => {
+      const element = document.createElement('test-lazy-item');
+      const host = element as HTMLElement & {
+        note: string;
+        $deferredSSR: boolean;
+        $flushUpdates(): void;
+        $hydrated: boolean;
+      };
+      host.id = 'client-reconnect';
+      host.setAttribute('label', 'Client reconnect');
+      host.style.position = 'absolute';
+      host.style.top = '6800px';
+      document.body.appendChild(host);
+      const mountedEagerly = host.$hydrated;
+      host.note = 'Client reconnect state';
+      host.$flushUpdates();
+      host.remove();
+      await Promise.resolve();
+      const tornDown = !host.$hydrated;
+      document.body.appendChild(host);
+      return {
+        deferred: host.$deferredSSR,
+        hydrated: host.$hydrated,
+        mountedEagerly,
+        note: host.note,
+        text: host.shadowRoot?.querySelector('.note')?.textContent,
+        tornDown,
+      };
+    });
+
+    expect(state).toEqual({
+      deferred: false,
+      hydrated: true,
+      mountedEagerly: true,
+      note: 'Client reconnect state',
+      text: 'Client reconnect state',
+      tornDown: true,
+    });
   });
 });
 

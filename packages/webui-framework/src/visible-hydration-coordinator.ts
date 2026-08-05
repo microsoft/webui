@@ -42,7 +42,13 @@ const observationStartTimes = new WeakMap<LazyHydrationTarget, number>();
 const activationQueue: LazyHydrationTarget[] = [];
 const activationQueueGenerations: number[] = [];
 const ancestorScratch: LazyHydrationTarget[] = [];
-const WAKE_EVENTS = ['pointerdown', 'focus', 'keydown', 'click'] as const;
+const WAKE_EVENTS = [
+  'pointerover',
+  'pointerdown',
+  'focus',
+  'keydown',
+  'click',
+] as const;
 const HYDRATION_BUDGET_MS = 8;
 
 let observer: IntersectionObserver | undefined;

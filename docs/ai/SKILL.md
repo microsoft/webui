@@ -615,7 +615,9 @@ export class FeedItem extends WebUIElement {
 
 Use `w-hydrate="eager"` for priority instances. Use `hydratedCallback()` for
 work that requires bindings or refs. Missing browser support falls back to eager
-hydration.
+hydration. Visible hydration does not delay image fetching; use native
+`loading="lazy"` and reconcile an already-complete `w-ref` image from
+`hydratedCallback()` when component state depends on `@load` or `@error`.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
