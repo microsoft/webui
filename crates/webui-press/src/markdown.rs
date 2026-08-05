@@ -262,7 +262,7 @@ fn resolve_relative_link(link_base_url: &str, target: &str) -> Option<String> {
 
 /// Render markdown content to HTML with syntax-highlighted code blocks.
 /// Root-absolute internal links are prefixed with `base_path`, and relative
-/// links are resolved from `page_url`.
+/// links are resolved from `link_base_url`.
 ///
 /// `page_url` is the current page's canonical URL path (base-prefixed, with a
 /// trailing slash — e.g. `/webui/guide/`). In-page fragment links (heading
@@ -270,17 +270,10 @@ fn resolve_relative_link(link_base_url: &str, target: &str) -> Option<String> {
 /// (`{page_url}#slug`) rather than bare `#slug`. A bare fragment would resolve
 /// against the document's `<base href>` — which points at the site root — and
 /// navigate away from the current page instead of scrolling within it.
-#[allow(dead_code)] // Public library API; the binary uses the source-aware helper below.
+///
+/// `link_base_url` is the URL directory corresponding to the Markdown source
+/// file. It can differ from `page_url` when configuration overrides the route.
 pub fn render_markdown(
-    content: &str,
-    highlighter: &Highlighter,
-    base_path: &str,
-    page_url: &str,
-) -> Result<String> {
-    render_markdown_with_link_base(content, highlighter, base_path, page_url, page_url)
-}
-
-pub(crate) fn render_markdown_with_link_base(
     content: &str,
     highlighter: &Highlighter,
     base_path: &str,
@@ -432,7 +425,8 @@ mod tests {
         // must not be interpreted as a WebUI signal binding by the template
         // parser — escape `{` and `}` to HTML entities.
         let h = Highlighter::new();
-        let html = render_markdown("Use `{{value}}` for escaped output.", &h, "/", "/").unwrap();
+        let html =
+            render_markdown("Use `{{value}}` for escaped output.", &h, "/", "/", "/").unwrap();
         assert!(
             html.contains("&#123;&#123;value&#125;&#125;"),
             "inline code braces should be escaped: {html}"
@@ -446,7 +440,7 @@ mod tests {
     #[test]
     fn heading_inline_code_survives_custom_anchor_rendering() {
         let h = Highlighter::new();
-        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/", "/") {
+        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/", "/", "/") {
             Ok(html) => html,
             Err(e) => panic!("render_markdown should succeed: {e}"),
         };
@@ -471,6 +465,7 @@ mod tests {
             &h,
             "/webui/",
             "/webui/guide/",
+            "/webui/guide/",
         )
         .unwrap();
 
@@ -487,7 +482,7 @@ mod tests {
     #[test]
     fn relative_links_are_absolute_to_the_markdown_source_directory() {
         let h = Highlighter::new();
-        let html = render_markdown_with_link_base(
+        let html = render_markdown(
             "[Sibling](./sibling) [Parent](../parent) [Bare](other?tab=1#details)",
             &h,
             "/webui/",
@@ -513,7 +508,7 @@ mod tests {
     #[test]
     fn non_relative_links_keep_their_existing_semantics() {
         let h = Highlighter::new();
-        let html = render_markdown_with_link_base(
+        let html = render_markdown(
             "[External](https://example.com/docs) [Network](//cdn.example.com/docs) [Query](?tab=1)",
             &h,
             "/webui/",
@@ -541,7 +536,7 @@ mod tests {
         // Fenced code blocks must also escape braces so example template
         // snippets render literally instead of being parsed as bindings.
         let h = Highlighter::new();
-        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/", "/").unwrap();
+        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/", "/", "/").unwrap();
         assert!(
             html.contains("&#123;&#123;name&#125;&#125;"),
             "code block braces should be escaped: {html}"

@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::markdown::{render_markdown_with_link_base, Highlighter};
+use crate::markdown::{render_markdown, Highlighter};
 use crate::state::{load_render_states, merge_page_state, LoadedStates};
 use crate::types::{DocsConfig, NavLink, PageDescriptor, SidebarItem, SidebarSection};
 
@@ -499,7 +499,7 @@ pub(crate) fn process_content_with_states(
                         };
                         let link_base_url =
                             markdown_link_base_url(full_path, content_dir, base_path);
-                        html = render_markdown_with_link_base(
+                        html = render_markdown(
                             body,
                             highlighter,
                             base_path,
