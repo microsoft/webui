@@ -214,6 +214,20 @@ fn has_uri_scheme(url: &str) -> bool {
     false
 }
 
+fn has_base_path_prefix(url: &str, base_prefix: &str) -> bool {
+    if base_prefix.is_empty() {
+        return true;
+    }
+    let Some(suffix) = url.strip_prefix(base_prefix) else {
+        return false;
+    };
+    suffix.is_empty()
+        || suffix
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| matches!(*byte, b'/' | b'?' | b'#'))
+}
+
 fn resolve_relative_link(base_path: &str, link_base_url: &str, target: &str) -> Option<String> {
     if target.is_empty()
         || target.starts_with('/')
@@ -294,6 +308,7 @@ pub fn render_markdown(
     options.render.r#unsafe = true; // Allow raw HTML passthrough
 
     let root = parse_document(&arena, content, &options);
+    let base_prefix = base_path.trim_end_matches('/');
 
     // Multi-pass approach: collect node pointers first, then modify.
     // This avoids modifying the tree during iteration and lets heading
@@ -315,11 +330,10 @@ pub fn render_markdown(
                 link.url = format!("{page_url}{}", link.url);
             } else if link.url.starts_with('/')
                 && !link.url.starts_with("//")
-                && !link.url.starts_with(base_path)
-                && base_path != "/"
+                && !has_base_path_prefix(&link.url, base_prefix)
             {
                 // Prepend base_path to absolute internal links
-                link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
+                link.url = format!("{base_prefix}{}", &link.url);
             } else if let Some(resolved) =
                 resolve_relative_link(base_path, link_base_url, &link.url)
             {
@@ -551,6 +565,38 @@ mod tests {
             html.contains(r#"<a href="/webui/guide/current/"></a>"#),
             "empty destination should target the current page: {html}"
         );
+    }
+
+    #[test]
+    fn absolute_internal_links_respect_base_path_boundaries() {
+        let h = Highlighter::new();
+        for base_path in ["/webui/", "/webui"] {
+            let html = render_markdown(
+                "[Root](/webui) [Nested](/webui/guide) [Query](/webui?tab=1) [Sibling](/webui-press)",
+                &h,
+                base_path,
+                "/webui/guide/current/",
+                "/webui/guide/",
+            )
+            .unwrap();
+
+            assert!(
+                html.contains(r#"<a href="/webui">Root</a>"#),
+                "base root should not be double-prefixed: {html}"
+            );
+            assert!(
+                html.contains(r#"<a href="/webui/guide">Nested</a>"#),
+                "nested base path should not be double-prefixed: {html}"
+            );
+            assert!(
+                html.contains(r#"<a href="/webui?tab=1">Query</a>"#),
+                "query on the base root should not be double-prefixed: {html}"
+            );
+            assert!(
+                html.contains(r#"<a href="/webui/webui-press">Sibling</a>"#),
+                "a similarly named path should still receive basePath: {html}"
+            );
+        }
     }
 
     #[test]
