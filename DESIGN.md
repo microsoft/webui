@@ -3846,7 +3846,8 @@ The Rspack adapter:
 3. Walks `module.dependencies` and nested `AsyncDependenciesBlock` values
    iteratively. Duplicate base/specifier records collapse by authored request
    and static/dynamic kind; a resolved target wins over an unresolved duplicate,
-   then a base dependency wins over a specifier record.
+   then a base dependency wins over a specifier record. A remaining targetless
+   record is omitted because Rspack pruned it from the compiled graph.
 4. Marks `ExternalModule` targets external and proves bundled package identity
    from the resolved file's nearest `package.json`.
 5. Reads authored UTF-8 disk source for physical modules. Loader-transformed

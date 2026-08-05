@@ -48,6 +48,7 @@ interface CapturedProjection {
   callbackCount: number;
   rawBaseDependencies: number;
   sawConcatenation: boolean;
+  targetlessDependencyTypes: string[];
 }
 
 async function createFixture(): Promise<Fixture> {
@@ -63,7 +64,10 @@ async function createFixture(): Promise<Fixture> {
   await Promise.all([
     writeFile(
       path.join(root, "package.json"),
-      JSON.stringify({ name: "rspack-projection-fixture" })
+      JSON.stringify({
+        name: "rspack-projection-fixture",
+        sideEffects: ["*.css"],
+      })
     ),
     writeFile(
       path.join(frameworkDirectory, "package.json"),
@@ -101,6 +105,28 @@ class LazyCard extends WebUIElement {
 LazyCard.define('lazy-card');
 `
     ),
+    writeFile(
+      path.join(sourceDirectory, "barrel.ts"),
+      `
+import { importValue } from './pruned-import';
+export { importValue };
+export * from './pruned-export';
+export { specifierValue } from './pruned-specifier';
+export const keptValue = 'kept';
+`
+    ),
+    writeFile(
+      path.join(sourceDirectory, "pruned-import.ts"),
+      "export const importValue = 'unused';\n"
+    ),
+    writeFile(
+      path.join(sourceDirectory, "pruned-export.ts"),
+      "export const exportValue = 'unused';\n"
+    ),
+    writeFile(
+      path.join(sourceDirectory, "pruned-specifier.ts"),
+      "export const specifierValue = 'unused';\n"
+    ),
   ]);
   const entryPath = path.join(sourceDirectory, "entry.ts");
   await writeValidEntry(entryPath, "mainValue");
@@ -121,13 +147,14 @@ async function writeValidEntry(
 import externalValue from 'external-lib';
 import { observable } from '@microsoft/webui-framework';
 import { BaseCard } from './base';
+import { keptValue } from './barrel';
 import { virtualValue } from './virtual';
 
 class MainCard extends BaseCard {
   @observable ${propertyName} = '';
 }
 MainCard.define('main-card');
-console.log(externalValue, virtualValue);
+console.log(externalValue, keptValue, virtualValue);
 void import('./lazy');
 `
   );
@@ -263,6 +290,7 @@ describe("rspackProjection", () => {
       callbackCount: 0,
       rawBaseDependencies: 0,
       sawConcatenation: false,
+      targetlessDependencyTypes: [],
     };
     const plugin = rspackProjection({
       async afterManifest(result) {
@@ -284,6 +312,23 @@ describe("rspackProjection", () => {
           rawEntry?.dependencies.filter(
             (dependency) => dependency.request === "./base"
           ).length ?? 0;
+        const rawBarrel = [...result.compilation.modules].find(
+          (module) =>
+            module instanceof result.compiler.rspack.NormalModule &&
+            path.basename(module.resource) === "barrel.ts"
+        );
+        captured.targetlessDependencyTypes =
+          rawBarrel?.dependencies
+            .filter((dependency) => {
+              const target =
+                result.compilation.moduleGraph.getModule(dependency) ??
+                result.compilation.moduleGraph.getResolvedModule(dependency);
+              return (
+                dependency.request?.startsWith("./pruned-") === true &&
+                (target === undefined || target === null)
+              );
+            })
+            .map((dependency) => dependency.type) ?? [];
         const installed = await readManifest(fixture.root);
         assert.equal(installed.buildId, result.manifest.buildId);
         for (const [outputId, contents] of result.context.outputContents) {
@@ -305,10 +350,21 @@ describe("rspackProjection", () => {
     assert.equal(captured.callbackCount, 1);
     assert.equal(captured.sawConcatenation, true);
     assert.ok(captured.rawBaseDependencies >= 2);
+    for (const type of [
+      "esm import",
+      "esm export import",
+      "esm export import specifier",
+    ]) {
+      assert.ok(
+        captured.targetlessDependencyTypes.includes(type),
+        `expected a targetless ${type} dependency; saw ${captured.targetlessDependencyTypes.join(", ")}`
+      );
+    }
     const context = captured.context;
     assert.ok(context);
 
     const entryId = path.resolve(fixture.root, "src", "entry.ts");
+    const barrelId = path.resolve(fixture.root, "src", "barrel.ts");
     const baseId = path.resolve(fixture.root, "src", "base.ts");
     const lazyId = path.resolve(fixture.root, "src", "lazy.ts");
     const entry = context.graph.modules.get(entryId);
@@ -320,6 +376,12 @@ describe("rspackProjection", () => {
     assert.equal(baseEdges[0]?.kind, "static");
     assert.equal(baseEdges[0]?.resolvedId, baseId);
     assert.equal(baseEdges[0]?.external, false);
+    const barrel = context.graph.modules.get(barrelId);
+    assert.ok(barrel);
+    assert.equal(
+      barrel.imports.some((edge) => edge.specifier.startsWith("./pruned-")),
+      false
+    );
 
     const frameworkEdge = entry.imports.find(
       (edge) => edge.specifier === "@microsoft/webui-framework"

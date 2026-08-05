@@ -381,10 +381,10 @@ function collectImports(
   const imports: ResolvedImport[] = [];
   for (const { edge } of choices.values()) {
     if (!edge.external && edge.resolvedId === undefined) {
-      throw adapterError(
-        `Rspack did not resolve '${edge.specifier}' from '${record.id}'`,
-        "The adapter requires every non-external authored edge to have a target."
-      );
+      // Rspack retains authored dependency records after tree-shaking their
+      // targets. Resolved duplicates already won above; a remaining targetless
+      // record is not part of the compiled graph.
+      continue;
     }
     imports.push(edge);
   }
