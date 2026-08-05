@@ -315,10 +315,10 @@ pub fn render_markdown(
     // rendering see original code-span nodes before they are converted to raw
     // HTML for WebUI template-signal escaping.
 
-    // Pass 1: Rewrite internal links before custom heading rendering.
+    // Pass 1: Rewrite internal links and images before custom heading rendering.
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
-        if let NodeValue::Link(ref mut link) = data.value {
+        if let NodeValue::Link(ref mut link) | NodeValue::Image(ref mut link) = data.value {
             if link.url.is_empty() {
                 link.url = page_url.to_string();
             } else if link.url.starts_with('#') {
@@ -524,6 +524,24 @@ mod tests {
         assert!(
             html.contains(r#"<a href="/webui/guide/other?tab=1#details">Bare</a>"#),
             "bare relative link should preserve its query and fragment: {html}"
+        );
+    }
+
+    #[test]
+    fn relative_images_are_absolute_to_the_markdown_source_directory() {
+        let h = Highlighter::new();
+        let html = render_markdown(
+            "![Diagram](./images/diagram.png)",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r#"<img src="/webui/guide/images/diagram.png" alt="Diagram" />"#),
+            "relative image should use the source directory: {html}"
         );
     }
 
