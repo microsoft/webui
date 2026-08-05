@@ -3866,6 +3866,10 @@ The Rspack adapter:
    point for rebuilding `protocol.bin` with `--projection-manifest` before a
    dependent SSR build. Callback rejection becomes a Rspack compilation error.
 
+The protocol build and SSR runtime must use the same `@microsoft/webui` release.
+Cross-release protocol compatibility is not guaranteed, so split client/compiler
+and SSR deployments update atomically.
+
 ### webui-press integration
 
 `webui-press` invokes esbuild's JavaScript API once through

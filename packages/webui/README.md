@@ -170,6 +170,10 @@ Use it to rebuild `protocol.bin` with the new manifest before starting a
 dependent SSR bundle. If the callback rejects, the compilation fails. The
 callback receives `{ manifest, context, manifestPath, compiler, compilation }`.
 
+The protocol build and SSR runtime must use the same `@microsoft/webui` release.
+Update split client/compiler and SSR dependencies atomically rather than serving
+a newly compiled protocol with an older runtime.
+
 With no manifest, WebUI performs no JavaScript analysis and preserves full
 state. Once any manifest is supplied, coverage is strict: every scripted
 component compiled into the protocol must have exactly one entry. Shared

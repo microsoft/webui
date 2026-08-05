@@ -1085,7 +1085,9 @@ Add `@microsoft/webui-router` for client-side navigation. Passing
 Generate the manifest from the same client compilation with
 `esbuildProjection()` or `rspackProjection()`. For Rspack, use the awaited
 `afterManifest` callback to rebuild `protocol.bin` before a dependent SSR bundle
-runs. See [Hydration](/guide/concepts/hydration#build-time-state-projection).
+runs. Use the same `@microsoft/webui` release for the protocol build and SSR
+runtime, updating split pipelines atomically. See
+[Hydration](/guide/concepts/hydration#build-time-state-projection).
 
 ## Server integration
 

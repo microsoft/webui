@@ -388,6 +388,10 @@ identity, and hashes exact in-memory asset bytes after emit.
 Use it to rebuild `protocol.bin` with that manifest before a dependent SSR
 bundle runs. A rejected callback fails the compilation.
 
+The protocol build and SSR runtime must use the same `@microsoft/webui` release.
+Update split client/compiler and SSR dependencies atomically rather than serving
+a newly compiled protocol with an older runtime.
+
 Bundler plugins remain non-interchangeable: an esbuild plugin cannot be passed
 to Rspack, and a generic Unplugin wrapper does not expose the exact final graph
 facts required by projection. Other adapter authors import the normalized
