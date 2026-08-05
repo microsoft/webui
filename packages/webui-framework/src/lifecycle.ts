@@ -57,7 +57,7 @@ const navigationTiming = hasBrowserDocument &&
     | undefined
   : undefined;
 let documentReady = !hasBrowserDocument ||
-  document.readyState !== 'loading' ||
+  document.readyState === 'complete' ||
   (navigationTiming?.domContentLoadedEventStart ?? 0) > 0;
 
 if (!documentReady) {

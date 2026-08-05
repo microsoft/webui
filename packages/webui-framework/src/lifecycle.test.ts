@@ -113,7 +113,7 @@ describe('hydration lifecycle — non-streaming pages', () => {
     Object.defineProperty(globalThis, 'performance', {
       value: {
         getEntriesByType() {
-          return [];
+          return [{ domContentLoadedEventStart: 1 }];
         },
         mark() {},
         measure() {},
