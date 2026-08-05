@@ -378,10 +378,7 @@ When the page loads:
    elements.
 3. The framework matches each element to its class, re-attaches event listeners,
    and activates reactive bindings.
-4. The `webui:hydration-complete` event fires once the parser-startup hydration
-   cohort has settled. Components using `static override readonly hydration = 'visible'`
-   join that cohort only when initially visible; dormant instances use
-   `hydratedCallback()` when they activate later.
+4. The `webui:hydration-complete` event fires once initial hydration settles.
 
 ---
 

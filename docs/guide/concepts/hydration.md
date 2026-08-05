@@ -62,11 +62,11 @@ Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
 
-## Visible Authored Components
+## Visible Hydration
 
-Opt an authored component into per-instance visibility-deferred hydration
-with `static override readonly hydration = 'visible'`, and import the optional
-visible-hydration entry once, before component registration modules:
+Use visible hydration for components repeated beyond the initial viewport, such
+as long feeds and grids. Import the optional entry once before registering those
+components:
 
 ```typescript
 import '@microsoft/webui-framework/visible-hydration.js';
@@ -81,67 +81,19 @@ export class ActivityRow extends WebUIElement {
 ActivityRow.define('activity-row');
 ```
 
-`hydration` defaults to `'eager'` - the universal default and the safe
-fallback in every case below. Without the optional
-`@microsoft/webui-framework/visible-hydration.js` entry imported before
-component definitions, a `'visible'` component falls back to eager hydration
-rather than staying inert; this also logs one development-only console
-warning per session (never for a missing `IntersectionObserver` - that
-fallback is expected on older browsers and never warns).
+WebUI keeps the SSR content visible and hydrates each instance within 200px of
+the viewport or immediately on interaction. Client-created components remain
+eager.
 
-An individual SSR instance can force eager hydration regardless of its
-class's `'visible'` mode with the attribute `w-hydrate="eager"` - useful for,
-say, the first few rows of an otherwise lazy list that render above the fold.
-Only the exact string `"eager"` is recognized; any other value is ignored and
-normal visibility deferral applies. WebUI never strips or rewrites the
-attribute, so it survives hydration and any later reconnect.
+Keep priority instances eager:
 
-The SSR DOM stays visible and keeps its identity. The framework uses one shared
-`IntersectionObserver` for all deferred instances and hydrates an element when it
-enters a 200px lead area around the viewport. Supporting browsers use a 200px
-observer `scrollMargin` with zero `rootMargin`, extending the same lead through
-nested scroll containers without doubling it at the document root. Older
-observers use a 200px `rootMargin`; an item inside a nested scroller activates
-when it reaches that scroller's clip boundary.
+```html
+<activity-row w-hydrate="eager"></activity-row>
+```
 
-Pointer, focus, keyboard, and click capture activates a pending component
-synchronously before normal target handling. Nested deferred components
-activate parent-first across slots and shadow roots. If a visible batch exceeds
-an 8ms work budget, WebUI continues it in a user-visible scheduler task, or a
-`MessageChannel` task where the Scheduler API is unavailable. A rejected
-scheduler task uses the same fallback without dropping visible work.
-
-Visibility deferral applies only to SSR instances. Client-created components mount
-eagerly. If `IntersectionObserver` is unavailable, SSR hydration also falls back
-to eager behavior rather than leaving inert UI.
-
-After a hydrated component stays disconnected long enough for teardown,
-structure-free templates rewire the preserved DOM on reconnect. Templates with
-conditionals or repeats remount from the component's current state because their
-one-time SSR closing markers have already been removed.
-
-Writes made after `super.connectedCallback()` has placed a deferred instance in its
-deferred state are retained. They take precedence over older bootstrap state and
-are replayed synchronously after hydration, including parent-to-child writes
-from repeated lists and explicit same-value assignments. Ordinary bootstrap
-values are copied into component-local state before a router can release the
-global handoff. If one replayed binding also references template-only state that
-was omitted from bootstrap, WebUI preserves the complete trusted SSR binding
-during replay and later updates until that missing root is supplied. An explicit
-`undefined` counts as supplied state and clears the corresponding text or
-repeat. This does not change the ordinary
-pre-hydration mismatch rule: writes made in a field initializer, constructor, or
-before `super.connectedCallback()` still cannot change the trusted first server
-paint.
-
-On a progressive streaming page, a boundary commit records its local state and
-removes its temporary scaffolding without forcing a deferred root to hydrate.
-Subsequent boundary patches update the dormant root, and the newest values win
-when visibility or interaction activates it.
-
-Use `hydration = 'visible'` for long feeds, grids, and other pages where most
-authored components begin outside the lead area. For a small page whose
-components are all visible, eager hydration avoids the observer-delivery delay.
+Use `hydratedCallback()` for setup that requires bindings or refs. If the
+optional entry or `IntersectionObserver` is unavailable, WebUI falls back to
+eager hydration. Keep the default eager mode for small, fully visible groups.
 
 ## Progressive Streaming Hydration
 

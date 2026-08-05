@@ -110,9 +110,8 @@ to access the value or when the value is part of the component's public API.
 
 ### Component-level hydration strategy
 
-Large pages can keep authored SSR components dormant until they approach the
-viewport by opting into `hydration = 'visible'` and importing the optional
-visible-hydration entry once, before component registration modules:
+For components repeated beyond the initial viewport, import the optional entry
+once before component modules:
 
 ```ts
 import '@microsoft/webui-framework/visible-hydration.js';
@@ -122,53 +121,20 @@ import './product-card.js';
 ```ts
 export class ProductCard extends WebUIElement {
   static override readonly hydration = 'visible';
-
-  // Decorators, events, and lifecycle code work normally after activation.
 }
 
 ProductCard.define('product-card');
 ```
 
-`hydration` defaults to `'eager'` on the base class — the universal default,
-and the safe fallback in every case below. The default
-`@microsoft/webui-framework` entry has no dependency on the viewport
-coordinator, so an app with no `'visible'` components pays no coordinator
-bundle or initialization cost; `hydration = 'visible'` alone, without the
-optional entry, falls back to eager hydration rather than staying inert (and
-logs one development-only console warning per session — never for a missing
-`IntersectionObserver`, since that fallback is expected on older browsers).
+Hydration is eager by default. Use `w-hydrate="eager"` for an above-the-fold
+instance of a visible-hydrated class:
 
-An individual SSR instance can force eager hydration regardless of its class's
-`'visible'` mode with the attribute `w-hydrate="eager"` — for example, an
-above-the-fold instance of an otherwise-lazy list row template. Only the exact
-string `"eager"` is recognized; any other value is ignored.
+```html
+<product-card w-hydrate="eager"></product-card>
+```
 
-The server-rendered DOM remains visible and unchanged. One shared
-`IntersectionObserver` activates instances within 200px of the viewport. On
-browsers with `scrollMargin`, WebUI uses a 200px scroll margin and zero root
-margin so nested scroll containers get the same lead without doubling the
-document margin. Older observers use a 200px root margin and activate through
-nested scrollers at their clip boundary. A shared capture listener activates a
-pending component before pointer, focus, keyboard, or click handling. Nested,
-slotted, and shadow-contained lazy components activate parent-first.
-
-Only SSR instances defer. Client-created elements mount immediately, and
-browsers without `IntersectionObserver` use eager hydration. State written after
-an instance defers is preserved and replayed synchronously after its bindings
-are wired. Ordinary bootstrap values are copied into component-local state
-before the page-wide handoff can be released. Mixed bindings preserve trusted
-SSR text across later updates when another dependency was intentionally omitted
-from bootstrap state; an explicit `undefined` is instead treated as supplied
-state. After delayed disconnect teardown, structural templates remount from
-current component state on reconnect. In progressive streaming mode, the
-boundary can commit and release its scaffolding while a lazy root remains
-dormant; the root retains its boundary-local state and accepts later streamed
-patches until activation.
-
-Visible activation batches run immediately while they stay below an 8ms budget.
-Larger batches continue in user-visible scheduler tasks, with a
-`MessageChannel` fallback, to avoid creating a long main-thread task. Each
-parent-first activation is budgeted and failures are isolated.
+Keep small, fully visible groups eager. See
+[Visible Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#visible-hydration).
 
 ### Build with the WebUI plugin
 

@@ -80,18 +80,11 @@ export class TodoRow extends WebUIElement {
 TodoRow.define('todo-row');
 ```
 
-SSR content remains visible. A shared observer hydrates rows within 200px of the
-viewport, including nested scroll-container lead distance where `scrollMargin`
-is supported; older observers activate nested items at the scroller's clip
-boundary. Interaction or focus wakes an offscreen instance synchronously,
-client-created rows stay eager, and missing `IntersectionObserver` support
-falls back to eager hydration. An individual above-the-fold row can force
-eager hydration with `w-hydrate="eager"`. Use `hydratedCallback()` rather than
-`connectedCallback()` for setup that requires bindings, events, or `w-ref`,
-because a deferred `connectedCallback()` returns before hydration.
+Use `w-hydrate="eager"` on any above-the-fold instance that should hydrate
+immediately. Put setup that needs bindings, events, or `w-ref` in
+`hydratedCallback()`.
 
-See [Hydration](/guide/concepts/hydration#visible-authored-components) for state
-replay, streaming, scheduling, and fallback details.
+See [Visible Hydration](/guide/concepts/hydration#visible-hydration).
 
 The matching template (`my-counter.html`):
 

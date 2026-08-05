@@ -602,15 +602,7 @@ MyComponent.define('my-component');
 For a component with many initially offscreen SSR instances, add
 `static override readonly hydration = 'visible'` and import the optional
 `@microsoft/webui-framework/visible-hydration.js` entry once before component
-definitions (without it, or without `IntersectionObserver`, the component
-falls back to eager hydration). WebUI keeps SSR DOM visible and uses one shared
-`IntersectionObserver`. It uses a 200px `scrollMargin` with zero `rootMargin`
-when supported, or a 200px `rootMargin` otherwise. Visibility, pointer, focus,
-keyboard, or click activates the instance; nested visible-deferred components
-activate parent-first across slots and shadow roots. Client-created instances
-and browsers without `IntersectionObserver` stay eager. A per-instance
-`w-hydrate="eager"` attribute forces eager hydration for one SSR instance
-regardless of viewport position.
+definitions:
 
 ```typescript
 import '@microsoft/webui-framework/visible-hydration.js';
@@ -621,11 +613,9 @@ export class FeedItem extends WebUIElement {
 }
 ```
 
-Writes made after the component enters deferred mode are retained and
-replayed after activation, including equal-value intent, parent repeat updates,
-and streamed state patches. A mixed binding keeps trusted SSR output while one
-of its roots remains unavailable. Use `hydratedCallback()` for work that
-requires bindings or refs.
+Use `w-hydrate="eager"` for priority instances. Use `hydratedCallback()` for
+work that requires bindings or refs. Missing browser support falls back to eager
+hydration.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
