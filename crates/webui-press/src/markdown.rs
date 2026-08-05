@@ -195,8 +195,74 @@ fn collect_node_text<'a>(
     (plain, html)
 }
 
+fn has_uri_scheme(url: &str) -> bool {
+    let mut bytes = url.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+
+    for byte in bytes {
+        match byte {
+            b':' => return true,
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'.' => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn resolve_relative_link(link_base_url: &str, target: &str) -> Option<String> {
+    if target.is_empty()
+        || target.starts_with('/')
+        || target.starts_with('#')
+        || target.starts_with('?')
+        || has_uri_scheme(target)
+    {
+        return None;
+    }
+
+    let suffix_start = target.find(['?', '#']).unwrap_or(target.len());
+    let path = &target[..suffix_start];
+    if path.is_empty() {
+        return None;
+    }
+
+    let trailing_slash = path.ends_with('/') || path == "." || path == "..";
+    let segment_capacity = link_base_url.bytes().filter(|byte| *byte == b'/').count()
+        + path.bytes().filter(|byte| *byte == b'/').count()
+        + 1;
+    let mut segments = Vec::with_capacity(segment_capacity);
+    for segment in link_base_url.split('/').chain(path.split('/')) {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
+        }
+    }
+
+    let mut resolved = String::with_capacity(link_base_url.len() + target.len() + 1);
+    resolved.push('/');
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            resolved.push('/');
+        }
+        resolved.push_str(segment);
+    }
+    if trailing_slash && !resolved.ends_with('/') {
+        resolved.push('/');
+    }
+    resolved.push_str(&target[suffix_start..]);
+    Some(resolved)
+}
+
 /// Render markdown content to HTML with syntax-highlighted code blocks.
-/// Internal links (starting with `/`) are prefixed with `base_path`.
+/// Root-absolute internal links are prefixed with `base_path`, and relative
+/// links are resolved from `page_url`.
 ///
 /// `page_url` is the current page's canonical URL path (base-prefixed, with a
 /// trailing slash — e.g. `/webui/guide/`). In-page fragment links (heading
@@ -204,11 +270,22 @@ fn collect_node_text<'a>(
 /// (`{page_url}#slug`) rather than bare `#slug`. A bare fragment would resolve
 /// against the document's `<base href>` — which points at the site root — and
 /// navigate away from the current page instead of scrolling within it.
+#[allow(dead_code)] // Public library API; the binary uses the source-aware helper below.
 pub fn render_markdown(
     content: &str,
     highlighter: &Highlighter,
     base_path: &str,
     page_url: &str,
+) -> Result<String> {
+    render_markdown_with_link_base(content, highlighter, base_path, page_url, page_url)
+}
+
+pub(crate) fn render_markdown_with_link_base(
+    content: &str,
+    highlighter: &Highlighter,
+    base_path: &str,
+    page_url: &str,
+    link_base_url: &str,
 ) -> Result<String> {
     let arena = Arena::new();
     let mut options = Options::default();
@@ -228,16 +305,26 @@ pub fn render_markdown(
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
         if let NodeValue::Link(ref mut link) = data.value {
-            if link.url.starts_with('#') {
+            if link.url.is_empty() {
+                link.url = page_url.to_string();
+            } else if link.url.starts_with('#') {
                 // In-page fragment link. Make it absolute to the current page so
                 // it isn't resolved against `<base href>` (the site root).
                 link.url = format!("{page_url}{}", link.url);
+            } else if link.url.starts_with('?') {
+                // Query-only links also target the current page, not the site root.
+                link.url = format!("{page_url}{}", link.url);
             } else if link.url.starts_with('/')
+                && !link.url.starts_with("//")
                 && !link.url.starts_with(base_path)
                 && base_path != "/"
             {
                 // Prepend base_path to absolute internal links
                 link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
+            } else if let Some(resolved) = resolve_relative_link(link_base_url, &link.url) {
+                // The document-level `<base href>` points at the site root, so
+                // relative Markdown links must be resolved during the build.
+                link.url = resolved;
             }
         }
     }
@@ -394,6 +481,58 @@ mod tests {
         assert!(
             html.contains(r##"<a href="/webui/guide/#hello">below</a>"##),
             "in-content fragment link should be absolute to the page: {html}"
+        );
+    }
+
+    #[test]
+    fn relative_links_are_absolute_to_the_markdown_source_directory() {
+        let h = Highlighter::new();
+        let html = render_markdown_with_link_base(
+            "[Sibling](./sibling) [Parent](../parent) [Bare](other?tab=1#details)",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r#"<a href="/webui/guide/sibling">Sibling</a>"#),
+            "dot-relative link should use the source directory: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/webui/parent">Parent</a>"#),
+            "parent-relative link should normalize dot segments: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/webui/guide/other?tab=1#details">Bare</a>"#),
+            "bare relative link should preserve its query and fragment: {html}"
+        );
+    }
+
+    #[test]
+    fn non_relative_links_keep_their_existing_semantics() {
+        let h = Highlighter::new();
+        let html = render_markdown_with_link_base(
+            "[External](https://example.com/docs) [Network](//cdn.example.com/docs) [Query](?tab=1)",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r#"<a href="https://example.com/docs">External</a>"#),
+            "absolute external link should remain unchanged: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="//cdn.example.com/docs">Network</a>"#),
+            "protocol-relative link should remain unchanged: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/webui/guide/current/?tab=1">Query</a>"#),
+            "query-only link should target the current page: {html}"
         );
     }
 
