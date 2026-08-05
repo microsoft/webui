@@ -75,6 +75,92 @@ function withPerformanceAndWindow<T>(run: (dispatched: Event[]) => T): T {
 }
 
 describe('hydration lifecycle — non-streaming pages', () => {
+  test('treats an interactive document as ready after DOMContentLoaded', async () => {
+    const previousDocumentConstructor = Object.getOwnPropertyDescriptor(globalThis, 'Document');
+    const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const previousPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const previousEvent = Object.getOwnPropertyDescriptor(globalThis, 'Event');
+    const dispatched: Event[] = [];
+
+    class FakeDocument {}
+    const fakeDocument = new FakeDocument() as FakeDocument & {
+      readyState: DocumentReadyState;
+      addEventListener(): void;
+    };
+    fakeDocument.readyState = 'interactive';
+    fakeDocument.addEventListener = () => {
+      throw new Error('DOMContentLoaded must not be awaited after it has fired');
+    };
+
+    class FakeEvent {
+      type: string;
+      constructor(type: string) {
+        this.type = type;
+      }
+    }
+
+    Object.defineProperty(globalThis, 'Document', {
+      value: FakeDocument,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'document', {
+      value: fakeDocument,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'performance', {
+      value: {
+        getEntriesByType() {
+          return [];
+        },
+        mark() {},
+        measure() {},
+      },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'window', {
+      value: {
+        dispatchEvent(event: Event) {
+          dispatched.push(event);
+          return true;
+        },
+      },
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(globalThis, 'Event', {
+      value: FakeEvent,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      const lifecycle = await freshLifecycle();
+      assert.equal(lifecycle.isHydrationStartupPending(), false);
+      lifecycle.hydrationStart();
+      lifecycle.hydrationEnd();
+      assert.equal(dispatched.length, 1);
+      assert.equal(dispatched[0].type, 'webui:hydration-complete');
+    } finally {
+      for (const [key, descriptor] of [
+        ['Document', previousDocumentConstructor],
+        ['document', previousDocument],
+        ['performance', previousPerformance],
+        ['window', previousWindow],
+        ['Event', previousEvent],
+      ] as const) {
+        if (descriptor) {
+          Object.defineProperty(globalThis, key, descriptor);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+    }
+  });
+
   test('fires webui:hydration-complete once pending count reaches zero', async () => {
     const lifecycle = await freshLifecycle();
     withPerformanceAndWindow((dispatched) => {
