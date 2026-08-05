@@ -214,7 +214,7 @@ fn has_uri_scheme(url: &str) -> bool {
     false
 }
 
-fn resolve_relative_link(link_base_url: &str, target: &str) -> Option<String> {
+fn resolve_relative_link(base_path: &str, link_base_url: &str, target: &str) -> Option<String> {
     if target.is_empty()
         || target.starts_with('/')
         || target.starts_with('#')
@@ -234,12 +234,18 @@ fn resolve_relative_link(link_base_url: &str, target: &str) -> Option<String> {
     let segment_capacity = link_base_url.bytes().filter(|byte| *byte == b'/').count()
         + path.bytes().filter(|byte| *byte == b'/').count()
         + 1;
+    let base_segment_count = base_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .count();
     let mut segments = Vec::with_capacity(segment_capacity);
     for segment in link_base_url.split('/').chain(path.split('/')) {
         match segment {
             "" | "." => {}
             ".." => {
-                segments.pop();
+                if segments.len() > base_segment_count {
+                    segments.pop();
+                }
             }
             _ => segments.push(segment),
         }
@@ -314,7 +320,9 @@ pub fn render_markdown(
             {
                 // Prepend base_path to absolute internal links
                 link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
-            } else if let Some(resolved) = resolve_relative_link(link_base_url, &link.url) {
+            } else if let Some(resolved) =
+                resolve_relative_link(base_path, link_base_url, &link.url)
+            {
                 // The document-level `<base href>` points at the site root, so
                 // relative Markdown links must be resolved during the build.
                 link.url = resolved;
@@ -502,6 +510,46 @@ mod tests {
         assert!(
             html.contains(r#"<a href="/webui/guide/other?tab=1#details">Bare</a>"#),
             "bare relative link should preserve its query and fragment: {html}"
+        );
+    }
+
+    #[test]
+    fn relative_links_cannot_escape_the_base_path() {
+        let h = Highlighter::new();
+        let html = match render_markdown(
+            "[Clamped](../../x)",
+            &h,
+            "/webui/",
+            "/webui/guide/",
+            "/webui/guide/",
+        ) {
+            Ok(html) => html,
+            Err(e) => panic!("render_markdown should succeed: {e}"),
+        };
+
+        assert!(
+            html.contains(r#"<a href="/webui/x">Clamped</a>"#),
+            "parent segments should stop at the base path: {html}"
+        );
+    }
+
+    #[test]
+    fn empty_link_destination_targets_the_current_page() {
+        let h = Highlighter::new();
+        let html = match render_markdown(
+            "[]()",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        ) {
+            Ok(html) => html,
+            Err(e) => panic!("render_markdown should succeed: {e}"),
+        };
+
+        assert!(
+            html.contains(r#"<a href="/webui/guide/current/"></a>"#),
+            "empty destination should target the current page: {html}"
         );
     }
 
