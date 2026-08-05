@@ -35,6 +35,11 @@
       top: 1400px;
     }
 
+    #offscreen-eager-escape {
+      position: absolute;
+      top: 1600px;
+    }
+
     #nested {
       position: absolute;
       top: 2200px;
@@ -74,6 +79,12 @@
   <test-lazy-item id="visible" label="Visible" count="0"></test-lazy-item>
   <test-lazy-item id="near" label="Near" count="0"></test-lazy-item>
   <test-lazy-item id="offscreen" label="Offscreen" count="0"></test-lazy-item>
+  <test-lazy-item
+    id="offscreen-eager-escape"
+    w-hydrate="eager"
+    label="OffscreenEagerEscape"
+    count="0"
+  ></test-lazy-item>
 
   <div id="nested-scroller">
     <div id="scroller-spacer"></div>

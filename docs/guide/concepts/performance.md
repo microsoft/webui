@@ -129,42 +129,60 @@ instance for the server lifetime.
 **Browser state is client-facing.** Never put credentials, private tokens, or other secrets in state rendered to
 the browser.
 
-## Lazy Hydration Showdown
+## Visible Hydration Showdown
 
-Authored components can set `static lazy = true` to hydrate only instances
-within 200px of the viewport. A production Chromium benchmark compares a
+Authored components can set `static override readonly hydration = 'visible'` (with the
+optional `@microsoft/webui-framework/visible-hydration.js` entry imported
+before component definitions) to hydrate only instances within 200px of the
+viewport. A production Chromium benchmark compares a
 representative todo row with four text bindings and two direct event listeners
 at 1280x720. Each result is the median of 30 balanced, fresh-page runs; p95 is
 shown for CPU and first-screen readiness. Listener counts come from installed
 binding cleanups, and total retained heap is measured after forced GC from a
-pre-bundle page baseline.
+pre-bundle page baseline. The eager bundle excludes the viewport/interaction
+coordinator entirely (verified from the build's module graph, not inferred
+from size); the visible-enabled bundle additionally imports the optional entry.
 
 | Mode | Items | Component CPU med/p95 | Ready med/p95 | Initially hydrated | Initial listeners | Total retained heap |
 |---|---:|---:|---:|---:|---:|---:|
-| Eager | 10 | 1.30 / 1.60 ms | 1.90 / 2.10 ms | 10 | 20 | 372.0 KiB |
-| Lazy | 10 | 1.50 / 1.90 ms | 23.90 / 30.40 ms | 10 | 20 | 407.0 KiB |
-| Eager | 1,000 | 9.80 / 12.10 ms | 26.00 / 30.10 ms | 1,000 | 2,000 | 1,475.3 KiB |
-| Lazy | 1,000 | 4.60 / 5.40 ms | 28.40 / 36.70 ms | 13 | 26 | 766.5 KiB |
+| Eager | 10 | 1.20 / 1.60 ms | 1.70 / 2.20 ms | 10 | 20 | 366.9 KiB |
+| Visible | 10 | 1.40 / 1.80 ms | 25.10 / 32.50 ms | 10 | 20 | 412.3 KiB |
+| Eager | 1,000 | 9.90 / 11.70 ms | 27.00 / 30.40 ms | 1,000 | 2,000 | 1,470.1 KiB |
+| Visible | 1,000 | 5.10 / 6.30 ms | 29.50 / 40.40 ms | 13 | 26 | 774.0 KiB |
 
-For 1,000 items, lazy mode reduced initial component CPU by 53%, hydrated roots
-and listeners by 98.7%, hydration-only retained heap by 55%, and total retained
-heap by 48%. Median first-screen readiness stayed within 2.4ms of eager mode.
-Activating the last dormant row from an interaction took 0.1ms median.
+For 1,000 items, visible-deferred mode reduced initial component CPU by 49%,
+hydrated roots and listeners by 98.7%, hydration-only retained heap by 55%, and
+total retained heap by 47%. Median first-screen readiness - the wall-clock time
+until the initially-visible rows finish hydrating, including the async
+`IntersectionObserver` callback round-trip - stayed within 2.5ms of eager mode,
+because the same observer delivery that costs 10 small items (below) is here
+offset by hydrating far fewer rows up front. Activating the last dormant row
+from an interaction took 0.1ms median.
 
-For 10 items, every row was already inside the lead area. Lazy mode therefore
-saved no hydration work and paid one asynchronous observer delivery, adding
-22.0ms to median readiness, 0.2ms component CPU, and 35.0 KiB total retained
-heap. Keep eager hydration for small, fully visible surfaces.
+For 10 items, every row was already inside the lead area, so deferring bought
+no hydration savings - it only added the cost of one asynchronous
+`IntersectionObserver` callback round-trip before those already-satisfied rows
+could activate. That shows up entirely as **+23.4ms of median first-screen
+readiness latency**, not blocked main-thread work: component CPU rose by only
+0.2ms and total retained heap by 45.4 KiB. The latency is the browser scheduling
+the observer's callback, not WebUI computing anything - the main thread is free
+the entire time. Keep eager hydration for small, fully visible surfaces, where
+visibility deferral has no offsetting benefit and only adds that latency.
 
 The eager control was also rebuilt from the pre-change source and measured with
-the same final harness. Median component CPU changed from 1.20ms to 1.30ms for
-10 items and from 10.00ms to 9.80ms for 1,000 items. P95 stayed at 1.60ms for 10
-items and fell from 13.90ms to 12.10ms for 1,000. Hydration-only retained heap
-increased by 2.1 KiB for 10 items and fell by 31.4 KiB for 1,000. This shows no
-material eager hydration regression, but the shared capability has a real bundle
-cost: 6,154 minified bytes and 2,013 gzip bytes in this isolated framework
-fixture. Median bundle initialization increased by 0.1ms for 10 items and 0.2ms
-for 1,000.
+the same final harness. Median component CPU stayed at 1.20ms for 10 items and
+changed from 10.00ms to 9.90ms for 1,000 items. P95 stayed at 1.60ms for 10
+items and fell from 13.90ms to 11.70ms for 1,000. Hydration-only retained heap
+increased by 3.2 KiB for 10 items and fell by 30.5 KiB for 1,000. This shows no
+material eager hydration regression.
+
+The final eager bundle is 40,583 minified bytes and 12,788 gzip bytes. The
+visible-enabled bundle is 43,902 minified bytes and 14,099 gzip bytes, so opting
+in adds 3,319 minified bytes and 1,311 gzip bytes in this isolated fixture. The
+eager module graph contains no viewport coordinator. Compared with the
+pre-feature source, its remaining strategy contract and state-safety integration
+add 3,732 minified bytes and 1,125 gzip bytes, while median bundle initialization
+is unchanged for 10 items and 0.1ms higher for 1,000.
 
 Reproduce the matrix:
 

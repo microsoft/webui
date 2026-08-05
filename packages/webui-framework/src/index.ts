@@ -24,12 +24,16 @@
 import { installTemplateElementRuntime } from './static-host.js';
 
 // Set up compiler-owned dormant template hosts. The default entry deliberately
-// carries no dependency on the streaming coordinator: streaming apps import the
-// separate `@microsoft/webui-framework/streaming.js` entry (see
-// `streaming-entry.ts`) to install it, so a non-streaming app never loads it.
+// carries no dependency on the streaming coordinator or the visible-hydration
+// coordinator: streaming apps import the separate
+// `@microsoft/webui-framework/streaming.js` entry (see `streaming-entry.ts`),
+// and `hydration = 'visible'` apps import
+// `@microsoft/webui-framework/visible-hydration.js` (see
+// `visible-hydration-entry.ts`), so an app that uses neither never loads them.
 setTimeout(installTemplateElementRuntime, 0);
 
 export { WebUIElement } from './element.js';
+export type { HydrationStrategy } from './element.js';
 export { observable, attr } from './decorators.js';
 export { getTemplate, registerTemplateData } from './template.js';
 export type { TemplateMeta } from './template.js';

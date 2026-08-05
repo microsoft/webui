@@ -18,6 +18,7 @@ import { TemplateElement } from './template-element.js';
 import {
   disconnectLazyHydration,
   isStreamedLazyActivation,
+  isVisibleHydrationCoordinatorInstalled,
   LAZY_HYDRATION_ACTIVATE,
   observeLazyHydration,
   observeStreamedLazyHydration,
@@ -47,25 +48,82 @@ import type {
 type EventHandler = (...args: unknown[]) => unknown;
 
 /**
+ * Component-level hydration strategy. `'eager'` (the universal default)
+ * hydrates synchronously like every other WebUI component; `'visible'` defers
+ * SSR instances until the shared viewport/interaction coordinator activates
+ * them (see `static hydration` below).
+ */
+export type HydrationStrategy = 'eager' | 'visible';
+
+/**
+ * Per-instance SSR escape hatch for a `hydration = 'visible'` class: the
+ * exact attribute value `"eager"` suppresses viewport deferral for that one
+ * instance. Any other value is ignored — this is a narrow, exact-match
+ * contract rather than a general directive, so it costs nothing beyond one
+ * attribute read, and only for components that already opted into
+ * `'visible'`.
+ */
+const HYDRATE_ATTR = 'w-hydrate';
+const HYDRATE_EAGER = 'eager';
+
+// ── Development build flag ──────────────────────────────────────
+// See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
+// bundler-folded compile-time constant, declared and consumed module-locally
+// so a production build (`--define:__WEBUI_DEV__=false`) can constant-fold
+// `DEV` to `false` and dead-code-eliminate `warnMissingVisibleHydrationEntry`'s
+// body, while `tsc`, unit tests, and `webui-press serve` keep it active.
+declare const __WEBUI_DEV__: boolean;
+const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
+
+let warnedMissingVisibleHydrationEntry = false;
+
+/**
+ * Warn once, in development, when a `hydration = 'visible'` component falls
+ * back to eager hydration because the optional
+ * `@microsoft/webui-framework/visible-hydration.js` entry was never imported.
+ * Never warns for a missing `IntersectionObserver` — that fallback is
+ * documented, expected behavior on older browsers, not a misconfiguration.
+ */
+function warnMissingVisibleHydrationEntry(tag: string): void {
+  if (!DEV || warnedMissingVisibleHydrationEntry) return;
+  warnedMissingVisibleHydrationEntry = true;
+  console.warn(
+    `[WebUI] <${tag}> sets \`static hydration = 'visible'\`, but ` +
+    "'@microsoft/webui-framework/visible-hydration.js' was never imported, " +
+    'so it hydrated eagerly instead. Import that optional entry once before ' +
+    'your component definitions to enable visibility-deferred hydration.',
+  );
+}
+
+/**
  * The interactive element base. Authored components extend this to gain event
  * binding (`@click`, root events), decorator-backed state, `w-ref` wiring, and
  * `$emit`. HTML-only components never reach this class.
  */
 export class WebUIElement extends TemplateElement {
   /**
-   * Defer SSR hydration until this component is within 200px of the viewport.
+   * Component-level hydration strategy. Eager is the universal default.
    *
-   * Server-rendered DOM remains visible and interaction, focus, or keyboard
-   * input activates the component synchronously. Client-created instances mount
-   * eagerly. Subclasses opt in with `static lazy = true`.
+   * Set `static override readonly hydration = 'visible'` to defer SSR instances until
+   * they are within 200px of the viewport. Server-rendered DOM remains
+   * visible and interaction, focus, or keyboard input activates the
+   * component synchronously regardless. Client-created instances always
+   * mount eagerly.
+   *
+   * `'visible'` requires the optional
+   * `@microsoft/webui-framework/visible-hydration.js` entry to be imported
+   * before component definitions; without it (or without
+   * `IntersectionObserver`), the component falls back to eager hydration
+   * rather than staying inert. An individual SSR instance can force eager
+   * hydration regardless of this static mode with `w-hydrate="eager"`.
+   *
+   * The policy is readonly because changing it after instances connect would
+   * make one class follow inconsistent hydration semantics.
    */
-  static lazy = false;
+  static readonly hydration: HydrationStrategy = 'eager';
 
   protected override $shouldDeferSSRHydration(): boolean {
-    return (
-      (this.constructor as typeof WebUIElement).lazy === true &&
-      supportsLazyHydration()
-    );
+    return this.$isVisibleHydrationEligible();
   }
 
   protected override $didDeferSSRHydration(): void {
@@ -89,13 +147,30 @@ export class WebUIElement extends TemplateElement {
     if (
       isStreamingHydrationMode() &&
       this.hasAttribute(STREAMED_HOST_ATTR) &&
-      (this.constructor as typeof WebUIElement).lazy === true &&
-      supportsLazyHydration()
+      this.$isVisibleHydrationEligible()
     ) {
       observeStreamedLazyHydration(this, state);
       return;
     }
     super.$activateDeferredSSR(state);
+  }
+
+  /**
+   * Whether this SSR instance should defer to the viewport/interaction
+   * coordinator. Checks the static `hydration` mode first — an ordinary
+   * eager component (the common case) returns `false` immediately and never
+   * reaches the `w-hydrate` attribute lookup or the coordinator.
+   */
+  private $isVisibleHydrationEligible(): boolean {
+    if ((this.constructor as typeof WebUIElement).hydration !== 'visible') {
+      return false;
+    }
+    if (this.getAttribute(HYDRATE_ATTR) === HYDRATE_EAGER) return false;
+    if (!isVisibleHydrationCoordinatorInstalled()) {
+      warnMissingVisibleHydrationEntry(this.tagName);
+      return false;
+    }
+    return supportsLazyHydration();
   }
 
   [LAZY_HYDRATION_ACTIVATE](

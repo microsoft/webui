@@ -22,6 +22,12 @@
         "types": "./dist/streaming-entry.d.ts",
         "default": "./dist/streaming-entry.js"
       }
+    },
+    "./visible-hydration.js": {
+      "import": {
+        "types": "./dist/visible-hydration-entry.d.ts",
+        "default": "./dist/visible-hydration-entry.js"
+      }
     }
   },
   "files": [

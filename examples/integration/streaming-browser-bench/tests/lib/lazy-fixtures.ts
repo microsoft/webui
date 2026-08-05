@@ -24,6 +24,15 @@ const FRAMEWORK_SRC = process.env.WEBUI_LAZY_HYDRATION_FRAMEWORK_SRC
 export const TODO_TAG = 'bench-todo-item';
 export const ITEM_COUNTS = [10, 1_000] as const;
 
+/**
+ * Which bundle to produce. Coordinator inclusion is a build-time (static
+ * import) decision, not a runtime flag: the `visible` bundle additionally
+ * imports the optional `visible-hydration-entry.ts` before defining the
+ * component with `static override readonly hydration = 'visible'`; the `eager` bundle
+ * never references it.
+ */
+export type LazyBenchMode = 'eager' | 'visible';
+
 const TODO_TEMPLATE = {
   h: '<article><input type="checkbox"><span></span><small></small><strong></strong><time></time><button type="button">Toggle</button><button type="button">Delete</button></article>',
   tr: ['title', 'description', 'priority', 'due'],
@@ -41,8 +50,15 @@ const TODO_TEMPLATE = {
   ],
 } as const;
 
-const ENTRY = `
-import { WebUIElement } from './index.js';
+function entrySource(mode: LazyBenchMode): string {
+  const optionalImport = mode === 'visible'
+    ? "import './visible-hydration-entry.js';\n"
+    : '';
+  const hydrationField = mode === 'visible'
+    ? "  static override readonly hydration = 'visible';\n\n"
+    : '';
+  return `
+${optionalImport}import { WebUIElement } from './index.js';
 
 function noteHydration(el, started) {
   const win = window;
@@ -60,9 +76,7 @@ function noteHydration(el, started) {
 }
 
 class BenchTodoItem extends WebUIElement {
-  static lazy = false;
-
-  connectedCallback() {
+${hydrationField}  connectedCallback() {
     const started = performance.now();
     super.connectedCallback();
     noteHydration(this, started);
@@ -85,21 +99,29 @@ class BenchTodoItem extends WebUIElement {
 
 window.__defineBenchTodo = function defineBenchTodo() {
   if (customElements.get('${TODO_TAG}')) return;
-  BenchTodoItem.lazy = window.__benchLazy === true;
   BenchTodoItem.define('${TODO_TAG}');
 };
 `;
+}
 
 export interface LazyFixture {
+  readonly mode: LazyBenchMode;
   readonly code: string;
   readonly minifiedBytes: number;
   readonly gzipBytes: number;
+  /**
+   * Input file paths (relative to the framework `src/` dir) esbuild reached
+   * while bundling this fixture. Used to assert the eager bundle's module
+   * graph never includes the coordinator, rather than inferring that from
+   * byte size alone.
+   */
+  readonly inputs: readonly string[];
 }
 
-export async function buildLazyFixture(): Promise<LazyFixture> {
+export async function buildLazyFixture(mode: LazyBenchMode): Promise<LazyFixture> {
   const result = await build({
     stdin: {
-      contents: ENTRY,
+      contents: entrySource(mode),
       resolveDir: FRAMEWORK_SRC,
       loader: 'ts',
       sourcefile: 'lazy-hydration-fixture.ts',
@@ -113,12 +135,15 @@ export async function buildLazyFixture(): Promise<LazyFixture> {
     define: { __WEBUI_DEV__: 'false' },
     supported: { 'import-attributes': true },
     legalComments: 'none',
+    metafile: true,
   });
   const code = result.outputFiles[0].text;
   return {
+    mode,
     code,
     minifiedBytes: Buffer.byteLength(code, 'utf-8'),
     gzipBytes: gzipSync(Buffer.from(code, 'utf-8')).length,
+    inputs: Object.keys(result.metafile.inputs),
   };
 }
 

@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-export type LazyMode = 'eager' | 'lazy';
+export type LazyMode = 'eager' | 'visible';
 
 export interface LazyRunMetrics {
   bundleInitMs: number;
@@ -23,9 +23,14 @@ export function insertLazyRoots(html: string): void {
   document.body.insertAdjacentHTML('beforeend', html);
 }
 
+/**
+ * Drive one already-defined `bench-todo-item` fixture through hydration.
+ * `mode` only affects the expected-count math below (which roots must hydrate
+ * up front) — the fixture bundle passed to the page already baked in the
+ * matching `hydration` strategy at build time (see `lazy-fixtures.ts`).
+ */
 export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> {
   const win = window as unknown as {
-    __benchLazy?: boolean;
     __benchBundleInitMs?: number;
     __benchHydrationCpu?: number;
     __benchHydratedCount?: number;
@@ -59,7 +64,6 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
     longTaskObserver = null;
   }
 
-  win.__benchLazy = mode === 'lazy';
   win.__benchHydrationCpu = 0;
   win.__benchHydratedCount = 0;
   win.__benchListenerCount = 0;

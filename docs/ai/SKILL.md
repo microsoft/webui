@@ -600,20 +600,28 @@ MyComponent.define('my-component');
 ```
 
 For a component with many initially offscreen SSR instances, add
-`static lazy = true`. WebUI keeps SSR DOM visible and uses one shared
+`static override readonly hydration = 'visible'` and import the optional
+`@microsoft/webui-framework/visible-hydration.js` entry once before component
+definitions (without it, or without `IntersectionObserver`, the component
+falls back to eager hydration). WebUI keeps SSR DOM visible and uses one shared
 `IntersectionObserver`. It uses a 200px `scrollMargin` with zero `rootMargin`
 when supported, or a 200px `rootMargin` otherwise. Visibility, pointer, focus,
-keyboard, or click activates the instance; nested lazy components activate
-parent-first across slots and shadow roots. Client-created instances and
-browsers without `IntersectionObserver` stay eager.
+keyboard, or click activates the instance; nested visible-deferred components
+activate parent-first across slots and shadow roots. Client-created instances
+and browsers without `IntersectionObserver` stay eager. A per-instance
+`w-hydrate="eager"` attribute forces eager hydration for one SSR instance
+regardless of viewport position.
 
 ```typescript
+import '@microsoft/webui-framework/visible-hydration.js';
+import './feed-item.js';
+
 export class FeedItem extends WebUIElement {
-  static lazy = true;
+  static override readonly hydration = 'visible';
 }
 ```
 
-Writes made after the lazy component enters deferred mode are retained and
+Writes made after the component enters deferred mode are retained and
 replayed after activation, including equal-value intent, parent repeat updates,
 and streamed state patches. A mixed binding keeps trusted SSR output while one
 of its roots remains unavailable. Use `hydratedCallback()` for work that
@@ -627,7 +635,7 @@ requires bindings or refs.
 
 | Method / property | Description |
 |---|---|
-| `static lazy = true` | Hydrate SSR instances within 200px of visibility |
+| `static override readonly hydration = 'visible'` | Defer SSR instances within 200px of visibility until the optional `visible-hydration.js` coordinator activates them |
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
@@ -677,10 +685,11 @@ mismatch` warning (development-only; stripped from production via
 If the value must appear in the first render, put it in the SSR state JSON.
 Otherwise assign it in `hydratedCallback()`. On buffered SSR and client-created
 mounts, `super.connectedCallback()` hydrates synchronously, but streamed hosts
-and `static lazy = true` hosts can return while still deferred.
+and `hydration = 'visible'` hosts (without `w-hydrate="eager"`) can return
+while still deferred.
 `hydratedCallback()` is the cross-mode signal: it runs synchronously exactly
 once after the first successful hydration or mount, and reconnects or callback
-exceptions do not retry it. Once a lazy host has deferred, later state writes
+exceptions do not retry it. Once a host has deferred, later state writes
 are retained and replayed; this exception does not make constructor or
 pre-`super.connectedCallback()` writes safe.
 

@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import '../../../src/visible-hydration-entry.js';
 import { attr, observable, WebUIElement } from '../../../src/index.js';
 import {
   disconnectLazyHydration,
@@ -55,7 +56,7 @@ function createLazyProbe(id: string, activate: () => void): LazyProbe {
 }
 
 export class TestLazyItem extends WebUIElement {
-  static override lazy = true;
+  static override readonly hydration = 'visible';
 
   @attr label = '';
   @attr count = 0;
@@ -79,7 +80,7 @@ export class TestLazyItem extends WebUIElement {
 TestLazyItem.define('test-lazy-item');
 
 export class TestLazyParent extends WebUIElement {
-  static override lazy = true;
+  static override readonly hydration = 'visible';
 
   @attr label = '';
 
@@ -97,7 +98,7 @@ interface LazyListItem {
 }
 
 export class TestLazyList extends WebUIElement {
-  static override lazy = true;
+  static override readonly hydration = 'visible';
 
   @observable items: LazyListItem[] = [];
   @observable showSummary = true;

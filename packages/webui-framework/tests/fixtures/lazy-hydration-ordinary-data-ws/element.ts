@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import '../../../src/visible-hydration-entry.js';
 import { attr, WebUIElement } from '../../../src/index.js';
 
 export class TestOrdinaryEagerItem extends WebUIElement {
@@ -13,7 +14,7 @@ export class TestOrdinaryEagerItem extends WebUIElement {
 TestOrdinaryEagerItem.define('test-ordinary-eager-item');
 
 export class TestOrdinaryLazyItem extends WebUIElement {
-  static override lazy = true;
+  static override readonly hydration = 'visible';
 
   @attr label = 'Client default';
 

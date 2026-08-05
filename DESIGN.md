@@ -3843,10 +3843,47 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   `TemplateElement.connectedCallback()` hydrates synchronously, so
   `super.connectedCallback()` returns only after that component's bindings,
   events, and references are wired, unless the authored class explicitly sets
-  `static lazy = true`.
-- **Component-level lazy hydration.** `WebUIElement.lazy` defaults to `false`.
-  An authored subclass setting it to `true` defers only SSR instances;
-  client-created instances mount eagerly. Deferred DOM stays visible and
+  `static override readonly hydration = 'visible'` (and, for that instance, no `w-hydrate="eager"`
+  SSR escape hatch — see below).
+- **Component-level hydration strategy.** `WebUIElement.hydration` defaults to
+  `'eager'` — the universal default and safe fallback for every other case
+  below. An authored subclass overriding it to `'visible'`
+  (`static override readonly hydration = 'visible'`) defers only SSR instances; client-created
+  instances always mount eagerly. The readonly field is typed as the exported
+  `HydrationStrategy` union, so unsupported strategy names fail type checking
+  while the exact override above remains a one-line opt-in.
+  - `'visible'` requires the optional
+    `@microsoft/webui-framework/visible-hydration.js` entry to have been
+    imported before component definitions in the same module graph (see
+    "Optional visible-hydration entry" below). Without it, or without
+    `IntersectionObserver`, the component falls back to eager hydration —
+    it is never left inert. A missing optional entry logs one
+    development-only console warning per session; a missing
+    `IntersectionObserver` never warns, since that fallback is expected on
+    older browsers.
+  - **`w-hydrate="eager"` SSR escape hatch.** An individual `hydration =
+    'visible'` SSR instance can force eager hydration with the attribute
+    `w-hydrate="eager"`, regardless of viewport position. Only the exact
+    string `"eager"` is recognized (case-sensitive, exact match) — this is a
+    narrow, hard-coded contract rather than a general directive, so it costs
+    nothing beyond one attribute read, and only for components whose static
+    `hydration` is already `'visible'`; ordinary eager components never read
+    the attribute. Any other value is ignored and normal visibility deferral
+    applies. The framework never strips or rewrites `w-hydrate`, so it
+    naturally survives hydration and any later reconnect.
+- **Optional visible-hydration entry.** The shared viewport/interaction
+  coordinator lives in `visible-hydration-coordinator.ts`, reachable only
+  through the optional `@microsoft/webui-framework/visible-hydration.js` entry
+  (`visible-hydration-entry.ts`), mirroring the streaming coordinator's split
+  (`streaming.js`). `element.ts` imports only a tiny, dependency-free contract
+  module (`lazy-hydration.ts`: an activation symbol, types, and a
+  coordinator registry `element.ts` consults through an optional-chained
+  reference), so an application that never imports the optional entry never
+  bundles the coordinator — a `hydration = 'visible'` opt-in alone does not
+  pull it in. The optional entry installs the coordinator synchronously as an
+  import side effect, before any authored `.define()` body in the same module
+  graph, exactly like the streaming entry.
+- Deferred DOM stays visible and
   structurally untouched. One lazily created `IntersectionObserver` is shared
   across the realm with `root: null` and `threshold: 0`. Browsers exposing
   `IntersectionObserver.scrollMargin` receive `scrollMargin: "200px"` and

@@ -61,11 +61,17 @@ MyCounter.define('my-counter');
 ```
 
 For a component repeated far beyond the initial viewport, opt into per-instance
-lazy hydration:
+visibility-deferred hydration, importing the optional visible-hydration entry
+once before component registration modules:
+
+```typescript
+import '@microsoft/webui-framework/visible-hydration.js';
+import './todo-row.js';
+```
 
 ```typescript
 export class TodoRow extends WebUIElement {
-  static lazy = true;
+  static override readonly hydration = 'visible';
 
   @attr label = '';
   @observable completed = false;
@@ -79,11 +85,12 @@ viewport, including nested scroll-container lead distance where `scrollMargin`
 is supported; older observers activate nested items at the scroller's clip
 boundary. Interaction or focus wakes an offscreen instance synchronously,
 client-created rows stay eager, and missing `IntersectionObserver` support
-falls back to eager hydration. Use `hydratedCallback()` rather than
+falls back to eager hydration. An individual above-the-fold row can force
+eager hydration with `w-hydrate="eager"`. Use `hydratedCallback()` rather than
 `connectedCallback()` for setup that requires bindings, events, or `w-ref`,
-because a lazy `connectedCallback()` returns before hydration.
+because a deferred `connectedCallback()` returns before hydration.
 
-See [Hydration](/guide/concepts/hydration#lazy-authored-components) for state
+See [Hydration](/guide/concepts/hydration#visible-authored-components) for state
 replay, streaming, scheduling, and fallback details.
 
 The matching template (`my-counter.html`):

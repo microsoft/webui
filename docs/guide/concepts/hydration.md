@@ -62,21 +62,42 @@ Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
 
-## Lazy Authored Components
+## Visible Authored Components
 
-Opt an authored component into per-instance lazy hydration with
-`static lazy = true`:
+Opt an authored component into per-instance visibility-deferred hydration
+with `static override readonly hydration = 'visible'`, and import the optional
+visible-hydration entry once, before component registration modules:
+
+```typescript
+import '@microsoft/webui-framework/visible-hydration.js';
+import './activity-row.js';
+```
 
 ```typescript
 export class ActivityRow extends WebUIElement {
-  static lazy = true;
+  static override readonly hydration = 'visible';
 }
 
 ActivityRow.define('activity-row');
 ```
 
+`hydration` defaults to `'eager'` - the universal default and the safe
+fallback in every case below. Without the optional
+`@microsoft/webui-framework/visible-hydration.js` entry imported before
+component definitions, a `'visible'` component falls back to eager hydration
+rather than staying inert; this also logs one development-only console
+warning per session (never for a missing `IntersectionObserver` - that
+fallback is expected on older browsers and never warns).
+
+An individual SSR instance can force eager hydration regardless of its
+class's `'visible'` mode with the attribute `w-hydrate="eager"` - useful for,
+say, the first few rows of an otherwise lazy list that render above the fold.
+Only the exact string `"eager"` is recognized; any other value is ignored and
+normal visibility deferral applies. WebUI never strips or rewrites the
+attribute, so it survives hydration and any later reconnect.
+
 The SSR DOM stays visible and keeps its identity. The framework uses one shared
-`IntersectionObserver` for all lazy instances and hydrates an element when it
+`IntersectionObserver` for all deferred instances and hydrates an element when it
 enters a 200px lead area around the viewport. Supporting browsers use a 200px
 observer `scrollMargin` with zero `rootMargin`, extending the same lead through
 nested scroll containers without doubling it at the document root. Older
@@ -84,13 +105,13 @@ observers use a 200px `rootMargin`; an item inside a nested scroller activates
 when it reaches that scroller's clip boundary.
 
 Pointer, focus, keyboard, and click capture activates a pending component
-synchronously before normal target handling. Nested lazy components activate
-parent-first across slots and shadow roots. If a visible batch exceeds an 8ms
-work budget, WebUI continues it in a user-visible scheduler task, or a
+synchronously before normal target handling. Nested deferred components
+activate parent-first across slots and shadow roots. If a visible batch exceeds
+an 8ms work budget, WebUI continues it in a user-visible scheduler task, or a
 `MessageChannel` task where the Scheduler API is unavailable. A rejected
 scheduler task uses the same fallback without dropping visible work.
 
-Lazy hydration applies only to SSR instances. Client-created components mount
+Visibility deferral applies only to SSR instances. Client-created components mount
 eagerly. If `IntersectionObserver` is unavailable, SSR hydration also falls back
 to eager behavior rather than leaving inert UI.
 
@@ -99,7 +120,7 @@ structure-free templates rewire the preserved DOM on reconnect. Templates with
 conditionals or repeats remount from the component's current state because their
 one-time SSR closing markers have already been removed.
 
-Writes made after `super.connectedCallback()` has placed a lazy instance in its
+Writes made after `super.connectedCallback()` has placed a deferred instance in its
 deferred state are retained. They take precedence over older bootstrap state and
 are replayed synchronously after hydration, including parent-to-child writes
 from repeated lists and explicit same-value assignments. Ordinary bootstrap
@@ -114,13 +135,13 @@ before `super.connectedCallback()` still cannot change the trusted first server
 paint.
 
 On a progressive streaming page, a boundary commit records its local state and
-removes its temporary scaffolding without forcing a lazy root to hydrate.
+removes its temporary scaffolding without forcing a deferred root to hydrate.
 Subsequent boundary patches update the dormant root, and the newest values win
 when visibility or interaction activates it.
 
-Use lazy hydration for long feeds, grids, and other pages where most authored
-components begin outside the lead area. For a small page whose components are
-all visible, eager hydration avoids the observer-delivery delay.
+Use `hydration = 'visible'` for long feeds, grids, and other pages where most
+authored components begin outside the lead area. For a small page whose
+components are all visible, eager hydration avoids the observer-delivery delay.
 
 ## Progressive Streaming Hydration
 

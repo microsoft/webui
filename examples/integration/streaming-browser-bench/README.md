@@ -10,7 +10,9 @@ holds **three** independent benches:
    across 1/3/10/100 boundaries against an ordinary one-shot control.
 3. **Lazy hydration matrix** (`lazy_hydration_matrix.spec.ts`) - production
    component hydration for representative 10-item and 1,000-item todo lists,
-   comparing eager and `static lazy = true` modes.
+   comparing the default eager strategy against an opt-in
+   `hydration = 'visible'` bundle that additionally imports the optional
+   `visible-hydration.js` entry.
 
 ## Transport bench
 
@@ -176,10 +178,23 @@ normal run.
 
 ## Lazy hydration matrix
 
-This matrix bundles the production framework with `__WEBUI_DEV__=false` and
-defines a todo item with four text bindings and two direct event listeners. Each
-SSR row has a fixed 72px height. The 10-item list fits inside the viewport plus
-the 200px lead margin; the 1,000-item list leaves almost every row dormant.
+This matrix builds **two** separate production bundles with esbuild
+(`__WEBUI_DEV__=false`): an **eager** bundle (the framework default entry
+only) and a **visible** bundle that additionally imports the optional
+`visible-hydration.js` entry before defining the component with
+`static override readonly hydration = 'visible'`. Coordinator inclusion is a
+build-time (static import) decision, matching production - there is no
+runtime toggle. Both bundles define a todo item with four text bindings and
+two direct event listeners. Each SSR row has a fixed 72px height. The 10-item
+list fits inside the viewport plus the 200px lead margin; the 1,000-item list
+leaves almost every row dormant.
+
+Before running the matrix, the spec inspects each bundle's esbuild
+**metafile** (its actual module input graph, not an inferred byte count) and
+asserts the eager bundle never reaches `visible-hydration-coordinator.ts`
+while the visible bundle does - the same "measurable zero-coordinator"
+guarantee the framework's own `index-decoupling.test.ts` enforces for the
+default entry point.
 
 Each arm runs in a fresh page and records:
 
@@ -193,9 +208,9 @@ Each arm runs in a fresh page and records:
 | hydration-only and total retained heap | forced GC through CDP before hydration and before bundle evaluation |
 | longest long task | overlapping `PerformanceObserver('longtask')` records from the definition/readiness window |
 | first visible and dormant interaction | synchronous click timing |
-| bundle size | exact production minified and gzip bytes |
+| bundle size | exact production minified and gzip bytes, per bundle |
 
-The dormant interaction must hydrate the last row synchronously. The lazy
+The dormant interaction must hydrate the last row synchronously. The visible
 1,000-item arm must hydrate fewer roots than it renders, while the eager arms
 must hydrate every root. The driver also fails if the expected initial roots do
 not hydrate before its frame deadline. These correctness assertions are always

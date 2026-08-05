@@ -108,20 +108,40 @@ lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
 
-### Component-level lazy hydration
+### Component-level hydration strategy
 
 Large pages can keep authored SSR components dormant until they approach the
-viewport:
+viewport by opting into `hydration = 'visible'` and importing the optional
+visible-hydration entry once, before component registration modules:
+
+```ts
+import '@microsoft/webui-framework/visible-hydration.js';
+import './product-card.js';
+```
 
 ```ts
 export class ProductCard extends WebUIElement {
-  static lazy = true;
+  static override readonly hydration = 'visible';
 
   // Decorators, events, and lifecycle code work normally after activation.
 }
 
 ProductCard.define('product-card');
 ```
+
+`hydration` defaults to `'eager'` on the base class — the universal default,
+and the safe fallback in every case below. The default
+`@microsoft/webui-framework` entry has no dependency on the viewport
+coordinator, so an app with no `'visible'` components pays no coordinator
+bundle or initialization cost; `hydration = 'visible'` alone, without the
+optional entry, falls back to eager hydration rather than staying inert (and
+logs one development-only console warning per session — never for a missing
+`IntersectionObserver`, since that fallback is expected on older browsers).
+
+An individual SSR instance can force eager hydration regardless of its class's
+`'visible'` mode with the attribute `w-hydrate="eager"` — for example, an
+above-the-fold instance of an otherwise-lazy list row template. Only the exact
+string `"eager"` is recognized; any other value is ignored.
 
 The server-rendered DOM remains visible and unchanged. One shared
 `IntersectionObserver` activates instances within 200px of the viewport. On
@@ -265,7 +285,7 @@ Base class for framework components.
 
 | Member | Purpose |
 |--------|---------|
-| `static lazy` | Set to `true` to hydrate SSR instances near the viewport |
+| `static hydration` | Set to `'visible'` to defer SSR instances near the viewport (requires the optional `visible-hydration.js` entry) |
 | `static define(tagName)` | Register the class as a custom element |
 | `protected hydratedCallback()` | Run once after the first successful hydration or client mount |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |

@@ -122,7 +122,11 @@ test.describe('component lazy hydration', () => {
         ).__allOffscreenCompleteCount ?? 0
       )
     ).toBe(1);
-    await expect(page.locator('[data-hydrated]')).toHaveCount(0);
+    // Only lazy roots should still be inert here — the `w-hydrate="eager"`
+    // instance mounts synchronously regardless of visibility and is excluded.
+    await expect(
+      page.locator('[data-hydrated]:not(#offscreen-eager-escape)'),
+    ).toHaveCount(0);
   });
 
   test('keeps SSR visible and hydrates only the viewport plus 200px margin', async ({ page }) => {
@@ -745,7 +749,13 @@ test.describe('component lazy hydration', () => {
     expect(hydrated).not.toContain('ordinary-lazy');
   });
 
-  test('falls back to eager hydration without IntersectionObserver', async ({ page }) => {
+  test('falls back to eager hydration without IntersectionObserver, without warning', async ({ page }) => {
+    const warnings: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'warning' || message.type() === 'error') {
+        warnings.push(message.text());
+      }
+    });
     await page.addInitScript(() => {
       Object.defineProperty(window, 'IntersectionObserver', {
         configurable: true,
@@ -756,6 +766,11 @@ test.describe('component lazy hydration', () => {
 
     await expect(page.locator('#offscreen')).toHaveAttribute('data-hydrated', '');
     await expect(page.locator('#reconnect')).toHaveAttribute('data-hydrated', '');
+    // A missing IntersectionObserver is an expected, documented fallback on
+    // older browsers — never a misconfiguration warning.
+    expect(
+      warnings.filter((warning) => warning.includes('visible-hydration.js')),
+    ).toEqual([]);
   });
 
   test('mounts client-created components eagerly', async ({ page }) => {
@@ -771,5 +786,32 @@ test.describe('component lazy hydration', () => {
     expect(hydratedSynchronously).toBe(true);
     await expect(page.locator('#client-created .label')).toHaveText('Client');
     await expect(page.locator('#client-created .count')).toHaveText('4');
+  });
+});
+
+test.describe('w-hydrate="eager" SSR escape hatch', () => {
+  test('hydrates synchronously despite being offscreen, while a normal visible sibling still defers', async ({ page }) => {
+    await page.goto(FIXTURE);
+
+    await expect(page.locator('#offscreen-eager-escape')).toHaveAttribute('data-hydrated', '');
+    await expect(page.locator('#offscreen')).not.toHaveAttribute('data-hydrated', '');
+  });
+
+  test('remains eager after a delayed reconnect', async ({ page }) => {
+    await page.goto(FIXTURE);
+    await expect(page.locator('#offscreen-eager-escape')).toHaveAttribute('data-hydrated', '');
+
+    await page.locator('#offscreen-eager-escape').evaluate(async (element) => {
+      const parent = element.parentNode;
+      const next = element.nextSibling;
+      element.remove();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      parent?.insertBefore(element, next);
+    });
+
+    await expect(page.locator('#offscreen-eager-escape')).toHaveAttribute('data-hydrated', '');
+    await expect(page.locator('#offscreen-eager-escape')).toHaveAttribute('w-hydrate', 'eager');
+    await page.locator('#offscreen-eager-escape button').click();
+    await expect(page.locator('#offscreen-eager-escape .count')).toHaveText('1');
   });
 });

@@ -33,9 +33,9 @@ const RUNS = Number.isFinite(ENV_RUNS) && ENV_RUNS > 0 ? ENV_RUNS : 15;
 const requestedModes = process.env.WEBUI_LAZY_HYDRATION_MODES;
 const MODES: readonly LazyMode[] = requestedModes === 'eager'
   ? ['eager']
-  : requestedModes === 'lazy'
-    ? ['lazy']
-    : ['eager', 'lazy'];
+  : requestedModes === 'visible'
+    ? ['visible']
+    : ['eager', 'visible'];
 
 interface Aggregate {
   mode: LazyMode;
@@ -56,10 +56,14 @@ interface Aggregate {
   dormantInteractionMsMedian: number;
 }
 
+interface BundleSizes {
+  minifiedBytes: number;
+  gzipBytes: number;
+}
+
 interface Snapshot {
   runs: number;
-  bundleMinifiedBytes: number;
-  bundleGzipBytes: number;
+  bundles: Partial<Record<LazyMode, BundleSizes>>;
   rows: Aggregate[];
 }
 
@@ -192,8 +196,17 @@ async function compareSnapshot(name: string, current: Snapshot): Promise<void> {
   const path = resolve(BASELINE_DIR, `browser-lazy-hydration-${name}.json`);
   const before = JSON.parse(await readFile(path, 'utf8')) as Snapshot;
   console.log(`\nLazy hydration delta vs "${name}":`);
-  console.log(`  bundle minified: ${current.bundleMinifiedBytes - before.bundleMinifiedBytes} B`);
-  console.log(`  bundle gzip:     ${current.bundleGzipBytes - before.bundleGzipBytes} B`);
+  for (const mode of Object.keys(current.bundles) as LazyMode[]) {
+    const currentBundle = current.bundles[mode];
+    const baselineBundle = before.bundles?.[mode];
+    if (!currentBundle || !baselineBundle) continue;
+    console.log(
+      `  ${mode} bundle minified: ${currentBundle.minifiedBytes - baselineBundle.minifiedBytes} B`,
+    );
+    console.log(
+      `  ${mode} bundle gzip:     ${currentBundle.gzipBytes - baselineBundle.gzipBytes} B`,
+    );
+  }
   for (const row of current.rows) {
     const baseline = before.rows.find((candidate) =>
       candidate.mode === row.mode && candidate.itemCount === row.itemCount
@@ -209,7 +222,35 @@ async function compareSnapshot(name: string, current: Snapshot): Promise<void> {
 }
 
 test('component lazy hydration 10/1000 item performance matrix', async ({ browser }) => {
-  const fixture = await buildLazyFixture();
+  const fixtures = new Map<LazyMode, LazyFixture>();
+  for (const mode of MODES) {
+    fixtures.set(mode, await buildLazyFixture(mode));
+  }
+
+  // Item 3 / architecture guidance: the eager bundle must never reach the
+  // viewport/interaction coordinator. Assert this from the actual esbuild
+  // module graph rather than inferring it from bundle size.
+  const eagerFixture = fixtures.get('eager');
+  if (eagerFixture) {
+    const coordinatorInputs = eagerFixture.inputs.filter((input) =>
+      input.endsWith('visible-hydration-coordinator.ts')
+    );
+    expect(
+      coordinatorInputs,
+      'the eager bundle must not reach visible-hydration-coordinator.ts',
+    ).toEqual([]);
+  }
+  const visibleFixture = fixtures.get('visible');
+  if (visibleFixture) {
+    const coordinatorInputs = visibleFixture.inputs.filter((input) =>
+      input.endsWith('visible-hydration-coordinator.ts')
+    );
+    expect(
+      coordinatorInputs,
+      'the visible bundle must reach visible-hydration-coordinator.ts',
+    ).not.toEqual([]);
+  }
+
   const samples = new Map<string, Array<{
     metrics: LazyRunMetrics;
     retained: number | null;
@@ -223,6 +264,8 @@ test('component lazy hydration 10/1000 item performance matrix', async ({ browse
     const modes = round % 2 === 0 ? MODES : [...MODES].reverse();
     for (const itemCount of itemCounts) {
       for (const mode of modes) {
+        const fixture = fixtures.get(mode);
+        if (!fixture) continue;
         const key = `${mode}:${itemCount}`;
         const bucket = samples.get(key) ?? [];
         bucket.push(await runOnce(browser, fixture, mode, itemCount));
@@ -238,19 +281,25 @@ test('component lazy hydration 10/1000 item performance matrix', async ({ browse
       if (runs) rows.push(aggregate(mode, itemCount, runs));
     }
   }
-  const snapshot: Snapshot = {
-    runs: RUNS,
-    bundleMinifiedBytes: fixture.minifiedBytes,
-    bundleGzipBytes: fixture.gzipBytes,
-    rows,
-  };
+  const bundles: Partial<Record<LazyMode, BundleSizes>> = {};
+  for (const [mode, fixture] of fixtures) {
+    bundles[mode] = {
+      minifiedBytes: fixture.minifiedBytes,
+      gzipBytes: fixture.gzipBytes,
+    };
+  }
+  const snapshot: Snapshot = { runs: RUNS, bundles, rows };
 
   console.log('\nLazy hydration browser matrix');
-  console.log(`  production bundle: ${fixture.minifiedBytes} B min / ${fixture.gzipBytes} B gzip`);
-  console.log('  mode  | items | bundle init | hydration CPU med/p95 | define | initial ready med/p95 | hydrated | listeners | peak heap | hydration retained | total retained | long task | visible/dormant click');
+  for (const [mode, fixture] of fixtures) {
+    console.log(
+      `  ${mode} bundle: ${fixture.minifiedBytes} B min / ${fixture.gzipBytes} B gzip`,
+    );
+  }
+  console.log('  mode    | items | bundle init | hydration CPU med/p95 | define | initial ready med/p95 | hydrated | listeners | peak heap | hydration retained | total retained | long task | visible/dormant click');
   for (const row of rows) {
     console.log(
-      `  ${row.mode.padEnd(5)} | ${String(row.itemCount).padStart(5)} | `
+      `  ${row.mode.padEnd(7)} | ${String(row.itemCount).padStart(5)} | `
       + `${formatMs(row.bundleInitMsMedian)} ms | `
       + `${formatMs(row.hydrationCpuMsMedian)}/${formatMs(row.hydrationCpuMsP95)} ms | `
       + `${formatMs(row.definitionMsMedian)} ms | `
