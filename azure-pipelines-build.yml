@@ -34,8 +34,159 @@ stages:
       displayName: Resolve release version
       name: release
       inputs:
-        targetType: filePath
-        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-resolve.sh'
+        targetType: inline
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          # Resolve the workspace release and reject versions that were already tagged.
+          set -euo pipefail
+
+          log_error() {
+            echo "##vso[task.logissue type=error]$*" >&2
+          }
+
+          is_stable_version() {
+            local value="$1"
+            local major minor patch extra
+
+            [[ "$value" != *$'\n'* ]] || return 1
+            IFS=. read -r major minor patch extra <<<"$value"
+            [[ -n "$major" && -n "$minor" && -n "$patch" && -z "${extra:-}" ]] || return 1
+            [[ -z "${major//[0-9]/}" && -z "${minor//[0-9]/}" && -z "${patch//[0-9]/}" ]] ||
+              return 1
+            [[ "$major" == 0 || "$major" != 0* ]] &&
+              [[ "$minor" == 0 || "$minor" != 0* ]] &&
+              [[ "$patch" == 0 || "$patch" != 0* ]]
+          }
+
+          parse_workspace_version() {
+            local version
+
+            if ! version=$(awk '
+              BEGIN {
+                in_workspace_package = 0
+                version_count = 0
+                invalid = 0
+              }
+              /^[[:space:]]*\[/ {
+                in_workspace_package = ($0 ~ /^[[:space:]]*\[workspace[.]package\][[:space:]]*(#.*)?$/)
+                next
+              }
+              in_workspace_package && /^[[:space:]]*version[[:space:]]*=/ {
+                value = $0
+                sub(/^[[:space:]]*version[[:space:]]*=[[:space:]]*/, "", value)
+                if (value !~ /^"[0-9]+[.][0-9]+[.][0-9]+"[[:space:]]*(#.*)?$/) {
+                  invalid = 1
+                  next
+                }
+                sub(/^"/, "", value)
+                sub(/"[[:space:]]*(#.*)?$/, "", value)
+                version = value
+                version_count++
+              }
+              END {
+                if (invalid || version_count != 1) {
+                  exit 1
+                }
+                print version
+              }
+            '); then
+              log_error "Cargo.toml must contain exactly one canonical stable version in [workspace.package]."
+              return 1
+            fi
+
+            if ! is_stable_version "$version"; then
+              log_error "Workspace version must use stable SemVer MAJOR.MINOR.PATCH with ASCII digits only."
+              return 1
+            fi
+            printf '%s\n' "$version"
+          }
+
+          is_commit_id() {
+            local value="$1"
+            [[ ${#value} -eq 40 && -z "${value//[0-9a-f]/}" ]]
+          }
+
+          resolve_remote_tag() {
+            local tag="$1"
+            local output status commit
+
+            set +e
+            output=$(git ls-remote --exit-code origin \
+              "refs/tags/${tag}" "refs/tags/${tag}^{}" 2>&1)
+            status=$?
+            set -e
+            if (( status == 2 )); then
+              return 1
+            fi
+            if (( status != 0 )); then
+              log_error "Unable to query tag ${tag} from checkout repository origin: ${output}"
+              return 2
+            fi
+
+            commit=$(printf '%s\n' "$output" |
+              awk -v ref="refs/tags/${tag}^{}" '$2 == ref { print $1; exit }')
+            if [[ -z "$commit" ]]; then
+              commit=$(printf '%s\n' "$output" |
+                awk -v ref="refs/tags/${tag}" '$2 == ref { print $1; exit }')
+            fi
+            if ! is_commit_id "$commit"; then
+              log_error "Remote tag ${tag} did not resolve to a 40-character lowercase commit ID."
+              return 2
+            fi
+            printf '%s\n' "$commit"
+          }
+
+          case "${BUILD_SOURCEBRANCH:-}" in
+            refs/heads/*) ;;
+            *)
+              log_error "BUILD_SOURCEBRANCH must identify a branch as refs/heads/*."
+              exit 1
+              ;;
+          esac
+          release_commit="${BUILD_SOURCEVERSION:-}"
+          if ! is_commit_id "$release_commit"; then
+            log_error "BUILD_SOURCEVERSION must be a 40-character lowercase commit ID."
+            exit 1
+          fi
+          if ! release_version=$(parse_workspace_version <Cargo.toml); then
+            exit 1
+          fi
+          release_tag="v${release_version}"
+          allow_existing_release="${ALLOW_EXISTING_RELEASE:-false}"
+          case "$allow_existing_release" in
+            true | false) ;;
+            *)
+              log_error "ALLOW_EXISTING_RELEASE must be true or false."
+              exit 1
+              ;;
+          esac
+          if remote_commit=$(resolve_remote_tag "$release_tag"); then
+            if [[ "$allow_existing_release" == true ]]; then
+              should_build=true
+              echo "Remote tag ${release_tag} already exists at ${remote_commit}; rebuilding artifacts for validation."
+            else
+              should_build=false
+              echo "Remote tag ${release_tag} already exists at ${remote_commit}; skipping release build."
+            fi
+          else
+            status=$?
+            if (( status != 1 )); then
+              exit 1
+            fi
+            should_build=true
+          fi
+
+          echo "Resolved release: ${release_tag} (${release_commit}); shouldBuild=${should_build}"
+          if [[ -n "${BUILD_BUILDID:-}" ]]; then
+            echo "##vso[build.updatebuildnumber]${release_tag}-build-${BUILD_BUILDID}"
+          fi
+          echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${release_version}"
+          echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${release_tag}"
+          echo "##vso[task.setvariable variable=releaseCommit;isOutput=true]${release_commit}"
+          echo "##vso[task.setvariable variable=shouldBuild;isOutput=true]${should_build}"
       env:
         ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
 
@@ -62,9 +213,37 @@ stages:
     - task: Bash@3
       displayName: Build and stage Linux assets
       inputs:
-        targetType: filePath
-        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-build-linux.sh'
+        targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            protobuf-compiler \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+          rustup toolchain install 1.93 --profile minimal \
+            --target x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          rustup default 1.93
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+
+          cargo xtask publish-build \
+            --target x86_64-unknown-linux-gnu \
+            --target aarch64-unknown-linux-gnu \
+            --profile release
+
+          stage_dir="${BUILD_ARTIFACT_STAGING_DIRECTORY}/stage-linux"
+          mkdir -p "$stage_dir/publish" "$stage_dir/packages" "$stage_dir/dotnet/runtimes"
+          cp -R publish/native "$stage_dir/publish/"
+          cp -R packages/webui-linux-x64 packages/webui-linux-arm64 "$stage_dir/packages/"
+          cp -R dotnet/runtimes/linux-x64 dotnet/runtimes/linux-arm64 "$stage_dir/dotnet/runtimes/"
       env:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
     - task: PublishPipelineArtifact@1
@@ -83,9 +262,34 @@ stages:
     - task: Bash@3
       displayName: Build and stage macOS assets
       inputs:
-        targetType: filePath
-        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-build-macos.sh'
+        targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+
+          if ! command -v protoc >/dev/null 2>&1; then
+            brew install protobuf
+          fi
+          rustup toolchain install 1.93 --profile minimal \
+            --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup default 1.93
+
+          cargo xtask publish-build \
+            --target aarch64-apple-darwin \
+            --target x86_64-apple-darwin \
+            --profile release
+
+          stage_dir="${BUILD_ARTIFACT_STAGING_DIRECTORY}/stage-macos"
+          mkdir -p "$stage_dir/publish" "$stage_dir/packages" "$stage_dir/dotnet/runtimes"
+          cp -R publish/native "$stage_dir/publish/"
+          cp -R packages/webui-darwin-arm64 packages/webui-darwin-x64 "$stage_dir/packages/"
+          cp -R dotnet/runtimes/osx-arm64 dotnet/runtimes/osx-x64 "$stage_dir/dotnet/runtimes/"
       env:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
     - task: PublishPipelineArtifact@1
@@ -104,10 +308,55 @@ stages:
     - task: PowerShell@2
       displayName: Build and stage Windows assets
       inputs:
-        targetType: filePath
-        filePath: '$(Build.SourcesDirectory)\scripts\azure\release-build-windows.ps1'
+        targetType: inline
         pwsh: true
         workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          if (-not $env:BUILD_ARTIFACT_STAGING_DIRECTORY) {
+              throw 'BUILD_ARTIFACT_STAGING_DIRECTORY is required.'
+          }
+
+          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
+              $version = '29.5'
+              $expectedSha256 = '633d3e555fc97f0a1f55b4adb03256cd94b8059e51e7abbae98ff39e58a9dfa5'
+              $zip = "$env:AGENT_TEMP_DIRECTORY\protoc.zip"
+              $dest = "$env:AGENT_TEMP_DIRECTORY\protoc"
+              Invoke-WebRequest `
+                  -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-win64.zip" `
+                  -OutFile $zip
+              $actualSha256 = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
+              if (-not $actualSha256.Equals($expectedSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  Remove-Item $zip -Force
+                  throw "protoc archive SHA-256 mismatch: expected $expectedSha256, received $actualSha256."
+              }
+              Expand-Archive -Path $zip -DestinationPath $dest -Force
+              $env:PATH = "$dest\bin;$env:PATH"
+          }
+
+          rustup toolchain install 1.93 `
+              --profile minimal `
+              --target x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+          rustup default 1.93
+
+          cargo xtask publish-build `
+              --target x86_64-pc-windows-msvc `
+              --target aarch64-pc-windows-msvc `
+              --profile release
+
+          $stage = "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\stage-windows"
+          New-Item -ItemType Directory -Force `
+              "$stage\publish", "$stage\packages", "$stage\dotnet\runtimes" | Out-Null
+          Copy-Item publish\native -Destination "$stage\publish" -Recurse
+          Copy-Item packages\webui-win32-x64, packages\webui-win32-arm64 `
+              -Destination "$stage\packages" -Recurse
+          Copy-Item dotnet\runtimes\win-x64, dotnet\runtimes\win-arm64 `
+              -Destination "$stage\dotnet\runtimes" -Recurse
       env:
         AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
@@ -158,16 +407,120 @@ stages:
     - task: Bash@3
       displayName: Assemble release packages
       inputs:
-        targetType: filePath
-        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-package.sh'
+        targetType: inline
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          # Assemble merged native outputs into the artifact sets consumed by the release pipeline.
+          set -euo pipefail
+          shopt -s nullglob
+
+          : "${PACKAGE_OUTPUT_ROOT:?PACKAGE_OUTPUT_ROOT is required}"
+          : "${RELEASE_SOURCE_DIR:?RELEASE_SOURCE_DIR is required}"
+
+          cd "$RELEASE_SOURCE_DIR"
+
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler
+          rustup toolchain install 1.93 --profile minimal
+          rustup default 1.93
+          corepack enable
+          pnpm install --frozen-lockfile
+          cargo xtask publish-stage --pack-only --profile release
+
+          npm_artifacts=(publish/npm/*.tgz)
+          crate_artifacts=(publish/crates/*.crate)
+          nuget_artifacts=(publish/nuget/*.nupkg)
+          nuget_symbol_artifacts=(publish/nuget/*.snupkg)
+          standalone_artifacts=(publish/standalone/*)
+          if (( ${#npm_artifacts[@]} == 0 )); then
+            echo "No npm artifacts were rebuilt." >&2
+            exit 1
+          fi
+          if (( ${#crate_artifacts[@]} == 0 )); then
+            echo "No crate artifacts were rebuilt." >&2
+            exit 1
+          fi
+          if (( ${#nuget_artifacts[@]} == 0 )); then
+            echo "No NuGet package artifacts were rebuilt." >&2
+            exit 1
+          fi
+          if (( ${#nuget_symbol_artifacts[@]} == 0 )); then
+            echo "No NuGet symbol package artifacts were rebuilt." >&2
+            exit 1
+          fi
+          if (( ${#standalone_artifacts[@]} != 20 )); then
+            echo "Expected 20 standalone release assets, found ${#standalone_artifacts[@]}." >&2
+            exit 1
+          fi
+
+          npm_output="${PACKAGE_OUTPUT_ROOT}/publish_artifacts_npm"
+          crate_output="${PACKAGE_OUTPUT_ROOT}/publish_artifacts_crates"
+          nuget_output="${PACKAGE_OUTPUT_ROOT}/publish_artifacts_nuget"
+          standalone_output="${PACKAGE_OUTPUT_ROOT}/publish_artifacts_standalone"
+          rm -rf -- "$npm_output" "$crate_output" "$nuget_output" "$standalone_output"
+          mkdir -p "$npm_output" "$crate_output" "$nuget_output" "$standalone_output"
+          cp "${npm_artifacts[@]}" "$npm_output/"
+          cp "${crate_artifacts[@]}" "$crate_output/"
+          cp "${nuget_artifacts[@]}" "$nuget_output/"
+          cp "${nuget_symbol_artifacts[@]}" "$nuget_output/"
+          cp "${standalone_artifacts[@]}" "$standalone_output/"
+
+          echo "npm artifacts:"
+          ls "$npm_output/"
+          echo "crate artifacts:"
+          ls "$crate_output/"
+          echo "NuGet artifacts:"
+          ls "$nuget_output/"
+          echo "Standalone release assets:"
+          ls "$standalone_output/"
       env:
         PACKAGE_OUTPUT_ROOT: $(Build.ArtifactStagingDirectory)
         RELEASE_SOURCE_DIR: $(Build.SourcesDirectory)
     - task: Bash@3
       displayName: Write release metadata
       inputs:
-        targetType: filePath
-        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-write-metadata.sh'
+        targetType: inline
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          # Persist the selected release identity across the pipeline resource boundary.
+          set -euo pipefail
+
+          : "${METADATA_OUTPUT_DIR:?METADATA_OUTPUT_DIR is required}"
+          : "${RELEASE_TAG:?RELEASE_TAG is required}"
+          : "${RELEASE_COMMIT:?RELEASE_COMMIT is required}"
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+          : "${VALIDATION_MODE:?VALIDATION_MODE is required}"
+
+          if [[ "$RELEASE_TAG" == *$'\n'* || ! "$RELEASE_TAG" =~ ^v.+$ ]]; then
+            echo "RELEASE_TAG must be a v-prefixed release tag." >&2
+            exit 1
+          fi
+          if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "RELEASE_COMMIT must be a 40-character lowercase hexadecimal commit." >&2
+            exit 1
+          fi
+          if [[ "$RELEASE_VERSION" == *$'\n'* || "$RELEASE_VERSION" != "${RELEASE_TAG#v}" ]]; then
+            echo "RELEASE_VERSION must equal RELEASE_TAG without its v prefix." >&2
+            exit 1
+          fi
+          if [[ "$VALIDATION_MODE" != true && "$VALIDATION_MODE" != false ]]; then
+            echo "VALIDATION_MODE must be true or false." >&2
+            exit 1
+          fi
+
+          mkdir -p "$METADATA_OUTPUT_DIR"
+          printf '%s\n' "$RELEASE_TAG" > "$METADATA_OUTPUT_DIR/release-tag.txt"
+          printf '%s\n' "$RELEASE_COMMIT" > "$METADATA_OUTPUT_DIR/release-commit.txt"
+          printf '%s\n' "$RELEASE_VERSION" > "$METADATA_OUTPUT_DIR/release-version.txt"
+          printf '%s\n' "$VALIDATION_MODE" > "$METADATA_OUTPUT_DIR/validation-mode.txt"
+
+          echo "Wrote build metadata for ${RELEASE_TAG} (${RELEASE_COMMIT})."
       env:
         METADATA_OUTPUT_DIR: $(Build.ArtifactStagingDirectory)/release-metadata
         RELEASE_TAG: $(releaseTag)

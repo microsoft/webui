@@ -12,7 +12,7 @@
 //! - `publish/wasm/`    — WASM modules + JS glue
 //! - `publish/standalone/` — legacy direct-download native and WASM assets
 
-use crate::util::{build_command, run_command_quiet};
+use crate::util::{build_command, run_command, run_command_quiet};
 use crate::version;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -154,7 +154,69 @@ struct StageOptions {
     mode: StageMode,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct BuildOptions {
+    target_triples: Vec<String>,
+    profile: String,
+}
+
 // ── Public entry point ──────────────────────────────────────────────────
+
+/// Build and stage native release artifacts for one or more target triples.
+///
+/// Usage: `cargo xtask publish-build --target <triple> [--target <triple>] [--profile release]`
+pub fn run_build(args: &[String]) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "  {} Failed to read current directory: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = match parse_build_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("  {} {error}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    for triple in &options.target_triples {
+        eprintln!(
+            "\n{} Building native release artifacts for {}",
+            console::style("▸").cyan().bold(),
+            console::style(triple).bold(),
+        );
+        if let Err(error) = build_native_target(&root, triple, &options.profile) {
+            eprintln!(
+                "  {} Failed to build {triple}: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    if let Err(error) = stage_native_targets(
+        &root,
+        options.target_triples.iter().map(String::as_str),
+        &options.profile,
+    ) {
+        eprintln!(
+            "  {} Failed to stage native release artifacts: {error}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    eprintln!(
+        "\n{} Native release artifacts built and staged\n",
+        console::style("✨").green(),
+    );
+    ExitCode::SUCCESS
+}
 
 /// Stage release artifacts into `publish/` and package directories.
 ///
@@ -404,6 +466,73 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
         profile,
         mode,
     })
+}
+
+fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
+    let mut target_triples = Vec::new();
+    let mut profile = String::from("release");
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                let Some(triple) = args.get(i) else {
+                    return Err("missing value for --target".to_string());
+                };
+                if triple == "all" {
+                    return Err(
+                        "publish-build requires explicit target triples; --target all is not supported"
+                            .to_string(),
+                    );
+                }
+                if !PLATFORMS.iter().any(|platform| platform.triple == triple) {
+                    return Err(format!("unknown target triple: {triple}"));
+                }
+                if !target_triples.contains(triple) {
+                    target_triples.push(triple.clone());
+                }
+            }
+            "--profile" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return Err("missing value for --profile".to_string());
+                };
+                profile.clone_from(value);
+            }
+            argument => return Err(format!("unknown publish-build argument: {argument}")),
+        }
+        i += 1;
+    }
+
+    if target_triples.is_empty() {
+        return Err("publish-build requires at least one --target".to_string());
+    }
+
+    Ok(BuildOptions {
+        target_triples,
+        profile,
+    })
+}
+
+fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
+    run_command(
+        "cargo",
+        &[
+            "build",
+            "--profile",
+            profile,
+            "--target",
+            triple,
+            "-p",
+            "microsoft-webui-cli",
+            "-p",
+            "microsoft-webui-ffi",
+            "-p",
+            "microsoft-webui-node",
+        ],
+        Some(root),
+    )
 }
 
 fn set_stage_mode(current: StageMode, requested: StageMode) -> Result<StageMode, String> {
@@ -1071,6 +1200,11 @@ fn copy_directory_contents(src_dir: &Path, dest_dir: &Path) -> Result<u32, Strin
 mod tests {
     use super::*;
 
+    fn parse_build(args: &[&str]) -> Result<BuildOptions, String> {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        parse_build_options(&args)
+    }
+
     fn parse(args: &[&str]) -> Result<StageOptions, String> {
         let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
         parse_stage_options(&args)
@@ -1101,6 +1235,48 @@ mod tests {
             parse(&["--native-only", "--pack-only"]).expect_err("conflicting modes should fail");
 
         assert!(error.contains("cannot combine"));
+    }
+
+    #[test]
+    fn parse_build_options_supports_multiple_targets() {
+        let options = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+            "--profile",
+            "debug",
+        ])
+        .expect("publish build options should parse");
+
+        assert_eq!(
+            options.target_triples,
+            ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+        );
+        assert_eq!(options.profile, "debug");
+    }
+
+    #[test]
+    fn parse_build_options_rejects_missing_target() {
+        let error = parse_build(&[]).expect_err("a target should be required");
+
+        assert!(error.contains("requires at least one --target"));
+    }
+
+    #[test]
+    fn parse_build_options_rejects_unknown_target() {
+        let error =
+            parse_build(&["--target", "unknown-target"]).expect_err("unknown targets should fail");
+
+        assert!(error.contains("unknown target triple"));
+    }
+
+    #[test]
+    fn parse_build_options_rejects_all_target() {
+        let error =
+            parse_build(&["--target", "all"]).expect_err("all should require explicit targets");
+
+        assert!(error.contains("--target all is not supported"));
     }
 
     #[test]
