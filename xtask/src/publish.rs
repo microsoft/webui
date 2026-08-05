@@ -10,6 +10,7 @@
 //! - `publish/nuget/`   — `.nupkg` and `.snupkg` files from `dotnet pack`
 //! - `publish/crates/`  — `.crate` files from `cargo package`
 //! - `publish/wasm/`    — WASM modules + JS glue
+//! - `publish/standalone/` — legacy direct-download native and WASM assets
 
 use crate::util::{build_command, run_command_quiet};
 use crate::version;
@@ -89,7 +90,55 @@ const PLATFORMS: &[PlatformEntry] = &[
 ];
 
 /// Subdirectories created inside `publish/`.
-const PUBLISH_SUBDIRS: &[&str] = &["native", "npm", "nuget", "crates", "wasm"];
+const PUBLISH_SUBDIRS: &[&str] = &["native", "npm", "nuget", "crates", "wasm", "standalone"];
+const WASM_VARIANT_DIRS: &[&str] = &["all", "handler", "parser"];
+
+const STANDALONE_RELEASE_FILES: &[(&str, &str)] = &[
+    ("native/webui-darwin-arm64", "webui-darwin-arm64"),
+    ("native/webui-darwin-x64", "webui-darwin-x64"),
+    ("native/webui-linux-arm64", "webui-linux-arm64"),
+    ("native/webui-linux-x64", "webui-linux-x64"),
+    ("native/webui-win32-arm64.exe", "webui-win32-arm64.exe"),
+    ("native/webui-win32-x64.exe", "webui-win32-x64.exe"),
+    ("wasm/all/package.json", "package.json"),
+    ("wasm/all/README.md", "README.md"),
+    ("wasm/all/webui_wasm_all.d.ts", "webui_wasm_all.d.ts"),
+    ("wasm/all/webui_wasm_all.js", "webui_wasm_all.js"),
+    ("wasm/all/webui_wasm_all_bg.wasm", "webui_wasm_all_bg.wasm"),
+    (
+        "wasm/all/webui_wasm_all_bg.wasm.d.ts",
+        "webui_wasm_all_bg.wasm.d.ts",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler.d.ts",
+        "webui_wasm_handler.d.ts",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler.js",
+        "webui_wasm_handler.js",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler_bg.wasm",
+        "webui_wasm_handler_bg.wasm",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler_bg.wasm.d.ts",
+        "webui_wasm_handler_bg.wasm.d.ts",
+    ),
+    (
+        "wasm/parser/webui_wasm_parser.d.ts",
+        "webui_wasm_parser.d.ts",
+    ),
+    ("wasm/parser/webui_wasm_parser.js", "webui_wasm_parser.js"),
+    (
+        "wasm/parser/webui_wasm_parser_bg.wasm",
+        "webui_wasm_parser_bg.wasm",
+    ),
+    (
+        "wasm/parser/webui_wasm_parser_bg.wasm.d.ts",
+        "webui_wasm_parser_bg.wasm.d.ts",
+    ),
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StageMode {
@@ -117,10 +166,10 @@ struct StageOptions {
 /// Steps:
 ///   1. Stage native binaries into npm/NuGet package directories (existing behavior).
 ///   2. Copy CLI binaries into `publish/native/` with platform suffixes.
-///   3. Pack npm tarballs into `publish/npm/`.
-///   4. Pack NuGet packages into `publish/nuget/`.
-///   5. Pack publishable Rust crates into `publish/crates/`.
-///   6. Build and stage WASM artifacts into `publish/wasm/`.
+///   3. Build WASM artifacts into the main npm package and `publish/wasm/`.
+///   4. Pack npm tarballs into `publish/npm/`.
+///   5. Pack NuGet packages into `publish/nuget/`.
+///   6. Pack publishable Rust crates into `publish/crates/`.
 pub fn run_stage(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(p) => p,
@@ -198,7 +247,20 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         }
     }
 
-    // Phase 2: Pack npm tarballs
+    // Phase 2: Stage WASM before packing the main npm package.
+    eprintln!(
+        "\n{} Staging WASM artifacts",
+        console::style("▸").cyan().bold(),
+    );
+    if let Err(e) = stage_wasm_artifacts(&root) {
+        eprintln!(
+            "  {} WASM staging failed: {e}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Phase 3: Pack npm tarballs
     eprintln!(
         "\n{} Packing npm tarballs",
         console::style("▸").cyan().bold(),
@@ -211,7 +273,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Phase 3: Pack NuGet packages
+    // Phase 4: Pack NuGet packages
     eprintln!(
         "\n{} Packing NuGet packages",
         console::style("▸").cyan().bold(),
@@ -224,7 +286,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Phase 4: Pack Rust crates
+    // Phase 5: Pack Rust crates
     eprintln!(
         "\n{} Packing Rust crates",
         console::style("▸").cyan().bold(),
@@ -232,19 +294,6 @@ pub fn run_stage(args: &[String]) -> ExitCode {
     if let Err(e) = pack_rust_crates(&root) {
         eprintln!(
             "  {} Rust crate pack failed: {e}",
-            console::style("✘").red().bold(),
-        );
-        return ExitCode::FAILURE;
-    }
-
-    // Phase 5: Stage WASM artifacts
-    eprintln!(
-        "\n{} Staging WASM artifacts",
-        console::style("▸").cyan().bold(),
-    );
-    if let Err(e) = stage_wasm_artifacts(&root) {
-        eprintln!(
-            "  {} WASM staging failed: {e}",
             console::style("✘").red().bold(),
         );
         return ExitCode::FAILURE;
@@ -302,7 +351,7 @@ fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
             fs::create_dir_all(publish_dir.join("native"))
                 .map_err(|e| format!("failed to create publish/native: {e}"))?;
 
-            for subdir in ["npm", "nuget", "crates", "wasm"] {
+            for subdir in ["npm", "nuget", "crates", "wasm", "standalone"] {
                 let path = publish_dir.join(subdir);
                 if path.exists() {
                     fs::remove_dir_all(&path)
@@ -796,22 +845,65 @@ fn pack_rust_crates(root: &Path) -> Result<(), String> {
 
 // ── Phase 5: WASM artifacts ─────────────────────────────────────────────
 
-/// Build WASM variants and copy artifacts to `publish/wasm/`.
+/// Build WASM variants and stage them for npm packaging and direct inspection.
 fn stage_wasm_artifacts(root: &Path) -> Result<(), String> {
-    let wasm_out = root.join("publish").join("wasm");
-
-    // Build WASM using the existing build_wasm module
     crate::build_wasm::run()?;
 
     let wasm_source = root.join(crate::build_wasm::WASM_OUTPUT_DIR);
-    let copied = copy_directory_contents(&wasm_source, &wasm_out)?;
+    let copied = stage_built_wasm_artifacts(root, &wasm_source)?;
+    let standalone = stage_standalone_release_assets(root)?;
     eprintln!(
-        "  {} [wasm] staged {} file(s)",
+        "  {} [wasm] staged {} file(s) for npm and publish output; {} standalone asset(s)",
         console::style("✔").green(),
         console::style(copied).bold(),
+        console::style(standalone).bold(),
     );
 
     Ok(())
+}
+
+fn stage_built_wasm_artifacts(root: &Path, wasm_source: &Path) -> Result<u32, String> {
+    let package_out = root.join("packages").join("webui").join("wasm");
+    fs::create_dir_all(&package_out)
+        .map_err(|e| format!("failed to create {}: {e}", package_out.display()))?;
+    for variant in WASM_VARIANT_DIRS {
+        let generated_dir = package_out.join(variant);
+        if generated_dir.exists() {
+            fs::remove_dir_all(&generated_dir)
+                .map_err(|e| format!("failed to clean {}: {e}", generated_dir.display()))?;
+        }
+    }
+
+    let copied = copy_directory_contents(wasm_source, &package_out)?;
+    let publish_out = root.join("publish").join("wasm");
+    copy_directory_contents(wasm_source, &publish_out)?;
+    Ok(copied)
+}
+
+fn stage_standalone_release_assets(root: &Path) -> Result<u32, String> {
+    let publish = root.join("publish");
+    let output = publish.join("standalone");
+    if output.exists() {
+        fs::remove_dir_all(&output)
+            .map_err(|e| format!("failed to clean {}: {e}", output.display()))?;
+    }
+    fs::create_dir_all(&output)
+        .map_err(|e| format!("failed to create {}: {e}", output.display()))?;
+
+    for (source, destination) in STANDALONE_RELEASE_FILES {
+        let source = publish.join(source);
+        let destination = output.join(destination);
+        fs::copy(&source, &destination).map_err(|e| {
+            format!(
+                "failed to copy standalone asset {} to {}: {e}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+
+    u32::try_from(STANDALONE_RELEASE_FILES.len())
+        .map_err(|_| "standalone release asset count exceeds u32".to_string())
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────
@@ -1086,6 +1178,7 @@ mod tests {
         assert!(publish.join("nuget").is_dir());
         assert!(publish.join("crates").is_dir());
         assert!(publish.join("wasm").is_dir());
+        assert!(publish.join("standalone").is_dir());
     }
 
     #[test]
@@ -1145,6 +1238,52 @@ mod tests {
             .join("handler")
             .join("webui_wasm_handler_bg.wasm")
             .exists());
+    }
+
+    #[test]
+    fn test_stage_built_wasm_artifacts_populates_npm_and_publish_outputs() {
+        let root = tempfile::TempDir::new().unwrap();
+        let source = tempfile::TempDir::new().unwrap();
+        let package_wasm = root.path().join("packages/webui/wasm");
+        fs::create_dir_all(package_wasm.join("handler")).unwrap();
+        fs::write(package_wasm.join(".gitkeep"), "").unwrap();
+        fs::write(package_wasm.join("tracked.txt"), "tracked").unwrap();
+        fs::write(package_wasm.join("handler/stale.js"), "stale").unwrap();
+        let handler = source.path().join("handler");
+        fs::create_dir_all(&handler).unwrap();
+        fs::write(handler.join("webui_wasm_handler.js"), "js").unwrap();
+        fs::write(handler.join("webui_wasm_handler_bg.wasm"), "wasm").unwrap();
+
+        let copied = stage_built_wasm_artifacts(root.path(), source.path()).unwrap();
+
+        assert_eq!(copied, 2);
+        assert!(package_wasm.join(".gitkeep").exists());
+        assert!(package_wasm.join("tracked.txt").exists());
+        assert!(!package_wasm.join("handler/stale.js").exists());
+        for output in [package_wasm, root.path().join("publish/wasm")] {
+            assert!(output.join("handler/webui_wasm_handler.js").exists());
+            assert!(output.join("handler/webui_wasm_handler_bg.wasm").exists());
+        }
+    }
+
+    #[test]
+    fn test_stage_standalone_release_assets_copies_expected_files() {
+        let root = tempfile::TempDir::new().unwrap();
+        let publish = root.path().join("publish");
+        for (source, _) in STANDALONE_RELEASE_FILES {
+            let source = publish.join(source);
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::write(source, "asset").unwrap();
+        }
+
+        let copied = stage_standalone_release_assets(root.path()).unwrap();
+
+        assert_eq!(copied, 20);
+        let output = publish.join("standalone");
+        for (_, destination) in STANDALONE_RELEASE_FILES {
+            assert!(output.join(destination).is_file());
+        }
+        assert_eq!(fs::read_dir(output).unwrap().count(), 20);
     }
 
     #[test]

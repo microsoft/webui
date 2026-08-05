@@ -1,0 +1,201 @@
+# Register this YAML in Azure DevOps with the exact pipeline definition name
+# "Web UI - CD Build". azure-pipelines-cd.yml references that definition name.
+trigger: none
+pr: none
+
+parameters:
+- name: validationMode
+  displayName: Rebuild an existing release for artifact validation
+  type: string
+  default: 'false'
+  values:
+  - 'false'
+  - 'true'
+
+schedules:
+- cron: '0 * * * *'
+  displayName: Hourly release check
+  branches:
+    include:
+    - main
+  always: true
+
+stages:
+- stage: PrepareRelease
+  displayName: Prepare release
+  jobs:
+  - job: SelectRelease
+    displayName: Select release
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+    - task: Bash@3
+      displayName: Resolve release version
+      name: release
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-resolve.sh'
+      env:
+        ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
+
+- stage: BuildRelease
+  displayName: Build release
+  dependsOn: PrepareRelease
+  condition: |
+    and(
+      succeeded(),
+      eq(dependencies.PrepareRelease.outputs['SelectRelease.release.shouldBuild'], 'true')
+    )
+  variables:
+    releaseTag: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseTag'] ]
+    releaseCommit: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseCommit'] ]
+    releaseVersion: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseVersion'] ]
+  jobs:
+  - job: BuildLinuxAssets
+    displayName: Build Linux release assets
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: Bash@3
+      displayName: Build and stage Linux assets
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-build-linux.sh'
+        workingDirectory: '$(Build.SourcesDirectory)'
+      env:
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+    - task: PublishPipelineArtifact@1
+      displayName: Upload Linux release artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/stage-linux'
+        artifactName: stage-linux
+
+  - job: BuildMacOSAssets
+    displayName: Build macOS release assets
+    pool:
+      vmImage: macOS-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: Bash@3
+      displayName: Build and stage macOS assets
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-build-macos.sh'
+        workingDirectory: '$(Build.SourcesDirectory)'
+      env:
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+    - task: PublishPipelineArtifact@1
+      displayName: Upload macOS release artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/stage-macos'
+        artifactName: stage-macos
+
+  - job: BuildWindowsAssets
+    displayName: Build Windows release assets
+    pool:
+      vmImage: windows-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: PowerShell@2
+      displayName: Build and stage Windows assets
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)\scripts\azure\release-build-windows.ps1'
+        pwsh: true
+        workingDirectory: '$(Build.SourcesDirectory)'
+      env:
+        AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+    - task: PublishPipelineArtifact@1
+      displayName: Upload Windows release artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/stage-windows'
+        artifactName: stage-windows
+
+  - job: AssembleRelease
+    displayName: Assemble release packages
+    dependsOn:
+    - BuildLinuxAssets
+    - BuildMacOSAssets
+    - BuildWindowsAssets
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Linux release assets
+      inputs:
+        buildType: current
+        artifactName: stage-linux
+        targetPath: $(Build.SourcesDirectory)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download macOS release assets
+      inputs:
+        buildType: current
+        artifactName: stage-macos
+        targetPath: $(Build.SourcesDirectory)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Windows release assets
+      inputs:
+        buildType: current
+        artifactName: stage-windows
+        targetPath: $(Build.SourcesDirectory)
+    - task: NodeTool@0
+      displayName: Install Node.js 22
+      inputs:
+        versionSpec: 22.x
+    - task: UseDotNet@2
+      displayName: Install .NET 9 SDK
+      inputs:
+        packageType: sdk
+        version: 9.x
+    - task: Bash@3
+      displayName: Assemble release packages
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-package.sh'
+      env:
+        PACKAGE_OUTPUT_ROOT: $(Build.ArtifactStagingDirectory)
+        RELEASE_SOURCE_DIR: $(Build.SourcesDirectory)
+    - task: Bash@3
+      displayName: Write release metadata
+      inputs:
+        targetType: filePath
+        filePath: '$(Build.SourcesDirectory)/scripts/azure/release-write-metadata.sh'
+      env:
+        METADATA_OUTPUT_DIR: $(Build.ArtifactStagingDirectory)/release-metadata
+        RELEASE_TAG: $(releaseTag)
+        RELEASE_COMMIT: $(releaseCommit)
+        RELEASE_VERSION: $(releaseVersion)
+        VALIDATION_MODE: ${{ parameters.validationMode }}
+    - task: PublishPipelineArtifact@1
+      displayName: Upload unsigned npm packages
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_npm'
+        artifactName: unsigned_npm_packages
+    - task: PublishPipelineArtifact@1
+      displayName: Upload unsigned crate packages
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_crates'
+        artifactName: unsigned_crate_packages
+    - task: PublishPipelineArtifact@1
+      displayName: Upload NuGet signing input
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_nuget'
+        artifactName: nuget_signing_input
+    - task: PublishPipelineArtifact@1
+      displayName: Upload standalone release assets
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_standalone'
+        artifactName: standalone_release_assets
+    - task: PublishPipelineArtifact@1
+      displayName: Upload release metadata
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/release-metadata'
+        artifactName: release-metadata

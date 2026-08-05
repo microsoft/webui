@@ -1,20 +1,27 @@
 trigger: none
 pr: none
 
-# Optional: set targetReleaseTag to a v-prefixed GitHub tag for manual reprocessing.
-variables:
-  targetReleaseTag: ''
+parameters:
+- name: validationMode
+  displayName: Generate signed artifacts without external publication
+  type: string
+  default: 'false'
+  values:
+  - 'false'
+  - 'true'
 
-schedules:
-  - cron: '0 * * * *'
-    displayName: Hourly deployment check
-    branches:
-      include:
-        - main
-    always: true  # run even when there are no new commits — needed since we check an external GitHub release, not repo changes
-
-# The `resources` specify the location and version of the 1ES PT.
 resources:
+  pipelines:
+  - pipeline: releaseBuild
+    source: Web UI - CD Build
+    # Manual Run Pipeline selection may intentionally override this default.
+    branch: refs/heads/main
+    trigger:
+      branches:
+        include:
+        - main
+      stages:
+      - BuildRelease
   repositories:
   - repository: webuiPipelines
     type: git
@@ -26,151 +33,125 @@ resources:
     ref: refs/tags/release
 
 extends:
-  # The pipeline extends the 1ES PT which will inject different SDL and compliance tasks.
-  # For non-production pipelines, use "Unofficial" as defined below.
-  # For productions pipelines, use "Official".
+  # The pipeline extends the 1ES PT, which injects SDL and compliance tasks.
   template: v1/1ES.Official.PipelineTemplate.yml@1esPipelines
   parameters:
-    # Update the pool with your team's 1ES hosted pool.
     pool:
-      name: OneESPool  # Name of your hosted pool
-      image: HostedPoolLinuxImage  # Name of the image in your pool. If not specified, first image of the pool is used
-      os: linux  # OS of the image. This value cannot be a variable. Allowed values: windows, linux, macOS
+      name: OneESPool
+      image: HostedPoolLinuxImage
+      os: linux
     sdl:
       sourceAnalysisPool:
-        name: OneESPool  # Name of your hosted pool
-        image: HostedPoolWindowsImage  # Name of the image in your pool. If not specified, first image of the pool is used
-        os: windows  # OS of the image. Allowed values: windows, linux, macOS
+        name: OneESPool
+        image: HostedPoolWindowsImage
+        os: windows
     settings:
       networkIsolationPolicy: Permissive
     stages:
-
-    # ── Stage 1: Lightweight version check (runs every hour, ~1-2 min) ──
-    # This stage is separate so hourly runs can skip the heavyweight Package
-    # stage when the target release has already been deployed.
-    - stage: Check
+    - stage: Release
+      displayName: Sign and publish release
       jobs:
-      - job: CheckVersion
-        steps:
-          - checkout: self
-            persistCredentials: "true"
-
-          - task: DownloadGitHubRelease@0
-            displayName: Download latest GitHub release
-            condition: and(succeeded(), eq(variables['targetReleaseTag'], ''))
-            inputs:
-              connection: fast
-              userRepository: microsoft/webui
-              defaultVersionType: 'latest'
-              downloadPath: '$(System.ArtifactsDirectory)'
-
-          - task: DownloadGitHubRelease@0
-            displayName: Download pinned GitHub release
-            condition: and(succeeded(), ne(variables['targetReleaseTag'], ''))
-            inputs:
-              connection: fast
-              userRepository: microsoft/webui
-              defaultVersionType: 'specificTag'
-              version: '$(targetReleaseTag)'
-              downloadPath: '$(System.ArtifactsDirectory)'
-
-          # Extract the version number from the downloaded .crate filename,
-          # e.g. microsoft-webui-0.0.3.crate → 0.0.3
-          - script: |
-              CRATE_FILE=$(ls "$(System.ArtifactsDirectory)"/microsoft-webui-*.crate 2>/dev/null | head -1)
-              if [ -z "$CRATE_FILE" ]; then
-                echo "##vso[task.logissue type=error]No microsoft-webui-*.crate file found in $(System.ArtifactsDirectory)"
-                exit 1
-              fi
-              VERSION=$(basename "$CRATE_FILE" .crate | sed 's/^microsoft-webui-//')
-              echo "Detected version: ${VERSION}"
-              echo "##vso[task.setvariable variable=releaseVersion]${VERSION}"
-              echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${VERSION}"
-              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]v${VERSION}"
-            displayName: Extract version from downloaded artifacts
-            name: resolveTag
-
-          # Check whether this version has already been deployed by looking
-          # for a "deployed/vX.Y.Z" git tag. This avoids external network
-          # calls to npm/crates.io which are unreachable from 1ES agents.
-          # The Deploy job pushes this tag after a successful deployment.
-          - script: |
-              set -euo pipefail
-              VERSION="$(releaseVersion)"
-              DEPLOY_TAG="deployed/v${VERSION}"
-
-              git fetch --tags --quiet
-              if git tag -l "${DEPLOY_TAG}" | grep -q .; then
-                echo "${DEPLOY_TAG} tag exists — version ${VERSION} already deployed"
-                echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]false"
-              else
-                echo "${DEPLOY_TAG} tag not found — version ${VERSION} needs deployment"
-                echo "##vso[task.setvariable variable=needsDeployment;isOutput=true]true"
-              fi
-            displayName: Check if already deployed
-            name: deploymentCheck
-
-    # ── Stage 2: Deploy when needed; manual runs may reprocess the target tag ──
-    - stage: Package
-      dependsOn: Check
-      condition: and(succeeded(), or(eq(variables['Build.Reason'], 'Manual'), eq(dependencies.Check.outputs['CheckVersion.deploymentCheck.needsDeployment'], 'true')))
-      variables:
-        releaseTag: $[ stageDependencies.Check.CheckVersion.outputs['resolveTag.releaseTag'] ]
-      jobs:
-      - job: Deploy
+      - job: SignAndPublish
+        displayName: Sign and publish release
         templateContext:
           outputs:
-            - output: pipelineArtifact
-              targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_nuget'
-              artifactName: nuget_packages
-              displayName: Publish signed NuGet packages
+          - output: pipelineArtifact
+            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_npm'
+            artifactName: unsigned_npm_packages
+            displayName: Publish unsigned npm packages
+          - output: pipelineArtifact
+            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_crates'
+            artifactName: unsigned_crate_packages
+            displayName: Publish unsigned crate packages
+          - output: pipelineArtifact
+            targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_nuget'
+            artifactName: signed_nuget_packages
+            displayName: Publish signed NuGet packages
+          - output: pipelineArtifact
+            targetPath: '$(Build.SourcesDirectory)/publish_artifacts_standalone'
+            artifactName: standalone_release_assets
+            displayName: Publish standalone release assets
         steps:
-          - checkout: self
-            persistCredentials: "true"
+        - checkout: self
+          clean: true
+          persistCredentials: true
 
-          - task: UseDotNet@2
-            displayName: Install .NET 8 SDK for ESRP
+        - download: releaseBuild
+          artifact: release-metadata
+          displayName: Download release metadata
+
+        - task: Bash@3
+          displayName: Read release metadata
+          inputs:
+            targetType: filePath
+            filePath: '$(Build.SourcesDirectory)/scripts/azure/release-read-metadata.sh'
+          env:
+            METADATA_INPUT_DIR: $(Pipeline.Workspace)/releaseBuild/release-metadata
+            EXPECTED_VALIDATION_MODE: ${{ parameters.validationMode }}
+
+        - download: releaseBuild
+          artifact: unsigned_npm_packages
+          displayName: Download unsigned npm packages
+
+        - download: releaseBuild
+          artifact: unsigned_crate_packages
+          displayName: Download unsigned crate packages
+
+        - download: releaseBuild
+          artifact: nuget_signing_input
+          displayName: Download NuGet signing input
+
+        - download: releaseBuild
+          artifact: standalone_release_assets
+          displayName: Download standalone release assets
+
+        - task: Bash@3
+          displayName: Stage release artifacts
+          inputs:
+            targetType: filePath
+            filePath: '$(Build.SourcesDirectory)/scripts/azure/release-stage-artifacts.sh'
+          env:
+            BUILD_SOURCES_DIRECTORY: $(Build.SourcesDirectory)
+            PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+
+        - task: UseDotNet@2
+          displayName: Install .NET 8 SDK for ESRP
+          inputs:
+            packageType: sdk
+            version: 8.x
+
+        - template: WebUI.Sign.PipelineTemplate.yml@webuiPipelines
+
+        - ${{ if eq(parameters.validationMode, 'false') }}:
+          - task: Bash@3
+            displayName: Ensure release tag
             inputs:
-              packageType: sdk
-              version: '8.x'
+              targetType: filePath
+              filePath: '$(Build.SourcesDirectory)/scripts/azure/release-ensure-tag.sh'
+            env:
+              RELEASE_TAG: $(releaseTag)
+              RELEASE_COMMIT: $(releaseCommit)
 
-          - task: DownloadGitHubRelease@0
-            displayName: Download checked GitHub release artifacts
+          - task: GitHubRelease@1
+            displayName: Create or update GitHub Release
             inputs:
-              connection: fast
-              userRepository: microsoft/webui
-              defaultVersionType: 'specificTag'
-              version: '$(releaseTag)'
-              downloadPath: '$(System.ArtifactsDirectory)'
+              gitHubConnection: fast
+              repositoryName: microsoft/webui
+              action: edit
+              target: $(releaseCommit)
+              tag: $(releaseTag)
+              title: $(releaseTag)
+              releaseNotesSource: inline
+              releaseNotesInline: 'Automated WebUI release.'
+              addChangeLog: false
+              assets: |
+                $(Build.SourcesDirectory)/publish_artifacts_npm/*
+                $(Build.ArtifactStagingDirectory)/publish_artifacts_nuget/*
+                $(Build.SourcesDirectory)/publish_artifacts_crates/*
+                $(Build.SourcesDirectory)/publish_artifacts_standalone/*
+              assetUploadMode: replace
+              isDraft: false
+              isPreRelease: false
+              makeLatest: legacy
 
-          # Stage downloaded files in the directories expected by
-          # WebUI.Sign.PipelineTemplate.yml: .tgz → npm, .crate → crates, and
-          # .nupkg/.snupkg → NuGet.
-          - script: |
-              mkdir -p publish_artifacts_npm publish_artifacts_crates publish_artifacts_nuget
-              find "$(System.ArtifactsDirectory)" -name "*.tgz"   -exec cp {} publish_artifacts_npm/   \;
-              find "$(System.ArtifactsDirectory)" -name "*.crate" -exec cp {} publish_artifacts_crates/ \;
-              find "$(System.ArtifactsDirectory)" -name "*.nupkg" -exec cp {} publish_artifacts_nuget/ \;
-              find "$(System.ArtifactsDirectory)" -name "*.snupkg" -exec cp {} publish_artifacts_nuget/ \;
-
-              echo "npm artifacts:"
-              ls publish_artifacts_npm/
-              echo "crate artifacts:"
-              ls publish_artifacts_crates/
-              echo "NuGet artifacts:"
-              ls publish_artifacts_nuget/
-            displayName: Separate release artifacts
-
-          - template: WebUI.Sign.PipelineTemplate.yml@webuiPipelines  # Template reference
-          - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines  # Template reference
-
-          # Mark this version as deployed so future pipeline runs skip it.
-          # Uses the releaseTag stage variable (e.g. "v0.0.8") to create
-          # a "deployed/v0.0.8" tag and push it back to the repo.
-          - script: |
-              set -euo pipefail
-              DEPLOY_TAG="deployed/$(releaseTag)"
-              echo "Tagging successful deployment: ${DEPLOY_TAG}"
-              git tag "${DEPLOY_TAG}"
-              git push origin "${DEPLOY_TAG}"
-            displayName: Tag successful deployment
+          - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines
