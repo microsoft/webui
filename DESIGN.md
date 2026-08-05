@@ -3833,7 +3833,7 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 ### Runtime contract
 
-`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup or explicitly opt into visibility-driven activation, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
 
 - SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
 - Authored browser entries execute only after every SSR instance they may
@@ -3842,7 +3842,65 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   must appear after all such instances. Under this loading contract,
   `TemplateElement.connectedCallback()` hydrates synchronously, so
   `super.connectedCallback()` returns only after that component's bindings,
-  events, and references are wired.
+  events, and references are wired, unless the authored class explicitly sets
+  `static lazy = true`.
+- **Component-level lazy hydration.** `WebUIElement.lazy` defaults to `false`.
+  An authored subclass setting it to `true` defers only SSR instances;
+  client-created instances mount eagerly. Deferred DOM stays visible and
+  structurally untouched. One lazily created `IntersectionObserver` is shared
+  across the realm with `root: null` and `threshold: 0`. Browsers exposing
+  `IntersectionObserver.scrollMargin` receive `scrollMargin: "200px"` and
+  `rootMargin: "0px"` so the document scrollport is expanded exactly once.
+  Older implementations receive `rootMargin: "200px"`; nested scroll containers
+  then activate at their own clip boundary instead of receiving an additional
+  lead. If `IntersectionObserver` is absent, hydration remains eager. The
+  observer keeps a strong `Set` only for currently connected targets so it can
+  unobserve and remove global listeners, while weak state retains reconnect
+  eligibility without retaining detached elements. Observation generations
+  reject queued or delivered records from an earlier connection. If a hydrated
+  instance remains detached through the teardown microtask, reconnect rewires
+  marker-safe templates in place. Templates containing conditionals or repeats
+  remount from the instance's current state instead of attempting to reclaim
+  SSR ranges whose closing markers were already removed.
+- Lazy intersection batches enqueue each composed ancestor as an individual
+  parent-first work item and run synchronously until they consume an 8ms budget.
+  Remaining targets continue through
+  `scheduler.postTask(..., { priority: "user-visible" })`, with one shared
+  `MessageChannel` fallback. A rejected scheduler task reports the error and
+  drains the retained queue through `MessageChannel`. Small batches incur no
+  scheduling hop. Shared capture listeners for `pointerdown`, `focus`,
+  `keydown`, and `click` activate pending ancestors before target handling and
+  are installed only while connected lazy targets exist. Composed ancestry
+  follows assigned slots and shadow hosts. One failed activation is reported
+  without abandoning other visible work.
+- State writes after an instance enters lazy deferral are stored in its normal
+  authored or hidden template state. A lazily allocated root-name `Set`
+  prevents older ordinary or boundary-local bootstrap values from overwriting
+  those roots, including an explicit same-value assignment. Ordinary bootstrap
+  values are copied into component-local state when deferral begins, so a
+  router can release the page-wide bootstrap object before activation. After
+  normal SSR wiring succeeds, one synchronous path-indexed pass replays the
+  newest values. A binding that also depends on an unavailable template-only
+  root keeps its complete trusted SSR value on replay and every later reactive
+  or structural binding pass until that root is supplied; WebUI never
+  substitutes an unknown dependency with an empty string. An explicitly
+  supplied `undefined` is known state: it clears text and reconciles a repeat as
+  empty. This covers `setState`, compiled parent-to-child writes, attributes,
+  and repeat reconciliation without a separate initial mount implementation.
+  It does not alter pre-`super` hydration mismatch behavior.
+- A streamed lazy root reports a successful boundary activation without walking
+  its DOM. It retains the boundary state by reference, joins the coordinator's
+  root set when its boundary is updatable, accepts later shallow patches through
+  `setState`, and releases the retained state when visibility or interaction
+  invokes the same `$activateDeferredSSR` path. The coordinator still removes
+  `data-ws` and all boundary scaffolding at commit. `hydratedCallback()` runs
+  only at the eventual successful hydration.
+- Parser-startup lazy roots hold `webui:hydration-complete` only until
+  `DOMContentLoaded` and their first intersection result. Roots intersecting
+  at that point join the active hydration batch; non-intersecting roots are
+  classified as dormant and no longer hold the gate. Later visibility
+  activation does not redispatch the one-shot event. Component-specific
+  readiness belongs in `hydratedCallback()`.
 - Before a containing WebUI component hydrates, descendants must not
   structurally mutate its SSR subtree. Hydration resolves compiled node paths
   against the trusted server DOM and does not recover from pre-hydration node

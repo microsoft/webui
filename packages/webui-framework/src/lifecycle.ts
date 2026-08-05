@@ -5,20 +5,21 @@
  * Hydration lifecycle tracker.
  *
  * Tracks aggregate hydration timing via the Performance API and fires a
- * global `webui:hydration-complete` event on `window` once every registered
- * component has finished hydrating.
+ * global `webui:hydration-complete` event on `window` once the startup
+ * hydration cohort has settled. Visibility-deferred lazy components do not
+ * keep this one-shot event open indefinitely.
  *
  * ## Performance marks
  *
  * Global:
  * - `webui:hydrate:total:start`  — first component begins hydrating
- * - `webui:hydrate:total:end`    — last component finishes
+ * - `webui:hydrate:total:end`    — startup cohort settles
  * - measure `webui:hydrate:total`
  *
  * ## Window event
  *
- * `webui:hydration-complete` — dispatched once on `window` when all
- * components are hydrated.
+ * `webui:hydration-complete` — dispatched once on `window` when the startup
+ * cohort is hydrated or classified as visibility-dormant.
  *
  * ## Streaming gate
  *
@@ -35,7 +36,7 @@
  * completion gate does not need to expose parser-window state to components.
  */
 
-/** How many components are still waiting to hydrate. */
+/** How many startup or active-batch hydration operations remain. */
 let pendingCount = 0;
 
 /** Whether the global start mark has been placed. */
@@ -43,6 +44,33 @@ let started = false;
 
 /** Whether the global complete event has already fired. */
 let completed = false;
+
+/** Ordinary startup does not complete before parser-loaded components register. */
+const hasBrowserDocument =
+  typeof document !== 'undefined' &&
+  typeof Document !== 'undefined' &&
+  document instanceof Document;
+const navigationTiming = hasBrowserDocument &&
+  typeof performance.getEntriesByType === 'function'
+  ? performance.getEntriesByType('navigation')[0] as
+    | PerformanceNavigationTiming
+    | undefined
+  : undefined;
+let documentReady = !hasBrowserDocument ||
+  document.readyState === 'complete' ||
+  (navigationTiming?.domContentLoadedEventStart ?? 0) > 0;
+
+if (!documentReady) {
+  document.addEventListener('DOMContentLoaded', () => {
+    documentReady = true;
+    tryComplete();
+  }, { once: true });
+}
+
+/** Whether parser/deferred module startup can still register hydration work. */
+export function isHydrationStartupPending(): boolean {
+  return !documentReady;
+}
 
 /** Whether a streaming page has opted into the boundary-aware completion gate. */
 let streamingGateActive = false;
@@ -147,13 +175,19 @@ export function settleLateActivation(): void {
 }
 
 /**
- * Fire `webui:hydration-complete` once, when every known completion
- * condition is satisfied: no component is mid-hydration, and — only on
- * streaming pages — the terminal boundary has committed and no boundary is
- * still being processed.
+ * Fire `webui:hydration-complete` once, when every known startup completion
+ * condition is satisfied: no eager or active-batch hydration is running, and
+ * on streaming pages the terminal boundary has committed with no boundary
+ * still being processed. Dormant visibility-deferred roots are excluded.
  */
 function tryComplete(): void {
-  if (completed || streamingGateAborted || pendingCount !== 0) return;
+  if (
+    completed ||
+    !documentReady ||
+    streamingGateAborted ||
+    pendingCount !== 0
+  ) return;
+  if (!started && !streamingGateActive) return;
   if (
     streamingGateActive &&
     (!terminalReached || pendingBoundaries !== 0 || pendingLateActivations !== 0)

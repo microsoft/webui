@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ordinary Lazy Hydration Fixture</title>
+  <style>
+    body {
+      min-height: 2400px;
+      margin: 0;
+    }
+
+    test-ordinary-eager-item,
+    test-ordinary-lazy-item {
+      position: absolute;
+      display: block;
+    }
+
+    #ordinary-eager {
+      top: 0;
+    }
+
+    #ordinary-visible {
+      top: 100px;
+    }
+
+    #ordinary-lazy {
+      top: 1800px;
+    }
+  </style>
+</head>
+<body>
+  <test-ordinary-eager-item
+    id="ordinary-eager"
+    label="{{label}}"
+  ></test-ordinary-eager-item>
+  <test-ordinary-lazy-item
+    id="ordinary-visible"
+    label="{{label}}"
+  ></test-ordinary-lazy-item>
+  <test-ordinary-lazy-item
+    id="ordinary-lazy"
+    data-ws="authored-value"
+    label="{{label}}"
+  ></test-ordinary-lazy-item>
+</body>
+</html>

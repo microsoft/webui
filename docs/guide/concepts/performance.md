@@ -129,6 +129,50 @@ instance for the server lifetime.
 **Browser state is client-facing.** Never put credentials, private tokens, or other secrets in state rendered to
 the browser.
 
+## Lazy Hydration Showdown
+
+Authored components can set `static lazy = true` to hydrate only instances
+within 200px of the viewport. A production Chromium benchmark compares a
+representative todo row with four text bindings and two direct event listeners
+at 1280x720. Each result is the median of 30 balanced, fresh-page runs; p95 is
+shown for CPU and first-screen readiness. Listener counts come from installed
+binding cleanups, and total retained heap is measured after forced GC from a
+pre-bundle page baseline.
+
+| Mode | Items | Component CPU med/p95 | Ready med/p95 | Initially hydrated | Initial listeners | Total retained heap |
+|---|---:|---:|---:|---:|---:|---:|
+| Eager | 10 | 1.30 / 1.60 ms | 1.90 / 2.10 ms | 10 | 20 | 372.0 KiB |
+| Lazy | 10 | 1.50 / 1.90 ms | 23.90 / 30.40 ms | 10 | 20 | 407.0 KiB |
+| Eager | 1,000 | 9.80 / 12.10 ms | 26.00 / 30.10 ms | 1,000 | 2,000 | 1,475.3 KiB |
+| Lazy | 1,000 | 4.60 / 5.40 ms | 28.40 / 36.70 ms | 13 | 26 | 766.5 KiB |
+
+For 1,000 items, lazy mode reduced initial component CPU by 53%, hydrated roots
+and listeners by 98.7%, hydration-only retained heap by 55%, and total retained
+heap by 48%. Median first-screen readiness stayed within 2.4ms of eager mode.
+Activating the last dormant row from an interaction took 0.1ms median.
+
+For 10 items, every row was already inside the lead area. Lazy mode therefore
+saved no hydration work and paid one asynchronous observer delivery, adding
+22.0ms to median readiness, 0.2ms component CPU, and 35.0 KiB total retained
+heap. Keep eager hydration for small, fully visible surfaces.
+
+The eager control was also rebuilt from the pre-change source and measured with
+the same final harness. Median component CPU changed from 1.20ms to 1.30ms for
+10 items and from 10.00ms to 9.80ms for 1,000 items. P95 stayed at 1.60ms for 10
+items and fell from 13.90ms to 12.10ms for 1,000. Hydration-only retained heap
+increased by 2.1 KiB for 10 items and fell by 31.4 KiB for 1,000. This shows no
+material eager hydration regression, but the shared capability has a real bundle
+cost: 6,154 minified bytes and 2,013 gzip bytes in this isolated framework
+fixture. Median bundle initialization increased by 0.1ms for 10 items and 0.2ms
+for 1,000.
+
+Reproduce the matrix:
+
+```bash
+cd examples/integration/streaming-browser-bench
+WEBUI_LAZY_HYDRATION_RUNS=30 pnpm test:lazy-hydration
+```
+
 ## Why WebUI is Fast
 
 Each layer of the architecture contributes to the overall performance profile:
@@ -283,9 +327,11 @@ supports the same named before/after baseline workflow through `cargo xtask`.
 
 ## Measuring Hydration Performance
 
-WebUI emits a `webui:hydration-complete` event after all components have been
-hydrated on the client. Use the Performance API to inspect per-component
-timing:
+WebUI emits a one-shot `webui:hydration-complete` event after the startup
+hydration cohort completes. Visibility-deferred lazy components do not hold this
+event open indefinitely or redispatch it when they activate later. Use
+`hydratedCallback()` for instance-specific readiness and the Performance API to
+inspect hydration timing:
 
 ```typescript
 window.addEventListener('webui:hydration-complete', () => {
@@ -306,4 +352,5 @@ slow components and optimize them individually.
 - [SSR showdown source](https://github.com/microsoft/webui/tree/main/examples/integration/ssr-performance-showdown) - full benchmark harness and reproduction steps
 - [Contact book benchmark](https://github.com/microsoft/webui/tree/main/crates/webui/benches) - real-world application benchmark
 - [Node addon benchmark](https://github.com/microsoft/webui/tree/main/examples/integration/node-addon-bench) - V8/N-API boundary benchmark
+- [Browser hydration matrices](https://github.com/microsoft/webui/tree/main/examples/integration/streaming-browser-bench) - streaming and component-level lazy hydration
 - [DESIGN.md](https://github.com/microsoft/webui/blob/main/DESIGN.md) - architectural performance principles

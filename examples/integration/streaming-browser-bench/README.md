@@ -1,13 +1,16 @@
 # `streaming-browser-bench`
 
-Browser-perceived metrics for the WebUI streaming SSR pipeline. This package
-holds **two** independent benches:
+Browser-perceived metrics for WebUI hydration and streaming SSR. This package
+holds **three** independent benches:
 
 1. **Transport bench** (`browser_metrics.spec.ts`) - buffered vs streamed
    delivery of byte-identical HTML.
 2. **Progressive hydration matrix** (`hydration_matrix.spec.ts`) - the real
    streaming coordinator plus real `WebUIElement` hydration, measured
    across 1/3/10/100 boundaries against an ordinary one-shot control.
+3. **Lazy hydration matrix** (`lazy_hydration_matrix.spec.ts`) - production
+   component hydration for representative 10-item and 1,000-item todo lists,
+   comparing eager and `static lazy = true` modes.
 
 ## Transport bench
 
@@ -171,11 +174,42 @@ compare regression (CPU, elapsed, retained, or peak) fails the run.
 These are structured and documented separately so timing/heap noise never fails a
 normal run.
 
+## Lazy hydration matrix
+
+This matrix bundles the production framework with `__WEBUI_DEV__=false` and
+defines a todo item with four text bindings and two direct event listeners. Each
+SSR row has a fixed 72px height. The 10-item list fits inside the viewport plus
+the 200px lead margin; the 1,000-item list leaves almost every row dormant.
+
+Each arm runs in a fresh page and records:
+
+| Metric | Source |
+|---|---|
+| component CPU | instrumented real `connectedCallback` and deferred activation |
+| bundle initialization, definition, and first-screen readiness | `performance.now()` in separate measurement windows |
+| hydrated roots | successful hydration count |
+| installed listeners | actual root cleanup records after successful hydration |
+| peak heap | precise `performance.memory` sampling during hydration |
+| hydration-only and total retained heap | forced GC through CDP before hydration and before bundle evaluation |
+| longest long task | overlapping `PerformanceObserver('longtask')` records from the definition/readiness window |
+| first visible and dormant interaction | synchronous click timing |
+| bundle size | exact production minified and gzip bytes |
+
+The dormant interaction must hydrate the last row synchronously. The lazy
+1,000-item arm must hydrate fewer roots than it renders, while the eager arms
+must hydrate every root. The driver also fails if the expected initial roots do
+not hydrate before its frame deadline. These correctness assertions are always
+enforced. Run order reverses on alternating rounds to reduce fixed-order bias.
+Runs default to 15; set `WEBUI_LAZY_HYDRATION_RUNS` for a larger median/p95
+sample.
+
 ### Known limitations
 
 * `performance.memory` is Chromium-only and coarse/bucketed, so peak-heap deltas
   are noisy (the in-hook sampling makes them *truthful during commit* but not
-  precise); the forced-GC CDP retained delta is the authoritative memory metric.
+  precise); the forced-GC CDP retained deltas are the authoritative memory
+  metrics. The hydration-only value excludes fixed runtime and SSR DOM cost,
+  while total retained heap includes both.
 * On this dev machine `longtask` reads `null` for the streaming arms (the
   measured pipeline remains below 50 ms) while the one-shot control's synchronous
   1500-root hydration can trip a single long task - the concrete streaming
@@ -209,6 +243,7 @@ cargo xtask bench streaming-browser
 cd examples/integration/streaming-browser-bench
 pnpm test              # transport bench
 pnpm test:hydration    # progressive hydration matrix
+pnpm test:lazy-hydration # component lazy hydration matrix
 pnpm typecheck         # tsc --noEmit for this package
 ```
 
@@ -248,6 +283,26 @@ compare phase prints a per-scenario delta table with CPU %, elapsed %, and signe
 retained- and peak-heap KiB deltas. A strict comparison requires a compatible
 baseline and checks it before running the measurement matrix; a missing or stale
 baseline fails with the command needed to create a new one.
+
+The lazy matrix uses separate environment variables and snapshot files:
+
+```bash
+WEBUI_LAZY_HYDRATION_MODES=eager \
+WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_SAVE=before \
+pnpm test:lazy-hydration
+
+WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_COMPARE=before \
+WEBUI_LAZY_HYDRATION_SAVE=after \
+pnpm test:lazy-hydration
+```
+
+Snapshots live at
+`target/bench-baselines/browser-lazy-hydration-<name>.json`.
+Set `WEBUI_LAZY_HYDRATION_FRAMEWORK_SRC` to an extracted framework `src`
+directory to compare the current harness against an earlier runtime without
+changing the benchmark worktree.
 
 
 ## What it measures

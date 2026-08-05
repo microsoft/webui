@@ -304,6 +304,13 @@ export class TemplateElement extends HTMLElement {
    *  surface hydration mismatches (issue #379). Stays `null` for components
    *  that follow the lifecycle, so the common path allocates nothing. */
   private $preReadyWrites: Set<string> | null = null;
+  /** State roots written while lazy SSR hydration is deferred. The values live
+   *  in normal authored/template state; this set prevents older bootstrap state
+   *  from replacing them and requests one synchronous replay after wiring. */
+  declare private $deferredWrites: Set<string> | undefined;
+  /** Keep unavailable template-only roots from being replaced by empty values
+   *  after a deferred SSR activation. */
+  declare private $guardUnknownState: boolean | undefined;
   /** Cached condition resolver — avoids allocating a closure per evaluation. */
   private $resolver = (p: string, s?: unknown): unknown => this.$resolveValue(p, s as ScopeFrame | undefined);
   private $pathIndex?: Map<string, {
@@ -325,8 +332,8 @@ export class TemplateElement extends HTMLElement {
     const wasDeferred = this.$deferredSSR;
     this.$beforeExternalStateWrite();
     const owned = this.$setStateKey(key, value);
+    if (owned && wasDeferred) this.$recordDeferredWrite(key);
     this.$afterExternalStateWrite(owned);
-    if (owned && wasDeferred && !this.$deferredSSR) this.$update(key);
     return owned;
   }
 
@@ -356,7 +363,12 @@ export class TemplateElement extends HTMLElement {
     }
     this.$meta = meta;
     if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
-    this.$activateDeferredSSR(state);
+    this.$activatingDeferredSSR = true;
+    try {
+      this.$activateDeferredSSR(state);
+    } finally {
+      this.$activatingDeferredSSR = false;
+    }
     return ACTIVATION_ACTIVATED;
   }
 
@@ -366,6 +378,7 @@ export class TemplateElement extends HTMLElement {
     this.$activatingDeferredSSR = false;
     this.$ready = false;
     this.$preReadyWrites = null;
+    if (this.$deferredWrites) this.$deferredWrites = undefined;
   }
 
   /**
@@ -393,6 +406,7 @@ export class TemplateElement extends HTMLElement {
 
     if (this.$deferredSSR) {
       this.$ready = true;
+      this.$didDeferSSRHydration();
       return;
     }
 
@@ -426,6 +440,7 @@ export class TemplateElement extends HTMLElement {
       this.$ready = true;
       const resume = (this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void })[PENDING_ROOT_CONNECTED];
       if (typeof resume === 'function') resume.call(this);
+      this.$didDeferSSRHydration();
       return;
     }
 
@@ -445,18 +460,32 @@ export class TemplateElement extends HTMLElement {
   }
 
   /** Mount the component after children are available. */
-  private $mount(meta: TemplateMeta, forceSSR: boolean, ssrState?: Record<string, unknown>): void {
+  private $mount(
+    meta: TemplateMeta,
+    forceSSR: boolean,
+    ssrState?: Record<string, unknown>,
+    hasBoundaryState = false,
+  ): void {
     if (this.$hydrated) return;
 
     // Auto-detect shadow vs light DOM
     const hasShadow = !!this.shadowRoot;
     const wantShadow = hasShadow || !!meta.sd;
+    const remountStructuralTemplate = this.$hydratedCallbackCalled &&
+      ((meta.c?.length ?? 0) !== 0 || (meta.r?.length ?? 0) !== 0);
 
     let root: Node;
     let isSSR: boolean;
     let clientRoot: HTMLElement | null = null;
 
-    if (hasShadow) {
+    if (remountStructuralTemplate) {
+      const renderRoot = wantShadow
+        ? this.shadowRoot ?? this.attachShadow({ mode: 'open' })
+        : this;
+      renderRoot.replaceChildren();
+      root = renderRoot;
+      isSSR = false;
+    } else if (hasShadow) {
       // Shadow DOM SSR — declarative shadow root already has content
       root = this.shadowRoot!;
       isSSR = true;
@@ -483,6 +512,7 @@ export class TemplateElement extends HTMLElement {
       this.$meta = meta;
       this.$deferredSSR = true;
       this.$ready = true;
+      this.$didDeferSSRHydration();
       return;
     }
 
@@ -494,11 +524,13 @@ export class TemplateElement extends HTMLElement {
       if (isSSR) {
         // Seed explicit authored state. A streamed activation (forceSSR) supplies
         // its boundary-local state directly; ordinary hydration defaults to the
-        // global `window.__webui.state` handoff. Passing `forceSSR`'s state as-is
+        // global `window.__webui.state` handoff. Passing a boundary's state as-is
         // (even when undefined) keeps a stateless streamed boundary from falling
         // back to a later boundary's global state.
         if (this.$shouldApplySSRBootstrapState()) {
-          this.$applySSRState(forceSSR ? ssrState : window.__webui?.state);
+          this.$applySSRState(
+            hasBoundaryState ? ssrState : window.__webui?.state,
+          );
         }
         this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
@@ -511,6 +543,7 @@ export class TemplateElement extends HTMLElement {
       this.$hydrated = true;
       this.$ready = true;
       this.$syncAuthoredAttributes();
+      if (isSSR && this.$deferredWrites) this.$replayDeferredWrites();
 
       // SSR only: warn when a pre-ready write left an observable disagreeing
       // with the server-rendered DOM. Client-created components have no SSR
@@ -562,6 +595,7 @@ export class TemplateElement extends HTMLElement {
       this.$deferredSSR = false;
       this.$ready = false;
       this.$hasUnknownScopes = false;
+      if (this.$deferredWrites) this.$deferredWrites = undefined;
       return;
     }
     this.$disposeInstance(this.$root, false);
@@ -571,6 +605,7 @@ export class TemplateElement extends HTMLElement {
     this.$dirtyPaths = null;
     this.$pendingFlush = false;
     this.$preReadyWrites = null;
+    this.$hydrated = false;
     this.$ready = false;
     this.$hasUnknownScopes = false;
   }
@@ -610,10 +645,10 @@ export class TemplateElement extends HTMLElement {
     const property = this.$templateRootForAttribute(name);
     let changed = false;
     if (property && this.$usesTemplateState(property)) {
+      if (wasDeferred) this.$recordDeferredWrite(property);
       changed = this.$setTemplateState(property, newValue);
     }
     this.$afterExternalStateWrite(changed);
-    if (changed && property && wasDeferred && !this.$deferredSSR) this.$update(property);
   }
 
   /** Populate component state from server or router state.
@@ -629,12 +664,11 @@ export class TemplateElement extends HTMLElement {
     let owned = false;
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
-      owned = this.$setStateKey(key, state[key]) || owned;
+      const keyOwned = this.$setStateKey(key, state[key]);
+      if (keyOwned && wasDeferred) this.$recordDeferredWrite(key);
+      owned = keyOwned || owned;
     }
     this.$afterExternalStateWrite(owned);
-    if (owned && wasDeferred && !this.$deferredSSR) {
-      for (let i = 0; i < keys.length; i++) this.$update(keys[i]);
-    }
     this.$flushUpdates();
   }
 
@@ -669,6 +703,21 @@ export class TemplateElement extends HTMLElement {
     return false;
   }
 
+  /** Respond after an SSR instance enters or reconnects in deferred mode. */
+  protected $didDeferSSRHydration(): void {
+  }
+
+  /**
+   * Seed ordinary bootstrap state before a lazy root releases the initial
+   * `window.__webui.state` handoff. Values stay in component-local fields, so
+   * delayed activation does not retain the page-wide bootstrap object.
+   */
+  protected $primeSSRStateForDeferral(): void {
+    if (this.$shouldApplySSRBootstrapState()) {
+      this.$applySSRState(window.__webui?.state);
+    }
+  }
+
   /**
    * Decide whether a streamed boundary commit should activate this instance.
    * Authored/base components activate immediately; compiler-owned static
@@ -683,6 +732,26 @@ export class TemplateElement extends HTMLElement {
    *  SSR state supplied by the streaming coordinator; ordinary (non-streaming)
    *  activations omit it and fall back to the global handoff inside `$mount`. */
   protected $activateDeferredSSR(state?: Record<string, unknown>): void {
+    this.$activateDeferredSSRWithState(
+      state,
+      this.$activatingDeferredSSR,
+    );
+  }
+
+  /**
+   * Activate deferred SSR using retained boundary-local state after the
+   * streaming coordinator has released its boundary record.
+   */
+  protected $activateDeferredSSRFromBoundary(
+    state?: Record<string, unknown>,
+  ): void {
+    this.$activateDeferredSSRWithState(state, true);
+  }
+
+  private $activateDeferredSSRWithState(
+    state: Record<string, unknown> | undefined,
+    hasBoundaryState: boolean,
+  ): void {
     if (!this.$deferredSSR) return;
     // Both activation owners establish metadata before calling this hook:
     // static hosts retain it in `$mount()`, and streamed roots validate/cache it
@@ -690,13 +759,15 @@ export class TemplateElement extends HTMLElement {
     const meta = this.$meta;
     if (!meta) return;
     this.$deferredSSR = false;
+    this.$guardUnknownState = true;
     this.$ready = false;
     this.$preReadyWrites = null;
+    const wasActivating = this.$activatingDeferredSSR;
     this.$activatingDeferredSSR = true;
     try {
-      this.$mount(meta, true, state);
+      this.$mount(meta, true, state, hasBoundaryState);
     } finally {
-      this.$activatingDeferredSSR = false;
+      this.$activatingDeferredSSR = wasActivating;
       // The streamed-host `data-ws` marker is NOT dropped here: the streaming
       // coordinator (`streaming.ts` `invokeActivationHook`) owns successful-path
       // removal in its own `finally`, so every committed root — including
@@ -754,7 +825,10 @@ export class TemplateElement extends HTMLElement {
     if (!this.$templateState) {
       this.$templateState = Object.create(null) as Record<string, unknown>;
     }
-    if (Object.is(this.$templateState[key], value)) return false;
+    if (
+      Object.prototype.hasOwnProperty.call(this.$templateState, key) &&
+      Object.is(this.$templateState[key], value)
+    ) return false;
     this.$templateState[key] = value;
     return true;
   }
@@ -818,9 +892,11 @@ export class TemplateElement extends HTMLElement {
   private $applySSRState(state: Record<string, unknown> | undefined): void {
     if (!state || typeof state !== 'object') return;
     const observableNames = this.$observableNames();
+    const deferredWrites = this.$deferredWrites;
     const keys = Object.keys(state);
     for (let i = 0; i < keys.length; i++) {
       const key = keys[i];
+      if (deferredWrites?.has(key)) continue;
       if (observableNames.has(key)) {
         if (!this.$shouldApplySSRState(key)) continue;
         // Write to backing field directly — no reactive update yet
@@ -834,6 +910,7 @@ export class TemplateElement extends HTMLElement {
   /** Reactive update — called by @observable/@attr setters. */
   $update(path?: string): void {
     if (!this.$ready || !this.$root) {
+      if (path && this.$deferredSSR) this.$recordDeferredWrite(path);
       // A reactive write arrived while connected but before hydration
       // completed. `$update` cannot touch the DOM yet, so record the path and
       // check it against the SSR DOM once hydrated (see #379). `DEV` gates the
@@ -864,6 +941,25 @@ export class TemplateElement extends HTMLElement {
     this.$updateInstance(this.$root);
   }
 
+  private $recordDeferredWrite(path: string): void {
+    const dot = path.indexOf('.');
+    const root = dot === -1 ? path : path.slice(0, dot);
+    (this.$deferredWrites ??= new Set()).add(root);
+  }
+
+  private $replayDeferredWrites(): void {
+    const writes = this.$deferredWrites;
+    if (!writes) return;
+    this.$deferredWrites = undefined;
+    if (this.$dirtyPaths) {
+      for (const path of writes) this.$dirtyPaths.add(path);
+    } else {
+      this.$dirtyPaths = writes;
+    }
+    this.$pendingFlush = true;
+    this.$flush(true);
+  }
+
   /** Synchronously flush all queued path updates. Call this when you need
    *  the DOM to reflect pending property changes immediately. */
   $flushUpdates(): void {
@@ -871,7 +967,9 @@ export class TemplateElement extends HTMLElement {
   }
 
   /** Flush all queued path updates. Handles re-entrant setter calls. */
-  private $flush(): void {
+  private $flush(
+    requireKnownState = this.$guardUnknownState === true,
+  ): void {
     if (!this.$ready || !this.$root) {
       this.$dirtyPaths = null;
       this.$pendingFlush = false;
@@ -889,14 +987,26 @@ export class TemplateElement extends HTMLElement {
         if (!this.$pathIndex) this.$buildPathIndex();
         const entry = this.$pathIndex?.get(path);
         if (entry) {
-          this.$updateBindings(entry.texts, entry.attrs, entry.conds, entry.repeats);
+          this.$updateBindings(
+            entry.texts,
+            entry.attrs,
+            entry.conds,
+            entry.repeats,
+            requireKnownState,
+          );
         }
       }
       // Update wildcard bindings once per flush (not per dirty path)
       if (!this.$pathIndex) this.$buildPathIndex();
       if (this.$wildcardBindings) {
         const wc = this.$wildcardBindings;
-        this.$updateBindings(wc.texts, wc.attrs, wc.conds, wc.repeats);
+        this.$updateBindings(
+          wc.texts,
+          wc.attrs,
+          wc.conds,
+          wc.repeats,
+          requireKnownState,
+        );
       }
       if (!this.$pathIndex) this.$buildPathIndex();
     }
@@ -1816,26 +1926,74 @@ export class TemplateElement extends HTMLElement {
   private $updateBindings(
     texts: TextBinding[], attrs: AttrBinding[],
     conds: CondBinding[], repeats: RepeatBinding[],
+    requireKnownState = false,
   ): void {
     // Fast path: with no client-absent SSR scopes (every authored component and
     // every fully-hydrated host) the walk is unnecessary, so skip it per binding.
     const gated = this.$hasUnknownScopes;
     for (let i = 0; i < texts.length; i++) {
       const binding = texts[i];
-      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchText(binding);
+      if (
+        (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) &&
+        (!requireKnownState || this.$textStateIsKnown(binding))
+      ) {
+        this.$patchText(binding);
+      }
     }
     for (let i = 0; i < attrs.length; i++) {
       const binding = attrs[i];
-      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$patchAttr(binding);
+      if (
+        (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) &&
+        (!requireKnownState || this.$attrStateIsKnown(binding))
+      ) {
+        this.$patchAttr(binding);
+      }
     }
     for (let i = 0; i < conds.length; i++) {
       const binding = conds[i];
-      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) this.$toggleCond(binding);
+      if (
+        (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) &&
+        (!requireKnownState || this.$pathsAreKnown(binding.condition[1], binding.scope))
+      ) {
+        this.$toggleCond(binding);
+      }
     }
     for (let i = 0; i < repeats.length; i++) {
       const binding = repeats[i];
-      if (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) syncRepeat(this, binding);
+      if (
+        (!gated || !binding.scope || this.$scopeIsKnown(binding.scope)) &&
+        (!requireKnownState || this.$hasStateRoot(binding.collection, binding.scope))
+      ) {
+        syncRepeat(this, binding);
+      }
     }
+  }
+
+  private $textStateIsKnown(binding: TextBinding): boolean {
+    if (binding.parts) return this.$partsAreKnown(binding.parts, binding.scope);
+    return !binding.path || this.$hasStateRoot(binding.path, binding.scope);
+  }
+
+  private $attrStateIsKnown(binding: AttrBinding): boolean {
+    if (binding.path && !this.$hasStateRoot(binding.path, binding.scope)) return false;
+    if (binding.parts && !this.$partsAreKnown(binding.parts, binding.scope)) return false;
+    return !binding.condition
+      || this.$pathsAreKnown(binding.condition[1], binding.scope);
+  }
+
+  private $partsAreKnown(parts: CompiledAttrPart[], scope?: ScopeFrame): boolean {
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (typeof part !== 'string' && !this.$hasStateRoot(part[0], scope)) return false;
+    }
+    return true;
+  }
+
+  private $pathsAreKnown(paths: string[], scope?: ScopeFrame): boolean {
+    for (let i = 0; i < paths.length; i++) {
+      if (!this.$hasStateRoot(paths[i], scope)) return false;
+    }
+    return true;
   }
 
   private $scopeIsKnown(scope: ScopeFrame): boolean {
@@ -1848,7 +2006,13 @@ export class TemplateElement extends HTMLElement {
   }
 
   $updateInstance(instance: TemplateInstance): void {
-    this.$updateBindings(instance.texts, instance.attrs, instance.conds, instance.repeats);
+    this.$updateBindings(
+      instance.texts,
+      instance.attrs,
+      instance.conds,
+      instance.repeats,
+      this.$guardUnknownState === true,
+    );
   }
 
   private $patchText(b: TextBinding): void {

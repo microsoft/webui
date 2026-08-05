@@ -599,6 +599,26 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
+For a component with many initially offscreen SSR instances, add
+`static lazy = true`. WebUI keeps SSR DOM visible and uses one shared
+`IntersectionObserver`. It uses a 200px `scrollMargin` with zero `rootMargin`
+when supported, or a 200px `rootMargin` otherwise. Visibility, pointer, focus,
+keyboard, or click activates the instance; nested lazy components activate
+parent-first across slots and shadow roots. Client-created instances and
+browsers without `IntersectionObserver` stay eager.
+
+```typescript
+export class FeedItem extends WebUIElement {
+  static lazy = true;
+}
+```
+
+Writes made after the lazy component enters deferred mode are retained and
+replayed after activation, including equal-value intent, parent repeat updates,
+and streamed state patches. A mixed binding keeps trusted SSR output while one
+of its roots remains unavailable. Use `hydratedCallback()` for work that
+requires bindings or refs.
+
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
 | `@attr` | HTML attribute reflection | Yes; an existing SSR host attribute wins | Yes |
@@ -607,6 +627,7 @@ MyComponent.define('my-component');
 
 | Method / property | Description |
 |---|---|
+| `static lazy = true` | Hydrate SSR instances within 200px of visibility |
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
@@ -656,9 +677,12 @@ mismatch` warning (development-only; stripped from production via
 If the value must appear in the first render, put it in the SSR state JSON.
 Otherwise assign it in `hydratedCallback()`. On buffered SSR and client-created
 mounts, `super.connectedCallback()` hydrates synchronously, but streamed hosts
-can return while still deferred. `hydratedCallback()` is the cross-mode signal:
-it runs synchronously exactly once after the first successful hydration or
-mount, and reconnects or callback exceptions do not retry it.
+and `static lazy = true` hosts can return while still deferred.
+`hydratedCallback()` is the cross-mode signal: it runs synchronously exactly
+once after the first successful hydration or mount, and reconnects or callback
+exceptions do not retry it. Once a lazy host has deferred, later state writes
+are retained and replayed; this exception does not make constructor or
+pre-`super.connectedCallback()` writes safe.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a
@@ -715,8 +739,9 @@ directive is removed at compile time and emits no application DOM wrapper.
   unconditional `performance.mark()` (`webui:boundary:<id>`,
   `webui:boundary:<id>:update`, `webui:streaming:terminal`) that tooling can
   read retroactively without a listener.
-  `webui:hydration-complete` fires only after the terminal record and all
-  pending hydration work complete.
+  `webui:hydration-complete` fires only after the terminal record and eager
+  pending hydration work complete. Visibility-deferred lazy roots do not keep
+  this one-shot startup event open.
 - `window.__WEBUI_STREAMING_SLICE_MS__` opts into a time-sliced drain that
   yields between boundaries. Use it only when an intermediary coalesces the
   response into one chunk; it costs total hydration time.

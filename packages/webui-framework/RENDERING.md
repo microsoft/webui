@@ -106,6 +106,11 @@ Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<spa
 
 `<!--wc-->` and `<!--wr-->` start markers are kept after hydration as runtime anchors. They are the insertion points used when the condition flips or the repeat collection grows.
 
+The removed closing markers make structural SSR hydration intentionally
+one-shot. If delayed disconnect cleanup destroys a hydrated binding graph,
+reconnect remounts templates containing conditions or repeats from current
+component state rather than trying to claim the marker-stripped DOM again.
+
 Hydration assumes SSR DOM, marker comments, and compiled metadata come from the same trusted WebUI compiler/handler version. Hand-edited marker streams are unsupported; every `<!--wr-->` and `<!--wc-->` must have its matching closing marker.
 
 ---
@@ -409,7 +414,11 @@ window.addEventListener('webui:hydration-complete', () => {
 });
 ```
 
-The `webui:hydration-complete` event fires once after the last component on the page finishes. Use it to gate post-hydration logic or to ship a metric.
+The `webui:hydration-complete` event fires once after the parser-startup
+hydration cohort settles. For lazy roots, the cohort waits for the first
+intersection result: initially visible roots finish first, while dormant roots
+do not keep the event open or redispatch it later. Use `hydratedCallback()` for
+per-instance readiness.
 
 ---
 

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="webui-streaming" content="1">
+  <title>Lazy Hydration Fixture</title>
+  <style>
+    body {
+      min-height: 7000px;
+      margin: 0;
+    }
+
+    test-lazy-item,
+    test-lazy-parent,
+    test-lazy-list {
+      display: block;
+    }
+
+    test-lazy-item {
+      min-height: 72px;
+    }
+
+    #visible {
+      position: absolute;
+      top: 0;
+    }
+
+    #near {
+      position: absolute;
+      top: 850px;
+    }
+
+    #offscreen {
+      position: absolute;
+      top: 1400px;
+    }
+
+    #nested {
+      position: absolute;
+      top: 2200px;
+    }
+
+    #reconnect {
+      position: absolute;
+      top: 3000px;
+    }
+
+    #list-root {
+      position: absolute;
+      top: 3800px;
+    }
+
+    #streamed {
+      position: absolute;
+      top: 6200px;
+    }
+
+    #nested-scroller {
+      position: absolute;
+      top: 100px;
+      right: 20px;
+      width: 360px;
+      height: 240px;
+      overflow: auto;
+      border: 1px solid;
+    }
+
+    #scroller-spacer {
+      height: 800px;
+    }
+  </style>
+</head>
+<body>
+  <test-lazy-item id="visible" label="Visible" count="0"></test-lazy-item>
+  <test-lazy-item id="near" label="Near" count="0"></test-lazy-item>
+  <test-lazy-item id="offscreen" label="Offscreen" count="0"></test-lazy-item>
+
+  <div id="nested-scroller">
+    <div id="scroller-spacer"></div>
+    <test-lazy-item id="scrolled" label="Scrolled" count="0"></test-lazy-item>
+  </div>
+
+  <test-lazy-parent id="nested" label="Nested"></test-lazy-parent>
+  <test-lazy-item id="reconnect" label="Reconnect" count="0"></test-lazy-item>
+  <test-lazy-list id="list-root"></test-lazy-list>
+  <test-lazy-item id="streamed" data-ws label="Streamed SSR" count="1"></test-lazy-item>
+</body>
+</html>

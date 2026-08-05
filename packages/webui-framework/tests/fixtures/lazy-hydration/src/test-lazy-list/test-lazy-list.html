@@ -1,0 +1,10 @@
+<button class="replace" type="button" @click="{replaceItems()}">Replace</button>
+<button class="toggle-summary" type="button" @click="{toggleSummary()}">Toggle summary</button>
+<if condition="showSummary">
+  <p class="summary">{{summary}}</p>
+</if>
+<div class="items">
+  <for each="item in items">
+    <test-lazy-item key="{{item.id}}" label="{{item.label}}" count="{{item.count}}"></test-lazy-item>
+  </for>
+</div>

@@ -1,0 +1,10 @@
+<button type="button" @click="{increment()}">
+  <span class="label">{{label}}</span>
+  <output class="count">{{count}}</output>
+  <span class="server-only">{{serverOnly}}</span>
+  <span class="mixed">{{label}} / {{serverOnly}}</span>
+  <span class="note">{{note}}</span>
+  <span class="same-value">{{sameValue}}</span>
+</button>
+<input class="focus-target" @focus="{recordFocus()}" aria-label="Focus target">
+<output class="focus-count">{{focusCount}}</output>

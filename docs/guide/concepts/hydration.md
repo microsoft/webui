@@ -62,6 +62,66 @@ Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
 
+## Lazy Authored Components
+
+Opt an authored component into per-instance lazy hydration with
+`static lazy = true`:
+
+```typescript
+export class ActivityRow extends WebUIElement {
+  static lazy = true;
+}
+
+ActivityRow.define('activity-row');
+```
+
+The SSR DOM stays visible and keeps its identity. The framework uses one shared
+`IntersectionObserver` for all lazy instances and hydrates an element when it
+enters a 200px lead area around the viewport. Supporting browsers use a 200px
+observer `scrollMargin` with zero `rootMargin`, extending the same lead through
+nested scroll containers without doubling it at the document root. Older
+observers use a 200px `rootMargin`; an item inside a nested scroller activates
+when it reaches that scroller's clip boundary.
+
+Pointer, focus, keyboard, and click capture activates a pending component
+synchronously before normal target handling. Nested lazy components activate
+parent-first across slots and shadow roots. If a visible batch exceeds an 8ms
+work budget, WebUI continues it in a user-visible scheduler task, or a
+`MessageChannel` task where the Scheduler API is unavailable. A rejected
+scheduler task uses the same fallback without dropping visible work.
+
+Lazy hydration applies only to SSR instances. Client-created components mount
+eagerly. If `IntersectionObserver` is unavailable, SSR hydration also falls back
+to eager behavior rather than leaving inert UI.
+
+After a hydrated component stays disconnected long enough for teardown,
+structure-free templates rewire the preserved DOM on reconnect. Templates with
+conditionals or repeats remount from the component's current state because their
+one-time SSR closing markers have already been removed.
+
+Writes made after `super.connectedCallback()` has placed a lazy instance in its
+deferred state are retained. They take precedence over older bootstrap state and
+are replayed synchronously after hydration, including parent-to-child writes
+from repeated lists and explicit same-value assignments. Ordinary bootstrap
+values are copied into component-local state before a router can release the
+global handoff. If one replayed binding also references template-only state that
+was omitted from bootstrap, WebUI preserves the complete trusted SSR binding
+during replay and later updates until that missing root is supplied. An explicit
+`undefined` counts as supplied state and clears the corresponding text or
+repeat. This does not change the ordinary
+pre-hydration mismatch rule: writes made in a field initializer, constructor, or
+before `super.connectedCallback()` still cannot change the trusted first server
+paint.
+
+On a progressive streaming page, a boundary commit records its local state and
+removes its temporary scaffolding without forcing a lazy root to hydrate.
+Subsequent boundary patches update the dormant root, and the newest values win
+when visibility or interaction activates it.
+
+Use lazy hydration for long feeds, grids, and other pages where most authored
+components begin outside the lead area. For a small page whose components are
+all visible, eager hydration avoids the observer-delivery delay.
+
 ## Progressive Streaming Hydration
 
 WebUI can hydrate an explicit, complete entry-page region while the document
@@ -147,10 +207,10 @@ descendants, without waiting for `DOMContentLoaded`.
 Use `hydratedCallback()` for setup that needs bindings, events, or `w-ref`
 references. It runs synchronously exactly once after the first successful
 ordinary hydration, client mount, streamed activation, or dormant static-host
-wake. `connectedCallback()` can run earlier on a deferred streamed host and can
-run again after reconnect, so it is not a universal post-hydration signal.
-Actual timing still depends on module download, server progress, and transport
-delivery.
+wake, including a lazy activation. `connectedCallback()` can run earlier on a
+lazy or deferred streamed host and can run again after reconnect, so it is not a
+universal post-hydration signal. Actual timing still depends on module download,
+visibility, server progress, and transport delivery.
 
 WebUI dispatches these events on `window`:
 
@@ -161,9 +221,12 @@ WebUI dispatches these events on `window`:
   names. Keep this diagnostics flag off in production to avoid one event
   allocation per commit.
 - `webui:hydration-complete` once the empty terminal record has arrived and no
-  component or boundary remains pending. On a streaming page, it means the
+  eager component or boundary remains pending. On a streaming page, it means the
   complete response hydration lifecycle is done, not merely that the first
-  interactive boundary is ready.
+  interactive boundary is ready. On ordinary parser startup, WebUI waits through
+  `DOMContentLoaded` and the first intersection result for each lazy root.
+  Initially visible roots finish before the event; roots classified as dormant
+  do not keep it open and do not redispatch it when they activate later.
 
 ### Measuring commits in production
 

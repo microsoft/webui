@@ -1,0 +1,20 @@
+{
+  "serverOnly": "Server only",
+  "note": "SSR note",
+  "showSummary": true,
+  "summary": "12 items",
+  "items": [
+    { "id": 0, "label": "Item 0", "count": 0 },
+    { "id": 1, "label": "Item 1", "count": 1 },
+    { "id": 2, "label": "Item 2", "count": 2 },
+    { "id": 3, "label": "Item 3", "count": 3 },
+    { "id": 4, "label": "Item 4", "count": 4 },
+    { "id": 5, "label": "Item 5", "count": 5 },
+    { "id": 6, "label": "Item 6", "count": 6 },
+    { "id": 7, "label": "Item 7", "count": 7 },
+    { "id": 8, "label": "Item 8", "count": 8 },
+    { "id": 9, "label": "Item 9", "count": 9 },
+    { "id": 10, "label": "Item 10", "count": 10 },
+    { "id": 11, "label": "Item 11", "count": 11 }
+  ]
+}

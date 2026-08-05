@@ -16,6 +16,18 @@
 
 import { TemplateElement } from './template-element.js';
 import {
+  disconnectLazyHydration,
+  isStreamedLazyActivation,
+  LAZY_HYDRATION_ACTIVATE,
+  observeLazyHydration,
+  observeStreamedLazyHydration,
+  supportsLazyHydration,
+} from './lazy-hydration.js';
+import {
+  isStreamingHydrationMode,
+  STREAMED_HOST_ATTR,
+} from './streaming-mode.js';
+import {
   attributeNameForProperty,
   getObservableNames,
   syncAttrProperties,
@@ -40,6 +52,65 @@ type EventHandler = (...args: unknown[]) => unknown;
  * `$emit`. HTML-only components never reach this class.
  */
 export class WebUIElement extends TemplateElement {
+  /**
+   * Defer SSR hydration until this component is within 200px of the viewport.
+   *
+   * Server-rendered DOM remains visible and interaction, focus, or keyboard
+   * input activates the component synchronously. Client-created instances mount
+   * eagerly. Subclasses opt in with `static lazy = true`.
+   */
+  static lazy = false;
+
+  protected override $shouldDeferSSRHydration(): boolean {
+    return (
+      (this.constructor as typeof WebUIElement).lazy === true &&
+      supportsLazyHydration()
+    );
+  }
+
+  protected override $didDeferSSRHydration(): void {
+    // A streamed host cannot hydrate until its boundary-local state arrives.
+    if (
+      !isStreamingHydrationMode() ||
+      !this.hasAttribute(STREAMED_HOST_ATTR)
+    ) {
+      this.$primeSSRStateForDeferral();
+      observeLazyHydration(this);
+    }
+  }
+
+  protected override $activateDeferredSSR(
+    state?: Record<string, unknown>,
+  ): void {
+    if (isStreamedLazyActivation(this)) {
+      super.$activateDeferredSSRFromBoundary(state);
+      return;
+    }
+    if (
+      isStreamingHydrationMode() &&
+      this.hasAttribute(STREAMED_HOST_ATTR) &&
+      (this.constructor as typeof WebUIElement).lazy === true &&
+      supportsLazyHydration()
+    ) {
+      observeStreamedLazyHydration(this, state);
+      return;
+    }
+    super.$activateDeferredSSR(state);
+  }
+
+  [LAZY_HYDRATION_ACTIVATE](
+    state: Record<string, unknown> | undefined,
+  ): void {
+    // Call virtually so an authored override that instruments or extends the
+    // protected activation hook retains its existing behavior.
+    this.$activateDeferredSSR(state);
+  }
+
+  override disconnectedCallback(): void {
+    disconnectLazyHydration(this);
+    super.disconnectedCallback();
+  }
+
   protected override $observableNames(): Set<string> {
     return getObservableNames(this.constructor as Function);
   }

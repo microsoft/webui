@@ -108,6 +108,48 @@ lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
 
+### Component-level lazy hydration
+
+Large pages can keep authored SSR components dormant until they approach the
+viewport:
+
+```ts
+export class ProductCard extends WebUIElement {
+  static lazy = true;
+
+  // Decorators, events, and lifecycle code work normally after activation.
+}
+
+ProductCard.define('product-card');
+```
+
+The server-rendered DOM remains visible and unchanged. One shared
+`IntersectionObserver` activates instances within 200px of the viewport. On
+browsers with `scrollMargin`, WebUI uses a 200px scroll margin and zero root
+margin so nested scroll containers get the same lead without doubling the
+document margin. Older observers use a 200px root margin and activate through
+nested scrollers at their clip boundary. A shared capture listener activates a
+pending component before pointer, focus, keyboard, or click handling. Nested,
+slotted, and shadow-contained lazy components activate parent-first.
+
+Only SSR instances defer. Client-created elements mount immediately, and
+browsers without `IntersectionObserver` use eager hydration. State written after
+an instance defers is preserved and replayed synchronously after its bindings
+are wired. Ordinary bootstrap values are copied into component-local state
+before the page-wide handoff can be released. Mixed bindings preserve trusted
+SSR text across later updates when another dependency was intentionally omitted
+from bootstrap state; an explicit `undefined` is instead treated as supplied
+state. After delayed disconnect teardown, structural templates remount from
+current component state on reconnect. In progressive streaming mode, the
+boundary can commit and release its scaffolding while a lazy root remains
+dormant; the root retains its boundary-local state and accepts later streamed
+patches until activation.
+
+Visible activation batches run immediately while they stay below an 8ms budget.
+Larger batches continue in user-visible scheduler tasks, with a
+`MessageChannel` fallback, to avoid creating a long main-thread task. Each
+parent-first activation is budgeted and failures are isolated.
+
 ### Build with the WebUI plugin
 
 ```bash
@@ -184,17 +226,17 @@ development-only and is dead-code-eliminated from production bundles via the
 Override the protected `hydratedCallback()` hook for work that requires the
 component's bindings, events, and `w-ref` references to be ready. It runs
 synchronously exactly once after the first successful ordinary SSR hydration,
-client-created mount, deferred streamed activation, or dormant static-host wake.
-Its once-latch is set before author code runs, so a thrown callback is not
-retried on reconnect.
+client-created mount, lazy activation, deferred streamed activation, or dormant
+static-host wake. Its once-latch is set before author code runs, so a thrown
+callback is not retried on reconnect.
 
 `connectedCallback()` remains a native per-connection lifecycle. On ordinary
 SSR and client-created mounts, `super.connectedCallback()` hydrates
-synchronously, but a streamed `data-ws` root returns while still deferred and
-hydrates only when its boundary commits. Therefore `connectedCallback()` cannot
-be used as a universal post-hydration signal. Descendants must not structurally
-mutate a containing component's SSR subtree before it hydrates, because
-hydration relies on stable compiled paths.
+synchronously, but a lazy root or streamed `data-ws` root can return while still
+deferred. Therefore `connectedCallback()` cannot be used as a universal
+post-hydration signal. Descendants must not structurally mutate a containing
+component's SSR subtree before it hydrates, because hydration relies on stable
+compiled paths.
 
 ### DOM strategy (`--dom`)
 
@@ -223,6 +265,7 @@ Base class for framework components.
 
 | Member | Purpose |
 |--------|---------|
+| `static lazy` | Set to `true` to hydrate SSR instances near the viewport |
 | `static define(tagName)` | Register the class as a custom element |
 | `protected hydratedCallback()` | Run once after the first successful hydration or client mount |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |
@@ -852,9 +895,14 @@ The runtime exposes hydration timing via the Performance API:
 
 ```ts
 window.addEventListener('webui:hydration-complete', () => {
-  console.log('All initial framework components are hydrated.');
+  console.log('The startup hydration cohort is complete.');
 });
 ```
+
+Parser-startup lazy components hold this event only through their first
+intersection result. Initially visible roots finish first; dormant roots do not
+hold the one-shot event open or redispatch it later. Use `hydratedCallback()`
+for instance readiness.
 
 ---
 

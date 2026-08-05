@@ -60,6 +60,32 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
+For a component repeated far beyond the initial viewport, opt into per-instance
+lazy hydration:
+
+```typescript
+export class TodoRow extends WebUIElement {
+  static lazy = true;
+
+  @attr label = '';
+  @observable completed = false;
+}
+
+TodoRow.define('todo-row');
+```
+
+SSR content remains visible. A shared observer hydrates rows within 200px of the
+viewport, including nested scroll-container lead distance where `scrollMargin`
+is supported; older observers activate nested items at the scroller's clip
+boundary. Interaction or focus wakes an offscreen instance synchronously,
+client-created rows stay eager, and missing `IntersectionObserver` support
+falls back to eager hydration. Use `hydratedCallback()` rather than
+`connectedCallback()` for setup that requires bindings, events, or `w-ref`,
+because a lazy `connectedCallback()` returns before hydration.
+
+See [Hydration](/guide/concepts/hydration#lazy-authored-components) for state
+replay, streaming, scheduling, and fallback details.
+
 The matching template (`my-counter.html`):
 
 ```html
