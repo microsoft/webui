@@ -622,15 +622,6 @@ fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBu
     let normalized_output = normalize_path(&absolute_output);
     let normalized_root = normalize_path(root);
 
-    if normalized_output
-        .symlink_metadata()
-        .is_ok_and(|metadata| metadata.file_type().is_symlink())
-    {
-        return Err(format!(
-            "refusing to clean symlinked export output directory: {}",
-            normalized_output.display()
-        ));
-    }
     if !output_is_absolute && !normalized_output.starts_with(&normalized_root) {
         return Err(format!(
             "relative export output must remain within the workspace: {}",
@@ -646,6 +637,20 @@ fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBu
             normalized_output.display()
         ));
     }
+    let symlink_boundary = if output_is_absolute {
+        normalized_root
+            .ancestors()
+            .find(|ancestor| normalized_output.starts_with(ancestor))
+            .unwrap_or(normalized_root.as_path())
+    } else {
+        normalized_root.as_path()
+    };
+    if let Some(symlink) = find_symlinked_path_component(&normalized_output, symlink_boundary)? {
+        return Err(format!(
+            "refusing to clean export output through symlinked path component: {}",
+            symlink.display()
+        ));
+    }
     if normalized_output.is_file() {
         return Err(format!(
             "export output path is a file: {}",
@@ -654,6 +659,31 @@ fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBu
     }
 
     Ok(normalized_output)
+}
+
+fn find_symlinked_path_component(
+    path: &Path,
+    trusted_boundary: &Path,
+) -> Result<Option<PathBuf>, String> {
+    for component_path in path.ancestors() {
+        if component_path == trusted_boundary {
+            break;
+        }
+        match component_path.symlink_metadata() {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Ok(Some(component_path.to_path_buf()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect export output path {}: {error}",
+                    component_path.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -1773,6 +1803,26 @@ mod tests {
 
         assert!(error.contains("must remain within the workspace"));
         assert!(sibling.join("keep.txt").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_native_targets_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::TempDir::new().expect("parent should be created");
+        let root = parent.path().join("workspace");
+        let external = parent.path().join("external");
+        fs::create_dir_all(&root).expect("workspace should be created");
+        fs::create_dir_all(&external).expect("external directory should be created");
+        fs::write(external.join("keep.txt"), "keep").expect("fixture should be written");
+        symlink(&external, root.join("artifacts")).expect("symlink should be created");
+
+        let error = export_native_targets(&root, Path::new("artifacts/stage"), &[])
+            .expect_err("symlinked ancestor should be rejected");
+
+        assert!(error.contains("symlinked path component"));
+        assert!(external.join("keep.txt").is_file());
     }
 
     #[test]
