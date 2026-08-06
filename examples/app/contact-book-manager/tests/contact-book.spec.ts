@@ -80,6 +80,19 @@ test.describe('SSR pages', () => {
   });
 });
 
+test.describe('SSR without JavaScript', () => {
+  test.use({ javaScriptEnabled: false });
+
+  test('dashboard installs routed Light styles in the app ShadowRoot', async ({ page }) => {
+    await page.goto('/');
+
+    const card = page.locator('cb-page-dashboard cb-contact-card .card').first();
+    await expect(card).toBeVisible();
+    await expect(card).toHaveCSS('display', 'flex');
+    await expect(card).toHaveCSS('align-items', 'center');
+  });
+});
+
 // ── Navigation tests ──────────────────────────────────────────────
 
 test.describe('client-side navigation', () => {
