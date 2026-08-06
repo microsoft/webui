@@ -36,6 +36,18 @@ pub(crate) fn streaming_boundary_error(signal: &str, reason: &str) -> HandlerErr
     }))
 }
 
+#[cold]
+#[inline(never)]
+pub(super) fn component_style_payload_resources_missing_error() -> HandlerError {
+    HandlerError::Invariant("component style payload resources are missing".to_string())
+}
+
+#[cold]
+#[inline(never)]
+pub(super) fn component_style_inventory_error(reason: &'static str) -> HandlerError {
+    HandlerError::Invariant(reason.to_string())
+}
+
 /// A streamed component host (`streaming_root:<tag>`) was authored outside any
 /// `<boundary>`. Such a host can never be progressively activated, so the
 /// streaming render fails with an actionable structured error instead of

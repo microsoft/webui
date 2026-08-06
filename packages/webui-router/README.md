@@ -513,6 +513,12 @@ Accept: application/x-ndjson, application/json
 X-WebUI-Inventory: <hex bitmask>
 ```
 
+The inventory tracks component template and style metadata together. Partial
+responses therefore omit CSS definitions and closures that the client has
+already registered; a new closure may reference an existing shared resource
+without transmitting that resource again. If a closure dependency is not in
+the incoming inventory, its resource definition is sent with the new root.
+
 The server should return:
 
 - **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ componentStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON

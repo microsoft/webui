@@ -710,9 +710,9 @@ When `Accept: application/json` or `application/x-ndjson`:
 | Field | Description |
 |-------|-------------|
 | `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
-| `componentStyles` | Required versioned CSS resources and ordered CSS-tree closures |
+| `componentStyles` | Required versioned CSS resource and closure delta; a shared resource is omitted only when the incoming inventory proves it was already registered |
 | `templates` | Client template payloads filtered by inventory bitmask |
-| `inventory` | Updated hex bitmask of loaded templates |
+| `inventory` | Updated hex bitmask of loaded component template and style metadata |
 | `path` | The matched request path |
 | `chain` | Matched route chain - one entry per nesting level |
 | `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
@@ -728,7 +728,7 @@ custom-element registration, not by a server `client` flag.
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates the client already has — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata the client already has - server skips re-sending it |
 
 ### Full HTML (initial load)
 

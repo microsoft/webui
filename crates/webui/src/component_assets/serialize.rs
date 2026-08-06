@@ -300,7 +300,7 @@ fn push_style_closures(
     plan: &AssetGraphPlan,
     protocol: &WebUIProtocol,
 ) -> Result<(), WebUIError> {
-    for (index, component) in pending.required_components.iter().copied().enumerate() {
+    for (index, component) in pending.components.iter().copied().enumerate() {
         if index > 0 {
             out.push(',');
         }

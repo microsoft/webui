@@ -328,6 +328,44 @@ pub(crate) fn collect_component_styles<'a>(
     protocol: &WebUIProtocol,
     roots: impl IntoIterator<Item = &'a str>,
 ) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(protocol, roots, None)
+}
+
+#[derive(Clone, Copy)]
+struct ComponentInventoryView<'a> {
+    bits: &'a [u8],
+    index: &'a HashMap<String, u32>,
+}
+
+impl ComponentInventoryView<'_> {
+    fn contains(self, tag: &str) -> bool {
+        self.index
+            .get(tag)
+            .is_some_and(|&index| has_component(self.bits, index))
+    }
+}
+
+pub(crate) fn collect_component_style_delta<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    client_inventory: &[u8],
+    component_index: &HashMap<String, u32>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(
+        protocol,
+        roots,
+        Some(ComponentInventoryView {
+            bits: client_inventory,
+            index: component_index,
+        }),
+    )
+}
+
+fn collect_component_styles_inner<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    client_inventory: Option<ComponentInventoryView<'_>>,
+) -> Result<Value, HandlerError> {
     if protocol.style_closures.is_empty() {
         if protocol
             .components
@@ -368,25 +406,27 @@ pub(crate) fn collect_component_styles<'a>(
                     "component style closure `{root}` references missing resource `{tag}`"
                 ))
             })?;
-            resources.entry(tag.clone()).or_insert_with(|| {
-                let mut entry = serde_json::Map::new();
-                match protocol.css_strategy() {
-                    webui_protocol::CssStrategy::Link => {
-                        entry.insert("kind".into(), Value::String("link".into()));
-                        entry.insert("href".into(), Value::String(resource.to_owned()));
+            if client_inventory.is_none_or(|inventory| !inventory.contains(tag)) {
+                resources.entry(tag.clone()).or_insert_with(|| {
+                    let mut entry = serde_json::Map::new();
+                    match protocol.css_strategy() {
+                        webui_protocol::CssStrategy::Link => {
+                            entry.insert("kind".into(), Value::String("link".into()));
+                            entry.insert("href".into(), Value::String(resource.to_owned()));
+                        }
+                        webui_protocol::CssStrategy::Style => {
+                            entry.insert("kind".into(), Value::String("style".into()));
+                            entry.insert("css".into(), Value::String(resource.to_owned()));
+                        }
+                        webui_protocol::CssStrategy::Module => {
+                            entry.insert("kind".into(), Value::String("module".into()));
+                            entry.insert("specifier".into(), Value::String(tag.clone()));
+                            entry.insert("css".into(), Value::String(resource.to_owned()));
+                        }
                     }
-                    webui_protocol::CssStrategy::Style => {
-                        entry.insert("kind".into(), Value::String("style".into()));
-                        entry.insert("css".into(), Value::String(resource.to_owned()));
-                    }
-                    webui_protocol::CssStrategy::Module => {
-                        entry.insert("kind".into(), Value::String("module".into()));
-                        entry.insert("specifier".into(), Value::String(tag.clone()));
-                        entry.insert("css".into(), Value::String(resource.to_owned()));
-                    }
-                }
-                Value::Object(entry)
-            });
+                    Value::Object(entry)
+                });
+            }
             ordered.push(Value::String(tag.clone()));
         }
         closures.insert(root.to_owned(), Value::Array(ordered));
@@ -1252,6 +1292,21 @@ pub fn filter_needed_components(
     inventory_hex: &str,
     index: &HashMap<String, u32>,
 ) -> Result<(Vec<String>, String), HandlerError> {
+    let filtered = filter_components_with_inventory(component_names, inventory_hex, index)?;
+    Ok((filtered.needed, filtered.updated_inventory))
+}
+
+struct FilteredComponents {
+    needed: Vec<String>,
+    updated_inventory: String,
+    client_inventory: Vec<u8>,
+}
+
+fn filter_components_with_inventory(
+    component_names: &[String],
+    inventory_hex: &str,
+    index: &HashMap<String, u32>,
+) -> Result<FilteredComponents, HandlerError> {
     let client_inv = parse_inventory(inventory_hex)?;
     let mut updated_inv = client_inv.clone();
 
@@ -1270,7 +1325,11 @@ pub fn filter_needed_components(
         }
     }
 
-    Ok((needed, encode_inventory(&updated_inv)))
+    Ok(FilteredComponents {
+        needed,
+        updated_inventory: encode_inventory(&updated_inv),
+        client_inventory: client_inv,
+    })
 }
 
 fn has_template_payload(component: &webui_protocol::ComponentData) -> bool {
@@ -2065,8 +2124,8 @@ fn render_partial_indexed_with_state<'a>(
     let state_selection =
         crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
 
-    let (needed_names, updated_inv) =
-        filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
+    let filtered =
+        filter_components_with_inventory(&component_ids, inventory_hex, index.component_index)?;
 
     // Resolve cache tags and invalidation templates with accumulated params.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -2081,19 +2140,8 @@ fn render_partial_indexed_with_state<'a>(
         all_resolved_tags.extend(entry.cache_tags.iter().cloned());
     }
 
-    let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
-    let mut style_root_refs = Vec::with_capacity(component_ids.len() + chain.len() * 3);
-    style_root_refs.extend(component_ids.iter().map(String::as_str));
-    for entry in &chain {
-        style_root_refs.push(entry.component.as_str());
-        if !entry.pending_component.is_empty() {
-            style_root_refs.push(entry.pending_component.as_str());
-        }
-        if !entry.error_component.is_empty() {
-            style_root_refs.push(entry.error_component.as_str());
-        }
-    }
-    let assets = collect_component_assets(protocol, &tag_refs, &style_root_refs, index)?;
+    let tag_refs: Vec<&str> = filtered.needed.iter().map(String::as_str).collect();
+    let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
@@ -2101,7 +2149,10 @@ fn render_partial_indexed_with_state<'a>(
     result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
-    result.insert("inventory".into(), Value::String(updated_inv));
+    result.insert(
+        "inventory".into(),
+        Value::String(filtered.updated_inventory),
+    );
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
     if !all_resolved_tags.is_empty() {
@@ -2226,18 +2277,20 @@ fn render_component_templates_indexed(
         .filter(|s| seen.insert(**s))
         .map(|s| (*s).to_string())
         .collect();
-    let (needed, updated_inv) =
-        filter_needed_components(&requested, inventory_hex, index.component_index)?;
+    let filtered =
+        filter_components_with_inventory(&requested, inventory_hex, index.component_index)?;
 
-    let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
-    let requested_refs: Vec<&str> = requested.iter().map(String::as_str).collect();
-    let assets = collect_component_assets(protocol, &tag_refs, &requested_refs, index)?;
+    let tag_refs: Vec<&str> = filtered.needed.iter().map(String::as_str).collect();
+    let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let mut result = serde_json::Map::with_capacity(4);
     result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
-    result.insert("inventory".into(), Value::String(updated_inv));
+    result.insert(
+        "inventory".into(),
+        Value::String(filtered.updated_inventory),
+    );
     Ok(Value::Object(result))
 }
 
@@ -2245,10 +2298,15 @@ fn render_component_templates_indexed(
 fn collect_component_assets(
     protocol: &WebUIProtocol,
     tags: &[&str],
-    style_roots: &[&str],
+    client_inventory: &[u8],
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<ComponentAssets, HandlerError> {
-    let component_styles = collect_component_styles(protocol, style_roots.iter().copied())?;
+    let component_styles = collect_component_style_delta(
+        protocol,
+        tags.iter().copied(),
+        client_inventory,
+        index.component_index,
+    )?;
     let mut tmpl_map = serde_json::Map::new();
     let mut function_map = serde_json::Map::new();
 
@@ -3646,9 +3704,14 @@ mod tests {
             render_partial_metadata(&protocol, "index.html", "/", inventory, &mut index).unwrap();
         assert!(repeated["templates"].as_object().unwrap().is_empty());
         assert_eq!(
-            repeated["componentStyles"]["closures"]["my-page"],
-            serde_json::json!(["my-page"]),
-            "style metadata is independent from template definition inventory"
+            repeated["componentStyles"]["resources"],
+            serde_json::json!({}),
+            "inventoried style definitions must not be retransmitted"
+        );
+        assert_eq!(
+            repeated["componentStyles"]["closures"],
+            serde_json::json!({}),
+            "inventoried style closures must not be retransmitted"
         );
     }
 
@@ -3806,7 +3869,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_partial_sends_styles_even_when_templates_filtered_by_inventory() {
+    fn test_render_partial_filters_styles_with_template_inventory() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -3838,8 +3901,6 @@ mod tests {
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
-        // Component style metadata is independent from template inventory so
-        // the client can deduplicate definitions against the owning Document.
         let partial2 =
             render_partial_metadata(&protocol, "index.html", "/", inv, &mut index).unwrap();
         let templates = partial2["templates"]
@@ -3851,12 +3912,71 @@ mod tests {
             "templates should be empty when inventory is full"
         );
         assert_eq!(
-            partial2["componentStyles"]["resources"]["my-page"],
-            serde_json::json!({
-                "kind": "module",
-                "specifier": "my-page",
-                "css": ".page{color:red}"
-            })
+            partial2["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            partial2["componentStyles"]["closures"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn component_style_delta_sends_missing_and_reuses_registered_closure_resources() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["page-b", "shared-card"] {
+            protocol.fragments.insert(
+                tag.to_string(),
+                FragmentList {
+                    fragments: Vec::new(),
+                },
+            );
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.style_closures.insert(
+            "page-b".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["page-b".to_string(), "shared-card".to_string()],
+            },
+        );
+        protocol.style_closures.insert(
+            "shared-card".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["shared-card".to_string()],
+            },
+        );
+        let mut index = ProtocolIndex::new(&protocol);
+
+        let first_page =
+            render_component_templates(&protocol, &["page-b"], "", &mut index).unwrap();
+        assert!(first_page["componentStyles"]["resources"]["page-b"].is_object());
+        assert!(
+            first_page["componentStyles"]["resources"]["shared-card"].is_object(),
+            "a missing closure dependency must be sent with its new root"
+        );
+
+        let shared =
+            render_component_templates(&protocol, &["shared-card"], "", &mut index).unwrap();
+        let shared_inventory = shared["inventory"].as_str().unwrap_or_default();
+        let page = render_component_templates(&protocol, &["page-b"], shared_inventory, &mut index)
+            .unwrap();
+        assert_eq!(
+            page["componentStyles"]["closures"]["page-b"],
+            serde_json::json!(["page-b", "shared-card"])
+        );
+        assert!(page["componentStyles"]["resources"]["page-b"].is_object());
+        assert!(
+            page["componentStyles"]["resources"]
+                .get("shared-card")
+                .is_none(),
+            "a resource already covered by inventory must not be retransmitted"
         );
     }
 
@@ -4253,8 +4373,12 @@ mod tests {
             render_component_templates(&protocol, &["my-dialog"], inv, &mut index).unwrap();
         assert_eq!(result2["templates"].as_object().unwrap().len(), 0);
         assert_eq!(
-            result2["componentStyles"]["closures"]["my-dialog"],
-            serde_json::json!(["my-dialog"])
+            result2["componentStyles"]["closures"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            result2["componentStyles"]["resources"],
+            serde_json::json!({})
         );
     }
 

@@ -10605,7 +10605,11 @@ mod tests {
     /// compiler-owned `streaming_root:<tag>` signal (optionally emitted) lands
     /// inside the tag, exactly as `HtmlParser` produces. Components `comp-a` and
     /// `comp-b` carry disjoint templates and disjoint hydration keys.
-    fn disjoint_streaming_protocol_ext(hosts: &[&str], emit_root_signal: bool) -> Protocol {
+    fn disjoint_streaming_protocol_ext(
+        hosts: &[&str],
+        emit_root_signal: bool,
+        include_styles: bool,
+    ) -> Protocol {
         let mut fragments = HashMap::new();
         let mut entry = vec![
             WebUIFragment::raw("<!DOCTYPE html><html><head>"),
@@ -10669,11 +10673,21 @@ mod tests {
                 ..Default::default()
             },
         );
+        if include_styles {
+            document.set_css_strategy(webui_protocol::CssStrategy::Style);
+            document.components.get_mut("comp-a").unwrap().css = ".comp-a{color:red}".to_string();
+            document.components.get_mut("comp-b").unwrap().css = ".comp-b{color:blue}".to_string();
+            document.populate_style_closures(&["index.html"]);
+        }
         Protocol::new(document)
     }
 
     fn disjoint_streaming_protocol(hosts: &[&str]) -> Protocol {
-        disjoint_streaming_protocol_ext(hosts, true)
+        disjoint_streaming_protocol_ext(hosts, true, false)
+    }
+
+    fn styled_disjoint_streaming_protocol(hosts: &[&str]) -> Protocol {
+        disjoint_streaming_protocol_ext(hosts, true, true)
     }
 
     fn streaming_plan_validation_protocol(signals: &[&str], names: &[&str]) -> Protocol {
@@ -11178,8 +11192,8 @@ mod tests {
     fn streaming_root_signal_preserves_ordinary_output_bytes() {
         // Ordinary rendering ignores `streaming_root` byte-for-byte: identical
         // output with and without the signal, and never a `data-ws` attribute.
-        let with_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], true);
-        let without_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], false);
+        let with_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], true, false);
+        let without_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], false, false);
         let state = test_json!({ "a_count": 1, "b_count": 2 });
         let plugin = || {
             WebUIHandler::with_plugin(
@@ -11766,6 +11780,71 @@ mod tests {
 
         // Server-only state never leaks into any envelope.
         assert!(!writer.output.contains("serverOnly"));
+    }
+
+    #[test]
+    fn streaming_checkpoints_emit_style_resources_and_closures_once() {
+        let protocol = styled_disjoint_streaming_protocol(&["comp-a", "comp-b", "comp-a"]);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({ "a_count": 1, "b_count": 2 }),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let segment = |index: usize| -> &str {
+            let start = if index == 0 {
+                0
+            } else {
+                writer.flushes[index - 1]
+            };
+            &writer.output[start..writer.flushes[index]]
+        };
+        let checkpoint_styles = |checkpoint: &str| -> Value {
+            let script = checkpoint
+                .rfind(r#"<script type="application/json" data-webui-boundary"#)
+                .unwrap();
+            let payload_start = script + checkpoint[script..].find('>').unwrap() + 1;
+            let payload_end =
+                payload_start + checkpoint[payload_start..].find("</script>").unwrap();
+            let record: Value =
+                serde_json::from_str(&checkpoint[payload_start..payload_end]).unwrap();
+            record[4]["componentStyles"].clone()
+        };
+
+        let first = checkpoint_styles(segment(0));
+        assert!(first["resources"]["comp-a"].is_object());
+        assert!(first["resources"]["comp-b"].is_object());
+        assert!(first["closures"]["index.html"].is_array());
+        assert!(first["closures"]["comp-a"].is_array());
+
+        let second = checkpoint_styles(segment(1));
+        assert_eq!(second["resources"], test_json!({}));
+        assert_eq!(second["closures"], test_json!({ "comp-b": ["comp-b"] }));
+
+        let repeated = checkpoint_styles(segment(2));
+        assert_eq!(repeated["resources"], test_json!({}));
+        assert_eq!(repeated["closures"], test_json!({}));
+        for resource in ["comp-a", "comp-b"] {
+            assert_eq!(
+                [&first, &second, &repeated]
+                    .iter()
+                    .filter(|styles| {
+                        styles["resources"]
+                            .as_object()
+                            .is_some_and(|resources| resources.contains_key(resource))
+                    })
+                    .count(),
+                1,
+                "{resource} style metadata was serialized more than once"
+            );
+        }
     }
 
     #[test]

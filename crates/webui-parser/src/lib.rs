@@ -2492,7 +2492,9 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
-        let (html_content, css_content) = {
+        let needs_template_build = !self.fragment_records.contains_key(element.name());
+        let cached_dom_analysis = self.component_dom_analyses.get(element.name()).copied();
+        let (dom_analysis, template_source) = {
             let component = self.component_registry.get(element.name()).ok_or_else(|| {
                 self.authoring_error_at(
                     codes::UNKNOWN_COMPONENT,
@@ -2502,11 +2504,22 @@ impl HtmlParser {
                 .help(self.unknown_component_help(element.name()))
             })?;
             (
-                component.html_content.clone(),
-                component.css_content.clone(),
+                cached_dom_analysis.map_or_else(
+                    || analyze_component_dom(element.name(), &component.html_content),
+                    Ok,
+                )?,
+                needs_template_build.then(|| {
+                    (
+                        component.html_content.clone(),
+                        component.css_content.clone(),
+                    )
+                }),
             )
         };
-        let dom_analysis = self.analyze_component_dom(element.name(), &html_content)?;
+        if cached_dom_analysis.is_none() {
+            self.component_dom_analyses
+                .insert(element.name().to_string(), dom_analysis);
+        }
 
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
@@ -2542,7 +2555,7 @@ impl HtmlParser {
 
         self.flush_raw_buffer(fragments);
 
-        if !self.fragment_records.contains_key(element.name()) {
+        if let Some((html_content, css_content)) = template_source {
             let built = self.build_component_templates(
                 element.name(),
                 &html_content,

@@ -16,6 +16,7 @@ class FakeElement {
   href = '';
   nonce = '';
   textContent = '';
+  removed = false;
   private readonly attributes = new Map<string, string>();
 
   setAttribute(name: string, value: string): void {
@@ -26,27 +27,35 @@ class FakeElement {
     return this.attributes.get(name) ?? null;
   }
 
-  remove(): void {}
+  remove(): void {
+    this.removed = true;
+  }
 }
 
 class FakeParent {
-  readonly children: FakeElement[] = [];
+  private readonly childElements: FakeElement[] = [];
+  markerScans = 0;
+
+  get children(): FakeElement[] {
+    this.markerScans++;
+    return this.childElements;
+  }
 
   querySelectorAll(): FakeElement[] {
-    return this.children.filter(child =>
+    return this.childElements.filter(child =>
       child.getAttribute('data-webui-resource') !== null
     );
   }
 
   appendChild(child: FakeElement): FakeElement {
-    this.children.push(child);
+    this.childElements.push(child);
     return child;
   }
 
   insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
-    const index = before ? this.children.indexOf(before) : -1;
-    if (index < 0) this.children.push(child);
-    else this.children.splice(index, 0, child);
+    const index = before ? this.childElements.indexOf(before) : -1;
+    if (index < 0) this.childElements.push(child);
+    else this.childElements.splice(index, 0, child);
     return child;
   }
 }
@@ -105,6 +114,25 @@ describe('component style resources', () => {
     assert.deepEqual(
       children.map(child => child.getAttribute('data-webui-resource')),
       ['second', 'first'],
+    );
+  });
+
+  test('installs around existing markers synchronously and caches the completed closure', () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    const second = new FakeElement();
+    second.setAttribute('data-webui-resource', 'second');
+    parent.appendChild(second);
+    registerComponentStyles(styles({ root: ['first', 'second'] }), document);
+
+    assert.equal(installComponentStyles('root', root), undefined);
+    assert.equal(parent.markerScans, 1);
+    assert.equal(installComponentStyles('root', root), undefined);
+    assert.equal(parent.markerScans, 1, 'a completed closure should not rescan markers');
+    assert.deepEqual(
+      parent.children.map(child => child.getAttribute('data-webui-resource')),
+      ['first', 'second'],
     );
   });
 
@@ -169,6 +197,12 @@ describe('component style resources', () => {
     const document = fakeDocument();
     registerComponentStyles(styles({ root: ['first'] }), document);
 
+    assert.doesNotThrow(() => registerComponentStyles({
+      version: 1,
+      strategy: 'style',
+      resources: { first: { css: '.first{}', kind: 'style' } },
+      closures: { root: ['first'] },
+    }, document));
     assert.throws(() => registerComponentStyles({
       version: 1,
       strategy: 'style',
@@ -186,6 +220,9 @@ describe('component style resources', () => {
     const unrelated = {} as CSSStyleSheet;
     const componentSheet = {} as CSSStyleSheet;
     root.adoptedStyleSheets = [unrelated];
+    const marker = new FakeElement();
+    marker.setAttribute('data-webui-resource', 'module');
+    (root as unknown as FakeParent).appendChild(marker);
     registerComponentStyles({
       version: 1,
       strategy: 'module',
@@ -202,17 +239,64 @@ describe('component style resources', () => {
         : Promise.resolve({ default: componentSheet });
     });
 
-    await assert.rejects(installComponentStyles('root', root));
-    await installComponentStyles('root', root);
+    const failedInstall = installComponentStyles('root', root);
+    assert.ok(failedInstall);
+    await assert.rejects(failedInstall);
+    assert.equal(marker.removed, false);
+    const retry = installComponentStyles('root', root);
+    assert.ok(retry);
+    await retry;
     setCssModuleLoaderForTests();
 
     assert.equal(attempts, 2);
     assert.deepEqual(root.adoptedStyleSheets, [unrelated, componentSheet]);
+    assert.equal(marker.removed, true);
 
     const importMaps = (document.head as unknown as FakeParent).children.filter(
       (child) => (child as unknown as { type: string }).type === 'importmap',
     );
     assert.equal(importMaps.length, 1);
+  });
+
+  test('keeps a successful Module prefix and retries only the rejected suffix', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const dependencySheet = {} as CSSStyleSheet;
+    const componentSheet = {} as CSSStyleSheet;
+    registerComponentStyles({
+      version: 1,
+      strategy: 'module',
+      resources: {
+        dependency: { kind: 'module', specifier: 'dependency', css: '.dependency{}' },
+        component: { kind: 'module', specifier: 'component', css: '.component{}' },
+      },
+      closures: { component: ['dependency', 'component'] },
+    }, document);
+    const loaded: string[] = [];
+    let componentAttempts = 0;
+    setCssModuleLoaderForTests((specifier) => {
+      loaded.push(specifier);
+      if (specifier === 'dependency') {
+        return Promise.resolve({ default: dependencySheet });
+      }
+      componentAttempts++;
+      return componentAttempts === 1
+        ? Promise.reject(new Error('component failed'))
+        : Promise.resolve({ default: componentSheet });
+    });
+
+    const failedInstall = installComponentStyles('component', root);
+    assert.ok(failedInstall);
+    await assert.rejects(failedInstall);
+    assert.deepEqual(root.adoptedStyleSheets, [dependencySheet]);
+
+    const retry = installComponentStyles('component', root);
+    assert.ok(retry);
+    await retry;
+    setCssModuleLoaderForTests();
+
+    assert.deepEqual(loaded, ['dependency', 'component', 'component']);
+    assert.deepEqual(root.adoptedStyleSheets, [dependencySheet, componentSheet]);
   });
 
   test('loads and adopts Module resources in closure order', async () => {
@@ -238,6 +322,66 @@ describe('component style resources', () => {
 
     assert.deepEqual(loaded, ['dependency', 'component']);
     assert.equal(root.adoptedStyleSheets.length, 2);
+  });
+
+  test('starts Module loads concurrently, dedupes pending loads, and adopts once in closure order', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const dependencySheet = {} as CSSStyleSheet;
+    const componentSheet = {} as CSSStyleSheet;
+    registerComponentStyles({
+      version: 1,
+      strategy: 'module',
+      resources: {
+        dependency: { kind: 'module', specifier: 'dependency', css: '.dependency{}' },
+        component: { kind: 'module', specifier: 'component', css: '.component{}' },
+      },
+      closures: { component: ['dependency', 'component'] },
+    }, document);
+
+    let adopted: CSSStyleSheet[] = [];
+    let assignments = 0;
+    Object.defineProperty(root, 'adoptedStyleSheets', {
+      get: () => adopted,
+      set: (value: CSSStyleSheet[]) => {
+        assignments++;
+        adopted = value;
+      },
+      configurable: true,
+    });
+    const loaded: string[] = [];
+    const resolvers = new Map<
+      string,
+      (module: { default: CSSStyleSheet }) => void
+    >();
+    setCssModuleLoaderForTests((specifier) => {
+      loaded.push(specifier);
+      return new Promise(resolve => {
+        resolvers.set(specifier, resolve);
+      });
+    });
+
+    const firstInstall = installComponentStyles('component', root);
+    const duplicateInstall = installComponentStyles('component', root);
+    assert.ok(firstInstall);
+    assert.ok(duplicateInstall);
+    assert.deepEqual(loaded, ['dependency', 'component']);
+
+    const resolveComponent = resolvers.get('component');
+    const resolveDependency = resolvers.get('dependency');
+    assert.ok(resolveComponent);
+    assert.ok(resolveDependency);
+    resolveComponent({ default: componentSheet });
+    await Promise.resolve();
+    assert.deepEqual(adopted, []);
+    resolveDependency({ default: dependencySheet });
+
+    await Promise.all([firstInstall, duplicateInstall]);
+    setCssModuleLoaderForTests();
+
+    assert.deepEqual(adopted, [dependencySheet, componentSheet]);
+    assert.equal(assignments, 1);
+    assert.equal(installComponentStyles('component', root), undefined);
   });
 
   test('installs one import map per Module specifier per Document', async () => {

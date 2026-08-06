@@ -15,9 +15,11 @@ import {
 } from './asset.js';
 import {
   hasRegisteredComponentStyleResource,
-  registerComponentStyles,
+  registerPreparedComponentStyles,
   requireComponentStyles,
+  sameComponentStyleResource,
   validateComponentStylesRegistration,
+  type ComponentStyleResource,
   type ComponentStyles,
 } from '../element/styles.js';
 
@@ -122,7 +124,7 @@ function prepareComponentPayload(asset: ComponentAsset): PreparedComponentAsset 
 }
 
 function registerComponentResources(prepared: PreparedComponentAsset): void {
-  registerComponentStyles(prepared.componentStyles);
+  registerPreparedComponentStyles(prepared.componentStyles);
 }
 
 function registerComponentTemplates(prepared: PreparedComponentAsset): void {
@@ -132,8 +134,8 @@ function registerComponentTemplates(prepared: PreparedComponentAsset): void {
 }
 
 function validatePreparedGraph(graph: readonly PreparedComponentAsset[]): void {
-  const resourceKeys = new Map<string, string>();
-  const closures = new Map<string, string>();
+  const resources = new Map<string, ComponentStyleResource>();
+  const closures = new Map<string, readonly string[]>();
   const provided = new Set<string>();
   for (let i = 0; i < graph.length; i++) {
     const prepared = graph[i];
@@ -141,20 +143,23 @@ function validatePreparedGraph(graph: readonly PreparedComponentAsset[]): void {
     for (const component of prepared.asset.components) provided.add(component);
     const styles = prepared.componentStyles;
     for (const id of Object.keys(styles.resources)) {
-      const key = JSON.stringify(styles.resources[id]);
-      const current = resourceKeys.get(id);
-      if (current !== undefined && current !== key) {
+      const resource = styles.resources[id];
+      const current = resources.get(id);
+      if (current && !sameComponentStyleResource(current, resource)) {
         throw new Error(`[WebUI] Conflicting component style resource "${id}".`);
       }
-      resourceKeys.set(id, key);
+      resources.set(id, resource);
     }
     for (const root of Object.keys(styles.closures)) {
-      const key = JSON.stringify(styles.closures[root]);
+      const closure = styles.closures[root];
       const current = closures.get(root);
-      if (current !== undefined && current !== key) {
+      if (current && (
+        current.length !== closure.length ||
+        current.some((id, index) => id !== closure[index])
+      )) {
         throw new Error(`[WebUI] Conflicting component style closure "${root}".`);
       }
-      closures.set(root, key);
+      closures.set(root, closure);
     }
   }
   for (let i = 0; i < graph.length; i++) {
@@ -162,7 +167,7 @@ function validatePreparedGraph(graph: readonly PreparedComponentAsset[]): void {
     for (const root of Object.keys(styles.closures)) {
       for (const id of styles.closures[root]) {
         if (
-          !resourceKeys.has(id) &&
+          !resources.has(id) &&
           !hasRegisteredComponentStyleResource(id)
         ) {
           throw new Error(

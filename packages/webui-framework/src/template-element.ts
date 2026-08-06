@@ -553,9 +553,12 @@ export class TemplateElement extends HTMLElement {
       : containingRoot.nodeType === 11 && 'host' in containingRoot
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
-    void installComponentStyles(this.localName, styleTarget).catch((error) => {
-      console.error(error);
-    });
+    const installation = installComponentStyles(this.localName, styleTarget);
+    if (installation) {
+      void installation.catch((error) => {
+        console.error(error);
+      });
+    }
   }
 
   disconnectedCallback(): void {

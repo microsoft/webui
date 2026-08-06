@@ -379,10 +379,10 @@ values into the response. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
-- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots. Module resources carry both their specifier and compiled CSS
+- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots, filtered by the same inventory bitmask as templates. A closure may omit a shared resource definition only when the incoming inventory bit proves that component's template and style metadata was already registered; uninventoried closure dependencies are transmitted with the new root. Module resources carry both their specifier and compiled CSS
 - `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
-- `inventory`: updated hex bitmask of loaded templates
+- `inventory`: updated hex bitmask of loaded component template and style metadata
 - `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
@@ -526,7 +526,7 @@ overlap with the invalidated tags.
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata already loaded - server skips re-sending it |
 
 The `chain` field is produced by `Protocol::render_partial()`, which walks the
 fragment graph and matches routes at each nesting level using request-local
@@ -1996,17 +1996,19 @@ contract rather than introduce a parallel one.
    payload binds the *emitter*; a reader ignores unrecognized terminal payload
    fields rather than halting a page that has already fully rendered (rule 21).
 3. **Self-sufficient records.** Given all prior records, a record carries
-   everything needed to commit itself: its own template delta, inventory delta,
-   and projected state. A record never forward-references a later one, so a
-   truncated response is always a prefix of a valid one.
+   everything needed to commit itself: its own template delta, component-style
+   closure delta, inventory delta, and projected state. A record never
+   forward-references a later one, so a truncated response is always a prefix of
+   a valid one.
 4. **Additive global merge; ordered island state.** Global handoff merges
    accumulate only:
    inventory bits are OR-ed, CSS/style lists are appended with deduplication,
-   templates are registered additively. No record may overwrite or invalidate
-   an earlier record's contribution. Boundary state is ephemeral and never
-   published to `window.__webui.state`. A state-update record is a shallow
-   patch applied in record order to one already-committed updatable boundary;
-   repeated writes to the same key are last-writer-wins.
+   component-style resources and closures are registered once, and templates
+   are registered additively. No record may overwrite or invalidate an earlier
+   record's contribution. Boundary state is ephemeral and never published to
+   `window.__webui.state`. A state-update record is a shallow patch applied in
+   record order to one already-committed updatable boundary; repeated writes to
+   the same key are last-writer-wins.
 5. **Identity is not placement.** A record never contains a selector, node
    path, or DOM position. Checkpoints carry the compiler-assigned integer
    boundary ID in `target`; state updates carry the same ID. The integer
@@ -2014,10 +2016,13 @@ contract rather than introduce a parallel one.
    range walk and never requires a document scan. Placement remains expressed
    only through the marker pair the browser's HTML parser materializes.
 6. **Boundary-local payload.** A record carries only the templates and state
-   reachable from its own roots. Boundary 0 must not contain metadata or state
-   reachable only from a later boundary. This requires a state-projection
-   manifest; without one the build falls back to full state and every
-   checkpoint costs `O(boundaries × full state)`, which the compiler reports as
+   reachable from its own roots. Boundary 0 must not contain template metadata
+   or state reachable only from a later boundary. Component-style closures
+   remain CSS-tree metadata: the first entry closure can include transitive
+   resources used by later boundaries, but each resource definition and closure
+   is serialized at most once per response. State locality requires a
+   state-projection manifest; without one the build falls back to full state and
+   every checkpoint costs `O(boundaries × full state)`, which the compiler reports as
    a `streaming-without-projection` warning.
 
 **Coordinator**
@@ -2491,7 +2496,8 @@ CSS delivery strategy is selected once per build and is not boundary-local.
 4. Passes the checkpoint-local projected state directly into component
    activation. It does not merge ephemeral state into `window.__webui.state`.
    Inventory deltas are ORed into the cumulative global bitmask; CSS/style
-   bookkeeping deltas are appended with deduplication.
+   bookkeeping deltas are appended with deduplication; component-style
+   resources and closures are registered only on first delivery.
 5. Hydrates outer roots before descendants. After each successful first
    hydration or mount, `hydratedCallback()` runs synchronously exactly once;
    reconnects and callback exceptions do not retry it.

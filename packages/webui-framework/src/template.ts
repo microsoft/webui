@@ -50,6 +50,7 @@ import {
 import {
   prepareComponentStyles,
   registerComponentStyles,
+  registerPreparedComponentStyles,
   validateComponentStylesRegistration,
   type ComponentStyles,
 } from './element/styles.js';
@@ -82,7 +83,9 @@ function acceptTemplateData(
 ): boolean {
   validateComponentStylesRegistration(componentStyles);
   prepareTemplateData(templates, templateFns);
-  if (componentStyles) registerComponentStyles(componentStyles);
+  if (componentStyles) {
+    registerPreparedComponentStyles(componentStyles);
+  }
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
@@ -118,7 +121,9 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
     const detail = templateRegistrationDetail(event);
     if (!detail?.templates) return;
-    const styles = prepareComponentStyles(detail.componentStyles);
+    const styles = detail.componentStyles === undefined
+      ? undefined
+      : prepareComponentStyles(detail.componentStyles);
     acceptTemplateData(detail.templates, undefined, styles);
   });
 }
@@ -173,7 +178,8 @@ export function registerTemplateData(
 ): void {
   const componentStyles = prepareComponentStyles(componentStylesValue);
   if (acceptTemplateData(templates, templateFns, componentStyles)) {
-    dispatchTemplatesRegistered(templates, componentStyles);
+    // Styles were already accepted above; listeners only need the templates.
+    dispatchTemplatesRegistered(templates);
   }
 }
 
