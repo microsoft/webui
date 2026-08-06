@@ -1,5 +1,5 @@
 # Register this YAML in Azure DevOps with the exact pipeline definition name
-# "Web UI - CD Build". azure-pipelines-cd.yml references that definition name.
+# "Web UI - CD Build". .ado/pipelines/azure-pipelines-cd.yml references that definition name.
 trigger: none
 pr: none
 

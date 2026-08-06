@@ -1,3 +1,4 @@
+# Register this YAML in Azure DevOps with the exact pipeline definition name "Web UI - CD".
 trigger: none
 pr: none
 
