@@ -1561,9 +1561,16 @@ children contribute their CSS once and their fragment graph is traversed in the
 same CSS tree. Effective Shadow children are cut points: neither their CSS nor
 their descendants enter the caller's closure, but scanning resumes after the
 host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
-attribute-template, and route dependencies are followed conservatively. A route
-visits its body, nested route definitions in declaration order, pending
-component, then error component. Visited-fragment and first-style sets make
+and attribute-template dependencies are followed conservatively. A route visits
+its body, then its pending and error components. Nested route definitions enter
+the body's closure at that route component's `<outlet>` position because that
+is where the handler renders them. Consequently, a Shadow route body moves its
+nested Light route resources into its own `ShadowRoot` closure instead of the
+caller's tree. The ownership scan follows plain nested components because route
+context passes through them at runtime; an outlet delegated to a nested Shadow
+component therefore moves the route resources into that component's closure.
+Shared outlet components conservatively union their possible route contexts in
+deterministic discovery order. Visited-fragment and first-style sets make
 malformed or cyclic protocols finite without changing first-discovery order.
 
 Every effective Light host receives a persistent `data-wl` marker in SSR and

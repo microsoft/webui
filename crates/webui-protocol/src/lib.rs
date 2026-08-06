@@ -387,8 +387,13 @@ impl ConditionExpr {
 
 // ── Constructors ────────────────────────────────────────────────────────
 
+type RouteChildrenByComponent<'a> = HashMap<&'a str, Vec<&'a [WebUiFragmentRoute]>>;
+
 enum StyleClosureOp<'a> {
-    Fragment(&'a str),
+    Fragment {
+        fragment_id: &'a str,
+        component_owner: Option<&'a str>,
+    },
     Component(&'a str),
     Route(&'a WebUiFragmentRoute),
 }
@@ -432,6 +437,7 @@ impl WebUiProtocol {
     /// Traversal is iterative, follows source order, stops at effective Shadow
     /// children, and deduplicates resources at first discovery.
     pub fn populate_style_closures(&mut self, entry_fragments: &[&str]) {
+        let route_children = self.route_children_by_component();
         let mut roots: Vec<String> = entry_fragments
             .iter()
             .map(|root| (*root).to_string())
@@ -448,13 +454,109 @@ impl WebUiProtocol {
         self.style_closures = roots
             .into_iter()
             .map(|root| {
-                let closure = self.build_style_closure(&root);
+                let closure = self.build_style_closure(&root, &route_children);
                 (root, closure)
             })
             .collect();
     }
 
-    fn build_style_closure<'a>(&'a self, root: &'a str) -> ComponentStyleClosure {
+    fn route_definitions_by_component(&self) -> (Vec<&str>, RouteChildrenByComponent<'_>) {
+        let mut fragment_ids: Vec<&str> = self.fragments.keys().map(String::as_str).collect();
+        fragment_ids.sort_unstable();
+
+        let mut route_owners = Vec::new();
+        let mut route_definitions = RouteChildrenByComponent::new();
+        let mut work = Vec::new();
+        for fragment_id in fragment_ids {
+            let Some(fragment_list) = self.fragments.get(fragment_id) else {
+                continue;
+            };
+            for fragment in fragment_list.fragments.iter().rev() {
+                if let Some(web_ui_fragment::Fragment::Route(route)) = fragment.fragment.as_ref() {
+                    work.push(route);
+                }
+            }
+            while let Some(route) = work.pop() {
+                if !route.fragment_id.is_empty() && !route.children.is_empty() {
+                    if let Some(routes) = route_definitions.get_mut(route.fragment_id.as_str()) {
+                        routes.push(&route.children);
+                    } else {
+                        route_owners.push(route.fragment_id.as_str());
+                        route_definitions.insert(&route.fragment_id, vec![&route.children]);
+                    }
+                }
+                for child in route.children.iter().rev() {
+                    work.push(child);
+                }
+            }
+        }
+        (route_owners, route_definitions)
+    }
+
+    fn route_children_by_component(&self) -> RouteChildrenByComponent<'_> {
+        let (route_owners, route_definitions) = self.route_definitions_by_component();
+        let mut route_children = RouteChildrenByComponent::new();
+        for route_owner in route_owners {
+            let Some(route_sets) = route_definitions.get(route_owner) else {
+                continue;
+            };
+            self.map_route_children_to_outlets(route_owner, route_sets, &mut route_children);
+        }
+        route_children
+    }
+
+    fn map_route_children_to_outlets<'a>(
+        &'a self,
+        route_owner: &'a str,
+        route_sets: &[&'a [WebUiFragmentRoute]],
+        route_children: &mut RouteChildrenByComponent<'a>,
+    ) {
+        let mut work = vec![(route_owner, route_owner)];
+        let mut visited_fragments = HashSet::new();
+        let mut mapped_components = HashSet::new();
+
+        while let Some((fragment_id, component_owner)) = work.pop() {
+            if !visited_fragments.insert((fragment_id, component_owner)) {
+                continue;
+            }
+            let Some(fragment_list) = self.fragments.get(fragment_id) else {
+                continue;
+            };
+            for fragment in fragment_list.fragments.iter().rev() {
+                match fragment.fragment.as_ref() {
+                    Some(web_ui_fragment::Fragment::Component(component)) => {
+                        work.push((&component.fragment_id, &component.fragment_id));
+                    }
+                    Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
+                        work.push((&for_loop.fragment_id, component_owner));
+                    }
+                    Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
+                        work.push((&if_cond.fragment_id, component_owner));
+                    }
+                    Some(web_ui_fragment::Fragment::Attribute(attribute))
+                        if !attribute.template.is_empty() =>
+                    {
+                        work.push((&attribute.template, component_owner));
+                    }
+                    Some(web_ui_fragment::Fragment::Outlet(_))
+                        if mapped_components.insert(component_owner) =>
+                    {
+                        route_children
+                            .entry(component_owner)
+                            .or_default()
+                            .extend(route_sets.iter().copied());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn build_style_closure<'a>(
+        &'a self,
+        root: &'a str,
+        route_children: &RouteChildrenByComponent<'a>,
+    ) -> ComponentStyleClosure {
         let mut component_tags = Vec::new();
         let mut seen_styles = HashSet::new();
         let mut visited_fragments = HashSet::new();
@@ -466,12 +568,18 @@ impl WebUiProtocol {
             seen_styles.insert(root);
             component_tags.push(root.to_string());
         }
-        work.push(StyleClosureOp::Fragment(root));
+        work.push(StyleClosureOp::Fragment {
+            fragment_id: root,
+            component_owner: self.components.contains_key(root).then_some(root),
+        });
 
         while let Some(op) = work.pop() {
             match op {
-                StyleClosureOp::Fragment(fragment_id) => {
-                    if !visited_fragments.insert(fragment_id) {
+                StyleClosureOp::Fragment {
+                    fragment_id,
+                    component_owner,
+                } => {
+                    if !visited_fragments.insert((fragment_id, component_owner)) {
                         continue;
                     }
                     let Some(fragment_list) = self.fragments.get(fragment_id) else {
@@ -483,18 +591,38 @@ impl WebUiProtocol {
                                 work.push(StyleClosureOp::Component(&component.fragment_id));
                             }
                             Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
-                                work.push(StyleClosureOp::Fragment(&for_loop.fragment_id));
+                                work.push(StyleClosureOp::Fragment {
+                                    fragment_id: &for_loop.fragment_id,
+                                    component_owner,
+                                });
                             }
                             Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
-                                work.push(StyleClosureOp::Fragment(&if_cond.fragment_id));
+                                work.push(StyleClosureOp::Fragment {
+                                    fragment_id: &if_cond.fragment_id,
+                                    component_owner,
+                                });
                             }
                             Some(web_ui_fragment::Fragment::Attribute(attribute))
                                 if !attribute.template.is_empty() =>
                             {
-                                work.push(StyleClosureOp::Fragment(&attribute.template));
+                                work.push(StyleClosureOp::Fragment {
+                                    fragment_id: &attribute.template,
+                                    component_owner,
+                                });
                             }
                             Some(web_ui_fragment::Fragment::Route(route)) => {
                                 work.push(StyleClosureOp::Route(route));
+                            }
+                            Some(web_ui_fragment::Fragment::Outlet(_)) => {
+                                if let Some(route_sets) =
+                                    component_owner.and_then(|owner| route_children.get(owner))
+                                {
+                                    for routes in route_sets.iter().rev() {
+                                        for route in routes.iter().rev() {
+                                            work.push(StyleClosureOp::Route(route));
+                                        }
+                                    }
+                                }
                             }
                             _ => {}
                         }
@@ -509,19 +637,19 @@ impl WebUiProtocol {
                     {
                         component_tags.push(tag_name.to_string());
                     }
-                    work.push(StyleClosureOp::Fragment(tag_name));
+                    work.push(StyleClosureOp::Fragment {
+                        fragment_id: tag_name,
+                        component_owner: Some(tag_name),
+                    });
                 }
                 StyleClosureOp::Route(route) => {
-                    // Stack in reverse so route body, nested route definitions,
-                    // pending, and error dependencies retain declaration order.
+                    // The route body owns its nested routes at its outlet. Stack
+                    // fallbacks first so they follow that complete body tree.
                     if !route.error_component.is_empty() {
                         work.push(StyleClosureOp::Component(&route.error_component));
                     }
                     if !route.pending_component.is_empty() {
                         work.push(StyleClosureOp::Component(&route.pending_component));
-                    }
-                    for child in route.children.iter().rev() {
-                        work.push(StyleClosureOp::Route(child));
                     }
                     if !route.fragment_id.is_empty() {
                         work.push(StyleClosureOp::Component(&route.fragment_id));
@@ -1009,6 +1137,12 @@ mod tests {
         ] {
             add_style_component(&mut protocol, tag, DomStrategy::Light, true);
         }
+        protocol.fragments.insert(
+            "route-body".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+            },
+        );
 
         protocol.populate_style_closures(&["index.html"]);
 
@@ -1023,6 +1157,148 @@ mod tests {
                 "route-pending",
                 "route-error",
             ]
+        );
+    }
+
+    #[test]
+    fn style_closure_places_nested_routes_in_shadow_route_outlet_tree() {
+        let child_route = WebUiFragmentRoute {
+            fragment_id: "dashboard-page".to_string(),
+            pending_component: "dashboard-pending".to_string(),
+            error_component: "dashboard-error".to_string(),
+            ..Default::default()
+        };
+        let route = WebUiFragmentRoute {
+            fragment_id: "app-shell".to_string(),
+            children: vec![child_route],
+            pending_component: "shell-pending".to_string(),
+            error_component: "shell-error".to_string(),
+            ..Default::default()
+        };
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(route)],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::component("shell-header"),
+                    WebUIFragment::component("route-layout"),
+                    WebUIFragment::component("shell-footer"),
+                ],
+            },
+        );
+        fragments.insert(
+            "route-layout".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "dashboard-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("contact-card")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        protocol.set_dom_strategy(DomStrategy::Light);
+        for tag in [
+            "shell-header",
+            "route-layout",
+            "shell-footer",
+            "dashboard-page",
+            "contact-card",
+            "dashboard-pending",
+            "dashboard-error",
+            "shell-pending",
+            "shell-error",
+        ] {
+            add_style_component(&mut protocol, tag, DomStrategy::Light, true);
+        }
+        add_style_component(&mut protocol, "app-shell", DomStrategy::Shadow, true);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            ["shell-pending", "shell-error"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("app-shell")
+                .expect("Shadow shell closure"),
+            [
+                "app-shell",
+                "shell-header",
+                "route-layout",
+                "dashboard-page",
+                "contact-card",
+                "dashboard-pending",
+                "dashboard-error",
+                "shell-footer",
+            ]
+        );
+    }
+
+    #[test]
+    fn style_closure_routes_through_nested_shadow_outlet_component() {
+        let route = WebUiFragmentRoute {
+            fragment_id: "light-shell".to_string(),
+            children: vec![WebUiFragmentRoute {
+                fragment_id: "dashboard-page".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(route)],
+            },
+        );
+        fragments.insert(
+            "light-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shadow-layout")],
+            },
+        );
+        fragments.insert(
+            "shadow-layout".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "dashboard-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("contact-card")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        protocol.set_dom_strategy(DomStrategy::Light);
+        for tag in ["light-shell", "dashboard-page", "contact-card"] {
+            add_style_component(&mut protocol, tag, DomStrategy::Light, true);
+        }
+        add_style_component(&mut protocol, "shadow-layout", DomStrategy::Shadow, true);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            ["light-shell"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("shadow-layout")
+                .expect("nested Shadow closure"),
+            ["shadow-layout", "dashboard-page", "contact-card"]
         );
     }
 
