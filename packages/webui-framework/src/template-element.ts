@@ -477,6 +477,10 @@ export class TemplateElement extends HTMLElement {
       isSSR = false;
     }
 
+    // Styles are required even when a compiler-owned SSR host remains dormant.
+    // Install them after root selection but before the hydration deferral.
+    this.$installStyles(meta);
+
     if (isSSR && !forceSSR && this.$shouldDeferSSRHydration()) {
       this.$meta = meta;
       this.$deferredSSR = true;
@@ -489,18 +493,6 @@ export class TemplateElement extends HTMLElement {
       if (!isSSR && !wantShadow && !this.hasAttribute('data-wl')) {
         this.setAttribute('data-wl', '');
       }
-
-      // Install the effective CSS tree after root selection and before any
-      // client template nodes are staged or appended.
-      const containingRoot = this.getRootNode();
-      const styleTarget = wantShadow
-        ? this.shadowRoot!
-        : containingRoot.nodeType === 11 && 'host' in containingRoot
-          ? containingRoot as ShadowRoot
-          : this.ownerDocument;
-      void installComponentStyles(this.localName, styleTarget).catch((error) => {
-        console.error(error);
-      });
 
       if (isSSR) {
         // Seed explicit authored state. A streamed activation (forceSSR) supplies
@@ -551,6 +543,19 @@ export class TemplateElement extends HTMLElement {
     } finally {
       hydrationEnd();
     }
+  }
+
+  private $installStyles(meta: TemplateMeta): void {
+    const wantShadow = !!this.shadowRoot || !!meta.sd;
+    const containingRoot = this.getRootNode();
+    const styleTarget = wantShadow
+      ? this.shadowRoot!
+      : containingRoot.nodeType === 11 && 'host' in containingRoot
+        ? containingRoot as ShadowRoot
+        : this.ownerDocument;
+    void installComponentStyles(this.localName, styleTarget).catch((error) => {
+      console.error(error);
+    });
   }
 
   disconnectedCallback(): void {

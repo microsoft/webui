@@ -1279,7 +1279,7 @@ impl WebUIHandler {
     /// scripts honor `script-src`).
     ///
     /// Example for `my-comp` with CSS `span{color:blue;}`:
-    /// `<script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>`
+    /// `<script type="importmap" nonce="..." data-webui-resource="my-comp">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>`
     fn emit_css_module_importmap(
         &self,
         specifier: &str,
@@ -8283,7 +8283,7 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
+                r#"<script type="importmap" nonce="test-nonce-123" data-webui-resource="dash-page">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
             ),
             "CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
@@ -8362,7 +8362,7 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"product-card":"data:text/css,.product-card{display:block}"}}</script>"#
+                r#"<script type="importmap" nonce="test-nonce-123" data-webui-resource="product-card">{"imports":{"product-card":"data:text/css,.product-card{display:block}"}}</script>"#
             ),
             "Unrendered (body_end) CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
@@ -11886,7 +11886,7 @@ mod tests {
         assert!(first.contains(r#""hidden_count":7"#), "first: {first}");
         assert!(first.contains(r#""inventory":"01""#), "first: {first}");
         assert!(
-            first.contains(r#"<script type="importmap">"#),
+            first.contains(r#"<script type="importmap""#),
             "first: {first}"
         );
         assert!(
@@ -11899,16 +11899,13 @@ mod tests {
             "second re-sent metadata: {second}"
         );
         assert!(
-            !second.contains(r#"<script type="importmap">"#),
+            !second.contains(r#"<script type="importmap""#),
             "second re-sent CSS: {second}"
         );
         assert!(second.contains(r#""hidden_count":7"#), "second: {second}");
         assert!(second.contains(r#""inventory":"02""#), "second: {second}");
         assert_eq!(
-            writer
-                .output
-                .matches(r#"<script type="importmap">"#)
-                .count(),
+            writer.output.matches(r#"<script type="importmap""#).count(),
             1
         );
     }

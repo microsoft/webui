@@ -262,18 +262,9 @@ test.describe('?active boolean attributes', () => {
     await page.getByRole('link', { name: 'Frontend' }).click();
     await expect(page.locator('main h2')).toContainText('Frontend');
 
-    // Check the nav link for Frontend has the active attribute
-    const hasActive = await page.evaluate(() => {
-      const app = document.querySelector('routes-app');
-      const links = app?.shadowRoot?.querySelectorAll('nav a');
-      for (const a of links ?? []) {
-        if (a.textContent?.includes('Frontend') && a.hasAttribute('active')) {
-          return true;
-        }
-      }
-      return false;
-    });
-    expect(hasActive).toBe(true);
+    // The default Light DOM nav link for Frontend has the active attribute.
+    const frontend = page.locator('routes-app > nav').getByRole('link', { name: /Frontend/ });
+    await expect(frontend).toHaveAttribute('active', '');
   });
 
   test('active attribute updates when navigating to different section', async ({ page }) => {
@@ -284,20 +275,10 @@ test.describe('?active boolean attributes', () => {
     await page.getByRole('link', { name: 'Backend' }).click();
     await expect(page.locator('main h2')).toContainText('Backend');
 
-    // Backend link should be active, Frontend should not
-    const activeStates = await page.evaluate(() => {
-      const app = document.querySelector('routes-app');
-      const links = app?.shadowRoot?.querySelectorAll('nav a');
-      const states: Record<string, boolean> = {};
-      for (const a of links ?? []) {
-        const text = a.textContent?.trim() ?? '';
-        if (text.includes('Frontend')) states['Frontend'] = a.hasAttribute('active');
-        if (text.includes('Backend')) states['Backend'] = a.hasAttribute('active');
-      }
-      return states;
-    });
-    expect(activeStates['Backend']).toBe(true);
-    expect(activeStates['Frontend']).toBe(false);
+    // Backend link should be active, Frontend should not.
+    const nav = page.locator('routes-app > nav');
+    await expect(nav.getByRole('link', { name: /Backend/ })).toHaveAttribute('active', '');
+    await expect(nav.getByRole('link', { name: /Frontend/ })).not.toHaveAttribute('active', '');
   });
 
   test('topic link active attribute updates on topic navigation', async ({ page }) => {
@@ -306,17 +287,8 @@ test.describe('?active boolean attributes', () => {
     await page.getByRole('link', { name: 'React' }).click();
     await expect(page.locator('main h3')).toContainText('React');
 
-    // React topic link should be active
-    const hasActive = await page.evaluate(() => {
-      const section = document.querySelector('routes-app')?.shadowRoot?.querySelector('section-page');
-      const links = section?.shadowRoot?.querySelectorAll('.topics a');
-      for (const a of links ?? []) {
-        if (a.textContent?.includes('React') && a.hasAttribute('active')) {
-          return true;
-        }
-      }
-      return false;
-    });
-    expect(hasActive).toBe(true);
+    // The default Light DOM topic link for React should be active.
+    const react = page.locator('section-page .topics').getByRole('link', { name: 'React' });
+    await expect(react).toHaveAttribute('active', '');
   });
 });

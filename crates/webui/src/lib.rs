@@ -1728,7 +1728,9 @@ mod tests {
                         .expect("declarative Shadow root");
                     let style_start = writer
                         .buf
-                        .find(r#"data-webui-resource="my-card""#)
+                        .find(&format!(
+                            r#"<style data-webui-resource="my-card" data-webui-strategy="{kind}">"#
+                        ))
                         .expect("tree-local style");
                     let content_start = writer.buf.find("<p>content</p>").expect("component body");
                     assert!(template_start < style_start && style_start < content_start);
