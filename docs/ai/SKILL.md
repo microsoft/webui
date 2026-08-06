@@ -877,7 +877,7 @@ All three members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
 are emitted raw immediately before `</head>`, after `<body>`, and before
 `</body>`, respectively. Missing, empty, `null`, or non-string members are
 ignored. WebUI strips the reserved object from hydration and partial-navigation
-state, so templates and client code cannot read it.
+state, so client-side templates and code cannot read it.
 
 **Never put request-derived or otherwise untrusted content in `$webui`.** The
 values are not escaped and can create an XSS vulnerability. See
