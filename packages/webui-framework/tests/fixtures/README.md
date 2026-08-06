@@ -93,5 +93,5 @@ Create `webui.config.json` to override build options:
 { "css": "module" }
 ```
 
-Supported keys: `css` (`"link"` | `"style"` | `"module"`) and `dom`
-(`"light"` | `"shadow"`).
+Supported keys: `css` (`"link"` | `"style"` | `"module"`) and `script`
+(`"module"`; classic scripts are the default).
