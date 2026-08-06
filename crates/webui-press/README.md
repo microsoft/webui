@@ -511,6 +511,7 @@ Powered by [comrak](https://github.com/kivikakk/comrak), GitHub-flavored markdow
 
 - Tables, task lists, autolinks, footnotes, strikethrough
 - Header anchors auto-injected (`<a class="header-anchor" href="#...">#</a>`)
+- Relative links resolve from the Markdown source directory and remain valid under `basePath`
 - Fenced code blocks wrapped in `<code-block>` (copy button + dual-theme highlighting)
 - Raw HTML pass-through, including custom elements
 

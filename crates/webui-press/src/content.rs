@@ -200,6 +200,28 @@ fn page_url_path(rel_path: &str, base_path: &str, sources: &HashMap<&str, &str>)
     }
 }
 
+fn markdown_link_base_url(source_path: &Path, content_dir: &Path, base_path: &str) -> String {
+    let parent = source_path
+        .strip_prefix(content_dir)
+        .ok()
+        .and_then(Path::parent);
+    let parent = parent
+        .filter(|path| !path.as_os_str().is_empty())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+
+    let prefix = base_path.trim_end_matches('/');
+    let parent = parent.trim_matches('/');
+    let mut url = String::with_capacity(prefix.len() + parent.len() + 2);
+    url.push_str(prefix);
+    url.push('/');
+    if !parent.is_empty() {
+        url.push_str(parent);
+        url.push('/');
+    }
+    url
+}
+
 /// Map each nav entry that declares a `source` file to its configured link.
 ///
 /// Keys are content-relative markdown paths; values are raw config links.
@@ -475,7 +497,15 @@ pub(crate) fn process_content_with_states(
                         } else {
                             format!("{url_path}/")
                         };
-                        html = render_markdown(body, highlighter, base_path, &page_url)?;
+                        let link_base_url =
+                            markdown_link_base_url(full_path, content_dir, base_path);
+                        html = render_markdown(
+                            body,
+                            highlighter,
+                            base_path,
+                            &page_url,
+                            &link_base_url,
+                        )?;
                     }
 
                     if let Some(d) = fm.description {
@@ -841,6 +871,31 @@ mod tests {
         // A nav link like "/ai?v=2" must route to "/ai", not "/ai?v=2".
         let map = sources(&[("ai/SKILL.md", "/ai?v=2")]);
         assert_eq!(page_url_path("ai/SKILL.md", "/webui/", &map), "/webui/ai");
+    }
+
+    #[test]
+    fn markdown_link_base_uses_source_directory_for_index_and_leaf_pages() {
+        let content_dir = Path::new("docs");
+        assert_eq!(
+            markdown_link_base_url(Path::new("docs/guide/index.md"), content_dir, "/webui/"),
+            "/webui/guide/"
+        );
+        assert_eq!(
+            markdown_link_base_url(
+                Path::new("docs/guide/installation.md"),
+                content_dir,
+                "/webui/"
+            ),
+            "/webui/guide/"
+        );
+        assert_eq!(
+            markdown_link_base_url(
+                Path::new("docs/guide/topic/index.md"),
+                content_dir,
+                "/webui/"
+            ),
+            "/webui/guide/topic/"
+        );
     }
 
     // --- nav_source_overrides ---------------------------------------------
