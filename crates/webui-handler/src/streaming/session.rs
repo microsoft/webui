@@ -94,6 +94,8 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     component_attrs: HashMap<String, Value>,
     route_base: Cow<'a, str>,
     rendered_components: HashSet<String>,
+    document_style_resources: HashSet<String>,
+    shadow_style_roots: Vec<u32>,
     plugin: Option<Box<dyn HandlerPlugin>>,
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     head_end_emitted: bool,
@@ -137,6 +139,8 @@ pub(super) struct ParkedResponse {
     component_attrs: HashMap<String, Value>,
     route_base: Box<str>,
     rendered_components: HashSet<String>,
+    document_style_resources: HashSet<String>,
+    shadow_style_roots: Vec<u32>,
     plugin: Option<Box<dyn HandlerPlugin>>,
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     head_end_emitted: bool,
@@ -165,6 +169,8 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_attrs: self.component_attrs,
             route_base: self.route_base.into_owned().into_boxed_str(),
             rendered_components: self.rendered_components,
+            document_style_resources: self.document_style_resources,
+            shadow_style_roots: self.shadow_style_roots,
             plugin: self.plugin,
             route_children: self.route_children,
             head_end_emitted: self.head_end_emitted,
@@ -220,6 +226,8 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_attrs: parked.component_attrs,
             route_base: Cow::Owned(parked.route_base.into_string()),
             rendered_components: parked.rendered_components,
+            document_style_resources: parked.document_style_resources,
+            shadow_style_roots: parked.shadow_style_roots,
             plugin: parked.plugin,
             route_children: parked.route_children,
             head_end_emitted: parked.head_end_emitted,
@@ -250,6 +258,7 @@ impl WebUIHandler {
         options: &RenderOptions<'a>,
         writer: &'a mut W,
     ) -> Result<StreamingResponse<'a, W>> {
+        protocol.ensure_style_metadata()?;
         let document = protocol.protocol();
         let fragments = document
             .fragments
@@ -291,6 +300,8 @@ impl WebUIHandler {
             component_attrs: HashMap::new(),
             route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
+            document_style_resources: HashSet::new(),
+            shadow_style_roots: Vec::new(),
             plugin: self.plugin_factory.map(|factory| factory()),
             route_children: Vec::new(),
             head_end_emitted: false,
@@ -555,6 +566,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             entry_id: self.entry_id,
             nonce: self.nonce,
             component_index: self.protocol.component_index(),
+            css_strategy: self.protocol.css_strategy(),
             head_inject: self.head_inject,
             body_inject: self.body_inject,
             state_inject: crate::StateInject::resolve(state),
@@ -566,6 +578,8 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             streaming: Some(&mut self.streaming),
             json_scratch: std::mem::take(&mut self.json_scratch),
             scope_pool: std::mem::take(&mut self.scope_pool),
+            document_style_resources: std::mem::take(&mut self.document_style_resources),
+            shadow_style_roots: std::mem::take(&mut self.shadow_style_roots),
         };
 
         let result = operation(self.handler, &mut context);
@@ -581,6 +595,13 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
         self.route_chain_index = context.route_chain_index;
         self.json_scratch = std::mem::take(&mut context.json_scratch);
         self.scope_pool = std::mem::take(&mut context.scope_pool);
+        if !context.shadow_style_roots.is_empty() {
+            return Err(HandlerError::Invariant(
+                "a Shadow CSS tree escaped its component instance".to_string(),
+            ));
+        }
+        self.document_style_resources = std::mem::take(&mut context.document_style_resources);
+        self.shadow_style_roots = std::mem::take(&mut context.shadow_style_roots);
         result
     }
 }

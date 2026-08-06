@@ -136,7 +136,21 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
-    use webui_protocol::{FragmentList, WebUIFragment, WebUIProtocol};
+    use webui_protocol::{
+        ComponentStyleClosure, CssStrategy, FragmentList, WebUIFragment, WebUIProtocol,
+    };
+
+    fn add_page_style_closures(protocol: &mut WebUIProtocol) {
+        let closure = ComponentStyleClosure {
+            component_tags: vec!["my-page".to_string()],
+        };
+        protocol
+            .style_closures
+            .insert("index.html".to_string(), closure.clone());
+        protocol
+            .style_closures
+            .insert("my-page".to_string(), closure);
+    }
 
     fn response_json(response: ServeResponse) -> serde_json::Value {
         match response {
@@ -148,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_request_json_partial_preserves_template_styles() {
+    fn serve_request_json_partial_carries_module_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -164,12 +178,14 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
+        add_page_style_closures(&mut protocol);
         let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
@@ -184,11 +200,13 @@ mod tests {
 
         let json = response_json(response);
 
-        // templateStyles must be present and non-empty for module-mode components
         assert_eq!(
-            json["templateStyles"].as_array().map(Vec::len),
-            Some(1),
-            "serve_request should include module template styles"
+            json["componentStyles"]["resources"]["my-page"],
+            json!({
+                "kind": "module",
+                "specifier": "my-page",
+                "css": ".page{color:red}"
+            })
         );
         // templates must not contain any style tags
         assert!(
@@ -201,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_request_link_strategy_returns_empty_template_styles() {
+    fn serve_request_link_strategy_returns_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -223,7 +241,7 @@ mod tests {
             .or_default();
         comp.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         comp.css_href = "my-page.css".to_string();
-        // No css content — Link strategy
+        add_page_style_closures(&mut protocol);
         let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
@@ -238,11 +256,9 @@ mod tests {
 
         let json = response_json(response);
 
-        assert!(
-            json["templateStyles"]
-                .as_array()
-                .is_some_and(|a| a.is_empty()),
-            "Link strategy should return empty templateStyles"
+        assert_eq!(
+            json["componentStyles"]["resources"]["my-page"],
+            json!({"kind": "link", "href": "my-page.css"})
         );
         assert!(
             json["templates"].as_object().is_some_and(|a| a.len() == 1),
@@ -251,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn serve_request_style_strategy_returns_empty_template_styles() {
+    fn serve_request_style_strategy_returns_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -267,12 +283,14 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(CssStrategy::Style);
         let comp = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
-        // Style strategy: CSS is inlined in the template metadata
-        comp.template_json = r#"{"h":"<style>.p{color:red}</style><p/>"}"#.to_string();
+        comp.template_json = r#"{"h":"<p/>"}"#.to_string();
+        comp.css = ".p{color:red}".to_string();
+        add_page_style_closures(&mut protocol);
         let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
@@ -287,11 +305,9 @@ mod tests {
 
         let json = response_json(response);
 
-        assert!(
-            json["templateStyles"]
-                .as_array()
-                .is_some_and(|a| a.is_empty()),
-            "Style strategy should return empty templateStyles"
+        assert_eq!(
+            json["componentStyles"]["resources"]["my-page"],
+            json!({"kind": "style", "css": ".p{color:red}"})
         );
         assert!(
             json["templates"].as_object().is_some_and(|a| a.len() == 1),

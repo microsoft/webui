@@ -7,16 +7,20 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::{
+    AttributeAction, ComponentTemplateArtifact, ComponentTemplateContext, ParserPlugin,
+    ParserPluginArtifacts,
+};
 use crate::component_registry::Component;
 use crate::html_parser::{find_tag_close, opening_tag_name};
-use crate::{CssLinkOptions, CssStrategy, Result};
+use crate::{CssLinkOptions, CssStrategy, DomStrategy, Result};
 use webui_protocol::FastElementData;
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
     tag_name: String,
     template_html: String,
+    effective_dom_strategy: DomStrategy,
 }
 
 /// FAST 3 parser plugin used by `fast-v3`.
@@ -51,9 +55,47 @@ impl FastV3ParserPlugin {
             .iter()
             .map(|comp| {
                 let tmpl = generate_f_template_from_processed(&comp.tag_name, &comp.template_html);
-                ComponentTemplateArtifact::template(comp.tag_name.clone(), tmpl)
+                ComponentTemplateArtifact::template(
+                    comp.tag_name.clone(),
+                    tmpl,
+                    comp.effective_dom_strategy,
+                )
             })
             .collect()
+    }
+
+    fn track_component(
+        &mut self,
+        tag_name: &str,
+        processed_template: &str,
+        effective_dom_strategy: DomStrategy,
+    ) {
+        if self.components.iter().any(|c| c.tag_name == tag_name) {
+            return;
+        }
+        self.components.push(TrackedComponent {
+            tag_name: tag_name.to_string(),
+            template_html: processed_template.to_string(),
+            effective_dom_strategy,
+        });
+    }
+
+    #[cfg(test)]
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()> {
+        <Self as ParserPlugin>::register_component_template(
+            self,
+            tag_name,
+            component,
+            processed_template,
+            ComponentTemplateContext {
+                effective_dom_strategy: DomStrategy::Light,
+            },
+        )
     }
 }
 
@@ -69,16 +111,9 @@ impl ParserPlugin for FastV3ParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
+        context: ComponentTemplateContext,
     ) -> Result<()> {
-        // Only track each component once (avoids duplicate <f-template> blocks
-        // when a component is used in multiple parent templates)
-        if self.components.iter().any(|c| c.tag_name == tag_name) {
-            return Ok(());
-        }
-        self.components.push(TrackedComponent {
-            tag_name: tag_name.to_string(),
-            template_html: processed_template.to_string(),
-        });
+        self.track_component(tag_name, processed_template, context.effective_dom_strategy);
         let _ = component;
         Ok(())
     }

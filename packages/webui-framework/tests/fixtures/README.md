@@ -41,7 +41,7 @@ Static files (JS bundles, CSS) are served from the fixtures root as-is.
 ### Template syntax
 
 ```html
-<!-- Component template (shadow DOM) -->
+<!-- Component template (Light DOM by default) -->
 <span>{{propertyName}}</span>
 <button @click="{handler()}">Click</button>
 <if condition="show"><p>Visible</p></if>
@@ -75,12 +75,17 @@ emits templates for **reachable** components.
 With `state.json`: `{ "showChild": false }`. This makes the child reachable (so its
 template metadata is emitted) without rendering it during SSR.
 
-## Light-DOM fixtures
+## DOM-mode fixtures
 
-The pipeline always produces shadow DOM. The `light-dom` fixture uses manual
-template registration (`registerCompiledTemplate`) and hand-written `fixture.html`
-to keep the light-DOM hydration code path tested. Use this pattern for any test
-that specifically targets light-DOM behavior.
+The real build pipeline produces Light DOM by default. Use ordinary source
+templates to test the production Light path. To test one Shadow component, make
+a sole top-level `<template shadowrootmode="open">` its complete template. Set
+`"dom": "shadow"` in `webui.config.json` only when the whole fixture needs
+Shadow.
+
+The `light-dom` fixture exercises the default real-pipeline path and includes a
+component-level Shadow opt-in. Use manual template registration or hand-written
+fixture HTML only for tests that intentionally bypass the compiler.
 
 ## Per-fixture build config
 
@@ -90,4 +95,5 @@ Create `webui.config.json` to override build options:
 { "css": "module" }
 ```
 
-Supported keys: `css` (`"link"` | `"style"` | `"module"`).
+Supported keys: `css` (`"link"` | `"style"` | `"module"`) and `dom`
+(`"light"` | `"shadow"`).

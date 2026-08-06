@@ -106,16 +106,18 @@ impl WebUIHandler {
         // Rendered components emitted module importmaps inline before their
         // declarative shadow roots. Emit the same metadata here only for
         // reachable-but-unrendered descendants.
-        for &name in &new_template_tags {
-            if !context.rendered_components.contains(name) {
-                if let Some(css) = context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|component| component.css.as_str())
-                    .filter(|css| !css.is_empty())
-                {
-                    self.emit_css_module_importmap(name, css, context)?;
+        if context.css_strategy == webui_protocol::CssStrategy::Module {
+            for &name in &new_template_tags {
+                if !context.rendered_components.contains(name) {
+                    if let Some(css) = context
+                        .protocol
+                        .components
+                        .get(name)
+                        .map(|component| component.css.as_str())
+                        .filter(|css| !css.is_empty())
+                    {
+                        self.emit_css_module_importmap(name, css, context)?;
+                    }
                 }
             }
         }
@@ -168,13 +170,15 @@ impl WebUIHandler {
         };
         css_hrefs.clear();
         style_specs.clear();
-        let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+        let css_strategy = context.css_strategy;
+        let is_link = css_strategy == webui_protocol::CssStrategy::Link;
+        let is_module = css_strategy == webui_protocol::CssStrategy::Module;
         for &name in &new_template_tags {
             if let Some(component) = context.protocol.components.get(name) {
                 if is_link && !component.css_href.is_empty() {
                     css_hrefs.push(component.css_href.as_str());
                 }
-                if !component.css.is_empty() {
+                if is_module && !component.css.is_empty() {
                     style_specs.push(name);
                 }
             }
@@ -182,6 +186,14 @@ impl WebUIHandler {
 
         let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
         let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
+        let mut style_roots =
+            Vec::with_capacity(checkpoint_names.len() + if first_checkpoint { 1 } else { 0 });
+        if first_checkpoint {
+            style_roots.push(context.entry_id);
+        }
+        style_roots.extend(checkpoint_names.iter().copied());
+        let component_styles =
+            crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
         context
             .writer
             .write("<script type=\"application/json\" data-webui-boundary")?;
@@ -225,6 +237,7 @@ impl WebUIHandler {
                     nonce: context.nonce,
                     css_hrefs: &css_hrefs,
                     style_specs: &style_specs,
+                    component_styles: &component_styles,
                     templates: payloads,
                 },
             )?;

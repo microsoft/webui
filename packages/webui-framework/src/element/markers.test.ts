@@ -13,6 +13,7 @@ interface MockNode {
   nodeType: number;
   data?: string;
   nextSibling: MockNode | null;
+  hasAttribute?(name: string): boolean;
 }
 
 const ELEMENT = 1;
@@ -255,6 +256,21 @@ describe('findByOrdinal', () => {
 
     assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 0), link);
     assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 1), div);
+  });
+
+  test('skips compiler-emitted style fallbacks when counting elements', () => {
+    const style = {
+      nodeType: ELEMENT,
+      nextSibling: null,
+      hasAttribute: (name: string) => name === 'data-webui-resource',
+    } as MockNode;
+    const button = el('button');
+    const parent = makeParent(style, button);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      button,
+    );
   });
 
   test('skips conditional block content when counting elements', () => {

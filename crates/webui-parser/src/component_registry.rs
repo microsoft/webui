@@ -77,6 +77,8 @@ impl<'a> ComponentRegistration<'a> {
 pub struct ComponentRegistry {
     /// Map of component tag names to their component data
     components: HashMap<String, Component>,
+    /// Pre-transform CSS retained only when delivery bytes are replaced.
+    authored_component_css: HashMap<String, String>,
     /// Reusable CSS parser for token extraction during registration.
     css_parser: CssParser,
     /// Legal comment preservation policy for component CSS.
@@ -120,6 +122,7 @@ impl ComponentRegistry {
     pub(crate) fn with_legal_comments(legal_comments: LegalComments) -> Self {
         Self {
             components: HashMap::new(),
+            authored_component_css: HashMap::new(),
             css_parser: CssParser::new(),
             legal_comments,
         }
@@ -303,6 +306,38 @@ impl ComponentRegistry {
     /// Get a component by its tag name.
     pub fn get(&self, tag_name: &str) -> Option<&Component> {
         self.components.get(tag_name)
+    }
+
+    /// Replace a component's processed CSS after a DOM-specific build transform.
+    pub(crate) fn replace_css_content(
+        &mut self,
+        tag_name: &str,
+        css_content: String,
+    ) -> Result<()> {
+        let component = self.components.get_mut(tag_name).ok_or_else(|| {
+            ParserError::NotFound(format!(
+                "component <{tag_name}> disappeared before CSS compilation"
+            ))
+        })?;
+        if let Some(authored) = component.css_content.as_ref() {
+            self.authored_component_css
+                .entry(tag_name.to_string())
+                .or_insert_with(|| authored.clone());
+        }
+        component.css_content = Some(css_content);
+        Ok(())
+    }
+
+    /// Return pre-transform component CSS for source diagnostics.
+    pub(crate) fn diagnostic_css_content(&self, tag_name: &str) -> Option<&str> {
+        self.authored_component_css
+            .get(tag_name)
+            .map(String::as_str)
+            .or_else(|| {
+                self.components
+                    .get(tag_name)
+                    .and_then(|component| component.css_content.as_deref())
+            })
     }
 
     /// Get all registered components.

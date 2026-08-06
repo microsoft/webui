@@ -670,7 +670,20 @@ When `Accept: application/json` or `application/x-ndjson`:
 ```json
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
-  "templateStyles": ["<script type=\"importmap\">{\"imports\":{\"user-detail\":\"data:text/css,...\"}}</script>"],
+  "componentStyles": {
+    "version": 1,
+    "strategy": "module",
+    "resources": {
+      "user-detail": {
+        "kind": "module",
+        "specifier": "user-detail",
+        "css": "@scope (user-detail[data-wl]) { ... }"
+      }
+    },
+    "closures": {
+      "user-detail": ["user-detail"]
+    }
+  },
   "templates": {
     "user-detail": { "h": "<section></section>" }
   },
@@ -697,7 +710,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 | Field | Description |
 |-------|-------------|
 | `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
-| `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
+| `componentStyles` | Required versioned CSS resources and ordered CSS-tree closures |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded templates |
 | `path` | The matched request path |

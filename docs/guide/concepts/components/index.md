@@ -32,9 +32,8 @@ decorators, or imperative APIs.
 
 ### The `<template>` Tag
 
-The `<template shadowrootmode="open">` wrapper is **optional** in component HTML files. The build tool auto-injects it when it is not present.
-
-Most components omit it and write just the content:
+Light DOM is the default. Most components omit a wrapper and write only their
+content:
 
 ```html
 <!-- user-card.html -->
@@ -43,7 +42,8 @@ Most components omit it and write just the content:
 <p>{{email}}</p>
 ```
 
-Include it explicitly when you need **root host events** - event listeners on the shadow root that catch events bubbling up from children:
+Use a sole top-level `<template shadowrootmode="open">` when a component needs
+native `<slot>`, native Shadow encapsulation, or root events on the shadow root:
 
 ```html
 <!-- task-list.html -->
@@ -57,7 +57,9 @@ Include it explicitly when you need **root host events** - event listeners on th
 </template>
 ```
 
-When you include the `<template>` tag, the framework uses yours instead of auto-injecting one.
+The wrapper must contain the complete component. Closed roots, invalid values
+or placement, additional top-level content, and `<slot>` in an effective Light
+component fail the build.
 
 ## How Components Work
 
@@ -71,7 +73,8 @@ When WebUI discovers components:
 
 2. **Runtime**:
    - The server-side handler renders components based on state
-   - Components are output as Declarative Shadow DOM elements
+   - Components are output as Light DOM by default or Declarative Shadow DOM
+     when selected globally or by a valid component wrapper
    - Dynamic content is injected according to the protocol
 
 ## Component Organization
@@ -159,7 +162,7 @@ The TypeScript file lives alongside the HTML and CSS:
 ```
 user-card/
 ├── user-card.html   ← Template (declarative)
-├── user-card.css    ← Styles (scoped via Shadow DOM)
+├── user-card.css    ← Styles (scoped at build time)
 └── user-card.ts     ← Behavior (TypeScript class)
 ```
 
@@ -168,7 +171,8 @@ user-card/
 WebUI intentionally keeps HTML, CSS, and TypeScript in separate files:
 
 - **HTML** defines structure and data bindings (`{{expr}}`, `<if>`, `<for>`)
-- **CSS** defines visual presentation (scoped via Shadow DOM)
+- **CSS** defines visual presentation. WebUI scopes Light CSS and preserves
+  native Shadow scoping for Shadow components
 - **TypeScript** defines interactive behavior (event handlers, state mutations)
 
 There is no JSX, no CSS-in-JS, and no template literals. This separation

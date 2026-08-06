@@ -677,7 +677,12 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
     let response = json!({
         "templates": {},
         "templateFunctions": {},
-        "templateStyles": [],
+        "componentStyles": {
+            "version": 1,
+            "strategy": "link",
+            "resources": {},
+            "closures": {},
+        },
         "cssHrefs": [],
         "inventory": "",
         "path": "/",

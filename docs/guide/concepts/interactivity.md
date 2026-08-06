@@ -9,12 +9,13 @@ Every interactive component consists of three separate files. Templates are decl
 ```
 my-counter/
 ├── my-counter.html   ← Template (structure and bindings)
-├── my-counter.css    ← Styles (scoped via Shadow DOM)
+├── my-counter.css    ← Styles (scoped at build time)
 └── my-counter.ts     ← Behavior (TypeScript class)
 ```
 
 - **HTML** defines what the component renders and where dynamic values appear
-- **CSS** styles the component in isolation - Shadow DOM prevents leaking
+- **CSS** styles the component. WebUI scopes it for Light DOM or keeps native
+  Shadow scoping for an opted-in Shadow component
 - **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
 
 Components that do not need client-side behavior can omit the TypeScript file:
@@ -84,17 +85,18 @@ button {
 
 ## The `<template>` Tag
 
-The `<template shadowrootmode="open">` wrapper is **optional** in component HTML files. The build tool auto-injects it when it is not present.
+Light DOM is the default. Most component HTML files omit a wrapper and render
+their content directly into the component host.
 
-**Without `<template>` (most components):**
+**Light DOM (most components):**
 ```html
 <!-- my-counter.html -->
 <button @click="{increment()}">{{label}}: {{count}}</button>
 ```
 
-The framework wraps this in a `<template shadowrootmode="open">` during build.
+The compiler scopes the paired CSS for this Light component.
 
-**With `<template>` (root host events):**
+**Shadow DOM opt-in:**
 ```html
 <!-- todo-app.html -->
 <template shadowrootmode="open"
@@ -110,7 +112,12 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 </template>
 ```
 
-When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - listeners on the component root (the shadow root when present, otherwise the host element) that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
+The open template must be the sole top-level element and wrap the complete
+component. Use it when the component needs native `<slot>` composition, a
+native Shadow boundary, or root events on the shadow root. `closed`, another
+value, invalid placement, multiple wrappers, or extra top-level content fails
+the build. A native `<slot>` in an effective Light component is also a build
+error.
 
 Root host events only see events that **bubble**. `this.$emit()` dispatches with `bubbles: true`, so emitted events reach the root. A hand-built `new CustomEvent('my-event')` defaults to `bubbles: false` and will never arrive - bind it on the child element instead, or pass `{ bubbles: true }` yourself.
 
@@ -505,7 +512,9 @@ is missing.
 
 ## Styling
 
-CSS is scoped to each component via Shadow DOM. Styles in one component cannot leak into or be affected by another.
+Keep styles in the ordinary paired `.css` file. In the default Light mode, the
+compiler scopes rules to that component, lowers `:host`, and namespaces static
+keyframes. In Shadow mode, the browser provides native style scoping.
 
 ### The `:host` Selector
 
@@ -537,8 +546,12 @@ Style the component differently based on its attributes with `:host([attr])`:
 
 ### Scoping Rules
 
-- Styles defined in a component's `.css` file only apply inside that component's shadow root
-- External page styles do not penetrate into the component
+- Paired component styles are scoped in both Light and Shadow modes
+- `:host` and `:host([attr])` work in both modes
+- Light DOM keeps normal inheritance and cascade behavior
+- Shadow DOM provides a native style boundary
+- Shadow-only selectors and unsafe dynamic local-keyframe references in Light
+  components fail the build
 - No CSS-in-JS - styles stay in `.css` files, separate from behavior
 - Use CSS custom properties (`--my-color`) to allow external theming
 
@@ -548,16 +561,18 @@ Understanding the lifecycle helps you write components that work correctly from 
 
 ### 1. Server renders HTML
 
-The handler renders the component's template using JSON state data. No JavaScript runs. The output includes Declarative Shadow DOM:
+The handler renders the component's template using JSON state data. No
+JavaScript runs. With the default Light mode, component content is emitted
+directly:
 
 ```html
 <my-counter>
-  <template shadowrootmode="open">
-    <style>/* scoped styles */</style>
-    <button>Count: 0</button>
-  </template>
+  <button>Count: 0</button>
 </my-counter>
 ```
+
+An opted-in Shadow component instead emits Declarative Shadow DOM with its
+styles installed inside the shadow root.
 
 ### 2. Browser displays content
 
@@ -565,7 +580,8 @@ The browser parses the HTML and renders it immediately. The user sees fully styl
 
 ### 3. JavaScript loads and components hydrate
 
-The framework detects the existing Declarative Shadow DOM roots and upgrades elements in place:
+The framework detects the existing Light or Shadow SSR DOM and upgrades
+elements in place:
 
 - Bindings are wired to class properties
 - Event handlers are attached

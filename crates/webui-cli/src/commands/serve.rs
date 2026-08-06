@@ -1268,7 +1268,7 @@ async fn handle_json_partial(
         .unwrap_or_default()
         .to_string();
 
-    // Build the complete partial response (templateStyles, templates, inventory, path, chain)
+    // Build the complete partial response (componentStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
         let state_json = match serde_json::to_string(&state_data) {
             Ok(value) => value,

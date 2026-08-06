@@ -79,7 +79,9 @@ CounterCard.define('counter-card');
 <button @click="{increment()}">Increment</button>
 ```
 
-Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--dom=light` for light DOM rendering.
+The default build uses Light DOM. Pass `--dom=shadow` for global Shadow DOM, or
+make a sole top-level `<template shadowrootmode="open">` the complete component
+template to opt that component into Shadow.
 
 ### Use it from your page
 
@@ -202,16 +204,26 @@ The `--dom` flag controls how the server renders component content:
 
 | Flag | Behavior |
 |------|----------|
-| `--dom=shadow` (default) | Wraps component HTML in `<template shadowrootmode="open">` |
-| `--dom=light` | Renders component content as direct children of the host element |
+| `--dom=light` (default) | Renders component content as direct children of the host element |
+| `--dom=shadow` | Wraps component HTML in `<template shadowrootmode="open">` |
+
+In a Light build, a component opts into Shadow only when
+`<template shadowrootmode="open">` is its sole top-level element. Closed roots,
+invalid values or placement, and `<slot>` in an effective Light component are
+build errors. Native slots are Shadow-only.
 
 The runtime auto-detects which mode was used at hydration time:
 - If a `shadowRoot` already exists → shadow DOM SSR path
 - If `childNodes` exist but no shadow root → light DOM SSR path
 - If neither → client-created path (uses `meta.sd` to decide)
 
-Light DOM is useful for simpler styling (CSS inheritance works naturally) and
-better search-engine indexing.  Shadow DOM provides style encapsulation.
+The compiler scopes ordinary paired CSS for Light components, lowers `:host`,
+and namespaces static keyframes. Shadow components keep native Shadow scoping.
+The Link, Style, and Module delivery strategies all support both modes.
+
+Apps that relied on implicit Shadow can use `--dom=shadow` globally. To migrate
+incrementally, add open wrappers only to slot or native-encapsulation
+components.
 
 ---
 
@@ -261,6 +273,8 @@ The asset graph keeps entry-owned templates external, leaves single-root
 dependencies inline, and emits dependencies shared by multiple roots once as
 flat dynamic chunks. Component assets cannot be combined with `<route>`. Load
 the normal entry bundle first so external prerequisites are registered.
+Current assets require version 3 and an atomically validated
+`componentStyles` catalog; any other version is rejected as unsupported.
 
 Shared chunk filenames are generated and must not be copied into the manifest.
 Each root asset carries its own dynamic imports; `--metafile` is available for
@@ -607,7 +621,6 @@ interface TemplateMeta {
   r?: [collection, itemVar, blockIdx, slot][]; // Repeat blocks
   eg?: [event, [[handler, argSpecs, targetPath, usesEvent?]]][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
-  sa?: string;                         // Adopted stylesheet specifier
   sd?: 1;                              // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
   tr?: string[];                       // Template state roots
@@ -772,13 +785,15 @@ The framework supports three CSS delivery strategies:
 
 | Strategy | How it works |
 |----------|-------------|
-| **Link** | `<link>` tag baked into `meta.h` — loaded by the browser naturally |
-| **Inline** | `<style>` tag baked into `meta.h` — no external request |
-| **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
+| **Link** | Installs an external stylesheet resource |
+| **Style** | Installs compiled CSS in a `<style>` element with no external request |
+| **Module** | Uses an SSR style fallback, then imports and adopts a shared `CSSStyleSheet` when supported |
 
-CSS module stylesheets are cached so each component instance adopts the same
-parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the
-stylesheet specifier for a component.
+The compiler publishes resources and cascade-ordered closures. The framework
+installs each resource once per Document or ShadowRoot, including resources
+arriving through partial navigation, streaming, and version-3 component assets.
+Shadow roots are closure cut points. CSS module stylesheets are cached so each
+component instance adopts the same parsed sheet without re-parsing CSS.
 
 ---
 

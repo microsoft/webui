@@ -5,9 +5,13 @@ import type {
   CompiledConditionFn,
   TemplateMeta,
 } from '../template.js';
+import {
+  prepareComponentStyles,
+  type ComponentStyles,
+} from '../element/styles.js';
 
 const ASSET_TYPE = 'webui-component-asset';
-const ASSET_VERSION = 2;
+const COMPONENT_STYLES_ASSET_VERSION = 3;
 
 /** Dynamic import edge from a component asset root to a shared chunk. */
 export interface ComponentAssetImport {
@@ -22,14 +26,15 @@ export interface ComponentAssetImport {
 /** WebUI Framework component asset emitted by `webui build --emit-component-assets`. */
 export interface ComponentAsset {
   type: 'webui-component-asset';
-  version: 2;
+  /** Light-DOM-aware assets require an atomic component style catalog. */
+  version: 3;
   kind: 'root' | 'chunk';
   root?: string;
   components: string[];
   requiredComponents: string[];
   externalComponents: string[];
   imports: ComponentAssetImport[];
-  templateStyles: string[];
+  componentStyles: ComponentStyles;
   templates: Record<string, TemplateMeta>;
   templateFunctions?: Record<string, CompiledConditionFn[]>;
 }
@@ -54,8 +59,11 @@ export function validateAsset(
   if (asset.type !== ASSET_TYPE) {
     throw new Error(`[WebUI] Invalid component asset type: ${String(asset.type)}`);
   }
-  if (asset.version !== ASSET_VERSION) {
+  if (asset.version !== COMPONENT_STYLES_ASSET_VERSION) {
     throw new Error(`[WebUI] Unsupported component asset version: ${String(asset.version)}`);
+  }
+  if (asset.componentStyles === undefined) {
+    throw new Error('[WebUI] Version 3 component assets require componentStyles.');
   }
   if (asset.kind !== expectedKind) {
     throw new Error(
@@ -68,7 +76,7 @@ export function validateAsset(
   if (!Array.isArray(asset.imports)) {
     throw new Error('[WebUI] Component asset imports must be an array.');
   }
-  validateStringArray(asset.templateStyles, 'templateStyles');
+  prepareComponentStyles(asset.componentStyles);
   if (!isObject(asset.templates)) {
     throw new Error('[WebUI] Component asset templates must be an object.');
   }

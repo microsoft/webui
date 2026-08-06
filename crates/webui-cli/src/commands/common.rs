@@ -26,7 +26,7 @@ pub struct AppArgs {
     pub css: CssStrategy,
 
     /// DOM strategy for component rendering (shadow or light)
-    #[arg(long, value_enum, default_value_t = DomStrategy::Shadow)]
+    #[arg(long, value_enum, default_value_t = DomStrategy::Light)]
     pub dom: DomStrategy,
 
     /// Framework plugin to load
@@ -91,6 +91,25 @@ pub fn load_theme(theme: &str, search_root: &Path) -> Result<webui::TokenFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestArgs {
+        #[command(flatten)]
+        app: AppArgs,
+    }
+
+    #[test]
+    fn dom_defaults_to_light_and_accepts_explicit_modes() {
+        let default = TestArgs::try_parse_from(["test"]).unwrap();
+        assert_eq!(default.app.dom, DomStrategy::Light);
+
+        let light = TestArgs::try_parse_from(["test", "--dom=light"]).unwrap();
+        assert_eq!(light.app.dom, DomStrategy::Light);
+
+        let shadow = TestArgs::try_parse_from(["test", "--dom=shadow"]).unwrap();
+        assert_eq!(shadow.app.dom, DomStrategy::Shadow);
+    }
 
     #[test]
     fn to_build_options_passes_asset_file_output_settings() {

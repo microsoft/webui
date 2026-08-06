@@ -8,6 +8,7 @@ mod asset_filename;
 mod comment_policy;
 mod component_registry;
 mod condition_parser;
+mod css_boundary;
 mod css_link;
 mod css_parser;
 mod diagnostic;
@@ -52,6 +53,7 @@ const MAX_TEMPLATE_BYTES: usize = 16 * 1024 * 1024;
 /// enters child ranges. This limit keeps pathological nesting from exhausting
 /// the Rust call stack while preserving generous headroom for real templates.
 const MAX_TEMPLATE_DEPTH: usize = 512;
+const LIGHT_DOM_MARKER_ATTR: &str = "data-wl";
 
 /// Prefix for compiler-owned structural signals.
 ///
@@ -198,10 +200,10 @@ impl std::str::FromStr for CssStrategy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum DomStrategy {
-    /// Use shadow DOM with declarative shadow roots for SSR (default).
-    #[default]
+    /// Use shadow DOM with declarative shadow roots for SSR.
     Shadow,
-    /// Use light DOM — component content is rendered as direct children.
+    /// Use light DOM — component content is rendered as direct children (default).
+    #[default]
     Light,
 }
 
@@ -515,6 +517,12 @@ pub struct HtmlParser {
     /// Optional parser plugin for framework-specific behavior.
     plugin: Option<Box<dyn ParserPlugin>>,
 
+    /// Effective DOM strategy resolved once per component tag.
+    component_dom_strategies: HashMap<String, ResolvedComponentDomStrategy>,
+
+    /// Components whose registry CSS has already been lowered for Light DOM.
+    compiled_light_css: HashSet<String>,
+
     /// Top-level fragments parsed by callers. Token graph traversal starts
     /// from these roots after parsing completes.
     token_roots: Vec<String>,
@@ -591,12 +599,213 @@ pub struct HtmlParser {
 struct BuiltComponentTemplate {
     ssr: String,
     artifact: Option<String>,
+    effective_dom_strategy: DomStrategy,
+}
+
+#[derive(Clone, Copy)]
+struct ComponentStyleInjection<'a> {
+    css_snippet: Option<&'a str>,
+    adopted_specifier: Option<&'a str>,
 }
 
 impl BuiltComponentTemplate {
     fn artifact(&self) -> &str {
         self.artifact.as_deref().unwrap_or(&self.ssr)
     }
+
+    fn context(&self) -> plugin::ComponentTemplateContext {
+        plugin::ComponentTemplateContext {
+            effective_dom_strategy: self.effective_dom_strategy,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedComponentDomStrategy {
+    strategy: DomStrategy,
+    /// Byte range of the authored declarative Shadow DOM root, when present.
+    authored_shadow_root: Option<(usize, usize)>,
+}
+
+struct ShadowRootModeOccurrence<'a> {
+    element_start: usize,
+    element_end: usize,
+    element_name: &'a str,
+    has_closing_tag: bool,
+    dynamically_bound: bool,
+    attr_offset: usize,
+    value: Option<&'a str>,
+}
+
+fn resolve_component_dom_strategy(
+    tag_name: &str,
+    source: &str,
+    inherited: DomStrategy,
+) -> Result<ResolvedComponentDomStrategy> {
+    let mut ranges = Vec::with_capacity(8);
+    ranges.push((0..source.len(), true));
+    let mut top_level_element_count = 0usize;
+    let mut top_level_root_start = 0usize;
+    let mut has_top_level_content = false;
+    let mut shadow_mode = None;
+    let mut slot_offset = None;
+
+    while let Some((range, top_level)) = ranges.pop() {
+        for event in Walker::new_range(source, range.start, range.end) {
+            match event {
+                Event::Text(text) if top_level && !text.trim().is_empty() => {
+                    has_top_level_content = true;
+                }
+                Event::Declaration(_) if top_level => {
+                    has_top_level_content = true;
+                }
+                Event::Element(element) => {
+                    if top_level {
+                        top_level_element_count += 1;
+                        top_level_root_start = element.start;
+                    }
+
+                    for attr in element.attrs() {
+                        let attr_name = attr.name.strip_prefix([':', '?']).unwrap_or(attr.name);
+                        if attr_name.eq_ignore_ascii_case("shadowrootmode") {
+                            if shadow_mode.is_some() {
+                                return Err(invalid_shadow_root_mode_error(
+                                    tag_name,
+                                    source,
+                                    element.start + attr.raw_range.start,
+                                    "a component may declare only one `shadowrootmode`",
+                                    "keep one `shadowrootmode=\"open\"` attribute on the sole top-level `<template>`",
+                                ));
+                            }
+                            shadow_mode = Some(ShadowRootModeOccurrence {
+                                element_start: element.start,
+                                element_end: element.close_end(),
+                                element_name: element.name(),
+                                has_closing_tag: !element.self_closing()
+                                    && element.close_end() > element.content_end(),
+                                dynamically_bound: attr.name != attr_name,
+                                attr_offset: element.start + attr.raw_range.start,
+                                value: attr.value,
+                            });
+                        }
+                    }
+
+                    if slot_offset.is_none() && element.name().eq_ignore_ascii_case("slot") {
+                        slot_offset = Some(element.start);
+                    }
+
+                    let name = element.name();
+                    let raw_text = name.eq_ignore_ascii_case("script")
+                        || name.eq_ignore_ascii_case("style")
+                        || name.eq_ignore_ascii_case("textarea")
+                        || name.eq_ignore_ascii_case("title");
+                    if element.content_end() > element.inner().start && !raw_text {
+                        ranges.push((element.inner(), false));
+                    }
+                }
+                Event::Text(_)
+                | Event::Comment(_)
+                | Event::Declaration(_)
+                | Event::ClosingTag(_) => {}
+            }
+        }
+    }
+
+    let (strategy, authored_shadow_root) = match shadow_mode {
+        Some(mode) => {
+            let value = mode.value;
+            if mode.dynamically_bound {
+                return Err(invalid_shadow_root_mode_error(
+                    tag_name,
+                    source,
+                    mode.attr_offset,
+                    "`shadowrootmode` must be a static attribute",
+                    "replace the binding with `shadowrootmode=\"open\"` on the sole top-level `<template>`",
+                ));
+            }
+            if value.is_some_and(|value| value.eq_ignore_ascii_case("closed")) {
+                return Err(invalid_shadow_root_mode_error(
+                    tag_name,
+                    source,
+                    mode.attr_offset,
+                    "`shadowrootmode=\"closed\"` is not supported",
+                    "use `shadowrootmode=\"open\"`; WebUI requires an open root for hydration and style delivery",
+                ));
+            }
+            if !value.is_some_and(|value| value.eq_ignore_ascii_case("open")) {
+                return Err(invalid_shadow_root_mode_error(
+                    tag_name,
+                    source,
+                    mode.attr_offset,
+                    "`shadowrootmode` must be `open`",
+                    "set the attribute to `shadowrootmode=\"open\"`",
+                ));
+            }
+            if top_level_element_count != 1
+                || has_top_level_content
+                || mode.element_start != top_level_root_start
+                || !mode.element_name.eq_ignore_ascii_case("template")
+                || !mode.has_closing_tag
+            {
+                return Err(invalid_shadow_root_mode_error(
+                    tag_name,
+                    source,
+                    mode.attr_offset,
+                    "the declarative Shadow DOM wrapper must be the sole top-level element",
+                    "wrap the complete component in one top-level `<template shadowrootmode=\"open\">`",
+                ));
+            }
+            (
+                DomStrategy::Shadow,
+                Some((mode.element_start, mode.element_end)),
+            )
+        }
+        None => (inherited, None),
+    };
+
+    if strategy == DomStrategy::Light {
+        if let Some(offset) = slot_offset {
+            return Err(light_dom_slot_error(tag_name, source, offset));
+        }
+    }
+
+    Ok(ResolvedComponentDomStrategy {
+        strategy,
+        authored_shadow_root,
+    })
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_shadow_root_mode_error(
+    tag_name: &str,
+    source: &str,
+    offset: usize,
+    title: &str,
+    help: &str,
+) -> ParserError {
+    Diagnostic::error(title)
+        .code(codes::INVALID_SHADOW_ROOT_MODE)
+        .component(tag_name)
+        .at_offset(source, offset)
+        .snippet(source_line_snippet(source, offset))
+        .help(help)
+        .into()
+}
+
+#[cold]
+#[inline(never)]
+fn light_dom_slot_error(tag_name: &str, source: &str, offset: usize) -> ParserError {
+    Diagnostic::error("native `<slot>` projection requires Shadow DOM")
+        .code(codes::LIGHT_DOM_SLOT)
+        .component(tag_name)
+        .element("slot")
+        .at_offset(source, offset)
+        .snippet(source_line_snippet(source, offset))
+        .help(
+            "wrap the complete component template in `<template shadowrootmode=\"open\">` to use `<slot>`",
+        )
+        .into()
 }
 
 fn add_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
@@ -698,7 +907,7 @@ fn locate_css_token(css: &str, token: &str) -> Option<(usize, usize, String)> {
                 // `--token:` is a definition, not the usage we want to point at.
                 if bytes.get(cursor) != Some(&b':') {
                     let (line, column) = diagnostic::line_column(css, index);
-                    return Some((line, column, css_line_snippet(css, index)));
+                    return Some((line, column, source_line_snippet(css, index)));
                 }
             }
         }
@@ -707,13 +916,15 @@ fn locate_css_token(css: &str, token: &str) -> Option<(usize, usize, String)> {
     None
 }
 
-/// Extract the trimmed line containing byte `offset`, capped so a minified
-/// stylesheet does not produce a wall-of-text snippet.
-fn css_line_snippet(css: &str, offset: usize) -> String {
+/// Extract the trimmed line containing byte `offset`, capped so minified input
+/// does not produce a wall-of-text snippet.
+fn source_line_snippet(source: &str, offset: usize) -> String {
     const MAX_SNIPPET: usize = 80;
-    let start = css[..offset].rfind('\n').map_or(0, |n| n + 1);
-    let end = css[offset..].find('\n').map_or(css.len(), |n| offset + n);
-    let line = css[start..end].trim();
+    let start = source[..offset].rfind('\n').map_or(0, |n| n + 1);
+    let end = source[offset..]
+        .find('\n')
+        .map_or(source.len(), |n| offset + n);
+    let line = source[start..end].trim();
     if line.chars().count() > MAX_SNIPPET {
         let truncated: String = line.chars().take(MAX_SNIPPET).collect();
         format!("{truncated}…")
@@ -886,6 +1097,8 @@ impl HtmlParser {
             fragment_records: WebUIFragmentRecords::new(),
             options,
             plugin: None,
+            component_dom_strategies: HashMap::new(),
+            compiled_light_css: HashSet::new(),
             token_roots: Vec::new(),
             fragment_css_tokens: HashMap::new(),
             in_progress_fragments: HashSet::new(),
@@ -976,6 +1189,17 @@ impl HtmlParser {
     #[must_use]
     pub fn module_entry_srcs(&self) -> &[String] {
         &self.module_entry_srcs
+    }
+
+    /// Iterate component tags and the DOM strategy resolved for each parsed
+    /// component.
+    ///
+    /// This remains available independently of parser plugins so protocol
+    /// builders can persist authored Shadow overrides in plugin-free builds.
+    pub fn effective_component_dom_strategies(&self) -> impl Iterator<Item = (&str, DomStrategy)> {
+        self.component_dom_strategies
+            .iter()
+            .map(|(tag_name, resolved)| (tag_name.as_str(), resolved.strategy))
     }
 
     /// Take any post-parse artifacts captured by the parser plugin.
@@ -1118,7 +1342,7 @@ impl HtmlParser {
             &component.css_fallback_chains,
             available_counts,
             &css_owner_label(tag_name),
-            component.css_content.as_deref(),
+            self.component_registry.diagnostic_css_content(tag_name),
             out,
         );
         ops.push(TokenGraphOp::ExitDefinitions(&component.css_definitions));
@@ -1140,7 +1364,8 @@ impl HtmlParser {
             &component.css_fallback_chains,
             available_counts,
             &css_owner_label(&route.fragment_id),
-            component.css_content.as_deref(),
+            self.component_registry
+                .diagnostic_css_content(&route.fragment_id),
             out,
         );
         ops.push(TokenGraphOp::ExitDefinitions(&component.css_definitions));
@@ -1440,6 +1665,7 @@ impl HtmlParser {
                                 content_end,
                                 close_end,
                             };
+                            self.validate_light_dom_marker(&element)?;
 
                             if close_end < end {
                                 ops.push(ParseOp::Parse {
@@ -1616,6 +1842,27 @@ impl HtmlParser {
         }
 
         self.add_raw_fragment(">");
+        if element.name().eq_ignore_ascii_case("template")
+            && element
+                .attrs()
+                .find(|attr| attr.name.eq_ignore_ascii_case("shadowrootmode"))
+                .and_then(|attr| attr.value)
+                .is_some_and(|mode| mode.eq_ignore_ascii_case("open"))
+            && self
+                .component_dom_strategies
+                .get(&self.current_fragment_id)
+                .is_some_and(|resolved| resolved.strategy == DomStrategy::Shadow)
+        {
+            // This compiler-owned no-DOM hook lets the server install the
+            // complete tree-local style closure before hydratable children.
+            // It is a protocol fragment rather than an HTML marker, so client
+            // ordinal paths are unchanged.
+            self.flush_raw_buffer(fragments);
+            fragments.push(structural_signal(format!(
+                "shadow_styles:{}",
+                self.current_fragment_id
+            )));
+        }
         if !element.is_void() {
             if element.close_end() > element.content_end() {
                 ops.push(ParseOp::EmitClose(element.name()));
@@ -2309,8 +2556,29 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
+        let (html_content, css_content) = {
+            let component = self.component_registry.get(element.name()).ok_or_else(|| {
+                self.authoring_error_at(
+                    codes::UNKNOWN_COMPONENT,
+                    format!("unknown component <{}>", element.name()),
+                    element,
+                )
+                .help(self.unknown_component_help(element.name()))
+            })?;
+            (
+                component.html_content.clone(),
+                component.css_content.clone(),
+            )
+        };
+        let effective_dom_strategy =
+            self.resolve_component_dom_strategy(element.name(), &html_content)?;
+
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
+        if effective_dom_strategy.strategy == DomStrategy::Light {
+            self.add_raw_fragment(" ");
+            self.add_raw_fragment(LIGHT_DOM_MARKER_ATTR);
+        }
 
         let binding_count = self.process_tag_attributes(element.attrs(), fragments, true)?;
         if let Some(ref mut p) = self.plugin {
@@ -2339,34 +2607,7 @@ impl HtmlParser {
 
         self.flush_raw_buffer(fragments);
 
-        let (html_content, css_content) = {
-            let component = self.component_registry.get(element.name()).ok_or_else(|| {
-                self.authoring_error_at(
-                    codes::UNKNOWN_COMPONENT,
-                    format!("unknown component <{}>", element.name()),
-                    element,
-                )
-                .help(self.unknown_component_help(element.name()))
-            })?;
-            (
-                component.html_content.clone(),
-                component.css_content.clone(),
-            )
-        };
-
         if !self.fragment_records.contains_key(element.name()) {
-            let component_data = self
-                .component_registry
-                .get(element.name())
-                .ok_or_else(|| {
-                    self.authoring_error_at(
-                        codes::UNKNOWN_COMPONENT,
-                        format!("unknown component <{}>", element.name()),
-                        element,
-                    )
-                    .help(self.unknown_component_help(element.name()))
-                })?
-                .clone();
             let built = self.build_component_templates(
                 element.name(),
                 &html_content,
@@ -2374,8 +2615,24 @@ impl HtmlParser {
                 self.plugin.is_some(),
             )?;
 
+            let context = built.context();
             if let Some(ref mut p) = self.plugin {
-                p.register_component_template(element.name(), &component_data, built.artifact())?;
+                let component_data = self
+                    .component_registry
+                    .get(element.name())
+                    .ok_or_else(|| {
+                        ParserError::NotFound(format!(
+                            "component <{}> disappeared during CSS compilation",
+                            element.name()
+                        ))
+                    })?
+                    .clone();
+                p.register_component_template(
+                    element.name(),
+                    &component_data,
+                    built.artifact(),
+                    context,
+                )?;
             }
 
             self.parse(element.name(), &built.ssr)?;
@@ -2393,6 +2650,44 @@ impl HtmlParser {
         }
 
         Ok(())
+    }
+
+    fn resolve_component_dom_strategy(
+        &mut self,
+        tag_name: &str,
+        source: &str,
+    ) -> Result<ResolvedComponentDomStrategy> {
+        if let Some(resolved) = self.component_dom_strategies.get(tag_name) {
+            return Ok(*resolved);
+        }
+        let resolved = resolve_component_dom_strategy(tag_name, source, self.options.dom_strategy)?;
+        self.component_dom_strategies
+            .insert(tag_name.to_string(), resolved);
+        Ok(resolved)
+    }
+
+    fn validate_light_dom_marker(&self, element: &Element<'_>) -> Result<()> {
+        for attr in element.attrs() {
+            let name = attr.name.strip_prefix([':', '?']).unwrap_or(attr.name);
+            if name.eq_ignore_ascii_case(LIGHT_DOM_MARKER_ATTR) {
+                return Err(self.reserved_light_dom_marker_error(element));
+            }
+        }
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reserved_light_dom_marker_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::RESERVED_LIGHT_DOM_MARKER,
+            "`data-wl` is reserved for Light DOM style isolation",
+            element,
+        )
+        .element(element.name())
+        .snippet(element.opening())
+        .help("remove `data-wl`; WebUI adds and manages the marker automatically")
+        .into()
     }
 
     fn process_text(&mut self, content: &str, fragments: &mut Vec<WebUIFragment>) -> Result<()> {
@@ -3113,7 +3408,7 @@ impl HtmlParser {
             return Ok(());
         }
 
-        let component_data = self
+        let (html_content, css_content) = self
             .component_registry
             .get(component)
             .ok_or_else(|| {
@@ -3122,18 +3417,33 @@ impl HtmlParser {
                     format!("unknown component <{component}>"),
                 )
                 .help(self.unknown_component_help(component))
-            })?
-            .clone();
+            })
+            .map(|component| {
+                (
+                    component.html_content.clone(),
+                    component.css_content.clone(),
+                )
+            })?;
 
         let built = self.build_component_templates(
             component,
-            &component_data.html_content,
-            component_data.css_content.as_deref(),
+            &html_content,
+            css_content.as_deref(),
             self.plugin.is_some(),
         )?;
 
+        let context = built.context();
         if let Some(ref mut p) = self.plugin {
-            p.register_component_template(component, &component_data, built.artifact())?;
+            let component_data = self
+                .component_registry
+                .get(component)
+                .ok_or_else(|| {
+                    ParserError::NotFound(format!(
+                        "component <{component}> disappeared during CSS compilation"
+                    ))
+                })?
+                .clone();
+            p.register_component_template(component, &component_data, built.artifact(), context)?;
         }
 
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
@@ -3170,57 +3480,72 @@ impl HtmlParser {
         css_content: Option<&str>,
         artifact_needed: bool,
     ) -> Result<BuiltComponentTemplate> {
+        let effective_dom_strategy = self.resolve_component_dom_strategy(tag_name, html)?;
+        let compiled_css = if effective_dom_strategy.strategy == DomStrategy::Light {
+            if self.compiled_light_css.contains(tag_name) {
+                self.component_registry
+                    .get(tag_name)
+                    .and_then(|component| component.css_content.clone())
+                    .or_else(|| css_content.map(str::to_string))
+            } else {
+                let compiled = css_content
+                    .map(|css| css_boundary::compile(tag_name, css))
+                    .transpose()?;
+                if let Some(css) = compiled.as_ref() {
+                    self.component_registry
+                        .replace_css_content(tag_name, css.clone())?;
+                }
+                self.compiled_light_css.insert(tag_name.to_string());
+                compiled
+            }
+        } else {
+            None
+        };
+        let css_content = compiled_css.as_deref().or(css_content);
         let adopted_specifier = match self.options.css_strategy {
             CssStrategy::Module if css_content.is_some() => Some(tag_name),
             _ => None,
         };
-        let css_injection = match self.options.css_strategy {
-            CssStrategy::Link => {
-                // In light DOM mode, CSS links go in <head> (emitted by handler),
-                // not inside each component template.
-                if let (Some(css), DomStrategy::Shadow) = (css_content, self.options.dom_strategy) {
-                    let href = self.options.css_link_options.resolve(tag_name, css);
-                    let mut link = String::with_capacity(31 + href.href.len());
-                    link.push_str("<link rel=\"stylesheet\" href=\"");
-                    link.push_str(&href.href);
-                    link.push_str("\">");
-                    Some(link)
-                } else {
-                    None
-                }
-            }
-            CssStrategy::Style => css_content.map(|css| {
-                let trimmed = css.trim();
-                let mut style = String::with_capacity(15 + trimmed.len());
-                style.push_str("<style>");
-                style.push_str(trimmed);
-                style.push_str("</style>");
-                style
-            }),
-            CssStrategy::Module => None,
-        };
+        // CSS resources are installed by the handler from the precomputed
+        // tree-local closure. Keeping template serialization style-free avoids
+        // duplicating Light descendants and lets repeated Shadow instances each
+        // receive an exact, claimable resource set.
+        let css_injection: Option<String> = None;
 
-        let artifact_differs = artifact_needed && Self::template_has_stripped_runtime_attrs(html);
-        let ssr =
-            self.process_component_template(html, css_injection.as_deref(), adopted_specifier)?;
+        let runtime_attr_source = match effective_dom_strategy.authored_shadow_root {
+            Some((start, end)) => &html[start..end],
+            None => html,
+        };
+        let artifact_differs =
+            artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
+        let ssr = self.process_component_template_for_dom(
+            html,
+            css_injection.as_deref(),
+            adopted_specifier,
+            effective_dom_strategy,
+        )?;
         let artifact = if artifact_differs {
-            Some(self.process_component_artifact_template(
+            Some(self.process_component_artifact_template_for_dom(
                 html,
                 css_injection.as_deref(),
                 adopted_specifier,
+                effective_dom_strategy,
             )?)
         } else {
             None
         };
-
-        Ok(BuiltComponentTemplate { ssr, artifact })
+        Ok(BuiltComponentTemplate {
+            ssr,
+            artifact,
+            effective_dom_strategy: effective_dom_strategy.strategy,
+        })
     }
 
     /// Process component template HTML for SSR output.
     ///
-    /// The developer's authored `<template>` wrapper is the source of truth.
+    /// An authored declarative Shadow DOM wrapper is the source of truth.
     ///
-    /// - **Dev supplied `<template ...>`:** preserved verbatim — including
+    /// - **Dev supplied `<template shadowrootmode="open">`:** preserved verbatim — including
     ///   `shadowrootmode`, `shadowrootadoptedstylesheets`, signal fragments,
     ///   and any other custom attributes. SSR strips runtime-only attributes
     ///   (`@event`, `:bind`, `?cond`) from the opening tag, since those are
@@ -3230,8 +3555,9 @@ impl HtmlParser {
     ///   styles still apply. For `CssStrategy::Module`, the parser appends
     ///   `shadowrootadoptedstylesheets="<tag>"` when it is missing.
     ///
-    /// - **Dev omitted `<template>`:**
-    ///   - `DomStrategy::Shadow` wraps the content in a framework-controlled
+    /// - **No authored declarative Shadow DOM root:**
+    ///   - `DomStrategy::Shadow` wraps all content, including an ordinary
+    ///     `<template>`, in a framework-controlled
     ///     `<template shadowrootmode="open">`, optionally adding
     ///     `shadowrootadoptedstylesheets="<tag>"` for the CSS-module strategy.
     ///   - `DomStrategy::Light` emits the content as-is (with the CSS snippet
@@ -3240,46 +3566,92 @@ impl HtmlParser {
     /// Performance: zero recursion, zero regex. The dev-template path uses
     /// quote-aware scanners for opening-tag queries and pre-sizes the output
     /// buffer to avoid reallocation in the hot path.
+    #[cfg(test)]
     fn process_component_template(
         &mut self,
         html: &str,
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
     ) -> Result<String> {
-        self.process_component_template_with_mode(html, css_snippet, adopted_specifier, false)
+        let resolved =
+            resolve_component_dom_strategy("component", html, self.options.dom_strategy)?;
+        self.process_component_template_for_dom(html, css_snippet, adopted_specifier, resolved)
     }
 
-    fn process_component_artifact_template(
+    fn process_component_template_for_dom(
         &mut self,
         html: &str,
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
+        resolved_dom_strategy: ResolvedComponentDomStrategy,
     ) -> Result<String> {
-        self.process_component_template_with_mode(html, css_snippet, adopted_specifier, true)
+        self.process_component_template_with_mode(
+            html,
+            ComponentStyleInjection {
+                css_snippet,
+                adopted_specifier,
+            },
+            resolved_dom_strategy,
+            false,
+        )
+    }
+
+    fn process_component_artifact_template_for_dom(
+        &mut self,
+        html: &str,
+        css_snippet: Option<&str>,
+        adopted_specifier: Option<&str>,
+        resolved_dom_strategy: ResolvedComponentDomStrategy,
+    ) -> Result<String> {
+        self.process_component_template_with_mode(
+            html,
+            ComponentStyleInjection {
+                css_snippet,
+                adopted_specifier,
+            },
+            resolved_dom_strategy,
+            true,
+        )
     }
 
     fn process_component_template_with_mode(
         &mut self,
         html: &str,
-        css_snippet: Option<&str>,
-        adopted_specifier: Option<&str>,
+        style: ComponentStyleInjection<'_>,
+        resolved_dom_strategy: ResolvedComponentDomStrategy,
         preserve_runtime_attrs: bool,
     ) -> Result<String> {
         let trimmed = html.trim();
-        let snippet = css_snippet.unwrap_or_default();
+        let snippet = style.css_snippet.unwrap_or_default();
 
-        let processed = if trimmed.starts_with("<template") {
+        let processed = if let Some((root_start, root_end)) =
+            resolved_dom_strategy.authored_shadow_root
+        {
+            let trim_start = html.len() - html.trim_start().len();
+            let trim_end = html.trim_end().len();
+            if root_start < trim_start || root_end > trim_end || root_start >= root_end {
+                return Err(ParserError::Html(
+                    "invalid declarative Shadow DOM source range".to_string(),
+                ));
+            }
+            let root = &html[root_start..root_end];
             let base = if preserve_runtime_attrs {
-                trimmed.to_string()
+                root.to_string()
             } else {
-                self.strip_runtime_attrs_from_template(trimmed)
+                self.strip_runtime_attrs_from_template(root)
             };
-            let with_adopted = Self::append_adopted_attr_if_missing(base, adopted_specifier);
-            Self::inject_css_snippet_into_template(with_adopted, snippet)
+            let with_adopted = Self::append_adopted_attr_if_missing(base, style.adopted_specifier);
+            let root = Self::inject_css_snippet_into_template(with_adopted, snippet);
+            let mut result =
+                String::with_capacity(trimmed.len() + root.len() - (root_end - root_start));
+            result.push_str(&html[trim_start..root_start]);
+            result.push_str(&root);
+            result.push_str(&html[root_end..trim_end]);
+            result
         } else {
-            match self.options.dom_strategy {
+            match resolved_dom_strategy.strategy {
                 DomStrategy::Shadow => {
-                    let adopted = adopted_specifier.unwrap_or_default();
+                    let adopted = style.adopted_specifier.unwrap_or_default();
                     let adopted_extra = if adopted.is_empty() {
                         0
                     } else {
@@ -3339,7 +3711,13 @@ impl HtmlParser {
         let Some(tag) = html::parse_tag(&html) else {
             return html;
         };
-        if tag.name != "template" || tag.closing || tag.has_attr(Self::ADOPTED_STYLESHEETS_ATTR) {
+        if !tag.name.eq_ignore_ascii_case("template")
+            || tag.closing
+            || tag.attrs().any(|attr| {
+                attr.name
+                    .eq_ignore_ascii_case(Self::ADOPTED_STYLESHEETS_ATTR)
+            })
+        {
             return html;
         }
 
@@ -3367,7 +3745,7 @@ impl HtmlParser {
         let Some(tag) = html::parse_tag(trimmed) else {
             return false;
         };
-        if tag.name != "template" || tag.closing {
+        if !tag.name.eq_ignore_ascii_case("template") || tag.closing {
             return false;
         }
         tag.attrs().any(|attr| {
@@ -3498,8 +3876,263 @@ mod tests {
 
     use super::*;
 
+    #[derive(Default)]
+    struct ContextArtifactPlugin {
+        artifacts: Vec<crate::plugin::ComponentTemplateArtifact>,
+    }
+
+    impl ParserPlugin for ContextArtifactPlugin {
+        fn register_component_template(
+            &mut self,
+            tag_name: &str,
+            _component: &Component,
+            processed_template: &str,
+            context: crate::plugin::ComponentTemplateContext,
+        ) -> Result<()> {
+            self.artifacts
+                .push(crate::plugin::ComponentTemplateArtifact::template(
+                    tag_name.to_string(),
+                    processed_template.to_string(),
+                    context.effective_dom_strategy,
+                ));
+            Ok(())
+        }
+
+        fn classify_attribute(&mut self, _attr_name: &str) -> AttributeAction {
+            AttributeAction::Keep
+        }
+
+        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
+            None
+        }
+
+        fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+            Ok(ParserPluginArtifacts::ComponentTemplates(self.artifacts))
+        }
+    }
+
     fn structural_matcher(value: &str) -> FragmentMatcher {
         signal_raw(&format!("{STRUCTURAL_SIGNAL_PREFIX}{value}"))
+    }
+
+    #[test]
+    fn component_dom_strategy_inherits_build_default_without_override() {
+        assert_eq!(
+            resolve_component_dom_strategy("x-card", "<div>content</div>", DomStrategy::Shadow)
+                .expect("shadow mode")
+                .strategy,
+            DomStrategy::Shadow
+        );
+        assert_eq!(
+            resolve_component_dom_strategy("x-card", "<div>content</div>", DomStrategy::Light)
+                .expect("light mode")
+                .strategy,
+            DomStrategy::Light
+        );
+    }
+
+    #[test]
+    fn dom_strategy_defaults_to_light() {
+        assert_eq!(DomStrategy::default(), DomStrategy::Light);
+        assert_eq!(ParserOptions::default().dom_strategy, DomStrategy::Light);
+    }
+
+    #[test]
+    fn plugin_artifacts_preserve_resolved_shadow_mode() {
+        for (global, component_html) in [
+            (DomStrategy::Shadow, "<p>global shadow</p>"),
+            (
+                DomStrategy::Light,
+                r#"<template shadowrootmode="open"><p>override</p></template>"#,
+            ),
+        ] {
+            let mut parser = HtmlParser::with_plugin_options(
+                Box::new(ContextArtifactPlugin::default()),
+                (CssStrategy::Style, global),
+            );
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "x-card",
+                    component_html,
+                    None,
+                    false,
+                ))
+                .expect("register component");
+            parser
+                .parse("index.html", "<x-card></x-card>")
+                .expect("parse component");
+
+            let ParserPluginArtifacts::ComponentTemplates(artifacts) =
+                parser.take_plugin_artifacts().expect("consume artifacts")
+            else {
+                panic!("expected component artifacts");
+            };
+            assert_eq!(artifacts[0].effective_dom_strategy, DomStrategy::Shadow);
+        }
+    }
+
+    #[test]
+    fn open_shadow_wrapper_overrides_light_default() {
+        let html =
+            "<!-- lead --><template shadowrootmode='open'><slot></slot></template><!-- tail -->";
+        assert_eq!(
+            resolve_component_dom_strategy("x-card", html, DomStrategy::Light)
+                .expect("effective mode")
+                .strategy,
+            DomStrategy::Shadow
+        );
+    }
+
+    #[test]
+    fn closed_shadow_wrapper_is_rejected() {
+        let error = resolve_component_dom_strategy(
+            "x-card",
+            "<template shadowrootmode=\"closed\"><p>content</p></template>",
+            DomStrategy::Light,
+        )
+        .expect_err("closed mode must fail");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::INVALID_SHADOW_ROOT_MODE)
+                    && diagnostic.component_name() == Some("x-card")
+        ));
+    }
+
+    #[test]
+    fn shadow_wrapper_must_be_the_only_top_level_element() {
+        let error = resolve_component_dom_strategy(
+            "x-card",
+            "<template shadowrootmode=\"open\"><p>content</p></template><span>extra</span>",
+            DomStrategy::Light,
+        )
+        .expect_err("multiple roots must fail");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::INVALID_SHADOW_ROOT_MODE)
+        ));
+    }
+
+    #[test]
+    fn shadowrootmode_rejects_invalid_value_and_placement() {
+        for html in [
+            "<template shadowrootmode=\"invalid\"><p>content</p></template>",
+            "<template shadowrootmode=\" open \"><p>content</p></template>",
+            "<template :shadowrootmode=\"{{mode}}\"><p>content</p></template>",
+            "<template shadowrootmode=\"open\" />",
+            "<div><template shadowrootmode=\"open\"><p>content</p></template></div>",
+            "<div shadowrootmode=\"open\">content</div>",
+        ] {
+            let error = resolve_component_dom_strategy("x-card", html, DomStrategy::Light)
+                .expect_err("invalid shadowrootmode must fail");
+            assert!(matches!(
+                error,
+                ParserError::Template(ref diagnostic)
+                    if diagnostic.error_code() == Some(codes::INVALID_SHADOW_ROOT_MODE)
+                        && diagnostic.component_name() == Some("x-card")
+                        && diagnostic.help_text().is_some()
+                        && diagnostic.snippet_text().is_some()
+            ));
+        }
+    }
+
+    #[test]
+    fn light_component_slot_is_rejected() {
+        let error = resolve_component_dom_strategy(
+            "x-card",
+            "<div><slot name=\"label\"></slot></div>",
+            DomStrategy::Light,
+        )
+        .expect_err("light slot must fail");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::LIGHT_DOM_SLOT)
+                    && diagnostic.help_text().is_some_and(|help| help.contains("shadowrootmode"))
+        ));
+    }
+
+    #[test]
+    fn webui_plugin_uses_effective_shadow_mode_under_light_default() {
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(crate::plugin::webui::WebUIParserPlugin::new()),
+            DomStrategy::Light,
+        );
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "x-card",
+                "<!-- lead --><template shadowrootmode=\"open\" @click=\"{onClick()}\"><slot></slot></template><!-- tail -->",
+                None,
+                true,
+            ))
+            .expect("register component");
+        parser
+            .parse("index.html", "<x-card>projected</x-card>")
+            .expect("parse component");
+
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("plugin artifacts")
+        else {
+            panic!("expected component templates");
+        };
+        assert_eq!(templates[0].effective_dom_strategy, DomStrategy::Shadow);
+        assert!(templates[0].template_json.contains("\"sd\":1"));
+        assert!(templates[0]
+            .template_json
+            .contains(r#""re":[["click","onClick",[]]]"#));
+    }
+
+    #[test]
+    fn fast_plugins_receive_effective_shadow_mode_under_light_default() {
+        let plugins: Vec<Box<dyn ParserPlugin>> = vec![
+            Box::new(crate::plugin::fast_v2::FastV2ParserPlugin::new()),
+            Box::new(crate::plugin::fast_v3::FastV3ParserPlugin::new()),
+        ];
+        for plugin in plugins {
+            let mut parser = HtmlParser::with_plugin_options(plugin, DomStrategy::Light);
+            parser
+                .component_registry_mut()
+                .register_component(ComponentRegistration::new(
+                    "x-card",
+                    "<template shadowrootmode=\"open\"><slot></slot></template>",
+                    None,
+                    true,
+                ))
+                .expect("register component");
+            parser
+                .parse("index.html", "<x-card>projected</x-card>")
+                .expect("parse component");
+
+            let ParserPluginArtifacts::ComponentTemplates(templates) =
+                parser.take_plugin_artifacts().expect("plugin artifacts")
+            else {
+                panic!("expected component templates");
+            };
+            assert_eq!(templates[0].effective_dom_strategy, DomStrategy::Shadow);
+        }
+    }
+
+    #[test]
+    fn authored_light_dom_marker_is_rejected_on_elements_and_bindings() {
+        for html in [
+            "<div data-wl>content</div>",
+            "<div :data-wl=\"{{ownsMarker}}\">content</div>",
+        ] {
+            let mut parser = HtmlParser::with_options(DomStrategy::Light);
+            let error = parser
+                .parse("index.html", html)
+                .expect_err("authored data-wl must fail");
+            assert!(matches!(
+                error,
+                ParserError::Template(ref diagnostic)
+                    if diagnostic.error_code() == Some(codes::RESERVED_LIGHT_DOM_MARKER)
+                        && diagnostic.component_name() == Some("index.html")
+                        && diagnostic.help_text().is_some()
+            ));
+        }
     }
 
     #[test]
@@ -3694,7 +4327,7 @@ mod tests {
             records,
             "test.html",
             [
-                raw("<my-component"),
+                raw("<my-component data-wl"),
                 structural_matcher("streaming_root:my-component"),
                 raw(">"),
                 component("my-component"),
@@ -3708,6 +4341,72 @@ mod tests {
         assert!(
             matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
                 !raw.value.contains("<template shadowrootmode") && raw.value.contains("<div>My Component</div>"))
+        );
+    }
+
+    #[test]
+    fn shadow_component_emits_style_hook_inside_declarative_root() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "my-component",
+                "<div>My Component</div>",
+                Some("div { color: blue; }"),
+                true,
+            ))
+            .expect("register");
+
+        parser
+            .parse("test.html", "<my-component></my-component>")
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        assert_stream!(
+            records,
+            "my-component",
+            [
+                raw("<template shadowrootmode=\"open\">"),
+                structural_matcher("shadow_styles:my-component"),
+                raw("<div>My Component</div></template>"),
+            ]
+        );
+        assert!(
+            records["my-component"]
+                .fragments
+                .iter()
+                .all(|fragment| !matches!(
+                    fragment.fragment.as_ref(),
+                    Some(Fragment::Raw(raw)) if raw.value.contains("color: blue")
+                )),
+            "component CSS is delivered by the handler closure"
+        );
+    }
+
+    #[test]
+    fn authored_shadow_attribute_name_is_ascii_case_insensitive_for_style_hook() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "my-component",
+                r#"<template shadowRootMode="open"><slot></slot></template>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+
+        parser
+            .parse("test.html", "<my-component></my-component>")
+            .expect("parse");
+        let records = parser.into_fragment_records();
+        assert_stream!(
+            records,
+            "my-component",
+            [
+                raw(r#"<template shadowRootMode="open">"#),
+                structural_matcher("shadow_styles:my-component"),
+                raw("<slot></slot></template>"),
+            ]
         );
     }
 
@@ -3736,7 +4435,7 @@ mod tests {
             records,
             "test.html",
             [
-                raw("<my-widget"),
+                raw("<my-widget data-wl"),
                 structural_matcher("streaming_root:my-widget"),
                 raw(">"),
                 component("my-widget"),
@@ -3756,7 +4455,7 @@ mod tests {
                 .component_registry
                 .register_component(ComponentRegistration::new(
                     name,
-                    "<slot></slot>",
+                    "<div>content</div>",
                     None,
                     true,
                 ))
@@ -4040,7 +4739,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-element",
-                r#"<template foo="bar"><slot></slot></template>"#,
+                r#"<template foo="bar"><div>content</div></template>"#,
                 None,
                 true,
             ))
@@ -4052,7 +4751,7 @@ mod tests {
         assert_fragments!(
             records["index.html"].fragments,
             [
-                raw("<custom-element"),
+                raw("<custom-element data-wl"),
                 structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
@@ -4063,7 +4762,7 @@ mod tests {
         assert_stream!(
             records,
             "custom-element",
-            [raw(r#"<template foo="bar"><slot></slot></template>"#),]
+            [raw(r#"<template foo="bar"><div>content</div></template>"#),]
         );
     }
 
@@ -4078,7 +4777,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-element",
-                r#"<template foo="bar"><slot></slot></template>"#,
+                r#"<template foo="bar"><div>content</div></template>"#,
                 Some("div { color: red; }"),
                 true,
             ))
@@ -4090,7 +4789,7 @@ mod tests {
         assert_stream!(
             records,
             "custom-element",
-            [raw(r#"<template foo="bar"><slot></slot></template>"#),]
+            [raw(r#"<template foo="bar"><div>content</div></template>"#),]
         );
     }
 
@@ -4098,14 +4797,13 @@ mod tests {
     fn test_component_strip_runtime_attrs() {
         // Runtime-only attributes (`@event`, `:bind`, `?cond`) are stripped
         // from the opening <template> tag, but the wrapper itself is
-        // preserved. After stripping in this case the wrapper becomes
-        // `<template>` with no attributes.
+        // preserved. The declarative Shadow DOM attribute remains.
         let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-element",
-                r#"<template @click={foo} :bar="baz" ?bool="true"><slot></slot></template>"#,
+                r#"<template shadowrootmode="open" @click={foo} :bar="baz" ?bool="true"><div>content</div></template>"#,
                 None,
                 true,
             ))
@@ -4117,7 +4815,11 @@ mod tests {
         assert_stream!(
             records,
             "custom-element",
-            [raw("<template><slot></slot></template>"),]
+            [
+                raw(r#"<template shadowrootmode="open">"#),
+                structural_matcher("shadow_styles:custom-element"),
+                raw("<div>content</div></template>"),
+            ]
         );
     }
 
@@ -4128,7 +4830,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-element",
-                r#"<template data-note="@click={foo}" @click={foo}><slot></slot></template>"#,
+                r#"<template shadowrootmode="open" data-note="@click={foo}" @click={foo}><div>content</div></template>"#,
                 None,
                 true,
             ))
@@ -4140,9 +4842,11 @@ mod tests {
         assert_stream!(
             records,
             "custom-element",
-            [raw(
-                r#"<template data-note="@click={foo}"><slot></slot></template>"#
-            ),]
+            [
+                raw(r#"<template shadowrootmode="open" data-note="@click={foo}">"#),
+                structural_matcher("shadow_styles:custom-element"),
+                raw("<div>content</div></template>"),
+            ]
         );
     }
 
@@ -4153,7 +4857,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-element",
-                r#"<template @click={foo} @click={bar}><slot></slot></template>"#,
+                r#"<template shadowrootmode="open" @click={foo} @click={bar}><div>content</div></template>"#,
                 None,
                 true,
             ))
@@ -4165,13 +4869,17 @@ mod tests {
         assert_stream!(
             records,
             "custom-element",
-            [raw("<template><slot></slot></template>"),]
+            [
+                raw(r#"<template shadowrootmode="open">"#),
+                structural_matcher("shadow_styles:custom-element"),
+                raw("<div>content</div></template>"),
+            ]
         );
     }
 
     #[test]
     fn test_component_with_slots_and_attrs() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -4219,7 +4927,7 @@ mod tests {
         assert_fragments!(
             records["index.html"].fragments,
             [
-                raw("<custom-element"),
+                raw("<custom-element data-wl"),
                 structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
@@ -4253,7 +4961,7 @@ mod tests {
         assert_fragments!(
             records["index.html"].fragments,
             [
-                raw("<custom-widget"),
+                raw("<custom-widget data-wl"),
                 attr_start("config", "settings"),
                 structural_matcher("streaming_root:custom-widget"),
                 raw("/>"),
@@ -4269,7 +4977,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-icon",
-                "<svg><slot></slot></svg>",
+                "<template shadowrootmode=\"open\"><svg><slot></slot></svg></template>",
                 None,
                 true,
             ))
@@ -4294,12 +5002,20 @@ mod tests {
             ]
         );
 
-        assert_stream!(records, "custom-icon", [raw("<svg><slot></slot></svg>"),]);
+        assert_stream!(
+            records,
+            "custom-icon",
+            [
+                raw("<template shadowrootmode=\"open\">"),
+                structural_matcher("shadow_styles:custom-icon"),
+                raw("<svg><slot></slot></svg></template>"),
+            ]
+        );
     }
 
     #[test]
     fn test_component_leading_boolean_attr_start() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -4334,7 +5050,7 @@ mod tests {
 
     #[test]
     fn test_component_boolean_predicate_preserves_condition_tree() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -4667,7 +5383,7 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<my-component"),
+                raw("<my-component data-wl"),
                 attr_complex_start(":config", "settings"),
                 structural_matcher("streaming_root:my-component"),
                 raw(">"),
@@ -4689,7 +5405,7 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<my-component"),
+                raw("<my-component data-wl"),
                 attr_complex_start(":prop1", "val1"),
                 attr_complex(":prop2", "val2"),
                 structural_matcher("streaming_root:my-component"),
@@ -4764,7 +5480,7 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<my-component"),
+                raw("<my-component data-wl"),
                 attr_complex_start(":config", "settings"),
                 structural_matcher("streaming_root:my-component"),
                 raw(">"),
@@ -4786,7 +5502,7 @@ mod tests {
         assert_fragments!(
             fragments,
             [
-                raw("<my-component"),
+                raw("<my-component data-wl"),
                 attr_raw_start("id", "comp"),
                 attr_complex(":config", "settings"),
                 bool_attr("enabled", "isEnabled"),
@@ -5208,7 +5924,7 @@ mod tests {
     #[test]
     fn test_component_attr_skip() {
         // Port of: 'should set attrSkip for skipped component attributes'
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5249,7 +5965,7 @@ mod tests {
     fn test_component_attr_skip_static_and_embedded() {
         // Skipped attrs with static values and embedded bindings should
         // emit fragments (not be silently dropped).
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5294,7 +6010,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-element",
-                "<custom-child></custom-child><slot></slot>",
+                "<custom-child></custom-child><span></span>",
                 None,
                 true,
             ))
@@ -5303,7 +6019,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "custom-button",
-                "<slot></slot>",
+                "<span></span>",
                 None,
                 true,
             ))
@@ -5334,11 +6050,11 @@ mod tests {
             records,
             "for-1",
             [
-                raw("<custom-element"),
+                raw("<custom-element data-wl"),
                 structural_matcher("streaming_root:custom-element"),
                 raw(">"),
                 component("custom-element"),
-                raw("<custom-button"),
+                raw("<custom-button data-wl"),
                 structural_matcher("streaming_root:custom-button"),
                 raw(">"),
                 component("custom-button"),
@@ -5356,10 +6072,10 @@ mod tests {
             matches!(ce[3].fragment.as_ref(), Some(Fragment::Component(c)) if c.fragment_id == "custom-child")
         );
         assert!(
-            matches!(ce[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</custom-child><slot></slot>"))
+            matches!(ce[4].fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</custom-child><span></span>"))
         );
 
-        assert_stream!(records, "custom-button", [raw("<slot></slot>"),]);
+        assert_stream!(records, "custom-button", [raw("<span></span>"),]);
 
         assert_stream!(records, "custom-child", [raw("<h1>Hello World!</h1>"),]);
     }
@@ -5435,7 +6151,7 @@ mod tests {
 
     #[test]
     fn test_rejects_routes_over_depth_limit() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5534,13 +6250,13 @@ mod tests {
     }
 
     #[test]
-    fn test_css_strategy_external_emits_link_tag() {
-        let mut parser = HtmlParser::new();
+    fn test_css_strategy_external_defers_link_to_server_closure() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
                 "my-card",
-                "<p><slot></slot></p>",
+                "<p>content</p>",
                 Some("p { color: red; }"),
                 true,
             ))
@@ -5556,10 +6272,15 @@ mod tests {
             })
             .collect();
         assert!(
-            raw_text.contains(r#"<link rel="stylesheet" href="my-card.css">"#),
-            "Expected external <link> tag in: {}",
+            !raw_text.contains(r#"<link rel="stylesheet""#),
+            "component templates must not own tree-local links: {}",
             raw_text
         );
+        assert!(my_card.iter().any(|fragment| matches!(
+            fragment.fragment.as_ref(),
+            Some(Fragment::Signal(signal))
+                if signal.value == "}}}webui:shadow_styles:my-card"
+        )));
     }
 
     #[test]
@@ -5591,18 +6312,20 @@ mod tests {
     }
 
     #[test]
-    fn test_css_strategy_inline_emits_style_tag() {
+    fn test_css_strategy_inline_defers_style_to_server_closure() {
         let mut parser = HtmlParser::with_options(CssStrategy::Style);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
                 "my-card",
-                "<p><slot></slot></p>",
+                "<p>content</p>",
                 Some("p { color: red; }"),
                 true,
             ))
-            .ok();
-        parser.parse("index.html", "<my-card>Hello</my-card>").ok();
+            .expect("register component");
+        parser
+            .parse("index.html", "<my-card>Hello</my-card>")
+            .expect("parse component");
         let records = parser.into_fragment_records();
         let my_card = &records["my-card"].fragments;
         let raw_text: String = my_card
@@ -5613,8 +6336,8 @@ mod tests {
             })
             .collect();
         assert!(
-            raw_text.contains("<style>p { color: red; }</style>"),
-            "Expected inline <style> tag in: {}",
+            !raw_text.contains("<style>"),
+            "component templates must not own tree-local styles: {}",
             raw_text
         );
         assert!(
@@ -5631,12 +6354,14 @@ mod tests {
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
                 "my-card",
-                "<p><slot></slot></p>",
+                "<p>content</p>",
                 Some("p { color: red; }"),
                 true,
             ))
-            .ok();
-        parser.parse("index.html", "<my-card>Hello</my-card>").ok();
+            .expect("register component");
+        parser
+            .parse("index.html", "<my-card>Hello</my-card>")
+            .expect("parse component");
         let records = parser.into_fragment_records();
 
         // Component template should have shadowrootadoptedstylesheets, no CSS
@@ -5671,8 +6396,46 @@ mod tests {
     }
 
     #[test]
+    fn light_component_css_is_compiled_once() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<p>content</p>",
+                Some(":host{color:red}"),
+                false,
+            ))
+            .expect("register component");
+        parser
+            .parse("index.html", "<my-card></my-card>")
+            .expect("parse component");
+
+        let component = parser
+            .component_registry()
+            .get("my-card")
+            .expect("registered component")
+            .clone();
+        parser
+            .build_component_templates(
+                "my-card",
+                &component.html_content,
+                component.css_content.as_deref(),
+                false,
+            )
+            .expect("rebuild component");
+
+        let css = parser
+            .component_registry()
+            .get("my-card")
+            .and_then(|component| component.css_content.as_deref())
+            .expect("compiled CSS");
+        assert_eq!(css.matches("@scope (").count(), 1);
+    }
+
+    #[test]
     fn test_css_strategy_module_no_css_no_adopted_attr() {
-        let mut parser = HtmlParser::with_options(CssStrategy::Module);
+        let mut parser = HtmlParser::with_options((CssStrategy::Module, DomStrategy::Shadow));
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -5701,17 +6464,15 @@ mod tests {
 
     // ── Dev-authored <template> wrapper handling ────────────────────
     //
-    // These tests verify that when a developer includes a `<template>`
-    // wrapper in their component HTML, the framework respects it instead
-    // of stripping/normalizing it:
+    // These tests distinguish an ordinary `<template>` element from a
+    // declarative Shadow DOM root:
     //
     //   --dom=light  : dev `<template ...>` preserved verbatim (including
     //                  signal-fragment attrs like `foo="{{foo}}"`); no
     //                  wrapper added when dev omits one.
-    //   --dom=shadow : dev `<template ...>` preserved verbatim (framework
-    //                  does NOT inject `shadowrootmode="open"` or overwrite
-    //                  a dev-supplied `shadowrootmode="closed"`); wrapper
-    //                  added only when dev omits one.
+    //   --dom=shadow : ordinary `<template ...>` remains component content
+    //                  inside a generated declarative Shadow root; an authored
+    //                  open declarative Shadow root is preserved.
     //
     // Calls `process_component_template` directly so the assertions observe
     // the exact HTML string the framework emits for the component template
@@ -5788,7 +6549,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_preserves_dev_template_with_static_attrs() {
+    fn shadow_wraps_ordinary_template_as_component_content() {
         let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
         let processed = parser
             .process_component_template(
@@ -5799,32 +6560,29 @@ mod tests {
             .expect("process failed");
         assert!(
             processed.contains(r#"<template foo="bar">"#),
-            "[--dom=shadow] dev <template foo=\"bar\"> must be preserved verbatim, got: {processed}"
+            "[--dom=shadow] ordinary template content must be preserved, got: {processed}"
         );
         assert!(
-            !processed.contains(r#"shadowrootmode="open""#),
-            "[--dom=shadow] framework must NOT inject shadowrootmode when dev already supplied a <template>, got: {processed}"
+            processed.starts_with(r#"<template shadowrootmode="open"><template foo="bar">"#),
+            "[--dom=shadow] ordinary template must be nested in a generated Shadow root, got: {processed}"
         );
     }
 
     #[test]
-    fn shadow_preserves_dev_template_with_shadowrootmode_closed() {
+    fn shadow_rejects_dev_template_with_shadowrootmode_closed() {
         let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
-        let processed = parser
+        let error = parser
             .process_component_template(
                 r#"<template shadowrootmode="closed"><div>hi</div></template>"#,
                 None,
                 None,
             )
-            .expect("process failed");
-        assert!(
-            processed.contains(r#"shadowrootmode="closed""#),
-            "[--dom=shadow] framework must respect dev's shadowrootmode=\"closed\" (developer is managing), got: {processed}"
-        );
-        assert!(
-            !processed.contains(r#"shadowrootmode="open""#),
-            "[--dom=shadow] framework must not overwrite dev's shadowrootmode with \"open\", got: {processed}"
-        );
+            .expect_err("closed roots must fail");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::INVALID_SHADOW_ROOT_MODE)
+        ));
     }
 
     #[test]
@@ -5838,8 +6596,10 @@ mod tests {
             )
             .expect("process failed");
         assert!(
-            processed.contains(r#"<template foo="{{foo}}">"#),
-            "[--dom=shadow] dev <template> with signal-fragment attr must be preserved, got: {processed}"
+            processed.starts_with(
+                r#"<template shadowrootmode="open"><template foo="{{foo}}">"#
+            ),
+            "[--dom=shadow] ordinary template must remain inside the generated Shadow root, got: {processed}"
         );
     }
 
@@ -6493,7 +7253,7 @@ mod tests {
             .component_registry
             .register_component(ComponentRegistration::new(
                 "my-widget",
-                "<slot></slot>",
+                "<div>content</div>",
                 None,
                 true,
             ))
@@ -6924,6 +7684,7 @@ mod tests {
             _tag_name: &str,
             _component: &Component,
             _processed_template: &str,
+            _context: crate::plugin::ComponentTemplateContext,
         ) -> Result<()> {
             Ok(())
         }
@@ -6948,11 +7709,15 @@ mod tests {
 
     struct TemplateCapturePlugin {
         template: Option<String>,
+        effective_dom_strategy: DomStrategy,
     }
 
     impl TemplateCapturePlugin {
         fn new() -> Self {
-            Self { template: None }
+            Self {
+                template: None,
+                effective_dom_strategy: DomStrategy::Light,
+            }
         }
     }
 
@@ -6962,8 +7727,10 @@ mod tests {
             _tag_name: &str,
             _component: &Component,
             processed_template: &str,
+            context: crate::plugin::ComponentTemplateContext,
         ) -> Result<()> {
             self.template = Some(processed_template.to_string());
+            self.effective_dom_strategy = context.effective_dom_strategy;
             Ok(())
         }
 
@@ -6985,6 +7752,7 @@ mod tests {
                     crate::plugin::ComponentTemplateArtifact::template(
                         "todo-app".to_string(),
                         template,
+                        self.effective_dom_strategy,
                     ),
                 ])),
                 None => Ok(ParserPluginArtifacts::None),
@@ -7041,7 +7809,10 @@ mod tests {
 
     #[test]
     fn test_component_static_attrs_not_counted_as_bindings() {
-        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(BindingCountPlugin::new()),
+            DomStrategy::Shadow,
+        );
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -7073,7 +7844,10 @@ mod tests {
 
     #[test]
     fn test_component_dynamic_attr_counted_as_binding() {
-        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(BindingCountPlugin::new()),
+            DomStrategy::Shadow,
+        );
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -7112,7 +7886,10 @@ mod tests {
 
     #[test]
     fn test_component_mixed_static_and_dynamic_attrs_binding_count() {
-        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(BindingCountPlugin::new()),
+            DomStrategy::Shadow,
+        );
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -7154,7 +7931,10 @@ mod tests {
 
     #[test]
     fn test_component_only_skipped_plugin_attrs_counted() {
-        let mut parser = HtmlParser::with_plugin(Box::new(BindingCountPlugin::new()));
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(BindingCountPlugin::new()),
+            DomStrategy::Shadow,
+        );
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -7606,7 +8386,10 @@ mod tests {
         assert_eq!(diag.error_code(), Some(codes::MISSING_THEME_TOKEN));
         // File + line:column, like other authoring diagnostics.
         let location = diag.location().expect("a source location");
-        assert!(location.contains("my-card.css:2:"), "location: {location}");
+        assert!(
+            location.contains("my-card.css:2:14"),
+            "location: {location}"
+        );
         // Snippet shows the offending CSS line.
         assert!(
             diag.snippet_text()

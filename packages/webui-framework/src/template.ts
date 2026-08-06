@@ -13,7 +13,6 @@
  * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot, keyPath?]`
  * - `eg` — grouped element events `[eventName, [[handlerName, argSpecs, targetPath, usesEvent?]]]`
  * - `b`  — nested compiled block metadata
- * - `sa` — adopted stylesheet specifier for CSS module strategy
  * - `sd` — shadow DOM flag for client-created components
  * - `re` — root events on the host element
  * - `tr` — state roots referenced by the compiled template
@@ -48,6 +47,12 @@ import {
   templateRegistrationDetail,
   TEMPLATES_REGISTERED_EVENT,
 } from './template-events.js';
+import {
+  prepareComponentStyles,
+  registerComponentStyles,
+  validateComponentStylesRegistration,
+  type ComponentStyles,
+} from './element/styles.js';
 
 import type {
   CompiledCondition,
@@ -73,8 +78,11 @@ const pendingTemplateDefinitions = new Map<string, PendingTemplateDefinition>();
 function acceptTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
+  componentStyles?: ComponentStyles,
 ): boolean {
+  validateComponentStylesRegistration(componentStyles);
   prepareTemplateData(templates, templateFns);
+  if (componentStyles) registerComponentStyles(componentStyles);
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
@@ -101,9 +109,17 @@ function acceptTemplateData(
 }
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.__webuiRegisterComponentStyles = (value: unknown): void => {
+    registerComponentStyles(value);
+  };
+  if (window.__webui?.componentStyles) {
+    registerComponentStyles(window.__webui.componentStyles);
+  }
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
-    const templates = templateRegistrationDetail(event)?.templates;
-    if (templates) acceptTemplateData(templates);
+    const detail = templateRegistrationDetail(event);
+    if (!detail?.templates) return;
+    const styles = prepareComponentStyles(detail.componentStyles);
+    acceptTemplateData(detail.templates, undefined, styles);
   });
 }
 
@@ -115,8 +131,10 @@ declare global {
       templates?: Record<string, TemplateMeta>;
       templateFns?: Record<string, CompiledConditionFn[]>;
       templateHostExclusions?: Set<string>;
+      componentStyles?: ComponentStyles;
       [key: string]: unknown;
     };
+    __webuiRegisterComponentStyles?: (value: unknown) => void;
   }
 }
 
@@ -151,9 +169,11 @@ export function getTemplateRegistry(): Record<string, TemplateMeta> | undefined 
 export function registerTemplateData(
   templates: Record<string, TemplateMeta>,
   templateFns?: Record<string, CompiledConditionFn[]>,
+  componentStylesValue?: ComponentStyles | unknown,
 ): void {
-  if (acceptTemplateData(templates, templateFns)) {
-    dispatchTemplatesRegistered(templates);
+  const componentStyles = prepareComponentStyles(componentStylesValue);
+  if (acceptTemplateData(templates, templateFns, componentStyles)) {
+    dispatchTemplatesRegistered(templates, componentStyles);
   }
 }
 
@@ -222,6 +242,7 @@ function loadWebUIDataBlock(): void {
   if (text) {
     const templateFns = window.__webui?.templateFns;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    registerComponentStyles(parsed.componentStyles);
     if (templateFns) parsed.templateFns = templateFns;
     window.__webui = parsed;
   }

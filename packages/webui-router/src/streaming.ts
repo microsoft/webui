@@ -21,7 +21,6 @@ export interface StreamingContext {
   readonly currentRequestPath: string;
   readonly activeChain: RouteChainEntry[];
   readonly nonce: string;
-  readonly injectedStyles: Set<string>;
   readonly injectedCss: Set<string>;
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
@@ -99,7 +98,6 @@ export async function readStreamingPartial(
   registerTemplatesAndStyles(
     chunk1,
     ctx.nonce,
-    ctx.injectedStyles,
     ctx.updateInventory,
   );
   injectCssLinks(chunk1, ctx.injectedCss);

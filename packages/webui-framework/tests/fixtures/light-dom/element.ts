@@ -1,28 +1,27 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-/**
- * Dedicated light-DOM hydration fixture.
- *
- * The pipeline always produces shadow DOM, so this fixture uses manual
- * template registration and hand-written SSR HTML to keep the light-DOM
- * hydration code path tested.
- */
-
 import { WebUIElement, observable } from '../../../src/index.js';
-import { registerCompiledTemplate } from '@microsoft/webui-test-support';
-
-registerCompiledTemplate('test-light-dom', {
-  h: '<span class="greeting"></span> <span class="name"></span>!',
-  tx: [
-    [[[0], 0], [['greeting']]],
-    [[[2], 0], [['name']]],
-  ],
-});
 
 export class TestLightDom extends WebUIElement {
   @observable greeting = 'Hello';
   @observable name = 'World';
+
+  spawnChild(): void {
+    const container = this.querySelector('.client-children');
+    if (container) {
+      container.appendChild(document.createElement('test-light-child'));
+    }
+  }
 }
 
+export class TestLightChild extends WebUIElement {}
+
+export class TestShadowOptIn extends WebUIElement {}
+
+export class TestShadowLightChild extends WebUIElement {}
+
 TestLightDom.define('test-light-dom');
+TestLightChild.define('test-light-child');
+TestShadowOptIn.define('test-shadow-opt-in');
+TestShadowLightChild.define('test-shadow-light-child');

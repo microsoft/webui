@@ -515,8 +515,8 @@ X-WebUI-Inventory: <hex bitmask>
 
 The server should return:
 
-- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ templateStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
-- **`Accept: application/json`** → JSON partial: `{ state, templateStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `Protocol::render_partial()` returns this complete response
+- **`Accept: application/x-ndjson`** → NDJSON streaming: Chunk 1 `{ componentStyles, templates, inventory, path, chain, cacheTags }`, Chunk 2 `{ states: [...] }` — or fall back to single JSON
+- **`Accept: application/json`** → JSON partial: `{ state, componentStyles, templates, inventory, path, chain, cacheTags, cacheControl }`; `Protocol::render_partial()` returns this complete response
 - **Otherwise** → Full SSR'd HTML page
 
 The `chain` field contains the matched route chain with `component`, `path`,

@@ -10,6 +10,8 @@
  * whether a registered template needs a compiler-owned host.
  */
 
+import type { ComponentStyles } from './types.js';
+
 /** Shared event name understood by optional framework runtimes. */
 const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
@@ -24,63 +26,33 @@ export function registerTemplatesAndStyles(
   data: {
     templates?: Record<string, unknown>;
     templateFunctions?: Record<string, string>;
-    templateStyles?: string[];
+    componentStyles: ComponentStyles;
     inventory?: string;
   },
   nonce: string,
-  injectedStyles: Set<string>,
   updateInventory: (inv: string) => void,
 ): void {
+  const componentStyles = validateComponentStyles(data.componentStyles);
+  validateTemplatePayload(data.templates);
+  const register = window.__webuiRegisterComponentStyles;
+  if (register) {
+    register(componentStyles);
+  } else {
+    const w = window as Window;
+    if (!w.__webui) w.__webui = {};
+    w.__webui.componentStyles = mergeFallbackComponentStyles(
+      w.__webui.componentStyles,
+      componentStyles,
+    );
+  }
+
   if (data.inventory) {
     updateInventory(data.inventory);
   }
 
-  // 1. CSS modules: each entry is a `<script type="importmap">` tag
-  //    registering one or more component CSS modules under a data:text/css
-  //    URI. Append one importmap script per entry (matching the SSR
-  //    handler's 1:1 emission) so SSR and SPA produce the same DOM shape.
-  //    Multiple Import Maps support (required for this strategy) handles
-  //    the document-level merge.
-  if (data.templateStyles) {
-    for (const scriptMarkup of data.templateStyles) {
-      const trimmed = scriptMarkup.trim();
-      if (!trimmed.startsWith('<script')) continue;
-
-      const openTagEnd = trimmed.indexOf('>');
-      const closeTagStart = trimmed.lastIndexOf('</script>');
-      if (openTagEnd < 0 || closeTagStart <= openTagEnd) continue;
-
-      const jsonBody = trimmed.substring(openTagEnd + 1, closeTagStart);
-      let parsed: { imports?: Record<string, unknown> };
-      try {
-        parsed = JSON.parse(jsonBody) as { imports?: Record<string, unknown> };
-      } catch {
-        continue;
-      }
-      if (!parsed.imports || typeof parsed.imports !== 'object') continue;
-
-      const newImports: Record<string, string> = {};
-      let hasNew = false;
-      for (const [specifier, uri] of Object.entries(parsed.imports)) {
-        if (typeof uri !== 'string' || !uri.startsWith('data:text/css,')) continue;
-        if (injectedStyles.has(specifier)) continue;
-        newImports[specifier] = uri;
-        injectedStyles.add(specifier);
-        hasNew = true;
-      }
-      if (!hasNew) continue;
-
-      const script = document.createElement('script');
-      script.type = 'importmap';
-      if (nonce) script.nonce = nonce;
-      script.textContent = JSON.stringify({ imports: newImports });
-      document.head.appendChild(script);
-    }
-  }
-
   let executableTemplateBody = '';
   let registeredTemplates: Record<string, unknown> | undefined;
-  // 2. Template closures: execute only the component-local condition arrays.
+  // 1. Template closures: execute only the component-local condition arrays.
   //    TRUST BOUNDARY: closure scripts come from the same-origin server
   //    that compiled the protocol. The CSP nonce gates script execution.
   //    If the server endpoint is compromised, this is an XSS vector —
@@ -102,9 +74,15 @@ export function registerTemplatesAndStyles(
     }
   }
 
-  // 3. Template metadata: register JSON-safe data directly. FAST
-  //    `<f-template>` HTML strings are materialized as DOM; executable
-  //    template strings are intentionally unsupported.
+  if (executableTemplateBody) {
+    const script = document.createElement('script');
+    if (nonce) script.nonce = nonce;
+    script.textContent = `(function(){${executableTemplateBody}})();`;
+    document.head.appendChild(script);
+    document.head.removeChild(script);
+  }
+
+  // 2. Template metadata is published only after resources and closures.
   if (data.templates) {
     const w = window as unknown as { __webui?: { templates?: Record<string, unknown>; [key: string]: unknown } };
     if (!w.__webui) w.__webui = {};
@@ -131,15 +109,54 @@ export function registerTemplatesAndStyles(
     }
   }
 
-  if (executableTemplateBody) {
-    const script = document.createElement('script');
-    if (nonce) script.nonce = nonce;
-    script.textContent = `(function(){${executableTemplateBody}})();`;
-    document.head.appendChild(script);
-    document.head.removeChild(script);
-  }
+  notifyTemplatesRegistered(registeredTemplates, componentStyles);
+}
 
-  notifyTemplatesRegistered(registeredTemplates);
+function mergeFallbackComponentStyles(
+  current: ComponentStyles | undefined,
+  next: ComponentStyles,
+): ComponentStyles {
+  if (!current) return next;
+  if (current.strategy !== next.strategy) {
+    throw new Error('[Router] Conflicting componentStyles strategies.');
+  }
+  const resources = { ...current.resources };
+  const closures = { ...current.closures };
+  for (const id of Object.keys(next.resources)) {
+    const existing = resources[id];
+    if (existing && JSON.stringify(existing) !== JSON.stringify(next.resources[id])) {
+      throw new Error(`[Router] Conflicting component style resource "${id}".`);
+    }
+    resources[id] = next.resources[id];
+  }
+  for (const root of Object.keys(next.closures)) {
+    const existing = closures[root];
+    if (existing && (
+      existing.length !== next.closures[root].length ||
+      existing.some((id, index) => id !== next.closures[root][index])
+    )) {
+      throw new Error(`[Router] Conflicting component style closure "${root}".`);
+    }
+    closures[root] = next.closures[root];
+  }
+  return {
+    version: 1,
+    strategy: next.strategy,
+    resources,
+    closures,
+  };
+}
+
+function validateTemplatePayload(
+  templates: Record<string, unknown> | undefined,
+): void {
+  if (!templates) return;
+  for (const tag of Object.keys(templates)) {
+    const template = templates[tag];
+    if (typeof template === 'string' && !template.startsWith('<')) {
+      throw new Error(`[Router] Unsupported executable template payload for ${tag}.`);
+    }
+  }
 }
 
 /** Inject CSS stylesheet links from a partial response. */
@@ -170,7 +187,6 @@ export async function fetchComponentTemplates(
   inventoryHex: string,
   templateEndpoint: string,
   nonce: string,
-  injectedStyles: Set<string>,
   updateInventory: (inv: string) => void,
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
@@ -181,12 +197,13 @@ export async function fetchComponentTemplates(
   const data = await resp.json();
 
   // Register using the same pipeline as partial navigation
-  registerTemplatesAndStyles(data, nonce, injectedStyles, updateInventory);
+  registerTemplatesAndStyles(data, nonce, updateInventory);
 }
 
 /** Announce newly registered WebUI templates. */
 export function notifyTemplatesRegistered(
   templates: Record<string, unknown> | undefined,
+  componentStyles?: ComponentStyles,
 ): void {
   if (
     !templates ||
@@ -198,6 +215,58 @@ export function notifyTemplatesRegistered(
   }
 
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates },
+    detail: { templates, componentStyles },
   }));
+}
+
+function validateComponentStyles(value: unknown): ComponentStyles {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    (value as { version?: unknown }).version !== 1
+  ) {
+    throw new Error('[Router] componentStyles must use version 1.');
+  }
+  const styles = value as unknown as ComponentStyles;
+  if (
+    styles.strategy !== 'link' &&
+    styles.strategy !== 'style' &&
+    styles.strategy !== 'module'
+  ) {
+    throw new Error('[Router] Invalid componentStyles strategy.');
+  }
+  if (
+    !styles.resources ||
+    typeof styles.resources !== 'object' ||
+    Array.isArray(styles.resources) ||
+    !styles.closures ||
+    typeof styles.closures !== 'object' ||
+    Array.isArray(styles.closures)
+  ) {
+    throw new Error('[Router] componentStyles must contain resources and closures.');
+  }
+  for (const id of Object.keys(styles.resources)) {
+    const resource = styles.resources[id];
+    if (!id || !resource || resource.kind !== styles.strategy) {
+      throw new Error(`[Router] Invalid component style resource "${id}".`);
+    }
+    if (
+      (resource.kind === 'link' && (!resource.href || typeof resource.href !== 'string')) ||
+      (resource.kind === 'style' && typeof resource.css !== 'string') ||
+      (resource.kind === 'module' && (
+        !resource.specifier || typeof resource.specifier !== 'string' ||
+        typeof resource.css !== 'string'
+      ))
+    ) {
+      throw new Error(`[Router] Invalid component style resource "${id}".`);
+    }
+  }
+  for (const root of Object.keys(styles.closures)) {
+    const closure = styles.closures[root];
+    if (!root || !Array.isArray(closure) || closure.some(id => typeof id !== 'string' || !id)) {
+      throw new Error(`[Router] Invalid component style closure "${root}".`);
+    }
+  }
+  return styles;
 }

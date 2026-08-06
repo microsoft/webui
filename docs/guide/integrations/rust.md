@@ -359,6 +359,7 @@ delivery from a cancelled or stalled stream.
 | `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
+| `dom` | `DomStrategy` | `Light` | Component DOM strategy: `Light` or `Shadow` |
 | `plugin` | `Option<Plugin>` | `None` | Parser plugin (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
@@ -367,6 +368,11 @@ delivery from a cancelled or stalled stream.
 | `css_file_name_template` | `String` | `"[name].[ext]"` | Emitted asset filename template for Link-mode CSS and component assets. Tokens: `[name]`, `[hash]`, `[ext]` |
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
+
+`BuildOptions::default()` and `HtmlParser` use Light DOM. Set
+`dom: DomStrategy::Shadow` to select Shadow globally. In a Light build, a
+component can opt into Shadow with a sole top-level
+`<template shadowrootmode="open">`; native `<slot>` is Shadow-only.
 
 `BuildResult::component_asset_files` contains root and shared chunk modules.
 Entry-reachable dependencies remain in the protocol and are external

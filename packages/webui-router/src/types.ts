@@ -13,13 +13,27 @@ declare global {
       templates?: Record<string, unknown>;
       templateFns?: Record<string, unknown>;
       templateHostExclusions?: Set<string>;
+      componentStyles?: ComponentStyles;
     };
+    __webuiRegisterComponentStyles?: (value: unknown) => void;
   }
 }
 
 /**
  * Public type definitions for @microsoft/webui-router.
  */
+
+export type ComponentStyleResource =
+  | { kind: 'link'; href: string }
+  | { kind: 'style'; css: string }
+  | { kind: 'module'; specifier: string; css: string };
+
+export interface ComponentStyles {
+  version: 1;
+  strategy: 'link' | 'style' | 'module';
+  resources: Record<string, ComponentStyleResource>;
+  closures: Record<string, string[]>;
+}
 
 /** Configuration passed to `Router.start()`. */
 export interface RouterConfig {

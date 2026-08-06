@@ -312,7 +312,7 @@ impl Default for BuildOptions {
             app_dir: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
+            dom: DomStrategy::Light,
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
@@ -611,6 +611,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                 .map(|css| (component.tag_name.clone(), css.clone()))
         })
         .collect();
+    let effective_dom_strategies: Vec<(String, DomStrategy)> = parser
+        .effective_component_dom_strategies()
+        .map(|(tag_name, strategy)| (tag_name.to_string(), strategy))
+        .collect();
 
     // Collect CSS token analysis before consuming the parser.
     let token_analysis = parser.token_analysis();
@@ -698,20 +702,32 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         DomStrategy::Shadow => webui_protocol::DomStrategy::Shadow,
         DomStrategy::Light => webui_protocol::DomStrategy::Light,
     });
+    for (tag_name, strategy) in effective_dom_strategies {
+        if !protocol.fragments.contains_key(&tag_name) {
+            continue;
+        }
+        protocol
+            .components
+            .entry(tag_name)
+            .or_default()
+            .effective_dom_strategy = match strategy {
+            DomStrategy::Shadow => webui_protocol::DomStrategy::Shadow as i32,
+            DomStrategy::Light => webui_protocol::DomStrategy::Light as i32,
+        };
+    }
 
-    // Process component CSS in a single pass: store Module CSS content,
+    // Process component CSS in a single pass: retain compiled Style/Module CSS,
     // set Link-strategy css_href, and collect external CSS files.
-    let is_module = options.css == CssStrategy::Module;
-    let is_link = options.css == CssStrategy::Link;
+    let stores_css = options.css != CssStrategy::Link;
     let mut css_files: Vec<(String, String)> = Vec::new();
     let mut emitted_names: HashSet<String> = HashSet::new();
     for (tag, css) in css_snapshot {
         if !protocol.fragments.contains_key(&tag) {
             continue;
         }
-        if is_module {
-            protocol.components.entry(tag).or_default().css = css.trim().to_string();
-        } else if is_link {
+        if stores_css {
+            protocol.components.entry(tag).or_default().css = css;
+        } else {
             let resolved = css_link_options.resolve(&tag, &css);
             if !emitted_names.insert(resolved.filename.clone()) {
                 return Err(WebUIError::InvalidBuildOptions(format!(
@@ -722,9 +738,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             protocol.components.entry(tag).or_default().css_href = resolved.href;
             css_files.push((resolved.filename, css));
         }
-        // Style strategy: CSS is already baked into raw fragments by the
-        // parser — nothing to store in the protocol or emit as files.
     }
+
+    // CSS order is load-bearing, so compute this independently from the sorted
+    // component-asset reachability sets.
+    protocol.populate_style_closures(&[options.entry.as_str()]);
 
     // Store compiled client templates in the protocol so any host server can
     // query them. Scriptless templates retain navigation metadata but contribute
@@ -938,6 +956,8 @@ mod tests {
     fn default_options(app_dir: &Path) -> BuildOptions {
         BuildOptions {
             app_dir: app_dir.to_path_buf(),
+            // These fixtures intentionally exercise explicit Shadow mode.
+            dom: DomStrategy::Shadow,
             ..BuildOptions::default()
         }
     }
@@ -954,6 +974,91 @@ mod tests {
         assert_eq!(
             result.protocol.initial_state_strategy,
             webui_protocol::InitialStateStrategy::Full as i32
+        );
+    }
+
+    #[test]
+    fn build_defaults_to_light_and_supports_explicit_shadow() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<my-card></my-card><shadow-card></shadow-card>",
+            ),
+            ("my-card.html", "<p>content</p>"),
+            (
+                "shadow-card.html",
+                r#"<template shadowrootmode="open"><p>shadow</p></template>"#,
+            ),
+        ]);
+
+        let light = build(BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            ..BuildOptions::default()
+        })
+        .unwrap();
+        assert_eq!(BuildOptions::default().dom, DomStrategy::Light);
+        assert_eq!(
+            light.protocol.dom_strategy(),
+            webui_protocol::DomStrategy::Light
+        );
+        assert_eq!(
+            light.protocol.effective_component_dom_strategy("my-card"),
+            webui_protocol::DomStrategy::Light
+        );
+        assert_eq!(
+            light
+                .protocol
+                .effective_component_dom_strategy("shadow-card"),
+            webui_protocol::DomStrategy::Shadow
+        );
+        let light_html: String = light.protocol.fragments["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!light_html.contains("shadowrootmode"));
+
+        let shadow = build(BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            dom: DomStrategy::Shadow,
+            ..BuildOptions::default()
+        })
+        .unwrap();
+        assert_eq!(
+            shadow.protocol.dom_strategy(),
+            webui_protocol::DomStrategy::Shadow
+        );
+        let shadow_html: String = shadow.protocol.fragments["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(shadow_html.contains(r#"<template shadowrootmode="open">"#));
+    }
+
+    #[test]
+    fn build_rejects_slot_in_default_light_component() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+        ]);
+
+        let error = build(BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            ..BuildOptions::default()
+        })
+        .expect_err("effective Light DOM slot must fail the build");
+
+        assert!(
+            error.chain_message().contains("[light-dom-slot]"),
+            "unexpected build error: {}",
+            error.chain_message()
         );
     }
 
@@ -1402,6 +1507,237 @@ mod tests {
     }
 
     #[test]
+    fn light_css_bytes_align_across_link_style_and_module() {
+        let authored = " \n:host(.ready){color:red}\n ";
+        let expected = concat!(
+            "@scope (my-card[data-wl]) to (:scope [data-wl] > *) {\n",
+            " \n:scope:is(.ready){color:red}\n ",
+            "\n}"
+        );
+
+        for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
+            let app = create_app_dir(&[
+                ("index.html", "<my-card></my-card>"),
+                ("my-card.html", "<p>content</p>"),
+                ("my-card.css", authored),
+            ]);
+            let mut options = default_options(app.path());
+            options.dom = DomStrategy::Light;
+            options.css = strategy;
+            if strategy == CssStrategy::Link {
+                options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+            }
+            let result = build(options).unwrap();
+
+            let actual = match strategy {
+                CssStrategy::Link => {
+                    let expected_name = webui_parser::CssLinkOptions::try_new(
+                        "[name]-[hash].[ext]".to_string(),
+                        None,
+                    )
+                    .unwrap()
+                    .resolve("my-card", expected)
+                    .filename;
+                    assert_eq!(result.css_files[0].0, expected_name);
+                    result.css_files[0].1.clone()
+                }
+                CssStrategy::Module => result.protocol.components["my-card"].css.clone(),
+                CssStrategy::Style => {
+                    assert_eq!(result.protocol.components["my-card"].css, expected);
+                    result.protocol.components["my-card"].css.clone()
+                }
+            };
+            assert_eq!(actual, expected, "mismatch for {strategy:?}");
+            if strategy != CssStrategy::Link {
+                assert_eq!(
+                    result.protocol.component_style_resource("my-card"),
+                    Some(expected)
+                );
+            }
+            assert_eq!(
+                result
+                    .protocol
+                    .style_closure("index.html")
+                    .expect("entry closure"),
+                ["my-card"],
+                "Light CSS must be installed by the Document closure"
+            );
+
+            let protocol = Protocol::new(result.protocol.clone());
+            let mut writer = StringWriter { buf: String::new() };
+            WebUIHandler::new()
+                .render(
+                    &protocol,
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            match strategy {
+                CssStrategy::Link => {
+                    let href = &result.protocol.components["my-card"].css_href;
+                    assert!(writer.buf.contains(&format!(
+                        r#"<link rel="stylesheet" href="{href}" data-webui-resource="my-card" data-webui-strategy="link">"#
+                    )));
+                }
+                CssStrategy::Style | CssStrategy::Module => {
+                    let kind = if strategy == CssStrategy::Module {
+                        "module"
+                    } else {
+                        "style"
+                    };
+                    assert!(writer.buf.contains(&format!(
+                        r#"<style data-webui-resource="my-card" data-webui-strategy="{kind}">{expected}</style>"#
+                    )));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn build_precomputes_style_closures_for_both_dom_modes_and_shadow_override() {
+        for dom in [DomStrategy::Light, DomStrategy::Shadow] {
+            let app = create_app_dir(&[
+                (
+                    "index.html",
+                    "<light-card></light-card><shadow-card><after-card></after-card></shadow-card>",
+                ),
+                ("light-card.html", "<nested-card></nested-card>"),
+                ("light-card.css", ".light{}"),
+                (
+                    "shadow-card.html",
+                    r#"<template shadowrootmode="open"><nested-card></nested-card></template>"#,
+                ),
+                ("shadow-card.css", ".shadow{}"),
+                ("nested-card.html", "<span>nested</span>"),
+                ("nested-card.css", ".nested{}"),
+                ("after-card.html", "<span>after</span>"),
+                ("after-card.css", ".after{}"),
+            ]);
+            let mut options = default_options(app.path());
+            options.css = CssStrategy::Style;
+            options.dom = dom;
+            let result = build(options).unwrap();
+
+            if dom == DomStrategy::Light {
+                assert_eq!(
+                    result
+                        .protocol
+                        .style_closure("index.html")
+                        .expect("entry closure"),
+                    ["light-card", "nested-card", "after-card"]
+                );
+                assert_eq!(
+                    result
+                        .protocol
+                        .style_closure("shadow-card")
+                        .expect("Shadow closure"),
+                    ["shadow-card", "nested-card"]
+                );
+            } else {
+                assert!(result
+                    .protocol
+                    .style_closure("index.html")
+                    .expect("entry closure")
+                    .is_empty());
+                assert_eq!(
+                    result
+                        .protocol
+                        .style_closure("light-card")
+                        .expect("component closure"),
+                    ["light-card"]
+                );
+                assert_eq!(
+                    result
+                        .protocol
+                        .style_closure("shadow-card")
+                        .expect("Shadow closure"),
+                    ["shadow-card"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn authored_shadow_css_bytes_are_not_lowered_or_trimmed() {
+        let authored =
+            " \n:host(.ready){color:red}:host-context(body){color:blue}::slotted(*){color:green}\n ";
+
+        for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
+            let app = create_app_dir(&[
+                ("index.html", "<my-card></my-card>"),
+                (
+                    "my-card.html",
+                    r#"<template shadowrootmode="open"><p>content</p></template>"#,
+                ),
+                ("my-card.css", authored),
+            ]);
+            let mut options = default_options(app.path());
+            options.dom = DomStrategy::Light;
+            options.css = strategy;
+            let result = build(options).unwrap();
+
+            match strategy {
+                CssStrategy::Link => assert_eq!(result.css_files[0].1, authored),
+                CssStrategy::Style | CssStrategy::Module => {
+                    assert_eq!(result.protocol.components["my-card"].css, authored);
+                    assert_eq!(
+                        result.protocol.component_style_resource("my-card"),
+                        Some(authored)
+                    );
+                }
+            }
+            assert_eq!(
+                result
+                    .protocol
+                    .style_closure("my-card")
+                    .expect("component closure"),
+                ["my-card"],
+                "the authored Shadow root owns its exact CSS resource"
+            );
+
+            let protocol = Protocol::new(result.protocol.clone());
+            let mut writer = StringWriter { buf: String::new() };
+            WebUIHandler::new()
+                .render(
+                    &protocol,
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            match strategy {
+                CssStrategy::Link => {
+                    let href = &result.protocol.components["my-card"].css_href;
+                    assert!(writer.buf.contains(&format!(
+                        r#"<template shadowrootmode="open"><link rel="stylesheet" href="{href}" data-webui-resource="my-card" data-webui-strategy="link">"#
+                    )));
+                }
+                CssStrategy::Style | CssStrategy::Module => {
+                    let kind = if strategy == CssStrategy::Module {
+                        "module"
+                    } else {
+                        "style"
+                    };
+                    assert!(writer.buf.contains(&format!(
+                        r#"<style data-webui-resource="my-card" data-webui-strategy="{kind}">{authored}</style>"#
+                    )));
+                    let template_start = writer
+                        .buf
+                        .find(r#"<template shadowrootmode="open""#)
+                        .expect("declarative Shadow root");
+                    let style_start = writer
+                        .buf
+                        .find(r#"data-webui-resource="my-card""#)
+                        .expect("tree-local style");
+                    let content_start = writer.buf.find("<p>content</p>").expect("component body");
+                    assert!(template_start < style_start && style_start < content_start);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_build_strips_non_legal_css_comments_from_output_file() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
@@ -1501,7 +1837,7 @@ mod tests {
     }
 
     #[test]
-    fn test_css_public_base_emits_parser_and_handler_links() {
+    fn test_css_public_base_emits_protocol_handler_and_payload_resources() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -1517,19 +1853,16 @@ mod tests {
 
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
-        let component_html = result.protocol.fragments["my-card"]
-            .fragments
-            .iter()
-            .filter_map(|fragment| match fragment.fragment.as_ref() {
-                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-        assert!(
-            component_html.contains(&format!(
-                r#"<link rel="stylesheet" href="{expected_href}">"#
-            )),
-            "parser-generated component template should use CDN href: {component_html}"
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
+        assert_eq!(
+            result
+                .protocol
+                .style_closure("my-card")
+                .expect("component closure"),
+            ["my-card"]
         );
 
         let handler = WebUIHandler::new();
@@ -1545,15 +1878,23 @@ mod tests {
             .unwrap();
         assert!(
             writer.buf.contains(&format!(
-                r#"<link rel="preload" href="{expected_href}" as="style" data-webui-ssr-preload="style">"#
+                r#"<link rel="stylesheet" href="{}" data-webui-resource="my-card" data-webui-strategy="link">"#,
+                expected_href.replace('/', "&#x2F;")
             )),
-            "handler head preload should use CDN href: {}",
+            "handler Shadow-root resource should use CDN href: {}",
             writer.buf
+        );
+        let payload = protocol
+            .render_component_templates(&["my-card"], "")
+            .expect("component resource payload");
+        assert_eq!(
+            payload["componentStyles"]["resources"]["my-card"]["href"],
+            expected_href
         );
     }
 
     #[test]
-    fn test_css_public_base_emits_webui_plugin_template_links() {
+    fn test_css_public_base_keeps_webui_template_style_free() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
@@ -1569,14 +1910,18 @@ mod tests {
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
         let template = &result.protocol.components["my-card"].template_json;
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
         assert!(
-            template.contains(&format!(r#"href=\"{expected_href}\""#)),
-            "plugin component template should use CDN href: {template}"
+            !template.contains(&expected_href),
+            "WebUI templates must not duplicate handler-owned CSS links: {template}"
         );
     }
 
     #[test]
-    fn test_css_public_base_emits_fast_plugin_template_links() {
+    fn test_css_public_base_keeps_fast_template_style_free() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
@@ -1591,9 +1936,13 @@ mod tests {
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
         let template = &result.protocol.components["my-card"].template;
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
         assert!(
-            template.contains(&format!(r#"href="{expected_href}""#)),
-            "FAST component template should use CDN href: {template}"
+            !template.contains(&expected_href),
+            "FAST templates must not duplicate handler-owned CSS links: {template}"
         );
     }
 
@@ -1651,7 +2000,7 @@ mod tests {
             .contains(r#""type":"webui-component-asset""#));
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#""version":2"#));
+            .contains(r#""version":3"#));
         assert!(result.component_asset_files[0]
             .content
             .contains(r#""kind":"root""#));
@@ -1667,6 +2016,42 @@ mod tests {
                 .any(|key| key.starts_with("__webui_asset_root_")),
             "synthetic asset root fragments must not be serialized"
         );
+    }
+
+    #[test]
+    fn component_assets_emit_enhanced_style_catalog_for_all_strategies() {
+        for (strategy, kind) in [
+            (CssStrategy::Link, "link"),
+            (CssStrategy::Style, "style"),
+            (CssStrategy::Module, "module"),
+        ] {
+            let app = create_app_dir(&[
+                ("index.html", "<app-shell></app-shell>"),
+                ("app-shell.html", "<p>Entry</p>"),
+                ("lazy-panel.html", "<p>Lazy</p>"),
+                ("lazy-panel.css", ".lazy{color:red}"),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.css = strategy;
+            options.component_asset_roots = vec!["lazy-panel".to_string()];
+
+            let result = build(options).unwrap();
+            let asset = &result.component_asset_files[0].content;
+            assert!(asset.contains(r#""version":3"#));
+            assert!(asset.contains(&format!(
+                r#""componentStyles":{{"version":1,"strategy":"{kind}""#
+            )));
+            assert!(asset.contains(&format!(r#""lazy-panel":{{"kind":"{kind}""#)));
+            assert!(asset.contains(r#""closures":{"lazy-panel":["lazy-panel"]}"#));
+            if strategy == CssStrategy::Module {
+                assert!(asset
+                    .contains(r#""lazy-panel":{"kind":"module","specifier":"lazy-panel","css":"#,));
+            }
+            if strategy == CssStrategy::Link {
+                assert!(asset.contains(r#""href":new URL("lazy-panel.css",import.meta.url).href"#,));
+            }
+        }
     }
 
     #[test]
@@ -1727,7 +2112,7 @@ mod tests {
             ]
         );
         let lazy = &result.component_asset_files[0].content;
-        assert!(lazy.contains(r#""version":2"#));
+        assert!(lazy.contains(r#""version":3"#));
         assert!(lazy.contains(r#""kind":"root""#));
         assert!(lazy.contains(r#""externalComponents":["entry-badge"]"#));
         assert!(lazy
@@ -1934,9 +2319,9 @@ mod tests {
     fn test_css_href_set_for_light_dom_link_strategy() {
         let app = create_app_dir(&[
             ("index.html", "<has-css>A</has-css><no-css>B</no-css>"),
-            ("has-css.html", "<p><slot></slot></p>"),
+            ("has-css.html", "<p>styled</p>"),
             ("has-css.css", ".yes { color: green; }"),
-            ("no-css.html", "<p><slot></slot></p>"),
+            ("no-css.html", "<p>plain</p>"),
         ]);
         let mut options = default_options(app.path());
         options.dom = DomStrategy::Light;
@@ -1966,10 +2351,113 @@ mod tests {
     }
 
     #[test]
+    fn test_plugin_free_build_persists_each_effective_dom_strategy() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<light-card></light-card><shadow-card></shadow-card>",
+            ),
+            ("light-card.html", "<p>light</p>"),
+            (
+                "shadow-card.html",
+                "<template shadowrootmode=\"open\"><slot></slot></template>",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.dom = DomStrategy::Light;
+        options.plugin = None;
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result
+                .protocol
+                .effective_component_dom_strategy("light-card"),
+            webui_protocol::DomStrategy::Light
+        );
+        assert_eq!(
+            result
+                .protocol
+                .effective_component_dom_strategy("shadow-card"),
+            webui_protocol::DomStrategy::Shadow
+        );
+        assert_eq!(
+            result.protocol.components["light-card"].effective_dom_strategy,
+            webui_protocol::DomStrategy::Light as i32
+        );
+        assert_eq!(
+            result.protocol.components["shadow-card"].effective_dom_strategy,
+            webui_protocol::DomStrategy::Shadow as i32
+        );
+
+        let entry_html: String = result.protocol.fragments["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(entry_html.contains("<light-card data-wl>"));
+        assert!(entry_html.contains("<shadow-card>"));
+        assert!(!entry_html.contains("<shadow-card data-wl"));
+    }
+
+    #[test]
+    fn test_authored_shadow_under_light_matches_ssr_protocol_and_webui_metadata() {
+        let app = create_app_dir(&[
+            ("index.html", "<shadow-card>projected</shadow-card>"),
+            (
+                "shadow-card.html",
+                "<!-- lead --><template shadowrootmode=\"open\"><slot></slot></template><!-- tail -->",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.dom = DomStrategy::Light;
+        options.plugin = Some(Plugin::WebUI);
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.dom_strategy(),
+            webui_protocol::DomStrategy::Light
+        );
+        assert_eq!(
+            result
+                .protocol
+                .effective_component_dom_strategy("shadow-card"),
+            webui_protocol::DomStrategy::Shadow
+        );
+        assert!(result.protocol.components["shadow-card"]
+            .template_json
+            .contains("\"sd\":1"));
+
+        let component_html: String = result.protocol.fragments["shadow-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            component_html,
+            "<template shadowrootmode=\"open\"><slot></slot></template>"
+        );
+        let entry_html: String = result.protocol.fragments["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!entry_html.contains("data-wl"));
+    }
+
+    #[test]
     fn test_shadow_dom_link_strategy_sets_css_href() {
         // Shadow×Link: css_href is always set for Link-strategy components.
-        // The handler uses protocol.css_strategy + dom_strategy to decide
-        // whether to emit preload (Shadow) or stylesheet (Light) in <head>.
+        // The handler uses protocol.css_strategy + effective component DOM
+        // strategy to decide preload (Shadow) vs stylesheet (Light) in <head>.
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
             ("my-card.html", "<p><slot></slot></p>"),

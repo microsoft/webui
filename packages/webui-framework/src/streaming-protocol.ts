@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import type { TemplateMeta } from './template.js';
+import type { ComponentStyles } from './element/styles.js';
 
 const SUPPORTED_VERSION = 1;
 
@@ -14,6 +15,7 @@ export interface BoundaryBootstrap {
   chain?: unknown[];
   css?: string[];
   styles?: string[];
+  componentStyles: ComponentStyles;
   [key: string]: unknown;
 }
 

@@ -1,8 +1,10 @@
-<div class="tabs-container">
-  <div class="tab-bar">
-    <slot name="tab"></slot>
+<template shadowrootmode="open">
+  <div class="tabs-container">
+    <div class="tab-bar">
+      <slot name="tab"></slot>
+    </div>
+    <div class="tab-panels">
+      <slot></slot>
+    </div>
   </div>
-  <div class="tab-panels">
-    <slot></slot>
-  </div>
-</div>
+</template>
