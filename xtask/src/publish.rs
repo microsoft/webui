@@ -158,6 +158,7 @@ struct StageOptions {
 struct BuildOptions {
     target_triples: Vec<String>,
     profile: String,
+    output_root: Option<PathBuf>,
 }
 
 // ── Public entry point ──────────────────────────────────────────────────
@@ -209,6 +210,16 @@ pub fn run_build(args: &[String]) -> ExitCode {
             console::style("✘").red().bold(),
         );
         return ExitCode::FAILURE;
+    }
+
+    if let Some(output_root) = &options.output_root {
+        if let Err(error) = export_native_targets(&root, output_root, &options.target_triples) {
+            eprintln!(
+                "  {} Failed to export native release artifacts: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
     eprintln!(
@@ -471,6 +482,7 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
 fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
     let mut target_triples = Vec::new();
     let mut profile = String::from("release");
+    let mut output_root = None;
     let mut i = 0;
 
     while i < args.len() {
@@ -500,6 +512,13 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
                 };
                 profile.clone_from(value);
             }
+            "--output" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return Err("missing value for --output".to_string());
+                };
+                output_root = Some(PathBuf::from(value));
+            }
             argument => return Err(format!("unknown publish-build argument: {argument}")),
         }
         i += 1;
@@ -512,6 +531,7 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
     Ok(BuildOptions {
         target_triples,
         profile,
+        output_root,
     })
 }
 
@@ -533,6 +553,43 @@ fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), S
         ],
         Some(root),
     )
+}
+
+fn export_native_targets(
+    root: &Path,
+    output_root: &Path,
+    target_triples: &[String],
+) -> Result<(), String> {
+    if output_root.exists() {
+        fs::remove_dir_all(output_root)
+            .map_err(|error| format!("failed to clean {}: {error}", output_root.display()))?;
+    }
+
+    copy_directory_contents(
+        &root.join("publish").join("native"),
+        &output_root.join("publish").join("native"),
+    )?;
+    for triple in target_triples {
+        let platform = PLATFORMS
+            .iter()
+            .find(|platform| platform.triple == triple)
+            .ok_or_else(|| format!("unknown target triple: {triple}"))?;
+        copy_directory_contents(
+            &root.join("packages").join(platform.npm_package),
+            &output_root.join("packages").join(platform.npm_package),
+        )?;
+        copy_directory_contents(
+            &root
+                .join("dotnet")
+                .join("runtimes")
+                .join(platform.nuget_rid),
+            &output_root
+                .join("dotnet")
+                .join("runtimes")
+                .join(platform.nuget_rid),
+        )?;
+    }
+    Ok(())
 }
 
 fn set_stage_mode(current: StageMode, requested: StageMode) -> Result<StageMode, String> {
@@ -1160,7 +1217,10 @@ fn copy_files_with_extension(src_dir: &Path, dest_dir: &Path, ext: &str) -> Resu
 /// Copy all files under `src_dir` into `dest_dir`, preserving subdirectories.
 fn copy_directory_contents(src_dir: &Path, dest_dir: &Path) -> Result<u32, String> {
     if !src_dir.exists() {
-        return Err(format!("WASM output not found at {}", src_dir.display()));
+        return Err(format!(
+            "source directory not found at {}",
+            src_dir.display()
+        ));
     }
 
     let mut copied = 0;
@@ -1254,6 +1314,7 @@ mod tests {
             ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
         );
         assert_eq!(options.profile, "debug");
+        assert_eq!(options.output_root, None);
     }
 
     #[test]
@@ -1261,6 +1322,22 @@ mod tests {
         let error = parse_build(&[]).expect_err("a target should be required");
 
         assert!(error.contains("requires at least one --target"));
+    }
+
+    #[test]
+    fn parse_build_options_supports_output_root() {
+        let options = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--output",
+            "artifacts/stage-linux",
+        ])
+        .expect("output options should parse");
+
+        assert_eq!(
+            options.output_root,
+            Some(PathBuf::from("artifacts/stage-linux"))
+        );
     }
 
     #[test]
@@ -1414,6 +1491,51 @@ mod tests {
             .join("handler")
             .join("webui_wasm_handler_bg.wasm")
             .exists());
+    }
+
+    #[test]
+    fn export_native_targets_preserves_pipeline_layout() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let output = tempfile::TempDir::new().expect("output should be created");
+        fs::create_dir_all(root.path().join("publish/native"))
+            .expect("native directory should be created");
+        fs::create_dir_all(root.path().join("packages/webui-linux-x64"))
+            .expect("package directory should be created");
+        fs::create_dir_all(root.path().join("dotnet/runtimes/linux-x64/native"))
+            .expect("runtime directory should be created");
+        fs::write(root.path().join("publish/native/webui-linux-x64"), "cli")
+            .expect("native fixture should be written");
+        fs::write(
+            root.path().join("packages/webui-linux-x64/package.json"),
+            "{}",
+        )
+        .expect("package fixture should be written");
+        fs::write(
+            root.path()
+                .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so"),
+            "ffi",
+        )
+        .expect("runtime fixture should be written");
+
+        export_native_targets(
+            root.path(),
+            output.path(),
+            &["x86_64-unknown-linux-gnu".to_string()],
+        )
+        .expect("native artifacts should be exported");
+
+        assert!(output
+            .path()
+            .join("publish/native/webui-linux-x64")
+            .is_file());
+        assert!(output
+            .path()
+            .join("packages/webui-linux-x64/package.json")
+            .is_file());
+        assert!(output
+            .path()
+            .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so")
+            .is_file());
     }
 
     #[test]

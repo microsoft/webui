@@ -12,6 +12,10 @@ use std::process::Command;
 /// This is resolved from the `xtask` crate directory at compile time, so it
 /// remains correct regardless of where `cargo xtask ...` is invoked from.
 pub fn workspace_root() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("WEBUI_WORKSPACE_ROOT") {
+        return validate_workspace_root(PathBuf::from(path));
+    }
+
     let xtask_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let Some(root) = xtask_dir.parent() else {
         return Err(format!(
@@ -19,7 +23,18 @@ pub fn workspace_root() -> Result<PathBuf, String> {
             xtask_dir.display()
         ));
     };
-    Ok(root.to_path_buf())
+    validate_workspace_root(root.to_path_buf())
+}
+
+fn validate_workspace_root(root: PathBuf) -> Result<PathBuf, String> {
+    if root.join("Cargo.toml").is_file() {
+        Ok(root)
+    } else {
+        Err(format!(
+            "Workspace root does not contain Cargo.toml: {}",
+            root.display()
+        ))
+    }
 }
 
 /// Run a command and return Ok if it exits with status 0.
@@ -243,7 +258,7 @@ pub fn ensure_rustup_target(target: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_root;
+    use super::*;
 
     #[test]
     fn workspace_root_has_workspace_cargo_toml() {
@@ -257,5 +272,27 @@ mod tests {
             "workspace root should contain Cargo.toml at {}",
             root.display()
         );
+    }
+
+    #[test]
+    fn validate_workspace_root_accepts_cargo_workspace() {
+        let root = tempfile::TempDir::new().expect("temp directory should be created");
+        fs::write(root.path().join("Cargo.toml"), "[workspace]\n")
+            .expect("Cargo.toml should be written");
+
+        let resolved = validate_workspace_root(root.path().to_path_buf())
+            .expect("workspace root should be accepted");
+
+        assert_eq!(resolved, root.path());
+    }
+
+    #[test]
+    fn validate_workspace_root_rejects_missing_manifest() {
+        let root = tempfile::TempDir::new().expect("temp directory should be created");
+
+        let error = validate_workspace_root(root.path().to_path_buf())
+            .expect_err("workspace root should be rejected");
+
+        assert!(error.contains("does not contain Cargo.toml"));
     }
 }
