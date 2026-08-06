@@ -613,7 +613,8 @@ fn export_native_targets(
 }
 
 fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBuf, String> {
-    let absolute_output = if output_root.is_absolute() {
+    let output_is_absolute = output_root.is_absolute();
+    let absolute_output = if output_is_absolute {
         output_root.to_path_buf()
     } else {
         root.join(output_root)
@@ -628,6 +629,12 @@ fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBu
         return Err(format!(
             "refusing to clean symlinked export output directory: {}",
             normalized_output.display()
+        ));
+    }
+    if !output_is_absolute && !normalized_output.starts_with(&normalized_root) {
+        return Err(format!(
+            "relative export output must remain within the workspace: {}",
+            output_root.display()
         ));
     }
     if normalized_output.parent().is_none()
@@ -1750,6 +1757,22 @@ mod tests {
 
         assert!(error.contains("unsafe export output directory"));
         assert!(root.path().exists());
+    }
+
+    #[test]
+    fn export_native_targets_rejects_relative_workspace_escape() {
+        let parent = tempfile::TempDir::new().expect("parent should be created");
+        let root = parent.path().join("workspace");
+        let sibling = parent.path().join("sibling");
+        fs::create_dir_all(&root).expect("workspace should be created");
+        fs::create_dir_all(&sibling).expect("sibling should be created");
+        fs::write(sibling.join("keep.txt"), "keep").expect("fixture should be written");
+
+        let error = export_native_targets(&root, Path::new("../sibling"), &[])
+            .expect_err("relative workspace escape should be rejected");
+
+        assert!(error.contains("must remain within the workspace"));
+        assert!(sibling.join("keep.txt").is_file());
     }
 
     #[test]
