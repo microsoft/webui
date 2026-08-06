@@ -436,7 +436,6 @@ impl WebUiProtocol {
     /// Traversal is iterative, follows source order, stops at Shadow
     /// children, and deduplicates resources at first discovery.
     pub fn populate_style_closures(&mut self, entry_fragments: &[&str]) {
-        let route_children = self.route_children_by_component();
         let mut roots: Vec<String> = entry_fragments
             .iter()
             .map(|root| (*root).to_string())
@@ -450,6 +449,25 @@ impl WebUiProtocol {
         roots.sort_unstable();
         roots.dedup();
 
+        let has_style_resources = match self.css_strategy() {
+            CssStrategy::Link => self
+                .components
+                .values()
+                .any(|component| !component.css_href.is_empty()),
+            CssStrategy::Style | CssStrategy::Module => self
+                .components
+                .values()
+                .any(|component| !component.css.is_empty()),
+        };
+        if !has_style_resources {
+            self.style_closures = roots
+                .into_iter()
+                .map(|root| (root, ComponentStyleClosure::default()))
+                .collect();
+            return;
+        }
+
+        let route_children = self.route_children_by_component();
         self.style_closures = roots
             .into_iter()
             .map(|root| {
@@ -1314,6 +1332,34 @@ mod tests {
             ["cycle-card"]
         );
         assert_eq!(protocol.style_closures, first);
+    }
+
+    #[test]
+    fn style_closure_populates_empty_roots_without_resources() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("light-shell")],
+            },
+        );
+        fragments.insert(
+            "light-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shadow-card")],
+            },
+        );
+        fragments.insert("shadow-card".to_string(), FragmentList::default());
+        let mut protocol = WebUIProtocol::new(fragments);
+        add_style_component(&mut protocol, "light-shell", false, false);
+        add_style_component(&mut protocol, "shadow-card", true, false);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(protocol.style_closures.len(), 3);
+        for root in ["index.html", "light-shell", "shadow-card"] {
+            assert_eq!(protocol.style_closure(root), Some([].as_slice()));
+        }
     }
 
     #[test]

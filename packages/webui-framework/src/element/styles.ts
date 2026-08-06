@@ -17,7 +17,6 @@ export interface ComponentStyles {
 
 interface DocumentCatalog {
   readonly resources: Map<string, ComponentStyleResource>;
-  readonly resourceKeys: Map<string, string>;
   readonly closures: Map<string, readonly string[]>;
 }
 
@@ -33,7 +32,8 @@ interface WebUIStyleGlobal {
 
 const catalogs = new WeakMap<Document, DocumentCatalog>();
 const installed = new WeakMap<StyleTarget, Set<string>>();
-const pending = new WeakMap<StyleTarget, Map<string, Promise<void>>>();
+const completedClosures = new WeakMap<StyleTarget, Set<string>>();
+const pending = new WeakMap<StyleTarget, Map<string, Promise<CSSStyleSheet>>>();
 const moduleImportsInstalled = new WeakMap<Document, Set<string>>();
 const moduleImportsSeeded = new WeakSet<Document>();
 const defaultCssModuleLoader: CssModuleLoader = (specifier) =>
@@ -50,7 +50,6 @@ function catalogFor(document: Document): DocumentCatalog {
   if (!catalog) {
     catalog = {
       resources: new Map(),
-      resourceKeys: new Map(),
       closures: new Map(),
     };
     catalogs.set(document, catalog);
@@ -87,14 +86,21 @@ export function readNonce(target: StyleTarget = document): string {
   return meta?.content ?? '';
 }
 
-function resourceKey(resource: ComponentStyleResource): string {
-  switch (resource.kind) {
+/** Compare prepared resources without allocating serialized copies. */
+export function sameComponentStyleResource(
+  current: ComponentStyleResource,
+  next: ComponentStyleResource,
+): boolean {
+  if (current === next) return true;
+  switch (current.kind) {
     case 'link':
-      return `link\0${resource.href}`;
+      return next.kind === 'link' && current.href === next.href;
     case 'style':
-      return `style\0${resource.css}`;
+      return next.kind === 'style' && current.css === next.css;
     case 'module':
-      return `module\0${resource.specifier}\0${resource.css}`;
+      return next.kind === 'module' &&
+        current.specifier === next.specifier &&
+        current.css === next.css;
   }
 }
 
@@ -166,9 +172,8 @@ export function validateComponentStylesRegistration(
   if (!styles) return;
   const catalog = catalogFor(document);
   for (const id of Object.keys(styles.resources)) {
-    const nextKey = resourceKey(styles.resources[id]);
-    const currentKey = catalog.resourceKeys.get(id);
-    if (currentKey !== undefined && currentKey !== nextKey) {
+    const current = catalog.resources.get(id);
+    if (current && !sameComponentStyleResource(current, styles.resources[id])) {
       throw new Error(`[WebUI] Conflicting component style resource "${id}".`);
     }
   }
@@ -184,25 +189,36 @@ export function validateComponentStylesRegistration(
   }
 }
 
-/** Publish validated definitions and ordered closures for one owning Document. */
-export function registerComponentStyles(
-  value: ComponentStyles | unknown,
+/**
+ * Publish a prepared payload after its conflicts have been validated.
+ *
+ * Internal registration paths use this to avoid cloning the payload again.
+ */
+export function registerPreparedComponentStyles(
+  styles: ComponentStyles,
   document: Document = globalThis.document,
 ): void {
-  const styles = requireComponentStyles(value);
-  validateComponentStylesRegistration(styles, document);
   const catalog = catalogFor(document);
   for (const id of Object.keys(styles.resources)) {
     if (catalog.resources.has(id)) continue;
     const resource = styles.resources[id];
     catalog.resources.set(id, resource);
-    catalog.resourceKeys.set(id, resourceKey(resource));
   }
   for (const root of Object.keys(styles.closures)) {
     if (!catalog.closures.has(root)) {
       catalog.closures.set(root, styles.closures[root]);
     }
   }
+}
+
+/** Validate and publish definitions and ordered closures for one owning Document. */
+export function registerComponentStyles(
+  value: ComponentStyles | unknown,
+  document: Document = globalThis.document,
+): void {
+  const styles = requireComponentStyles(value);
+  validateComponentStylesRegistration(styles, document);
+  registerPreparedComponentStyles(styles, document);
 }
 
 /** Return whether one owning Document already knows an exact resource ID. */
@@ -221,15 +237,17 @@ export function hasRegisteredComponentStyleClosure(
   return catalogFor(document).closures.has(rootId);
 }
 
-function markerFor(target: StyleTarget, id: string): Element | undefined {
+function resourceMarkers(target: StyleTarget): Map<string, Element> | undefined {
   const scope: Element | ShadowRoot = isDocument(target) ? target.head : target;
   const candidates = scope.children;
+  let markers: Map<string, Element> | undefined;
   for (let i = 0; i < candidates.length; i++) {
-    if (candidates[i].getAttribute('data-webui-resource') === id) {
-      return candidates[i];
-    }
+    const id = candidates[i].getAttribute('data-webui-resource');
+    if (id === null) continue;
+    if (!markers) markers = new Map();
+    if (!markers.has(id)) markers.set(id, candidates[i]);
   }
-  return undefined;
+  return markers;
 }
 
 function appendResource(
@@ -298,11 +316,11 @@ function installModuleImportMap(
   installedSpecifiers.add(specifier);
 }
 
-async function installModule(
+function loadModule(
   target: StyleTarget,
   id: string,
   resource: { specifier: string; css: string },
-): Promise<void> {
+): Promise<CSSStyleSheet> {
   let targetPending = pending.get(target);
   if (!targetPending) {
     targetPending = new Map();
@@ -313,43 +331,181 @@ async function installModule(
 
   installModuleImportMap(target, resource.specifier, resource.css);
 
-  const targetInstalled = installed.get(target) ?? new Set<string>();
-  installed.set(target, targetInstalled);
+  const loads = targetPending;
   const promise = loadCssModule(resource.specifier)
-    .then((module: CssModule) => {
-      if (!target.adoptedStyleSheets.includes(module.default)) {
-        target.adoptedStyleSheets = [...target.adoptedStyleSheets, module.default];
-      }
-      targetInstalled.add(id);
-      markerFor(target, id)?.remove();
-    })
-    .finally(() => {
-      targetPending!.delete(id);
-    });
-  targetPending.set(id, promise);
+    .then((module: CssModule) => module.default);
+  loads.set(id, promise);
+  // Keep successful loads for another caller to adopt; only failures retry.
+  void promise.catch(() => {
+    if (loads.get(id) === promise) loads.delete(id);
+  });
   return promise;
+}
+
+function markClosureComplete(target: StyleTarget, rootId: string): void {
+  let roots = completedClosures.get(target);
+  if (!roots) {
+    roots = new Set();
+    completedClosures.set(target, roots);
+  }
+  roots.add(rootId);
+}
+
+function installElementRange(
+  target: StyleTarget,
+  catalog: DocumentCatalog,
+  closure: readonly string[],
+  targetInstalled: Set<string>,
+  start: number,
+  end: number,
+  before?: Element,
+): void {
+  for (let i = start; i < end; i++) {
+    const id = closure[i];
+    if (targetInstalled.has(id)) continue;
+    const resource = catalog.resources.get(id);
+    if (!resource || resource.kind === 'module') continue;
+    appendResource(target, id, resource, before);
+    targetInstalled.add(id);
+  }
+}
+
+function installElements(
+  target: StyleTarget,
+  catalog: DocumentCatalog,
+  closure: readonly string[],
+  targetInstalled: Set<string>,
+  markers: Map<string, Element> | undefined,
+): void {
+  // Existing markers delimit ranges that can be inserted in closure order
+  // without searching the target again for every resource.
+  let segmentEnd = closure.length;
+  let before: Element | undefined;
+  if (markers) {
+    for (let i = closure.length - 1; i >= 0; i--) {
+      const marker = markers.get(closure[i]);
+      if (!marker) continue;
+      installElementRange(
+        target,
+        catalog,
+        closure,
+        targetInstalled,
+        i + 1,
+        segmentEnd,
+        before,
+      );
+      const resource = catalog.resources.get(closure[i]);
+      if (resource && resource.kind !== 'module') {
+        targetInstalled.add(closure[i]);
+      }
+      before = marker;
+      segmentEnd = i;
+    }
+  }
+  installElementRange(
+    target,
+    catalog,
+    closure,
+    targetInstalled,
+    0,
+    segmentEnd,
+    before,
+  );
+}
+
+function commitModules(
+  target: StyleTarget,
+  ids: readonly string[],
+  sheets: readonly CSSStyleSheet[],
+  markers: Map<string, Element> | undefined,
+  targetInstalled: Set<string>,
+): void {
+  const adopted = target.adoptedStyleSheets;
+  const adoptedSet = new Set(adopted);
+  let next: CSSStyleSheet[] | undefined;
+  for (let i = 0; i < sheets.length; i++) {
+    const sheet = sheets[i];
+    if (!adoptedSet.has(sheet)) {
+      if (!next) next = adopted.slice();
+      next.push(sheet);
+      adoptedSet.add(sheet);
+    }
+  }
+  if (next) target.adoptedStyleSheets = next;
+  const targetPending = pending.get(target);
+  for (let i = 0; i < sheets.length; i++) {
+    const id = ids[i];
+    targetInstalled.add(id);
+    targetPending?.delete(id);
+    markers?.get(id)?.remove();
+  }
+  if (targetPending?.size === 0) pending.delete(target);
+}
+
+async function finishModuleLoads(
+  target: StyleTarget,
+  rootId: string,
+  ids: readonly string[],
+  loads: readonly Promise<CSSStyleSheet>[],
+  markers: Map<string, Element> | undefined,
+  targetInstalled: Set<string>,
+): Promise<void> {
+  const sheets: CSSStyleSheet[] = [];
+  try {
+    // Loads are already in flight; awaiting them in closure order preserves
+    // the successful prefix when a later resource rejects.
+    for (let i = 0; i < loads.length; i++) {
+      sheets.push(await loads[i]);
+    }
+  } catch (error) {
+    if (sheets.length > 0) {
+      commitModules(target, ids, sheets, markers, targetInstalled);
+    }
+    throw error;
+  }
+  commitModules(target, ids, sheets, markers, targetInstalled);
+  markClosureComplete(target, rootId);
 }
 
 /**
  * Install one root's ordered style closure into a Document or ShadowRoot.
  *
- * Link and Style resources are synchronous. Module resources return a promise
- * that rejects on import failure; failed pending entries are removed for retry.
+ * Link and Style resources complete synchronously and return undefined. Module
+ * resources return a promise that rejects on import failure; failed pending
+ * entries are removed for retry.
  */
 export function installComponentStyles(
   rootId: string,
   target: StyleTarget,
-): Promise<void> {
+): Promise<void> | undefined {
   const catalog = catalogFor(owningDocument(target));
   const closure = catalog.closures.get(rootId);
-  if (!closure) return Promise.resolve();
+  if (!closure || completedClosures.get(target)?.has(rootId)) return undefined;
 
   let targetInstalled = installed.get(target);
   if (!targetInstalled) {
     targetInstalled = new Set();
     installed.set(target, targetInstalled);
   }
-  let moduleInstalls = Promise.resolve();
+
+  let hasWork = false;
+  for (let i = 0; i < closure.length; i++) {
+    const id = closure[i];
+    if (targetInstalled.has(id)) continue;
+    const resource = catalog.resources.get(id);
+    if (!resource) {
+      throw new Error(`[WebUI] Missing component style resource "${id}" for closure "${rootId}".`);
+    }
+    hasWork = true;
+  }
+  if (!hasWork) {
+    markClosureComplete(target, rootId);
+    return undefined;
+  }
+
+  const markers = resourceMarkers(target);
+  let moduleIds: string[] | undefined;
+  let moduleLoads: Promise<CSSStyleSheet>[] | undefined;
   for (let i = 0; i < closure.length; i++) {
     const id = closure[i];
     if (targetInstalled.has(id)) continue;
@@ -358,19 +514,25 @@ export function installComponentStyles(
       throw new Error(`[WebUI] Missing component style resource "${id}" for closure "${rootId}".`);
     }
     if (resource.kind === 'module') {
-      moduleInstalls = moduleInstalls.then(
-        () => installModule(target, id, resource),
-      );
-      continue;
-    }
-    if (!markerFor(target, id)) {
-      let before: Element | undefined;
-      for (let j = i + 1; j < closure.length && !before; j++) {
-        before = markerFor(target, closure[j]);
+      if (!moduleIds) {
+        moduleIds = [];
+        moduleLoads = [];
       }
-      appendResource(target, id, resource, before);
+      moduleIds.push(id);
+      moduleLoads!.push(loadModule(target, id, resource));
     }
-    targetInstalled.add(id);
   }
-  return moduleInstalls;
+  if (!moduleLoads || !moduleIds) {
+    installElements(target, catalog, closure, targetInstalled, markers);
+    markClosureComplete(target, rootId);
+    return undefined;
+  }
+  return finishModuleLoads(
+    target,
+    rootId,
+    moduleIds,
+    moduleLoads,
+    markers,
+    targetInstalled,
+  );
 }

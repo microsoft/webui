@@ -54,7 +54,21 @@ pub(crate) struct StreamingRenderState<'data> {
     pub(super) inventory: Vec<u8>,
     pub(super) inventory_delta: Vec<u8>,
     pub(super) inventory_hex: String,
+    /// Dedup bitset for template metadata and style closures already delivered.
+    /// Kept separate from `inventory`: reachable-but-unrendered descendants
+    /// receive metadata but must not be reported as rendered DOM.
     pub(super) template_inventory: Vec<u8>,
+    /// Dedup bitset for style resource definitions already delivered. A resource
+    /// can arrive transitively through an earlier root's closure before its own
+    /// template or closure is emitted.
+    pub(super) style_resource_inventory: Vec<u8>,
+    /// Unique component indexes rendered since the previous checkpoint, in
+    /// render order. Storing the startup-built index rather than the tag string
+    /// keeps capture allocation-free, lets every consumer skip the
+    /// `component_index` hash lookup it would otherwise repeat, and leaves this
+    /// vector free of any borrow so a host-owned session can retain it across
+    /// calls. The vector is cleared after commit while retaining capacity for
+    /// the next checkpoint.
     pub(super) checkpoint_tags: Vec<u32>,
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
@@ -91,6 +105,7 @@ pub(crate) struct StreamingProgress {
     pub(super) inventory_delta: Vec<u8>,
     pub(super) inventory_hex: String,
     pub(super) template_inventory: Vec<u8>,
+    pub(super) style_resource_inventory: Vec<u8>,
     pub(super) checkpoint_tags: Vec<u32>,
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
@@ -116,6 +131,7 @@ impl StreamingProgress {
             inventory_delta: vec![0; inventory_bytes],
             inventory_hex: String::with_capacity(inventory_bytes * 2),
             template_inventory: vec![0; inventory_bytes],
+            style_resource_inventory: vec![0; inventory_bytes],
             checkpoint_tags: Vec::new(),
             checkpoint_walk_roots: Vec::new(),
             checkpoint_seen: vec![0; inventory_bytes],
@@ -153,6 +169,7 @@ impl<'data> StreamingRenderState<'data> {
             inventory_delta: progress.inventory_delta,
             inventory_hex: progress.inventory_hex,
             template_inventory: progress.template_inventory,
+            style_resource_inventory: progress.style_resource_inventory,
             checkpoint_tags: progress.checkpoint_tags,
             checkpoint_walk_roots: progress.checkpoint_walk_roots,
             checkpoint_seen: progress.checkpoint_seen,
@@ -177,6 +194,7 @@ impl<'data> StreamingRenderState<'data> {
             inventory_delta: self.inventory_delta,
             inventory_hex: self.inventory_hex,
             template_inventory: self.template_inventory,
+            style_resource_inventory: self.style_resource_inventory,
             checkpoint_tags: self.checkpoint_tags,
             checkpoint_walk_roots: self.checkpoint_walk_roots,
             checkpoint_seen: self.checkpoint_seen,

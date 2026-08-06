@@ -37,8 +37,10 @@ export function registerTemplatesAndStyles(
   const componentStyles = validateComponentStyles(data.componentStyles);
   validateTemplatePayload(data.templates);
   const register = window.__webuiRegisterComponentStyles;
+  let stylesRegisteredByFramework = false;
   if (register) {
     register(componentStyles);
+    stylesRegisteredByFramework = true;
   } else {
     const w = window as Window;
     if (!w.__webui) w.__webui = {};
@@ -111,7 +113,12 @@ export function registerTemplatesAndStyles(
     }
   }
 
-  notifyTemplatesRegistered(registeredTemplates, componentStyles);
+  // The bridge already accepted this exact payload. Only fallback listeners
+  // need styles included with the template announcement.
+  notifyTemplatesRegistered(
+    registeredTemplates,
+    stylesRegisteredByFramework ? undefined : componentStyles,
+  );
 }
 
 function mergeFallbackComponentStyles(

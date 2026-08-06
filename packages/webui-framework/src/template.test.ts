@@ -64,6 +64,59 @@ describe('template registry helpers', () => {
     }
   });
 
+  test('registerTemplateData does not re-announce styles it already registered', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    let announcedStyles: unknown = 'not-dispatched';
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: {
+          __webui: {},
+          dispatchEvent(event: Event): boolean {
+            announcedStyles = (event as CustomEvent<{
+              componentStyles?: unknown;
+            }>).detail.componentStyles;
+            return true;
+          },
+        },
+        configurable: true,
+        writable: true,
+      });
+      Object.defineProperty(globalThis, 'document', {
+        value: { nodeType: 9 },
+        configurable: true,
+        writable: true,
+      });
+
+      registerTemplateData(
+        { 'style-card': { h: '<p>Styled</p>' } },
+        undefined,
+        {
+          version: 1,
+          strategy: 'style',
+          resources: {
+            'style-card': { kind: 'style', css: '.style-card{}' },
+          },
+          closures: { 'style-card': ['style-card'] },
+        },
+      );
+
+      assert.equal(announcedStyles, undefined);
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+      if (previousDocument) {
+        Object.defineProperty(globalThis, 'document', previousDocument);
+      } else {
+        Reflect.deleteProperty(globalThis, 'document');
+      }
+    }
+  });
+
   test('getTemplate normalizes bootstrapped SSR metadata from window', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const fn = (): boolean => false;

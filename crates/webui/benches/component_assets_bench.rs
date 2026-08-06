@@ -90,6 +90,7 @@ fn setup() -> Fixture {
             .or_default()
             .template_json = template_json(&tag);
     }
+    protocol.populate_style_closures(&["index.html"]);
 
     Fixture {
         protocol,

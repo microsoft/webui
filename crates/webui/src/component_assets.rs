@@ -249,4 +249,62 @@ mod tests {
             .to_string()
             .contains("requires missing style closure metadata"));
     }
+
+    #[test]
+    fn component_asset_serializes_closures_only_for_owned_components() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        protocol.fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::component("entry-card")],
+            },
+        );
+        protocol
+            .fragments
+            .insert("entry-card".to_string(), FragmentList::default());
+        protocol.fragments.insert(
+            "deferred-card".to_string(),
+            FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::component("entry-card")],
+            },
+        );
+        for tag in ["entry-card", "deferred-card"] {
+            protocol.components.insert(
+                tag.to_string(),
+                ComponentData {
+                    template_json: r#"{"h":"<div></div>"}"#.to_string(),
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.style_closures.insert(
+            "entry-card".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["entry-card".to_string()],
+            },
+        );
+        protocol.style_closures.insert(
+            "deferred-card".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["deferred-card".to_string(), "entry-card".to_string()],
+            },
+        );
+
+        let graph = render_component_assets(
+            &protocol,
+            "index.html",
+            &["deferred-card".to_string()],
+            "[name].[ext]",
+            false,
+        )
+        .expect("render component asset");
+        let asset = graph.files.first().expect("deferred root asset");
+
+        assert!(asset
+            .content
+            .contains(r#""closures":{"deferred-card":["deferred-card","entry-card"]}"#));
+        assert!(!asset.content.contains(r#""entry-card":["entry-card"]"#));
+    }
 }

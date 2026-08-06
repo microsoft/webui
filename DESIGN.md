@@ -456,10 +456,10 @@ values into the response. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
-- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots. Module resources carry both their specifier and compiled CSS
+- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots, filtered by the same inventory bitmask as templates. A closure may omit a shared resource definition only when the incoming inventory bit proves that component's template and style metadata was already registered; uninventoried closure dependencies are transmitted with the new root. Module resources carry both their specifier and compiled CSS
 - `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
-- `inventory`: updated hex bitmask of loaded templates
+- `inventory`: updated hex bitmask of loaded component template and style metadata
 - `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
@@ -659,7 +659,7 @@ overlap with the invalidated tags.
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata already loaded - server skips re-sending it |
 
 The `chain` field is produced by `Protocol::render_partial()`, which walks the
 fragment graph and matches routes at each nesting level using request-local
@@ -2431,13 +2431,237 @@ regions while the document is still loading.
 
 ### Compilation and author syntax
 
-`<boundary>` is a bare compile-time directive. The parser erases its tags and
-brackets its body with a `WebUIFragmentBoundary` start/end pair emitted inline
-in the owner's record. It is valid in an entry or reusable component and may be
-reached through conditions, outlets, and route content. A boundary may enclose
-a boundary-free `<for>`. Component templates strip directive tags from their
-browser template HTML, while the server fragment graph retains the typed
-declaration.
+These invariants are binding. Every one is enforced somewhere — by the
+compiler, by the coordinator, or by a test — and none may be relaxed without a
+corresponding change here. Any additional transport must satisfy this same
+contract rather than introduce a parallel one.
+
+**Record format**
+
+1. **Gapless monotonic record order.** Every checkpoint, state update, and
+   terminal record carries one response-local record sequence starting at `0`
+   and increasing by exactly one. Any other value is rejected and halts the
+   stream. There is no reordering buffer and no out-of-order tolerance.
+2. **Typed records and exactly one empty terminal.** The five-element envelope
+   is `[version, record_sequence, kind, target, payload]`. `kind` is `0` for a
+   final boundary checkpoint, `1` for an updatable boundary checkpoint, `2`
+   for a state update, and `3` for the terminal. Every response ends with
+   exactly one markerless `[1, sequence, 3, 0, {}]` after all scriptless tail
+   bytes. A record arriving after it is corruption: it is rejected, its
+   scaffolding released, and the stream is halted without disturbing the
+   successful completion the terminal record already drove. The empty terminal
+   payload binds the *emitter*; a reader ignores unrecognized terminal payload
+   fields rather than halting a page that has already fully rendered (rule 21).
+3. **Self-sufficient records.** Given all prior records, a record carries
+   everything needed to commit itself: its own template delta, component-style
+   closure delta, inventory delta, and projected state. A record never
+   forward-references a later one, so a truncated response is always a prefix of
+   a valid one.
+4. **Additive global merge; ordered island state.** Global handoff merges
+   accumulate only:
+   inventory bits are OR-ed, CSS/style lists are appended with deduplication,
+   component-style resources and closures are registered once, and templates
+   are registered additively. No record may overwrite or invalidate an earlier
+   record's contribution. Boundary state is ephemeral and never published to
+   `window.__webui.state`. A state-update record is a shallow patch applied in
+   record order to one already-committed updatable boundary; repeated writes to
+   the same key are last-writer-wins.
+5. **Identity is not placement.** A record never contains a selector, node
+   path, or DOM position. Checkpoints carry the compiler-assigned integer
+   boundary ID in `target`; state updates carry the same ID. The integer
+   resolves through coordinator-owned references captured during the original
+   range walk and never requires a document scan. Placement remains expressed
+   only through the marker pair the browser's HTML parser materializes.
+6. **Boundary-local payload.** A record carries only the templates and state
+   reachable from its own roots. Boundary 0 must not contain template metadata
+   or state reachable only from a later boundary. Component-style closures
+   remain CSS-tree metadata: the first entry closure can include transitive
+   resources used by later boundaries, but each resource definition and closure
+   is serialized at most once per response. State locality requires a
+   state-projection manifest; without one the build falls back to full state and
+   every checkpoint costs `O(boundaries × full state)`, which the compiler reports as
+   a `streaming-without-projection` warning.
+
+**Coordinator**
+
+7. **One queue, one record in flight.** Sentinels enqueue onto a single shared
+   task pump; exactly one checkpoint or update commits at a time, and neither
+   hydration nor a state write runs inside the parser's sentinel-upgrade
+   callback. No per-record timer, observer, or root listener is created.
+8. **Range resolution is the only placement-aware step.**
+   `resolveBoundaryRange()` is the sole function that inspects DOM adjacency.
+   Template registration, state seeding, activation, scaffolding removal, and
+   lifecycle accounting all consume an abstract `HydrationRange`. State updates
+   bypass range resolution and use only the roots retained by their original
+   updatable checkpoint.
+9. **`data-ws` is per-element deferral state, not a boundary marker.** It is
+   compiler-owned, identifies exactly the SSR roots the server deferred, and is
+   removed on activation, rejection, or abandonment. An element without it
+   mounts normally even while a streaming response is still open.
+10. **Definitions and waiters are metadata-gated by tag name.** The browser
+    snapshots `observedAttributes` during `customElements.define()`, so a
+    streaming `.define(tag)` request waits until that tag's template metadata is
+    registered. Undefined custom elements then share one
+    `customElements.whenDefined` reaction per tag with a bounded root set,
+    never one promise closure per root instance.
+11. **Undefined parents are activation barriers.** If an outer streamed root is
+    undefined, the range walk counts but does not activate its descendants or
+    register descendant tag waiters. The retained subtree is revisited only
+    after the outer definition arrives and activates, preserving parent-first
+    hydration and preventing children from mutating an unhydrated parent tree.
+12. **Retention is opt-in and response-bounded.** A final checkpoint releases
+    its payload script, sentinel, marker pair, parsed envelope, projected state,
+    and root references immediately. An updatable checkpoint retains only its
+    bounded root array until the terminal record or fatal cleanup, when all
+    update targets and queued state are released together. Final boundaries pay
+    no target-map or root-retention cost. That array holds **live roots only**:
+    a root joins when it activates successfully, so one that was ignored,
+    failed, or was abandoned is never an update target and its element is not
+    kept alive by the boundary. Liveness is never inferred from `data-ws`,
+    which rule 9 strips on rejection and abandonment as well as on activation,
+    and which would therefore mark an inert root as ready to receive. The
+    retention budget is charged separately, at scan time, against every marked
+    root the checkpoint saw, so activating a root after its boundary was
+    retained can never grow that boundary past its bound. Delivering an update
+    to a live root is consequently an array walk with no DOM access. Because
+    `setState()` is defined on `TemplateElement` itself, a live root missing it
+    is a framework invariant violation and halts the stream rather than
+    reporting the same failure on every later update.
+13. **Bounded terminal failure.** On malformed, truncated, or overflow input
+    the coordinator releases every discoverable scaffold and pending reference
+    within its configured bounds, balances the pending-boundary count, and
+    suppresses `webui:hydration-complete`. A halt never leaves a root stuck in
+    the deferred state and never wedges completion on a stuck pending count.
+    Valid commits never scan the document; a bounded document sweep is reserved
+    for fatal cleanup when the malformed stream no longer exposes a complete
+    marker range.
+14. **Post-hydration author code runs exactly once.** `hydratedCallback()` runs
+    synchronously after the first successful ordinary hydration, client mount,
+    streamed activation, or dormant static-host wake. Its latch is set before
+    author code runs, so reconnects and exceptions never retry it.
+15. **Updates never rehydrate.** A state update calls the existing reactive
+    `setState()` path on each target root. It does not rerun
+    `$activateDeferredSSR()`, template wiring, or `hydratedCallback()`. If the
+    target class is not defined or its boundary is still activating, one
+    bounded shallow patch is queued per target and replayed through that same
+    `setState()` path immediately after the root activates - never merged into
+    the state the root hydrates from. Hydration wires bindings against the
+    server's bytes without evaluating them, so seeding a post-render value
+    first would bind the branch the DOM actually shows while the element
+    believed it held the new one, and the next equal-valued write would skip
+    the patch entirely. A root retained behind an undefined ancestor is
+    patched after its own activation, parent first.
+    A state update may reference only an earlier updatable
+    checkpoint; forward references and updates to final checkpoints are fatal
+    protocol errors. An application component whose `setState()` or change
+    handler throws degrades that root alone: the failure is reported and the
+    walk continues to the remaining targets, including the retained
+    descendants of a throwing root, because one
+    component's bug must never strand later boundaries.
+
+**Compile time**
+
+16. **`<boundary>` is a directive, not an element.** It emits no wrapper
+    node, never nests or overlaps another boundary, and may not cut through a
+    component template or host content, native raw/inert HTML content, `<if>`,
+    `<for>`, route, or hydration-marker scope.
+17. **Boundaries are rejected in HTML foster-parenting contexts.** Inside
+    `table`, `thead`, `tbody`, `tfoot`, `tr`, `colgroup`, `select`, or
+    `optgroup` the browser relocates the unknown `<webui-hydrate>` sentinel out
+    of the table while the payload `<script>` stays inside, permanently
+    breaking their adjacency. This is a build error
+    (`boundary-in-foster-context`), never a runtime failure. `td`, `th`, and
+    `caption` return to "in body" insertion rules and are allowed.
+18. **Boundary names are free-form and resolve once.** Names are author-chosen
+    strings validated at build time for non-emptiness, staticness, and
+    per-entry uniqueness. The protocol stores their declaration order so a
+    response session can resolve `boundary("weather-shell")` once to a
+    `BoundaryId`. Only that integer reaches the HTML response; no generated
+    language symbols or name strings reach the wire.
+
+**Host**
+
+19. **The compiler decides where a flush is legal; the host decides when to
+    write.** A `StreamingResponse` writes the shell, each compile-time boundary,
+    state updates, and the tail only when the host calls it. Each synchronous
+    call borrows its state only for that call, so the host may await backend
+    work between calls without retaining a state borrow. Rendering requires a
+    `FlushWriter` and never silently degrades to buffering. Every shell,
+    checkpoint, update, and terminal write flushes through the same transport,
+    preserving its backpressure and disconnect errors.
+
+**Compatibility**
+
+20. **The reader validates transport and version, not its own serializer.**
+    A record is written by this repository's handler and read back by this
+    repository's coordinator, so the coordinator re-derives nothing the
+    serializer already guaranteed. Exactly three conditions are checked before
+    the tuple is trusted: `JSON.parse` success, which is a *complete*
+    truncation detector because every proper prefix of a JSON array is invalid
+    JSON (rule 3 seen from the transport side); a five-element array, so
+    destructuring is total; and `version`. Everything past those is document
+    state rather than record shape, and is enforced where it is actually
+    known — the coordinator halts the stream on a sequence or target mismatch,
+    and commits inside an error boundary so any payload defect fails closed
+    instead of hydrating partially.
+21. **`version` is the only compatibility mechanism.** Because rule 20 removes
+    per-field checks, a stale cached client reads an unrecognized `kind` as a
+    final checkpoint. Any new record kind, tuple shape, or incompatible payload
+    meaning must therefore bump `version`, which is gated before any element is
+    read. Purely additive payload fields do not bump it and are ignored by
+    older readers, which is what makes tolerating an unexpected terminal
+    payload (rule 2) safe rather than lax.
+
+### Directive spelling and the structural signal namespace
+
+`<boundary>` is one arm of the parser's existing bare-element dispatch
+(`HtmlParser::parse`, `match element.name()`: `"for"`, `"if"`, `"body"`,
+`"head"`, `"route"`, `"outlet"`, then the component-registry fallback). Its
+handler `enter_boundary_directive` follows the shape `enter_body_element`
+established: it pushes compiler-owned structure before children and after them
+via a raw signal fragment, reusing `WebUIFragmentSignal` for
+`boundary_start:<seq>` / `boundary_end:<seq>` rather than adding `oneof`
+variants to `webui.proto`.
+
+All compiler-owned structural signal values use the internal wire namespace
+`}}}webui:<token>` (for example `}}}webui:body_end` and
+`}}}webui:boundary_start:0`). The parser's authored double/triple bindings
+cannot produce a value beginning with `}}}` because those bytes close the
+binding; CSS comment bindings also reject braces in paths. The handler strips
+this prefix only from raw signals before interpreting structure. Unprefixed
+values such as authored `{{{head_start}}}`, `{{{head_end}}}`,
+`{{{body_start}}}`, `{{{body_end}}}`, and `{{{streaming_root}}}` always remain
+ordinary public state keys. Protocols built before this namespace therefore no
+longer receive structural hooks and must be rebuilt. Such a protocol also
+cannot enter streaming mode because it lacks namespaced `head_start`, boundary,
+and streamed-root signals. This namespace is an internal parser/handler
+contract, not author syntax.
+
+Boundary validation — unique static `name`, no nesting, outermost entry
+template only, and "must not cut through a component, native raw/inert content,
+`<if>`, `<for>`, route, or hydration-marker scope" — is parse-time structural
+analysis of the same order as the existing `key`-on-`<for>` validation
+(`invalid-for-key`). Marking a statically-provable, independently-hydratable
+fragment subtree is inherently a parse-time question, so no surface spelling
+avoids that cost. An attribute spelling (`<div boundary="name">`) would carry
+identical validation cost while losing "emits no wrapper element" and a clean
+reserved-tag diagnostic.
+
+The bare, unhyphenated spelling follows the rule the rest of the compiler uses:
+
+| Spelling | Meaning | Examples |
+| --- | --- | --- |
+| Bare tag | Compile-time directive, erased at build, never in the DOM | `<if>`, `<for>`, `<route>`, `<outlet>`, `<boundary>` |
+| `webui-` tag | Real custom element defined at runtime | `<webui-hydrate>` |
+| `data-webui-*` | Runtime marker attribute on emitted output | `data-webui-boundary`, `data-webui-ssr-preload` |
+
+A hyphenated name is the HTML requirement for *custom elements*, so spending it
+on a directive that is deleted before the browser ever sees it would imply a
+runtime element that does not exist. `<boundary>` cannot collide with a
+component either: WebUI components are discovered from hyphenated filenames, so
+no component can ever be named `boundary`.
+
+### Author-facing syntax
 
 ```html
 <!-- index.html -->
@@ -2616,11 +2840,86 @@ For every final or updatable boundary checkpoint the coordinator:
 6. Removes the record script, sentinel, boundary markers, and consumed
    compiler attributes.
 
-Hydration runs through one document-scoped FIFO pump, never directly from the
-sentinel upgrade callback. `webui:hydration-complete` fires only after the
-terminal record, all queued records, definition waiters, ancestor barriers, and
-generated spans settle successfully. `hydratedCallback()` is latched before
-author code runs and is never retried after reconnect or exception.
+Three inputs make this computable, and each is recorded where the build
+already has it in hand:
+
+- **Module sizes.** The bundler adapter reads `metafile.outputs[path].bytes`,
+  which it already iterates for `.inputs`. Ordering is not incidental:
+  `examples/app/streaming` measures a **125 ms swing from ordering alone**,
+  larger than the split itself, because preloads are issued in document order
+  over one shared connection. Only the bundler knows output sizes, so it sorts
+  once at build time and ships the answer.
+- **Island exclusion.** The parser maintains `in_boundary` to reject nested
+  boundaries, and a `<script type="module" src>` seen while it is set is
+  island-owned by definition. Only non-boundary module entries are recorded,
+  so an island loader is excluded without any subtraction pass. This matters:
+  preloading the island is precisely the regression the hint exists to remove.
+  A chunk the island *shares* with the critical entry still gets preloaded,
+  because it is genuinely critical.
+- **The output import graph.** A shared runtime chunk defines no component, so
+  it appears in no component's `outputs` — yet it is exactly the file the hint
+  must cover. In `examples/app/streaming` the critical entry's closure is
+  45,912 B, of which the unmapped shared chunk is 35,827 B (78%); the mapped
+  `index.js` is 9,801 B and the scanner already finds it unaided. The manifest
+  therefore records output-to-output edges in `entryClosures`, filtered to
+  `kind === "import-statement"` so a dynamic `import()` — which is *meant* to
+  cost a round trip — is never hoisted onto the critical path. Every known
+  entry remains a map key even when this filtered closure is empty; the empty
+  ownership record prevents an equal basename from another merged build from
+  being selected.
+
+Two constraints govern the design. The closure is computed at **build time and
+shipped as an ordered list of finished hrefs** in `WebUIProtocol
+.module_preloads`, not shipped as a graph and traversed per request — so
+request-time emission is N writes against a precomputed slice, with no
+traversal, sorting, or scratch collections. And the hint set lives on the
+entry rather than on `ComponentData`, because a critical closure is a
+per-entry property.
+
+Resolution joins the authored `src` URL to build-root-relative manifest keys.
+It fails safe throughout: an entry whose basename matches more than one
+manifest key emits nothing and warns, because a wrong preload costs a 404 and
+a wasted connection while a missing one costs only speed; an unrecognized
+`src` is skipped silently, since a third-party script is not a build mistake;
+cross-origin, protocol-relative, and query-bearing authored URLs are skipped
+because they do not describe a path the manifest covers; the list is capped so
+a runaway closure cannot starve the entry itself; and an href that cannot be
+written verbatim into an attribute is rejected at build time rather than
+escaped per request. Compiler-generated query-bearing URLs are accepted only
+through an exact physical-output-to-served-URL map. A non-empty esbuild
+`publicPath` also suppresses closure members unless the host supplies that
+explicit map: the metafile exposes local output paths while emitted imports use
+the configured served URL, so synthesizing same-origin hrefs would be unsafe.
+
+CSS delivery strategy is selected once per build and is not boundary-local.
+
+**Commit.** For one boundary, the coordinator:
+
+1. Validates sequence, size, marker closure, template indexes, state arity,
+   and response identity.
+2. Registers new templates/functions and compiler-owned hosts immediately;
+   streamed registrations do not wait for `DOMContentLoaded`.
+3. Resolves the boundary's `HydrationRange` (`resolveBoundaryRange()` — the
+   only placement-aware step), then walks that range once in boundary order,
+   including open declarative shadow roots, without a root list or per-element
+   document-position comparisons.
+4. Passes the checkpoint-local projected state directly into component
+   activation. It does not merge ephemeral state into `window.__webui.state`.
+   Inventory deltas are ORed into the cumulative global bitmask; CSS/style
+   bookkeeping deltas are appended with deduplication; component-style
+   resources and closures are registered only on first delivery.
+5. Hydrates outer roots before descendants. After each successful first
+   hydration or mount, `hydratedCallback()` runs synchronously exactly once;
+   reconnects and callback exceptions do not retry it.
+6. Removes the payload, sentinel, markers, and `data-ws` identities and releases
+   parsed arrays before dispatching diagnostics or completion.
+
+Hydration runs through one shared task pump so it never executes inside the
+parser's sentinel-upgrade callback. No per-boundary timer, observer, or root
+listener is created. `webui:hydration-complete` fires only after the
+terminal record and zero pending boundaries. Truncated or malformed streams
+abort that completion gate and release discoverable generated scaffolding within
+the configured bounds.
 
 #### Commit observability
 

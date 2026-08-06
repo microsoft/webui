@@ -3,9 +3,11 @@
 
 //! Version-2 checkpoint, update, span-completion, and terminal serialization.
 
+use super::error::component_style_payload_resources_missing_error;
 use super::inventory::{
     commit_checkpoint_inventory, expand_static_checkpoint_reachability,
-    mark_streaming_template_sent, replace_checkpoint_reachability,
+    mark_streaming_style_resource_sent, mark_streaming_template_sent,
+    replace_checkpoint_reachability,
 };
 use super::state::StateUpdatePlan;
 use super::{flush_streaming_transport, streaming_state, MarkerBuffer};
@@ -207,14 +209,31 @@ impl WebUIHandler {
 
         let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
         let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
-        let mut style_roots =
-            Vec::with_capacity(checkpoint_names.len() + if first_checkpoint { 1 } else { 0 });
-        if first_checkpoint {
-            style_roots.push(context.entry_id);
+        let entry_style_root = first_checkpoint.then_some(context.entry_id);
+        let style_roots = entry_style_root
+            .into_iter()
+            .chain(new_template_tags.iter().copied());
+        let component_styles = {
+            let style_inventory = context.streaming.as_ref().map_or(&[][..], |streaming| {
+                streaming.style_resource_inventory.as_slice()
+            });
+            crate::route_handler::collect_component_style_delta(
+                context.protocol,
+                style_roots,
+                style_inventory,
+                context.component_index,
+            )?
+        };
+        let resources = component_styles
+            .get("resources")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(component_style_payload_resources_missing_error)?;
+        for resource in resources.keys() {
+            let Some(&index) = context.component_index.get(resource) else {
+                continue;
+            };
+            mark_streaming_style_resource_sent(streaming_state(context)?, index)?;
         }
-        style_roots.extend(checkpoint_names.iter().copied());
-        let component_styles =
-            crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
         context
             .writer
             .write("<script type=\"application/json\" data-webui-boundary")?;

@@ -13,6 +13,7 @@ import { ensureComponentLoaded } from './loaders.js';
 import { NavigationCache } from './cache.js';
 import { setupPreloadListeners } from './preload.js';
 import { registerTemplatesAndStyles } from './templates.js';
+import type { ComponentStyles } from './types.js';
 
 // ── Test-only type access ────────────────────────────────────────
 // The router's `inventory` and `activeChain` are private at compile
@@ -309,13 +310,19 @@ describe('WebUIRouter', () => {
       const origBridge = window.__webuiRegisterComponentStyles;
       const order: string[] = [];
       const tag = 'ordered-component';
-      const onRegistered = (): void => {
+      let styleRegistrations = 0;
+      let announcedStyles: unknown = 'not-dispatched';
+      const onRegistered = (event: Event): void => {
         order.push('event');
+        announcedStyles = (event as CustomEvent<{
+          componentStyles?: unknown;
+        }>).detail.componentStyles;
         assert.ok(globals().__webui?.templates?.[tag]);
       };
       window.addEventListener('webui:templates-registered', onRegistered);
       window.__webuiRegisterComponentStyles = () => {
         assert.equal(globals().__webui?.templates?.[tag], undefined);
+        styleRegistrations++;
         order.push('styles');
       };
       (globalThis as any).document.createElement = (elementTag: string) => ({
@@ -348,11 +355,56 @@ describe('WebUIRouter', () => {
         }, '', () => {});
 
         assert.deepEqual(order, ['styles', 'closures', 'event']);
+        assert.equal(styleRegistrations, 1);
+        assert.equal(
+          announcedStyles,
+          undefined,
+          'styles accepted by the framework bridge should not be registered again from the event',
+        );
       } finally {
         window.removeEventListener('webui:templates-registered', onRegistered);
         window.__webuiRegisterComponentStyles = origBridge;
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.head = origHead;
+        delete globals().__webui?.templates?.[tag];
+      }
+    });
+
+    test('keeps component styles in the template event when the framework bridge is absent', () => {
+      const origBridge = window.__webuiRegisterComponentStyles;
+      const previousStyles = window.__webui!.componentStyles;
+      const tag = 'fallback-event-component';
+      const componentStyles: ComponentStyles = {
+        version: 1,
+        strategy: 'style',
+        resources: {
+          [tag]: { kind: 'style', css: '.fallback{}' },
+        },
+        closures: { [tag]: [tag] },
+      };
+      let announcedStyles: unknown;
+      const onRegistered = (event: Event): void => {
+        announcedStyles = (event as CustomEvent<{
+          componentStyles?: unknown;
+        }>).detail.componentStyles;
+      };
+      window.__webuiRegisterComponentStyles = undefined;
+      delete window.__webui!.componentStyles;
+      window.addEventListener('webui:templates-registered', onRegistered);
+
+      try {
+        registerTemplatesAndStyles({
+          componentStyles,
+          templates: { [tag]: { h: '<p>fallback</p>' } },
+        }, '', () => {});
+
+        assert.equal(announcedStyles, componentStyles);
+        assert.equal(window.__webui!.componentStyles, componentStyles);
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = origBridge;
+        if (previousStyles) window.__webui!.componentStyles = previousStyles;
+        else delete window.__webui!.componentStyles;
         delete globals().__webui?.templates?.[tag];
       }
     });
