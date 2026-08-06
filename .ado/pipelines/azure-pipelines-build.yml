@@ -15,14 +15,6 @@ parameters:
   - 'false'
   - 'true'
 
-schedules:
-- cron: '0 * * * *'
-  displayName: Hourly release check
-  branches:
-    include:
-    - main
-  always: true
-
 stages:
 - stage: PrepareRelease
   displayName: Prepare release
