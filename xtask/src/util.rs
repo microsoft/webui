@@ -243,7 +243,7 @@ pub fn ensure_rustup_target(target: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_root;
+    use super::*;
 
     #[test]
     fn workspace_root_has_workspace_cargo_toml() {

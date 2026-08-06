@@ -10,11 +10,12 @@
 //! - `publish/nuget/`   — `.nupkg` and `.snupkg` files from `dotnet pack`
 //! - `publish/crates/`  — `.crate` files from `cargo package`
 //! - `publish/wasm/`    — WASM modules + JS glue
+//! - `publish/standalone/` — legacy direct-download native and WASM assets
 
-use crate::util::{build_command, run_command_quiet};
+use crate::util::{build_command, run_command, run_command_quiet};
 use crate::version;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 // ── Platform mapping ────────────────────────────────────────────────────
@@ -89,7 +90,55 @@ const PLATFORMS: &[PlatformEntry] = &[
 ];
 
 /// Subdirectories created inside `publish/`.
-const PUBLISH_SUBDIRS: &[&str] = &["native", "npm", "nuget", "crates", "wasm"];
+const PUBLISH_SUBDIRS: &[&str] = &["native", "npm", "nuget", "crates", "wasm", "standalone"];
+const WASM_VARIANT_DIRS: &[&str] = &["all", "handler", "parser"];
+
+const STANDALONE_RELEASE_FILES: &[(&str, &str)] = &[
+    ("native/webui-darwin-arm64", "webui-darwin-arm64"),
+    ("native/webui-darwin-x64", "webui-darwin-x64"),
+    ("native/webui-linux-arm64", "webui-linux-arm64"),
+    ("native/webui-linux-x64", "webui-linux-x64"),
+    ("native/webui-win32-arm64.exe", "webui-win32-arm64.exe"),
+    ("native/webui-win32-x64.exe", "webui-win32-x64.exe"),
+    ("wasm/all/package.json", "package.json"),
+    ("wasm/all/README.md", "README.md"),
+    ("wasm/all/webui_wasm_all.d.ts", "webui_wasm_all.d.ts"),
+    ("wasm/all/webui_wasm_all.js", "webui_wasm_all.js"),
+    ("wasm/all/webui_wasm_all_bg.wasm", "webui_wasm_all_bg.wasm"),
+    (
+        "wasm/all/webui_wasm_all_bg.wasm.d.ts",
+        "webui_wasm_all_bg.wasm.d.ts",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler.d.ts",
+        "webui_wasm_handler.d.ts",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler.js",
+        "webui_wasm_handler.js",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler_bg.wasm",
+        "webui_wasm_handler_bg.wasm",
+    ),
+    (
+        "wasm/handler/webui_wasm_handler_bg.wasm.d.ts",
+        "webui_wasm_handler_bg.wasm.d.ts",
+    ),
+    (
+        "wasm/parser/webui_wasm_parser.d.ts",
+        "webui_wasm_parser.d.ts",
+    ),
+    ("wasm/parser/webui_wasm_parser.js", "webui_wasm_parser.js"),
+    (
+        "wasm/parser/webui_wasm_parser_bg.wasm",
+        "webui_wasm_parser_bg.wasm",
+    ),
+    (
+        "wasm/parser/webui_wasm_parser_bg.wasm.d.ts",
+        "webui_wasm_parser_bg.wasm.d.ts",
+    ),
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StageMode {
@@ -105,7 +154,79 @@ struct StageOptions {
     mode: StageMode,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct BuildOptions {
+    target_triple: String,
+    profile: String,
+    output_root: Option<PathBuf>,
+}
+
 // ── Public entry point ──────────────────────────────────────────────────
+
+/// Build and stage native release artifacts for one target triple.
+///
+/// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>]`
+pub fn run_build(args: &[String]) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "  {} Failed to read current directory: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = match parse_build_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("  {} {error}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    eprintln!(
+        "\n{} Building native release artifacts for {}",
+        console::style("▸").cyan().bold(),
+        console::style(&options.target_triple).bold(),
+    );
+    if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
+        eprintln!(
+            "  {} Failed to build {}: {error}",
+            console::style("✘").red().bold(),
+            options.target_triple,
+        );
+        return ExitCode::FAILURE;
+    }
+
+    if let Err(error) = stage_native_targets(
+        &root,
+        std::iter::once(options.target_triple.as_str()),
+        &options.profile,
+    ) {
+        eprintln!(
+            "  {} Failed to stage native release artifacts: {error}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    if let Some(output_root) = &options.output_root {
+        if let Err(error) = export_native_target(&root, output_root, &options.target_triple) {
+            eprintln!(
+                "  {} Failed to export native release artifacts: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    eprintln!(
+        "\n{} Native release artifacts built and staged\n",
+        console::style("✨").green(),
+    );
+    ExitCode::SUCCESS
+}
 
 /// Stage release artifacts into `publish/` and package directories.
 ///
@@ -117,10 +238,10 @@ struct StageOptions {
 /// Steps:
 ///   1. Stage native binaries into npm/NuGet package directories (existing behavior).
 ///   2. Copy CLI binaries into `publish/native/` with platform suffixes.
-///   3. Pack npm tarballs into `publish/npm/`.
-///   4. Pack NuGet packages into `publish/nuget/`.
-///   5. Pack publishable Rust crates into `publish/crates/`.
-///   6. Build and stage WASM artifacts into `publish/wasm/`.
+///   3. Build WASM artifacts into the main npm package and `publish/wasm/`.
+///   4. Pack npm tarballs into `publish/npm/`.
+///   5. Pack NuGet packages into `publish/nuget/`.
+///   6. Pack publishable Rust crates into `publish/crates/`.
 pub fn run_stage(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(p) => p,
@@ -198,7 +319,20 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         }
     }
 
-    // Phase 2: Pack npm tarballs
+    // Phase 2: Stage WASM before packing the main npm package.
+    eprintln!(
+        "\n{} Staging WASM artifacts",
+        console::style("▸").cyan().bold(),
+    );
+    if let Err(e) = stage_wasm_artifacts(&root) {
+        eprintln!(
+            "  {} WASM staging failed: {e}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    // Phase 3: Pack npm tarballs
     eprintln!(
         "\n{} Packing npm tarballs",
         console::style("▸").cyan().bold(),
@@ -211,7 +345,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Phase 3: Pack NuGet packages
+    // Phase 4: Pack NuGet packages
     eprintln!(
         "\n{} Packing NuGet packages",
         console::style("▸").cyan().bold(),
@@ -224,7 +358,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Phase 4: Pack Rust crates
+    // Phase 5: Pack Rust crates
     eprintln!(
         "\n{} Packing Rust crates",
         console::style("▸").cyan().bold(),
@@ -237,14 +371,9 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // Phase 5: Stage WASM artifacts
-    eprintln!(
-        "\n{} Staging WASM artifacts",
-        console::style("▸").cyan().bold(),
-    );
-    if let Err(e) = stage_wasm_artifacts(&root) {
+    if let Err(e) = validate_release_artifact_counts(&root) {
         eprintln!(
-            "  {} WASM staging failed: {e}",
+            "  {} Release artifact validation failed: {e}",
             console::style("✘").red().bold(),
         );
         return ExitCode::FAILURE;
@@ -302,7 +431,7 @@ fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
             fs::create_dir_all(publish_dir.join("native"))
                 .map_err(|e| format!("failed to create publish/native: {e}"))?;
 
-            for subdir in ["npm", "nuget", "crates", "wasm"] {
+            for subdir in ["npm", "nuget", "crates", "wasm", "standalone"] {
                 let path = publish_dir.join(subdir);
                 if path.exists() {
                     fs::remove_dir_all(&path)
@@ -355,6 +484,218 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
         profile,
         mode,
     })
+}
+
+fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
+    let mut target_triple = None;
+    let mut profile = String::from("release");
+    let mut output_root = None;
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                let Some(triple) = args.get(i) else {
+                    return Err("missing value for --target".to_string());
+                };
+                if triple == "all" {
+                    return Err(
+                        "publish-build requires explicit target triples; --target all is not supported"
+                            .to_string(),
+                    );
+                }
+                if !PLATFORMS.iter().any(|platform| platform.triple == triple) {
+                    return Err(format!("unknown target triple: {triple}"));
+                }
+                if target_triple.is_some() {
+                    return Err(
+                        "publish-build accepts exactly one --target; use separate jobs for each target"
+                            .to_string(),
+                    );
+                }
+                target_triple = Some(triple.clone());
+            }
+            "--profile" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return Err("missing value for --profile".to_string());
+                };
+                if value != "release" && value != "debug" {
+                    return Err(format!(
+                        "unsupported publish-build profile: {value}; expected release or debug"
+                    ));
+                }
+                profile.clone_from(value);
+            }
+            "--output" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return Err("missing value for --output".to_string());
+                };
+                output_root = Some(PathBuf::from(value));
+            }
+            argument => return Err(format!("unknown publish-build argument: {argument}")),
+        }
+        i += 1;
+    }
+
+    let target_triple =
+        target_triple.ok_or_else(|| "publish-build requires one --target".to_string())?;
+
+    Ok(BuildOptions {
+        target_triple,
+        profile,
+        output_root,
+    })
+}
+
+fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
+    let args = native_build_args(triple, profile)?;
+    run_command("cargo", &args, Some(root))
+}
+
+fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>, String> {
+    let mut args = Vec::with_capacity(13);
+    args.push("build");
+    match profile {
+        "release" => args.push("--release"),
+        "debug" => {}
+        _ => return Err(format!("unsupported native build profile: {profile}")),
+    }
+    args.extend_from_slice(&[
+        "--target",
+        triple,
+        "-p",
+        "microsoft-webui-cli",
+        "-p",
+        "microsoft-webui-ffi",
+        "-p",
+        "microsoft-webui-node",
+    ]);
+    Ok(args)
+}
+
+fn export_native_target(root: &Path, output_root: &Path, triple: &str) -> Result<(), String> {
+    let safe_output_root = validate_export_output_root(root, output_root)?;
+    if safe_output_root.exists() {
+        fs::remove_dir_all(&safe_output_root)
+            .map_err(|error| format!("failed to clean {}: {error}", safe_output_root.display()))?;
+    }
+
+    copy_directory_contents(
+        &root.join("publish").join("native"),
+        &safe_output_root.join("publish").join("native"),
+    )?;
+    let platform = PLATFORMS
+        .iter()
+        .find(|platform| platform.triple == triple)
+        .ok_or_else(|| format!("unknown target triple: {triple}"))?;
+    copy_directory_contents(
+        &root.join("packages").join(platform.npm_package),
+        &safe_output_root.join("packages").join(platform.npm_package),
+    )?;
+    copy_directory_contents(
+        &root
+            .join("dotnet")
+            .join("runtimes")
+            .join(platform.nuget_rid),
+        &safe_output_root
+            .join("dotnet")
+            .join("runtimes")
+            .join(platform.nuget_rid),
+    )?;
+    Ok(())
+}
+
+fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBuf, String> {
+    let output_is_absolute = output_root.is_absolute();
+    let absolute_output = if output_is_absolute {
+        output_root.to_path_buf()
+    } else {
+        root.join(output_root)
+    };
+    let normalized_output = normalize_path(&absolute_output);
+    let normalized_root = normalize_path(root);
+
+    if !output_is_absolute && !normalized_output.starts_with(&normalized_root) {
+        return Err(format!(
+            "relative export output must remain within the workspace: {}",
+            output_root.display()
+        ));
+    }
+    if normalized_output.parent().is_none()
+        || normalized_output == normalized_root
+        || normalized_root.starts_with(&normalized_output)
+    {
+        return Err(format!(
+            "refusing to clean unsafe export output directory: {}",
+            normalized_output.display()
+        ));
+    }
+    let symlink_boundary = if output_is_absolute {
+        normalized_root
+            .ancestors()
+            .find(|ancestor| normalized_output.starts_with(ancestor))
+            .unwrap_or(normalized_root.as_path())
+    } else {
+        normalized_root.as_path()
+    };
+    if let Some(symlink) = find_symlinked_path_component(&normalized_output, symlink_boundary)? {
+        return Err(format!(
+            "refusing to clean export output through symlinked path component: {}",
+            symlink.display()
+        ));
+    }
+    if normalized_output.is_file() {
+        return Err(format!(
+            "export output path is a file: {}",
+            normalized_output.display()
+        ));
+    }
+
+    Ok(normalized_output)
+}
+
+fn find_symlinked_path_component(
+    path: &Path,
+    trusted_boundary: &Path,
+) -> Result<Option<PathBuf>, String> {
+    for component_path in path.ancestors() {
+        if component_path == trusted_boundary {
+            break;
+        }
+        match component_path.symlink_metadata() {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Ok(Some(component_path.to_path_buf()));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect export output path {}: {error}",
+                    component_path.display()
+                ));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized
 }
 
 fn set_stage_mode(current: StageMode, requested: StageMode) -> Result<StageMode, String> {
@@ -796,22 +1137,65 @@ fn pack_rust_crates(root: &Path) -> Result<(), String> {
 
 // ── Phase 5: WASM artifacts ─────────────────────────────────────────────
 
-/// Build WASM variants and copy artifacts to `publish/wasm/`.
+/// Build WASM variants and stage them for npm packaging and direct inspection.
 fn stage_wasm_artifacts(root: &Path) -> Result<(), String> {
-    let wasm_out = root.join("publish").join("wasm");
-
-    // Build WASM using the existing build_wasm module
     crate::build_wasm::run()?;
 
     let wasm_source = root.join(crate::build_wasm::WASM_OUTPUT_DIR);
-    let copied = copy_directory_contents(&wasm_source, &wasm_out)?;
+    let copied = stage_built_wasm_artifacts(root, &wasm_source)?;
+    let standalone = stage_standalone_release_assets(root)?;
     eprintln!(
-        "  {} [wasm] staged {} file(s)",
+        "  {} [wasm] staged {} file(s) for npm and publish output; {} standalone asset(s)",
         console::style("✔").green(),
         console::style(copied).bold(),
+        console::style(standalone).bold(),
     );
 
     Ok(())
+}
+
+fn stage_built_wasm_artifacts(root: &Path, wasm_source: &Path) -> Result<u32, String> {
+    let package_out = root.join("packages").join("webui").join("wasm");
+    fs::create_dir_all(&package_out)
+        .map_err(|e| format!("failed to create {}: {e}", package_out.display()))?;
+    for variant in WASM_VARIANT_DIRS {
+        let generated_dir = package_out.join(variant);
+        if generated_dir.exists() {
+            fs::remove_dir_all(&generated_dir)
+                .map_err(|e| format!("failed to clean {}: {e}", generated_dir.display()))?;
+        }
+    }
+
+    let copied = copy_directory_contents(wasm_source, &package_out)?;
+    let publish_out = root.join("publish").join("wasm");
+    copy_directory_contents(wasm_source, &publish_out)?;
+    Ok(copied)
+}
+
+fn stage_standalone_release_assets(root: &Path) -> Result<u32, String> {
+    let publish = root.join("publish");
+    let output = publish.join("standalone");
+    if output.exists() {
+        fs::remove_dir_all(&output)
+            .map_err(|e| format!("failed to clean {}: {e}", output.display()))?;
+    }
+    fs::create_dir_all(&output)
+        .map_err(|e| format!("failed to create {}: {e}", output.display()))?;
+
+    for (source, destination) in STANDALONE_RELEASE_FILES {
+        let source = publish.join(source);
+        let destination = output.join(destination);
+        fs::copy(&source, &destination).map_err(|e| {
+            format!(
+                "failed to copy standalone asset {} to {}: {e}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+
+    u32::try_from(STANDALONE_RELEASE_FILES.len())
+        .map_err(|_| "standalone release asset count exceeds u32".to_string())
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────
@@ -913,6 +1297,54 @@ fn count_files_with_extension(dir: &Path, ext: &str) -> u32 {
     count
 }
 
+fn validate_release_artifact_counts(root: &Path) -> Result<(), String> {
+    let publish = root.join("publish");
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("npm"), "tgz"),
+        9,
+        "npm packages",
+    )?;
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("crates"), "crate"),
+        15,
+        "crate packages",
+    )?;
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("nuget"), "nupkg"),
+        8,
+        "NuGet packages",
+    )?;
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("nuget"), "snupkg"),
+        2,
+        "NuGet symbol packages",
+    )?;
+    validate_artifact_count(
+        count_regular_files(&publish.join("standalone")),
+        20,
+        "standalone release assets",
+    )
+}
+
+fn validate_artifact_count(actual: u32, expected: u32, kind: &str) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("expected {expected} {kind}, found {actual}"))
+    }
+}
+
+fn count_regular_files(dir: &Path) -> u32 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let count = entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 /// Copy all files with a given extension from `src_dir` to `dest_dir`.
 fn copy_files_with_extension(src_dir: &Path, dest_dir: &Path, ext: &str) -> Result<(), String> {
     let entries =
@@ -939,7 +1371,10 @@ fn copy_files_with_extension(src_dir: &Path, dest_dir: &Path, ext: &str) -> Resu
 /// Copy all files under `src_dir` into `dest_dir`, preserving subdirectories.
 fn copy_directory_contents(src_dir: &Path, dest_dir: &Path) -> Result<u32, String> {
     if !src_dir.exists() {
-        return Err(format!("WASM output not found at {}", src_dir.display()));
+        return Err(format!(
+            "source directory not found at {}",
+            src_dir.display()
+        ));
     }
 
     let mut copied = 0;
@@ -979,6 +1414,11 @@ fn copy_directory_contents(src_dir: &Path, dest_dir: &Path) -> Result<u32, Strin
 mod tests {
     use super::*;
 
+    fn parse_build(args: &[&str]) -> Result<BuildOptions, String> {
+        let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
+        parse_build_options(&args)
+    }
+
     fn parse(args: &[&str]) -> Result<StageOptions, String> {
         let args = args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>();
         parse_stage_options(&args)
@@ -1009,6 +1449,99 @@ mod tests {
             parse(&["--native-only", "--pack-only"]).expect_err("conflicting modes should fail");
 
         assert!(error.contains("cannot combine"));
+    }
+
+    #[test]
+    fn parse_build_options_supports_one_target() {
+        let options = parse_build(&[
+            "--target",
+            "aarch64-unknown-linux-gnu",
+            "--profile",
+            "debug",
+        ])
+        .expect("publish build options should parse");
+
+        assert_eq!(options.target_triple, "aarch64-unknown-linux-gnu");
+        assert_eq!(options.profile, "debug");
+        assert_eq!(options.output_root, None);
+    }
+
+    #[test]
+    fn parse_build_options_rejects_missing_target() {
+        let error = parse_build(&[]).expect_err("a target should be required");
+
+        assert!(error.contains("requires one --target"));
+    }
+
+    #[test]
+    fn parse_build_options_rejects_multiple_targets() {
+        let error = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+        ])
+        .expect_err("multiple targets should require separate jobs");
+
+        assert!(error.contains("exactly one --target"));
+    }
+
+    #[test]
+    fn parse_build_options_supports_output_root() {
+        let options = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--output",
+            "artifacts/stage-linux",
+        ])
+        .expect("output options should parse");
+
+        assert_eq!(
+            options.output_root,
+            Some(PathBuf::from("artifacts/stage-linux"))
+        );
+    }
+
+    #[test]
+    fn parse_build_options_rejects_unknown_target() {
+        let error =
+            parse_build(&["--target", "unknown-target"]).expect_err("unknown targets should fail");
+
+        assert!(error.contains("unknown target triple"));
+    }
+
+    #[test]
+    fn parse_build_options_rejects_all_target() {
+        let error =
+            parse_build(&["--target", "all"]).expect_err("all should require explicit targets");
+
+        assert!(error.contains("--target all is not supported"));
+    }
+
+    #[test]
+    fn parse_build_options_rejects_unsupported_profile() {
+        let error = parse_build(&["--target", "x86_64-unknown-linux-gnu", "--profile", "dev"])
+            .expect_err("unsupported profiles should fail");
+
+        assert!(error.contains("expected release or debug"));
+    }
+
+    #[test]
+    fn native_build_args_map_debug_to_cargo_dev_profile() {
+        let args = native_build_args("x86_64-unknown-linux-gnu", "debug")
+            .expect("debug profile should be supported");
+
+        assert_eq!(args[0], "build");
+        assert!(!args.contains(&"--profile"));
+        assert!(!args.contains(&"--release"));
+    }
+
+    #[test]
+    fn native_build_args_map_release_to_release_flag() {
+        let args = native_build_args("x86_64-unknown-linux-gnu", "release")
+            .expect("release profile should be supported");
+
+        assert!(args.contains(&"--release"));
     }
 
     #[test]
@@ -1086,6 +1619,7 @@ mod tests {
         assert!(publish.join("nuget").is_dir());
         assert!(publish.join("crates").is_dir());
         assert!(publish.join("wasm").is_dir());
+        assert!(publish.join("standalone").is_dir());
     }
 
     #[test]
@@ -1099,6 +1633,48 @@ mod tests {
         assert_eq!(count_files_with_extension(dir.path(), "snupkg"), 1);
         assert_eq!(count_files_with_extension(dir.path(), "txt"), 1);
         assert_eq!(count_files_with_extension(dir.path(), "nupkg"), 0);
+    }
+
+    #[test]
+    fn validate_release_artifact_counts_accepts_expected_layout() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        for directory in ["npm", "crates", "nuget", "standalone"] {
+            fs::create_dir_all(root.path().join("publish").join(directory))
+                .expect("publish directory should be created");
+        }
+        write_numbered_files(root.path().join("publish/npm"), 9, "tgz");
+        write_numbered_files(root.path().join("publish/crates"), 15, "crate");
+        write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
+        write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
+        write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+
+        assert!(validate_release_artifact_counts(root.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_release_artifact_counts_rejects_missing_package() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        for directory in ["npm", "crates", "nuget", "standalone"] {
+            fs::create_dir_all(root.path().join("publish").join(directory))
+                .expect("publish directory should be created");
+        }
+        write_numbered_files(root.path().join("publish/npm"), 8, "tgz");
+        write_numbered_files(root.path().join("publish/crates"), 15, "crate");
+        write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
+        write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
+        write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+
+        let error = validate_release_artifact_counts(root.path())
+            .expect_err("missing npm package should fail validation");
+
+        assert!(error.contains("expected 9 npm packages, found 8"));
+    }
+
+    fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {
+        for index in 0..count {
+            fs::write(directory.join(format!("{index}.{extension}")), "")
+                .expect("artifact fixture should be written");
+        }
     }
 
     #[test]
@@ -1145,6 +1721,159 @@ mod tests {
             .join("handler")
             .join("webui_wasm_handler_bg.wasm")
             .exists());
+    }
+
+    #[test]
+    fn export_native_target_preserves_pipeline_layout() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let output = tempfile::TempDir::new().expect("output should be created");
+        fs::create_dir_all(root.path().join("publish/native"))
+            .expect("native directory should be created");
+        fs::create_dir_all(root.path().join("packages/webui-linux-x64"))
+            .expect("package directory should be created");
+        fs::create_dir_all(root.path().join("dotnet/runtimes/linux-x64/native"))
+            .expect("runtime directory should be created");
+        fs::write(root.path().join("publish/native/webui-linux-x64"), "cli")
+            .expect("native fixture should be written");
+        fs::write(
+            root.path().join("packages/webui-linux-x64/package.json"),
+            "{}",
+        )
+        .expect("package fixture should be written");
+        fs::write(
+            root.path()
+                .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so"),
+            "ffi",
+        )
+        .expect("runtime fixture should be written");
+
+        export_native_target(root.path(), output.path(), "x86_64-unknown-linux-gnu")
+            .expect("native artifacts should be exported");
+
+        assert!(output
+            .path()
+            .join("publish/native/webui-linux-x64")
+            .is_file());
+        assert!(output
+            .path()
+            .join("packages/webui-linux-x64/package.json")
+            .is_file());
+        assert!(output
+            .path()
+            .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so")
+            .is_file());
+    }
+
+    #[test]
+    fn export_native_target_rejects_workspace_root() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let error = export_native_target(root.path(), root.path(), "x86_64-unknown-linux-gnu")
+            .expect_err("workspace root should be rejected");
+
+        assert!(error.contains("unsafe export output directory"));
+        assert!(root.path().exists());
+    }
+
+    #[test]
+    fn export_native_target_rejects_filesystem_root() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let filesystem_root = root
+            .path()
+            .ancestors()
+            .last()
+            .expect("filesystem root should exist");
+        let error = export_native_target(root.path(), filesystem_root, "x86_64-unknown-linux-gnu")
+            .expect_err("filesystem root should be rejected");
+
+        assert!(error.contains("unsafe export output directory"));
+        assert!(root.path().exists());
+    }
+
+    #[test]
+    fn export_native_target_rejects_relative_workspace_escape() {
+        let parent = tempfile::TempDir::new().expect("parent should be created");
+        let root = parent.path().join("workspace");
+        let sibling = parent.path().join("sibling");
+        fs::create_dir_all(&root).expect("workspace should be created");
+        fs::create_dir_all(&sibling).expect("sibling should be created");
+        fs::write(sibling.join("keep.txt"), "keep").expect("fixture should be written");
+
+        let error =
+            export_native_target(&root, Path::new("../sibling"), "x86_64-unknown-linux-gnu")
+                .expect_err("relative workspace escape should be rejected");
+
+        assert!(error.contains("must remain within the workspace"));
+        assert!(sibling.join("keep.txt").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_native_target_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempfile::TempDir::new().expect("parent should be created");
+        let root = parent.path().join("workspace");
+        let external = parent.path().join("external");
+        fs::create_dir_all(&root).expect("workspace should be created");
+        fs::create_dir_all(&external).expect("external directory should be created");
+        fs::write(external.join("keep.txt"), "keep").expect("fixture should be written");
+        symlink(&external, root.join("artifacts")).expect("symlink should be created");
+
+        let error = export_native_target(
+            &root,
+            Path::new("artifacts/stage"),
+            "x86_64-unknown-linux-gnu",
+        )
+        .expect_err("symlinked ancestor should be rejected");
+
+        assert!(error.contains("symlinked path component"));
+        assert!(external.join("keep.txt").is_file());
+    }
+
+    #[test]
+    fn test_stage_built_wasm_artifacts_populates_npm_and_publish_outputs() {
+        let root = tempfile::TempDir::new().unwrap();
+        let source = tempfile::TempDir::new().unwrap();
+        let package_wasm = root.path().join("packages/webui/wasm");
+        fs::create_dir_all(package_wasm.join("handler")).unwrap();
+        fs::write(package_wasm.join(".gitkeep"), "").unwrap();
+        fs::write(package_wasm.join("tracked.txt"), "tracked").unwrap();
+        fs::write(package_wasm.join("handler/stale.js"), "stale").unwrap();
+        let handler = source.path().join("handler");
+        fs::create_dir_all(&handler).unwrap();
+        fs::write(handler.join("webui_wasm_handler.js"), "js").unwrap();
+        fs::write(handler.join("webui_wasm_handler_bg.wasm"), "wasm").unwrap();
+
+        let copied = stage_built_wasm_artifacts(root.path(), source.path()).unwrap();
+
+        assert_eq!(copied, 2);
+        assert!(package_wasm.join(".gitkeep").exists());
+        assert!(package_wasm.join("tracked.txt").exists());
+        assert!(!package_wasm.join("handler/stale.js").exists());
+        for output in [package_wasm, root.path().join("publish/wasm")] {
+            assert!(output.join("handler/webui_wasm_handler.js").exists());
+            assert!(output.join("handler/webui_wasm_handler_bg.wasm").exists());
+        }
+    }
+
+    #[test]
+    fn test_stage_standalone_release_assets_copies_expected_files() {
+        let root = tempfile::TempDir::new().unwrap();
+        let publish = root.path().join("publish");
+        for (source, _) in STANDALONE_RELEASE_FILES {
+            let source = publish.join(source);
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            fs::write(source, "asset").unwrap();
+        }
+
+        let copied = stage_standalone_release_assets(root.path()).unwrap();
+
+        assert_eq!(copied, 20);
+        let output = publish.join("standalone");
+        for (_, destination) in STANDALONE_RELEASE_FILES {
+            assert!(output.join(destination).is_file());
+        }
+        assert_eq!(fs::read_dir(output).unwrap().count(), 20);
     }
 
     #[test]
