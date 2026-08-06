@@ -15,7 +15,7 @@
 use crate::util::{build_command, run_command, run_command_quiet};
 use crate::version;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 // ── Platform mapping ────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ struct BuildOptions {
 
 /// Build and stage native release artifacts for one or more target triples.
 ///
-/// Usage: `cargo xtask publish-build --target <triple> [--target <triple>] [--profile release]`
+/// Usage: `cargo xtask publish-build --target <triple> [--target <triple>] [--profile release|debug]`
 pub fn run_build(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(path) => path,
@@ -518,6 +518,11 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
                 let Some(value) = args.get(i) else {
                     return Err("missing value for --profile".to_string());
                 };
+                if value != "release" && value != "debug" {
+                    return Err(format!(
+                        "unsupported publish-build profile: {value}; expected release or debug"
+                    ));
+                }
                 profile.clone_from(value);
             }
             "--output" => {
@@ -544,23 +549,29 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
 }
 
 fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
-    run_command(
-        "cargo",
-        &[
-            "build",
-            "--profile",
-            profile,
-            "--target",
-            triple,
-            "-p",
-            "microsoft-webui-cli",
-            "-p",
-            "microsoft-webui-ffi",
-            "-p",
-            "microsoft-webui-node",
-        ],
-        Some(root),
-    )
+    let args = native_build_args(triple, profile)?;
+    run_command("cargo", &args, Some(root))
+}
+
+fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>, String> {
+    let mut args = Vec::with_capacity(13);
+    args.push("build");
+    match profile {
+        "release" => args.push("--release"),
+        "debug" => {}
+        _ => return Err(format!("unsupported native build profile: {profile}")),
+    }
+    args.extend_from_slice(&[
+        "--target",
+        triple,
+        "-p",
+        "microsoft-webui-cli",
+        "-p",
+        "microsoft-webui-ffi",
+        "-p",
+        "microsoft-webui-node",
+    ]);
+    Ok(args)
 }
 
 fn export_native_targets(
@@ -568,14 +579,15 @@ fn export_native_targets(
     output_root: &Path,
     target_triples: &[String],
 ) -> Result<(), String> {
-    if output_root.exists() {
-        fs::remove_dir_all(output_root)
-            .map_err(|error| format!("failed to clean {}: {error}", output_root.display()))?;
+    let safe_output_root = validate_export_output_root(root, output_root)?;
+    if safe_output_root.exists() {
+        fs::remove_dir_all(&safe_output_root)
+            .map_err(|error| format!("failed to clean {}: {error}", safe_output_root.display()))?;
     }
 
     copy_directory_contents(
         &root.join("publish").join("native"),
-        &output_root.join("publish").join("native"),
+        &safe_output_root.join("publish").join("native"),
     )?;
     for triple in target_triples {
         let platform = PLATFORMS
@@ -584,20 +596,73 @@ fn export_native_targets(
             .ok_or_else(|| format!("unknown target triple: {triple}"))?;
         copy_directory_contents(
             &root.join("packages").join(platform.npm_package),
-            &output_root.join("packages").join(platform.npm_package),
+            &safe_output_root.join("packages").join(platform.npm_package),
         )?;
         copy_directory_contents(
             &root
                 .join("dotnet")
                 .join("runtimes")
                 .join(platform.nuget_rid),
-            &output_root
+            &safe_output_root
                 .join("dotnet")
                 .join("runtimes")
                 .join(platform.nuget_rid),
         )?;
     }
     Ok(())
+}
+
+fn validate_export_output_root(root: &Path, output_root: &Path) -> Result<PathBuf, String> {
+    let absolute_output = if output_root.is_absolute() {
+        output_root.to_path_buf()
+    } else {
+        root.join(output_root)
+    };
+    let normalized_output = normalize_path(&absolute_output);
+    let normalized_root = normalize_path(root);
+
+    if normalized_output
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        return Err(format!(
+            "refusing to clean symlinked export output directory: {}",
+            normalized_output.display()
+        ));
+    }
+    if normalized_output.parent().is_none()
+        || normalized_output == normalized_root
+        || normalized_root.starts_with(&normalized_output)
+    {
+        return Err(format!(
+            "refusing to clean unsafe export output directory: {}",
+            normalized_output.display()
+        ));
+    }
+    if normalized_output.is_file() {
+        return Err(format!(
+            "export output path is a file: {}",
+            normalized_output.display()
+        ));
+    }
+
+    Ok(normalized_output)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::Normal(value) => normalized.push(value),
+        }
+    }
+    normalized
 }
 
 fn set_stage_mode(current: StageMode, requested: StageMode) -> Result<StageMode, String> {
@@ -1413,6 +1478,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_build_options_rejects_unsupported_profile() {
+        let error = parse_build(&["--target", "x86_64-unknown-linux-gnu", "--profile", "dev"])
+            .expect_err("unsupported profiles should fail");
+
+        assert!(error.contains("expected release or debug"));
+    }
+
+    #[test]
+    fn native_build_args_map_debug_to_cargo_dev_profile() {
+        let args = native_build_args("x86_64-unknown-linux-gnu", "debug")
+            .expect("debug profile should be supported");
+
+        assert_eq!(args[0], "build");
+        assert!(!args.contains(&"--profile"));
+        assert!(!args.contains(&"--release"));
+    }
+
+    #[test]
+    fn native_build_args_map_release_to_release_flag() {
+        let args = native_build_args("x86_64-unknown-linux-gnu", "release")
+            .expect("release profile should be supported");
+
+        assert!(args.contains(&"--release"));
+    }
+
+    #[test]
     fn test_native_binary_name_unix() {
         let p = PlatformEntry {
             triple: "aarch64-apple-darwin",
@@ -1634,6 +1725,31 @@ mod tests {
             .path()
             .join("dotnet/runtimes/linux-x64/native/libwebui_ffi.so")
             .is_file());
+    }
+
+    #[test]
+    fn export_native_targets_rejects_workspace_root() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let error = export_native_targets(root.path(), root.path(), &[])
+            .expect_err("workspace root should be rejected");
+
+        assert!(error.contains("unsafe export output directory"));
+        assert!(root.path().exists());
+    }
+
+    #[test]
+    fn export_native_targets_rejects_filesystem_root() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let filesystem_root = root
+            .path()
+            .ancestors()
+            .last()
+            .expect("filesystem root should exist");
+        let error = export_native_targets(root.path(), filesystem_root, &[])
+            .expect_err("filesystem root should be rejected");
+
+        assert!(error.contains("unsafe export output directory"));
+        assert!(root.path().exists());
     }
 
     #[test]
