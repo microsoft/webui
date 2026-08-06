@@ -858,6 +858,31 @@ Full detail: [Routing](/guide/concepts/routing).
 route's template binds to. Sending full app state on every route wastes
 bandwidth and render time.
 
+### Reserved `$webui` state
+
+The top-level `"$webui"` object is reserved for trusted host HTML emitted at
+document boundaries:
+
+```json
+{
+  "$webui": {
+    "headEnd": "<link rel=\"preload\" as=\"image\" href=\"/hero.avif\">",
+    "bodyStart": "<!-- immediately after <body> -->",
+    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+  }
+}
+```
+
+All three members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
+are emitted raw immediately before `</head>`, after `<body>`, and before
+`</body>`, respectively. Missing, empty, `null`, or non-string members are
+ignored. WebUI strips the reserved object from hydration and partial-navigation
+state, so templates and client code cannot read it.
+
+**Never put request-derived or otherwise untrusted content in `$webui`.** The
+values are not escaped and can create an XSS vulnerability. See
+[Integrations](/guide/integrations/) for host-specific rendering details.
+
 ### Truthiness
 
 | Value | Truthy? |
