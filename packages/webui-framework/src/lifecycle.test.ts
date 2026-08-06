@@ -75,22 +75,25 @@ function withPerformanceAndWindow<T>(run: (dispatched: Event[]) => T): T {
 }
 
 describe('hydration lifecycle — non-streaming pages', () => {
-  test('treats an interactive document as ready after DOMContentLoaded', async () => {
+  test('handles interactive documents before and after DOMContentLoaded', async () => {
     const previousDocumentConstructor = Object.getOwnPropertyDescriptor(globalThis, 'Document');
     const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
     const previousPerformance = Object.getOwnPropertyDescriptor(globalThis, 'performance');
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const previousEvent = Object.getOwnPropertyDescriptor(globalThis, 'Event');
     const dispatched: Event[] = [];
+    let navigationEntries = [{ domContentLoadedEventStart: 1 }];
+    const documentListeners = new Map<string, () => void>();
+    const windowListeners = new Map<string, () => void>();
 
     class FakeDocument {}
     const fakeDocument = new FakeDocument() as FakeDocument & {
       readyState: DocumentReadyState;
-      addEventListener(): void;
+      addEventListener(type: string, listener: () => void): void;
     };
     fakeDocument.readyState = 'interactive';
-    fakeDocument.addEventListener = () => {
-      throw new Error('DOMContentLoaded must not be awaited after it has fired');
+    fakeDocument.addEventListener = (type, listener) => {
+      documentListeners.set(type, listener);
     };
 
     class FakeEvent {
@@ -113,7 +116,7 @@ describe('hydration lifecycle — non-streaming pages', () => {
     Object.defineProperty(globalThis, 'performance', {
       value: {
         getEntriesByType() {
-          return [{ domContentLoadedEventStart: 1 }];
+          return navigationEntries;
         },
         mark() {},
         measure() {},
@@ -123,6 +126,9 @@ describe('hydration lifecycle — non-streaming pages', () => {
     });
     Object.defineProperty(globalThis, 'window', {
       value: {
+        addEventListener(type: string, listener: () => void) {
+          windowListeners.set(type, listener);
+        },
         dispatchEvent(event: Event) {
           dispatched.push(event);
           return true;
@@ -142,6 +148,24 @@ describe('hydration lifecycle — non-streaming pages', () => {
       assert.equal(lifecycle.isHydrationStartupPending(), false);
       lifecycle.hydrationStart();
       lifecycle.hydrationEnd();
+      assert.equal(dispatched.length, 1);
+      assert.equal(dispatched[0].type, 'webui:hydration-complete');
+      assert.equal(documentListeners.size, 0);
+      assert.equal(windowListeners.size, 0);
+
+      dispatched.length = 0;
+      navigationEntries = [];
+      const startupLifecycle = await freshLifecycle();
+      assert.equal(startupLifecycle.isHydrationStartupPending(), true);
+      startupLifecycle.hydrationStart();
+      startupLifecycle.hydrationEnd();
+      assert.equal(dispatched.length, 0, 'interactive module startup must remain gated');
+      assert.equal(documentListeners.has('DOMContentLoaded'), true);
+      const loadListener = windowListeners.get('load');
+      assert.ok(loadListener);
+
+      loadListener();
+      assert.equal(startupLifecycle.isHydrationStartupPending(), false);
       assert.equal(dispatched.length, 1);
       assert.equal(dispatched[0].type, 'webui:hydration-complete');
     } finally {

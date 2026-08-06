@@ -61,10 +61,16 @@ let documentReady = !hasBrowserDocument ||
   (navigationTiming?.domContentLoadedEventStart ?? 0) > 0;
 
 if (!documentReady) {
-  document.addEventListener('DOMContentLoaded', () => {
+  const markDocumentReady = (): void => {
+    if (documentReady) return;
     documentReady = true;
     tryComplete();
-  }, { once: true });
+  };
+  document.addEventListener('DOMContentLoaded', markDocumentReady, { once: true });
+  // A late-loaded module can miss DOMContentLoaded when navigation timing is
+  // unavailable. `load` is the next authoritative signal and cannot race
+  // parser module startup.
+  window.addEventListener('load', markDocumentReady, { once: true });
 }
 
 /** Whether parser/deferred module startup can still register hydration work. */
