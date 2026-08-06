@@ -3736,6 +3736,14 @@ canonical artifact identities. A page using one prepared source clones only
 the `Arc`; mixed prepared/fresh sources retain artifact identities so
 conflicting hashes still fail with `PROJ-M007`.
 
+Every generated page uses `<base href>` for root-relative site assets.
+Markdown links are therefore normalized during conversion: relative paths are
+resolved from the source Markdown file's directory, root-absolute internal
+paths receive `basePath`, and fragment-only or query-only links target the
+current canonical page. External and protocol-relative URLs remain unchanged.
+This preserves normal Markdown link semantics for both `index.md` and leaf
+pages without relying on browser resolution against the site root.
+
 To preserve build throughput without exposing a public compile/finalize split,
 press uses a hidden orchestration barrier:
 

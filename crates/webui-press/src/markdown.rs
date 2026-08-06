@@ -195,8 +195,94 @@ fn collect_node_text<'a>(
     (plain, html)
 }
 
+fn has_uri_scheme(url: &str) -> bool {
+    let mut bytes = url.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+
+    for byte in bytes {
+        match byte {
+            b':' => return true,
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'+' | b'-' | b'.' => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn has_base_path_prefix(url: &str, base_prefix: &str) -> bool {
+    if base_prefix.is_empty() {
+        return true;
+    }
+    let Some(suffix) = url.strip_prefix(base_prefix) else {
+        return false;
+    };
+    suffix.is_empty()
+        || suffix
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| matches!(*byte, b'/' | b'?' | b'#'))
+}
+
+fn resolve_relative_link(base_path: &str, link_base_url: &str, target: &str) -> Option<String> {
+    if target.is_empty()
+        || target.starts_with('/')
+        || target.starts_with('#')
+        || target.starts_with('?')
+        || has_uri_scheme(target)
+    {
+        return None;
+    }
+
+    let suffix_start = target.find(['?', '#']).unwrap_or(target.len());
+    let path = &target[..suffix_start];
+    if path.is_empty() {
+        return None;
+    }
+
+    let trailing_slash = path.ends_with('/') || path == "." || path == "..";
+    let segment_capacity = link_base_url.bytes().filter(|byte| *byte == b'/').count()
+        + path.bytes().filter(|byte| *byte == b'/').count()
+        + 1;
+    let base_segment_count = base_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .count();
+    let mut segments = Vec::with_capacity(segment_capacity);
+    for segment in link_base_url.split('/').chain(path.split('/')) {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                if segments.len() > base_segment_count {
+                    segments.pop();
+                }
+            }
+            _ => segments.push(segment),
+        }
+    }
+
+    let mut resolved = String::with_capacity(link_base_url.len() + target.len() + 1);
+    resolved.push('/');
+    for (index, segment) in segments.iter().enumerate() {
+        if index > 0 {
+            resolved.push('/');
+        }
+        resolved.push_str(segment);
+    }
+    if trailing_slash && !resolved.ends_with('/') {
+        resolved.push('/');
+    }
+    resolved.push_str(&target[suffix_start..]);
+    Some(resolved)
+}
+
 /// Render markdown content to HTML with syntax-highlighted code blocks.
-/// Internal links (starting with `/`) are prefixed with `base_path`.
+/// Root-absolute internal links are prefixed with `base_path`, and relative
+/// links are resolved from `link_base_url`.
 ///
 /// `page_url` is the current page's canonical URL path (base-prefixed, with a
 /// trailing slash — e.g. `/webui/guide/`). In-page fragment links (heading
@@ -204,11 +290,15 @@ fn collect_node_text<'a>(
 /// (`{page_url}#slug`) rather than bare `#slug`. A bare fragment would resolve
 /// against the document's `<base href>` — which points at the site root — and
 /// navigate away from the current page instead of scrolling within it.
+///
+/// `link_base_url` is the URL directory corresponding to the Markdown source
+/// file. It can differ from `page_url` when configuration overrides the route.
 pub fn render_markdown(
     content: &str,
     highlighter: &Highlighter,
     base_path: &str,
     page_url: &str,
+    link_base_url: &str,
 ) -> Result<String> {
     let arena = Arena::new();
     let mut options = Options::default();
@@ -218,26 +308,38 @@ pub fn render_markdown(
     options.render.r#unsafe = true; // Allow raw HTML passthrough
 
     let root = parse_document(&arena, content, &options);
+    let base_prefix = base_path.trim_end_matches('/');
 
     // Multi-pass approach: collect node pointers first, then modify.
     // This avoids modifying the tree during iteration and lets heading
     // rendering see original code-span nodes before they are converted to raw
     // HTML for WebUI template-signal escaping.
 
-    // Pass 1: Rewrite internal links before custom heading rendering.
+    // Pass 1: Rewrite internal links and images before custom heading rendering.
     for node in root.descendants() {
         let mut data = node.data.borrow_mut();
-        if let NodeValue::Link(ref mut link) = data.value {
-            if link.url.starts_with('#') {
+        if let NodeValue::Link(ref mut link) | NodeValue::Image(ref mut link) = data.value {
+            if link.url.is_empty() {
+                link.url = page_url.to_string();
+            } else if link.url.starts_with('#') {
                 // In-page fragment link. Make it absolute to the current page so
                 // it isn't resolved against `<base href>` (the site root).
                 link.url = format!("{page_url}{}", link.url);
+            } else if link.url.starts_with('?') {
+                // Query-only links also target the current page, not the site root.
+                link.url = format!("{page_url}{}", link.url);
             } else if link.url.starts_with('/')
-                && !link.url.starts_with(base_path)
-                && base_path != "/"
+                && !link.url.starts_with("//")
+                && !has_base_path_prefix(&link.url, base_prefix)
             {
                 // Prepend base_path to absolute internal links
-                link.url = format!("{}{}", base_path.trim_end_matches('/'), &link.url);
+                link.url = format!("{base_prefix}{}", &link.url);
+            } else if let Some(resolved) =
+                resolve_relative_link(base_path, link_base_url, &link.url)
+            {
+                // The document-level `<base href>` points at the site root, so
+                // relative Markdown links must be resolved during the build.
+                link.url = resolved;
             }
         }
     }
@@ -345,7 +447,8 @@ mod tests {
         // must not be interpreted as a WebUI signal binding by the template
         // parser — escape `{` and `}` to HTML entities.
         let h = Highlighter::new();
-        let html = render_markdown("Use `{{value}}` for escaped output.", &h, "/", "/").unwrap();
+        let html =
+            render_markdown("Use `{{value}}` for escaped output.", &h, "/", "/", "/").unwrap();
         assert!(
             html.contains("&#123;&#123;value&#125;&#125;"),
             "inline code braces should be escaped: {html}"
@@ -359,7 +462,7 @@ mod tests {
     #[test]
     fn heading_inline_code_survives_custom_anchor_rendering() {
         let h = Highlighter::new();
-        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/", "/") {
+        let html = match render_markdown("# `<for>` Loop Directive\n", &h, "/", "/", "/") {
             Ok(html) => html,
             Err(e) => panic!("render_markdown should succeed: {e}"),
         };
@@ -384,6 +487,7 @@ mod tests {
             &h,
             "/webui/",
             "/webui/guide/",
+            "/webui/guide/",
         )
         .unwrap();
 
@@ -398,11 +502,153 @@ mod tests {
     }
 
     #[test]
+    fn relative_links_are_absolute_to_the_markdown_source_directory() {
+        let h = Highlighter::new();
+        let html = render_markdown(
+            "[Sibling](./sibling) [Parent](../parent) [Bare](other?tab=1#details)",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r#"<a href="/webui/guide/sibling">Sibling</a>"#),
+            "dot-relative link should use the source directory: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/webui/parent">Parent</a>"#),
+            "parent-relative link should normalize dot segments: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/webui/guide/other?tab=1#details">Bare</a>"#),
+            "bare relative link should preserve its query and fragment: {html}"
+        );
+    }
+
+    #[test]
+    fn relative_images_are_absolute_to_the_markdown_source_directory() {
+        let h = Highlighter::new();
+        let html = render_markdown(
+            "![Diagram](./images/diagram.png)",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r#"<img src="/webui/guide/images/diagram.png" alt="Diagram" />"#),
+            "relative image should use the source directory: {html}"
+        );
+    }
+
+    #[test]
+    fn relative_links_cannot_escape_the_base_path() {
+        let h = Highlighter::new();
+        let html = match render_markdown(
+            "[Clamped](../../x)",
+            &h,
+            "/webui/",
+            "/webui/guide/",
+            "/webui/guide/",
+        ) {
+            Ok(html) => html,
+            Err(e) => panic!("render_markdown should succeed: {e}"),
+        };
+
+        assert!(
+            html.contains(r#"<a href="/webui/x">Clamped</a>"#),
+            "parent segments should stop at the base path: {html}"
+        );
+    }
+
+    #[test]
+    fn empty_link_destination_targets_the_current_page() {
+        let h = Highlighter::new();
+        let html = match render_markdown(
+            "[]()",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        ) {
+            Ok(html) => html,
+            Err(e) => panic!("render_markdown should succeed: {e}"),
+        };
+
+        assert!(
+            html.contains(r#"<a href="/webui/guide/current/"></a>"#),
+            "empty destination should target the current page: {html}"
+        );
+    }
+
+    #[test]
+    fn absolute_internal_links_respect_base_path_boundaries() {
+        let h = Highlighter::new();
+        for base_path in ["/webui/", "/webui"] {
+            let html = render_markdown(
+                "[Root](/webui) [Nested](/webui/guide) [Query](/webui?tab=1) [Sibling](/webui-press)",
+                &h,
+                base_path,
+                "/webui/guide/current/",
+                "/webui/guide/",
+            )
+            .unwrap();
+
+            assert!(
+                html.contains(r#"<a href="/webui">Root</a>"#),
+                "base root should not be double-prefixed: {html}"
+            );
+            assert!(
+                html.contains(r#"<a href="/webui/guide">Nested</a>"#),
+                "nested base path should not be double-prefixed: {html}"
+            );
+            assert!(
+                html.contains(r#"<a href="/webui?tab=1">Query</a>"#),
+                "query on the base root should not be double-prefixed: {html}"
+            );
+            assert!(
+                html.contains(r#"<a href="/webui/webui-press">Sibling</a>"#),
+                "a similarly named path should still receive basePath: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_relative_links_keep_their_existing_semantics() {
+        let h = Highlighter::new();
+        let html = render_markdown(
+            "[External](https://example.com/docs) [Network](//cdn.example.com/docs) [Query](?tab=1)",
+            &h,
+            "/webui/",
+            "/webui/guide/current/",
+            "/webui/guide/",
+        )
+        .unwrap();
+
+        assert!(
+            html.contains(r#"<a href="https://example.com/docs">External</a>"#),
+            "absolute external link should remain unchanged: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="//cdn.example.com/docs">Network</a>"#),
+            "protocol-relative link should remain unchanged: {html}"
+        );
+        assert!(
+            html.contains(r#"<a href="/webui/guide/current/?tab=1">Query</a>"#),
+            "query-only link should target the current page: {html}"
+        );
+    }
+
+    #[test]
     fn code_block_escapes_template_braces() {
         // Fenced code blocks must also escape braces so example template
         // snippets render literally instead of being parsed as bindings.
         let h = Highlighter::new();
-        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/", "/").unwrap();
+        let html = render_markdown("```html\n<p>{{name}}</p>\n```\n", &h, "/", "/", "/").unwrap();
         assert!(
             html.contains("&#123;&#123;name&#125;&#125;"),
             "code block braces should be escaped: {html}"
