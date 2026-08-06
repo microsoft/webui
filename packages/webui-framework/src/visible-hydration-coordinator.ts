@@ -343,6 +343,7 @@ function trackInitialObservation(target: LazyHydrationTarget): void {
   document.addEventListener('DOMContentLoaded', sealStartupObservationGate, {
     once: true,
   });
+  window.addEventListener('load', sealStartupObservationGate, { once: true });
 }
 
 function settleInitialObservation(target: LazyHydrationTarget): void {
