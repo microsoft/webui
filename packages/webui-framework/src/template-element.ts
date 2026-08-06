@@ -741,30 +741,15 @@ export class TemplateElement extends HTMLElement {
       isSSR = false;
     }
 
-    if (
-      isSSR &&
-      !forceSSR &&
-      !reconnecting
-    ) {
-      const ancestor = this.$nearestHydrationBarrier();
-      if (ancestor) {
-        this.$meta = meta;
-        this.$deferredSSR = true;
-        this.$deferredByAncestor = true;
-        this.$ready = true;
-        this.$primeSSRStateForDeferral();
-        this.$registerWithHydrationBarrier(ancestor);
-        return;
-      }
-      if (!this.$shouldDeferSSRHydration(meta)) {
-        // Continue into ordinary eager hydration below.
-      } else {
-        this.$meta = meta;
-        this.$deferredSSR = true;
-        this.$ready = true;
-        this.$didDeferSSRHydration();
-        return;
-      }
+    // Styles are required even when a compiler-owned SSR host remains dormant.
+    // Install them after root selection but before the hydration deferral.
+    this.$installStyles(meta);
+
+    if (isSSR && !forceSSR && this.$shouldDeferSSRHydration()) {
+      this.$meta = meta;
+      this.$deferredSSR = true;
+      this.$ready = true;
+      return;
     }
 
     let deferredHydrationFinish = false;
@@ -774,31 +759,14 @@ export class TemplateElement extends HTMLElement {
         this.setAttribute('data-wl', '');
       }
 
-      // Install the effective CSS tree after root selection and before any
-      // client template nodes are staged or appended.
-      const containingRoot = this.getRootNode();
-      const styleTarget = wantShadow
-        ? this.shadowRoot!
-        : containingRoot.nodeType === 11 && 'host' in containingRoot
-          ? containingRoot as ShadowRoot
-          : this.ownerDocument;
-      void installComponentStyles(this.localName, styleTarget).catch((error) => {
-        console.error(error);
-      });
-
-      if (!reconnecting) {
-        if (isSSR) {
-          // Seed explicit authored state. A streamed activation (forceSSR)
-          // supplies its boundary-local state directly; ordinary hydration
-          // defaults to the global `window.__webui.state` handoff. Passing a
-          // boundary's state as-is (even when undefined) keeps a stateless
-          // streamed boundary from falling back to a later boundary's global
-          // state.
-          if (this.$shouldApplySSRBootstrapState()) {
-            this.$applySSRState(
-              hasBoundaryState ? ssrState : window.__webui?.state,
-            );
-          }
+      if (isSSR) {
+        // Seed explicit authored state. A streamed activation (forceSSR) supplies
+        // its boundary-local state directly; ordinary hydration defaults to the
+        // global `window.__webui.state` handoff. Passing `forceSSR`'s state as-is
+        // (even when undefined) keeps a stateless streamed boundary from falling
+        // back to a later boundary's global state.
+        if (this.$shouldApplySSRBootstrapState()) {
+          this.$applySSRState(forceSSR ? ssrState : window.__webui?.state);
         }
         this.$applyPendingParentState(isSSR);
       }
@@ -903,6 +871,19 @@ export class TemplateElement extends HTMLElement {
     } finally {
       hydrationEnd();
     }
+  }
+
+  private $installStyles(meta: TemplateMeta): void {
+    const wantShadow = !!this.shadowRoot || !!meta.sd;
+    const containingRoot = this.getRootNode();
+    const styleTarget = wantShadow
+      ? this.shadowRoot!
+      : containingRoot.nodeType === 11 && 'host' in containingRoot
+        ? containingRoot as ShadowRoot
+        : this.ownerDocument;
+    void installComponentStyles(this.localName, styleTarget).catch((error) => {
+      console.error(error);
+    });
   }
 
   disconnectedCallback(): void {

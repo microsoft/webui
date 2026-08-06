@@ -16,11 +16,12 @@ use serde_json::Value;
 /// Build a complete `<script type="importmap">` tag string that registers a
 /// single CSS module under `specifier` via a `data:text/css,…` URI.
 ///
-/// If `nonce` is `Some`, a `nonce="…"` attribute is inserted between `type`
-/// and `>` so strict CSP `script-src 'nonce-…'` policies allow the inline
-/// script. CSS bytes are percent-encoded so they survive the `data:` URI
-/// parser; the importmap JSON is produced via `serde_json` so the specifier
-/// and URI value are correctly JSON-escaped.
+/// The tag carries `data-webui-resource` so Light DOM hydration excludes the
+/// compiler-emitted script from template node ordinals. If `nonce` is `Some`,
+/// a `nonce="…"` attribute is inserted so strict CSP `script-src 'nonce-…'`
+/// policies allow the inline script. CSS bytes are percent-encoded so they
+/// survive the `data:` URI parser; the importmap JSON is produced via
+/// `serde_json` so the specifier and URI value are correctly JSON-escaped.
 ///
 /// Requires browser support for Multiple Import Maps (Chrome 133+); the
 /// browser merges each emitted importmap into the document-level resolution
@@ -30,10 +31,11 @@ pub fn build_importmap_tag(specifier: &str, css: &str, nonce: Option<&str>) -> S
     let data_uri = build_data_uri(css);
     let body = build_importmap_json(specifier, data_uri);
 
-    // `<script type="importmap"></script>` is 33 chars; `nonce=""` adds 8 +
-    // the value. A few extra bytes avoid a reallocation when the body is
-    // small.
-    let cap = 40 + body.len() + nonce.map_or(0, |n| n.len() + 9);
+    let escaped_specifier = crate::html_encode::encode_safe(specifier);
+    // `<script type="importmap" data-webui-resource=""></script>` is 56 chars;
+    // `nonce=""` adds 8 + the value. A few extra bytes avoid a reallocation
+    // when the body is small.
+    let cap = 64 + body.len() + escaped_specifier.len() + nonce.map_or(0, |n| n.len() + 9);
     let mut out = String::with_capacity(cap);
     out.push_str("<script type=\"importmap\"");
     if let Some(n) = nonce {
@@ -41,7 +43,9 @@ pub fn build_importmap_tag(specifier: &str, css: &str, nonce: Option<&str>) -> S
         out.push_str(n);
         out.push('"');
     }
-
+    out.push_str(" data-webui-resource=\"");
+    out.push_str(&escaped_specifier);
+    out.push('"');
     out.push('>');
     out.push_str(&body);
     out.push_str("</script>");
@@ -123,7 +127,7 @@ mod tests {
         let tag = build_importmap_tag("my-comp", "span{color:blue;}", None);
         assert_eq!(
             tag,
-            r#"<script type="importmap">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>"#
+            r#"<script type="importmap" data-webui-resource="my-comp">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>"#
         );
     }
 
@@ -132,7 +136,7 @@ mod tests {
         let tag = build_importmap_tag("dash-page", "h1{font-size:2rem}", Some("test-nonce-123"));
         assert_eq!(
             tag,
-            r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
+            r#"<script type="importmap" nonce="test-nonce-123" data-webui-resource="dash-page">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
         );
     }
 
