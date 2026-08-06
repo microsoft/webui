@@ -1,6 +1,9 @@
 # Register this YAML in Azure DevOps with the exact pipeline definition name
 # "Web UI - CD Build". .ado/pipelines/azure-pipelines-cd.yml references that definition name.
-trigger: none
+trigger:
+  branches:
+    include:
+    - main
 pr: none
 
 parameters:
@@ -98,6 +101,8 @@ stages:
     releaseTag: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseTag'] ]
     releaseCommit: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseCommit'] ]
     releaseVersion: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseVersion'] ]
+    CARGO_HOME: $(Pipeline.Workspace)/.cargo
+    PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
   jobs:
   - job: BuildLinuxAssets
     displayName: Build Linux release assets
@@ -106,6 +111,20 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: Cache@2
+      displayName: Restore Cargo cache
+      inputs:
+        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        restoreKeys: |
+          cargo-home | "$(Agent.OS)"
+        path: $(CARGO_HOME)
+    - task: Cache@2
+      displayName: Restore Linux target cache
+      inputs:
+        key: 'cargo-target | "$(Agent.OS)" | linux-release | Cargo.lock'
+        restoreKeys: |
+          cargo-target | "$(Agent.OS)" | linux-release
+        path: $(Build.SourcesDirectory)/target
     - task: Bash@3
       displayName: Build and stage Linux assets
       inputs:
@@ -150,6 +169,20 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: Cache@2
+      displayName: Restore Cargo cache
+      inputs:
+        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        restoreKeys: |
+          cargo-home | "$(Agent.OS)"
+        path: $(CARGO_HOME)
+    - task: Cache@2
+      displayName: Restore macOS target cache
+      inputs:
+        key: 'cargo-target | "$(Agent.OS)" | macos-release | Cargo.lock'
+        restoreKeys: |
+          cargo-target | "$(Agent.OS)" | macos-release
+        path: $(Build.SourcesDirectory)/target
     - task: Bash@3
       displayName: Build and stage macOS assets
       inputs:
@@ -191,6 +224,20 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: Cache@2
+      displayName: Restore Cargo cache
+      inputs:
+        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        restoreKeys: |
+          cargo-home | "$(Agent.OS)"
+        path: $(CARGO_HOME)
+    - task: Cache@2
+      displayName: Restore Windows target cache
+      inputs:
+        key: 'cargo-target | "$(Agent.OS)" | windows-release | Cargo.lock'
+        restoreKeys: |
+          cargo-target | "$(Agent.OS)" | windows-release
+        path: $(Build.SourcesDirectory)/target
     - task: PowerShell@2
       displayName: Build and stage Windows assets
       inputs:
@@ -255,6 +302,27 @@ stages:
     steps:
     - checkout: self
       clean: true
+    - task: Cache@2
+      displayName: Restore Cargo cache
+      inputs:
+        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        restoreKeys: |
+          cargo-home | "$(Agent.OS)"
+        path: $(CARGO_HOME)
+    - task: Cache@2
+      displayName: Restore assembly target cache
+      inputs:
+        key: 'cargo-target | "$(Agent.OS)" | assembly-release | Cargo.lock'
+        restoreKeys: |
+          cargo-target | "$(Agent.OS)" | assembly-release
+        path: $(Build.SourcesDirectory)/target
+    - task: Cache@2
+      displayName: Restore pnpm store
+      inputs:
+        key: 'pnpm | "$(Agent.OS)" | pnpm-lock.yaml'
+        restoreKeys: |
+          pnpm | "$(Agent.OS)"
+        path: $(PNPM_STORE_PATH)
     - task: DownloadPipelineArtifact@2
       displayName: Download Linux release assets
       inputs:
@@ -293,8 +361,10 @@ stages:
           rustup toolchain install 1.93 --profile minimal
           rustup default 1.93
           corepack enable
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
           cargo xtask publish-stage --pack-only --profile release
+      env:
+        PNPM_STORE_PATH: $(PNPM_STORE_PATH)
     - task: Bash@3
       displayName: Write release metadata
       inputs:

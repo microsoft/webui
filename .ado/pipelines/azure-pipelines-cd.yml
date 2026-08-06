@@ -226,8 +226,8 @@ extends:
           releaseTag: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseTag'] ]
           releaseCommit: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseCommit'] ]
         jobs:
-        - job: Publish
-          displayName: Publish release
+        - job: PublishGitHub
+          displayName: Publish GitHub Release
           steps:
           - checkout: self
             clean: true
@@ -283,4 +283,34 @@ extends:
               isPreRelease: false
               makeLatest: legacy
 
+        - job: PublishNpm
+          displayName: Publish npm packages
+          steps:
+          - checkout: self
+            clean: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download npm packages
+            inputs:
+              buildType: current
+              artifactName: unsigned_npm_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
+
+          # The template skips package types whose artifact directory is absent.
+          - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines
+
+        - job: PublishCrates
+          displayName: Publish Rust crates
+          steps:
+          - checkout: self
+            clean: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download crate packages
+            inputs:
+              buildType: current
+              artifactName: unsigned_crate_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
+
+          # The template skips package types whose artifact directory is absent.
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines
