@@ -109,17 +109,22 @@ To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` t
 ### ParserPlugin Trait
 
 ```rust
+pub struct ComponentTemplateContext {
+    pub effective_dom_strategy: DomStrategy,
+}
+
 pub trait ParserPlugin {
     /// Called before parsing begins for a fragment.
     fn start_fragment(&mut self, fragment_id: &str) {}
 
-    /// Called with the plugin-facing component template. Authored root
-    /// `<template>` attributes are preserved for plugins.
+    /// Called with the plugin-facing component template and resolved DOM mode.
+    /// Authored root `<template>` attributes are preserved for plugins.
     fn register_component_template(
         &mut self,
         tag_name: &str,
         component: &Component,
         processed_template: &str,
+        context: ComponentTemplateContext,
     ) -> Result<()>;
 
     /// Decide how a framework-owned attribute should be handled.
@@ -138,6 +143,10 @@ pub trait ParserPlugin {
     }
 }
 ```
+
+When producing a `ComponentTemplateArtifact`, pass
+`context.effective_dom_strategy` to its constructor. The effective mode is
+required metadata and is not inferred after the plugin returns its artifacts.
 
 ### HandlerPlugin Trait
 

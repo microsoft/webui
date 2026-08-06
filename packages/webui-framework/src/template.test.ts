@@ -122,7 +122,7 @@ describe('template registry helpers', () => {
           getElementById(id: string) {
             if (id !== 'webui-data') return null;
             return {
-              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[[],0]]]}}}',
+              textContent: '{"inventory":"0c","state":{"title":"Hello"},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"templates":{"greeting":{"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[[],0]]]}}}',
               remove() { removed = true; },
             };
           },

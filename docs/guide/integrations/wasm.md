@@ -117,7 +117,7 @@ await init();
 
 const files = {
   'index.html': '<h1>{{title}}</h1>',
-  'my-card.html': '<p><slot></slot></p>',
+  'my-card.html': '<template shadowrootmode="open"><p><slot></slot></p></template>',
   'my-card.css': 'p { color: red; }',
 };
 

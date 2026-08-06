@@ -83,6 +83,11 @@ function renderOne(
   }
   if (fixtureConfig.dom === 'light' || fixtureConfig.dom === 'shadow') {
     buildOptions.dom = fixtureConfig.dom;
+  } else if (fixtureConfig.dom !== 'default') {
+    // Existing framework fixtures were authored to exercise global Shadow.
+    // Keep that setup explicit while allowing focused fixtures to test the
+    // product default without passing a DOM option.
+    buildOptions.dom = 'shadow';
   }
   if (projectionManifest) {
     buildOptions.projectionManifests = [projectionManifest];

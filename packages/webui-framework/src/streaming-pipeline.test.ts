@@ -509,6 +509,19 @@ function markStreamedRoots(nodes: FakeNode[]): void {
   }
 }
 
+function currentCheckpointPayload(bootstrap: object): object {
+  if (bootstrap === null) return bootstrap;
+  return {
+    componentStyles: {
+      version: 1,
+      strategy: 'style',
+      resources: {},
+      closures: {},
+    },
+    ...bootstrap,
+  };
+}
+
 /** Build a boundary with a marker pair wrapping `roots`. */
 function buildBoundary(sequence: number, terminal: number, roots: FakeElement[], bootstrap: object): BuiltBoundary {
   markStreamedRoots(roots);
@@ -521,9 +534,7 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
       sequence,
       terminal === 1 ? 4 : 0,
       terminal === 1 ? 0 : sequence,
-      terminal === 1
-        ? bootstrap
-        : { declarationId: sequence, ...bootstrap },
+      terminal === 1 ? bootstrap : currentCheckpointPayload(bootstrap),
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -537,13 +548,11 @@ function buildMarkerless(sequence: number, terminal: number, bootstrap: object):
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
+      1,
       sequence,
-      terminal === 1 ? 4 : 0,
+      terminal === 1 ? 3 : 0,
       0,
-      terminal === 1
-        ? bootstrap
-        : { declarationId: 0, ...bootstrap },
+      terminal === 1 ? bootstrap : currentCheckpointPayload(bootstrap),
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -564,11 +573,11 @@ function buildUpdatableBoundary(
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
+      1,
       recordSequence,
       1,
       boundaryId,
-      { declarationId: boundaryId, ...bootstrap },
+      currentCheckpointPayload(bootstrap),
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -1462,6 +1471,21 @@ describe('streaming coordinator pipeline', () => {
 
     assert.equal(__isHaltedForTests(), false);
     assert.equal(webuiGlobal().inventory, '0123456789abcdefabcdef');
+  });
+
+  test('halts the stream when a checkpoint omits componentStyles', async () => {
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      const boundary = buildRawBoundary(0, '[1,0,0,0,{"state":{}}]', []);
+      enqueue(boundary.sentinel);
+      await flush();
+
+      assert.equal(__isHaltedForTests(), true);
+      assert.equal(__getLifecycleStateForTests().completed, false);
+    } finally {
+      console.error = previousError;
+    }
   });
 
   test('halts the stream when a checkpoint payload is not an object', async () => {

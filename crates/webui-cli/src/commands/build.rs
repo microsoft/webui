@@ -274,7 +274,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             app: app.to_path_buf(),
             entry: entry.to_string(),
             css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
+            dom: DomStrategy::Light,
             plugin: None,
             components: Vec::new(),
             projection_manifests: Vec::new(),
@@ -356,7 +356,7 @@ mod tests {
     fn test_build_with_component_css() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.html", "<div>content</div>"),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out_dir = TempDir::new().unwrap();
@@ -455,7 +455,8 @@ mod tests {
 
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":2"#));
+        assert!(asset.contains(r#""version":3"#));
+        assert!(asset.contains(r#""componentStyles":{"version":1"#));
         assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
@@ -755,7 +756,8 @@ mod tests {
         assert!(asset_path.exists());
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":2"#));
+        assert!(asset.contains(r#""version":3"#));
+        assert!(asset.contains(r#""componentStyles":{"version":1"#));
         assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""templateFunctionModule""#));
@@ -1109,7 +1111,7 @@ mod tests {
     fn test_build_protocol_includes_tokens_from_components() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-btn></my-btn>"),
-            ("my-btn.html", "<button><slot></slot></button>"),
+            ("my-btn.html", "<button>Button</button>"),
             (
                 "my-btn.css",
                 ".btn { color: var(--text-color); padding: var(--spacing-m); }",
@@ -1272,7 +1274,7 @@ mod tests {
         <my-btn></my-btn>"#;
         let app_dir = create_app_dir(&[
             ("index.html", html),
-            ("my-btn.html", "<button><slot></slot></button>"),
+            ("my-btn.html", "<button>Button</button>"),
             (
                 "my-btn.css",
                 ".btn { color: var(--text-color); margin: var(--spacing-m); }",

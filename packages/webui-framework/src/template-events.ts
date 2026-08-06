@@ -10,6 +10,7 @@
  */
 
 import type { TemplateMeta } from './template.js';
+import type { ComponentStyles } from './element/styles.js';
 
 /** DOM event emitted when WebUI template data becomes available at runtime. */
 export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
@@ -23,6 +24,7 @@ export interface TemplateRegistrationDetail {
 /** Notify optional runtimes that templates have been registered. */
 export function dispatchTemplatesRegistered(
   templates: Record<string, TemplateMeta>,
+  componentStyles?: ComponentStyles,
 ): void {
   if (
     typeof window === 'undefined' ||
@@ -33,17 +35,18 @@ export function dispatchTemplatesRegistered(
   }
 
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates },
+    detail: { templates, componentStyles },
   }));
 }
 
 /** Read a template registration event payload without trusting arbitrary detail. */
-export function templateRegistrationDetail(
-  event: Event,
-): TemplateRegistrationDetail | undefined {
+export function templateRegistrationDetail(event: Event): {
+  templates?: Record<string, TemplateMeta>;
+  componentStyles?: unknown;
+} | undefined {
   const detail = (event as CustomEvent<{
     templates?: unknown;
-    waitUntil?: unknown;
+    componentStyles?: unknown;
   }>).detail;
   if (!detail || typeof detail !== 'object') return undefined;
   const templates = detail.templates;
@@ -51,9 +54,7 @@ export function templateRegistrationDetail(
     templates: typeof templates === 'object' && templates !== null
       ? templates as Record<string, TemplateMeta>
       : undefined,
-    waitUntil: typeof detail.waitUntil === 'function'
-      ? detail.waitUntil as (promise: PromiseLike<unknown>) => void
-      : undefined,
+    componentStyles: detail.componentStyles,
   };
-  return payload.templates ? payload : undefined;
+  return payload.templates || payload.componentStyles ? payload : undefined;
 }

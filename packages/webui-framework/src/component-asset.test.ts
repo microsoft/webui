@@ -7,6 +7,8 @@ import { describe, test } from 'node:test';
 import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
 import { getTemplate, type TemplateMeta } from './template.js';
 import { defineComponentAssets } from './component-asset.js';
+import { validateAsset } from './component-asset/asset.js';
+import { installComponentStyles, setCssModuleLoaderForTests } from './element/styles.js';
 
 type GlobalName = 'window' | 'document';
 
@@ -46,156 +48,137 @@ function componentAsset(templates: Record<string, TemplateMeta>): Record<string,
   const components = Object.keys(templates);
   return {
     type: 'webui-component-asset',
-    version: 2,
+    version: 3,
     kind: 'root',
     root: components[0],
     components,
     requiredComponents: components,
     externalComponents: [],
     imports: [],
-    templateStyles: [],
+    componentStyles: emptyComponentStyles(),
     templates,
   };
 }
 
+function emptyComponentStyles(): Record<string, unknown> {
+  return { version: 1, strategy: 'style', resources: {}, closures: {} };
+}
+
 describe('component asset helpers', () => {
-  test('generated style metadata is a no-op without browser globals', () => {
-    const previousWindow = setGlobal('window', undefined);
-    const previousDocument = setGlobal('document', undefined);
+  test('enhanced asset styles install in closure order and deduplicate', async () => {
+    class StyleElement {
+      rel = '';
+      href = '';
+      textContent = '';
+      private readonly attributes = new Map<string, string>();
 
-    try {
-      assert.equal(takeGeneratedComponentAssetStyles('server-card'), undefined);
-    } finally {
-      restoreGlobal('window', previousWindow);
-      restoreGlobal('document', previousDocument);
+      setAttribute(name: string, value: string): void {
+        this.attributes.set(name, value);
+      }
+
+      getAttribute(name: string): string | null {
+        return this.attributes.get(name) ?? null;
+      }
     }
-  });
 
-  test('loads compiler-generated style metadata beside the authored asset', async () => {
-    const template: TemplateMeta = { h: '<p>Generated</p>' };
-    const asset = assetObjectModule(componentAsset({ 'generated-card': template }));
-    let removed = false;
+    const markers: StyleElement[] = [];
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
+      nodeType: 9,
       baseURI: 'https://example.test/app/',
-      getElementById(id: string) {
-        if (id === 'webui-data') return null;
-        assert.equal(id, 'webui-component-assets');
-        return {
-          textContent: JSON.stringify({
-            'generated-card': ['/generated-card.css'],
+      createElement() {
+        return new StyleElement();
+      },
+      head: {
+        children: markers,
+        insertBefore(marker: StyleElement, before: StyleElement | null) {
+          const index = before ? markers.indexOf(before) : -1;
+          if (index === -1) markers.push(marker);
+          else markers.splice(index, 0, marker);
+          return marker;
+        },
+      },
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'asset-parent': {
+          asset: assetObjectModule({
+            ...componentAsset({
+              'asset-parent': { h: '<asset-child></asset-child>' },
+              'asset-child': { h: '<p>Child</p>' },
+            }),
+            version: 3,
+            componentStyles: {
+              version: 1,
+              strategy: 'style',
+              resources: {
+                'asset-parent': { kind: 'style', css: '.parent{}' },
+                'asset-child': { kind: 'style', css: '.child{}' },
+              },
+              closures: {
+                'asset-parent': ['asset-parent', 'asset-child'],
+                'asset-child': ['asset-child'],
+              },
+            },
           }),
-          remove() {
-            removed = true;
-          },
-        };
-      },
-      querySelector() {
-        return null;
-      },
-    });
-
-    try {
-      const assets = defineComponentAssets({
-        'generated-card': { asset },
-      });
-      await assets.preload('generated-card').asset;
-
-      assert.equal(removed, true);
-      assert.deepEqual(window.__webui?.componentAssetStyles, {});
-      assert.deepEqual(getTemplate('generated-card'), template);
-    } finally {
-      restoreGlobal('window', previousWindow);
-      restoreGlobal('document', previousDocument);
-    }
-  });
-
-  test('accepts a bundler-owned asset importer and invokes it once', async () => {
-    const template: TemplateMeta = { h: '<p>Bundled</p>' };
-    let imports = 0;
-    const previousWindow = setGlobal('window', { __webui: {} });
-    const previousDocument = setGlobal('document', {
-      getElementById() {
-        return null;
-      },
-      querySelector() {
-        return null;
-      },
-    });
-
-    try {
-      const assets = defineComponentAssets({
-        'bundled-card': {
-          asset: async () => {
-            imports += 1;
-            return {
-              default: componentAsset({ 'bundled-card': template }),
-            };
-          },
         },
       });
-      const first = assets.preload('bundled-card');
-      const second = assets.preload('bundled-card');
-      await Promise.all([first.asset, second.asset]);
 
-      assert.equal(first, second);
-      assert.equal(imports, 1);
-      assert.deepEqual(getTemplate('bundled-card'), template);
+      await assets.preload('asset-parent').asset;
+      await installComponentStyles('asset-parent', document);
+      await installComponentStyles('asset-parent', document);
+
+      assert.deepEqual(
+        markers.map(marker => marker.getAttribute('data-webui-resource')),
+        ['asset-parent', 'asset-child'],
+      );
     } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
     }
   });
 
-  test('retries a rejected asset importer on the next preload', async () => {
-    const template: TemplateMeta = { h: '<p>Retry asset</p>' };
-    let imports = 0;
-    const previousWindow = setGlobal('window', { __webui: {} });
-    const previousDocument = setGlobal('document', {
-      getElementById() {
-        return null;
-      },
-      querySelector() {
-        return null;
-      },
-    });
+  test('validates the version boundary for componentStyles', () => {
+    const asset = componentAsset({ 'version-card': { h: '<p>Version</p>' } });
+    validateAsset(asset, 'root');
 
-    try {
-      const assets = defineComponentAssets({
-        'retry-asset-card': {
-          asset: async () => {
-            imports += 1;
-            if (imports === 1) throw new Error('transient asset failure');
-            return {
-              default: componentAsset({ 'retry-asset-card': template }),
-            };
-          },
+    assert.throws(() => validateAsset({
+      ...asset,
+      version: 2,
+    }, 'root'), /Unsupported component asset version: 2/);
+
+    assert.throws(() => validateAsset({
+      ...asset,
+      componentStyles: undefined,
+    }, 'root'), /Version 3 component assets require componentStyles/);
+
+    assert.throws(() => validateAsset({
+      ...asset,
+      componentStyles: {
+        version: 1,
+        strategy: 'style',
+        resources: {
+          'version-card': { kind: 'link', href: '/wrong.css' },
         },
-      });
-      const first = assets.preload('retry-asset-card');
-      await assert.rejects(first.asset, /transient asset failure/);
-
-      const second = assets.preload('retry-asset-card');
-      assert.notEqual(second, first);
-      await second.asset;
-
-      assert.equal(imports, 2);
-      assert.deepEqual(getTemplate('retry-asset-card'), template);
-    } finally {
-      restoreGlobal('window', previousWindow);
-      restoreGlobal('document', previousDocument);
-    }
+        closures: {
+          'version-card': ['version-card'],
+        },
+      },
+    }, 'root'), /Invalid component style resource/);
   });
 
-  test('retries a rejected authored module on the next preload', async () => {
-    const template: TemplateMeta = { h: '<p>Retry module</p>' };
-    let moduleImports = 0;
+  test('rejects invalid version 3 styles before registering templates', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
+      nodeType: 9,
       baseURI: 'https://example.test/app/',
-      getElementById() {
-        return null;
-      },
       querySelector() {
         return null;
       },
@@ -203,43 +186,51 @@ describe('component asset helpers', () => {
 
     try {
       const assets = defineComponentAssets({
-        'retry-module-card': {
-          asset: assetObjectModule(componentAsset({ 'retry-module-card': template })),
-          module: async () => {
-            moduleImports += 1;
-            if (moduleImports === 1) throw new Error('transient module failure');
-          },
+        'invalid-v3-card': {
+          asset: assetObjectModule({
+            ...componentAsset({
+              'invalid-v3-card': { h: '<p>Must not register</p>' },
+            }),
+            version: 3,
+            componentStyles: {
+              version: 1,
+              strategy: 'style',
+              resources: {
+                'invalid-v3-card': { kind: 'link', href: '/wrong.css' },
+              },
+              closures: {
+                'invalid-v3-card': ['invalid-v3-card'],
+              },
+            },
+          }),
         },
       });
-      const first = assets.preload('retry-module-card');
-      await first.asset;
-      assert.ok(first.module);
-      await assert.rejects(first.module, /transient module failure/);
 
-      const second = assets.preload('retry-module-card');
-      assert.notEqual(second, first);
-      await second.asset;
-      assert.ok(second.module);
-      await second.module;
-
-      assert.equal(moduleImports, 2);
+      await assert.rejects(
+        assets.preload('invalid-v3-card').asset,
+        /Invalid component style resource/,
+      );
+      assert.equal(getTemplate('invalid-v3-card'), undefined);
     } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
     }
   });
 
-  test('manifest preload registers templates and injects nonce importmaps', async () => {
+  test('manifest preload registers templates and installs Module componentStyles with a nonce import map', async () => {
     const appended: ScriptMock[] = [];
     const template: TemplateMeta = { h: '<p>Lazy</p>' };
     const previousWindow = setGlobal('window', { __webui: { nonce: 'abc123' } });
     const previousDocument = setGlobal('document', {
+      nodeType: 9,
       baseURI: 'https://example.test/app/',
+      adoptedStyleSheets: [] as CSSStyleSheet[],
       createElement(tag: string) {
         assert.equal(tag, 'script');
         return { type: '', nonce: '', textContent: '' };
       },
       head: {
+        children: [] as unknown[],
         appendChild(script: ScriptMock) {
           appended.push(script);
           return script;
@@ -252,19 +243,28 @@ describe('component asset helpers', () => {
         return null;
       },
     });
+    setCssModuleLoaderForTests(() => Promise.resolve({ default: {} as CSSStyleSheet }));
 
     try {
       const assets = defineComponentAssets({
         'lazy-card': {
           asset: assetObjectModule({
             ...componentAsset({ 'lazy-card': template }),
-            templateStyles: [
-              '<script type="importmap">{"imports":{"lazy-card":"data:text/css,body%7B%7D"}}</script>',
-            ],
+            componentStyles: {
+              version: 1,
+              strategy: 'module',
+              resources: {
+                'lazy-card': { kind: 'module', specifier: 'lazy-card', css: 'body{}' },
+              },
+              closures: {
+                'lazy-card': ['lazy-card'],
+              },
+            },
           }),
         },
       });
       await assets.preload('lazy-card').asset;
+      await installComponentStyles('lazy-card', document);
 
       assert.equal(appended.length, 1);
       assert.equal(appended[0].type, 'importmap');
@@ -275,25 +275,19 @@ describe('component asset helpers', () => {
       );
       assert.deepEqual(getTemplate('lazy-card'), template);
     } finally {
+      setCssModuleLoaderForTests();
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
     }
   });
 
-  test('manifest preload rejects non-importmap template styles', async () => {
+  test('manifest preload rejects malformed Module componentStyles', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
+      nodeType: 9,
       baseURI: 'https://example.test/app/',
-      createElement() {
-        return { type: '', nonce: '', textContent: '' };
-      },
       getElementById() {
         return null;
-      },
-      head: {
-        appendChild(script: ScriptMock) {
-          return script;
-        },
       },
       querySelector() {
         return null;
@@ -307,16 +301,23 @@ describe('component asset helpers', () => {
             ...componentAsset({
               'invalid-style-card': { h: '<p>Invalid style</p>' },
             }),
-            templateStyles: [
-              '<script type="application/json">{"imports":{"invalid-style-card":"data:text/css,body%7B%7D"}}</script>',
-            ],
+            componentStyles: {
+              version: 1,
+              strategy: 'module',
+              resources: {
+                'invalid-style-card': { kind: 'module', specifier: 'invalid-style-card' },
+              },
+              closures: {
+                'invalid-style-card': ['invalid-style-card'],
+              },
+            },
           }),
         },
       });
 
       await assert.rejects(
         assets.preload('invalid-style-card').asset,
-        /must be a <script type="importmap"> tag/,
+        /Invalid component style resource/,
       );
       assert.equal(window.__webui?.templates, undefined);
     } finally {
@@ -342,14 +343,14 @@ describe('component asset helpers', () => {
         'fn-card': {
           asset: assetModule(`{
             type: 'webui-component-asset',
-            version: 2,
+            version: 3,
             kind: 'root',
             root: 'fn-card',
             components: ['fn-card'],
             requiredComponents: ['fn-card'],
             externalComponents: [],
             imports: [],
-            templateStyles: [],
+            componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
             templates: { 'fn-card': { h: '<p>Fn</p>' } },
             templateFunctions: { 'fn-card': [function(v,s){return !!v('ready',s);}] }
           }`),
@@ -370,6 +371,7 @@ describe('component asset helpers', () => {
   test('manifest preload reuses in-flight work and starts module plus data', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
+      nodeType: 9,
       baseURI: 'https://example.test/app/',
       createElement() {
         return { type: '', nonce: '', textContent: '' };
@@ -392,12 +394,7 @@ describe('component asset helpers', () => {
     try {
       const assets = defineComponentAssets({
         'cached-card': {
-          asset: assetObjectModule({
-            ...componentAsset({ 'cached-card': { h: '<p>Cached</p>' } }),
-            templateStyles: [
-              '<script type="importmap">{"imports":{"cached-card":"data:text/css,body%7B%7D"}}</script>',
-            ],
-          }),
+          asset: assetObjectModule(componentAsset({ 'cached-card': { h: '<p>Cached</p>' } })),
           module: async () => {
             moduleCount += 1;
           },
@@ -657,14 +654,14 @@ describe('component asset helpers', () => {
         'empty-card': {
           asset: assetObjectModule({
             type: 'webui-component-asset',
-            version: 2,
+            version: 3,
             kind: 'root',
             root: 'empty-card',
             components: [],
             requiredComponents: [],
             externalComponents: [],
             imports: [],
-            templateStyles: [],
+            componentStyles: emptyComponentStyles(),
             templates: {},
           }),
         },
@@ -692,14 +689,14 @@ describe('component asset helpers', () => {
         'declared-card': {
           asset: assetObjectModule({
             type: 'webui-component-asset',
-            version: 2,
+            version: 3,
             kind: 'root',
             root: 'declared-card',
             components: ['declared-card'],
             requiredComponents: ['declared-card'],
             externalComponents: [],
             imports: [],
-            templateStyles: [],
+            componentStyles: emptyComponentStyles(),
             templates: { 'undeclared-card': { h: '<p>Wrong</p>' } },
           }),
         },
@@ -727,14 +724,14 @@ describe('component asset helpers', () => {
         'condition-card': {
           asset: assetModule(`{
             type: 'webui-component-asset',
-            version: 2,
+            version: 3,
             kind: 'root',
             root: 'condition-card',
             components: ['valid-child', 'condition-card'],
             requiredComponents: ['valid-child', 'condition-card'],
             externalComponents: [],
             imports: [],
-            templateStyles: [],
+            componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
             templates: {
               'valid-child': { h: '<p>Valid</p>' },
               'condition-card': {
@@ -778,14 +775,14 @@ describe('component asset helpers', () => {
         'stale-condition-card': {
           asset: assetObjectModule({
             type: 'webui-component-asset',
-            version: 2,
+            version: 3,
             kind: 'root',
             root: 'stale-condition-card',
             components: ['stale-condition-card'],
             requiredComponents: ['stale-condition-card'],
             externalComponents: [],
             imports: [],
-            templateStyles: [],
+            componentStyles: emptyComponentStyles(),
             templates: {
               'stale-condition-card': {
                 h: '<!--wc:0--><!--/wc-->',
@@ -857,19 +854,19 @@ describe('component asset helpers', () => {
     });
     const chunkUrl = assetObjectModule({
       type: 'webui-component-asset',
-      version: 2,
+      version: 3,
       kind: 'chunk',
       components: ['shared-detail'],
       requiredComponents: ['shared-detail'],
       externalComponents: [],
       imports: [],
-      templateStyles: [],
+      componentStyles: emptyComponentStyles(),
       templates: { 'shared-detail': { h: '<p>Shared</p>' } },
     });
     const chunkUrlSource = JSON.stringify(chunkUrl);
     const rootModule = (root: string) => assetModule(`{
       type: 'webui-component-asset',
-      version: 2,
+      version: 3,
       kind: 'root',
       root: '${root}',
       components: ['${root}'],
@@ -884,7 +881,7 @@ describe('component asset helpers', () => {
           return import(${chunkUrlSource});
         }
       }],
-      templateStyles: [],
+      componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
       templates: { '${root}': { h: '<shared-detail></shared-detail>' } }
     }`);
 

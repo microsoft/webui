@@ -278,34 +278,37 @@ data from a 2,400-component email client:
 
 ### When to Use Each
 
-**Shadow DOM** (default) - use when:
-- Style encapsulation is important (shared component libraries)
-- Components are used in contexts where CSS conflicts are likely
-- You need slot-based composition
-
-**Light DOM** - use when:
+**Light DOM** (default) - use when:
 - Performance is critical (high-component-count pages)
-- Components are leaf nodes (list items, cards, badges)
-- You control the full page CSS and don't need encapsulation
+- Components benefit from normal CSS inheritance
+- Native slot composition is not required
 
-### Switching to Light DOM
+**Shadow DOM** - use when:
+- You need native `<slot>` composition
+- Components run in unknown host pages
+- A native Shadow boundary is an explicit requirement
 
-Build with the `--dom=light` flag:
+### Selecting Shadow DOM
 
 ```bash
-webui build ./src --out ./dist --dom=light
+webui build ./src --out ./dist --dom=shadow
 ```
 
-In Rust handlers, use `DomStrategy::Light`:
+Rust `BuildOptions` and `HtmlParser`, CLI `build` and `serve`, and Node
+`build()` all default to Light. Set `DomStrategy::Shadow`,
+`--dom=shadow`, or `dom: "shadow"` to select Shadow globally.
 
-```rust
-let options = RenderOptions::new("index.html", "/")
-    .with_dom_strategy(DomStrategy::Light);
-```
+In a Light app, a component can opt into Shadow with a sole top-level
+`<template shadowrootmode="open">`. Use that only for components that need
+slots or native encapsulation. Invalid or closed wrappers and `<slot>` in an
+effective Light component fail the build.
 
-CSS differences:
-- Shadow DOM: `:host { display: block; }`
-- Light DOM: `my-component { display: block; }` (use the tag name)
+Keep authoring ordinary paired CSS in both modes. The compiler scopes Light CSS,
+lowers `:host`, and namespaces static keyframes. It rejects selectors and
+dynamic local-keyframe references that cannot be isolated safely.
+
+Use `--dom=shadow` for a global Shadow build, or add open wrappers only to slot
+and encapsulation components.
 
 ## Performance Rules
 

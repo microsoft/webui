@@ -119,6 +119,25 @@ impl WebUIHandler {
             }
         }
 
+        // Rendered components emitted module importmaps inline before their
+        // declarative shadow roots. Emit the same metadata here only for
+        // reachable-but-unrendered descendants.
+        if context.css_strategy == webui_protocol::CssStrategy::Module {
+            for &name in &new_template_tags {
+                if !context.rendered_components.contains(name) {
+                    if let Some(css) = context
+                        .protocol
+                        .components
+                        .get(name)
+                        .map(|component| component.css.as_str())
+                        .filter(|css| !css.is_empty())
+                    {
+                        self.emit_css_module_importmap(name, css, context)?;
+                    }
+                }
+            }
+        }
+
         let template_payloads = context.plugin.as_ref().and_then(|plugin| {
             plugin.collect_template_payloads_slice(context.protocol, &new_template_tags)
         });
@@ -157,13 +176,15 @@ impl WebUIHandler {
         };
         css_hrefs.clear();
         style_specs.clear();
-        let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+        let css_strategy = context.css_strategy;
+        let is_link = css_strategy == webui_protocol::CssStrategy::Link;
+        let is_module = css_strategy == webui_protocol::CssStrategy::Module;
         for &name in &new_template_tags {
             if let Some(component) = context.protocol.components.get(name) {
                 if is_link && !component.css_href.is_empty() {
                     css_hrefs.push(component.css_href.as_str());
                 }
-                if !component.css.is_empty() {
+                if is_module && !component.css.is_empty() {
                     style_specs.push(name);
                 }
             }
@@ -186,43 +207,62 @@ impl WebUIHandler {
 
         let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
         let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
-        write_record_open(context, record.kind(), record.target())?;
-        let (declaration_id, enclosing_span_instance_id) = match record {
-            RangeRecord::Boundary {
-                declaration_id,
-                enclosing_span_instance_id,
-                ..
-            } => (Some(declaration_id), enclosing_span_instance_id),
-            RangeRecord::Span { .. } => (None, None),
-        };
-        let state_selection = if requires_full_state {
-            StateSelection::Full
-        } else {
-            StateSelection::KeyIds(HydrationKeySelection {
-                ids: &state_key_ids,
-                index: checkpoint_reachability,
-            })
-        };
+        let mut style_roots =
+            Vec::with_capacity(checkpoint_names.len() + if first_checkpoint { 1 } else { 0 });
+        if first_checkpoint {
+            style_roots.push(context.entry_id);
+        }
+        style_roots.extend(checkpoint_names.iter().copied());
+        let component_styles =
+            crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
+        context
+            .writer
+            .write("<script type=\"application/json\" data-webui-boundary")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">[1,")?;
+        write_usize(context.writer, record_sequence)?;
+        context.writer.write(",")?;
+        write_usize(
+            context.writer,
+            if updatable {
+                RECORD_KIND_UPDATABLE_CHECKPOINT
+            } else {
+                RECORD_KIND_FINAL_CHECKPOINT
+            },
+        )?;
+        context.writer.write(",")?;
+        write_usize(context.writer, boundary_id)?;
+        context.writer.write(",")?;
         let inventory = context
             .streaming
             .as_ref()
             .map_or("", |streaming| streaming.inventory_hex.as_str());
-        write_webui_bootstrap(
-            context.writer,
-            &mut context.json_scratch,
-            WebUiBootstrap {
-                declaration_id,
-                enclosing_span_instance_id,
-                state: context.state,
-                state_selection,
-                chain: &chain,
-                inventory,
-                nonce: context.nonce,
-                css_hrefs: &css_hrefs,
-                style_specs: &style_specs,
-                templates: payloads,
-            },
-        )?;
+        {
+            let state_selection = if requires_full_state {
+                StateSelection::Full
+            } else {
+                StateSelection::BorrowedKeys(&state_key_scratch)
+            };
+            write_webui_bootstrap(
+                context.writer,
+                &mut context.json_scratch,
+                WebUiBootstrap {
+                    state: context.state,
+                    state_selection,
+                    chain: &chain,
+                    inventory,
+                    nonce: context.nonce,
+                    css_hrefs: &css_hrefs,
+                    style_specs: &style_specs,
+                    component_styles: &component_styles,
+                    templates: payloads,
+                },
+            )?;
+        }
         context.writer.write("]</script>")?;
 
         if let Some(importmap) =

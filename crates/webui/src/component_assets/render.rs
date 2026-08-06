@@ -6,7 +6,9 @@ use webui_protocol::WebUIProtocol;
 
 use super::graph::{AssetGraphPlan, ChunkPlan, RootPlan};
 use super::payload::render_component_payloads;
-use super::serialize::{render_asset, PendingAsset, RenderedAsset, RenderedOutput, ResolvedImport};
+use super::serialize::{
+    render_asset, AssetRenderOptions, PendingAsset, RenderedAsset, RenderedOutput, ResolvedImport,
+};
 use super::ComponentAssetFile;
 use crate::{AssetFileNameTemplate, WebUIError};
 
@@ -22,21 +24,18 @@ pub(super) fn render_component_asset_graph(
     emit_metafile: bool,
 ) -> Result<RenderedGraph, WebUIError> {
     let payloads = render_component_payloads(protocol, plan)?;
+    let render_options = AssetRenderOptions {
+        file_name_template,
+        emit_metafile,
+        protocol,
+    };
     let chunks = if plan.chunks.is_empty() {
         Vec::new()
     } else {
         let chunk_results: Vec<Result<RenderedAsset, WebUIError>> = plan
             .chunks
             .par_iter()
-            .map(|chunk| {
-                render_asset(
-                    &pending_chunk(chunk),
-                    plan,
-                    &payloads,
-                    file_name_template,
-                    emit_metafile,
-                )
-            })
+            .map(|chunk| render_asset(&pending_chunk(chunk), plan, &payloads, &render_options))
             .collect();
         collect_rendered(chunk_results)?
     };
@@ -46,8 +45,7 @@ pub(super) fn render_component_asset_graph(
             &pending_root(&plan.roots[0], plan, &chunks),
             plan,
             &payloads,
-            file_name_template,
-            emit_metafile,
+            &render_options,
         )?]
     } else {
         let root_results: Vec<Result<RenderedAsset, WebUIError>> = plan
@@ -58,8 +56,7 @@ pub(super) fn render_component_asset_graph(
                     &pending_root(root, plan, &chunks),
                     plan,
                     &payloads,
-                    file_name_template,
-                    emit_metafile,
+                    &render_options,
                 )
             })
             .collect();

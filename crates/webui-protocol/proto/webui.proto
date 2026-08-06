@@ -10,19 +10,14 @@ message ComponentData {
   // Non-WebUI client-side template payload.
   // FAST plugins store complete <f-template> HTML here.
   string template = 1;
-  // Component CSS content for the Module strategy.
-  // Contains the full CSS content when CssStrategy::Module is active.
-  // Empty for Link and Style strategies (CSS is handled via <link> tags
-  // or inline <style> tags baked into raw fragments by the parser).
+  // Compiled component CSS content for the Style and Module strategies.
+  // Empty for Link and for components without CSS.
   string css = 2;
   // External stylesheet href for the Link CSS strategy.
   // Set to e.g. "/my-card.css" when the component has a CSS file and the
   // build used CssStrategy::Link. Empty for Style/Module strategies and
   // for components without CSS.
-  // The handler uses css_strategy and dom_strategy on WebUIProtocol to
-  // decide what to emit in <head>:
-  //   Link + Shadow → <link rel="preload"> (shadow root has the stylesheet)
-  //   Link + Light  → <link rel="stylesheet"> (no shadow root to host it)
+  // Ordered style closures decide which Document or ShadowRoot owns the link.
   string css_href = 3;
   // WebUI plugin JSON-safe component metadata.
   // Stored separately from executable condition closures so handlers can emit
@@ -49,6 +44,8 @@ message ComponentData {
   // significant: protocols produced before projection metadata leave this
   // absent, so handlers preserve full state instead of treating it as NONE.
   optional StateProjectionMode navigation_mode = 9;
+  // Effective DOM strategy resolved for this component at build time.
+  DomStrategy effective_dom_strategy = 10;
 }
 
 // Link stylesheet metadata for one static component asset root.
@@ -90,8 +87,8 @@ enum CssStrategy {
 
 // DOM encapsulation strategy chosen at build time.
 enum DomStrategy {
-  DOM_STRATEGY_SHADOW = 0;
-  DOM_STRATEGY_LIGHT = 1;
+  DOM_STRATEGY_LIGHT = 0;
+  DOM_STRATEGY_SHADOW = 1;
 }
 
 // Root protocol containing all fragment records and build metadata.
@@ -103,8 +100,8 @@ message WebUIProtocol {
   repeated string tokens = 2;
   // Per-component data keyed by tag name (f-template + CSS).
   map<string, ComponentData> components = 3;
-  // Build-wide CSS delivery strategy. Determines how the handler emits
-  // CSS-related tags in <head> for components with css_href.
+  // Build-wide CSS delivery strategy. Determines how compiled component
+  // resources are installed in each CSS tree.
   CssStrategy css_strategy = 4;
   // Build-wide DOM encapsulation strategy. Combined with css_strategy to
   // decide preload vs stylesheet emission.
@@ -125,14 +122,24 @@ message WebUIProtocol {
   // The compiler resolves and sorts these at build time so the handler writes
   // them verbatim with no per-request work.
   repeated string module_preloads = 7;
-  // Build-generated document-level rules for component rendering policies.
-  // Empty when no component opts into lazy rendering.
-  string component_render_css = 9;
-  // Build-generated eager metadata for static component asset roots.
-  //
-  // Entries are sorted by root tag. Builds without component assets omit the
-  // field from the wire.
-  repeated ComponentAssetStylePreload component_asset_style_preloads = 10;
+  // Free-form <boundary name> values keyed by entry fragment and stored in
+  // declaration order. Hosts resolve a name once to its zero-based BoundaryId;
+  // names never reach the rendered HTML response.
+  map<string, StreamingBoundaryList> streaming_boundaries = 8;
+  // Ordered, deduplicated component style resource tags for each Document or
+  // component-root CSS tree entry point.
+  map<string, ComponentStyleClosure> style_closures = 9;
+}
+
+// Compile-time component style resources for one CSS tree.
+message ComponentStyleClosure {
+  // Component tags in cascade-sensitive first-discovery order.
+  repeated string component_tags = 1;
+}
+
+// Ordered compile-time boundary names for one entry fragment.
+message StreamingBoundaryList {
+  repeated string names = 1;
 }
 
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).

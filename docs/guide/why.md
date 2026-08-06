@@ -44,11 +44,16 @@ Historically, frameworks existed because the web platform lacked key primitives.
 
 - **Web Components** - reusable custom elements with a standard lifecycle, no framework runtime required
 - **Declarative Shadow DOM** - server-renderable encapsulation without JavaScript
-- **CSS containment** - layout and paint isolation for predictable rendering performance
-- **Adopted stylesheets** - shared, constructable stylesheets across shadow roots
+- **CSS scoping** - native `@scope` for compiler-scoped Light component styles
+- **Adopted stylesheets** - shared, constructable stylesheets when module
+  delivery is selected
 - **Navigation API** - client-side routing without framework abstractions
 
-WebUI builds directly on these platform primitives rather than wrapping them in an abstraction layer. Templates use standard HTML and native Web Components. The optional client-side router uses the Navigation API. Styling uses adopted stylesheets and CSS containment. No proprietary component model, no virtual DOM, no framework runtime in the browser.
+WebUI builds directly on these platform primitives rather than wrapping them in
+an abstraction layer. Templates use standard HTML and native Web Components.
+The optional client-side router uses the Navigation API. Styling uses ordinary
+paired CSS, native `@scope` in Light DOM, and Shadow scoping when selected. No
+proprietary component model or virtual DOM is required.
 
 When you build on the web platform, you inherit its improvements for free. Every browser performance optimization, every new CSS feature, every platform API lands in your app without a framework upgrade.
 
@@ -62,7 +67,11 @@ With WebUI's Islands Architecture:
 
 - **Static content** is server-rendered HTML. It arrives fully formed in the initial response. No JavaScript is shipped, no hydration occurs, no client-side processing is needed. It is just HTML and CSS - the fastest thing a browser can render.
 
-- **Interactive components** are Web Components that hydrate on the client. Each island is self-contained with its own Shadow DOM, encapsulated styles, and TypeScript behavior. Islands hydrate independently - they don't wait for each other or for a global framework to initialize.
+- **Interactive components** are Web Components that hydrate on the client.
+  Each island has its own template, scoped styles, and TypeScript behavior.
+  Light DOM is the default, with Shadow available for native slots or an
+  explicit native boundary. Islands hydrate independently - they don't wait for
+  each other or for a global framework to initialize.
 
 - **You control the boundary.** The hydration plugin system lets you decide exactly which components are interactive islands and how they hydrate (on load, on visible, on interaction).
 

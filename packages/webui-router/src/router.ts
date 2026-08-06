@@ -85,7 +85,6 @@ export class WebUIRouter {
   private basePath = '';
   /** O(1) lookup sets backed by the global arrays — kept in sync. */
   private cssSet = new Set<string>();
-  private stylesSet = new Set<string>();
   private navGeneration = 0;
   private currentRequestPath = '/';
   private navCache: import('./cache.js').NavigationCache | null = null;
@@ -196,12 +195,11 @@ export class WebUIRouter {
 
     this.installDocumentTransitionOverride();
 
-    // Build O(1) lookup Sets from the global arrays, then free the arrays —
-    // they were one-shot SSR data; the Sets are the live lookup structure.
+    // Build the router's O(1) CSS URL lookup, then free its source array.
+    // Keep `styles`: the framework lazily consumes those SSR Module specifiers
+    // when it initializes the per-Document import-map deduplication set.
     for (const href of meta.css) this.cssSet.add(href);
-    for (const spec of meta.styles) this.stylesSet.add(spec);
     delete meta.css;
-    delete meta.styles;
 
     const nav = window.navigation;
     const handler = (event: NavigateEvent) => {
@@ -317,7 +315,7 @@ export class WebUIRouter {
       const inv = window.__webui!.inventory!;
       const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
       const fetchPromise = fetchComponentTemplates(
-        missing, inv, endpoint, window.__webui!.nonce!, this.stylesSet,
+        missing, inv, endpoint, window.__webui!.nonce!,
         (inv) => this.updateInventory(inv),
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
@@ -364,7 +362,6 @@ export class WebUIRouter {
     this.ssrPreloadsCleared = false;
     this.documentNavigationUrl = null;
     this.cssSet.clear();
-    this.stylesSet.clear();
 
     this.currentRequestPath = '/';
     this.navCache?.clear();
@@ -566,12 +563,28 @@ export class WebUIRouter {
     const headers: Record<string, string> = { 'Accept': 'application/x-ndjson, application/json' };
     if (window.__webui!.inventory) headers['X-WebUI-Inventory'] = window.__webui!.inventory!;
 
-    const requestController = new AbortController();
-    if (!speculative) this.abortPartialRequests();
-    this.partialControllers.add(requestController);
-    const timeout = setTimeout(
-      () => requestController.abort(new DOMException('Partial response timed out', 'TimeoutError')),
-      PARTIAL_FETCH_TIMEOUT_MS,
+    const resp = await fetch(fullPath, { headers, signal });
+    if (!resp.ok) return null;
+
+    const contentType = resp.headers.get('content-type') ?? '';
+
+    if (!contentType.includes('json') && !contentType.includes('ndjson')) {
+      if (speculative || signal?.aborted) return null;
+      this.navigateDocument(requestPath);
+      return null;
+    }
+
+    if (contentType.includes('ndjson') && resp.body) {
+      const { readStreamingPartial } = await import('./streaming.js');
+      return readStreamingPartial(resp, requestPath, this.streamingContext(), signal);
+    }
+
+    const data = await resp.json() as PartialResponse & { inventory?: string };
+    if (signal?.aborted) return null;
+    registerTemplatesAndStyles(
+      data,
+      window.__webui!.nonce!,
+      (inv) => this.updateInventory(inv),
     );
     const requestSignal = signal
       ? AbortSignal.any([signal, requestController.signal])
@@ -688,7 +701,6 @@ export class WebUIRouter {
       get currentRequestPath() { return self.currentRequestPath; },
       get activeChain() { return self.activeChain; },
       get nonce() { return window.__webui!.nonce!; },
-      get injectedStyles() { return self.stylesSet; },
       get injectedCss() { return self.cssSet; },
       setDeferredReader(r) {
         if (r) {

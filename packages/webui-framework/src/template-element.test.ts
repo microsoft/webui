@@ -16,6 +16,7 @@ Object.defineProperty(globalThis, 'HTMLElement', {
     isConnected = false;
     childNodes: unknown[] = [];
     shadowRoot = null;
+    ownerDocument = document;
     _attrs: Record<string, string> = {};
 
     hasAttribute(name: string): boolean {
@@ -33,12 +34,17 @@ Object.defineProperty(globalThis, 'HTMLElement', {
     removeAttribute(name: string): void {
       delete this._attrs[name];
     }
+
+    getRootNode(): Document {
+      return this.ownerDocument;
+    }
   },
   configurable: true,
 });
 
 Object.defineProperty(globalThis, 'document', {
   value: {
+    nodeType: 9,
     readyState: 'loading',
     getElementById() {
       return null;

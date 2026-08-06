@@ -10,7 +10,7 @@ test.describe('css module fixture', () => {
   });
 
   test('client-created components adopt module styles from registered specifiers', async ({ page }) => {
-    // Wait for async CSS module injection (import().then() in injectModuleStyle)
+    // Wait for async CSS module injection (import().then() in installModule)
     await expect(async () => {
       const hostColor = await page.locator('test-module-host').evaluate((host) => {
         const label = (host.shadowRoot ?? host).querySelector('.host-label');

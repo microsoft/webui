@@ -87,6 +87,16 @@ pub mod codes {
     pub const MALFORMED_HTML_TAG: &str = "malformed-html-tag";
     /// A closing tag has no matching opening tag.
     pub const UNEXPECTED_CLOSING_TAG: &str = "unexpected-closing-tag";
+    /// An effective Light DOM component contains a native `<slot>`.
+    pub const LIGHT_DOM_SLOT: &str = "light-dom-slot";
+    /// A declarative Shadow DOM wrapper has an unsupported mode or placement.
+    pub const INVALID_SHADOW_ROOT_MODE: &str = "invalid-shadow-root-mode";
+    /// Authored markup attempts to own WebUI's Light DOM host marker.
+    pub const RESERVED_LIGHT_DOM_MARKER: &str = "reserved-light-dom-marker";
+    /// Light component CSS contains a selector or at-rule that cannot be scoped.
+    pub const UNSUPPORTED_LIGHT_CSS: &str = "unsupported-light-css";
+    /// A Light component refers to a component-local keyframe dynamically.
+    pub const DYNAMIC_LIGHT_KEYFRAME: &str = "dynamic-light-keyframe";
     /// An HTML comment was opened but never closed with `-->`.
     pub const UNTERMINATED_HTML_COMMENT: &str = "unterminated-html-comment";
     /// An HTML declaration was opened but never closed with `>`.

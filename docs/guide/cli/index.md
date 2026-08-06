@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -45,7 +45,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
+| `--dom <STRATEGY>` | DOM strategy: `light` or `shadow` | `light` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
@@ -63,9 +63,20 @@ URI-style values.
 
 | Mode | Behavior |
 |------|----------|
-| `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
-| `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
-| `module` | Emits `<script type="importmap">{"imports":{"component":"data:text/css,..."}}</script>` tags that register each component's CSS under a data URI, and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Import Maps](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) and [CSS Module Scripts](https://github.com/whatwg/html/issues/9572) proposals. If a component supplies its own `<template>` wrapper (e.g. to attach `@event` handlers), WebUI preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. |
+| `link` | Emits external `.css` files and installs their `<link>` resources in compiler-defined cascade order. |
+| `style` | Installs compiled CSS in `<style>` elements. No separate CSS files are written. |
+| `module` | Delivers compiled CSS with an SSR fallback and shares imported CSS module stylesheets across component instances when supported. No separate CSS files are written. |
+
+All modes support Light and Shadow components. A component's ordinary paired
+CSS file is scoped by the compiler in Light DOM and remains native Shadow CSS in
+Shadow DOM. Resources are installed once per Document or ShadowRoot in
+first-discovery order, including partial navigation, streaming, and static
+component assets. Full-document SSR installs Document resources before
+`</head>`. When the document omits an explicit head, resources precede document
+content while remaining immediately after any leading doctype.
+Document fragment renders install resources before fragment content; an
+effective Shadow component rendered directly as the entry installs them inside
+its declarative root.
 
 For long-lived CDN/browser caching, include `[hash]` in
 `--asset-file-name-template`. `[hash]` is the emitted file's SHA-256 content hash
@@ -101,6 +112,10 @@ Dependencies shared by the same two or more roots are emitted once as
 `chunk-<first-sorted-component>.webui.js`, and each root dynamically imports the
 chunks it needs. Requested-root order does not change ownership, bytes, or
 hashes. Asset-only records are removed from `protocol.bin`.
+
+Component assets use version 3 with a required, atomically registered
+`componentStyles` catalog. Other versions and assets without the catalog are
+rejected before registration.
 
 `--metafile` writes esbuild-compatible `inputs` and `outputs`, including every
 root-to-chunk `dynamic-import` edge and exact byte attribution. It can be opened
@@ -160,8 +175,17 @@ Use `--legal-comments none` to strip all non-signal comments.
 
 | Strategy | Behavior |
 |----------|----------|
-| `shadow` | Components render inside `<template shadowrootmode="open">`. Style encapsulation via Shadow DOM. Default. |
-| `light` | Components render as direct children. No shadow boundary. 26% faster FCP on high-component-count pages. |
+| `light` | Components render as direct children. This is the default. Component CSS is compiler-scoped. |
+| `shadow` | Components render inside `<template shadowrootmode="open">` with a native shadow boundary. |
+
+In a Light build, a component can opt into Shadow by making a single
+`<template shadowrootmode="open">` its sole top-level element. Closed roots,
+invalid values or placement, and `<slot>` in an effective Light component fail
+the build. Native slots require Shadow DOM.
+
+Use `--dom=shadow` when the whole build requires Shadow. Otherwise, add the open
+wrapper only to components that require native slots or native Shadow
+encapsulation.
 
 See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.
 
@@ -264,7 +288,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
+| `--dom <STRATEGY>` | DOM strategy: `light` or `shadow` | `light` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |

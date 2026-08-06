@@ -318,8 +318,9 @@ export function buildSSRIndex(
  *
  * This function walks `parent.firstChild` → siblings, counting only
  * children of the requested `nodeType` that are NOT inside a structural
- * block range.  Nested blocks of the same type are handled via depth
- * tracking.  Returns the child at the given `ordinal`, or null.
+ * block range or compiler-emitted style fallback. Nested blocks of the same
+ * type are handled via depth tracking. Returns the child at the given
+ * `ordinal`, or null.
  *
  * Used by `$findSSRText` to keep SSR text ordinals aligned with the template.
  * Elements are addressed by pre-order index instead (see `buildSSRIndex`);
@@ -344,7 +345,9 @@ export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): 
         continue;
       }
     }
-    if (child.nodeType === nodeType) {
+    const isStyleResource = child.nodeType === 1
+      && (child as Element).hasAttribute?.('data-webui-resource') === true;
+    if (child.nodeType === nodeType && !isStyleResource) {
       if (count === ordinal) return child;
       count++;
     }

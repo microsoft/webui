@@ -298,10 +298,7 @@ state that a template binding could express.
 
 ### The `<template>` tag
 
-The `<template shadowrootmode="open">` wrapper is **optional**. The build tool
-auto-injects it when absent.
-
-Omit it for most components:
+Light DOM is the default. Omit the wrapper for ordinary components:
 
 ```html
 <!-- my-card.html -->
@@ -309,7 +306,9 @@ Omit it for most components:
 <p>{{description}}</p>
 ```
 
-Include it only when you need root host events on the component root:
+Use a sole top-level `<template shadowrootmode="open">` only when the component
+needs native `<slot>`, a native Shadow boundary, or root events on the shadow
+root:
 
 ```html
 <!-- todo-app.html -->
@@ -323,17 +322,15 @@ Include it only when you need root host events on the component root:
 </template>
 ```
 
-Root host events catch custom events bubbling up from child components. To arrive
-from a child, an event must bubble and - to cross the child's shadow boundary -
-be `composed`; `this.$emit()` sets both whenever the emitting component has a
-shadow root (the default), but a hand-built `new CustomEvent(name)` defaults to
-neither and will never reach the root - pass `{ bubbles: true, composed: true }`
-or bind it on the child element.
+The wrapper must contain the complete component. `closed`, a dynamic or invalid
+value, placement on another element, multiple declarations, or extra top-level
+content fails the build. `<slot>` is a build error in an effective Light
+component.
 
-The binding sits on the host element, so it also catches events targeted at the
-host itself - what host-interactive components (host `tabindex`, presentational
-shadow content) rely on. It does not see non-composed events (`change`,
-`submit`, `select`, media); bind those per element.
+Root host events catch custom events bubbling up from child components. They see
+only events that bubble; `this.$emit()` sets `bubbles: true`, but a hand-built
+`new CustomEvent(name)` defaults to `bubbles: false` and will never reach the
+root - bind that on the child element instead.
 
 One root listener also serves an arbitrarily large `<for>`, so this is the way
 to trade per-row listeners for a single handler on a very long list. For rows
@@ -370,8 +367,9 @@ self-closing form is preferred.
 
 ## Styling
 
-CSS is scoped per component via Shadow DOM. No CSS-in-JS, no inline styles
-written from script, no runtime style injection.
+Keep ordinary paired component CSS. The compiler scopes Light CSS, lowers
+`:host`, and namespaces static keyframes. Shadow components retain native
+Shadow CSS scoping. No CSS-in-JS or styles written from script.
 
 ```css
 /* my-component.css */
@@ -392,8 +390,11 @@ written from script, no runtime style injection.
 .header { font-weight: bold; }
 ```
 
-- `:host` styles the component root; `:host([attr])` styles by attribute.
-- Internal selectors are scoped to the shadow root. No styles leak in or out.
+- `:host` styles the component root; `:host([attr])` styles by attribute in
+  both DOM modes.
+- Light DOM preserves normal inheritance while compiler scoping bounds
+  component rules. Shadow DOM creates a native boundary.
+- Shadow-only selectors and unsafe Light keyframe references fail the build.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Malformed CSS fails the build, including unterminated `var()` calls,
@@ -1149,6 +1150,8 @@ Before emitting WebUI code, confirm:
 - [ ] `::view-transition-*` rules are in the entry template, not component CSS.
 - [ ] `prefers-reduced-motion` is honored wherever motion is used.
 - [ ] No conditions mix `&&` with `||`, use parentheses, or use a ternary.
+- [ ] Every native `<slot>` is inside a component whose sole top-level element
+      is `<template shadowrootmode="open">`, unless the whole build uses Shadow.
 
 ## Build and run
 
@@ -1167,6 +1170,10 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--dom <shadow|light>`, `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
+
+Light is the default when `--dom` is omitted. Use `--dom=shadow` to select
+Shadow globally, or add an open wrapper only to components that need slots or
+native encapsulation.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

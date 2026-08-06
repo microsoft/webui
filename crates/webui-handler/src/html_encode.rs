@@ -8,6 +8,8 @@
 
 use std::borrow::Cow;
 
+use crate::{ResponseWriter, Result};
+
 /// Characters escaped and their replacements:
 ///
 /// * `&` → `&amp;`
@@ -57,9 +59,56 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// Write CSS into an HTML `<style>` raw-text element without allowing an
+/// authored, case-insensitive `</style` sequence to terminate the element.
+///
+/// Escaping only the slash (`<\/style`) preserves the CSS string value and
+/// keeps the ordinary path allocation-free.
+pub(crate) fn write_style_text(writer: &mut dyn ResponseWriter, css: &str) -> Result<()> {
+    let bytes = css.as_bytes();
+    let mut chunk_start = 0usize;
+    let mut index = 0usize;
+    while index + 7 <= bytes.len() {
+        if bytes[index] == b'<'
+            && bytes[index + 1] == b'/'
+            && bytes[index + 2].eq_ignore_ascii_case(&b's')
+            && bytes[index + 3].eq_ignore_ascii_case(&b't')
+            && bytes[index + 4].eq_ignore_ascii_case(&b'y')
+            && bytes[index + 5].eq_ignore_ascii_case(&b'l')
+            && bytes[index + 6].eq_ignore_ascii_case(&b'e')
+        {
+            writer.write(&css[chunk_start..index + 1])?;
+            writer.write("\\/")?;
+            chunk_start = index + 2;
+            index += 7;
+        } else {
+            index += 1;
+        }
+    }
+    writer.write(&css[chunk_start..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct StyleWriter {
+        output: String,
+        writes: usize,
+    }
+
+    impl ResponseWriter for StyleWriter {
+        fn write(&mut self, content: &str) -> Result<()> {
+            self.output.push_str(content);
+            self.writes += 1;
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn no_escaping_returns_borrowed() {
@@ -178,5 +227,27 @@ mod tests {
         for (input, expected) in test_cases {
             assert_eq!(encode_safe(input), expected, "Failed for input: {input:?}");
         }
+    }
+
+    #[test]
+    fn style_text_preserves_normal_bytes_in_one_write() {
+        let mut writer = StyleWriter::default();
+        write_style_text(&mut writer, ".card{content:'normal / style'}").unwrap();
+        assert_eq!(writer.output, ".card{content:'normal / style'}");
+        assert_eq!(writer.writes, 1);
+    }
+
+    #[test]
+    fn style_text_escapes_mixed_case_end_tags() {
+        let mut writer = StyleWriter::default();
+        write_style_text(
+            &mut writer,
+            ".a{content:'</style>'}.b{content:'</StYlE attr>'}",
+        )
+        .unwrap();
+        assert_eq!(
+            writer.output,
+            ".a{content:'<\\/style>'}.b{content:'<\\/StYlE attr>'}"
+        );
     }
 }

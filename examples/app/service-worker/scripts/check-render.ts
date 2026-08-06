@@ -57,10 +57,8 @@ while (!step.done) {
     html += decoder.decode(step.bytes);
     continue;
   }
-  const boundary = step.boundary;
-  const payload = payloads.get(boundary.name);
-  if (!payload || boundary.owner !== "index.html") {
-    throw new Error(`Unexpected boundary ${boundary.owner}/${boundary.name}`);
+  if (!html.includes('<style data-webui-resource="')) {
+    throw new Error(`Rendered ${sanitized.entry} did not include component CSS`);
   }
   if (payload.entry !== `${boundary.name}-panel`) {
     throw new Error(`Boundary ${boundary.name} received state for ${payload.entry}`);

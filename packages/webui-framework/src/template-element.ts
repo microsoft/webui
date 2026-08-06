@@ -88,9 +88,7 @@ import {
   rawMarker,
   type SSRIndex,
 } from './element/markers.js';
-import {
-  injectModuleStyle,
-} from './element/styles.js';
+import { installComponentStyles } from './element/styles.js';
 import {
   cancelTemplateLinkStyleMount,
   installTemplateLinkStyles,
@@ -772,8 +770,21 @@ export class TemplateElement extends HTMLElement {
     let deferredHydrationFinish = false;
     hydrationStart();
     try {
-      // Inject CSS module stylesheet after root is determined
-      if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
+      if (!isSSR && !wantShadow && !this.hasAttribute('data-wl')) {
+        this.setAttribute('data-wl', '');
+      }
+
+      // Install the effective CSS tree after root selection and before any
+      // client template nodes are staged or appended.
+      const containingRoot = this.getRootNode();
+      const styleTarget = wantShadow
+        ? this.shadowRoot!
+        : containingRoot.nodeType === 11 && 'host' in containingRoot
+          ? containingRoot as ShadowRoot
+          : this.ownerDocument;
+      void installComponentStyles(this.localName, styleTarget).catch((error) => {
+        console.error(error);
+      });
 
       if (!reconnecting) {
         if (isSSR) {

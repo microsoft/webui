@@ -12,20 +12,15 @@ pub struct ComponentData {
     /// FAST plugins store complete <f-template> HTML here.
     #[prost(string, tag = "1")]
     pub template: ::prost::alloc::string::String,
-    /// Component CSS content for the Module strategy.
-    /// Contains the full CSS content when CssStrategy::Module is active.
-    /// Empty for Link and Style strategies (CSS is handled via <link> tags
-    /// or inline <style> tags baked into raw fragments by the parser).
+    /// Compiled component CSS content for the Style and Module strategies.
+    /// Empty for Link and for components without CSS.
     #[prost(string, tag = "2")]
     pub css: ::prost::alloc::string::String,
     /// External stylesheet href for the Link CSS strategy.
     /// Set to e.g. "/my-card.css" when the component has a CSS file and the
     /// build used CssStrategy::Link. Empty for Style/Module strategies and
     /// for components without CSS.
-    /// The handler uses css_strategy and dom_strategy on WebUIProtocol to
-    /// decide what to emit in <head>:
-    ///    Link + Shadow → <link rel="preload"> (shadow root has the stylesheet)
-    ///    Link + Light  → <link rel="stylesheet"> (no shadow root to host it)
+    /// Ordered style closures decide which Document or ShadowRoot owns the link.
     #[prost(string, tag = "3")]
     pub css_href: ::prost::alloc::string::String,
     /// WebUI plugin JSON-safe component metadata.
@@ -59,6 +54,9 @@ pub struct ComponentData {
     /// absent, so handlers preserve full state instead of treating it as NONE.
     #[prost(enumeration = "StateProjectionMode", optional, tag = "9")]
     pub navigation_mode: ::core::option::Option<i32>,
+    /// Effective DOM strategy resolved for this component at build time.
+    #[prost(enumeration = "DomStrategy", tag = "10")]
+    pub effective_dom_strategy: i32,
 }
 /// Link stylesheet metadata for one static component asset root.
 ///
@@ -95,8 +93,8 @@ pub struct WebUiProtocol {
         ::prost::alloc::string::String,
         ComponentData,
     >,
-    /// Build-wide CSS delivery strategy. Determines how the handler emits
-    /// CSS-related tags in <head> for components with css_href.
+    /// Build-wide CSS delivery strategy. Determines how compiled component
+    /// resources are installed in each CSS tree.
     #[prost(enumeration = "CssStrategy", tag = "4")]
     pub css_strategy: i32,
     /// Build-wide DOM encapsulation strategy. Combined with css_strategy to
@@ -133,6 +131,21 @@ pub struct WebUiProtocol {
     pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
         ComponentAssetStylePreload,
     >,
+    /// Ordered, deduplicated component style resource tags for each Document or
+    /// component-root CSS tree entry point.
+    #[prost(map = "string, message", tag = "9")]
+    pub style_closures: ::std::collections::HashMap<
+        ::prost::alloc::string::String,
+        ComponentStyleClosure,
+    >,
+}
+/// Compile-time component style resources for one CSS tree.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ComponentStyleClosure {
+    /// Component tags in cascade-sensitive first-discovery order.
+    #[prost(string, repeated, tag = "1")]
+    pub component_tags: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -507,8 +520,8 @@ impl CssStrategy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum DomStrategy {
-    Shadow = 0,
-    Light = 1,
+    Light = 0,
+    Shadow = 1,
 }
 impl DomStrategy {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -517,15 +530,15 @@ impl DomStrategy {
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
-            Self::Shadow => "DOM_STRATEGY_SHADOW",
             Self::Light => "DOM_STRATEGY_LIGHT",
+            Self::Shadow => "DOM_STRATEGY_SHADOW",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
     pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
-            "DOM_STRATEGY_SHADOW" => Some(Self::Shadow),
             "DOM_STRATEGY_LIGHT" => Some(Self::Light),
+            "DOM_STRATEGY_SHADOW" => Some(Self::Shadow),
             _ => None,
         }
     }

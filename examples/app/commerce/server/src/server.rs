@@ -381,11 +381,13 @@ mod tests {
 
         assert!(html.contains("mp-page-search"));
         assert!(html.contains("mp-navbar"));
-        // CSS preloads are now emitted by the framework (via protocol strategy
-        // not the custom server. Verify the framework-emitted preload is present.
+        // Component CSS resources are emitted by the framework from the
+        // protocol strategy, not by the custom server.
         assert!(
-            html.contains(r#"data-webui-ssr-preload="style""#),
-            "Framework should emit CSS preload with data-webui-ssr-preload: {html}"
+            html.contains(
+                r#"<link rel="stylesheet" href="mp-page-search.css" data-webui-resource="mp-page-search" data-webui-strategy="link">"#,
+            ),
+            "Framework should emit the component stylesheet resource: {html}"
         );
         assert!(html.contains(r#"href="_image/t-shirt-1?w=640&q=75""#));
         assert!(
@@ -476,35 +478,28 @@ mod tests {
             Err(error) => panic!("{error}"),
         };
 
-        let template_styles = match json["templateStyles"].as_array() {
-            Some(template_styles) => template_styles,
-            None => panic!("templateStyles should be an array"),
+        let style_resources = match json["componentStyles"]["resources"].as_object() {
+            Some(style_resources) => style_resources,
+            None => panic!("componentStyles.resources should be an object"),
         };
         let templates = match json["templates"].as_object() {
             Some(templates) => templates,
             None => panic!("templates should be an object"),
         };
-        let combined_styles = template_styles
-            .iter()
-            .filter_map(serde_json::Value::as_str)
-            .collect::<String>();
         let combined_templates = match serde_json::to_string(templates) {
             Ok(value) => value,
             Err(error) => panic!("{error}"),
         };
 
-        assert!(
-            combined_styles.contains(r#""mp-product-card":"data:text/css,"#),
-            "module partials should return authored product-card CSS: {combined_styles}"
-        );
-        assert!(
-            combined_styles.contains(r#""mp-product-grid":"data:text/css,"#),
-            "module partials should return dormant product-grid CSS: {combined_styles}"
-        );
-        assert!(
-            combined_styles.contains(r#""mp-page-search":"data:text/css,"#),
-            "module partials should return dormant page-search CSS: {combined_styles}"
-        );
+        for tag in ["mp-product-card", "mp-product-grid", "mp-page-search"] {
+            let resource = &style_resources[tag];
+            assert_eq!(resource["kind"], "module", "{tag}: {resource}");
+            assert_eq!(resource["specifier"], tag, "{tag}: {resource}");
+            assert!(
+                resource["css"].as_str().is_some_and(|css| !css.is_empty()),
+                "module partials should carry {tag} CSS in componentStyles: {resource}"
+            );
+        }
         assert!(
             !combined_templates.contains(r#""mp-product-grid":"data:text/css,"#),
             "template metadata should not embed module CSS importmap entries: {combined_templates}"

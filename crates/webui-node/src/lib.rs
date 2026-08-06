@@ -99,7 +99,7 @@ pub struct JsBuildOptions {
     pub entry: Option<String>,
     /// CSS mode: "link" (default) or "style".
     pub css: Option<String>,
-    /// DOM strategy for component rendering: "shadow" (default) or "light".
+    /// DOM strategy for component rendering: "light" (default) or "shadow".
     pub dom: Option<String>,
     /// Plugin identifier (see crate documentation for available identifiers).
     pub plugin: Option<String>,
@@ -1295,7 +1295,7 @@ mod tests {
     fn test_build_with_components_css() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
         std::fs::write(dir.path().join("my-card.css"), ".card { color: red; }").unwrap();
 
         let options = JsBuildOptions {
@@ -1405,7 +1405,7 @@ mod tests {
     fn test_build_legal_comments_none_strips_legal_css() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
         std::fs::write(
             dir.path().join("my-card.css"),
             "/*! @license MIT */ .card { color: red; }",
@@ -1416,7 +1416,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
-            dom: None,
+            dom: Some("shadow".to_string()),
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1460,34 +1460,36 @@ mod tests {
     }
 
     #[test]
-    fn test_build_with_light_dom_omits_shadow_root_template() {
+    fn test_build_with_default_and_explicit_light_dom_omits_shadow_root_template() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
 
-        let options = JsBuildOptions {
-            app_dir: dir.path().to_string_lossy().to_string(),
-            entry: None,
-            css: None,
-            dom: Some("light".to_string()),
-            plugin: None,
-            components: None,
-            component_asset_roots: None,
-            metafile: None,
-            css_file_name_template: None,
-            css_public_base: None,
-            legal_comments: None,
-            theme: None,
-            projection_manifests: None,
-            projection_manifest_objects: None,
-        };
+        for dom in [None, Some("light".to_string())] {
+            let options = JsBuildOptions {
+                app_dir: dir.path().to_string_lossy().to_string(),
+                entry: None,
+                css: None,
+                dom,
+                plugin: None,
+                components: None,
+                component_asset_roots: None,
+                metafile: None,
+                css_file_name_template: None,
+                css_public_base: None,
+                legal_comments: None,
+                theme: None,
+                projection_manifests: None,
+                projection_manifest_objects: None,
+            };
 
-        let result = build(options).unwrap();
-        let json = inspect(result.protocol).unwrap();
-        assert!(
-            !json.contains("shadowrootmode"),
-            "light DOM build should not emit shadowrootmode wrappers, got: {json}"
-        );
+            let result = build(options).unwrap();
+            let json = inspect(result.protocol).unwrap();
+            assert!(
+                !json.contains("shadowrootmode"),
+                "light DOM build should not emit shadowrootmode wrappers, got: {json}"
+            );
+        }
     }
 
     #[test]

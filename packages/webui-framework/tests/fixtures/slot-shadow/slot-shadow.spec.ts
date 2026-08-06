@@ -31,6 +31,13 @@ test.describe('slot-shadow: SPA partial regression', () => {
     expect(hasShadow).toBe(true);
   });
 
+  test('explicit global Shadow mode wraps an ordinary component template', async ({ page }) => {
+    const hasShadow = await page.locator('#parent').evaluate(
+      element => !!element.shadowRoot,
+    );
+    expect(hasShadow).toBe(true);
+  });
+
   test('child with pre-existing slot content gets a shadow root', async ({ page }) => {
     // Wait for the preloaded child to be ready
     await page.waitForFunction(() => {

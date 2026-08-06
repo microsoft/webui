@@ -11,13 +11,12 @@ cargo add webui
 ## Quick Start
 
 ```rust
-use webui::{build, BuildOptions, DomStrategy};
+use webui::{build, BuildOptions};
 
 // Build a WebUI application from an app directory
 let result = build(BuildOptions {
     app_dir: "my-app/src".into(),
     entry: "index.html".into(),
-    dom: DomStrategy::Shadow,
     ..Default::default()
 })?;
 
@@ -45,7 +44,7 @@ build_to_disk(
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
-        dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
+        dom: DomStrategy::Shadow,      // Light is the default
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
@@ -54,6 +53,11 @@ build_to_disk(
     Path::new("dist"),
 )?;
 ```
+
+`BuildOptions::default()` and `HtmlParser` use Light DOM. Set
+`DomStrategy::Shadow` to select Shadow globally. In a Light build, a component
+can opt into Shadow only with a sole top-level
+`<template shadowrootmode="open">`. Native `<slot>` is Shadow-only.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:
@@ -178,14 +182,15 @@ let partial = protocol.render_partial(
 
 | Type | Description |
 |------|-------------|
-| `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, css_public_base) |
+| `BuildOptions` | Build configuration (app_dir, entry, css, dom, plugin, components, css_file_name_template, css_public_base) |
 | `BuildResult` | Build output (protocol, css_files, component_templates with metadata/closures, stats) |
 | `BuildStats` | Build metrics (duration, fragment_count, protocol_size_bytes) |
 | `Protocol` | Loaded immutable runtime protocol with reusable indices |
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |
 | `RenderOptions` | Render configuration (entry_id, request_path) |
 | `ResponseWriter` | Trait for streaming rendered output |
-| `CssStrategy` | CSS delivery mode (Link or Style) |
+| `CssStrategy` | CSS delivery mode (Link, Style, or Module) |
+| `DomStrategy` | Component DOM mode (Light by default, or Shadow) |
 | `WebUIError` | Error type for build/inspect operations |
 
 ## License

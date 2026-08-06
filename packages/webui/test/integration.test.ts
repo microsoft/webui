@@ -57,7 +57,7 @@ before(() => {
 </html>
 `);
 
-  writeFileSync(join(appDir, 'my-card.html'), '<div class="card"><slot></slot></div>');
+  writeFileSync(join(appDir, 'my-card.html'), '<div class="card">Content</div>');
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
   writeFileSync(join(appDir, 'app-shell.html'), '<div>{{name}}</div>');
@@ -128,6 +128,16 @@ describe('build', () => {
     assert.ok(result.stats.componentCount > 0);
     assert.equal(result.cssFiles.length, 2); // [filename, content]
     assert.equal(result.stats.cssFileCount, 1);
+  });
+
+  test('defaults to light DOM and preserves explicit DOM modes', () => {
+    for (const options of [{}, { dom: 'light' as const }]) {
+      const result = build({ appDir, entry: 'index2.html', ...options });
+      assert.ok(!inspect(result.protocol).includes('shadowrootmode'));
+    }
+
+    const shadow = build({ appDir, entry: 'index2.html', dom: 'shadow' });
+    assert.ok(inspect(shadow.protocol).includes('shadowrootmode'));
   });
 
   test('emits static component asset files and an analyzable metafile', async () => {
@@ -583,7 +593,7 @@ describe('renderComponentTemplates', () => {
     const json = protocol.renderComponentTemplates(['my-card'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.equal(typeof parsed.templates, 'object');
-    assert.ok(Array.isArray(parsed.templateStyles));
+    assert.equal(typeof parsed.componentStyles, 'object');
     assert.equal(typeof parsed.templateFunctions, 'object');
     assert.equal(typeof parsed.inventory, 'string');
   });
@@ -595,7 +605,8 @@ describe('renderComponentTemplates', () => {
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.deepEqual(parsed.templates, {});
     assert.deepEqual(parsed.templateFunctions, {});
-    assert.deepEqual(parsed.templateStyles, []);
+    assert.deepEqual(parsed.componentStyles.resources, {});
+    assert.deepEqual(parsed.componentStyles.closures, {});
   });
 });
 

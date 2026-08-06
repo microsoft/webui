@@ -16,8 +16,8 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** DOM strategy for component rendering: "shadow" (default) or "light". */
-  dom?: "shadow" | "light";
+  /** DOM strategy for component rendering: "light" (default) or "shadow". */
+  dom?: "light" | "shadow";
   /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
@@ -96,28 +96,16 @@ export interface ProtocolOptions {
  */
 export type BoundaryMode = "final" | "updatable";
 
-/** A runtime-discovered boundary occurrence waiting to be resumed. */
-export interface BoundaryDescriptor {
-  /** Gapless response-local occurrence ID passed to `resume()` and `update()`. */
-  instanceId: number;
-  /** Stable build-local ID for the authored boundary declaration. */
-  declarationId: number;
-  /** Entry or component template that owns the declaration. */
-  owner: string;
-  /** Free-form authored boundary name. */
-  name: string;
-  /** Evaluated boundary key, preserving its authored JSON type. */
-  key?: string | number;
-}
+export type ComponentStyleResource =
+  | { kind: "link"; href: string }
+  | { kind: "style"; css: string }
+  | { kind: "module"; specifier: string; css: string };
 
-/** Bytes and continuation state produced by a streaming session step. */
-export interface StreamStep {
-  /** Complete bytes produced by this semantic step. */
-  bytes: Buffer;
-  /** Whether the document tail and terminal record have been emitted. */
-  done: boolean;
-  /** Runtime occurrence waiting for `resume()`, present only at a boundary. */
-  boundary?: BoundaryDescriptor;
+export interface ComponentStyles {
+  version: 1;
+  strategy: "link" | "style" | "module";
+  resources: Record<string, ComponentStyleResource>;
+  closures: Record<string, string[]>;
 }
 
 /** Per-response settings for a host-driven streaming session. */
@@ -136,8 +124,8 @@ export interface StreamOptions {
 
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
-  /** Module CSS `<style>` strings for the requested components. */
-  templateStyles: string[];
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
@@ -154,6 +142,8 @@ export interface PartialResponse {
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
   templateFunctions?: Record<string, string>;
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
   /** The request path. */
@@ -175,6 +165,7 @@ interface NativeAddon {
     appDir: string;
     entry?: string;
     css?: string;
+    dom?: string;
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];
@@ -286,6 +277,7 @@ export function build(options: BuildOptions): BuildResult {
   const { projectionManifestObjects, ...nativeOptions } = options;
   return native.build({
     ...nativeOptions,
+    dom: nativeOptions.dom ?? "light",
     projectionManifestObjects: projectionManifestObjects?.map(
       ({ path, manifest }) => ({
         path,

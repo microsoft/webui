@@ -2,7 +2,9 @@
 // Licensed under the MIT license.
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser};
+use webui_parser::{
+    plugin::fast_v2::FastV2ParserPlugin, CssStrategy, DomStrategy, HtmlParser, ParserOptions,
+};
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
@@ -100,6 +102,18 @@ fn build_style_heavy_template(blocks: usize) -> String {
 
     html.push_str("<div>{{content}}</div></body>");
     html
+}
+
+fn build_component_stylesheet(rules: usize) -> String {
+    let mut css = String::with_capacity(rules * 140 + 160);
+    css.push_str(":host { display: block; }");
+    css.push_str("@keyframes pulse { from { opacity: .6; } to { opacity: 1; } }");
+    for idx in 0..rules {
+        css.push_str(".item-");
+        css.push_str(&idx.to_string());
+        css.push_str(":hover { color: var(--webui-color); animation: pulse 1s ease; }");
+    }
+    css
 }
 
 fn build_todo_app_template() -> String {
@@ -317,21 +331,22 @@ fn build_nested_article_template(depth: usize) -> String {
 }
 
 fn parser_with_bench_components() -> HtmlParser {
-    let mut parser = HtmlParser::new();
+    let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
     register_bench_components(&mut parser);
     parser
 }
 
-fn parser_with_bench_components_and_options(
-    options: impl Into<webui_parser::ParserOptions>,
-) -> HtmlParser {
+fn parser_with_bench_components_and_options(options: impl Into<ParserOptions>) -> HtmlParser {
+    let mut options = options.into();
+    options.dom_strategy = DomStrategy::Shadow;
     let mut parser = HtmlParser::with_options(options);
     register_bench_components(&mut parser);
     parser
 }
 
 fn parser_with_bench_components_and_fast_plugin() -> HtmlParser {
-    let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
+    let mut parser =
+        HtmlParser::with_plugin_options(Box::new(FastV2ParserPlugin::new()), DomStrategy::Shadow);
     register_bench_components(&mut parser);
     parser
 }
@@ -499,6 +514,38 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn parser_light_css_boundary_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_light_css_boundary");
+    let input = "<x-styled-card></x-styled-card>";
+    let css = build_component_stylesheet(40);
+    group.throughput(Throughput::Bytes((input.len() + css.len()) as u64));
+
+    for (name, dom_strategy) in [
+        ("shadow", DomStrategy::Shadow),
+        ("light", DomStrategy::Light),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let mut parser = HtmlParser::with_options(dom_strategy);
+                parser
+                    .component_registry_mut()
+                    .register_component(webui_parser::ComponentRegistration::new(
+                        "x-styled-card",
+                        "<div class=\"item-0\">Styled</div>",
+                        Some(black_box(css.as_str())),
+                        true,
+                    ))
+                    .unwrap_or_else(|error| panic!("failed to register styled component: {error}"));
+                parser
+                    .parse("index.html", black_box(input))
+                    .unwrap_or_else(|error| panic!("{name} CSS boundary parse failed: {error}"));
+            });
+        });
+    }
+
+    group.finish();
+}
+
 fn parser_size_sweep_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("parser_size_sweep");
 
@@ -605,6 +652,7 @@ criterion_group!(
     parser_parse_fresh_vs_reuse,
     parser_plugin_bench,
     parser_css_strategy_bench,
+    parser_light_css_boundary_bench,
     parser_size_sweep_bench,
     parser_realistic_bench,
     parser_text_vs_directive_bench,
