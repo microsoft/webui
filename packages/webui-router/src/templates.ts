@@ -10,7 +10,7 @@
  * whether a registered template needs a compiler-owned host.
  */
 
-import type { ComponentStyles } from './types.js';
+import type { ComponentStyleResource, ComponentStyles } from './types.js';
 
 /** Shared event name understood by optional framework runtimes. */
 const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
@@ -126,7 +126,7 @@ function mergeFallbackComponentStyles(
   const closures = { ...current.closures };
   for (const id of Object.keys(next.resources)) {
     const existing = resources[id];
-    if (existing && JSON.stringify(existing) !== JSON.stringify(next.resources[id])) {
+    if (existing && !sameComponentStyleResource(existing, next.resources[id])) {
       throw new Error(`[Router] Conflicting component style resource "${id}".`);
     }
     resources[id] = next.resources[id];
@@ -147,6 +147,22 @@ function mergeFallbackComponentStyles(
     resources,
     closures,
   };
+}
+
+function sameComponentStyleResource(
+  current: ComponentStyleResource,
+  next: ComponentStyleResource,
+): boolean {
+  switch (current.kind) {
+    case 'link':
+      return next.kind === 'link' && current.href === next.href;
+    case 'style':
+      return next.kind === 'style' && current.css === next.css;
+    case 'module':
+      return next.kind === 'module' &&
+        current.specifier === next.specifier &&
+        current.css === next.css;
+  }
 }
 
 function validateTemplatePayload(

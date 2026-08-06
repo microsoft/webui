@@ -357,6 +357,43 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('fallback style merging ignores resource property order', () => {
+      const origBridge = window.__webuiRegisterComponentStyles;
+      window.__webuiRegisterComponentStyles = undefined;
+      window.__webui!.componentStyles = {
+        version: 1,
+        strategy: 'module',
+        resources: {
+          'ordered-component': {
+            css: '.ordered{}',
+            specifier: 'ordered-component',
+            kind: 'module',
+          },
+        },
+        closures: { 'ordered-component': ['ordered-component'] },
+      };
+
+      try {
+        assert.doesNotThrow(() => registerTemplatesAndStyles({
+          componentStyles: {
+            version: 1,
+            strategy: 'module',
+            resources: {
+              'ordered-component': {
+                kind: 'module',
+                specifier: 'ordered-component',
+                css: '.ordered{}',
+              },
+            },
+            closures: { 'ordered-component': ['ordered-component'] },
+          },
+        }, '', () => {}));
+      } finally {
+        window.__webuiRegisterComponentStyles = origBridge;
+        delete window.__webui!.componentStyles;
+      }
+    });
+
     test('fetchPartial forwards componentStyles through the registration bridge and batches closure scripts', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
