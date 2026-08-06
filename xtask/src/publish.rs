@@ -156,16 +156,16 @@ struct StageOptions {
 
 #[derive(Debug, Eq, PartialEq)]
 struct BuildOptions {
-    target_triples: Vec<String>,
+    target_triple: String,
     profile: String,
     output_root: Option<PathBuf>,
 }
 
 // ── Public entry point ──────────────────────────────────────────────────
 
-/// Build and stage native release artifacts for one or more target triples.
+/// Build and stage native release artifacts for one target triple.
 ///
-/// Usage: `cargo xtask publish-build --target <triple> [--target <triple>] [--profile release|debug]`
+/// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>]`
 pub fn run_build(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(path) => path,
@@ -185,24 +185,23 @@ pub fn run_build(args: &[String]) -> ExitCode {
         }
     };
 
-    for triple in &options.target_triples {
+    eprintln!(
+        "\n{} Building native release artifacts for {}",
+        console::style("▸").cyan().bold(),
+        console::style(&options.target_triple).bold(),
+    );
+    if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
         eprintln!(
-            "\n{} Building native release artifacts for {}",
-            console::style("▸").cyan().bold(),
-            console::style(triple).bold(),
+            "  {} Failed to build {}: {error}",
+            console::style("✘").red().bold(),
+            options.target_triple,
         );
-        if let Err(error) = build_native_target(&root, triple, &options.profile) {
-            eprintln!(
-                "  {} Failed to build {triple}: {error}",
-                console::style("✘").red().bold(),
-            );
-            return ExitCode::FAILURE;
-        }
+        return ExitCode::FAILURE;
     }
 
     if let Err(error) = stage_native_targets(
         &root,
-        options.target_triples.iter().map(String::as_str),
+        std::iter::once(options.target_triple.as_str()),
         &options.profile,
     ) {
         eprintln!(
@@ -213,7 +212,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
     }
 
     if let Some(output_root) = &options.output_root {
-        if let Err(error) = export_native_targets(&root, output_root, &options.target_triples) {
+        if let Err(error) = export_native_target(&root, output_root, &options.target_triple) {
             eprintln!(
                 "  {} Failed to export native release artifacts: {error}",
                 console::style("✘").red().bold(),
@@ -488,7 +487,7 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
 }
 
 fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
-    let mut target_triples = Vec::new();
+    let mut target_triple = None;
     let mut profile = String::from("release");
     let mut output_root = None;
     let mut i = 0;
@@ -509,9 +508,13 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
                 if !PLATFORMS.iter().any(|platform| platform.triple == triple) {
                     return Err(format!("unknown target triple: {triple}"));
                 }
-                if !target_triples.contains(triple) {
-                    target_triples.push(triple.clone());
+                if target_triple.is_some() {
+                    return Err(
+                        "publish-build accepts exactly one --target; use separate jobs for each target"
+                            .to_string(),
+                    );
                 }
+                target_triple = Some(triple.clone());
             }
             "--profile" => {
                 i += 1;
@@ -537,12 +540,11 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
         i += 1;
     }
 
-    if target_triples.is_empty() {
-        return Err("publish-build requires at least one --target".to_string());
-    }
+    let target_triple =
+        target_triple.ok_or_else(|| "publish-build requires one --target".to_string())?;
 
     Ok(BuildOptions {
-        target_triples,
+        target_triple,
         profile,
         output_root,
     })
@@ -574,11 +576,7 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
     Ok(args)
 }
 
-fn export_native_targets(
-    root: &Path,
-    output_root: &Path,
-    target_triples: &[String],
-) -> Result<(), String> {
+fn export_native_target(root: &Path, output_root: &Path, triple: &str) -> Result<(), String> {
     let safe_output_root = validate_export_output_root(root, output_root)?;
     if safe_output_root.exists() {
         fs::remove_dir_all(&safe_output_root)
@@ -589,26 +587,24 @@ fn export_native_targets(
         &root.join("publish").join("native"),
         &safe_output_root.join("publish").join("native"),
     )?;
-    for triple in target_triples {
-        let platform = PLATFORMS
-            .iter()
-            .find(|platform| platform.triple == triple)
-            .ok_or_else(|| format!("unknown target triple: {triple}"))?;
-        copy_directory_contents(
-            &root.join("packages").join(platform.npm_package),
-            &safe_output_root.join("packages").join(platform.npm_package),
-        )?;
-        copy_directory_contents(
-            &root
-                .join("dotnet")
-                .join("runtimes")
-                .join(platform.nuget_rid),
-            &safe_output_root
-                .join("dotnet")
-                .join("runtimes")
-                .join(platform.nuget_rid),
-        )?;
-    }
+    let platform = PLATFORMS
+        .iter()
+        .find(|platform| platform.triple == triple)
+        .ok_or_else(|| format!("unknown target triple: {triple}"))?;
+    copy_directory_contents(
+        &root.join("packages").join(platform.npm_package),
+        &safe_output_root.join("packages").join(platform.npm_package),
+    )?;
+    copy_directory_contents(
+        &root
+            .join("dotnet")
+            .join("runtimes")
+            .join(platform.nuget_rid),
+        &safe_output_root
+            .join("dotnet")
+            .join("runtimes")
+            .join(platform.nuget_rid),
+    )?;
     Ok(())
 }
 
@@ -1456,10 +1452,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_build_options_supports_multiple_targets() {
+    fn parse_build_options_supports_one_target() {
         let options = parse_build(&[
-            "--target",
-            "x86_64-unknown-linux-gnu",
             "--target",
             "aarch64-unknown-linux-gnu",
             "--profile",
@@ -1467,10 +1461,7 @@ mod tests {
         ])
         .expect("publish build options should parse");
 
-        assert_eq!(
-            options.target_triples,
-            ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
-        );
+        assert_eq!(options.target_triple, "aarch64-unknown-linux-gnu");
         assert_eq!(options.profile, "debug");
         assert_eq!(options.output_root, None);
     }
@@ -1479,7 +1470,20 @@ mod tests {
     fn parse_build_options_rejects_missing_target() {
         let error = parse_build(&[]).expect_err("a target should be required");
 
-        assert!(error.contains("requires at least one --target"));
+        assert!(error.contains("requires one --target"));
+    }
+
+    #[test]
+    fn parse_build_options_rejects_multiple_targets() {
+        let error = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--target",
+            "aarch64-unknown-linux-gnu",
+        ])
+        .expect_err("multiple targets should require separate jobs");
+
+        assert!(error.contains("exactly one --target"));
     }
 
     #[test]
@@ -1720,7 +1724,7 @@ mod tests {
     }
 
     #[test]
-    fn export_native_targets_preserves_pipeline_layout() {
+    fn export_native_target_preserves_pipeline_layout() {
         let root = tempfile::TempDir::new().expect("root should be created");
         let output = tempfile::TempDir::new().expect("output should be created");
         fs::create_dir_all(root.path().join("publish/native"))
@@ -1743,12 +1747,8 @@ mod tests {
         )
         .expect("runtime fixture should be written");
 
-        export_native_targets(
-            root.path(),
-            output.path(),
-            &["x86_64-unknown-linux-gnu".to_string()],
-        )
-        .expect("native artifacts should be exported");
+        export_native_target(root.path(), output.path(), "x86_64-unknown-linux-gnu")
+            .expect("native artifacts should be exported");
 
         assert!(output
             .path()
@@ -1765,9 +1765,9 @@ mod tests {
     }
 
     #[test]
-    fn export_native_targets_rejects_workspace_root() {
+    fn export_native_target_rejects_workspace_root() {
         let root = tempfile::TempDir::new().expect("root should be created");
-        let error = export_native_targets(root.path(), root.path(), &[])
+        let error = export_native_target(root.path(), root.path(), "x86_64-unknown-linux-gnu")
             .expect_err("workspace root should be rejected");
 
         assert!(error.contains("unsafe export output directory"));
@@ -1775,14 +1775,14 @@ mod tests {
     }
 
     #[test]
-    fn export_native_targets_rejects_filesystem_root() {
+    fn export_native_target_rejects_filesystem_root() {
         let root = tempfile::TempDir::new().expect("root should be created");
         let filesystem_root = root
             .path()
             .ancestors()
             .last()
             .expect("filesystem root should exist");
-        let error = export_native_targets(root.path(), filesystem_root, &[])
+        let error = export_native_target(root.path(), filesystem_root, "x86_64-unknown-linux-gnu")
             .expect_err("filesystem root should be rejected");
 
         assert!(error.contains("unsafe export output directory"));
@@ -1790,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn export_native_targets_rejects_relative_workspace_escape() {
+    fn export_native_target_rejects_relative_workspace_escape() {
         let parent = tempfile::TempDir::new().expect("parent should be created");
         let root = parent.path().join("workspace");
         let sibling = parent.path().join("sibling");
@@ -1798,8 +1798,9 @@ mod tests {
         fs::create_dir_all(&sibling).expect("sibling should be created");
         fs::write(sibling.join("keep.txt"), "keep").expect("fixture should be written");
 
-        let error = export_native_targets(&root, Path::new("../sibling"), &[])
-            .expect_err("relative workspace escape should be rejected");
+        let error =
+            export_native_target(&root, Path::new("../sibling"), "x86_64-unknown-linux-gnu")
+                .expect_err("relative workspace escape should be rejected");
 
         assert!(error.contains("must remain within the workspace"));
         assert!(sibling.join("keep.txt").is_file());
@@ -1807,7 +1808,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn export_native_targets_rejects_symlinked_ancestor() {
+    fn export_native_target_rejects_symlinked_ancestor() {
         use std::os::unix::fs::symlink;
 
         let parent = tempfile::TempDir::new().expect("parent should be created");
@@ -1818,8 +1819,12 @@ mod tests {
         fs::write(external.join("keep.txt"), "keep").expect("fixture should be written");
         symlink(&external, root.join("artifacts")).expect("symlink should be created");
 
-        let error = export_native_targets(&root, Path::new("artifacts/stage"), &[])
-            .expect_err("symlinked ancestor should be rejected");
+        let error = export_native_target(
+            &root,
+            Path::new("artifacts/stage"),
+            "x86_64-unknown-linux-gnu",
+        )
+        .expect_err("symlinked ancestor should be rejected");
 
         assert!(error.contains("symlinked path component"));
         assert!(external.join("keep.txt").is_file());

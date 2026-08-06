@@ -97,7 +97,17 @@ stages:
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
   jobs:
   - job: BuildLinuxAssets
-    displayName: Build Linux release assets
+    displayName: Build Linux release asset
+    strategy:
+      matrix:
+        LinuxX64:
+          targetTriple: x86_64-unknown-linux-gnu
+          artifactName: stage-linux-x64
+          installArm64Linker: 'false'
+        LinuxArm64:
+          targetTriple: aarch64-unknown-linux-gnu
+          artifactName: stage-linux-arm64
+          installArm64Linker: 'true'
     pool:
       vmImage: ubuntu-latest
     steps:
@@ -106,19 +116,20 @@ stages:
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
+          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_HOME)
     - task: Cache@2
-      displayName: Restore Linux target cache
+      displayName: Restore target cache
       inputs:
-        key: 'cargo-target | "$(Agent.OS)" | linux-release | Cargo.lock'
+        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | "$(Agent.OS)" | linux-release
+          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
     - task: Bash@3
-      displayName: Build and stage Linux assets
+      displayName: Build and stage $(targetTriple)
       inputs:
         targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
@@ -130,32 +141,43 @@ stages:
           set -euo pipefail
 
           : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
 
           sudo apt-get update -q
-          sudo apt-get install -y -q \
-            protobuf-compiler \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
-          rustup toolchain install 1.93 --profile minimal \
-            --target x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          sudo apt-get install -y -q protobuf-compiler
+          if [[ "$INSTALL_ARM64_LINKER" == true ]]; then
+            sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+          fi
+          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
           rustup default 1.93
-          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
 
           cargo xtask publish-build \
-            --target x86_64-unknown-linux-gnu \
-            --target aarch64-unknown-linux-gnu \
+            --target "$TARGET_TRIPLE" \
             --profile release \
-            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/stage-linux"
+            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
       env:
+        ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        INSTALL_ARM64_LINKER: $(installArm64Linker)
+        TARGET_TRIPLE: $(targetTriple)
     - task: PublishPipelineArtifact@1
-      displayName: Upload Linux release artifact
+      displayName: Upload $(targetTriple) artifact
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/stage-linux'
-        artifactName: stage-linux
+        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
+        artifactName: $(artifactName)
 
   - job: BuildMacOSAssets
-    displayName: Build macOS release assets
+    displayName: Build macOS release asset
+    strategy:
+      matrix:
+        MacOSArm64:
+          targetTriple: aarch64-apple-darwin
+          artifactName: stage-macos-arm64
+        MacOSX64:
+          targetTriple: x86_64-apple-darwin
+          artifactName: stage-macos-x64
     pool:
       vmImage: macOS-latest
     steps:
@@ -164,19 +186,20 @@ stages:
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
+          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_HOME)
     - task: Cache@2
-      displayName: Restore macOS target cache
+      displayName: Restore target cache
       inputs:
-        key: 'cargo-target | "$(Agent.OS)" | macos-release | Cargo.lock'
+        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | "$(Agent.OS)" | macos-release
+          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
     - task: Bash@3
-      displayName: Build and stage macOS assets
+      displayName: Build and stage $(targetTriple)
       inputs:
         targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
@@ -188,29 +211,39 @@ stages:
           set -euo pipefail
 
           : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
 
           if ! command -v protoc >/dev/null 2>&1; then
             brew install protobuf
           fi
-          rustup toolchain install 1.93 --profile minimal \
-            --target aarch64-apple-darwin,x86_64-apple-darwin
+          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
           rustup default 1.93
 
           cargo xtask publish-build \
-            --target aarch64-apple-darwin \
-            --target x86_64-apple-darwin \
+            --target "$TARGET_TRIPLE" \
             --profile release \
-            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/stage-macos"
+            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
       env:
+        ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        TARGET_TRIPLE: $(targetTriple)
     - task: PublishPipelineArtifact@1
-      displayName: Upload macOS release artifact
+      displayName: Upload $(targetTriple) artifact
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/stage-macos'
-        artifactName: stage-macos
+        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
+        artifactName: $(artifactName)
 
   - job: BuildWindowsAssets
-    displayName: Build Windows release assets
+    displayName: Build Windows release asset
+    strategy:
+      matrix:
+        WindowsX64:
+          targetTriple: x86_64-pc-windows-msvc
+          artifactName: stage-windows-x64
+        WindowsArm64:
+          targetTriple: aarch64-pc-windows-msvc
+          artifactName: stage-windows-arm64
     pool:
       vmImage: windows-latest
     steps:
@@ -219,19 +252,20 @@ stages:
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
+        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
+          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
         path: $(CARGO_HOME)
     - task: Cache@2
-      displayName: Restore Windows target cache
+      displayName: Restore target cache
       inputs:
-        key: 'cargo-target | "$(Agent.OS)" | windows-release | Cargo.lock'
+        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | "$(Agent.OS)" | windows-release
+          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
         path: $(Build.SourcesDirectory)/target
     - task: PowerShell@2
-      displayName: Build and stage Windows assets
+      displayName: Build and stage $(targetTriple)
       inputs:
         targetType: inline
         pwsh: true
@@ -245,6 +279,12 @@ stages:
 
           if (-not $env:BUILD_ARTIFACT_STAGING_DIRECTORY) {
               throw 'BUILD_ARTIFACT_STAGING_DIRECTORY is required.'
+          }
+          if (-not $env:TARGET_TRIPLE) {
+              throw 'TARGET_TRIPLE is required.'
+          }
+          if (-not $env:ARTIFACT_NAME) {
+              throw 'ARTIFACT_NAME is required.'
           }
 
           if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
@@ -264,24 +304,23 @@ stages:
               $env:PATH = "$dest\bin;$env:PATH"
           }
 
-          rustup toolchain install 1.93 `
-              --profile minimal `
-              --target x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+          rustup toolchain install 1.93 --profile minimal --target $env:TARGET_TRIPLE
           rustup default 1.93
 
           cargo xtask publish-build `
-              --target x86_64-pc-windows-msvc `
-              --target aarch64-pc-windows-msvc `
+              --target $env:TARGET_TRIPLE `
               --profile release `
-              --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\stage-windows"
+              --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME"
       env:
         AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+        ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        TARGET_TRIPLE: $(targetTriple)
     - task: PublishPipelineArtifact@1
-      displayName: Upload Windows release artifact
+      displayName: Upload $(targetTriple) artifact
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/stage-windows'
-        artifactName: stage-windows
+        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
+        artifactName: $(artifactName)
 
   - job: AssembleRelease
     displayName: Assemble release packages
@@ -316,22 +355,40 @@ stages:
           pnpm | "$(Agent.OS)"
         path: $(PNPM_STORE_PATH)
     - task: DownloadPipelineArtifact@2
-      displayName: Download Linux release assets
+      displayName: Download Linux x64 release asset
       inputs:
         buildType: current
-        artifactName: stage-linux
+        artifactName: stage-linux-x64
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
-      displayName: Download macOS release assets
+      displayName: Download Linux arm64 release asset
       inputs:
         buildType: current
-        artifactName: stage-macos
+        artifactName: stage-linux-arm64
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
-      displayName: Download Windows release assets
+      displayName: Download macOS arm64 release asset
       inputs:
         buildType: current
-        artifactName: stage-windows
+        artifactName: stage-macos-arm64
+        targetPath: $(Build.SourcesDirectory)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download macOS x64 release asset
+      inputs:
+        buildType: current
+        artifactName: stage-macos-x64
+        targetPath: $(Build.SourcesDirectory)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Windows x64 release asset
+      inputs:
+        buildType: current
+        artifactName: stage-windows-x64
+        targetPath: $(Build.SourcesDirectory)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download Windows arm64 release asset
+      inputs:
+        buildType: current
+        artifactName: stage-windows-arm64
         targetPath: $(Build.SourcesDirectory)
     - task: NodeTool@0
       displayName: Install Node.js 22
