@@ -68,12 +68,11 @@ fn existing_parent(path: &Path) -> PathBuf {
     fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[cfg(unix)]
     #[test]
     fn watch_ignore_paths_resolve_a_symlinked_metafile_parent() {
         use std::os::unix::fs::symlink;

@@ -32,7 +32,7 @@ decorators, or imperative APIs.
 
 ### The `<template>` Tag
 
-Light DOM is the default. Most components omit a wrapper and write only their
+Every unwrapped component uses Light DOM. Most components write only their
 content:
 
 ```html
@@ -58,8 +58,8 @@ native `<slot>`, native Shadow encapsulation, or root events on the shadow root:
 ```
 
 The wrapper must contain the complete component. Closed roots, invalid values
-or placement, additional top-level content, and `<slot>` in an effective Light
-component fail the build.
+or placement, additional top-level content, and `<slot>` in an unwrapped
+component fail the build. The compiler never generates this wrapper.
 
 ## How Components Work
 
@@ -73,8 +73,8 @@ When WebUI discovers components:
 
 2. **Runtime**:
    - The server-side handler renders components based on state
-   - Components are output as Light DOM by default or Declarative Shadow DOM
-     when selected globally or by a valid component wrapper
+   - Unwrapped components output Light DOM; components with a valid sole open
+     wrapper output Declarative Shadow DOM
    - Dynamic content is injected according to the protocol
 
 ## Component Organization

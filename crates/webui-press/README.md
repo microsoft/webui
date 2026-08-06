@@ -18,7 +18,7 @@ Most documentation site generators are JavaScript first. They run a Node.js serv
 - **Pre-compiled templates.** Pages are compiled into the WebUI binary protocol once, then rendered with state. Repeat builds reuse the cached protocol.
 - **Parallel everything.** Page rendering is parallelized with [rayon](https://docs.rs/rayon). Syntax highlighting reuses one preloaded `syntect` syntax set across threads. Markdown parsing is per-page and free of cross-page state.
 - **Hydration that works on GitHub Pages.** The output is static, server-rendered
-  HTML using Light DOM by default and Declarative Shadow DOM for opted-in
+  HTML using Light DOM for unwrapped components and Declarative Shadow DOM for opted-in
   components. No JavaScript is required for first paint. Optional client-side
   hydration upgrades interactive components without re-rendering anything.
 - **Custom Web Components in markdown.** Drop a component into `components/`,
@@ -428,7 +428,7 @@ Reference it from any `.md`:
 Components are:
 
 1. Compiled into the WebUI protocol at build time
-2. Server-rendered as Light DOM by default or **Declarative Shadow DOM** when
+2. Server-rendered as Light DOM when unwrapped or **Declarative Shadow DOM** when
    selected by a sole top-level `<template shadowrootmode="open">`
 3. Auto-imported into the root script for template chrome or a page script when page content uses the component tag
 4. Shared through esbuild chunks when multiple pages use the same component or dependency
@@ -597,7 +597,7 @@ The output is fully renderable without JavaScript:
 
 - Markdown → HTML at build time
 - Components rendered server-side via the WebUI protocol
-- Light DOM by default, with Declarative Shadow DOM pre-expanded for opted-in components
+- Light DOM for unwrapped components, with Declarative Shadow DOM pre-expanded for opted-in components
 - Component styles installed in compiler-defined order
 
 When the browser loads the generated root/page scripts (deferred, after first

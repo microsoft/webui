@@ -67,7 +67,7 @@ use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{find_matching_end, find_tag_close, parse_tag, style_element_bounds};
-use crate::{ConditionParser, DomStrategy, Result};
+use crate::{ConditionParser, Result};
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
@@ -81,12 +81,12 @@ struct TrackedComponent {
     template_html: String,
     root_event_source: String,
     client_module: ClientModule,
-    effective_dom_strategy: DomStrategy,
+    uses_shadow_dom: bool,
 }
 
 struct TrackedClientContext {
     client_module: ClientModule,
-    effective_dom_strategy: DomStrategy,
+    uses_shadow_dom: bool,
 }
 
 /// Authored client-module ownership.
@@ -169,7 +169,7 @@ impl WebUIParserPlugin {
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
-                c.effective_dom_strategy == DomStrategy::Shadow,
+                c.uses_shadow_dom,
                 !is_authored,
             )?;
             // The parser plugin performs no JavaScript/TypeScript analysis: it
@@ -193,7 +193,7 @@ impl WebUIParserPlugin {
                     c.tag_name.clone(),
                     payload.template_json,
                     payload.template_functions,
-                    c.effective_dom_strategy,
+                    c.uses_shadow_dom,
                 )
                 .with_hydration(hydration)
                 .with_navigation(navigation)
@@ -217,7 +217,7 @@ impl WebUIParserPlugin {
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
             component.client_module = client.client_module;
-            component.effective_dom_strategy = client.effective_dom_strategy;
+            component.uses_shadow_dom = client.uses_shadow_dom;
             return;
         }
         self.components.push(TrackedComponent {
@@ -225,7 +225,7 @@ impl WebUIParserPlugin {
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
             client_module: client.client_module,
-            effective_dom_strategy: client.effective_dom_strategy,
+            uses_shadow_dom: client.uses_shadow_dom,
         });
     }
 
@@ -242,7 +242,7 @@ impl WebUIParserPlugin {
             component,
             processed_template,
             ComponentTemplateContext {
-                effective_dom_strategy: DomStrategy::Light,
+                uses_shadow_dom: false,
             },
         )
     }
@@ -284,7 +284,7 @@ impl ParserPlugin for WebUIParserPlugin {
             &component.html_content,
             TrackedClientContext {
                 client_module: ClientModule::from_component(component),
-                effective_dom_strategy: context.effective_dom_strategy,
+                uses_shadow_dom: context.uses_shadow_dom,
             },
         );
         Ok(())

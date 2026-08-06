@@ -87,7 +87,7 @@ pub mod codes {
     pub const MALFORMED_HTML_TAG: &str = "malformed-html-tag";
     /// A closing tag has no matching opening tag.
     pub const UNEXPECTED_CLOSING_TAG: &str = "unexpected-closing-tag";
-    /// An effective Light DOM component contains a native `<slot>`.
+    /// An unwrapped Light DOM component contains a native `<slot>`.
     pub const LIGHT_DOM_SLOT: &str = "light-dom-slot";
     /// A declarative Shadow DOM wrapper has an unsupported mode or placement.
     pub const INVALID_SHADOW_ROOT_MODE: &str = "invalid-shadow-root-mode";

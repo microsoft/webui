@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Compiler-owned CSS boundary for effective Light DOM components.
+//! Compiler-owned CSS boundary for Light DOM components.
 
 use crate::diagnostic::{codes, Diagnostic};
 use crate::{comment_policy, ParserError, Result};

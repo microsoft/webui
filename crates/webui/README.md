@@ -37,14 +37,13 @@ let result = build(BuildOptions {
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and component assets to disk |
 
 ```rust
-use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
+use webui::{build_to_disk, BuildOptions, CssStrategy, LegalComments, Plugin};
 
 build_to_disk(
     BuildOptions {
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
-        dom: DomStrategy::Shadow,      // Light is the default
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
@@ -54,10 +53,9 @@ build_to_disk(
 )?;
 ```
 
-`BuildOptions::default()` and `HtmlParser` use Light DOM. Set
-`DomStrategy::Shadow` to select Shadow globally. In a Light build, a component
-can opt into Shadow only with a sole top-level
-`<template shadowrootmode="open">`. Native `<slot>` is Shadow-only.
+Every unwrapped component uses Light DOM. A component uses Shadow only with a
+sole top-level `<template shadowrootmode="open">` containing its complete
+template. Native `<slot>` is Shadow-only.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:
@@ -145,7 +143,7 @@ let partial = protocol.render_partial(
 
 | Type | Description |
 |------|-------------|
-| `BuildOptions` | Build configuration (app_dir, entry, css, dom, plugin, components, css_file_name_template, css_public_base) |
+| `BuildOptions` | Build configuration (app_dir, entry, css, plugin, components, css_file_name_template, css_public_base) |
 | `BuildResult` | Build output (protocol, css_files, component_templates with metadata/closures, stats) |
 | `BuildStats` | Build metrics (duration, fragment_count, protocol_size_bytes) |
 | `Protocol` | Loaded immutable runtime protocol with reusable indices |
@@ -153,7 +151,6 @@ let partial = protocol.render_partial(
 | `RenderOptions` | Render configuration (entry_id, request_path) |
 | `ResponseWriter` | Trait for streaming rendered output |
 | `CssStrategy` | CSS delivery mode (Link, Style, or Module) |
-| `DomStrategy` | Component DOM mode (Light by default, or Shadow) |
 | `WebUIError` | Error type for build/inspect operations |
 
 ## License

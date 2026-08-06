@@ -196,7 +196,7 @@ data from a 2,400-component email client:
 
 ### When to Use Each
 
-**Light DOM** (default) - use when:
+**Light DOM** - leave the component unwrapped when:
 - Performance is critical (high-component-count pages)
 - Components benefit from normal CSS inheritance
 - Native slot composition is not required
@@ -206,27 +206,19 @@ data from a 2,400-component email client:
 - Components run in unknown host pages
 - A native Shadow boundary is an explicit requirement
 
-### Selecting Shadow DOM
+### Authoring Shadow DOM
 
-```bash
-webui build ./src --out ./dist --dom=shadow
-```
-
-Rust `BuildOptions` and `HtmlParser`, CLI `build` and `serve`, and Node
-`build()` all default to Light. Set `DomStrategy::Shadow`,
-`--dom=shadow`, or `dom: "shadow"` to select Shadow globally.
-
-In a Light app, a component can opt into Shadow with a sole top-level
-`<template shadowrootmode="open">`. Use that only for components that need
+Every unwrapped component is Light. A component uses Shadow only when its
+complete template is a sole top-level `<template shadowrootmode="open">`. Use
+that only for components that need
 slots or native encapsulation. Invalid or closed wrappers and `<slot>` in an
-effective Light component fail the build.
+unwrapped component fail the build.
 
 Keep authoring ordinary paired CSS in both modes. The compiler scopes Light CSS,
 lowers `:host`, and namespaces static keyframes. It rejects selectors and
 dynamic local-keyframe references that cannot be isolated safely.
 
-Use `--dom=shadow` for a global Shadow build, or add open wrappers only to slot
-and encapsulation components.
+Add open wrappers only to slot and encapsulation components.
 
 ## Performance Rules
 

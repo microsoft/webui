@@ -54,6 +54,10 @@ before(() => {
 `);
 
   writeFileSync(join(appDir, 'my-card.html'), '<div class="card">Content</div>');
+  writeFileSync(
+    join(appDir, 'shadow-card.html'),
+    '<template shadowrootmode="open"><div><slot></slot></div></template>',
+  );
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
   writeFileSync(join(appDir, 'app-shell.html'), '<div>{{name}}</div>');
@@ -102,14 +106,19 @@ describe('build', () => {
     assert.equal(result.stats.cssFileCount, 1);
   });
 
-  test('defaults to light DOM and preserves explicit DOM modes', () => {
-    for (const options of [{}, { dom: 'light' as const }]) {
-      const result = build({ appDir, entry: 'index2.html', ...options });
-      assert.ok(!inspect(result.protocol).includes('shadowrootmode'));
-    }
+  test('uses Light DOM unless a component authors a Shadow wrapper', () => {
+    const light = build({ appDir, entry: 'index2.html' });
+    assert.ok(!inspect(light.protocol).includes('shadowrootmode'));
 
-    const shadow = build({ appDir, entry: 'index2.html', dom: 'shadow' });
+    writeFileSync(join(appDir, 'index-shadow.html'), '<shadow-card>slot</shadow-card>');
+    const shadow = build({ appDir, entry: 'index-shadow.html' });
     assert.ok(inspect(shadow.protocol).includes('shadowrootmode'));
+  });
+
+  test('BuildOptions has no DOM strategy option', () => {
+    // @ts-expect-error DOM ownership is authored in each component template.
+    const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'shadow' };
+    assert.equal(options.appDir, appDir);
   });
 
   test('emits static component asset files and an analyzable metafile', async () => {

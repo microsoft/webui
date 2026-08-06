@@ -370,9 +370,9 @@ This is roughly 15 KB - the handler renders faster, the network transfer is smal
 
 ## Light DOM vs Shadow DOM
 
-WebUI defaults to Light DOM. The compiler scopes each component's ordinary
-paired CSS, so choosing Light does not require global component styles or
-rewriting `:host`.
+Every unwrapped component uses Light DOM. The compiler scopes its ordinary
+paired CSS, so an unwrapped template does not require global component styles
+or rewriting `:host`.
 
 ### Performance Comparison
 
@@ -384,7 +384,7 @@ rewriting `:host`.
 
 ### When to Use Each
 
-**Light DOM** (default):
+**Light DOM** (unwrapped templates):
 
 - Most application components
 - High-component-count pages such as tables and long lists
@@ -396,14 +396,10 @@ rewriting `:host`.
 - Third-party components embedded in unknown host pages
 - Components that specifically require a native Shadow boundary
 
-### Selecting Shadow DOM
+### Authoring Shadow DOM
 
-```bash
-webui build ./src --out ./dist --dom=shadow
-```
-
-For a single component in a Light app, wrap the complete component in the sole
-top-level element:
+Every unwrapped component is Light. To use Shadow, wrap the complete component
+in the sole top-level element:
 
 ```html
 <template shadowrootmode="open">
@@ -412,10 +408,8 @@ top-level element:
 ```
 
 Only `open` is supported. A closed root, invalid wrapper placement or value, or
-native `<slot>` in an effective Light component is a build error.
-
-Use `--dom=shadow` for a global Shadow build. Prefer adding open wrappers only
-to components that need slots or native Shadow encapsulation.
+native `<slot>` in an unwrapped component is a build error. Add open wrappers
+only to components that need slots or native Shadow encapsulation.
 
 ## Summary
 
@@ -427,5 +421,5 @@ to components that need slots or native Shadow encapsulation.
 | Check `.length` for empty arrays | Server and client disagree on bare `[]`; `.length` of `0` is falsy on both |
 | Return route-scoped state | Smaller payloads, faster rendering |
 | Prefer declarative bindings over imperative DOM manipulation | Template bindings are reactive and SSR-compatible |
-| Keep the Light DOM default unless a component needs Shadow | Scoped CSS with fewer shadow roots |
+| Leave a component unwrapped unless it needs Shadow | Scoped CSS with fewer shadow roots |
 | Put native `<slot>` only in a Shadow component | Native slots do not work in Light DOM |

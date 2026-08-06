@@ -334,13 +334,12 @@ enum StyleClosureOp<'a> {
 }
 
 impl WebUiProtocol {
-    /// Return a component's build-resolved DOM strategy.
+    /// Return whether a component authored a declarative Shadow DOM root.
     #[must_use]
-    pub fn effective_component_dom_strategy(&self, tag_name: &str) -> DomStrategy {
-        self.components.get(tag_name).map_or_else(
-            || self.dom_strategy(),
-            ComponentData::effective_dom_strategy,
-        )
+    pub fn component_uses_shadow_dom(&self, tag_name: &str) -> bool {
+        self.components
+            .get(tag_name)
+            .is_some_and(|component| component.uses_shadow_dom)
     }
 
     /// Return the stored style resource for a component.
@@ -369,7 +368,7 @@ impl WebUiProtocol {
     /// Precompute ordered style-resource closures for entry fragments and every
     /// compiled component root.
     ///
-    /// Traversal is iterative, follows source order, stops at effective Shadow
+    /// Traversal is iterative, follows source order, stops at Shadow
     /// children, and deduplicates resources at first discovery.
     pub fn populate_style_closures(&mut self, entry_fragments: &[&str]) {
         let route_children = self.route_children_by_component();
@@ -564,7 +563,7 @@ impl WebUiProtocol {
                     }
                 }
                 StyleClosureOp::Component(tag_name) => {
-                    if self.effective_component_dom_strategy(tag_name) == DomStrategy::Shadow {
+                    if self.component_uses_shadow_dom(tag_name) {
                         continue;
                     }
                     if self.component_style_resource(tag_name).is_some()
@@ -603,7 +602,6 @@ impl WebUiProtocol {
             tokens: Vec::new(),
             components: HashMap::new(),
             css_strategy: 0,
-            dom_strategy: DomStrategy::Light as i32,
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
@@ -618,7 +616,6 @@ impl WebUiProtocol {
             tokens,
             components: HashMap::new(),
             css_strategy: 0,
-            dom_strategy: DomStrategy::Light as i32,
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
@@ -638,21 +635,6 @@ impl WebUiProtocol {
                 protocol.css_strategy
             ))
         })?;
-        DomStrategy::try_from(protocol.dom_strategy).map_err(|_| {
-            ProtocolError::Validation(format!(
-                "unknown DOM strategy value: {}",
-                protocol.dom_strategy
-            ))
-        })?;
-        for (tag, component) in &protocol.components {
-            DomStrategy::try_from(component.effective_dom_strategy).map_err(|_| {
-                ProtocolError::Validation(format!(
-                    "component `{tag}` has unknown effective DOM strategy value: {}",
-                    component.effective_dom_strategy
-                ))
-            })?;
-        }
-
         let fragments = &protocol.fragments;
 
         let invalid_ref = fragments.iter().find_map(|(_, fragment_list)| {
@@ -793,7 +775,7 @@ mod tests {
     fn add_style_component(
         protocol: &mut WebUIProtocol,
         tag: &str,
-        mode: DomStrategy,
+        uses_shadow_dom: bool,
         has_css: bool,
     ) {
         protocol
@@ -806,7 +788,7 @@ mod tests {
             tag.to_string(),
             ComponentData {
                 css: has_css.then(|| format!(".{tag}{{}}")).unwrap_or_default(),
-                effective_dom_strategy: mode as i32,
+                uses_shadow_dom,
                 ..Default::default()
             },
         );
@@ -853,7 +835,6 @@ mod tests {
         );
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(CssStrategy::Style);
-        protocol.set_dom_strategy(DomStrategy::Light);
         for tag in [
             "light-a",
             "light-b",
@@ -862,10 +843,10 @@ mod tests {
             "shadow-descendant",
             "after-cut",
         ] {
-            add_style_component(&mut protocol, tag, DomStrategy::Light, true);
+            add_style_component(&mut protocol, tag, false, true);
         }
-        add_style_component(&mut protocol, "no-css", DomStrategy::Light, false);
-        add_style_component(&mut protocol, "shadow-cut", DomStrategy::Shadow, true);
+        add_style_component(&mut protocol, "no-css", false, false);
+        add_style_component(&mut protocol, "shadow-cut", true, true);
 
         protocol.populate_style_closures(&["index.html"]);
 
@@ -926,7 +907,6 @@ mod tests {
         }
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(CssStrategy::Style);
-        protocol.set_dom_strategy(DomStrategy::Light);
         for tag in [
             "for-card",
             "if-card",
@@ -936,7 +916,7 @@ mod tests {
             "route-pending",
             "route-error",
         ] {
-            add_style_component(&mut protocol, tag, DomStrategy::Light, true);
+            add_style_component(&mut protocol, tag, false, true);
         }
         protocol.fragments.insert(
             "route-body".to_string(),
@@ -1007,7 +987,6 @@ mod tests {
         );
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(CssStrategy::Style);
-        protocol.set_dom_strategy(DomStrategy::Light);
         for tag in [
             "shell-header",
             "route-layout",
@@ -1019,9 +998,9 @@ mod tests {
             "shell-pending",
             "shell-error",
         ] {
-            add_style_component(&mut protocol, tag, DomStrategy::Light, true);
+            add_style_component(&mut protocol, tag, false, true);
         }
-        add_style_component(&mut protocol, "app-shell", DomStrategy::Shadow, true);
+        add_style_component(&mut protocol, "app-shell", true, true);
 
         protocol.populate_style_closures(&["index.html"]);
 
@@ -1083,11 +1062,10 @@ mod tests {
         );
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(CssStrategy::Style);
-        protocol.set_dom_strategy(DomStrategy::Light);
         for tag in ["light-shell", "dashboard-page", "contact-card"] {
-            add_style_component(&mut protocol, tag, DomStrategy::Light, true);
+            add_style_component(&mut protocol, tag, false, true);
         }
-        add_style_component(&mut protocol, "shadow-layout", DomStrategy::Shadow, true);
+        add_style_component(&mut protocol, "shadow-layout", true, true);
 
         protocol.populate_style_closures(&["index.html"]);
 
@@ -1120,8 +1098,7 @@ mod tests {
         );
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(CssStrategy::Style);
-        protocol.set_dom_strategy(DomStrategy::Light);
-        add_style_component(&mut protocol, "cycle-card", DomStrategy::Light, true);
+        add_style_component(&mut protocol, "cycle-card", false, true);
 
         protocol.populate_style_closures(&["index.html"]);
         let first = protocol.style_closures.clone();
@@ -1144,7 +1121,6 @@ mod tests {
     fn style_closure_roundtrips() {
         let mut protocol = sample_protocol();
         protocol.set_css_strategy(CssStrategy::Link);
-        protocol.set_dom_strategy(DomStrategy::Light);
         protocol.components.insert(
             "contact-card".to_string(),
             ComponentData {
@@ -1163,12 +1139,12 @@ mod tests {
     }
 
     #[test]
-    fn current_json_requires_style_and_component_dom_metadata() {
+    fn current_json_requires_style_and_component_shadow_metadata() {
         let mut protocol = sample_protocol();
         protocol.components.insert(
             "my-card".to_string(),
             ComponentData {
-                effective_dom_strategy: DomStrategy::Light as i32,
+                uses_shadow_dom: false,
                 ..Default::default()
             },
         );
@@ -1182,35 +1158,20 @@ mod tests {
             .remove("style_closures");
         assert!(serde_json::from_value::<WebUIProtocol>(missing_closures).is_err());
 
-        let mut missing_dom = current;
-        missing_dom["components"]["my-card"]
+        let mut missing_shadow_dom = current;
+        missing_shadow_dom["components"]["my-card"]
             .as_object_mut()
             .expect("component JSON object")
-            .remove("effective_dom_strategy");
-        assert!(serde_json::from_value::<WebUIProtocol>(missing_dom).is_err());
-    }
+            .remove("uses_shadow_dom");
+        assert!(serde_json::from_value::<WebUIProtocol>(missing_shadow_dom).is_err());
 
-    #[test]
-    fn protobuf_rejects_unknown_dom_strategy_values() {
-        let mut protocol = sample_protocol();
-        protocol.dom_strategy = 99;
-        let bytes = protocol.to_protobuf().expect("encode failed");
-        let error = WebUIProtocol::from_protobuf(&bytes).expect_err("invalid strategy must fail");
-        assert!(error.to_string().contains("unknown DOM strategy value: 99"));
+        let mut legacy_root = serde_json::to_value(&protocol).expect("JSON encode failed");
+        legacy_root["dom_strategy"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<WebUIProtocol>(legacy_root).is_err());
 
-        protocol.dom_strategy = DomStrategy::Light as i32;
-        protocol.components.insert(
-            "my-card".to_string(),
-            ComponentData {
-                effective_dom_strategy: 99,
-                ..Default::default()
-            },
-        );
-        let bytes = protocol.to_protobuf().expect("encode failed");
-        let error = WebUIProtocol::from_protobuf(&bytes).expect_err("invalid mode must fail");
-        assert!(error
-            .to_string()
-            .contains("component `my-card` has unknown effective DOM strategy value: 99"));
+        let mut legacy_component = serde_json::to_value(&protocol).expect("JSON encode failed");
+        legacy_component["components"]["my-card"]["effective_dom_strategy"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<WebUIProtocol>(legacy_component).is_err());
     }
 
     #[test]
@@ -1575,18 +1536,10 @@ mod tests {
         let protocol = WebUIProtocol::new(HashMap::new());
         assert!(protocol.tokens.is_empty());
         assert!(protocol.fragments.is_empty());
-        assert_eq!(protocol.dom_strategy(), DomStrategy::Light);
         assert_eq!(
             protocol.initial_state_strategy,
             InitialStateStrategy::Full as i32
         );
-    }
-
-    #[test]
-    fn test_absent_wire_dom_strategy_decodes_as_light() {
-        let protocol =
-            WebUIProtocol::from_protobuf(&[]).expect("empty protocol payload should decode");
-        assert_eq!(protocol.dom_strategy(), DomStrategy::Light);
     }
 
     #[test]
@@ -1620,23 +1573,20 @@ mod tests {
     }
 
     #[test]
-    fn test_component_effective_dom_strategy_roundtrips() {
+    fn test_component_uses_shadow_dom_roundtrips() {
         let mut protocol = WebUIProtocol::new(HashMap::new());
-        protocol.set_dom_strategy(DomStrategy::Light);
         protocol.components.insert(
             "my-card".to_string(),
             ComponentData {
-                effective_dom_strategy: DomStrategy::Shadow as i32,
+                uses_shadow_dom: true,
                 ..Default::default()
             },
         );
 
         let bytes = protocol.to_protobuf().unwrap();
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
-        assert_eq!(
-            decoded.effective_component_dom_strategy("my-card"),
-            DomStrategy::Shadow
-        );
+        assert!(decoded.component_uses_shadow_dom("my-card"));
+        assert!(!decoded.component_uses_shadow_dom("missing-card"));
     }
 
     #[test]
@@ -1644,7 +1594,6 @@ mod tests {
         let tokens = vec!["color-primary".to_string(), "spacing-m".to_string()];
         let protocol = WebUIProtocol::with_tokens(HashMap::new(), tokens.clone());
         assert_eq!(protocol.tokens, tokens);
-        assert_eq!(protocol.dom_strategy(), DomStrategy::Light);
     }
 
     #[test]

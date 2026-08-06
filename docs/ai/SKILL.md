@@ -288,7 +288,7 @@ state that a template binding could express.
 
 ### The `<template>` tag
 
-Light DOM is the default. Omit the wrapper for ordinary components:
+Every unwrapped component uses Light DOM:
 
 ```html
 <!-- my-card.html -->
@@ -314,7 +314,7 @@ root:
 
 The wrapper must contain the complete component. `closed`, a dynamic or invalid
 value, placement on another element, multiple declarations, or extra top-level
-content fails the build. `<slot>` is a build error in an effective Light
+content fails the build. `<slot>` is a build error in an unwrapped Light
 component.
 
 Root host events catch custom events bubbling up from child components. They see
@@ -377,7 +377,7 @@ Shadow CSS scoping. No CSS-in-JS or styles written from script.
 ```
 
 - `:host` styles the component root; `:host([attr])` styles by attribute in
-  both DOM modes.
+  both Light and Shadow components.
 - Light DOM preserves normal inheritance while compiler scoping bounds
   component rules. Shadow DOM creates a native boundary.
 - Shadow-only selectors and unsafe Light keyframe references fail the build.
@@ -1039,7 +1039,7 @@ Before emitting WebUI code, confirm:
 - [ ] `prefers-reduced-motion` is honored wherever motion is used.
 - [ ] No conditions mix `&&` with `||`, use parentheses, or use a ternary.
 - [ ] Every native `<slot>` is inside a component whose sole top-level element
-      is `<template shadowrootmode="open">`, unless the whole build uses Shadow.
+      is `<template shadowrootmode="open">`.
 
 ## Build and run
 
@@ -1055,13 +1055,12 @@ webui inspect ./dist/protocol.bin
 ```
 
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
-`--dom <shadow|light>`, `--components`, `--theme`,
+`--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
-Light is the default when `--dom` is omitted. Use `--dom=shadow` to select
-Shadow globally, or add an open wrapper only to components that need slots or
-native encapsulation.
+Every unwrapped component is Light. A component uses Shadow only when its
+complete template is a sole top-level `<template shadowrootmode="open">`.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

@@ -69,8 +69,8 @@ With WebUI's Islands Architecture:
 
 - **Interactive components** are Web Components that hydrate on the client.
   Each island has its own template, scoped styles, and TypeScript behavior.
-  Light DOM is the default, with Shadow available for native slots or an
-  explicit native boundary. Islands hydrate independently - they don't wait for
+  Unwrapped components use Light DOM; an explicit sole open wrapper provides
+  Shadow for native slots or a native boundary. Islands hydrate independently - they don't wait for
   each other or for a global framework to initialize.
 
 - **You control the boundary.** The hydration plugin system lets you decide exactly which components are interactive islands and how they hydrate (on load, on visible, on interaction).

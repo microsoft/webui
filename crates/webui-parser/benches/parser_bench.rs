@@ -2,9 +2,7 @@
 // Licensed under the MIT license.
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{
-    plugin::fast_v2::FastV2ParserPlugin, CssStrategy, DomStrategy, HtmlParser, ParserOptions,
-};
+use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser, ParserOptions};
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
@@ -331,22 +329,19 @@ fn build_nested_article_template(depth: usize) -> String {
 }
 
 fn parser_with_bench_components() -> HtmlParser {
-    let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
+    let mut parser = HtmlParser::new();
     register_bench_components(&mut parser);
     parser
 }
 
 fn parser_with_bench_components_and_options(options: impl Into<ParserOptions>) -> HtmlParser {
-    let mut options = options.into();
-    options.dom_strategy = DomStrategy::Shadow;
     let mut parser = HtmlParser::with_options(options);
     register_bench_components(&mut parser);
     parser
 }
 
 fn parser_with_bench_components_and_fast_plugin() -> HtmlParser {
-    let mut parser =
-        HtmlParser::with_plugin_options(Box::new(FastV2ParserPlugin::new()), DomStrategy::Shadow);
+    let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
     register_bench_components(&mut parser);
     parser
 }
@@ -356,7 +351,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-bench-button",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -364,7 +359,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-card",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -372,7 +367,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-panel",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -380,7 +375,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-banner",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -388,7 +383,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-dialog",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -396,7 +391,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-item",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -404,7 +399,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-stats-card",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -520,18 +515,21 @@ fn parser_light_css_boundary_bench(c: &mut Criterion) {
     let css = build_component_stylesheet(40);
     group.throughput(Throughput::Bytes((input.len() + css.len()) as u64));
 
-    for (name, dom_strategy) in [
-        ("shadow", DomStrategy::Shadow),
-        ("light", DomStrategy::Light),
+    for (name, component_html) in [
+        (
+            "authored_shadow",
+            r#"<template shadowrootmode="open"><div class="item-0">Styled</div></template>"#,
+        ),
+        ("light", r#"<div class="item-0">Styled</div>"#),
     ] {
         group.bench_function(name, |b| {
             b.iter(|| {
-                let mut parser = HtmlParser::with_options(dom_strategy);
+                let mut parser = HtmlParser::new();
                 parser
                     .component_registry_mut()
                     .register_component(webui_parser::ComponentRegistration::new(
                         "x-styled-card",
-                        "<div class=\"item-0\">Styled</div>",
+                        component_html,
                         Some(black_box(css.as_str())),
                         true,
                     ))

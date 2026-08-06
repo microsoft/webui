@@ -13,14 +13,14 @@ use super::{
 };
 use crate::component_registry::Component;
 use crate::html_parser::{find_tag_close, opening_tag_name};
-use crate::{CssLinkOptions, CssStrategy, DomStrategy, Result};
+use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
     tag_name: String,
     template_html: String,
-    effective_dom_strategy: DomStrategy,
+    uses_shadow_dom: bool,
 }
 
 /// FAST 3 parser plugin used by `fast-v3`.
@@ -58,25 +58,20 @@ impl FastV3ParserPlugin {
                 ComponentTemplateArtifact::template(
                     comp.tag_name.clone(),
                     tmpl,
-                    comp.effective_dom_strategy,
+                    comp.uses_shadow_dom,
                 )
             })
             .collect()
     }
 
-    fn track_component(
-        &mut self,
-        tag_name: &str,
-        processed_template: &str,
-        effective_dom_strategy: DomStrategy,
-    ) {
+    fn track_component(&mut self, tag_name: &str, processed_template: &str, uses_shadow_dom: bool) {
         if self.components.iter().any(|c| c.tag_name == tag_name) {
             return;
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: processed_template.to_string(),
-            effective_dom_strategy,
+            uses_shadow_dom,
         });
     }
 
@@ -93,7 +88,7 @@ impl FastV3ParserPlugin {
             component,
             processed_template,
             ComponentTemplateContext {
-                effective_dom_strategy: DomStrategy::Light,
+                uses_shadow_dom: false,
             },
         )
     }
@@ -113,7 +108,7 @@ impl ParserPlugin for FastV3ParserPlugin {
         processed_template: &str,
         context: ComponentTemplateContext,
     ) -> Result<()> {
-        self.track_component(tag_name, processed_template, context.effective_dom_strategy);
+        self.track_component(tag_name, processed_template, context.uses_shadow_dom);
         let _ = component;
         Ok(())
     }

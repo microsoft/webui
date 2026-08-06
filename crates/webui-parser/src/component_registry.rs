@@ -308,7 +308,7 @@ impl ComponentRegistry {
         self.components.get(tag_name)
     }
 
-    /// Replace a component's processed CSS after a DOM-specific build transform.
+    /// Replace a component's processed CSS after its boundary-specific transform.
     pub(crate) fn replace_css_content(
         &mut self,
         tag_name: &str,

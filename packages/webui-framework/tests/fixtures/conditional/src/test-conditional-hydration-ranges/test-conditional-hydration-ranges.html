@@ -1,3 +1,4 @@
+<template shadowrootmode="open">
 <button class="mismatch-toggle" @click="{toggleClientOnlyOpen()}">Toggle mismatch</button>
 <if condition="clientOnlyOpen">
   <span class="mismatch-details">Client-only details</span>
@@ -10,3 +11,4 @@
   <div class="outer-details">Outer details</div>
 </if>
 <div class="static-sibling">Static sibling</div>
+</template>
