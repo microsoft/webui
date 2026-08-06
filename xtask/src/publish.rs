@@ -372,6 +372,14 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if let Err(e) = validate_release_artifact_counts(&root) {
+        eprintln!(
+            "  {} Release artifact validation failed: {e}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
     // Summary
     eprintln!(
         "\n{} All artifacts staged in {}\n",
@@ -1191,6 +1199,54 @@ fn count_files_with_extension(dir: &Path, ext: &str) -> u32 {
     count
 }
 
+fn validate_release_artifact_counts(root: &Path) -> Result<(), String> {
+    let publish = root.join("publish");
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("npm"), "tgz"),
+        9,
+        "npm packages",
+    )?;
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("crates"), "crate"),
+        15,
+        "crate packages",
+    )?;
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("nuget"), "nupkg"),
+        8,
+        "NuGet packages",
+    )?;
+    validate_artifact_count(
+        count_files_with_extension(&publish.join("nuget"), "snupkg"),
+        2,
+        "NuGet symbol packages",
+    )?;
+    validate_artifact_count(
+        count_regular_files(&publish.join("standalone")),
+        20,
+        "standalone release assets",
+    )
+}
+
+fn validate_artifact_count(actual: u32, expected: u32, kind: &str) -> Result<(), String> {
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!("expected {expected} {kind}, found {actual}"))
+    }
+}
+
+fn count_regular_files(dir: &Path) -> u32 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let count = entries
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .count();
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
 /// Copy all files with a given extension from `src_dir` to `dest_dir`.
 fn copy_files_with_extension(src_dir: &Path, dest_dir: &Path, ext: &str) -> Result<(), String> {
     let entries =
@@ -1445,6 +1501,48 @@ mod tests {
         assert_eq!(count_files_with_extension(dir.path(), "snupkg"), 1);
         assert_eq!(count_files_with_extension(dir.path(), "txt"), 1);
         assert_eq!(count_files_with_extension(dir.path(), "nupkg"), 0);
+    }
+
+    #[test]
+    fn validate_release_artifact_counts_accepts_expected_layout() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        for directory in ["npm", "crates", "nuget", "standalone"] {
+            fs::create_dir_all(root.path().join("publish").join(directory))
+                .expect("publish directory should be created");
+        }
+        write_numbered_files(root.path().join("publish/npm"), 9, "tgz");
+        write_numbered_files(root.path().join("publish/crates"), 15, "crate");
+        write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
+        write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
+        write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+
+        assert!(validate_release_artifact_counts(root.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_release_artifact_counts_rejects_missing_package() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        for directory in ["npm", "crates", "nuget", "standalone"] {
+            fs::create_dir_all(root.path().join("publish").join(directory))
+                .expect("publish directory should be created");
+        }
+        write_numbered_files(root.path().join("publish/npm"), 8, "tgz");
+        write_numbered_files(root.path().join("publish/crates"), 15, "crate");
+        write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
+        write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
+        write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+
+        let error = validate_release_artifact_counts(root.path())
+            .expect_err("missing npm package should fail validation");
+
+        assert!(error.contains("expected 9 npm packages, found 8"));
+    }
+
+    fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {
+        for index in 0..count {
+            fs::write(directory.join(format!("{index}.{extension}")), "")
+                .expect("artifact fixture should be written");
+        }
     }
 
     #[test]

@@ -22,7 +22,7 @@ resources:
         include:
         - main
       stages:
-      - BuildRelease
+      - BuildArtifacts
   repositories:
   - repository: webuiPipelines
     type: git
@@ -49,11 +49,11 @@ extends:
     settings:
       networkIsolationPolicy: Permissive
     stages:
-    - stage: Release
-      displayName: Sign and publish release
+    - stage: SignArtifacts
+      displayName: Sign release artifacts
       jobs:
-      - job: SignAndPublish
-        displayName: Sign and publish release
+      - job: Sign
+        displayName: Sign release artifacts
         templateContext:
           outputs:
           - output: pipelineArtifact
@@ -75,27 +75,36 @@ extends:
         steps:
         - checkout: self
           clean: true
-          persistCredentials: true
 
         - download: releaseBuild
           artifact: release-metadata
           displayName: Download release metadata
 
-        - download: releaseBuild
-          artifact: release-tools
-          displayName: Download release orchestration tool
-
         - task: Bash@3
+          name: release
           displayName: Read release metadata
           inputs:
             targetType: inline
             script: |
               set -euo pipefail
-              chmod +x "$RELEASE_XTASK"
-              "$RELEASE_XTASK" release-read-metadata
+              metadata_dir="${METADATA_INPUT_DIR:?METADATA_INPUT_DIR is required}"
+              release_tag=$(<"$metadata_dir/release-tag.txt")
+              release_commit=$(<"$metadata_dir/release-commit.txt")
+              release_version=$(<"$metadata_dir/release-version.txt")
+              validation_mode=$(<"$metadata_dir/validation-mode.txt")
+
+              if [[ "$release_tag" != "v${release_version}" ]] ||
+                [[ ! "$release_commit" =~ ^[0-9a-f]{40}$ ]] ||
+                [[ "$validation_mode" != "$EXPECTED_VALIDATION_MODE" ]]; then
+                echo "##vso[task.logissue type=error]Release metadata is invalid or does not match validation mode."
+                exit 1
+              fi
+
+              echo "##vso[build.updatebuildnumber]${release_tag}-cd-${BUILD_BUILDID}"
+              echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${release_version}"
+              echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${release_tag}"
+              echo "##vso[task.setvariable variable=releaseCommit;isOutput=true]${release_commit}"
           env:
-            RELEASE_XTASK: $(Pipeline.Workspace)/releaseBuild/release-tools/xtask
-            WEBUI_WORKSPACE_ROOT: $(Build.SourcesDirectory)
             METADATA_INPUT_DIR: $(Pipeline.Workspace)/releaseBuild/release-metadata
             EXPECTED_VALIDATION_MODE: ${{ parameters.validationMode }}
 
@@ -115,16 +124,37 @@ extends:
           artifact: standalone_release_assets
           displayName: Download standalone release assets
 
-        - task: Bash@3
-          displayName: Stage release artifacts
+        - task: CopyFiles@2
+          displayName: Stage npm packages
           inputs:
-            targetType: inline
-            script: '"$RELEASE_XTASK" release-stage-artifacts'
-          env:
-            RELEASE_XTASK: $(Pipeline.Workspace)/releaseBuild/release-tools/xtask
-            WEBUI_WORKSPACE_ROOT: $(Build.SourcesDirectory)
-            BUILD_SOURCES_DIRECTORY: $(Build.SourcesDirectory)
-            PIPELINE_WORKSPACE: $(Pipeline.Workspace)
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/unsigned_npm_packages
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_npm
+            CleanTargetFolder: true
+
+        - task: CopyFiles@2
+          displayName: Stage crate packages
+          inputs:
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/unsigned_crate_packages
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_crates
+            CleanTargetFolder: true
+
+        - task: CopyFiles@2
+          displayName: Stage NuGet packages
+          inputs:
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/nuget_signing_input
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_nuget
+            CleanTargetFolder: true
+
+        - task: CopyFiles@2
+          displayName: Stage standalone release assets
+          inputs:
+            SourceFolder: $(Pipeline.Workspace)/releaseBuild/standalone_release_assets
+            Contents: '**'
+            TargetFolder: $(Build.SourcesDirectory)/publish_artifacts_standalone
+            CleanTargetFolder: true
 
         - task: UseDotNet@2
           displayName: Install .NET 8 SDK for ESRP
@@ -134,25 +164,110 @@ extends:
 
         - template: WebUI.Sign.PipelineTemplate.yml@webuiPipelines
 
-        - ${{ if eq(parameters.validationMode, 'false') }}:
+    - ${{ if eq(parameters.validationMode, 'false') }}:
+      - stage: TagRelease
+        displayName: Tag release
+        dependsOn: SignArtifacts
+        variables:
+          releaseTag: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseTag'] ]
+          releaseCommit: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseCommit'] ]
+        jobs:
+        - job: Tag
+          displayName: Create release tag
+          steps:
+          - checkout: self
+            clean: true
+            fetchDepth: 0
+            persistCredentials: true
+
           - task: Bash@3
-            displayName: Ensure release tag
+            displayName: Create annotated release tag
             inputs:
               targetType: inline
-              script: '"$RELEASE_XTASK" release-ensure-tag'
+              script: |
+                set -euo pipefail
+                remote_ref="refs/azure-release-tags/${RELEASE_TAG}"
+
+                git fetch --no-tags origin "$RELEASE_COMMIT"
+                if git fetch --force origin "refs/tags/${RELEASE_TAG}:${remote_ref}" 2>/dev/null; then
+                  existing_commit=$(git rev-parse "${remote_ref}^{}")
+                  if [[ "$existing_commit" != "$RELEASE_COMMIT" ]]; then
+                    echo "##vso[task.logissue type=error]${RELEASE_TAG} points to ${existing_commit}, not ${RELEASE_COMMIT}."
+                    exit 1
+                  fi
+                  echo "${RELEASE_TAG} already points to ${RELEASE_COMMIT}."
+                  exit 0
+                fi
+
+                git config user.name "Azure Pipelines"
+                git config user.email "azure-pipelines@microsoft.com"
+                git tag -a "$RELEASE_TAG" "$RELEASE_COMMIT" -m "Release ${RELEASE_TAG}"
+                if git push origin "refs/tags/${RELEASE_TAG}"; then
+                  exit 0
+                fi
+
+                git fetch --force origin "refs/tags/${RELEASE_TAG}:${remote_ref}"
+                raced_commit=$(git rev-parse "${remote_ref}^{}")
+                if [[ "$raced_commit" != "$RELEASE_COMMIT" ]]; then
+                  echo "##vso[task.logissue type=error]Concurrent tag ${RELEASE_TAG} points to ${raced_commit}, not ${RELEASE_COMMIT}."
+                  exit 1
+                fi
+                echo "Concurrent release run created ${RELEASE_TAG} at the expected commit."
             env:
-              RELEASE_XTASK: $(Pipeline.Workspace)/releaseBuild/release-tools/xtask
-              WEBUI_WORKSPACE_ROOT: $(Build.SourcesDirectory)
               RELEASE_TAG: $(releaseTag)
               RELEASE_COMMIT: $(releaseCommit)
 
+      - stage: PublishRelease
+        displayName: Publish GitHub and registry release
+        dependsOn:
+        - SignArtifacts
+        - TagRelease
+        variables:
+          releaseTag: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseTag'] ]
+          releaseCommit: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseCommit'] ]
+        jobs:
+        - job: Publish
+          displayName: Publish release
+          steps:
+          - checkout: self
+            clean: true
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download npm packages
+            inputs:
+              buildType: current
+              artifactName: unsigned_npm_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download crate packages
+            inputs:
+              buildType: current
+              artifactName: unsigned_crate_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download signed NuGet packages
+            inputs:
+              buildType: current
+              artifactName: signed_nuget_packages
+              targetPath: $(Build.ArtifactStagingDirectory)/publish_artifacts_nuget
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download standalone release assets
+            inputs:
+              buildType: current
+              artifactName: standalone_release_assets
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
+
           - task: GitHubRelease@1
-            displayName: Create or update GitHub Release
+            displayName: Create GitHub Release
             inputs:
               gitHubConnection: fast
               repositoryName: microsoft/webui
-              action: edit
+              action: create
               target: $(releaseCommit)
+              tagSource: userSpecifiedTag
               tag: $(releaseTag)
               title: $(releaseTag)
               releaseNotesSource: inline

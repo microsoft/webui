@@ -36,12 +36,58 @@ stages:
       inputs:
         targetType: inline
         script: |
-          cargo xtask release-resolve
+          set -euo pipefail
+
+          release_version=$(awk '
+            $0 == "[workspace.package]" { in_workspace = 1; next }
+            /^\[/ { in_workspace = 0 }
+            in_workspace && /^version = "[0-9]+\.[0-9]+\.[0-9]+"$/ {
+              value = $0
+              sub(/^version = "/, "", value)
+              sub(/"$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)
+          if [[ ! "$release_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "##vso[task.logissue type=error]Cargo.toml must contain a stable workspace version."
+            exit 1
+          fi
+
+          release_tag="v${release_version}"
+          release_commit="${BUILD_SOURCEVERSION:?BUILD_SOURCEVERSION is required}"
+          set +e
+          git ls-remote --exit-code origin \
+            "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}" >/dev/null
+          tag_status=$?
+          set -e
+          case "$tag_status" in
+            0)
+              if [[ "$ALLOW_EXISTING_RELEASE" == true ]]; then
+                should_build=true
+                echo "${release_tag} exists; rebuilding artifacts for validation."
+              else
+                should_build=false
+                echo "${release_tag} exists; skipping release build."
+              fi
+              ;;
+            2) should_build=true ;;
+            *)
+              echo "##vso[task.logissue type=error]Unable to query ${release_tag} from origin."
+              exit 1
+              ;;
+          esac
+
+          echo "##vso[build.updatebuildnumber]${release_tag}-build-${BUILD_BUILDID}"
+          echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${release_version}"
+          echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${release_tag}"
+          echo "##vso[task.setvariable variable=releaseCommit;isOutput=true]${release_commit}"
+          echo "##vso[task.setvariable variable=shouldBuild;isOutput=true]${should_build}"
       env:
         ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
 
-- stage: BuildRelease
-  displayName: Build release
+- stage: BuildArtifacts
+  displayName: Build release artifacts
   dependsOn: PrepareRelease
   condition: |
     and(
@@ -237,7 +283,7 @@ stages:
         packageType: sdk
         version: 9.x
     - task: Bash@3
-      displayName: Assemble release packages
+      displayName: Generate release artifacts
       inputs:
         targetType: inline
         script: |
@@ -248,14 +294,18 @@ stages:
           rustup default 1.93
           corepack enable
           pnpm install --frozen-lockfile
-          cargo xtask release-package
-      env:
-        PACKAGE_OUTPUT_ROOT: $(Build.ArtifactStagingDirectory)
+          cargo xtask publish-stage --pack-only --profile release
     - task: Bash@3
       displayName: Write release metadata
       inputs:
         targetType: inline
-        script: cargo xtask release-write-metadata
+        script: |
+          set -euo pipefail
+          mkdir -p "$METADATA_OUTPUT_DIR"
+          printf '%s\n' "$RELEASE_TAG" > "$METADATA_OUTPUT_DIR/release-tag.txt"
+          printf '%s\n' "$RELEASE_COMMIT" > "$METADATA_OUTPUT_DIR/release-commit.txt"
+          printf '%s\n' "$RELEASE_VERSION" > "$METADATA_OUTPUT_DIR/release-version.txt"
+          printf '%s\n' "$VALIDATION_MODE" > "$METADATA_OUTPUT_DIR/validation-mode.txt"
       env:
         METADATA_OUTPUT_DIR: $(Build.ArtifactStagingDirectory)/release-metadata
         RELEASE_TAG: $(releaseTag)
@@ -265,30 +315,25 @@ stages:
     - task: PublishPipelineArtifact@1
       displayName: Upload unsigned npm packages
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_npm'
+        targetPath: '$(Build.SourcesDirectory)/publish/npm'
         artifactName: unsigned_npm_packages
     - task: PublishPipelineArtifact@1
       displayName: Upload unsigned crate packages
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_crates'
+        targetPath: '$(Build.SourcesDirectory)/publish/crates'
         artifactName: unsigned_crate_packages
     - task: PublishPipelineArtifact@1
       displayName: Upload NuGet signing input
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_nuget'
+        targetPath: '$(Build.SourcesDirectory)/publish/nuget'
         artifactName: nuget_signing_input
     - task: PublishPipelineArtifact@1
       displayName: Upload standalone release assets
       inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/publish_artifacts_standalone'
+        targetPath: '$(Build.SourcesDirectory)/publish/standalone'
         artifactName: standalone_release_assets
     - task: PublishPipelineArtifact@1
       displayName: Upload release metadata
       inputs:
         targetPath: '$(Build.ArtifactStagingDirectory)/release-metadata'
         artifactName: release-metadata
-    - task: PublishPipelineArtifact@1
-      displayName: Upload release orchestration tool
-      inputs:
-        targetPath: '$(Build.SourcesDirectory)/target/debug/xtask'
-        artifactName: release-tools

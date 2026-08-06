@@ -9,7 +9,6 @@ mod e2e_approve;
 mod license_headers;
 mod process;
 mod publish;
-mod release;
 mod util;
 mod version;
 mod windows_local;
@@ -86,12 +85,6 @@ fn main() -> ExitCode {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_build(&extra)
         }
-        Some("release-resolve") => release::run_resolve(),
-        Some("release-package") => release::run_package(),
-        Some("release-write-metadata") => release::run_write_metadata(),
-        Some("release-read-metadata") => release::run_read_metadata(),
-        Some("release-stage-artifacts") => release::run_stage_artifacts(),
-        Some("release-ensure-tag") => release::run_ensure_tag(),
         Some("build-windows-local") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             windows_local::run(&extra)
@@ -151,12 +144,6 @@ fn usage() -> ExitCode {
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
            publish-build --target <triple> [--target <triple>] [--profile release] [--output <dir>]  Build, stage, and optionally export native release artifacts\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]  Stage release artifacts into publish/\n  \
-           release-resolve  Resolve the Azure release version and tag\n  \
-           release-package  Pack and export Azure release artifacts\n  \
-           release-write-metadata  Write release metadata for the official pipeline\n  \
-           release-read-metadata  Read release metadata and restore Azure variables\n  \
-           release-stage-artifacts  Stage downloaded artifacts for ESRP signing\n  \
-           release-ensure-tag  Safely create the annotated release tag\n  \
            build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \
            license-headers [--fix]  Check (or fix) license headers in source files\n  \
            proto  Regenerate src/gen_webui.rs from proto/webui.proto"
