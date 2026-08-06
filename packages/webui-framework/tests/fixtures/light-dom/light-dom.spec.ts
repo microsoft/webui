@@ -10,7 +10,7 @@ test.describe('light-dom pipeline', () => {
     await expect(page.locator('#shadow-opt-in')).toHaveJSProperty('$ready', true);
   });
 
-  test('omitted DOM option defaults to Light and applies scoped CSS', async ({ page }) => {
+  test('unwrapped component uses Light DOM and applies scoped CSS', async ({ page }) => {
     await expect(page.locator('test-light-dom .greeting')).toHaveText('Hello');
     await expect(page.locator('test-light-dom .name')).toHaveText('World');
     await expect(page.locator('test-light-dom .greeting')).toHaveCSS(

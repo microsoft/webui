@@ -99,8 +99,6 @@ pub struct JsBuildOptions {
     pub entry: Option<String>,
     /// CSS mode: "link" (default) or "style".
     pub css: Option<String>,
-    /// DOM strategy for component rendering: "light" (default) or "shadow".
-    pub dom: Option<String>,
     /// Plugin identifier (see crate documentation for available identifiers).
     pub plugin: Option<String>,
     /// Additional component sources (npm packages or local paths).
@@ -132,13 +130,6 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
     let css = options
         .css
         .map(|s| s.parse::<webui::CssStrategy>())
-        .transpose()
-        .map_err(NapiError::from_reason)?
-        .unwrap_or_default();
-
-    let dom = options
-        .dom
-        .map(|s| s.parse::<webui::DomStrategy>())
         .transpose()
         .map_err(NapiError::from_reason)?
         .unwrap_or_default();
@@ -184,7 +175,6 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         app_dir,
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
         css,
-        dom,
         plugin,
         components: options.components.unwrap_or_default(),
         component_asset_roots: options.component_asset_roots.unwrap_or_default(),
@@ -1139,7 +1129,6 @@ mod tests {
             app_dir: app_dir.to_string_lossy().to_string(),
             entry: None,
             css: None,
-            dom: None,
             plugin: Some("webui".to_string()),
             components: None,
             component_asset_roots: None,
@@ -1196,7 +1185,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1225,7 +1213,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: Some("page.html".to_string()),
             css: None,
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1248,7 +1235,6 @@ mod tests {
             app_dir: "/nonexistent/path".to_string(),
             entry: None,
             css: None,
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1274,7 +1260,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("bogus".to_string()),
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1302,7 +1287,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1340,7 +1324,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1373,7 +1356,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
-            dom: None,
             plugin: Some("webui".to_string()),
             components: None,
             component_asset_roots: Some(vec!["lazy-panel".to_string()]),
@@ -1405,7 +1387,11 @@ mod tests {
     fn test_build_legal_comments_none_strips_legal_css() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
+        std::fs::write(
+            dir.path().join("my-card.html"),
+            r#"<template shadowrootmode="open"><div>content</div></template>"#,
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join("my-card.css"),
             "/*! @license MIT */ .card { color: red; }",
@@ -1416,7 +1402,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
-            dom: Some("shadow".to_string()),
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1442,7 +1427,6 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
-            dom: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1460,49 +1444,46 @@ mod tests {
     }
 
     #[test]
-    fn test_build_with_default_and_explicit_light_dom_omits_shadow_root_template() {
+    fn test_build_with_unwrapped_component_omits_shadow_root_template() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
         std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
-
-        for dom in [None, Some("light".to_string())] {
-            let options = JsBuildOptions {
-                app_dir: dir.path().to_string_lossy().to_string(),
-                entry: None,
-                css: None,
-                dom,
-                plugin: None,
-                components: None,
-                component_asset_roots: None,
-                metafile: None,
-                css_file_name_template: None,
-                css_public_base: None,
-                legal_comments: None,
-                theme: None,
-                projection_manifests: None,
-                projection_manifest_objects: None,
-            };
-
-            let result = build(options).unwrap();
-            let json = inspect(result.protocol).unwrap();
-            assert!(
-                !json.contains("shadowrootmode"),
-                "light DOM build should not emit shadowrootmode wrappers, got: {json}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_build_with_shadow_dom_emits_shadow_root_template() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
-        std::fs::write(dir.path().join("my-card.html"), "<div><slot></slot></div>").unwrap();
 
         let options = JsBuildOptions {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
-            dom: Some("shadow".to_string()),
+            plugin: None,
+            components: None,
+            component_asset_roots: None,
+            metafile: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: None,
+            theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
+        };
+
+        let result = build(options).unwrap();
+        let json = inspect(result.protocol).unwrap();
+        assert!(!json.contains("shadowrootmode"));
+    }
+
+    #[test]
+    fn test_build_with_authored_shadow_dom_preserves_shadow_root_template() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
+        std::fs::write(
+            dir.path().join("my-card.html"),
+            r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+        )
+        .unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
             plugin: None,
             components: None,
             component_asset_roots: None,
@@ -1519,20 +1500,24 @@ mod tests {
         let json = inspect(result.protocol).unwrap();
         assert!(
             json.contains("shadowrootmode"),
-            "shadow DOM build should emit shadowrootmode wrappers, got: {json}"
+            "authored Shadow DOM wrapper should be preserved, got: {json}"
         );
     }
 
     #[test]
-    fn test_build_invalid_dom() {
+    fn test_build_rejects_invalid_shadow_wrapper() {
         let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card></my-card>").unwrap();
+        std::fs::write(
+            dir.path().join("my-card.html"),
+            r#"<template shadowrootmode="closed"><p>invalid</p></template>"#,
+        )
+        .unwrap();
 
         let options = JsBuildOptions {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
-            dom: Some("bogus".to_string()),
             plugin: None,
             components: None,
             component_asset_roots: None,

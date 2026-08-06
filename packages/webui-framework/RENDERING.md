@@ -398,9 +398,9 @@ before importing it, then reuses the cached parsed sheet for every target.
 
 ## Light DOM vs Shadow DOM
 
-Light DOM is the compiler default. `--dom=shadow` selects Shadow globally, and
-a sole top-level `<template shadowrootmode="open">` selects Shadow for one
-component. The effective mode is surfaced as `meta.sd`:
+Every unwrapped component uses Light DOM. A sole top-level
+`<template shadowrootmode="open">` containing the complete component selects
+Shadow. This is surfaced as `meta.sd`:
 
 - **Shadow DOM** (`meta.sd` truthy): SSR uses Declarative Shadow DOM. Client-created instances call `attachShadow({ mode: 'open' })`. Slot content stays in light DOM and projects through.
 - **Light DOM**: SSR renders children directly into the host. Client-created

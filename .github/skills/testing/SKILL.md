@@ -181,15 +181,14 @@ Create `webui.config.json` to override build options:
 { "css": "module" }
 ```
 
-### DOM strategy fixtures
+### Light and Shadow fixtures
 
-The real pipeline uses the product default, Light DOM. Ordinary component
-templates therefore exercise Light rendering without extra configuration.
-Use a sole top-level `<template shadowrootmode="open">` for a per-component
-Shadow opt-in, or set `{ "dom": "shadow" }` in `webui.config.json` when a
-fixture intentionally exercises global Shadow mode. See `fixtures/light-dom/`
-for mixed Light and Shadow coverage built through the real pipeline. Reserve
-manual `registerCompiledTemplate` fixtures for raw template-metadata scenarios.
+Ordinary unwrapped component templates exercise Light rendering. A fixture
+component requiring Shadow must author a sole top-level
+`<template shadowrootmode="open">` as its complete template. See
+`fixtures/light-dom/` for mixed Light and Shadow coverage built through the real
+pipeline. Reserve manual `registerCompiledTemplate` fixtures for raw
+template-metadata scenarios.
 
 ### Running framework E2E tests
 

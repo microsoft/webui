@@ -44,8 +44,8 @@ message ComponentData {
   // significant: protocols produced before projection metadata leave this
   // absent, so handlers preserve full state instead of treating it as NONE.
   optional StateProjectionMode navigation_mode = 9;
-  // Effective DOM strategy resolved for this component at build time.
-  DomStrategy effective_dom_strategy = 10;
+  // Whether this component authored a sole open declarative Shadow DOM root.
+  bool uses_shadow_dom = 10;
 }
 
 // Link stylesheet metadata for one static component asset root.
@@ -85,12 +85,6 @@ enum CssStrategy {
   CSS_STRATEGY_MODULE = 2;
 }
 
-// DOM encapsulation strategy chosen at build time.
-enum DomStrategy {
-  DOM_STRATEGY_LIGHT = 0;
-  DOM_STRATEGY_SHADOW = 1;
-}
-
 // Root protocol containing all fragment records and build metadata.
 message WebUIProtocol {
   map<string, FragmentList> fragments = 1;
@@ -103,9 +97,8 @@ message WebUIProtocol {
   // Build-wide CSS delivery strategy. Determines how compiled component
   // resources are installed in each CSS tree.
   CssStrategy css_strategy = 4;
-  // Build-wide DOM encapsulation strategy. Combined with css_strategy to
-  // decide preload vs stylesheet emission.
-  DomStrategy dom_strategy = 5;
+  reserved 5;
+  reserved "dom_strategy";
   // Whether initial SSR metadata contains full state or WebUI component
   // projection. Partial-navigation state remains component-driven.
   InitialStateStrategy initial_state_strategy = 6;

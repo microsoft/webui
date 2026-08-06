@@ -1678,15 +1678,13 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Mark a handler-generated component host when its effective mode is Light.
+    /// Mark a handler-generated component host when it uses Light DOM.
     fn write_light_dom_marker(
         &self,
         component: &str,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        if context.protocol.effective_component_dom_strategy(component)
-            == webui_protocol::DomStrategy::Light
-        {
+        if !context.protocol.component_uses_shadow_dom(component) {
             context.writer.write(" data-wl")?;
         }
         Ok(())
@@ -1840,9 +1838,10 @@ impl WebUIHandler {
     #[inline]
     fn component_owns_css_tree(component: &str, protocol: &WebUIProtocol) -> bool {
         !protocol.style_closures.is_empty()
-            && protocol.components.get(component).is_some_and(|data| {
-                data.effective_dom_strategy() == webui_protocol::DomStrategy::Shadow
-            })
+            && protocol
+                .components
+                .get(component)
+                .is_some_and(|data| data.uses_shadow_dom)
     }
 
     fn push_shadow_style_root(component: &str, context: &mut WebUIProcessContext) -> Result<()> {
@@ -2638,7 +2637,8 @@ fn handle(
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use webui_parser::HtmlParser;
+    use std::sync::Arc;
+    use webui_parser::{ComponentRegistration, HtmlParser};
     use webui_protocol::{
         web_ui_fragment, ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator,
         WebUIFragmentAttribute,
@@ -7861,7 +7861,6 @@ mod tests {
 
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
 
         let comp = protocol
             .components
@@ -7958,15 +7957,14 @@ mod tests {
         ]);
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
-        for (tag, css, mode) in [
-            ("outer-box", ".outer{}", webui_protocol::DomStrategy::Shadow),
-            ("inner-box", ".inner{}", webui_protocol::DomStrategy::Shadow),
-            ("light-card", ".card{}", webui_protocol::DomStrategy::Light),
+        for (tag, css, uses_shadow_dom) in [
+            ("outer-box", ".outer{}", true),
+            ("inner-box", ".inner{}", true),
+            ("light-card", ".card{}", false),
         ] {
             let component = protocol.components.entry(tag.to_string()).or_default();
             component.css = css.to_string();
-            component.effective_dom_strategy = mode as i32;
+            component.uses_shadow_dom = uses_shadow_dom;
         }
         protocol.populate_style_closures(&["index.html"]);
 
@@ -8041,13 +8039,12 @@ mod tests {
                 ),
             ]));
             protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
-            protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
             let component = protocol
                 .components
                 .entry("my-card".to_string())
                 .or_default();
             component.css = ".card{color:red}".to_string();
-            component.effective_dom_strategy = webui_protocol::DomStrategy::Light as i32;
+            component.uses_shadow_dom = false;
             protocol.populate_style_closures(&["index.html"]);
 
             let mut writer = TestWriter::new();
@@ -8075,7 +8072,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_shadow_component_can_render_as_entry_fragment() {
+    fn authored_shadow_component_can_render_as_entry_fragment() {
         let mut protocol = WebUIProtocol::new(HashMap::from([(
             "my-card".to_string(),
             FragmentList {
@@ -8087,13 +8084,12 @@ mod tests {
             },
         )]));
         protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
         let component = protocol
             .components
             .entry("my-card".to_string())
             .or_default();
         component.css = ".card{color:red}".to_string();
-        component.effective_dom_strategy = webui_protocol::DomStrategy::Shadow as i32;
+        component.uses_shadow_dom = true;
         protocol.populate_style_closures(&["my-card"]);
 
         let mut writer = TestWriter::new();
@@ -8193,14 +8189,13 @@ mod tests {
                 ),
             ]));
             protocol.set_css_strategy(strategy);
-            protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
             let component = protocol
                 .components
                 .entry("my-card".to_string())
                 .or_default();
             component.css = ".card{color:red}".to_string();
             component.css_href = "/my-card.css".to_string();
-            component.effective_dom_strategy = webui_protocol::DomStrategy::Shadow as i32;
+            component.uses_shadow_dom = true;
             protocol.populate_style_closures(&["index.html"]);
 
             let mut writer = TestWriter::new();
@@ -8352,7 +8347,6 @@ mod tests {
 
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
 
         let z = protocol
             .components
@@ -8606,7 +8600,6 @@ mod tests {
 
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
 
         // Only has-css has an external stylesheet (Link strategy)
         protocol
@@ -12201,7 +12194,7 @@ mod tests {
     }
 
     fn parser_route_protocol(with_boundary: bool) -> Protocol {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -12225,7 +12218,6 @@ mod tests {
             .parse("index.html", &html)
             .expect("parse route streaming fixture");
         let mut document = WebUIProtocol::new(parser.into_fragment_records());
-        document.set_dom_strategy(webui_protocol::DomStrategy::Light);
         document.components.insert(
             "route-page".to_string(),
             webui_protocol::ComponentData::default(),
@@ -12444,7 +12436,6 @@ mod tests {
         ]);
         let mut document = WebUIProtocol::new(fragments);
         document.set_css_strategy(webui_protocol::CssStrategy::Link);
-        document.set_dom_strategy(webui_protocol::DomStrategy::Light);
         document.initial_state_strategy = InitialStateStrategy::Components as i32;
         for (name, keys) in [
             ("static-shell", vec!["show_hidden", "static_count"]),

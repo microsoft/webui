@@ -41,7 +41,7 @@ Static files (JS bundles, CSS) are served from the fixtures root as-is.
 ### Template syntax
 
 ```html
-<!-- Component template (Light DOM by default) -->
+<!-- Unwrapped component template (Light DOM) -->
 <span>{{propertyName}}</span>
 <button @click="{handler()}">Click</button>
 <if condition="show"><p>Visible</p></if>
@@ -75,15 +75,13 @@ emits templates for **reachable** components.
 With `state.json`: `{ "showChild": false }`. This makes the child reachable (so its
 template metadata is emitted) without rendering it during SSR.
 
-## DOM-mode fixtures
+## DOM ownership fixtures
 
-The real build pipeline produces Light DOM by default. Use ordinary source
-templates to test the production Light path. To test one Shadow component, make
-a sole top-level `<template shadowrootmode="open">` its complete template. Set
-`"dom": "shadow"` in `webui.config.json` only when the whole fixture needs
-Shadow.
+The real build pipeline produces Light DOM for unwrapped templates. Use ordinary
+source templates to test the production Light path. To test a Shadow component,
+make a sole top-level `<template shadowrootmode="open">` its complete template.
 
-The `light-dom` fixture exercises the default real-pipeline path and includes a
+The `light-dom` fixture exercises the unwrapped real-pipeline path and includes a
 component-level Shadow opt-in. Use manual template registration or hand-written
 fixture HTML only for tests that intentionally bypass the compiler.
 

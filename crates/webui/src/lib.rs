@@ -40,7 +40,6 @@ pub use webui_handler::{
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
-pub use webui_parser::DomStrategy;
 pub use webui_parser::LegalComments;
 pub use webui_parser::ParserError;
 pub use webui_parser::ParserOptions;
@@ -253,8 +252,6 @@ pub struct BuildOptions {
     pub entry: String,
     /// CSS delivery strategy for component stylesheets.
     pub css: CssStrategy,
-    /// DOM strategy for component rendering (shadow or light).
-    pub dom: DomStrategy,
     /// Framework plugin to load.
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
@@ -313,7 +310,6 @@ impl Default for BuildOptions {
             app_dir: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
-            dom: DomStrategy::Light,
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
@@ -515,7 +511,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     }
     let parser_options = ParserOptions::try_new(
         options.css,
-        options.dom,
         &options.css_file_name_template,
         options.css_public_base.as_deref(),
         options.legal_comments,
@@ -614,9 +609,9 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                 .map(|css| (component.tag_name.clone(), css.clone()))
         })
         .collect();
-    let effective_dom_strategies: Vec<(String, DomStrategy)> = parser
-        .effective_component_dom_strategies()
-        .map(|(tag_name, strategy)| (tag_name.to_string(), strategy))
+    let component_shadow_dom_usage: Vec<(String, bool)> = parser
+        .component_shadow_dom_usage()
+        .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
         .collect();
 
     // Collect CSS token analysis before consuming the parser.
@@ -698,17 +693,13 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         warnings.append(&mut preloads.warnings);
     }
 
-    // Record build-wide strategies so the handler can decide rendering behavior.
+    // Record CSS delivery and per-component Shadow DOM ownership.
     protocol.set_css_strategy(match options.css {
         CssStrategy::Link => webui_protocol::CssStrategy::Link,
         CssStrategy::Style => webui_protocol::CssStrategy::Style,
         CssStrategy::Module => webui_protocol::CssStrategy::Module,
     });
-    protocol.set_dom_strategy(match options.dom {
-        DomStrategy::Shadow => webui_protocol::DomStrategy::Shadow,
-        DomStrategy::Light => webui_protocol::DomStrategy::Light,
-    });
-    for (tag_name, strategy) in effective_dom_strategies {
+    for (tag_name, uses_shadow_dom) in component_shadow_dom_usage {
         if !protocol.fragments.contains_key(&tag_name) {
             continue;
         }
@@ -716,10 +707,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .components
             .entry(tag_name)
             .or_default()
-            .effective_dom_strategy = match strategy {
-            DomStrategy::Shadow => webui_protocol::DomStrategy::Shadow as i32,
-            DomStrategy::Light => webui_protocol::DomStrategy::Light as i32,
-        };
+            .uses_shadow_dom = uses_shadow_dom;
     }
 
     // Process component CSS in a single pass: retain compiled Style/Module CSS,
@@ -962,8 +950,6 @@ mod tests {
     fn default_options(app_dir: &Path) -> BuildOptions {
         BuildOptions {
             app_dir: app_dir.to_path_buf(),
-            // These fixtures intentionally exercise explicit Shadow mode.
-            dom: DomStrategy::Shadow,
             ..BuildOptions::default()
         }
     }
@@ -984,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn build_defaults_to_light_and_supports_explicit_shadow() {
+    fn build_uses_light_unless_component_authors_shadow() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -997,27 +983,14 @@ mod tests {
             ),
         ]);
 
-        let light = build(BuildOptions {
+        let result = build(BuildOptions {
             app_dir: app.path().to_path_buf(),
             ..BuildOptions::default()
         })
         .unwrap();
-        assert_eq!(BuildOptions::default().dom, DomStrategy::Light);
-        assert_eq!(
-            light.protocol.dom_strategy(),
-            webui_protocol::DomStrategy::Light
-        );
-        assert_eq!(
-            light.protocol.effective_component_dom_strategy("my-card"),
-            webui_protocol::DomStrategy::Light
-        );
-        assert_eq!(
-            light
-                .protocol
-                .effective_component_dom_strategy("shadow-card"),
-            webui_protocol::DomStrategy::Shadow
-        );
-        let light_html: String = light.protocol.fragments["my-card"]
+        assert!(!result.protocol.component_uses_shadow_dom("my-card"));
+        assert!(result.protocol.component_uses_shadow_dom("shadow-card"));
+        let light_html: String = result.protocol.fragments["my-card"]
             .fragments
             .iter()
             .filter_map(|fragment| match fragment.fragment.as_ref() {
@@ -1027,17 +1000,7 @@ mod tests {
             .collect();
         assert!(!light_html.contains("shadowrootmode"));
 
-        let shadow = build(BuildOptions {
-            app_dir: app.path().to_path_buf(),
-            dom: DomStrategy::Shadow,
-            ..BuildOptions::default()
-        })
-        .unwrap();
-        assert_eq!(
-            shadow.protocol.dom_strategy(),
-            webui_protocol::DomStrategy::Shadow
-        );
-        let shadow_html: String = shadow.protocol.fragments["my-card"]
+        let shadow_html: String = result.protocol.fragments["shadow-card"]
             .fragments
             .iter()
             .filter_map(|fragment| match fragment.fragment.as_ref() {
@@ -1049,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_slot_in_default_light_component() {
+    fn build_rejects_slot_in_unwrapped_light_component() {
         let app = create_app_dir(&[
             ("index.html", "<my-card></my-card>"),
             ("my-card.html", "<div><slot></slot></div>"),
@@ -1059,7 +1022,7 @@ mod tests {
             app_dir: app.path().to_path_buf(),
             ..BuildOptions::default()
         })
-        .expect_err("effective Light DOM slot must fail the build");
+        .expect_err("unwrapped Light DOM slot must fail the build");
 
         assert!(
             error.chain_message().contains("[light-dom-slot]"),
@@ -1511,7 +1474,10 @@ mod tests {
     fn test_build_with_component_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
             ("my-card.ts", "export {};"),
         ]);
@@ -1539,7 +1505,6 @@ mod tests {
                 ("my-card.css", authored),
             ]);
             let mut options = default_options(app.path());
-            options.dom = DomStrategy::Light;
             options.css = strategy;
             if strategy == CssStrategy::Link {
                 options.css_file_name_template = "[name]-[hash].[ext]".to_string();
@@ -1612,67 +1577,42 @@ mod tests {
     }
 
     #[test]
-    fn build_precomputes_style_closures_for_both_dom_modes_and_shadow_override() {
-        for dom in [DomStrategy::Light, DomStrategy::Shadow] {
-            let app = create_app_dir(&[
-                (
-                    "index.html",
-                    "<light-card></light-card><shadow-card><after-card></after-card></shadow-card>",
-                ),
-                ("light-card.html", "<nested-card></nested-card>"),
-                ("light-card.css", ".light{}"),
-                (
-                    "shadow-card.html",
-                    r#"<template shadowrootmode="open"><nested-card></nested-card></template>"#,
-                ),
-                ("shadow-card.css", ".shadow{}"),
-                ("nested-card.html", "<span>nested</span>"),
-                ("nested-card.css", ".nested{}"),
-                ("after-card.html", "<span>after</span>"),
-                ("after-card.css", ".after{}"),
-            ]);
-            let mut options = default_options(app.path());
-            options.css = CssStrategy::Style;
-            options.dom = dom;
-            let result = build(options).unwrap();
+    fn build_precomputes_style_closures_with_authored_shadow_cut() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<light-card></light-card><shadow-card><after-card></after-card></shadow-card>",
+            ),
+            ("light-card.html", "<nested-card></nested-card>"),
+            ("light-card.css", ".light{}"),
+            (
+                "shadow-card.html",
+                r#"<template shadowrootmode="open"><nested-card></nested-card></template>"#,
+            ),
+            ("shadow-card.css", ".shadow{}"),
+            ("nested-card.html", "<span>nested</span>"),
+            ("nested-card.css", ".nested{}"),
+            ("after-card.html", "<span>after</span>"),
+            ("after-card.css", ".after{}"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
 
-            if dom == DomStrategy::Light {
-                assert_eq!(
-                    result
-                        .protocol
-                        .style_closure("index.html")
-                        .expect("entry closure"),
-                    ["light-card", "nested-card", "after-card"]
-                );
-                assert_eq!(
-                    result
-                        .protocol
-                        .style_closure("shadow-card")
-                        .expect("Shadow closure"),
-                    ["shadow-card", "nested-card"]
-                );
-            } else {
-                assert!(result
-                    .protocol
-                    .style_closure("index.html")
-                    .expect("entry closure")
-                    .is_empty());
-                assert_eq!(
-                    result
-                        .protocol
-                        .style_closure("light-card")
-                        .expect("component closure"),
-                    ["light-card"]
-                );
-                assert_eq!(
-                    result
-                        .protocol
-                        .style_closure("shadow-card")
-                        .expect("Shadow closure"),
-                    ["shadow-card"]
-                );
-            }
-        }
+        assert_eq!(
+            result
+                .protocol
+                .style_closure("index.html")
+                .expect("entry closure"),
+            ["light-card", "nested-card", "after-card"]
+        );
+        assert_eq!(
+            result
+                .protocol
+                .style_closure("shadow-card")
+                .expect("Shadow closure"),
+            ["shadow-card", "nested-card"]
+        );
     }
 
     #[test]
@@ -1690,7 +1630,6 @@ mod tests {
                 ("my-card.css", authored),
             ]);
             let mut options = default_options(app.path());
-            options.dom = DomStrategy::Light;
             options.css = strategy;
             let result = build(options).unwrap();
 
@@ -1760,7 +1699,10 @@ mod tests {
     fn test_build_strips_non_legal_css_comments_from_output_file() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             (
                 "my-card.css",
                 "/* remove var(--ignored) */ .card { color: var(--textColor); }",
@@ -1776,7 +1718,10 @@ mod tests {
     fn test_build_preserves_legal_css_comments_by_default() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             (
                 "my-card.css",
                 "/*! @license MIT */ .card { color: red; } /* remove */",
@@ -1794,7 +1739,10 @@ mod tests {
     fn test_build_legal_comments_none_strips_legal_css_comments() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", "/*! @license MIT */ .card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1808,7 +1756,10 @@ mod tests {
     fn test_build_with_css_hashed_filename_template() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1834,7 +1785,10 @@ mod tests {
     fn test_css_public_base_prefixes_css_href_only() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1862,7 +1816,10 @@ mod tests {
                 "index.html",
                 "<html><head></head><body><my-card>Hello</my-card></body></html>",
             ),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1916,7 +1873,10 @@ mod tests {
     fn test_css_public_base_keeps_webui_template_style_free() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
             ("my-card.ts", "export {};"),
         ]);
@@ -1943,7 +1903,10 @@ mod tests {
     fn test_css_public_base_keeps_fast_template_style_free() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1969,7 +1932,10 @@ mod tests {
     fn test_invalid_css_template_is_rejected() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1983,9 +1949,15 @@ mod tests {
     fn test_css_filename_collision_is_rejected() {
         let app = create_app_dir(&[
             ("index.html", "<card-a>A</card-a><card-b>B</card-b>"),
-            ("card-a.html", "<div><slot></slot></div>"),
+            (
+                "card-a.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-a.css", ".x { color: red; }"),
-            ("card-b.html", "<div><slot></slot></div>"),
+            (
+                "card-b.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-b.css", ".x { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2417,8 +2389,7 @@ mod tests {
             ("has-css.css", ".yes { color: green; }"),
             ("no-css.html", "<p>plain</p>"),
         ]);
-        let mut options = default_options(app.path());
-        options.dom = DomStrategy::Light;
+        let options = default_options(app.path());
         let result = build(options).unwrap();
 
         let href = result
@@ -2445,7 +2416,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_free_build_persists_each_effective_dom_strategy() {
+    fn test_plugin_free_build_persists_component_shadow_usage() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -2458,30 +2429,13 @@ mod tests {
             ),
         ]);
         let mut options = default_options(app.path());
-        options.dom = DomStrategy::Light;
         options.plugin = None;
         let result = build(options).unwrap();
 
-        assert_eq!(
-            result
-                .protocol
-                .effective_component_dom_strategy("light-card"),
-            webui_protocol::DomStrategy::Light
-        );
-        assert_eq!(
-            result
-                .protocol
-                .effective_component_dom_strategy("shadow-card"),
-            webui_protocol::DomStrategy::Shadow
-        );
-        assert_eq!(
-            result.protocol.components["light-card"].effective_dom_strategy,
-            webui_protocol::DomStrategy::Light as i32
-        );
-        assert_eq!(
-            result.protocol.components["shadow-card"].effective_dom_strategy,
-            webui_protocol::DomStrategy::Shadow as i32
-        );
+        assert!(!result.protocol.component_uses_shadow_dom("light-card"));
+        assert!(result.protocol.component_uses_shadow_dom("shadow-card"));
+        assert!(!result.protocol.components["light-card"].uses_shadow_dom);
+        assert!(result.protocol.components["shadow-card"].uses_shadow_dom);
 
         let entry_html: String = result.protocol.fragments["index.html"]
             .fragments
@@ -2506,20 +2460,10 @@ mod tests {
             ),
         ]);
         let mut options = default_options(app.path());
-        options.dom = DomStrategy::Light;
         options.plugin = Some(Plugin::WebUI);
         let result = build(options).unwrap();
 
-        assert_eq!(
-            result.protocol.dom_strategy(),
-            webui_protocol::DomStrategy::Light
-        );
-        assert_eq!(
-            result
-                .protocol
-                .effective_component_dom_strategy("shadow-card"),
-            webui_protocol::DomStrategy::Shadow
-        );
+        assert!(result.protocol.component_uses_shadow_dom("shadow-card"));
         assert!(result.protocol.components["shadow-card"]
             .template_json
             .contains("\"sd\":1"));
@@ -2550,11 +2494,14 @@ mod tests {
     #[test]
     fn test_shadow_dom_link_strategy_sets_css_href() {
         // Shadow×Link: css_href is always set for Link-strategy components.
-        // The handler uses protocol.css_strategy + effective component DOM
-        // strategy to decide preload (Shadow) vs stylesheet (Light) in <head>.
+        // The handler uses protocol.css_strategy + component Shadow metadata
+        // to decide preload (Shadow) vs stylesheet (Light) in <head>.
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
-            ("my-card.html", "<p><slot></slot></p>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><p><slot></slot></p></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let result = build(default_options(app.path())).unwrap();
@@ -2570,10 +2517,6 @@ mod tests {
             result.protocol.css_strategy(),
             webui_protocol::CssStrategy::Link,
         );
-        assert_eq!(
-            result.protocol.dom_strategy(),
-            webui_protocol::DomStrategy::Shadow,
-        );
 
         // CSS file should still be emitted for the server to serve
         assert_eq!(
@@ -2587,7 +2530,10 @@ mod tests {
     fn test_css_href_empty_for_style_strategy() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
-            ("my-card.html", "<p><slot></slot></p>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><p><slot></slot></p></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2607,7 +2553,10 @@ mod tests {
     fn test_css_href_empty_for_module_strategy() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
-            ("my-card.html", "<p><slot></slot></p>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><p><slot></slot></p></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2631,7 +2580,10 @@ mod tests {
     fn test_build_to_disk_writes_files() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
             ("my-card.ts", "export {};"),
         ]);
@@ -2680,7 +2632,10 @@ mod tests {
     fn test_build_inline_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2697,7 +2652,10 @@ mod tests {
     fn test_build_module_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2777,7 +2735,7 @@ mod tests {
         let ext_dir = TempDir::new().unwrap();
         fs::write(
             ext_dir.path().join("ext-card.html"),
-            "<div class=\"card\"><slot></slot></div>",
+            r#"<template shadowrootmode="open"><div class="card"><slot></slot></div></template>"#,
         )
         .unwrap();
         fs::write(
@@ -3056,7 +3014,10 @@ mod tests {
     fn test_build_to_disk_css_stays_in_output_dir() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();
@@ -3118,7 +3079,10 @@ mod tests {
     fn test_build_to_disk_inline_mode_no_css_files() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();
@@ -3144,9 +3108,15 @@ mod tests {
     fn test_build_multiple_components_css() {
         let app = create_app_dir(&[
             ("index.html", "<card-a>A</card-a><card-b>B</card-b>"),
-            ("card-a.html", "<div><slot></slot></div>"),
+            (
+                "card-a.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-a.css", ".a { color: red; }"),
-            ("card-b.html", "<span><slot></slot></span>"),
+            (
+                "card-b.html",
+                r#"<template shadowrootmode="open"><span><slot></slot></span></template>"#,
+            ),
             ("card-b.css", ".b { color: blue; }"),
         ]);
         let result = build(default_options(app.path())).unwrap();
@@ -3163,9 +3133,15 @@ mod tests {
         // card-b is registered but not referenced in index.html
         let app = create_app_dir(&[
             ("index.html", "<card-a>A</card-a>"),
-            ("card-a.html", "<div><slot></slot></div>"),
+            (
+                "card-a.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-a.css", ".a { color: red; }"),
-            ("card-b.html", "<span><slot></slot></span>"),
+            (
+                "card-b.html",
+                r#"<template shadowrootmode="open"><span><slot></slot></span></template>"#,
+            ),
             ("card-b.css", ".b { color: blue; }"),
         ]);
         let result = build(default_options(app.path())).unwrap();
@@ -3411,7 +3387,10 @@ mod tests {
     fn test_build_to_disk_returns_accurate_stats() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card><p>{{name}}</p>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();

@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -45,7 +45,6 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `light` or `shadow` | `light` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
@@ -74,8 +73,8 @@ first-discovery order, including partial navigation, streaming, and static
 component assets. Full-document SSR installs Document resources before
 `</head>`. When the document omits an explicit head, resources precede document
 content while remaining immediately after any leading doctype.
-Document fragment renders install resources before fragment content; an
-effective Shadow component rendered directly as the entry installs them inside
+Document fragment renders install resources before fragment content; a Shadow
+component rendered directly as the entry installs them inside
 its declarative root.
 
 For long-lived CDN/browser caching, include `[hash]` in
@@ -171,21 +170,16 @@ With the default `--legal-comments inline`, CSS comments that contain
 `@license` or `@preserve`, or start with `/*!` or `//!`, are preserved inline.
 Use `--legal-comments none` to strip all non-signal comments.
 
-**DOM Strategies:**
+**Component DOM ownership:**
 
-| Strategy | Behavior |
-|----------|----------|
-| `light` | Components render as direct children. This is the default. Component CSS is compiler-scoped. |
-| `shadow` | Components render inside `<template shadowrootmode="open">` with a native shadow boundary. |
+Every unwrapped component renders as direct Light DOM children and receives
+compiler-scoped CSS. A component uses Shadow DOM only when its complete template
+is a sole top-level `<template shadowrootmode="open">`. There is no build-wide
+DOM selector or CLI flag.
 
-In a Light build, a component can opt into Shadow by making a single
-`<template shadowrootmode="open">` its sole top-level element. Closed roots,
-invalid values or placement, and `<slot>` in an effective Light component fail
-the build. Native slots require Shadow DOM.
-
-Use `--dom=shadow` when the whole build requires Shadow. Otherwise, add the open
-wrapper only to components that require native slots or native Shadow
-encapsulation.
+Closed roots, invalid values or placement, and `<slot>` in an unwrapped
+component fail the build. Add the open wrapper only to components that require
+native slots or native Shadow encapsulation.
 
 See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.
 
@@ -273,7 +267,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -288,7 +282,6 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `light` or `shadow` | `light` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |

@@ -88,8 +88,8 @@ where the UI changes far less often than the state.
    then call `protocol.renderStream(stateJson, onChunk, options)`. Handler
    writes are coalesced around a 16 KiB target before `onChunk(html)`, and the
    service worker writes those chunks directly to a `ReadableStream`.
-5. **Light DOM fragments.** The example builds with `--dom light` because the
-   service worker appends independent fragments into a single document stream.
+5. **Light DOM fragments.** Components are unwrapped, so the service worker can
+   append independent fragments into a single document stream.
 6. **Shared theme tokens.** `scripts/inject-theme.ts` mirrors
    `webui serve --theme=@microsoft/webui-examples-theme` at build time. It reads
    `protocol.bin`, gets the protocol token list, and writes trusted token

@@ -10,7 +10,7 @@ This guide compares common UI patterns written in React (imperative, JavaScript-
 | **Rendering** | Client-side or Node.js SSR | Build-time compiled protocol, server-rendered HTML |
 | **Template language** | JSX (JavaScript + HTML mixed) | Separate HTML, CSS, and TypeScript files |
 | **State management** | `useState`, `useReducer`, context | `@observable` properties with targeted DOM updates |
-| **Styling** | CSS-in-JS, CSS Modules, or external | Paired CSS scoped for default Light DOM or native Shadow DOM |
+| **Styling** | CSS-in-JS, CSS Modules, or external | Paired CSS scoped for unwrapped Light DOM or native Shadow DOM |
 | **Runtime** | React runtime + ReactDOM in browser | No framework runtime for static content; thin hydration for interactive islands |
 | **Interactivity** | Every component ships JavaScript | Only interactive islands ship JavaScript |
 
@@ -389,7 +389,7 @@ h3 {
 </code-comparison>
 
 **What changed:** CSS-in-JS becomes a plain CSS file. WebUI scopes it at build
-time for the default Light mode, while opted-in Shadow components use native
+time for unwrapped Light components, while opted-in Shadow components use native
 Shadow scoping. There is no JavaScript runtime cost for styling.
 
 ## Component Composition

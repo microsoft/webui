@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::{ParserPluginArtifacts, StateSurface};
-use webui_parser::{CssStrategy, DomStrategy as ParserDomStrategy, HtmlParser};
+use webui_parser::{CssStrategy, HtmlParser};
 use webui_protocol::projection_manifest::{ProjectionComponent, ProjectionManifest};
 use webui_protocol::{InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
@@ -77,10 +77,7 @@ fn has_component_script(files: &HashMap<String, String>, tag_name: &str) -> bool
     files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
 }
 
-type ComponentDeliverySnapshot = (
-    Vec<(String, String)>,
-    Vec<(String, webui_parser::DomStrategy)>,
-);
+type ComponentDeliverySnapshot = (Vec<(String, String)>, Vec<(String, bool)>);
 
 fn component_delivery_snapshot(parser: &HtmlParser) -> ComponentDeliverySnapshot {
     let css = parser
@@ -94,11 +91,11 @@ fn component_delivery_snapshot(parser: &HtmlParser) -> ComponentDeliverySnapshot
                 .map(|css| (component.tag_name.clone(), css.clone()))
         })
         .collect();
-    let dom = parser
-        .effective_component_dom_strategies()
-        .map(|(tag_name, strategy)| (tag_name.to_string(), strategy))
+    let shadow_dom = parser
+        .component_shadow_dom_usage()
+        .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
         .collect();
-    (css, dom)
+    (css, shadow_dom)
 }
 
 fn apply_component_delivery(
@@ -107,8 +104,7 @@ fn apply_component_delivery(
     entry: &str,
 ) {
     protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
-    protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
-    for (tag_name, strategy) in snapshot.1 {
+    for (tag_name, uses_shadow_dom) in snapshot.1 {
         if !protocol.fragments.contains_key(&tag_name) {
             continue;
         }
@@ -116,10 +112,7 @@ fn apply_component_delivery(
             .components
             .entry(tag_name)
             .or_default()
-            .effective_dom_strategy = match strategy {
-            ParserDomStrategy::Shadow => webui_protocol::DomStrategy::Shadow as i32,
-            ParserDomStrategy::Light => webui_protocol::DomStrategy::Light as i32,
-        };
+            .uses_shadow_dom = uses_shadow_dom;
     }
     for (tag_name, css) in snapshot.0 {
         if protocol.fragments.contains_key(&tag_name) {
@@ -297,15 +290,12 @@ mod tests {
         assert_eq!(component.hydration_mode, StateProjectionMode::All as i32);
         assert!(component.hydration_keys.is_empty());
         assert!(!component.template_json.is_empty());
-        assert_eq!(
-            component.effective_dom_strategy,
-            webui_protocol::DomStrategy::Shadow as i32
-        );
+        assert!(component.uses_shadow_dom);
         assert!(protocol.style_closures.contains_key("my-card"));
     }
 
     #[test]
-    fn parse_to_protocol_marks_default_light_dom() {
+    fn parse_to_protocol_marks_unwrapped_light_dom() {
         let files = HashMap::from([
             (
                 "index.html".to_string(),
@@ -322,12 +312,8 @@ mod tests {
         ]);
 
         let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
-        assert_eq!(protocol.dom_strategy(), webui_protocol::DomStrategy::Light);
         assert_eq!(protocol.css_strategy(), webui_protocol::CssStrategy::Style);
-        assert_eq!(
-            protocol.components["my-card"].effective_dom_strategy,
-            webui_protocol::DomStrategy::Light as i32
-        );
+        assert!(!protocol.components["my-card"].uses_shadow_dom);
         assert!(protocol.components["my-card"].css.contains("@scope"));
         assert_eq!(
             protocol.style_closure("index.html").expect("entry closure"),

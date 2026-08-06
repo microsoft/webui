@@ -38,8 +38,6 @@ pub struct WebUIProtocol {
     pub components: HashMap<String, ComponentData>,
     /// Build-wide CSS delivery strategy (Link, Style, or Module).
     pub css_strategy: CssStrategy,
-    /// Build-wide DOM encapsulation strategy (Shadow or Light).
-    pub dom_strategy: DomStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
     /// Ordered component style resources for each CSS-tree entry point.
@@ -80,9 +78,8 @@ pub struct ComponentData {
     /// Present for protocols with exact navigation projection metadata.
     /// Absence means the surface is unknown and requires full state.
     pub navigation_mode: Option<StateProjectionMode>,
-    /// Per-component DOM strategy after applying an authored open declarative
-    /// Shadow DOM override.
-    pub effective_dom_strategy: DomStrategy,
+    /// Whether the component authors a sole open declarative Shadow root.
+    pub uses_shadow_dom: bool,
 }
 
 pub enum InitialStateStrategy {
@@ -94,11 +91,6 @@ pub enum StateProjectionMode {
     None = 0,
     Keys = 1,
     All = 2,
-}
-
-pub enum DomStrategy {
-    Light = 0,
-    Shadow = 1,
 }
 
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
@@ -1451,41 +1443,30 @@ pub struct HtmlParser {
     condition_parser: ConditionParser,
     handlebars_parser: HandlebarsParser,
     css_strategy: CssStrategy,
-    dom_strategy: DomStrategy,
     legal_comments: LegalComments,
     // Other fields...
 }
 ```
 
-#### DOM Strategy and Effective Mode
+#### Component DOM Invariant
 
-Light DOM is the public default across `DomStrategy`, `ParserOptions`,
-`HtmlParser`, Rust `BuildOptions`, CLI `build` and `serve`, and Node
-`@microsoft/webui` `build()`. Callers select Shadow globally with
-`DomStrategy::Shadow`, `--dom=shadow`, or `dom: "shadow"`.
-
-The build strategy is inherited by every component unless the component is the
-sole top-level `<template shadowrootmode="open">`. That authored wrapper makes
-the component's effective mode Shadow even in a Light build. It must contain the
+Every unwrapped component uses Light DOM. A component uses Shadow DOM only when
+its complete template is a sole top-level
+`<template shadowrootmode="open">`. It must contain the
 complete component and be the only top-level content other than whitespace and
 comments. A dynamic value, `closed`, any value other than `open`, more than one
 `shadowrootmode`, placement on a non-template element, or additional top-level
-content fails with `invalid-shadow-root-mode`. An authored open wrapper remains
-valid in a global Shadow build and does not create a nested root.
+content fails with `invalid-shadow-root-mode`. The compiler never generates a
+Shadow wrapper.
 
-Native `<slot>` is Shadow-only. A `<slot>` anywhere in an effective Light
+Native `<slot>` is Shadow-only. A `<slot>` anywhere in a Light
 component fails the build with `light-dom-slot` and help to wrap the complete
-component in a sole top-level `<template shadowrootmode="open">`. This check uses
-effective mode, so global `--dom=shadow` and a valid per-component wrapper both
-permit slots.
+component in a sole top-level `<template shadowrootmode="open">`.
 
-`WebUIProtocol.dom_strategy` records the build-wide mode.
-`ComponentData.effective_dom_strategy` records the resolved mode for each
-component. Both fields are concrete current-protocol values, with Light encoded
-as zero. The resolved component mode, rather than the build-wide mode, controls
-HTML structure, style-tree boundaries, CSS transformation, and client-created
-DOM. Protocol decoding rejects unknown CSS, build-wide DOM, and effective
-component DOM enum values.
+`ComponentData.uses_shadow_dom` stores this parser-derived boolean once per
+component. It controls HTML structure, style-tree boundaries, CSS
+transformation, and client-created DOM without runtime template scans. The root
+protocol has no DOM mode.
 
 #### CSS Strategy
 ```rust
@@ -1514,14 +1495,14 @@ pub enum CssStrategy {
   support.
 
 All three strategies use the ordered component style closures below. CSS
-strategy changes delivery, not component discovery, effective DOM mode,
+strategy changes delivery, not component discovery, Shadow ownership,
 transformation, or cascade order.
 
 #### Component CSS Isolation
 
 Developers author one ordinary paired component stylesheet and use `:host` as the
-cross-mode host API. After legal-comment processing, effective Shadow components
-retain those CSS bytes unchanged. Effective Light components are compiled before
+Light/Shadow host API. After legal-comment processing, Shadow components retain
+those CSS bytes unchanged. Light components are compiled before
 Link filename hashing or Style/Module storage:
 
 - Rules are enclosed in `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)`.
@@ -1533,7 +1514,7 @@ Link filename hashing or Style/Module storage:
 - Block grouping rules (`@media`, `@supports`, `@container`, `@layer`, and
   authored `@scope`) remain nested. Global or statement-form at-rules that cannot
   be isolated fail with `unsupported-light-css`.
-- Shadow-only `:host-context()` and `::slotted()` are rejected in effective Light
+- Shadow-only `:host-context()` and `::slotted()` are rejected in Light
   CSS with `unsupported-light-css`. Authors must use entry CSS or opt that
   component into `<template shadowrootmode="open">`.
 - Component-local keyframes receive a deterministic component prefix, and static
@@ -1556,9 +1537,9 @@ style resource only when `css_href` is nonempty. Style and Module builds use
 nonempty retained compiled `ComponentData.css`.
 
 For a component-root closure, that component's paired CSS is first when present.
-The iterative graph walk then follows fragment source order. Effective Light
-children contribute their CSS once and their fragment graph is traversed in the
-same CSS tree. Effective Shadow children are cut points: neither their CSS nor
+The iterative graph walk then follows fragment source order. Light children
+contribute their CSS once and their fragment graph is traversed in the same CSS
+tree. Shadow children are cut points: neither their CSS nor
 their descendants enter the caller's closure, but scanning resumes after the
 host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
 and attribute-template dependencies are followed conservatively. A route visits
@@ -1573,7 +1554,7 @@ Shared outlet components conservatively union their possible route contexts in
 deterministic discovery order. Visited-fragment and first-style sets make
 malformed or cyclic protocols finite without changing first-discovery order.
 
-Every effective Light host receives a persistent `data-wl` marker in SSR and
+Every Light host receives a persistent `data-wl` marker in SSR and
 client-created DOM. The marker is both the scope anchor and nested-Light lower
 boundary and is reserved: authored static or bound ownership fails with
 `reserved-light-dom-marker`. Servers and clients consume stored closures
@@ -1581,15 +1562,15 @@ directly and must not expand the fragment graph per request. A styled protocol
 without required closure metadata is invalid.
 
 The handler keeps Document delivered-resource state directly and uses a lazily
-allocated stack of component indexes only while rendering effective Shadow
+allocated stack of component indexes only while rendering Shadow
 roots. Each closure is installed in stored order and each resource is emitted at
 most once in that tree for the lifetime of the render. Full-document SSR installs
 the Document closure before `</head>`. When the document omits an explicit head,
 the closure precedes document content while remaining immediately after any
 leading doctype. The browser therefore places resources in the document head and
 the doctype remains the first token.
-Document fragment renders install their closure before fragment content; an
-effective Shadow component used directly as the entry installs its component
+Document fragment renders install their closure before fragment content; a
+Shadow component used directly as the entry installs its component
 closure at the compiler hook inside the declarative root. The same Document
 state is retained across progressive streaming checkpoints. Partial navigation
 sends a versioned `componentStyles` catalog containing the newly needed resources
@@ -1643,7 +1624,7 @@ SSR hydration, Style mode, Module mode, and Light DOM behavior do not use this
 client-mount gate.
 
 Set at construction time with
-`HtmlParser::with_options(ParserOptions::try_new(css, dom, css_file_name_template, css_public_base, legal_comments))`.
+`HtmlParser::with_options(ParserOptions::try_new(css, css_file_name_template, css_public_base, legal_comments))`.
 
 #### Legal Comments
 ```rust
@@ -1678,7 +1659,7 @@ metadata without requiring the build layer to downcast concrete plugin types.
 
 ```rust
 pub struct ComponentTemplateContext {
-    pub effective_dom_strategy: DomStrategy,
+    pub uses_shadow_dom: bool,
 }
 
 pub trait ParserPlugin {
@@ -1700,7 +1681,7 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext` containing the resolved DOM strategy. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics. Component template artifacts require this effective strategy when constructed; the parser does not infer or patch omitted plugin metadata.
+- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext` containing `uses_shadow_dom`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**

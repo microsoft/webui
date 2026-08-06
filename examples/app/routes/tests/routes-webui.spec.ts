@@ -262,7 +262,7 @@ test.describe('?active boolean attributes', () => {
     await page.getByRole('link', { name: 'Frontend' }).click();
     await expect(page.locator('main h2')).toContainText('Frontend');
 
-    // The default Light DOM nav link for Frontend has the active attribute.
+    // The unwrapped Light DOM nav link for Frontend has the active attribute.
     const frontend = page.locator('routes-app > nav').getByRole('link', { name: /Frontend/ });
     await expect(frontend).toHaveAttribute('active', '');
   });
@@ -287,7 +287,7 @@ test.describe('?active boolean attributes', () => {
     await page.getByRole('link', { name: 'React' }).click();
     await expect(page.locator('main h3')).toContainText('React');
 
-    // The default Light DOM topic link for React should be active.
+    // The unwrapped Light DOM topic link for React should be active.
     const react = page.locator('section-page .topics').getByRole('link', { name: 'React' });
     await expect(react).toHaveAttribute('active', '');
   });

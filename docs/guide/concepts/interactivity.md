@@ -110,8 +110,8 @@ button {
 
 ## The `<template>` Tag
 
-Light DOM is the default. Most component HTML files omit a wrapper and render
-their content directly into the component host.
+Every unwrapped component uses Light DOM and renders its content directly into
+the component host.
 
 **Light DOM (most components):**
 ```html
@@ -141,7 +141,7 @@ The open template must be the sole top-level element and wrap the complete
 component. Use it when the component needs native `<slot>` composition, a
 native Shadow boundary, or root events on the shadow root. `closed`, another
 value, invalid placement, multiple wrappers, or extra top-level content fails
-the build. A native `<slot>` in an effective Light component is also a build
+the build. A native `<slot>` in an unwrapped component is also a build
 error.
 
 To reach a root binding from a **child component**, an event must **bubble** and - because it has to cross the child's shadow boundary - be **composed**. `this.$emit()` sets both whenever the emitting component has a shadow root, which is the default. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
@@ -563,9 +563,10 @@ is missing.
 
 ## Styling
 
-Keep styles in the ordinary paired `.css` file. In the default Light mode, the
-compiler scopes rules to that component, lowers `:host`, and namespaces static
-keyframes. In Shadow mode, the browser provides native style scoping.
+Keep styles in the ordinary paired `.css` file. For an unwrapped Light
+component, the compiler scopes rules to that component, lowers `:host`, and
+namespaces static keyframes. For authored Shadow roots, the browser provides
+native style scoping.
 
 ### The `:host` Selector
 
@@ -597,8 +598,8 @@ Style the component differently based on its attributes with `:host([attr])`:
 
 ### Scoping Rules
 
-- Paired component styles are scoped in both Light and Shadow modes
-- `:host` and `:host([attr])` work in both modes
+- Paired component styles are scoped for both Light and Shadow components
+- `:host` and `:host([attr])` work in both forms
 - Light DOM keeps normal inheritance and cascade behavior
 - Shadow DOM provides a native style boundary
 - Shadow-only selectors and unsafe dynamic local-keyframe references in Light
@@ -613,8 +614,7 @@ Understanding the lifecycle helps you write components that work correctly from 
 ### 1. Server renders HTML
 
 The handler renders the component's template using JSON state data. No
-JavaScript runs. With the default Light mode, component content is emitted
-directly:
+JavaScript runs. For an unwrapped component, content is emitted directly:
 
 ```html
 <my-counter>

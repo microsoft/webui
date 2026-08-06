@@ -42,7 +42,7 @@ The build step:
 7. Renders every sample API payload once through the WASM handler.
 
 The streamed UI uses normal WebUI component files: every `src/*.html` fragment
-has a paired `src/*.css` file. The app is built with `--css style --dom light`,
+has a paired `src/*.css` file. The app is built with `--css style`,
 so component CSS is embedded in the rendered fragments and no standalone
 `public/styles.css` file is needed.
 

@@ -16,8 +16,6 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** DOM strategy for component rendering: "light" (default) or "shadow". */
-  dom?: "light" | "shadow";
   /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
@@ -165,7 +163,6 @@ interface NativeAddon {
     appDir: string;
     entry?: string;
     css?: string;
-    dom?: string;
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];
@@ -277,7 +274,6 @@ export function build(options: BuildOptions): BuildResult {
   const { projectionManifestObjects, ...nativeOptions } = options;
   return native.build({
     ...nativeOptions,
-    dom: nativeOptions.dom ?? "light",
     projectionManifestObjects: projectionManifestObjects?.map(
       ({ path, manifest }) => ({
         path,

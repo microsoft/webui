@@ -13,7 +13,7 @@ pub mod fast_v3;
 pub mod webui;
 
 use crate::component_registry::Component;
-use crate::{DomStrategy, ParserOptions, Result};
+use crate::{ParserOptions, Result};
 
 /// Parser-owned decision about how an attribute should be handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,19 +88,14 @@ pub struct ComponentTemplateArtifact {
     /// an entry for scripted components; scriptless ones are always
     /// Rust-derived and never require a manifest entry.
     pub is_scripted: bool,
-    /// DOM strategy resolved for this component after applying an authored
-    /// declarative Shadow DOM override.
-    pub effective_dom_strategy: DomStrategy,
+    /// Whether this component authored a declarative Shadow DOM root.
+    pub uses_shadow_dom: bool,
 }
 
 impl ComponentTemplateArtifact {
     /// Create a non-WebUI template payload.
     #[must_use]
-    pub fn template(
-        tag_name: String,
-        template: String,
-        effective_dom_strategy: DomStrategy,
-    ) -> Self {
+    pub fn template(tag_name: String, template: String, uses_shadow_dom: bool) -> Self {
         Self {
             tag_name,
             template,
@@ -110,7 +105,7 @@ impl ComponentTemplateArtifact {
             navigation: StateSurface::None,
             template_roots: Vec::new(),
             is_scripted: false,
-            effective_dom_strategy,
+            uses_shadow_dom,
         }
     }
 
@@ -123,7 +118,7 @@ impl ComponentTemplateArtifact {
         tag_name: String,
         template_json: String,
         template_functions: String,
-        effective_dom_strategy: DomStrategy,
+        uses_shadow_dom: bool,
     ) -> Self {
         Self {
             tag_name,
@@ -134,7 +129,7 @@ impl ComponentTemplateArtifact {
             navigation: StateSurface::None,
             template_roots: Vec::new(),
             is_scripted: false,
-            effective_dom_strategy,
+            uses_shadow_dom,
         }
     }
 
@@ -171,8 +166,8 @@ impl ComponentTemplateArtifact {
 /// processed template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentTemplateContext {
-    /// DOM strategy resolved for this component.
-    pub effective_dom_strategy: DomStrategy,
+    /// Whether this component authored a declarative Shadow DOM root.
+    pub uses_shadow_dom: bool,
 }
 
 /// A parser plugin that can customize template parsing behavior.
@@ -231,12 +226,10 @@ pub trait ParserPlugin {
 #[cfg(test)]
 mod artifact_tests {
     use super::{ComponentTemplateArtifact, StateSurface};
-    use crate::DomStrategy;
 
     #[test]
     fn template_constructor_starts_with_no_hydration_surface() {
-        let artifact =
-            ComponentTemplateArtifact::template("x-a".into(), "<p></p>".into(), DomStrategy::Light);
+        let artifact = ComponentTemplateArtifact::template("x-a".into(), "<p></p>".into(), false);
         assert_eq!(artifact.tag_name, "x-a");
         assert_eq!(artifact.template, "<p></p>");
         assert!(artifact.template_json.is_empty());
@@ -247,12 +240,8 @@ mod artifact_tests {
 
     #[test]
     fn webui_constructor_starts_with_no_hydration_surface() {
-        let artifact = ComponentTemplateArtifact::webui(
-            "x-b".into(),
-            "{\"j\":1}".into(),
-            "[]".into(),
-            DomStrategy::Light,
-        );
+        let artifact =
+            ComponentTemplateArtifact::webui("x-b".into(), "{\"j\":1}".into(), "[]".into(), false);
         assert_eq!(artifact.tag_name, "x-b");
         assert!(artifact.template.is_empty());
         assert_eq!(artifact.template_json, "{\"j\":1}");
@@ -263,13 +252,9 @@ mod artifact_tests {
 
     #[test]
     fn with_hydration_attaches_surface_fluently() {
-        let artifact = ComponentTemplateArtifact::webui(
-            "x-c".into(),
-            "{}".into(),
-            "[]".into(),
-            DomStrategy::Light,
-        )
-        .with_hydration(StateSurface::keys(vec!["count".into(), "name".into()]));
+        let artifact =
+            ComponentTemplateArtifact::webui("x-c".into(), "{}".into(), "[]".into(), false)
+                .with_hydration(StateSurface::keys(vec!["count".into(), "name".into()]));
         assert_eq!(
             artifact.hydration,
             StateSurface::Keys(vec!["count".into(), "name".into()])
@@ -279,25 +264,18 @@ mod artifact_tests {
     #[test]
     fn with_hydration_is_plugin_agnostic_over_template_payloads() {
         // A non-WebUI plugin payload can carry its own hydration surface too.
-        let artifact = ComponentTemplateArtifact::template(
-            "x-d".into(),
-            "<f-t></f-t>".into(),
-            DomStrategy::Light,
-        )
-        .with_hydration(StateSurface::keys(vec!["value".into()]));
+        let artifact =
+            ComponentTemplateArtifact::template("x-d".into(), "<f-t></f-t>".into(), false)
+                .with_hydration(StateSurface::keys(vec!["value".into()]));
         assert_eq!(artifact.template, "<f-t></f-t>");
         assert_eq!(artifact.hydration, StateSurface::Keys(vec!["value".into()]));
     }
 
     #[test]
     fn with_navigation_attaches_partial_state_surface() {
-        let artifact = ComponentTemplateArtifact::webui(
-            "x-e".into(),
-            "{}".into(),
-            "[]".into(),
-            DomStrategy::Light,
-        )
-        .with_navigation(StateSurface::keys(vec!["items".into(), "title".into()]));
+        let artifact =
+            ComponentTemplateArtifact::webui("x-e".into(), "{}".into(), "[]".into(), false)
+                .with_navigation(StateSurface::keys(vec!["items".into(), "title".into()]));
         assert_eq!(
             artifact.navigation,
             StateSurface::Keys(vec!["items".into(), "title".into()])

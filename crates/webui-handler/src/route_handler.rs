@@ -246,8 +246,7 @@ impl Protocol {
     fn validate_component_style_metadata(protocol: &WebUIProtocol) -> Option<String> {
         if protocol.style_closures.is_empty() {
             let requires_closures = protocol.components.iter().any(|(tag, component)| {
-                protocol.component_style_resource(tag).is_some()
-                    || component.effective_dom_strategy() == webui_protocol::DomStrategy::Shadow
+                protocol.component_style_resource(tag).is_some() || component.uses_shadow_dom
             });
             if requires_closures {
                 return Some(
@@ -288,9 +287,7 @@ impl Protocol {
                         "Shadow style hook `{root}` references unknown component `{fragment_id}`"
                     ));
                 };
-                if root != fragment_id.as_str()
-                    || component.effective_dom_strategy() != webui_protocol::DomStrategy::Shadow
-                {
+                if root != fragment_id.as_str() || !component.uses_shadow_dom {
                     return Some(format!(
                         "Shadow style hook `{root}` does not match component fragment `{fragment_id}`"
                     ));
@@ -298,7 +295,7 @@ impl Protocol {
             }
         }
         for (tag, component) in &protocol.components {
-            if component.effective_dom_strategy() != webui_protocol::DomStrategy::Shadow {
+            if !component.uses_shadow_dom {
                 continue;
             }
             let Some(fragments) = protocol.fragments.get(tag) else {
