@@ -1619,7 +1619,7 @@ update hot paths still call the function directly.
 | `eg`  | `[event, [[handler, argSpecs, targetPath, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
 | `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
-| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to `this.shadowRoot ?? this` |
+| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element; observe `composed` events only |
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
@@ -3936,9 +3936,12 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   It resolves handler arguments against the scope
   captured when that block was rendered. Nested conditional/repeat instances
   unregister their listeners when removed
-  so detached DOM is not retained. Root events from `re[]` attach directly to
-  `this.shadowRoot ?? this`, using the shadow root when present and the host
-  element otherwise.
+  so detached DOM is not retained. Root events from `re[]` attach to the host
+  element, so they observe events dispatched on the host itself plus every
+  `composed` event leaving the shadow tree. Non-composed events (`change`,
+  `submit`, `select`, media) stop at the shadow root by design and are bound per
+  element instead. `event.target` is retargeted to the host for anything raised
+  inside the shadow tree; `event.composedPath()` recovers the originating element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.

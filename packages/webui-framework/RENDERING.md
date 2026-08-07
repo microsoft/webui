@@ -149,7 +149,7 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
-| `re` | Root-level host events (attached to `this.shadowRoot ?? this`: the shadow root when present, otherwise the host element). |
+| `re` | Root-level host events (attached to the host element; observe `composed` events only, including events targeted at the host itself). |
 
 The same metadata serves both paths:
 
@@ -356,7 +356,7 @@ Two flavours:
 - **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
 
   Bindings are never delegated to the render root. `$wireEvents` runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
-- **Root events** (`re` field): attached to `this.shadowRoot ?? this` (the shadow root when present, otherwise the host element). Used for `@custom-event` on the component's `<template>` root. When shadow DOM is present, slotted light-DOM events must be composed to reach this listener.
+- **Root events** (`re` field): used for `@custom-event` on the component's `<template>` root. Attached to the **host element**, the only node that observes both events dispatched on the host itself (which never enter the shadow tree) and `composed` events on their way out of it. Non-composed events (`change`, `submit`, `select`, media) stop at the shadow root by design and are bound per element instead. Because the listener is on the host, `event.target` is retargeted to the host for inner events — use `event.composedPath()[0]` to recover the originating element.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.
 

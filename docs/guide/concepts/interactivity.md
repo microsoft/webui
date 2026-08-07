@@ -110,9 +110,13 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 </template>
 ```
 
-When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - listeners on the component root (the shadow root when present, otherwise the host element) that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
+When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - listeners on the component root that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
 
 Root host events only see events that **bubble**. `this.$emit()` dispatches with `bubbles: true`, so emitted events reach the root. A hand-built `new CustomEvent('my-event')` defaults to `bubbles: false` and will never arrive - bind it on the child element instead, or pass `{ bubbles: true }` yourself.
+
+A root binding lives on the **host element**, so it also catches events targeted at the host itself - what host-interactive components (host `tabindex`, presentational shadow content) rely on. It does not see non-composed events (`change`, `submit`, `select`, media events), which stop at the shadow boundary because they identify one specific inner element; bind those per element - `<input @change="{onChange(e)}">`.
+
+Since the listener is on the host, `e.target` is the host for events raised inside the shadow tree. Use `e.composedPath()[0]` to get the element that was actually hit.
 
 Decorators define how properties behave and how they connect to the template.
 

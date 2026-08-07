@@ -299,8 +299,7 @@ Omit it for most components:
 <p>{{description}}</p>
 ```
 
-Include it only when you need root host events on the component root (the shadow
-root when present, otherwise the host element):
+Include it only when you need root host events on the component root:
 
 ```html
 <!-- todo-app.html -->
@@ -319,9 +318,14 @@ only events that bubble; `this.$emit()` sets `bubbles: true`, but a hand-built
 `new CustomEvent(name)` defaults to `bubbles: false` and will never reach the
 root - bind that on the child element instead.
 
+The binding sits on the host element, so it also catches events targeted at the
+host itself - what host-interactive components (host `tabindex`, presentational
+shadow content) rely on. It does not see non-composed events (`change`,
+`submit`, `select`, media); bind those per element.
+
 One root listener also serves an arbitrarily large `<for>`, so this is the way
-to trade per-row listeners for a single handler on a very long list. Use
-`e.composedPath()` to find the row that was hit.
+to trade per-row listeners for a single handler on a very long list. `e.target`
+is the host, so use `e.composedPath()[0]` to find the element that was hit.
 
 ### Outlet
 

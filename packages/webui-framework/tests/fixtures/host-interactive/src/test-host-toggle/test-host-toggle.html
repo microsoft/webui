@@ -1,0 +1,4 @@
+<template shadowrootmode="open" @click="{onActivate(e)}" @keydown="{onKeydown(e)}">
+  <style>:host{display:inline-block;padding:12px;border:1px solid rgb(136,136,136);}.indicator{pointer-events:none;}</style>
+  <span class="indicator">{{label}}</span><span class="count">{{activations}}</span>
+</template>
