@@ -69,6 +69,17 @@ const DISABLE_DOCUMENT_VIEW_TRANSITION = '@view-transition { navigation: none; }
 const PARTIAL_FETCH_TIMEOUT_MS = 10_000;
 let webuiDataLoaded = false;
 
+/**
+ * Identify a route-owned style marker among a route element's direct children.
+ *
+ * Only the server places style markers directly inside a `<webui-route>`, and
+ * it always writes `data-webui-strategy` alongside `data-webui-resource`. The
+ * client installer appends into a Document head or a ShadowRoot, never into a
+ * route element, and CSS module importmaps are emitted inside the component
+ * host rather than beside it. So requiring the strategy attribute here is
+ * exact, not merely a heuristic: it keeps route-owned styles pinned across a
+ * remount while letting every other child be treated as replaceable content.
+ */
 function isRouteStyleMarker(node: Node): node is Element {
   if (node.nodeType !== 1) return false;
   const element = node as Element;
