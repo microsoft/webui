@@ -599,6 +599,14 @@ impl BuiltComponentTemplate {
     }
 }
 
+struct ComponentTemplateInput<'a> {
+    tag_name: &'a str,
+    html: &'a str,
+    artifact_html: Option<&'a str>,
+    css_content: Option<&'a str>,
+    artifact_needed: bool,
+}
+
 fn add_token_definitions(definitions: &[String], available_counts: &mut HashMap<String, usize>) {
     for definition in definitions {
         let count = available_counts.entry(definition.clone()).or_insert(0);
@@ -915,6 +923,8 @@ impl HtmlParser {
         options: impl Into<ParserOptions>,
     ) -> Self {
         let mut p = Self::with_options(options);
+        p.component_registry
+            .set_component_source_transform(plugin.component_source_transform());
         p.plugin = Some(plugin);
         p.configure_plugin();
         p
@@ -2367,12 +2377,17 @@ impl HtmlParser {
                     .help(self.unknown_component_help(element.name()))
                 })?
                 .clone();
-            let built = self.build_component_templates(
-                element.name(),
-                &html_content,
-                css_content.as_deref(),
-                self.plugin.is_some(),
-            )?;
+            let artifact_html = self
+                .component_registry
+                .component_artifact_source(element.name())
+                .map(str::to_string);
+            let built = self.build_component_templates(ComponentTemplateInput {
+                tag_name: element.name(),
+                html: &html_content,
+                artifact_html: artifact_html.as_deref(),
+                css_content: css_content.as_deref(),
+                artifact_needed: self.plugin.is_some(),
+            })?;
 
             if let Some(ref mut p) = self.plugin {
                 p.register_component_template(element.name(), &component_data, built.artifact())?;
@@ -3124,13 +3139,18 @@ impl HtmlParser {
                 .help(self.unknown_component_help(component))
             })?
             .clone();
+        let artifact_html = self
+            .component_registry
+            .component_artifact_source(component)
+            .map(str::to_string);
 
-        let built = self.build_component_templates(
-            component,
-            &component_data.html_content,
-            component_data.css_content.as_deref(),
-            self.plugin.is_some(),
-        )?;
+        let built = self.build_component_templates(ComponentTemplateInput {
+            tag_name: component,
+            html: &component_data.html_content,
+            artifact_html: artifact_html.as_deref(),
+            css_content: component_data.css_content.as_deref(),
+            artifact_needed: self.plugin.is_some(),
+        })?;
 
         if let Some(ref mut p) = self.plugin {
             p.register_component_template(component, &component_data, built.artifact())?;
@@ -3165,11 +3185,11 @@ impl HtmlParser {
     /// Build both SSR-facing and plugin-facing component template views.
     fn build_component_templates(
         &mut self,
-        tag_name: &str,
-        html: &str,
-        css_content: Option<&str>,
-        artifact_needed: bool,
+        input: ComponentTemplateInput<'_>,
     ) -> Result<BuiltComponentTemplate> {
+        let tag_name = input.tag_name;
+        let html = input.html;
+        let css_content = input.css_content;
         let adopted_specifier = match self.options.css_strategy {
             CssStrategy::Module if css_content.is_some() => Some(tag_name),
             _ => None,
@@ -3200,17 +3220,22 @@ impl HtmlParser {
             CssStrategy::Module => None,
         };
 
-        let artifact_differs = artifact_needed && Self::template_has_stripped_runtime_attrs(html);
-        let ssr =
-            self.process_component_template(html, css_injection.as_deref(), adopted_specifier)?;
-        let artifact = if artifact_differs {
-            Some(self.process_component_artifact_template(
-                html,
-                css_injection.as_deref(),
-                adopted_specifier,
-            )?)
+        let artifact_source = if input.artifact_needed {
+            input
+                .artifact_html
+                .or_else(|| Self::template_has_stripped_runtime_attrs(html).then_some(html))
         } else {
             None
+        };
+        let ssr =
+            self.process_component_template(html, css_injection.as_deref(), adopted_specifier)?;
+        let artifact = match artifact_source {
+            Some(source) => Some(self.process_component_artifact_template(
+                source,
+                css_injection.as_deref(),
+                adopted_specifier,
+            )?),
+            None => None,
         };
 
         Ok(BuiltComponentTemplate { ssr, artifact })
@@ -3946,6 +3971,249 @@ mod tests {
         let last = fragments.last().unwrap();
         assert!(
             matches!(last.fragment.as_ref(), Some(Fragment::Raw(raw)) if raw.value.contains("</my-component>"))
+        );
+    }
+
+    fn assert_f_template_component_source(plugin: Box<dyn ParserPlugin>) {
+        let mut parser =
+            HtmlParser::with_plugin_options(plugin, (CssStrategy::Style, DomStrategy::Shadow));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#,
+                Some(".root { color: red; }"),
+                true,
+            ))
+            .expect("register component");
+
+        parser
+            .parse("index.html", "<named-card></named-card>")
+            .expect("parse entry");
+        let records = parser.fragment_records.clone();
+        assert_stream!(
+            records,
+            "named-card",
+            [
+                raw("<template><style>.root { color: red; }</style>"),
+                if_cond("if-1"),
+                raw("</template>"),
+            ]
+        );
+        assert_stream!(records, "if-1", [for_loop("item", "items", "for-1"),]);
+        let for_fragments = &records["for-1"].fragments;
+        // Binding count is 5: @click, :config, f-ref (FAST client bindings
+        // stripped and counted via classify_attribute) plus ?disabled and
+        // title (WebUI dynamic bindings).
+        assert!(for_fragments.iter().any(|fragment| {
+            matches!(
+                fragment.fragment.as_ref(),
+                Some(Fragment::Plugin(data)) if data.data == 5u32.to_le_bytes()
+            )
+        }));
+        // No FAST client attribute leaks into the SSR raw stream.
+        assert!(!for_fragments.iter().any(|fragment| {
+            matches!(
+                fragment.fragment.as_ref(),
+                Some(Fragment::Raw(raw))
+                    if raw.value.contains("@click")
+                        || raw.value.contains(":config")
+                        || raw.value.contains("f-ref")
+            )
+        }));
+
+        let artifacts = parser.take_plugin_artifacts().expect("artifacts");
+        let ParserPluginArtifacts::ComponentTemplates(templates) = artifacts else {
+            panic!("expected component template artifacts");
+        };
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0].tag_name, "named-card");
+        let template = &templates[0].template;
+        assert!(template.contains(r#"<f-template name="named-card">"#));
+        assert!(template.contains("<style>.root { color: red; }</style>"));
+        assert!(template.contains(r#"<f-when value="{{visible}}">"#));
+        assert!(template.contains(r#"<f-repeat value="{{item in items}}">"#));
+        assert!(template.contains(r#"@click="{save()}""#));
+        assert!(template.contains(r#":config="{config}""#));
+        assert!(template.contains(r#"?disabled="{{disabled}}""#));
+        assert!(template.contains(r#"f-ref="{button}""#));
+        assert!(template.contains(r#"title="{{title}}""#));
+        assert!(!template.contains("file-card"));
+    }
+
+    #[test]
+    fn fast_v2_plugin_uses_authored_f_template_source() {
+        assert_f_template_component_source(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn fast_plugin_uses_authored_f_template_source() {
+        assert_f_template_component_source(Box::new(plugin::fast::FastParserPlugin::new()));
+    }
+
+    #[test]
+    fn fast_v3_plugin_uses_authored_f_template_source() {
+        assert_f_template_component_source(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+    }
+
+    #[test]
+    fn fast_client_attributes_are_counted_in_nested_source_order_without_markers() {
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "binding-card",
+                r#"<f-template name="binding-card"><template><div @click="{save()}" :config="{config}" f-ref="{root}" f-slotted="{slot}" f-children="{children}" title="{{title}}"><span @focus="{focus()}" :value="{value}">{{label}}</span></div></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        parser
+            .parse("index.html", "<binding-card></binding-card>")
+            .expect("parse entry");
+        let fragments = &parser.fragment_records["binding-card"].fragments;
+        let binding_counts: Vec<u32> = fragments
+            .iter()
+            .filter_map(|fragment| {
+                let Some(Fragment::Plugin(data)) = fragment.fragment.as_ref() else {
+                    return None;
+                };
+                (data.data.len() == 4).then(|| {
+                    u32::from_le_bytes([data.data[0], data.data[1], data.data[2], data.data[3]])
+                })
+            })
+            .collect();
+        assert_eq!(binding_counts, vec![6, 2]);
+
+        for fragment in fragments {
+            if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
+                for client_attr in [
+                    "@click",
+                    ":config",
+                    "f-ref",
+                    "f-slotted",
+                    "f-children",
+                    "@focus",
+                    ":value",
+                    "data-webui-internal-",
+                ] {
+                    assert!(!raw.value.contains(client_attr));
+                }
+            }
+        }
+
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("artifacts")
+        else {
+            panic!("expected component template artifacts");
+        };
+        let template = &templates[0].template;
+        for client_attr in [
+            "@click",
+            ":config",
+            "f-ref",
+            "f-slotted",
+            "f-children",
+            "@focus",
+            ":value",
+        ] {
+            assert!(template.contains(client_attr));
+        }
+        assert!(!template.contains("data-webui-internal-"));
+    }
+
+    #[test]
+    fn route_only_fast_component_uses_retained_authored_source() {
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "route-card",
+                r#"<f-template name="route-card"><template><f-when value="{{visible}}"><span>{{label}}</span></f-when></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        parser
+            .parse(
+                "index.html",
+                r#"<route path="/card" component="route-card" exact />"#,
+            )
+            .expect("parse route");
+        assert!(parser.fragment_records.contains_key("route-card"));
+
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("artifacts")
+        else {
+            panic!("expected component template artifacts");
+        };
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0]
+            .template
+            .contains(r#"<f-when value="{{visible}}">"#));
+    }
+
+    #[test]
+    fn webui_plugin_leaves_f_template_shaped_source_inert() {
+        // The WebUI plugin supplies no component-source transform, so
+        // `<f-template>`-shaped markup is stored verbatim under the filename
+        // tag: no rename, no FAST conversion, and no FAST diagnostics.
+        let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        assert!(parser.component_registry.contains("file-card"));
+        assert!(!parser.component_registry.contains("named-card"));
+        assert_eq!(
+            parser
+                .component_registry
+                .get("file-card")
+                .map(|component| component.html_content.as_str()),
+            Some(
+                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#
+            )
+        );
+        assert_eq!(
+            parser
+                .component_registry
+                .component_artifact_source("file-card"),
+            None
+        );
+    }
+
+    #[test]
+    fn default_parser_leaves_f_template_shaped_source_inert() {
+        // With no plugin selected, `<f-template>`-shaped markup is inert too.
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "file-card",
+                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        assert!(parser.component_registry.contains("file-card"));
+        assert!(!parser.component_registry.contains("named-card"));
+        assert_eq!(
+            parser
+                .component_registry
+                .component_artifact_source("file-card"),
+            None
         );
     }
 
@@ -5917,12 +6185,13 @@ mod tests {
     fn dev_template_module_strategy_appends_adopted_attr_and_preserves_root_attrs() {
         for dom_strategy in [DomStrategy::Shadow, DomStrategy::Light] {
             let mut parser = HtmlParser::with_options((CssStrategy::Module, dom_strategy));
-            let built = match parser.build_component_templates(
-                "my-comp",
-                r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
-                Some(":host { color: red; }"),
-                true,
-            ) {
+            let built = match parser.build_component_templates(ComponentTemplateInput {
+                tag_name: "my-comp",
+                html: r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
+                artifact_html: None,
+                css_content: Some(":host { color: red; }"),
+                artifact_needed: true,
+            }) {
                 Ok(built) => built,
                 Err(err) => panic!(
                     "dev-authored <template> should be accepted under {dom_strategy:?} with module CSS, got: {err}"

@@ -12,6 +12,31 @@
 - **Server-side logic:** Conditions, loops, and expressions are evaluated on the server.
 - **Plugin-ready:** Parser and handler plugins support framework-specific hydration and directives.
 
+## FAST plugin authored templates
+
+WebUI's parser is framework-neutral by default: with no plugin selected, or
+with the `webui` plugin, `<f-template>` markup is not scanned or interpreted
+and passes through like any other HTML. Selecting the `fast`, `fast_v2`, or
+`fast_v3` integration (CLI names `fast`, `fast-v2`, and `fast-v3`) installs a
+shared plugin hook that detects component HTML authored as a single
+`<f-template>`. A non-empty `name` replaces the component tag derived from the
+filename; an absent or whitespace-only name keeps the filename-derived tag. The
+wrapper must contain exactly one inner `<template>`. Unsupported FAST syntax and
+multiple `<f-template>` blocks fail the build with an authoring diagnostic.
+
+For build-time SSR, WebUI adapts the source for `microsoft-fast-convert` and its
+`webui-prerelease` target, supplying a converter-only name when the authored
+name is absent or empty. The converter rewrites supported `<f-repeat>` and
+`<f-when>` directives to WebUI `<for>` and `<if>` directives while preserving
+text interpolation and boolean bindings. WebUI then removes client-only
+`@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` attributes from the
+SSR view while retaining their binding counts for FAST hydration. The authored
+inner template, including its client bindings, is retained for the emitted
+`<f-template>` instead of being regenerated from the SSR conversion. It still
+receives normal wrapper normalization, legal comment processing, and CSS
+injection for the selected strategy. Component HTML without an `<f-template>`
+continues through the normal WebUI template path.
+
 ## Install
 
 ```bash

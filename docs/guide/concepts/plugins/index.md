@@ -93,6 +93,67 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
 
+### Using FAST Plugins
+
+The Rust FAST integrations are `fast`, `fast_v2`, and `fast_v3`; their CLI
+names are `fast`, `fast-v2`, and `fast-v3`:
+
+```bash
+webui build ./src --out ./dist --plugin=fast-v3
+webui serve ./src --state ./data/state.json --plugin=fast-v3 --watch
+```
+
+When a FAST plugin is selected, it installs a `component_source_transform` that
+recognizes an HTML file authored as one wrapping `<f-template>`. With no
+plugin, or with the `webui` plugin, `<f-template>` markup is not scanned or
+converted and passes through like any other HTML:
+
+```html
+<!-- src/components/file-card.html -->
+<f-template name="named-card">
+  <template>
+    <f-when value="{{visible}}">
+      <f-repeat value="{{item in items}}">
+        <button @click="{select(item)}" :config="{config}">
+          {{item.label}}
+        </button>
+      </f-repeat>
+    </f-when>
+  </template>
+</f-template>
+```
+
+`<f-template name="named-card">` registers the component as `named-card` instead
+of deriving `file-card` from the filename. If `name` is absent or contains only
+whitespace, WebUI keeps the filename-derived tag. The wrapper must contain
+exactly one inner `<template>`. Multiple inner templates and unsupported FAST
+syntax fail the build with an authoring error. Multiple `<f-template>` elements
+are not currently supported and have a dedicated authoring diagnostic.
+
+WebUI uses two views of this source:
+
+- **SSR parse view:** WebUI adapts the source for `microsoft-fast-convert` with
+  the `webui-prerelease` target. When the authored name is absent or empty, the
+  adapter supplies a converter-only name without changing the filename-derived
+  component tag. The converter rewrites supported `f-repeat` and `f-when`
+  directives to WebUI `for` and `if` directives and unwraps their `value`
+  expressions. Text interpolation and boolean bindings remain for WebUI
+  parsing. Unsupported `f-*` constructs fail conversion instead of being
+  silently accepted. The FAST plugins' `classify_attribute` skips `@event`,
+  `:property`, `f-ref`, `f-slotted`, and `f-children` and counts each as a
+  binding, so hydration binding indexes stay aligned without any parser-core
+  marker.
+- **Client artifact view:** WebUI retains the authored inner template, including
+  its client bindings, and emits it inside the resolved `<f-template>` rather
+  than regenerating it from the SSR view. The artifact is normalized and still
+  receives normal wrapper handling, legal comment processing, and CSS injection
+  for the selected strategy. Plugins that return `None` from
+  `component_source_transform` never receive FAST artifacts; they parse the
+  component's HTML unchanged.
+
+The deprecated `fast` selector aliases FAST 2. `fast`, `fast_v2`, and `fast_v3`
+all share this same transform, conversion, and retained-artifact path.
+
 ## Writing Custom Plugins
 
 To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` traits:
@@ -112,6 +173,14 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+
+    /// Return a stateless transform applied to a component's authored source
+    /// before registry insertion, or `None` to store sources unchanged. Only
+    /// plugins that own an alternate authored-template dialect (such as FAST's
+    /// `<f-template>`) need to implement this.
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> {
+        None
+    }
 
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;

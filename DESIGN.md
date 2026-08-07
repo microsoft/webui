@@ -1223,6 +1223,7 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> { None }
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
@@ -1234,6 +1235,7 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
+- **Component-source transform**: `component_source_transform` returns an optional stateless function pointer, `for<'a> fn(ComponentSource<'a>) -> Result<ComponentSourceResult>`. The component registry calls it once per component — after reading the authored HTML but before name validation, duplicate checking, CSS processing, or insertion. `Unchanged` stores the filename-derived tag and HTML verbatim; `Transformed` may replace the registry key and supplies the HTML the WebUI parser consumes, plus an optional distinct source retained for the plugin's client artifact. The default returns `None`, so a component's filename-derived tag and HTML are stored unchanged and any plugin-specific markup in the source is inert. This is the sole extension point for a plugin that owns an alternate authored-template dialect; see "Built-in FAST parser plugins" below for the concrete FAST implementation.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1246,6 +1248,66 @@ documentation for the current list. Each plugin defines:
 - The opaque `Plugin` fragment payload it emits per element
 - Any post-parse artifacts (e.g., client component templates) it injects at `</body>`
 - Any template-syntax conversions it performs inside component templates
+
+**Built-in FAST parser plugins**
+
+The `fast`, `fast_v2`, and `fast_v3` parser implementations (selected as
+`fast`, `fast-v2`, and `fast-v3` by CLI and host string APIs) share one
+`component_source_transform` implementation. Only when one of these plugins is
+selected does the component registry run that transform for each component,
+after reading the authored HTML but before name validation, duplicate
+checking, CSS processing, or insertion. With no plugin, or with any other
+plugin (including `webui`) that returns `None` from
+`component_source_transform`, the registry never scans for or interprets
+`<f-template>` syntax — an `<f-template>`-shaped source passes through
+unchanged, exactly like any other component.
+
+The shared FAST transform scans the authored source for an `<f-template>`. A
+source that has one must contain exactly one `<f-template>` with exactly one
+inner `<template>`. A present, non-empty `name` becomes the registered
+component tag and overrides the filename-derived tag. If `name` is absent or
+trims to empty, registration keeps the filename-derived tag. Multiple
+`<f-template>` elements return `unsupported-multiple-f-templates`; multiple
+inner `<template>` elements are also invalid. Sources without an `<f-template>`
+return `ComponentSourceResult::Unchanged` and follow the normal component
+template path.
+
+For build-time SSR parsing, the transform adapts the `<f-template>` source for
+`microsoft-fast-convert` with the `webui-prerelease` target. Because the
+converter requires a non-empty name, the adapter supplies an internal name only
+to the converter when the source name is absent or empty. This internal value
+does not replace the filename-derived component tag or appear in the emitted
+client artifact. The returned inner template becomes the parser view returned
+as `TransformedComponentSource::parser_content`:
+
+- `<f-repeat value="{{item in items}}">` converts to
+  `<for each="item in items">`.
+- `<f-when value="{{condition}}">` converts to
+  `<if condition="condition">`.
+- The converter unwraps the `value` expression for those directives. Text
+  `{{expression}}` bindings and `?boolean` bindings remain available to the
+  WebUI parser; ordinary attributes are not treated as additional converter
+  syntax.
+- Unsupported `f-*` elements or attributes and malformed directive expressions
+  return structured authoring diagnostics. WebUI does not claim support for
+  FAST constructs that the converter rejects.
+- The FAST plugins' `classify_attribute` skips `@event`, `:property`, `f-ref`,
+  `f-slotted`, and `f-children` and counts each as a binding, so they are
+  absent from the SSR view while the hydration binding count still reflects
+  them. No parser-core marker or FAST-named branch is involved.
+
+The transform separately returns the authored inner `<template>` as
+`TransformedComponentSource::artifact_content`, including its client-only
+bindings, rather than deriving it from the converted parser view. The FAST
+plugin wraps that retained source in the resolved `<f-template name="...">`
+for insertion. The artifact is normalized rather than preserved byte-for-byte:
+it passes through the same generic component-template processing as any other
+component, including wrapper normalization, selected CSS-strategy injection,
+module stylesheet adoption where applicable, legal-comment handling, and
+plugin artifact normalization. The deprecated `fast` selector aliases the
+FAST 2 implementation, while `fast_v2` and `fast_v3` use their respective
+hydration marker formats; all three share this transform, conversion, and
+artifact-retention behavior.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)

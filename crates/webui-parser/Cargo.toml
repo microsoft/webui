@@ -30,6 +30,7 @@ microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.22" }
 microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.22" }
 thiserror = { workspace = true }
 html-escape = { workspace = true }
+microsoft-fast-convert = { workspace = true }
 walkdir = { workspace = true, optional = true }
 clap = { workspace = true, optional = true }
 sha2 = { workspace = true }
