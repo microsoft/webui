@@ -265,6 +265,10 @@ JavaScript loader or empty class. Create a custom element only when the route
 component is interactive: event handlers, custom lifecycle code, imperative
 methods, or JavaScript-owned state.
 
+Initial SSR delivers component CSS only for the matched route chain. Styles for
+inactive routes remain deferred until navigation activates those components,
+including when an `<outlet />` is inside a Shadow component.
+
 ### Tagged Cache
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
@@ -734,7 +738,7 @@ custom-element registration, not by a server `client` flag.
 
 Without `Accept: application/json`, return the full SSR'd page. The handler
 includes the route chain, template inventory, and CSS list needed for client
-bootstrap.
+bootstrap. The CSS list contains the matched route chain, not inactive siblings.
 
 ### Partial Navigation
 

@@ -60,7 +60,7 @@ test('search results do not retain stale title segments while typing', async (t)
   await page.waitForTimeout(500);
 
   const first = await page.locator('docs-search').evaluate((el) => {
-    const result = el.shadowRoot.querySelector('.result');
+    const result = el.querySelector('.result');
     const title = result.querySelector('.result-title');
     return {
       href: result.getAttribute('href'),
@@ -90,14 +90,14 @@ test('heading search results use CSS spacing for breadcrumb separators', async (
   await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const input = el.shadowRoot.querySelector('input');
+    const input = el.querySelector('input');
     input.value = 'wasm bundles';
     el.onInput();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   const separator = await page.locator('docs-search').evaluate((el) => {
-    const results = [...el.shadowRoot.querySelectorAll('.result')];
+    const results = [...el.querySelectorAll('.result')];
     const hrefs = results.map((result) => result.getAttribute('href'));
     const item = results.find((result) =>
       result.getAttribute('href').includes('#building-the-wasm-bundles'),
@@ -235,14 +235,14 @@ test('scrollbars and search highlights use theme-specific colors', async (t) => 
   await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const input = el.shadowRoot.querySelector('input');
+    const input = el.querySelector('input');
     input.value = 'asse';
     el.onInput();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   const dark = await page.locator('docs-search').evaluate((el) => {
-    const mark = el.shadowRoot.querySelector('mark');
+    const mark = el.querySelector('mark');
     const hostStyle = getComputedStyle(el);
     return {
       thumb: hostStyle.getPropertyValue('--docs-scrollbar-thumb').trim(),
@@ -264,8 +264,7 @@ async function waitForDocsSearch(page: Page): Promise<void> {
     return (
       el &&
       customElements.get('docs-search') &&
-      el.shadowRoot &&
-      el.shadowRoot.querySelector('input')
+      el.querySelector('input')
     );
   });
 }

@@ -151,15 +151,14 @@ impl WebUIHandler {
             &mut state_key_scratch,
         );
         let chain = if first_checkpoint {
-            crate::route_handler::collect_route_chain(
-                context.protocol,
-                context.entry_id,
-                context.request_path,
-                context.route_index,
-            )
-            .iter()
-            .map(crate::route_handler::RouteChainEntry::to_json)
-            .collect::<Vec<_>>()
+            crate::WebUIHandler::ensure_request_route_chain(context);
+            match context.route_chain.as_deref() {
+                Some(chain) => chain
+                    .iter()
+                    .map(crate::route_handler::RouteChainEntry::to_json)
+                    .collect::<Vec<_>>(),
+                None => Vec::new(),
+            }
         } else {
             Vec::new()
         };

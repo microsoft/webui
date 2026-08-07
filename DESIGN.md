@@ -505,6 +505,12 @@ blocking on data by default, and can opt into bounded data blocking with
 
 FAST plugin builds can emit the same graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
+A plugin whose client runtime builds its own roots from the captured template
+owns component style delivery: WebUI keeps its own templates style-free because
+the handler installs the stored closure, but a Shadow component's CSS stays
+inline in that plugin-facing template so a client-created element is styled.
+Light CSS is never inlined there — it is Document-owned, and its `@scope` root
+cannot be resolved from inside a runtime-created root.
 
 **Navigation cache:** The client router exposes an optional tagged navigation
 cache tier. The default `Router.start()` path does not import or instantiate the
@@ -1243,7 +1249,10 @@ Link filename hashing or Style/Module storage:
 - Shadow-only `:host-context()` and `::slotted()` are rejected in Light
   CSS with `unsupported-light-css`. Authors must use entry CSS or opt that
   component into `<template shadowrootmode="open">`.
-- Component-local keyframes receive a deterministic component prefix, and static
+- Component-local keyframes receive a deterministic, collision-free component
+  prefix (`wui<tag-length>-<tag>-<name>`, whose length delimiter keeps
+  `<x-foo>`/`bar-baz` distinct from `<x-foo-bar>`/`baz` because `@scope` does
+  not isolate `@keyframes`), and static
   `animation` / `animation-name` references (including vendor-prefixed forms) are
   rewritten token-by-token. Dynamic references that could name a local keyframe
   fail with `dynamic-light-keyframe` rather than silently targeting an
@@ -1268,17 +1277,15 @@ contribute their CSS once and their fragment graph is traversed in the same CSS
 tree. Shadow children are cut points: neither their CSS nor
 their descendants enter the caller's closure, but scanning resumes after the
 host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
-and attribute-template dependencies are followed conservatively. A route visits
-its body, then its pending and error components. Nested route definitions enter
-the body's closure at that route component's `<outlet>` position because that
-is where the handler renders them. Consequently, a Shadow route body moves its
-nested Light route resources into its own `ShadowRoot` closure instead of the
-caller's tree. The ownership scan follows plain nested components because route
-context passes through them at runtime; an outlet delegated to a nested Shadow
-component therefore moves the route resources into that component's closure.
-Shared outlet components conservatively union their possible route contexts in
-deterministic discovery order. Visited-fragment and first-style sets make
-malformed or cyclic protocols finite without changing first-discovery order.
+and attribute-template dependencies are followed conservatively. Routes are
+activation edges, not static closure edges: route bodies, pending/error
+components, and outlet children do not enter the declaring fragment's closure.
+Each matched Light route root installs its own stored closure as compiler-owned
+children of the active `<webui-route>`, immediately before the generated host,
+in the inherited Document or ShadowRoot CSS tree. A matched Shadow route root
+installs its closure at the compiler hook inside its declarative root.
+Visited-fragment and first-style sets make malformed or cyclic protocols finite
+without changing first-discovery order.
 
 Every Light host receives a persistent `data-wl` marker in SSR and
 client-created DOM. The marker is both the scope anchor and nested-Light lower
@@ -1295,15 +1302,30 @@ the Document closure before `</head>`. When the document omits an explicit head,
 the closure precedes document content while remaining immediately after any
 leading doctype. The browser therefore places resources in the document head and
 the doctype remains the first token.
-Document fragment renders install their closure before fragment content; a
-Shadow component used directly as the entry installs its component
-closure at the compiler hook inside the declarative root. The same Document
-state is retained across progressive streaming checkpoints. Partial navigation
-sends a versioned `componentStyles` catalog containing the newly needed resources
-and closures; the browser registers it per Document and installs each resource
-at most once per Document or ShadowRoot. Version-3 component assets carry the
-same catalog, so SSR, navigation, streaming, and deferred assets share the
-ordering and deduplication contract.
+Document fragment renders install their closure before fragment content. A
+matched Light route installs only its active closure before its generated host;
+inactive route closures are not emitted or installed during hydration. Link
+builds emit ordered preload hints for the matched route closures before module
+preloads, so styles owned by a later ShadowRoot begin fetching without waiting
+for body discovery; the actual stylesheet still installs only in its owning CSS
+tree. Before any component closure installs, the framework scans that complete
+Document or ShadowRoot for compiler-owned SSR markers and claims them in place.
+It rescans an activating route's direct children for later streaming markers.
+Loaded Link elements are never reparented, avoiding a second request for
+non-cacheable CSS; the router preserves those route-owned markers across
+component remounts. Module fallbacks are adopted in marker order and removed
+after adoption. A Shadow component used directly as the entry or as a matched
+route installs its component closure at the compiler hook inside the declarative
+root. The same Document state is retained across progressive streaming
+checkpoints. Partial navigation sends a versioned `componentStyles` catalog
+containing the newly needed resources and closures; the browser registers it per
+Document and installs each resource at most once per Document or ShadowRoot.
+Version-3 component assets carry the same catalog, so SSR, navigation,
+streaming, and deferred assets share the ordering and deduplication contract.
+Module sheets reserve their adoption slot when their closure requests them, so
+a descendant closure whose load resolves first never adopts ahead of its
+caller, and an adopted SSR fallback element is dropped from marker state with
+the node.
 
 Shadow roots are closure cut points. A caller's closure stops at an effective
 Shadow host, and the child's closure begins inside that root. Light descendants
@@ -1362,6 +1384,7 @@ pub trait ParserPlugin {
         processed_template: &str,
         context: ComponentTemplateContext,
     ) -> Result<()>;
+    fn owns_component_styles(&self) -> bool { false }
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
@@ -1373,6 +1396,7 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext` containing `uses_shadow_dom`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
+- **Style ownership**: `owns_component_styles` reports whether the plugin's client runtime builds its own roots from that captured template. It is `false` for WebUI, whose closures the handler installs, and `true` for FAST, whose captured Shadow templates keep an inline `<link>`/`<style>`. SSR output is style-free either way.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -2018,9 +2042,10 @@ contract rather than introduce a parallel one.
 6. **Boundary-local payload.** A record carries only the templates and state
    reachable from its own roots. Boundary 0 must not contain template metadata
    or state reachable only from a later boundary. Component-style closures
-   remain CSS-tree metadata: the first entry closure can include transitive
-   resources used by later boundaries, but each resource definition and closure
-   is serialized at most once per response. State locality requires a
+   remain CSS-tree metadata: the first entry closure can include static
+   transitive resources used by later boundaries, but never resources reachable
+   only through an inactive route. Each resource definition and closure is
+   serialized at most once per response. State locality requires a
    state-projection manifest; without one the build falls back to full state and
    every checkpoint costs `O(boundaries × full state)`, which the compiler reports as
    a `streaming-without-projection` warning.

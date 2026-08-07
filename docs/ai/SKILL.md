@@ -804,6 +804,8 @@ routed components.
 - Child paths are relative to the parent (no leading `/`).
 - Use `exact` on leaf routes; omit it on parents that have `<outlet />`.
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all).
+- Initial SSR delivers CSS only for the matched route chain; inactive route
+  styles remain deferred until navigation.
 
 | Attribute | Example | Description |
 |---|---|---|

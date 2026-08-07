@@ -74,7 +74,7 @@ import {
   MARKER_COND_END,
   MARKER_REPEAT_START,
 } from './element/markers.js';
-import { installComponentStyles } from './element/styles.js';
+import { claimSsrComponentStyles, installComponentStyles } from './element/styles.js';
 import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
@@ -353,7 +353,10 @@ export class TemplateElement extends HTMLElement {
       return ACTIVATION_MISSING_TEMPLATE;
     }
     this.$meta = meta;
-    if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
+    if (!this.$shouldActivateOnBoundaryCommit()) {
+      this.$installStyles(meta);
+      return ACTIVATION_STATIC_HOST_OPT_OUT;
+    }
     this.$activateDeferredSSR(state);
     return ACTIVATION_ACTIVATED;
   }
@@ -553,6 +556,7 @@ export class TemplateElement extends HTMLElement {
       : containingRoot.nodeType === 11 && 'host' in containingRoot
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
+    claimSsrComponentStyles(this, styleTarget);
     const installation = installComponentStyles(this.localName, styleTarget);
     if (installation) {
       void installation.catch((error) => {

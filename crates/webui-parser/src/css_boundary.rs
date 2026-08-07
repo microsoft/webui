@@ -5,6 +5,7 @@
 
 use crate::diagnostic::{codes, Diagnostic};
 use crate::{comment_policy, ParserError, Result};
+use std::fmt::Write;
 use std::ops::Range;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,11 +61,29 @@ pub(crate) fn compile(tag_name: &str, source: &str) -> Result<String> {
     let rewritten = rewrite_css(tag_name, source, &keyframes)?;
     let mut output = String::with_capacity(tag_name.len() + rewritten.len() + 58);
     output.push_str("@scope (");
-    output.push_str(tag_name);
+    push_css_escaped_tag(&mut output, tag_name);
     output.push_str("[data-wl]) to (:scope [data-wl] > *) {\n");
     output.push_str(&rewritten);
     output.push_str("\n}");
     Ok(output)
+}
+
+/// Append a tag name as a CSS type selector / identifier.
+///
+/// A custom-element name may legally contain `.`, which would otherwise parse
+/// as a class selector and silently scope the component to nothing. Every other
+/// character the HTML production allows is already identifier-safe here.
+fn push_css_escaped_tag(output: &mut String, tag_name: &str) {
+    if !tag_name.contains('.') {
+        output.push_str(tag_name);
+        return;
+    }
+    for character in tag_name.chars() {
+        if character == '.' {
+            output.push('\\');
+        }
+        output.push(character);
+    }
 }
 
 fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<KeyframeName>> {
@@ -714,18 +733,26 @@ fn hex_value(byte: u8) -> u8 {
     }
 }
 
+/// Build the component-local keyframe name.
+///
+/// The tag length delimits the prefix so two components can never compile to
+/// the same name: `<x-foo>`/`bar-baz` and `<x-foo-bar>`/`baz` would otherwise
+/// both produce `wui-x-foo-bar-baz`. `@scope` does not isolate `@keyframes`,
+/// so a collision would silently animate with another component's rule.
 fn compiled_keyframe_name(tag_name: &str, authored: &str) -> String {
     let quote = authored
         .as_bytes()
         .first()
         .copied()
         .filter(|byte| matches!(*byte, b'"' | b'\''));
-    let mut compiled = String::with_capacity(tag_name.len() + authored.len() + 5);
+    let mut compiled = String::with_capacity(tag_name.len() + authored.len() + 8);
     if let Some(quote) = quote {
         compiled.push(char::from(quote));
     }
-    compiled.push_str("wui-");
-    compiled.push_str(tag_name);
+    compiled.push_str("wui");
+    let _ = write!(compiled, "{}", tag_name.len());
+    compiled.push('-');
+    push_css_escaped_tag(&mut compiled, tag_name);
     compiled.push('-');
     if let Some(quote) = quote {
         compiled.push_str(&authored[1..authored.len() - 1]);
@@ -1286,9 +1313,9 @@ mod tests {
             ".x { animation: fade 1s ease; animation-name: fade; }"
         );
         let css = compile("my-card", source).expect("compile");
-        assert!(css.contains("@keyframes wui-my-card-fade"));
-        assert!(css.contains("animation: wui-my-card-fade 1s ease"));
-        assert!(css.contains("animation-name: wui-my-card-fade"));
+        assert!(css.contains("@keyframes wui7-my-card-fade"));
+        assert!(css.contains("animation: wui7-my-card-fade 1s ease"));
+        assert!(css.contains("animation-name: wui7-my-card-fade"));
     }
 
     #[test]
@@ -1300,8 +1327,8 @@ mod tests {
             "animation-name:fade, spin;content:\"fade\";--animation:fade}"
         );
         let css = compile("my-card", source).expect("compile");
-        assert!(css.contains("-webkit-animation:wui-my-card-spin 1s, wui-my-card-fade 2s ease"));
-        assert!(css.contains("animation-name:wui-my-card-fade, wui-my-card-spin"));
+        assert!(css.contains("-webkit-animation:wui7-my-card-spin 1s, wui7-my-card-fade 2s ease"));
+        assert!(css.contains("animation-name:wui7-my-card-fade, wui7-my-card-spin"));
         assert!(css.contains("content:\"fade\";--animation:fade"));
     }
 
@@ -1312,8 +1339,8 @@ mod tests {
             ".x{animation-name:'fade in';content:\"fade in\"}"
         );
         let css = compile("my-card", source).expect("compile");
-        assert!(css.contains("@keyframes \"wui-my-card-fade in\""));
-        assert!(css.contains("animation-name:\"wui-my-card-fade in\""));
+        assert!(css.contains("@keyframes \"wui7-my-card-fade in\""));
+        assert!(css.contains("animation-name:\"wui7-my-card-fade in\""));
         assert!(css.contains("content:\"fade in\""));
     }
 
@@ -1321,8 +1348,8 @@ mod tests {
     fn matches_equivalent_escaped_keyframe_identifiers() {
         let source = r"@keyframes f\61 de{to{opacity:1}}.x{animation-name:fa\64 e}";
         let css = compile("my-card", source).expect("compile");
-        assert!(css.contains(r"@keyframes wui-my-card-f\61 de"));
-        assert!(css.contains(r"animation-name:wui-my-card-f\61 de"));
+        assert!(css.contains(r"@keyframes wui7-my-card-f\61 de"));
+        assert!(css.contains(r"animation-name:wui7-my-card-f\61 de"));
     }
 
     #[test]
@@ -1336,8 +1363,31 @@ mod tests {
         );
         let css = compile("my-card", source).expect("compile");
         assert!(css.contains("animation:other 1s linear"));
-        assert!(css.contains("animation:1s linear wui-my-card-linear"));
-        assert!(css.contains("animation-name:wui-my-card-linear,wui-my-card-s"));
+        assert!(css.contains("animation:1s linear wui7-my-card-linear"));
+        assert!(css.contains("animation-name:wui7-my-card-linear,wui7-my-card-s"));
+    }
+
+    /// A custom-element name may legally contain `.`, which must not become a
+    /// class selector in the generated scope root.
+    #[test]
+    fn escapes_dotted_tag_names_in_scope_root_and_keyframes() {
+        let css = compile(
+            "x.foo-bar",
+            "@keyframes fade{to{opacity:1}}.card{color:red}",
+        )
+        .expect("compile");
+        assert!(css.starts_with(r"@scope (x\.foo-bar[data-wl])"));
+        assert!(css.contains(r"@keyframes wui9-x\.foo-bar-fade"));
+    }
+
+    /// `@scope` does not isolate `@keyframes`, so two components must never
+    /// compile the same animation name.
+    #[test]
+    fn keyframe_names_never_collide_across_components() {
+        let outer = compile("x-foo", "@keyframes bar-baz{to{opacity:1}}").expect("compile");
+        let inner = compile("x-foo-bar", "@keyframes baz{to{opacity:1}}").expect("compile");
+        assert!(outer.contains("@keyframes wui5-x-foo-bar-baz"));
+        assert!(inner.contains("@keyframes wui9-x-foo-bar-baz"));
     }
 
     #[test]

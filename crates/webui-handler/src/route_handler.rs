@@ -406,26 +406,26 @@ fn collect_component_styles_inner<'a>(
                     "component style closure `{root}` references missing resource `{tag}`"
                 ))
             })?;
-            if client_inventory.is_none_or(|inventory| !inventory.contains(tag)) {
-                resources.entry(tag.clone()).or_insert_with(|| {
-                    let mut entry = serde_json::Map::new();
-                    match protocol.css_strategy() {
-                        webui_protocol::CssStrategy::Link => {
-                            entry.insert("kind".into(), Value::String("link".into()));
-                            entry.insert("href".into(), Value::String(resource.to_owned()));
-                        }
-                        webui_protocol::CssStrategy::Style => {
-                            entry.insert("kind".into(), Value::String("style".into()));
-                            entry.insert("css".into(), Value::String(resource.to_owned()));
-                        }
-                        webui_protocol::CssStrategy::Module => {
-                            entry.insert("kind".into(), Value::String("module".into()));
-                            entry.insert("specifier".into(), Value::String(tag.clone()));
-                            entry.insert("css".into(), Value::String(resource.to_owned()));
-                        }
+            if client_inventory.is_none_or(|inventory| !inventory.contains(tag))
+                && !resources.contains_key(tag.as_str())
+            {
+                let mut entry = serde_json::Map::new();
+                match protocol.css_strategy() {
+                    webui_protocol::CssStrategy::Link => {
+                        entry.insert("kind".into(), Value::String("link".into()));
+                        entry.insert("href".into(), Value::String(resource.to_owned()));
                     }
-                    Value::Object(entry)
-                });
+                    webui_protocol::CssStrategy::Style => {
+                        entry.insert("kind".into(), Value::String("style".into()));
+                        entry.insert("css".into(), Value::String(resource.to_owned()));
+                    }
+                    webui_protocol::CssStrategy::Module => {
+                        entry.insert("kind".into(), Value::String("module".into()));
+                        entry.insert("specifier".into(), Value::String(tag.clone()));
+                        entry.insert("css".into(), Value::String(resource.to_owned()));
+                    }
+                }
+                resources.insert(tag.clone(), Value::Object(entry));
             }
             ordered.push(Value::String(tag.clone()));
         }

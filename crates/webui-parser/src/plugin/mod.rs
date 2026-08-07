@@ -204,6 +204,17 @@ pub trait ParserPlugin {
         context: ComponentTemplateContext,
     ) -> Result<()>;
 
+    /// Whether this plugin's client runtime owns component style delivery.
+    ///
+    /// WebUI installs precomputed style closures into every CSS tree it owns,
+    /// so its own templates stay style-free. A plugin whose runtime builds its
+    /// own roots from the plugin-facing template (FAST `<f-template>`) is
+    /// outside that registry, so a Shadow component's CSS stays inline in the
+    /// template the plugin captures.
+    fn owns_component_styles(&self) -> bool {
+        false
+    }
+
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
 
