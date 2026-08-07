@@ -319,10 +319,13 @@ impl ComponentRegistry {
                 "component <{tag_name}> disappeared before CSS compilation"
             ))
         })?;
-        if let Some(authored) = component.css_content.as_ref() {
+        // `css_content` is overwritten below, so move the authored bytes into
+        // the diagnostic cache rather than cloning a second full copy of every
+        // transformed stylesheet.
+        if let Some(authored) = component.css_content.take() {
             self.authored_component_css
                 .entry(tag_name.to_string())
-                .or_insert_with(|| authored.clone());
+                .or_insert(authored);
         }
         component.css_content = Some(css_content);
         Ok(())
