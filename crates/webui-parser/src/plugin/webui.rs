@@ -246,6 +246,7 @@ impl WebUIParserPlugin {
             processed_template,
             ComponentTemplateContext {
                 uses_shadow_dom: false,
+                style: None,
             },
         )
     }
@@ -279,7 +280,7 @@ impl ParserPlugin for WebUIParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
-        context: ComponentTemplateContext,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()> {
         self.store_component_template(
             tag_name,

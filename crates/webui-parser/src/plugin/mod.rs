@@ -162,12 +162,45 @@ impl ComponentTemplateArtifact {
     }
 }
 
+/// How a component's compiled CSS is delivered, as resolved by the build.
+///
+/// This is a neutral statement of fact about the component, not a request:
+/// WebUI installs its own stylesheets from precomputed style closures, so its
+/// templates stay style-free and most plugins ignore this entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComponentStyleDelivery<'a> {
+    /// An external stylesheet served at `href`.
+    Link {
+        /// Resolved stylesheet URL.
+        href: &'a str,
+    },
+    /// The compiled CSS text itself.
+    Inline {
+        /// Compiled CSS source.
+        css: &'a str,
+    },
+    /// A constructed stylesheet the root adopts by `specifier`, already
+    /// recorded on the template's `shadowrootadoptedstylesheets`.
+    Adopted {
+        /// Module specifier for the constructed stylesheet.
+        specifier: &'a str,
+    },
+}
+
 /// Build-time component context resolved before a parser plugin observes the
 /// processed template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ComponentTemplateContext {
+pub struct ComponentTemplateContext<'a> {
     /// Whether this component authored a declarative Shadow DOM root.
     pub uses_shadow_dom: bool,
+    /// How this component's CSS is delivered, when it has any.
+    ///
+    /// A plugin whose client runtime builds roots from the template it captures
+    /// here is outside WebUI's style registry, so it can use this to keep those
+    /// roots styled. Light CSS is Document-owned and its `@scope` root cannot
+    /// match from inside a runtime-created root, so it is reported only for
+    /// components that authored a Shadow root.
+    pub style: Option<ComponentStyleDelivery<'a>>,
 }
 
 /// A parser plugin that can customize template parsing behavior.
@@ -201,19 +234,8 @@ pub trait ParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
-        context: ComponentTemplateContext,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()>;
-
-    /// Whether this plugin's client runtime owns component style delivery.
-    ///
-    /// WebUI installs precomputed style closures into every CSS tree it owns,
-    /// so its own templates stay style-free. A plugin whose runtime builds its
-    /// own roots from the plugin-facing template (FAST `<f-template>`) is
-    /// outside that registry, so a Shadow component's CSS stays inline in the
-    /// template the plugin captures.
-    fn owns_component_styles(&self) -> bool {
-        false
-    }
 
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;

@@ -623,6 +623,15 @@ struct BuiltComponentTemplate {
     ssr: String,
     artifact: Option<String>,
     uses_shadow_dom: bool,
+    style: Option<OwnedComponentStyle>,
+}
+
+/// Owned form of [`plugin::ComponentStyleDelivery`], held for the lifetime of a
+/// built component template so plugin context can borrow from it.
+enum OwnedComponentStyle {
+    Link(String),
+    Inline(String),
+    Adopted(String),
 }
 
 #[derive(Clone, Copy)]
@@ -642,9 +651,16 @@ impl BuiltComponentTemplate {
         self.artifact.as_deref().unwrap_or(&self.ssr)
     }
 
-    fn context(&self) -> plugin::ComponentTemplateContext {
+    fn context(&self) -> plugin::ComponentTemplateContext<'_> {
         plugin::ComponentTemplateContext {
             uses_shadow_dom: self.uses_shadow_dom,
+            style: self.style.as_ref().map(|style| match style {
+                OwnedComponentStyle::Link(href) => plugin::ComponentStyleDelivery::Link { href },
+                OwnedComponentStyle::Inline(css) => plugin::ComponentStyleDelivery::Inline { css },
+                OwnedComponentStyle::Adopted(specifier) => {
+                    plugin::ComponentStyleDelivery::Adopted { specifier }
+                }
+            }),
         }
     }
 }
@@ -4331,18 +4347,13 @@ impl HtmlParser {
         // duplicating Light descendants and lets repeated Shadow instances each
         // receive an exact, claimable resource set.
         //
-        // A plugin whose client runtime builds its own roots from the captured
-        // template is outside that registry, so a Shadow component keeps its
-        // CSS inline in the plugin-facing view only. Light CSS is never
-        // injected: it is Document-owned and its `@scope` root cannot match
+        // The resolved delivery is reported to the plugin as build context; a
+        // plugin whose client runtime builds its own roots from the captured
+        // template decides for itself what to do with it. Light CSS is never
+        // reported: it is Document-owned and its `@scope` root cannot match
         // from inside a runtime-created root.
-        let css_injection = if dom_analysis.uses_shadow_dom
-            && self
-                .plugin
-                .as_ref()
-                .is_some_and(|plugin| plugin.owns_component_styles())
-        {
-            self.plugin_component_style_injection(tag_name, css_content)
+        let style = if dom_analysis.uses_shadow_dom && self.plugin.is_some() {
+            self.component_style_delivery(tag_name, css_content)
         } else {
             None
         };
@@ -4351,15 +4362,13 @@ impl HtmlParser {
             Some((start, end)) => &html[start..end],
             None => html,
         };
-        let artifact_differs = artifact_needed
-            && (css_injection.is_some()
-                || Self::template_has_stripped_runtime_attrs(runtime_attr_source));
+        let artifact_differs =
+            artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
         let ssr =
             self.process_component_template_for_dom(html, None, adopted_specifier, dom_analysis)?;
         let artifact = if artifact_differs {
             Some(self.process_component_artifact_template_for_dom(
                 html,
-                css_injection.as_deref(),
                 adopted_specifier,
                 dom_analysis,
             )?)
@@ -4370,36 +4379,27 @@ impl HtmlParser {
             ssr,
             artifact,
             uses_shadow_dom: dom_analysis.uses_shadow_dom,
+            style,
         })
     }
 
-    /// Build the inline style snippet a style-owning plugin keeps in its
-    /// captured template. Module builds adopt through `adopted_specifier`.
-    fn plugin_component_style_injection(
+    /// Resolve how a component's compiled CSS reaches the browser.
+    ///
+    /// Build-time only, once per component definition, and only when a plugin
+    /// can observe it.
+    fn component_style_delivery(
         &self,
         tag_name: &str,
         css_content: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<OwnedComponentStyle> {
         let css = css_content?;
-        match self.options.css_strategy {
+        Some(match self.options.css_strategy {
             CssStrategy::Link => {
-                let href = self.options.css_link_options.resolve(tag_name, css);
-                let mut link = String::with_capacity(30 + href.href.len());
-                link.push_str("<link rel=\"stylesheet\" href=\"");
-                link.push_str(&href.href);
-                link.push_str("\">");
-                Some(link)
+                OwnedComponentStyle::Link(self.options.css_link_options.resolve(tag_name, css).href)
             }
-            CssStrategy::Style => {
-                let trimmed = css.trim();
-                let mut style = String::with_capacity(15 + trimmed.len());
-                style.push_str("<style>");
-                style.push_str(trimmed);
-                style.push_str("</style>");
-                Some(style)
-            }
-            CssStrategy::Module => None,
-        }
+            CssStrategy::Style => OwnedComponentStyle::Inline(css.trim().to_string()),
+            CssStrategy::Module => OwnedComponentStyle::Adopted(tag_name.to_string()),
+        })
     }
 
     /// Process component template HTML for SSR output.
@@ -4454,14 +4454,13 @@ impl HtmlParser {
     fn process_component_artifact_template_for_dom(
         &mut self,
         html: &str,
-        css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
         dom_analysis: ComponentDomAnalysis,
     ) -> Result<String> {
         self.process_component_template_with_mode(
             html,
             ComponentStyleInjection {
-                css_snippet,
+                css_snippet: None,
                 adopted_specifier,
             },
             dom_analysis,
@@ -4957,10 +4956,11 @@ mod tests {
         }
     }
 
-    /// A style-owning plugin builds its own roots from the captured template,
-    /// so client-created Shadow components would otherwise lose their CSS.
+    /// FAST's client runtime builds its own roots from the captured template,
+    /// so it opts into keeping Shadow CSS there using the delivery reported in
+    /// its build context.
     #[test]
-    fn style_owning_plugin_keeps_shadow_css_in_captured_template() {
+    fn fast_plugin_keeps_shadow_css_in_captured_template() {
         for (strategy, expected) in [
             (
                 CssStrategy::Link,
@@ -5007,11 +5007,11 @@ mod tests {
         }
     }
 
-    /// The handler installs Light CSS from the stored closure, so a captured
-    /// template must never repeat it: `@scope` cannot resolve its root from
-    /// inside a runtime-created shadow root.
+    /// The handler installs Light CSS from the stored closure, so the context
+    /// never reports it: `@scope` cannot resolve its root from inside a
+    /// runtime-created shadow root.
     #[test]
-    fn style_owning_plugin_omits_light_css_from_captured_template() {
+    fn fast_plugin_omits_light_css_from_captured_template() {
         let mut parser = HtmlParser::with_plugin_options(
             Box::new(crate::plugin::fast_v3::FastV3ParserPlugin::new()),
             ParserOptions {
@@ -5047,7 +5047,7 @@ mod tests {
     /// SSR output is style-free in every build: the handler installs the
     /// precomputed closure into the owning CSS tree exactly once.
     #[test]
-    fn style_owning_plugin_leaves_ssr_output_style_free() {
+    fn plugin_build_leaves_ssr_output_style_free() {
         let mut parser = HtmlParser::with_plugin_options(
             Box::new(crate::plugin::fast_v3::FastV3ParserPlugin::new()),
             ParserOptions {
@@ -5079,6 +5079,112 @@ mod tests {
             !ssr.contains("<style>"),
             "SSR component output must stay style-free: {ssr}"
         );
+    }
+
+    /// Records the build context so tests can assert what the parser reports
+    /// without asserting how any particular plugin reacts to it.
+    struct StyleContextPlugin {
+        captured: std::rc::Rc<std::cell::RefCell<Vec<(bool, Option<String>, String)>>>,
+    }
+
+    impl crate::plugin::ParserPlugin for StyleContextPlugin {
+        fn register_component_template(
+            &mut self,
+            _tag_name: &str,
+            _component: &Component,
+            processed_template: &str,
+            context: crate::plugin::ComponentTemplateContext<'_>,
+        ) -> Result<()> {
+            self.captured.borrow_mut().push((
+                context.uses_shadow_dom,
+                context.style.map(|style| format!("{style:?}")),
+                processed_template.to_string(),
+            ));
+            Ok(())
+        }
+
+        fn classify_attribute(&mut self, _attr_name: &str) -> AttributeAction {
+            AttributeAction::Keep
+        }
+
+        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    fn capture_style_context(
+        strategy: CssStrategy,
+        template: &str,
+        css: Option<&str>,
+    ) -> (bool, Option<String>, String) {
+        let captured = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(StyleContextPlugin {
+                captured: std::rc::Rc::clone(&captured),
+            }),
+            ParserOptions {
+                css_strategy: strategy,
+                ..ParserOptions::default()
+            },
+        );
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new("x-card", template, css, true))
+            .expect("register component");
+        parser
+            .parse("index.html", "<x-card></x-card>")
+            .expect("parse component");
+        let captured = captured.borrow();
+        captured.first().cloned().expect("component registered")
+    }
+
+    /// The parser reports the resolved delivery as data and injects nothing:
+    /// a plugin that ignores `context.style` gets a style-free template even
+    /// for an authored Shadow component.
+    #[test]
+    fn parser_reports_shadow_style_delivery_without_injecting_it() {
+        for (strategy, expected) in [
+            (CssStrategy::Link, "Link { href: \"x-card.css\" }"),
+            (CssStrategy::Style, "Inline { css: \".card{color:red}\" }"),
+            (CssStrategy::Module, "Adopted { specifier: \"x-card\" }"),
+        ] {
+            let (uses_shadow_dom, style, template) = capture_style_context(
+                strategy,
+                "<template shadowrootmode=\"open\" shadowrootadoptedstylesheets=\"x-card\"><div class=\"card\"></div></template>",
+                Some(".card{color:red}"),
+            );
+            assert!(uses_shadow_dom, "{strategy:?} should be shadow");
+            assert_eq!(style.as_deref(), Some(expected), "{strategy:?} delivery");
+            assert!(
+                !template.contains("<style>") && !template.contains("<link"),
+                "{strategy:?} template must stay injection-free: {template}"
+            );
+        }
+    }
+
+    /// Light CSS is Document-owned, so there is nothing for a plugin to place
+    /// inside a runtime-created root.
+    #[test]
+    fn parser_reports_no_style_delivery_for_light_components() {
+        let (uses_shadow_dom, style, _) = capture_style_context(
+            CssStrategy::Style,
+            "<div class=\"card\"></div>",
+            Some(".card{color:red}"),
+        );
+        assert!(!uses_shadow_dom);
+        assert_eq!(style, None);
+    }
+
+    /// A component without CSS reports no delivery at all.
+    #[test]
+    fn parser_reports_no_style_delivery_without_css() {
+        let (uses_shadow_dom, style, _) = capture_style_context(
+            CssStrategy::Style,
+            "<template shadowrootmode=\"open\"><div></div></template>",
+            None,
+        );
+        assert!(uses_shadow_dom);
+        assert_eq!(style, None);
     }
 
     #[test]
