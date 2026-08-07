@@ -8444,6 +8444,18 @@ mod tests {
             fallback < host_open && host_open < content,
             "the Module fallback must precede the generated Light route host: {html}"
         );
+        // The importmap belongs to the component's own Light DOM, never to the
+        // route element. The router only treats `<link>`/`<style>` markers as
+        // route-owned styles, so an importmap emitted as a direct route child
+        // would be cleared on navigation and mistaken for the mounted
+        // component. Keep it inside the host so that can never happen.
+        let importmap = html
+            .find(r#"<script type="importmap""#)
+            .expect("route CSS module importmap");
+        assert!(
+            host_open < importmap,
+            "the CSS module importmap must live inside the route host, not as a route child: {html}"
+        );
     }
 
     #[test]
