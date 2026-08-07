@@ -1513,7 +1513,13 @@ Link filename hashing or Style/Module storage:
 
 - Rules are enclosed in `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)`.
   The lower boundary prevents parent rules from entering a nested Light component
-  while still allowing selectors to style that nested component's host.
+  while still allowing selectors to style that nested component's host. It is
+  also the fastest measured shape: removing the limit, or making it implicit,
+  costs 5.4% more style recalculation because the limit prunes nested component
+  subtrees out of the scope. Narrowing the root, tightening the limit, or
+  wrapping it in `:where()` each measure 3-5% slower. Per-element marker
+  stamping is faster still but raises every rule's specificity, which changes
+  the cascade against entry CSS, so it is not a drop-in replacement.
 - Selector anchors lower from `:host` to `:scope`; functional
   `:host(<compound>)` lowers to `:scope:is(<compound>)`. Strings, comments,
   declaration values, and custom properties are never selector-rewritten.
