@@ -88,7 +88,7 @@ import {
   rawMarker,
   type SSRIndex,
 } from './element/markers.js';
-import { installComponentStyles } from './element/styles.js';
+import { claimSsrComponentStyles, installComponentStyles } from './element/styles.js';
 import {
   cancelTemplateLinkStyleMount,
   installTemplateLinkStyles,
@@ -514,24 +514,11 @@ export class TemplateElement extends HTMLElement {
       return ACTIVATION_MISSING_TEMPLATE;
     }
     this.$meta = meta;
-    if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
-    const ancestor = this.$nearestHydrationBarrier(bypassAncestor);
-    if (ancestor) {
-      this.$deferredByAncestor = true;
-      this.$ancestorBoundaryState = state;
-      this.$hasAncestorBoundaryState = true;
-      this.$registerWithHydrationBarrier(ancestor);
-      return ACTIVATION_ANCESTOR_BARRIER;
+    if (!this.$shouldActivateOnBoundaryCommit()) {
+      this.$installStyles(meta);
+      return ACTIVATION_STATIC_HOST_OPT_OUT;
     }
-    // A root re-activated after its barrier lifted must not keep the stale
-    // registration; the boundary state it carried is superseded by `state`.
-    if (this.$deferredByAncestor) this.$clearAncestorDeferral();
-    this.$activatingDeferredSSR = true;
-    try {
-      this.$activateDeferredSSR(state);
-    } finally {
-      this.$activatingDeferredSSR = false;
-    }
+    this.$activateDeferredSSR(state);
     return ACTIVATION_ACTIVATED;
   }
 
@@ -881,6 +868,7 @@ export class TemplateElement extends HTMLElement {
       : containingRoot.nodeType === 11 && 'host' in containingRoot
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
+    claimSsrComponentStyles(this, styleTarget);
     const installation = installComponentStyles(this.localName, styleTarget);
     if (installation) {
       void installation.catch((error) => {

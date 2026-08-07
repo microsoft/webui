@@ -69,10 +69,31 @@ const DISABLE_DOCUMENT_VIEW_TRANSITION = '@view-transition { navigation: none; }
 const PARTIAL_FETCH_TIMEOUT_MS = 10_000;
 let webuiDataLoaded = false;
 
-type RouterRuntimeGlobal = WebUIRuntimeGlobal & {
-  templates?: Record<string, unknown>;
-  templateFns?: Record<string, unknown>;
-};
+function isRouteStyleMarker(node: Node): node is Element {
+  if (node.nodeType !== 1) return false;
+  const element = node as Element;
+  if (element.getAttribute('data-webui-resource') === null) return false;
+  const strategy = element.getAttribute('data-webui-strategy');
+  return (element.localName === 'link' && strategy === 'link') ||
+    (element.localName === 'style' && (strategy === 'style' || strategy === 'module'));
+}
+
+function mountedRouteComponent(route: HTMLElement): HTMLElement | null {
+  let element = route.firstElementChild;
+  while (element && isRouteStyleMarker(element)) {
+    element = element.nextElementSibling;
+  }
+  return element as HTMLElement | null;
+}
+
+function clearRouteContent(route: HTMLElement): void {
+  let node = route.firstChild;
+  while (node) {
+    const next = node.nextSibling;
+    if (!isRouteStyleMarker(node)) route.removeChild(node);
+    node = next;
+  }
+}
 
 export class WebUIRouter {
   private config: RouterConfig = {};
@@ -650,12 +671,12 @@ export class WebUIRouter {
     query?: Record<string, string>,
   ): void {
     // Destroy existing component bindings before clearing DOM
-    const existing = routeEl.firstElementChild;
+    const existing = mountedRouteComponent(routeEl);
     if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
       (existing as unknown as { $destroy: () => void }).$destroy();
     }
     const component = document.createElement(componentTag);
-    routeEl.textContent = '';
+    clearRouteContent(routeEl);
     routeEl.appendChild(component);
     applyParamsQueryState(component, routeEl, params, state, query);
   }
@@ -944,7 +965,7 @@ export class WebUIRouter {
           const effectiveOverride = override === LOADER_FAILED ? undefined : override;
 
           const isKeepAlive = entry.keepAlive || getRouteMeta(routeEl)?.keepAlive || false;
-          const existingComp = routeEl.firstElementChild;
+          const existingComp = mountedRouteComponent(routeEl);
           if (isKeepAlive && existingComp?.matches(entry.component)) {
             entry.compEl = existingComp;
             const stateToApply = effectiveOverride ?? entry.state;
@@ -956,7 +977,7 @@ export class WebUIRouter {
           } else {
             const stateToApply = effectiveOverride ?? entry.state;
             this.mountComponent(routeEl, entry.component, entry.params, stateToApply, query);
-            entry.compEl = routeEl.firstElementChild ?? undefined;
+            entry.compEl = mountedRouteComponent(routeEl) ?? undefined;
           }
         }
         activateRoute(routeEl, entry.params);

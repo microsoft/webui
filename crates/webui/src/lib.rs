@@ -1900,7 +1900,7 @@ mod tests {
     }
 
     #[test]
-    fn test_css_public_base_keeps_fast_template_style_free() {
+    fn test_css_public_base_keeps_shadow_fast_template_styled() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
             (
@@ -1923,8 +1923,37 @@ mod tests {
             Some(expected_href.as_str())
         );
         assert!(
+            template.contains(&expected_href),
+            "a Shadow FAST template owns its own CSS so client-created elements are styled: {template}"
+        );
+    }
+
+    /// Light CSS is Document-owned and its `@scope` root cannot resolve from
+    /// inside a FAST-created root, so it must never be inlined into the
+    /// plugin-facing template.
+    #[test]
+    fn test_light_fast_template_stays_style_free() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div>card</div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::FastV3);
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        let result = build(options).unwrap();
+
+        let filename = &result.css_files[0].0;
+        let expected_href = format!("https://cdn.example.com/assets/{filename}");
+        let template = &result.protocol.components["my-card"].template;
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
+        assert!(
             !template.contains(&expected_href),
-            "FAST templates must not duplicate handler-owned CSS links: {template}"
+            "Light templates must not duplicate handler-owned CSS links: {template}"
         );
     }
 

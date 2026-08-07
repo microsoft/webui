@@ -387,15 +387,9 @@ impl ConditionExpr {
 
 // ── Constructors ────────────────────────────────────────────────────────
 
-type RouteChildrenByComponent<'a> = HashMap<&'a str, Vec<&'a [WebUiFragmentRoute]>>;
-
 enum StyleClosureOp<'a> {
-    Fragment {
-        fragment_id: &'a str,
-        component_owner: Option<&'a str>,
-    },
+    Fragment(&'a str),
     Component(&'a str),
-    Route(&'a WebUiFragmentRoute),
 }
 
 impl WebUiProtocol {
@@ -434,7 +428,8 @@ impl WebUiProtocol {
     /// compiled component root.
     ///
     /// Traversal is iterative, follows source order, stops at Shadow
-    /// children, and deduplicates resources at first discovery.
+    /// children and route activation edges, and deduplicates resources at first
+    /// discovery. Matched route roots install their own stored closures.
     pub fn populate_style_closures(&mut self, entry_fragments: &[&str]) {
         let mut roots: Vec<String> = entry_fragments
             .iter()
@@ -467,113 +462,16 @@ impl WebUiProtocol {
             return;
         }
 
-        let route_children = self.route_children_by_component();
         self.style_closures = roots
             .into_iter()
             .map(|root| {
-                let closure = self.build_style_closure(&root, &route_children);
+                let closure = self.build_style_closure(&root);
                 (root, closure)
             })
             .collect();
     }
 
-    fn route_definitions_by_component(&self) -> (Vec<&str>, RouteChildrenByComponent<'_>) {
-        let mut fragment_ids: Vec<&str> = self.fragments.keys().map(String::as_str).collect();
-        fragment_ids.sort_unstable();
-
-        let mut route_owners = Vec::new();
-        let mut route_definitions = RouteChildrenByComponent::new();
-        let mut work = Vec::new();
-        for fragment_id in fragment_ids {
-            let Some(fragment_list) = self.fragments.get(fragment_id) else {
-                continue;
-            };
-            for fragment in fragment_list.fragments.iter().rev() {
-                if let Some(web_ui_fragment::Fragment::Route(route)) = fragment.fragment.as_ref() {
-                    work.push(route);
-                }
-            }
-            while let Some(route) = work.pop() {
-                if !route.fragment_id.is_empty() && !route.children.is_empty() {
-                    if let Some(routes) = route_definitions.get_mut(route.fragment_id.as_str()) {
-                        routes.push(&route.children);
-                    } else {
-                        route_owners.push(route.fragment_id.as_str());
-                        route_definitions.insert(&route.fragment_id, vec![&route.children]);
-                    }
-                }
-                for child in route.children.iter().rev() {
-                    work.push(child);
-                }
-            }
-        }
-        (route_owners, route_definitions)
-    }
-
-    fn route_children_by_component(&self) -> RouteChildrenByComponent<'_> {
-        let (route_owners, route_definitions) = self.route_definitions_by_component();
-        let mut route_children = RouteChildrenByComponent::new();
-        for route_owner in route_owners {
-            let Some(route_sets) = route_definitions.get(route_owner) else {
-                continue;
-            };
-            self.map_route_children_to_outlets(route_owner, route_sets, &mut route_children);
-        }
-        route_children
-    }
-
-    fn map_route_children_to_outlets<'a>(
-        &'a self,
-        route_owner: &'a str,
-        route_sets: &[&'a [WebUiFragmentRoute]],
-        route_children: &mut RouteChildrenByComponent<'a>,
-    ) {
-        let mut work = vec![(route_owner, route_owner)];
-        let mut visited_fragments = HashSet::new();
-        let mut mapped_components = HashSet::new();
-
-        while let Some((fragment_id, component_owner)) = work.pop() {
-            if !visited_fragments.insert((fragment_id, component_owner)) {
-                continue;
-            }
-            let Some(fragment_list) = self.fragments.get(fragment_id) else {
-                continue;
-            };
-            for fragment in fragment_list.fragments.iter().rev() {
-                match fragment.fragment.as_ref() {
-                    Some(web_ui_fragment::Fragment::Component(component)) => {
-                        work.push((&component.fragment_id, &component.fragment_id));
-                    }
-                    Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
-                        work.push((&for_loop.fragment_id, component_owner));
-                    }
-                    Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
-                        work.push((&if_cond.fragment_id, component_owner));
-                    }
-                    Some(web_ui_fragment::Fragment::Attribute(attribute))
-                        if !attribute.template.is_empty() =>
-                    {
-                        work.push((&attribute.template, component_owner));
-                    }
-                    Some(web_ui_fragment::Fragment::Outlet(_))
-                        if mapped_components.insert(component_owner) =>
-                    {
-                        route_children
-                            .entry(component_owner)
-                            .or_default()
-                            .extend(route_sets.iter().copied());
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    fn build_style_closure<'a>(
-        &'a self,
-        root: &'a str,
-        route_children: &RouteChildrenByComponent<'a>,
-    ) -> ComponentStyleClosure {
+    fn build_style_closure<'a>(&'a self, root: &'a str) -> ComponentStyleClosure {
         let mut component_tags = Vec::new();
         let mut seen_styles = HashSet::new();
         let mut visited_fragments = HashSet::new();
@@ -585,18 +483,12 @@ impl WebUiProtocol {
             seen_styles.insert(root);
             component_tags.push(root.to_string());
         }
-        work.push(StyleClosureOp::Fragment {
-            fragment_id: root,
-            component_owner: self.components.contains_key(root).then_some(root),
-        });
+        work.push(StyleClosureOp::Fragment(root));
 
         while let Some(op) = work.pop() {
             match op {
-                StyleClosureOp::Fragment {
-                    fragment_id,
-                    component_owner,
-                } => {
-                    if !visited_fragments.insert((fragment_id, component_owner)) {
+                StyleClosureOp::Fragment(fragment_id) => {
+                    if !visited_fragments.insert(fragment_id) {
                         continue;
                     }
                     let Some(fragment_list) = self.fragments.get(fragment_id) else {
@@ -608,38 +500,15 @@ impl WebUiProtocol {
                                 work.push(StyleClosureOp::Component(&component.fragment_id));
                             }
                             Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
-                                work.push(StyleClosureOp::Fragment {
-                                    fragment_id: &for_loop.fragment_id,
-                                    component_owner,
-                                });
+                                work.push(StyleClosureOp::Fragment(&for_loop.fragment_id));
                             }
                             Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
-                                work.push(StyleClosureOp::Fragment {
-                                    fragment_id: &if_cond.fragment_id,
-                                    component_owner,
-                                });
+                                work.push(StyleClosureOp::Fragment(&if_cond.fragment_id));
                             }
                             Some(web_ui_fragment::Fragment::Attribute(attribute))
                                 if !attribute.template.is_empty() =>
                             {
-                                work.push(StyleClosureOp::Fragment {
-                                    fragment_id: &attribute.template,
-                                    component_owner,
-                                });
-                            }
-                            Some(web_ui_fragment::Fragment::Route(route)) => {
-                                work.push(StyleClosureOp::Route(route));
-                            }
-                            Some(web_ui_fragment::Fragment::Outlet(_)) => {
-                                if let Some(route_sets) =
-                                    component_owner.and_then(|owner| route_children.get(owner))
-                                {
-                                    for routes in route_sets.iter().rev() {
-                                        for route in routes.iter().rev() {
-                                            work.push(StyleClosureOp::Route(route));
-                                        }
-                                    }
-                                }
+                                work.push(StyleClosureOp::Fragment(&attribute.template));
                             }
                             _ => {}
                         }
@@ -654,23 +523,7 @@ impl WebUiProtocol {
                     {
                         component_tags.push(tag_name.to_string());
                     }
-                    work.push(StyleClosureOp::Fragment {
-                        fragment_id: tag_name,
-                        component_owner: Some(tag_name),
-                    });
-                }
-                StyleClosureOp::Route(route) => {
-                    // The route body owns its nested routes at its outlet. Stack
-                    // fallbacks first so they follow that complete body tree.
-                    if !route.error_component.is_empty() {
-                        work.push(StyleClosureOp::Component(&route.error_component));
-                    }
-                    if !route.pending_component.is_empty() {
-                        work.push(StyleClosureOp::Component(&route.pending_component));
-                    }
-                    if !route.fragment_id.is_empty() {
-                        work.push(StyleClosureOp::Component(&route.fragment_id));
-                    }
+                    work.push(StyleClosureOp::Fragment(tag_name));
                 }
             }
         }
@@ -1086,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn style_closure_follows_dynamic_and_route_dependencies_in_order() {
+    fn style_closure_follows_dynamic_dependencies_but_not_routes() {
         let nested_route = WebUiFragmentRoute {
             fragment_id: "nested-route".to_string(),
             ..Default::default()
@@ -1146,20 +999,24 @@ mod tests {
 
         assert_eq!(
             protocol.style_closure("index.html").expect("entry closure"),
-            [
-                "for-card",
-                "if-card",
-                "attribute-card",
-                "route-body",
-                "nested-route",
-                "route-pending",
-                "route-error",
-            ]
+            ["for-card", "if-card", "attribute-card"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("route-body")
+                .expect("route body closure"),
+            ["route-body"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("nested-route")
+                .expect("nested route closure"),
+            ["nested-route"]
         );
     }
 
     #[test]
-    fn style_closure_places_nested_routes_in_shadow_route_outlet_tree() {
+    fn style_closure_keeps_nested_routes_out_of_shadow_outlet_tree() {
         let child_route = WebUiFragmentRoute {
             fragment_id: "dashboard-page".to_string(),
             pending_component: "dashboard-pending".to_string(),
@@ -1221,29 +1078,26 @@ mod tests {
 
         protocol.populate_style_closures(&["index.html"]);
 
-        assert_eq!(
-            protocol.style_closure("index.html").expect("entry closure"),
-            ["shell-pending", "shell-error"]
-        );
+        assert!(protocol
+            .style_closure("index.html")
+            .expect("entry closure")
+            .is_empty());
         assert_eq!(
             protocol
                 .style_closure("app-shell")
                 .expect("Shadow shell closure"),
-            [
-                "app-shell",
-                "shell-header",
-                "route-layout",
-                "dashboard-page",
-                "contact-card",
-                "dashboard-pending",
-                "dashboard-error",
-                "shell-footer",
-            ]
+            ["app-shell", "shell-header", "route-layout", "shell-footer"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("dashboard-page")
+                .expect("active route closure"),
+            ["dashboard-page", "contact-card"]
         );
     }
 
     #[test]
-    fn style_closure_routes_through_nested_shadow_outlet_component() {
+    fn style_closure_keeps_routes_out_of_nested_shadow_outlet_component() {
         let route = WebUiFragmentRoute {
             fragment_id: "light-shell".to_string(),
             children: vec![WebUiFragmentRoute {
@@ -1286,15 +1140,27 @@ mod tests {
 
         protocol.populate_style_closures(&["index.html"]);
 
+        assert!(protocol
+            .style_closure("index.html")
+            .expect("entry closure")
+            .is_empty());
         assert_eq!(
-            protocol.style_closure("index.html").expect("entry closure"),
+            protocol
+                .style_closure("light-shell")
+                .expect("route shell closure"),
             ["light-shell"]
         );
         assert_eq!(
             protocol
                 .style_closure("shadow-layout")
                 .expect("nested Shadow closure"),
-            ["shadow-layout", "dashboard-page", "contact-card"]
+            ["shadow-layout"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("dashboard-page")
+                .expect("active route closure"),
+            ["dashboard-page", "contact-card"]
         );
     }
 

@@ -113,6 +113,10 @@ impl ParserPlugin for FastV3ParserPlugin {
         Ok(())
     }
 
+    fn owns_component_styles(&self) -> bool {
+        true
+    }
+
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
         if attr_name.starts_with('@')
             || attr_name == "f-ref"

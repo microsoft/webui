@@ -15,6 +15,7 @@ Object.defineProperty(globalThis, 'HTMLElement', {
     tagName = '';
     isConnected = false;
     childNodes: unknown[] = [];
+    children: unknown[] = [];
     shadowRoot = null;
     ownerDocument = document;
     _attrs: Record<string, string> = {};
@@ -55,6 +56,9 @@ Object.defineProperty(globalThis, 'document', {
       // selector ever changes instead of silently detecting non-streaming.
       assert.equal(selector, 'meta[name="webui-streaming"][content="1"]');
       return { getAttribute: () => '1' };
+    },
+    querySelectorAll() {
+      return [];
     },
   },
   configurable: true,

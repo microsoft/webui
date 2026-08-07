@@ -4,6 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 import {
+  claimSsrComponentStyles,
   installComponentStyles,
   registerComponentStyles,
   setCssModuleLoaderForTests,
@@ -11,13 +12,19 @@ import {
 } from './styles.js';
 
 class FakeElement {
+  localName: string;
   type = '';
   rel = '';
   href = '';
   nonce = '';
   textContent = '';
   removed = false;
+  parent?: FakeParent;
   private readonly attributes = new Map<string, string>();
+
+  constructor(localName = '') {
+    this.localName = localName;
+  }
 
   setAttribute(name: string, value: string): void {
     this.attributes.set(name, value);
@@ -29,11 +36,13 @@ class FakeElement {
 
   remove(): void {
     this.removed = true;
+    this.parent?.detach(this);
   }
 }
 
 class FakeParent {
   private readonly childElements: FakeElement[] = [];
+  private readonly nestedElements: FakeElement[] = [];
   markerScans = 0;
 
   get children(): FakeElement[] {
@@ -42,21 +51,40 @@ class FakeParent {
   }
 
   querySelectorAll(): FakeElement[] {
-    return this.childElements.filter(child =>
+    return this.childElements.concat(this.nestedElements).filter(child =>
       child.getAttribute('data-webui-resource') !== null
     );
   }
 
   appendChild(child: FakeElement): FakeElement {
+    child.parent?.detach(child);
     this.childElements.push(child);
+    child.parent = this;
     return child;
   }
 
   insertBefore(child: FakeElement, before: FakeElement | null): FakeElement {
+    child.parent?.detach(child);
     const index = before ? this.childElements.indexOf(before) : -1;
     if (index < 0) this.childElements.push(child);
     else this.childElements.splice(index, 0, child);
+    child.parent = this;
     return child;
+  }
+
+  appendNested(child: FakeElement): FakeElement {
+    child.parent?.detach(child);
+    this.nestedElements.push(child);
+    child.parent = this;
+    return child;
+  }
+
+  detach(child: FakeElement): void {
+    let index = this.childElements.indexOf(child);
+    if (index >= 0) this.childElements.splice(index, 1);
+    index = this.nestedElements.indexOf(child);
+    if (index >= 0) this.nestedElements.splice(index, 1);
+    if (child.parent === this) child.parent = undefined;
   }
 }
 
@@ -65,9 +93,10 @@ function fakeDocument(globalNonce = '', metaNonce = ''): Document {
   return {
     nodeType: 9,
     head,
-    createElement: () => new FakeElement(),
+    createElement: (name: string) => new FakeElement(name),
     defaultView: globalNonce ? { __webui: { nonce: globalNonce } } : null,
     querySelector: () => metaNonce ? { content: metaNonce } : null,
+    querySelectorAll: () => head.querySelectorAll(),
   } as unknown as Document;
 }
 
@@ -117,11 +146,101 @@ describe('component style resources', () => {
     );
   });
 
+  test('claims nested SSR route styles before a descendant installs', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    for (const id of ['first', 'second']) {
+      const marker = new FakeElement('style');
+      marker.setAttribute('data-webui-resource', id);
+      marker.setAttribute('data-webui-strategy', 'style');
+      parent.appendNested(marker);
+    }
+    registerComponentStyles(styles({
+      route: ['first', 'second'],
+      descendant: ['second'],
+    }), document);
+
+    await installComponentStyles('descendant', root);
+    await installComponentStyles('route', root);
+
+    assert.equal(parent.children.length, 0, 'nested SSR markers must prevent direct duplicates');
+    assert.deepEqual(
+      parent.querySelectorAll().map(child => child.getAttribute('data-webui-resource')),
+      ['first', 'second'],
+    );
+  });
+
+  test('claims route markers added after the CSS tree was first scanned', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    registerComponentStyles(styles({
+      empty: [],
+      lateRoute: ['first'],
+    }), document);
+    await installComponentStyles('empty', root);
+
+    const marker = new FakeElement('style');
+    marker.setAttribute('data-webui-resource', 'first');
+    marker.setAttribute('data-webui-strategy', 'style');
+    claimSsrComponentStyles({
+      parentElement: {
+        localName: 'webui-route',
+        children: [marker],
+      },
+    } as unknown as Element, root);
+    await installComponentStyles('lateRoute', root);
+
+    assert.equal(
+      (root as unknown as FakeParent).children.length,
+      0,
+      'a streamed route marker must prevent a direct duplicate',
+    );
+  });
+
+  test('adopts nested Module markers in route order when a descendant installs first', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    const firstSheet = {} as CSSStyleSheet;
+    const secondSheet = {} as CSSStyleSheet;
+    for (const id of ['first', 'second']) {
+      const marker = new FakeElement('style');
+      marker.setAttribute('data-webui-resource', id);
+      marker.setAttribute('data-webui-strategy', 'module');
+      parent.appendNested(marker);
+    }
+    registerComponentStyles({
+      version: 1,
+      strategy: 'module',
+      resources: {
+        first: { kind: 'module', specifier: 'first', css: '.first{}' },
+        second: { kind: 'module', specifier: 'second', css: '.second{}' },
+      },
+      closures: {
+        route: ['first', 'second'],
+        descendant: ['second'],
+      },
+    }, document);
+    setCssModuleLoaderForTests((specifier) => Promise.resolve({
+      default: specifier === 'first' ? firstSheet : secondSheet,
+    }));
+
+    await Promise.all([
+      installComponentStyles('descendant', root),
+      installComponentStyles('route', root),
+    ]);
+    setCssModuleLoaderForTests();
+
+    assert.deepEqual(root.adoptedStyleSheets, [firstSheet, secondSheet]);
+    assert.equal(parent.querySelectorAll().length, 0, 'adopted SSR fallbacks must be removed');
+  });
+
   test('installs around existing markers synchronously and caches the completed closure', () => {
     const document = fakeDocument();
     const root = fakeShadow(document);
     const parent = root as unknown as FakeParent;
-    const second = new FakeElement();
+    const second = new FakeElement('style');
     second.setAttribute('data-webui-resource', 'second');
     parent.appendChild(second);
     registerComponentStyles(styles({ root: ['first', 'second'] }), document);
@@ -180,9 +299,9 @@ describe('component style resources', () => {
   test('claims only an exact SSR resource marker', async () => {
     const document = fakeDocument();
     const root = fakeShadow(document);
-    const nearMatch = new FakeElement();
+    const nearMatch = new FakeElement('style');
     nearMatch.setAttribute('data-webui-resource', 'first-child');
-    const exact = new FakeElement();
+    const exact = new FakeElement('style');
     exact.setAttribute('data-webui-resource', 'first');
     (root as unknown as FakeParent).appendChild(nearMatch);
     (root as unknown as FakeParent).appendChild(exact);
@@ -220,7 +339,7 @@ describe('component style resources', () => {
     const unrelated = {} as CSSStyleSheet;
     const componentSheet = {} as CSSStyleSheet;
     root.adoptedStyleSheets = [unrelated];
-    const marker = new FakeElement();
+    const marker = new FakeElement('style');
     marker.setAttribute('data-webui-resource', 'module');
     (root as unknown as FakeParent).appendChild(marker);
     registerComponentStyles({
@@ -297,6 +416,66 @@ describe('component style resources', () => {
 
     assert.deepEqual(loaded, ['dependency', 'component', 'component']);
     assert.deepEqual(root.adoptedStyleSheets, [dependencySheet, componentSheet]);
+  });
+
+  test('adopts concurrent closures in reserved order when a descendant resolves first', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parentSheet = {} as CSSStyleSheet;
+    const childSheet = {} as CSSStyleSheet;
+    registerComponentStyles({
+      version: 1,
+      strategy: 'module',
+      resources: {
+        parent: { kind: 'module', specifier: 'parent', css: '.parent{}' },
+        child: { kind: 'module', specifier: 'child', css: '.child{}' },
+      },
+      closures: { parent: ['parent', 'child'], child: ['child'] },
+    }, document);
+    let releaseParent: (() => void) | undefined;
+    const parentGate = new Promise<void>((resolve) => {
+      releaseParent = resolve;
+    });
+    setCssModuleLoaderForTests((specifier) =>
+      specifier === 'parent'
+        ? parentGate.then(() => ({ default: parentSheet }))
+        : Promise.resolve({ default: childSheet }));
+
+    // The parent reserves both slots first, then the child closure resolves
+    // ahead of it.
+    const parentInstall = installComponentStyles('parent', root);
+    const childInstall = installComponentStyles('child', root);
+    await childInstall;
+    releaseParent?.();
+    await parentInstall;
+    setCssModuleLoaderForTests();
+
+    assert.deepEqual(root.adoptedStyleSheets, [parentSheet, childSheet]);
+  });
+
+  test('releases adopted Module fallback markers', async () => {
+    const document = fakeDocument();
+    const root = fakeShadow(document);
+    const parent = root as unknown as FakeParent;
+    const sheet = {} as CSSStyleSheet;
+    const marker = new FakeElement('style');
+    marker.setAttribute('data-webui-resource', 'component');
+    marker.setAttribute('data-webui-strategy', 'module');
+    parent.appendNested(marker);
+    registerComponentStyles({
+      version: 1,
+      strategy: 'module',
+      resources: { component: { kind: 'module', specifier: 'component', css: '.component{}' } },
+      closures: { component: ['component'] },
+    }, document);
+    setCssModuleLoaderForTests(() => Promise.resolve({ default: sheet }));
+
+    await installComponentStyles('component', root);
+    setCssModuleLoaderForTests();
+
+    assert.equal(marker.removed, true);
+    assert.equal(marker.parent, undefined, 'adopted marker must not stay reachable');
+    assert.deepEqual(root.adoptedStyleSheets, [sheet]);
   });
 
   test('loads and adopts Module resources in closure order', async () => {
