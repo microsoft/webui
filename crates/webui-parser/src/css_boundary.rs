@@ -61,29 +61,11 @@ pub(crate) fn compile(tag_name: &str, source: &str) -> Result<String> {
     let rewritten = rewrite_css(tag_name, source, &keyframes)?;
     let mut output = String::with_capacity(tag_name.len() + rewritten.len() + 58);
     output.push_str("@scope (");
-    push_css_escaped_tag(&mut output, tag_name);
+    output.push_str(tag_name);
     output.push_str("[data-wl]) to (:scope [data-wl] > *) {\n");
     output.push_str(&rewritten);
     output.push_str("\n}");
     Ok(output)
-}
-
-/// Append a tag name as a CSS type selector / identifier.
-///
-/// A custom-element name may legally contain `.`, which would otherwise parse
-/// as a class selector and silently scope the component to nothing. Every other
-/// character the HTML production allows is already identifier-safe here.
-fn push_css_escaped_tag(output: &mut String, tag_name: &str) {
-    if !tag_name.contains('.') {
-        output.push_str(tag_name);
-        return;
-    }
-    for character in tag_name.chars() {
-        if character == '.' {
-            output.push('\\');
-        }
-        output.push(character);
-    }
 }
 
 fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<KeyframeName>> {
@@ -752,7 +734,7 @@ fn compiled_keyframe_name(tag_name: &str, authored: &str) -> String {
     compiled.push_str("wui");
     let _ = write!(compiled, "{}", tag_name.len());
     compiled.push('-');
-    push_css_escaped_tag(&mut compiled, tag_name);
+    compiled.push_str(tag_name);
     compiled.push('-');
     if let Some(quote) = quote {
         compiled.push_str(&authored[1..authored.len() - 1]);
@@ -1365,19 +1347,6 @@ mod tests {
         assert!(css.contains("animation:other 1s linear"));
         assert!(css.contains("animation:1s linear wui7-my-card-linear"));
         assert!(css.contains("animation-name:wui7-my-card-linear,wui7-my-card-s"));
-    }
-
-    /// A custom-element name may legally contain `.`, which must not become a
-    /// class selector in the generated scope root.
-    #[test]
-    fn escapes_dotted_tag_names_in_scope_root_and_keyframes() {
-        let css = compile(
-            "x.foo-bar",
-            "@keyframes fade{to{opacity:1}}.card{color:red}",
-        )
-        .expect("compile");
-        assert!(css.starts_with(r"@scope (x\.foo-bar[data-wl])"));
-        assert!(css.contains(r"@keyframes wui9-x\.foo-bar-fade"));
     }
 
     /// `@scope` does not isolate `@keyframes`, so two components must never

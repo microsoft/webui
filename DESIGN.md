@@ -1382,12 +1382,22 @@ pub trait ParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
-        context: ComponentTemplateContext,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()>;
-    fn owns_component_styles(&self) -> bool { false }
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
+}
+
+pub enum ComponentStyleDelivery<'a> {
+    Link { href: &'a str },
+    Inline { css: &'a str },
+    Adopted { specifier: &'a str },
+}
+
+pub struct ComponentTemplateContext<'a> {
+    pub uses_shadow_dom: bool,
+    pub style: Option<ComponentStyleDelivery<'a>>,
 }
 ```
 
@@ -1395,8 +1405,8 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext` containing `uses_shadow_dom`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
-- **Style ownership**: `owns_component_styles` reports whether the plugin's client runtime builds its own roots from that captured template. It is `false` for WebUI, whose closures the handler installs, and `true` for FAST, whose captured Shadow templates keep an inline `<link>`/`<style>`. SSR output is style-free either way.
+- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
+- **Style delivery**: `ComponentTemplateContext` carries `uses_shadow_dom` plus the resolved `style` delivery — a neutral statement of fact, never a request. The parser injects nothing into any template. WebUI ignores `style` because the handler installs its precomputed closures; FAST reads it and keeps an inline `<link>`/`<style>` inside the Shadow template its runtime uses to build roots. `style` is reported only for components that authored a Shadow root: Light CSS is Document-owned and its `@scope` root cannot match from inside a runtime-created root. SSR output is style-free either way.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
