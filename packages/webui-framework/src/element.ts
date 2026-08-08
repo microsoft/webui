@@ -117,7 +117,7 @@ export class WebUIElement extends TemplateElement {
    * the shadow tree) plus every `composed` event on its way out of it.
    * Non-composed events (`change`, `submit`, `select`, media) stop at the
    * shadow root by design and are bound per element instead. `event.target` is
-   * retargeted to the host for inner events; use `event.composedPath()`.
+   * retargeted to the host for inner events; use `event.composedPath()[0]`.
    */
   private $wireRoot(instance: TemplateInstance, re: [string, string, CompiledEventArgs][]): void {
     for (let i = 0; i < re.length; i++) {

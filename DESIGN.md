@@ -3941,7 +3941,7 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   `composed` event leaving the shadow tree. Non-composed events (`change`,
   `submit`, `select`, media) stop at the shadow root by design and are bound per
   element instead. `event.target` is retargeted to the host for anything raised
-  inside the shadow tree; `event.composedPath()` recovers the originating element.
+  inside the shadow tree; `event.composedPath()[0]` recovers the originating element.
 - The full package entrypoint supports repeat metadata (`r[]` / `rl[]`). The additive `@microsoft/webui-framework/element-no-repeat` entrypoint preserves the same public `WebUIElement` API but must reject compiled templates that contain repeat metadata.
 
 Detailed component examples, decorators, and package entrypoint guidance live in [packages/webui-framework/README.md](packages/webui-framework/README.md) rather than being duplicated in this design spec.
