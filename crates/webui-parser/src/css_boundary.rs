@@ -3,11 +3,15 @@
 
 //! Compiler-owned CSS boundary for Light DOM components.
 //!
-//! Light DOM has no native style boundary, so the compiler builds one. Every
-//! element a component's template emits is stamped with a per-component marker
-//! attribute (`data-wl-<id>`, applied in `crate::light_scope`), and this module
-//! rewrites the component's authored CSS so each selector can only match a
-//! stamped element:
+//! Light DOM has no native style boundary, so the compiler builds one. Two
+//! shapes are available, and [`compile`] picks the strongest one each
+//! component's DOM permits — see [`LightScope`].
+//!
+//! **Stamped** (the fast path, used whenever a component's rendered DOM is
+//! fully known at build time). Every element the template emits is stamped with
+//! a per-component marker attribute (`data-wl-<id>`, applied in
+//! `crate::light_scope`), and every selector is qualified so it can only match
+//! a stamped element:
 //!
 //! ```text
 //! .label      ->  .label:where([data-wl-a1b2c3])
@@ -18,17 +22,26 @@
 //! `:where()` contributes zero specificity, so a scoped selector cascades
 //! exactly as the developer wrote it.
 //!
-//! **This replaced a native `@scope` prelude, and the swap was measured.** Both
-//! shapes produce byte-identical computed styles across the commerce example
-//! (~12,500 declarations over two routes, validated against an identity-rebuild
-//! control), but stamping recalculates styles 27-35% faster because Blink never
-//! computes scope activations. See `DESIGN.md` for the full comparison,
-//! including the shapes that were rejected.
+//! **Enclosed** (the general path). The authored rules are wrapped in a native
+//! `@scope` enclosure and `:host` lowers to `:scope`:
 //!
-//! The trade-off is the authoring contract: only elements a template declares
-//! carry the marker, so DOM a component builds imperatively at runtime is not
-//! covered. `@scope` covered it natively. This is documented in the styling
-//! guide as the one Light DOM authoring rule.
+//! ```text
+//! @scope (my-card[data-wl]) to (:scope [data-wl] > *) { .label { … } }
+//! ```
+//!
+//! **The stamped shape was measured against the enclosed one it fast-paths.**
+//! Both produce byte-identical computed styles across the commerce example
+//! (~642,000 declarations over four routes, validated against a live A/B of two
+//! builds), but stamping recalculates styles 13-15% faster at load and 7-9%
+//! faster across a route change, because Blink never computes scope
+//! activations. See `DESIGN.md` for the full comparison, including the shapes
+//! that were rejected.
+//!
+//! Stamping can only mark elements a template declares, so a component that
+//! renders opaque markup keeps the enclosed shape rather than silently losing
+//! its styles. DOM a component builds imperatively from its own JavaScript is
+//! outside both shapes' reach and is documented in the styling guide as the one
+//! Light DOM authoring rule.
 
 use crate::css_selector::for_each_compound;
 use crate::diagnostic::{codes, Diagnostic};
@@ -83,14 +96,36 @@ enum AtRule {
     Keyframes(KeyframeRule),
 }
 
+/// How a Light component's CSS is bounded to the DOM its own template owns.
+///
+/// The compiler picks the strongest boundary a component's DOM permits, so a
+/// component pays for dynamic scoping only when it can actually render DOM the
+/// compiler never sees.
+#[derive(Clone, Copy)]
+pub(crate) enum LightScope<'a> {
+    /// Every element the component renders carries `marker`, so the boundary
+    /// compiles away into ordinary selector matching. Requires the rendered DOM
+    /// to be fully known at build time.
+    ///
+    /// This is also the shape a future minifier or dead-selector pass needs: a
+    /// stamped rule is statically bounded to exactly one template, so whether
+    /// it can ever match is decidable at build time.
+    Stamped { marker: &'a str },
+    /// The component can render markup the compiler never sees, so the boundary
+    /// is a native `@scope` enclosure the engine resolves at match time.
+    Enclosed,
+}
+
 /// Splices per-component scope markers into an authored selector list.
 ///
 /// Owns its scratch buffers so a whole stylesheet is rewritten with a fixed
 /// number of allocations regardless of how many rules it contains.
 struct Stamper {
-    /// Selector matching the component host, e.g. `my-card[data-wl]`.
+    /// Selector matching the component host: `my-card[data-wl]` when stamped,
+    /// `:scope` when enclosed, where the `@scope` root is already the host.
     host: String,
-    /// Zero-specificity qualifier, e.g. `:where([data-wl-a1b2c3])`.
+    /// Zero-specificity qualifier, e.g. `:where([data-wl-a1b2c3])`. Empty when
+    /// enclosed, where `@scope` bounds the selector instead.
     qualifier: String,
     /// Output offsets of host anchors written into the current prelude.
     host_anchors: Vec<usize>,
@@ -107,17 +142,26 @@ enum Edit {
 }
 
 impl Stamper {
-    fn new(tag_name: &str, scope_marker: &str) -> Self {
-        let mut host = String::with_capacity(tag_name.len() + LIGHT_DOM_MARKER_ATTR.len() + 2);
-        host.push_str(tag_name);
-        host.push('[');
-        host.push_str(LIGHT_DOM_MARKER_ATTR);
-        host.push(']');
+    fn new(tag_name: &str, scope: LightScope<'_>) -> Self {
+        let mut host = String::new();
+        let mut qualifier = String::new();
+        match scope {
+            LightScope::Stamped { marker } => {
+                host.reserve(tag_name.len() + LIGHT_DOM_MARKER_ATTR.len() + 2);
+                host.push_str(tag_name);
+                host.push('[');
+                host.push_str(LIGHT_DOM_MARKER_ATTR);
+                host.push(']');
 
-        let mut qualifier = String::with_capacity(scope_marker.len() + 10);
-        qualifier.push_str(":where([");
-        qualifier.push_str(scope_marker);
-        qualifier.push_str("])");
+                qualifier.reserve(marker.len() + 10);
+                qualifier.push_str(":where([");
+                qualifier.push_str(marker);
+                qualifier.push_str("])");
+            }
+            // The `@scope` root is the host, so `:host` lowers to `:scope` and
+            // the enclosure alone bounds every selector.
+            LightScope::Enclosed => host.push_str(":scope"),
+        }
 
         Self {
             host,
@@ -126,6 +170,11 @@ impl Stamper {
             edits: Vec::new(),
             scratch: String::new(),
         }
+    }
+
+    /// Whether selectors carry a marker, as opposed to being `@scope`-enclosed.
+    fn is_stamped(&self) -> bool {
+        !self.qualifier.is_empty()
     }
 
     /// Begin a new selector prelude, discarding the previous one's anchors.
@@ -144,6 +193,9 @@ impl Stamper {
     /// off inside an authored `@scope` block, where `:scope` refers to the
     /// developer's own scoping root rather than the component host.
     fn qualify(&mut self, output: &mut String, range: Range<usize>, lower_scope: bool) {
+        if !self.is_stamped() {
+            return;
+        }
         let selector = &output[range.clone()];
         self.edits.clear();
         let (host_anchors, edits) = (&self.host_anchors, &mut self.edits);
@@ -213,16 +265,33 @@ impl Stamper {
 
 /// Compile developer-authored component CSS for one Light DOM component.
 ///
-/// `scope_marker` is the component's stamped marker attribute name, as produced
-/// by [`crate::light_scope::marker_attribute`].
-pub(crate) fn compile(tag_name: &str, scope_marker: &str, source: &str) -> Result<String> {
+/// `scope` selects the boundary shape; see [`LightScope`].
+pub(crate) fn compile(tag_name: &str, scope: LightScope<'_>, source: &str) -> Result<String> {
     if source.trim().is_empty() {
         return Ok(String::new());
     }
 
     let keyframes = collect_keyframes_and_validate(tag_name, source)?;
-    let mut stamper = Stamper::new(tag_name, scope_marker);
-    rewrite_css(tag_name, source, &keyframes, &mut stamper)
+    let mut stamper = Stamper::new(tag_name, scope);
+    let rewritten = rewrite_css(tag_name, source, &keyframes, &mut stamper)?;
+    if stamper.is_stamped() {
+        return Ok(rewritten);
+    }
+
+    let mut output = String::with_capacity(tag_name.len() + rewritten.len() + 58);
+    // The lower boundary is also the fastest `@scope` shape measured, not just
+    // the isolating one. Dropping it, or replacing it with an implicit
+    // `to ([data-wl] > *)`, measured 5.4% slower style recalculation: the
+    // limit prunes nested component subtrees out of the scope, shrinking the
+    // element set Blink computes scope activations for. Narrowing the root to
+    // a bare tag, tightening the limit, or wrapping it in `:where()` all
+    // measured 3-5% slower. Do not "simplify" this prelude without measuring.
+    output.push_str("@scope (");
+    output.push_str(tag_name);
+    output.push_str("[data-wl]) to (:scope [data-wl] > *) {\n");
+    output.push_str(&rewritten);
+    output.push_str("\n}");
+    Ok(output)
 }
 
 fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<KeyframeName>> {
@@ -1228,7 +1297,11 @@ mod tests {
     const MARKER: &str = "data-wl-t3stid";
 
     fn compile(source: &str) -> Result<String> {
-        super::compile("my-card", MARKER, source)
+        super::compile("my-card", LightScope::Stamped { marker: MARKER }, source)
+    }
+
+    fn enclose(source: &str) -> Result<String> {
+        super::compile("my-card", LightScope::Enclosed, source)
     }
 
     #[test]
@@ -1303,6 +1376,47 @@ mod tests {
             css,
             "my-card[data-wl] .label:where([data-wl-t3stid]) { color:red }"
         );
+    }
+
+    /// A component that can render markup the compiler never sees keeps the
+    /// native enclosure, which resolves membership at match time and therefore
+    /// covers elements no template declares.
+    #[test]
+    fn encloses_rules_when_the_dom_is_not_build_time_known() {
+        let css = enclose(".label p { color:red }").expect("compile");
+        assert_eq!(
+            css,
+            concat!(
+                "@scope (my-card[data-wl]) to (:scope [data-wl] > *) {\n",
+                ".label p { color:red }\n}"
+            )
+        );
+    }
+
+    /// `:host` stays the cross-mode host abstraction in both shapes; only what
+    /// it lowers to differs.
+    #[test]
+    fn encloses_host_selectors_as_scope() {
+        let source = concat!(
+            ":host { display:block }",
+            ":host([disabled]):hover { opacity:.5 }"
+        );
+        let css = enclose(source).expect("compile");
+        assert!(css.contains(":scope { display:block }"));
+        assert!(css.contains(":scope:is([disabled]):hover { opacity:.5 }"));
+        assert!(!css.contains("my-card[data-wl] {"));
+    }
+
+    /// Keyframe namespacing is independent of the boundary shape: neither
+    /// `@scope` nor stamping isolates `@keyframes`.
+    #[test]
+    fn namespaces_keyframes_in_both_shapes() {
+        let source = "@keyframes fade{to{opacity:1}}.x{animation:fade 1s}";
+        for css in [compile(source), enclose(source)] {
+            let css = css.expect("compile");
+            assert!(css.contains("@keyframes wui7-my-card-fade"));
+            assert!(css.contains("animation:wui7-my-card-fade 1s"));
+        }
     }
 
     #[test]
@@ -1460,10 +1574,18 @@ mod tests {
     /// compile the same animation name.
     #[test]
     fn keyframe_names_never_collide_across_components() {
-        let outer =
-            super::compile("x-foo", MARKER, "@keyframes bar-baz{to{opacity:1}}").expect("compile");
-        let inner =
-            super::compile("x-foo-bar", MARKER, "@keyframes baz{to{opacity:1}}").expect("compile");
+        let outer = super::compile(
+            "x-foo",
+            LightScope::Stamped { marker: MARKER },
+            "@keyframes bar-baz{to{opacity:1}}",
+        )
+        .expect("compile");
+        let inner = super::compile(
+            "x-foo-bar",
+            LightScope::Stamped { marker: MARKER },
+            "@keyframes baz{to{opacity:1}}",
+        )
+        .expect("compile");
         assert!(outer.contains("@keyframes wui5-x-foo-bar-baz"));
         assert!(inner.contains("@keyframes wui9-x-foo-bar-baz"));
     }

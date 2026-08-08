@@ -4378,12 +4378,21 @@ impl HtmlParser {
         artifact_needed: bool,
     ) -> Result<BuiltComponentTemplate> {
         let dom_analysis = self.analyze_component_dom(tag_name, html)?;
-        let scope_marker = if dom_analysis.uses_shadow_dom {
-            None
-        } else {
+        let is_light = !dom_analysis.uses_shadow_dom;
+        // Pick the strongest boundary this component's DOM permits. A template
+        // that can interpolate opaque markup keeps the `@scope` enclosure,
+        // which scopes at match time and therefore covers elements no compiled
+        // template declares; everything else takes the stamped fast path.
+        let marker = if is_light && !light_scope::renders_opaque_html(html) {
             Some(self.light_scope_marker(tag_name)?)
+        } else {
+            None
         };
-        let compiled_css = if let Some(marker) = scope_marker.as_deref() {
+        let scope = is_light.then_some(match marker.as_deref() {
+            Some(marker) => css_boundary::LightScope::Stamped { marker },
+            None => css_boundary::LightScope::Enclosed,
+        });
+        let compiled_css = if let Some(scope) = scope {
             if self.compiled_light_css.contains(tag_name) {
                 self.component_registry
                     .get(tag_name)
@@ -4391,7 +4400,7 @@ impl HtmlParser {
                     .or_else(|| css_content.map(str::to_string))
             } else {
                 let compiled = css_content
-                    .map(|css| css_boundary::compile(tag_name, marker, css))
+                    .map(|css| css_boundary::compile(tag_name, scope, css))
                     .transpose()?;
                 if let Some(css) = compiled.as_ref() {
                     self.component_registry
@@ -4406,8 +4415,9 @@ impl HtmlParser {
         let css_content = compiled_css.as_deref().or(css_content);
         // Only a component that ships CSS needs markers; stamping a style-free
         // template would be pure payload.
-        let scope_marker =
-            scope_marker.filter(|_| css_content.is_some_and(|css| !css.trim().is_empty()));
+        let scope_marker = marker
+            .as_deref()
+            .filter(|_| css_content.is_some_and(|css| !css.trim().is_empty()));
         let adopted_specifier = match self.options.css_strategy {
             CssStrategy::Module if css_content.is_some() => Some(tag_name),
             _ => None,
@@ -4450,7 +4460,7 @@ impl HtmlParser {
         // authored bytes untouched leaves reserved-marker validation free to
         // reject the whole `data-wl-*` family without tripping over WebUI's own
         // markers.
-        let (ssr, artifact) = match scope_marker.as_deref() {
+        let (ssr, artifact) = match scope_marker {
             Some(marker) => (
                 light_scope::stamp_template(&ssr, marker).unwrap_or(ssr),
                 artifact.map(|html| light_scope::stamp_template(&html, marker).unwrap_or(html)),
@@ -7644,6 +7654,82 @@ mod tests {
             !raw.contains(&child_marker),
             "nested host must not carry its own descendant marker: {raw}"
         );
+    }
+
+    /// A template that can interpolate opaque markup cannot be stamped: the
+    /// interpolated elements do not exist at build time, so a marker-qualified
+    /// selector would silently stop matching them. Such a component keeps the
+    /// native `@scope` enclosure and emits no markers at all.
+    #[test]
+    fn raw_html_binding_falls_back_to_the_scope_enclosure() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<div class=\"body\">{{{descriptionHtml}}}</div>",
+                Some(".body p{margin:0}"),
+                false,
+            ))
+            .expect("register component");
+        parser
+            .parse("index.html", "<my-card></my-card>")
+            .expect("parse component");
+
+        let css = parser
+            .component_registry()
+            .get("my-card")
+            .and_then(|component| component.css_content.clone())
+            .expect("compiled CSS");
+        assert!(
+            css.starts_with("@scope (my-card[data-wl])"),
+            "opaque-HTML component must keep the enclosure: {css}"
+        );
+        assert!(
+            !css.contains(":where([data-wl-"),
+            "enclosed CSS must not be marker-qualified: {css}"
+        );
+
+        let marker = light_scope::marker_attribute("my-card");
+        let records = parser.into_fragment_records();
+        let raw: String = records["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match &fragment.fragment {
+                Some(web_ui_fragment::Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !raw.contains(&marker),
+            "enclosed component must not be stamped: {raw}"
+        );
+    }
+
+    /// The same component without the raw binding takes the stamped fast path.
+    #[test]
+    fn escaped_binding_keeps_the_stamped_boundary() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<div class=\"body\">{{description}}</div>",
+                Some(".body p{margin:0}"),
+                false,
+            ))
+            .expect("register component");
+        parser
+            .parse("index.html", "<my-card></my-card>")
+            .expect("parse component");
+
+        let css = parser
+            .component_registry()
+            .get("my-card")
+            .and_then(|component| component.css_content.clone())
+            .expect("compiled CSS");
+        assert!(!css.contains("@scope"), "must not be enclosed: {css}");
+        assert_eq!(css.matches(":where([data-wl-").count(), 2);
     }
 
     #[test]

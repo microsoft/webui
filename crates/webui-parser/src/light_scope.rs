@@ -60,6 +60,26 @@ pub(crate) fn is_reserved_marker(name: &str) -> bool {
         && name[..SCOPE_MARKER_PREFIX.len()].eq_ignore_ascii_case(SCOPE_MARKER_PREFIX)
 }
 
+/// Opening delimiter of a raw (unescaped) binding.
+///
+/// `HandlebarsParser` treats `{{{expr}}}` as a signal whose value is written to
+/// the document as markup rather than as text.
+const RAW_BINDING_OPEN: &str = "{{{";
+
+/// Whether a template can render elements the compiler never sees.
+///
+/// A raw binding interpolates author-supplied markup at render time, so the
+/// elements it produces exist in no compiled template and cannot be stamped.
+/// Their component keeps the `@scope` enclosure, which resolves the boundary at
+/// match time and therefore covers DOM of any origin.
+///
+/// Deliberately conservative: it tests only for the opening delimiter, so a
+/// literal `{{{` in text costs that component the stamped fast path but can
+/// never cost it correctness.
+pub(crate) fn renders_opaque_html(html: &str) -> bool {
+    html.contains(RAW_BINDING_OPEN)
+}
+
 /// Stamp `marker` onto every element in a Light component template.
 ///
 /// Returns `None` when the template declares no elements, so callers skip the
@@ -155,6 +175,15 @@ mod tests {
         assert!(!is_reserved_marker("data-wl"));
         assert!(!is_reserved_marker("data-wrapper"));
         assert!(!is_reserved_marker("data-w"));
+    }
+
+    #[test]
+    fn detects_only_raw_bindings_as_opaque() {
+        assert!(renders_opaque_html("<div>{{{descriptionHtml}}}</div>"));
+        assert!(renders_opaque_html("<div>{{{ a.b }}}</div>"));
+        assert!(!renders_opaque_html("<div>{{description}}</div>"));
+        assert!(!renders_opaque_html("<div class=\"{{cls}}\">x</div>"));
+        assert!(!renders_opaque_html("<div>plain</div>"));
     }
 
     #[test]

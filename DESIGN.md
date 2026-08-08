@@ -1509,7 +1509,27 @@ transformation, or cascade order.
 Developers author one ordinary paired component stylesheet and use `:host` as the
 Light/Shadow host API. After legal-comment processing, Shadow components retain
 those CSS bytes unchanged. Light components are compiled before
-Link filename hashing or Style/Module storage:
+Link filename hashing or Style/Module storage.
+
+Light DOM has no native style boundary, so the compiler builds one. Two shapes
+exist, and the compiler picks the strongest one each component's DOM permits:
+
+- **Stamped** — the fast path, taken whenever the component's rendered DOM is
+  fully known at build time. Every element is marked, and every selector is
+  qualified so it can only match a marked element.
+- **Enclosed** — the general path, taken when the component can render markup the
+  compiler never sees. The authored rules are wrapped in a native
+  `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)` prelude, which resolves
+  membership at match time.
+
+A component takes the enclosed path when its template contains a raw HTML binding
+(`{{{expr}}}`), which interpolates author-supplied markup at render time. Such
+elements exist in no compiled template, so a stamped selector would silently stop
+matching them; `@scope` covers them natively. The detection is conservative and
+purely textual, so a false positive costs the fast path but never correctness.
+Every other binding form escapes its value into text and is safe to stamp.
+
+The stamped shape:
 
 - Every element the component's template declares is stamped at build time with a
   presence-only marker attribute `data-wl-<id>`, where `<id>` is a base36 FNV-1a
@@ -1527,31 +1547,45 @@ Link filename hashing or Style/Module storage:
   `<title>`, `<base>`, `<head>`) are not stamped, since no rendered-content
   selector can match them. `<template>` *content* is stamped, because WebUI
   clones it into the live tree for repeats and conditionals.
-- This shape replaced a native
-  `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)` prelude, and the swap was
-  measured on a 26-component app: stamping reproduces the previous computed
-  styles exactly (~12,500 declarations per route, two routes, verified against an
-  identity-rebuild control) for 27-35% less style recalculation, at roughly +200
-  bytes of compressed markup per document. Anchoring rules on the host as a plain
-  descendant selector (`<tag>[data-wl] .sel`) was also measured and is rejected
-  permanently: it is slower than stamping *and* leaks parent rules into nested
-  components.
-- The trade-off is an authoring contract. DOM created imperatively inside a
-  component (`element.innerHTML = '<div class="x">'`) carries no marker and is not
-  styled by that component's CSS, which native `@scope` covered. Component hosts
-  created with `document.createElement` are unaffected: their content comes from
-  the compiled, stamped template. This is documented in the styling guide.
 - Selectors are qualified rather than nested, so a rule is statically bounded to
   one template. That makes the element inventory for a stylesheet finite and known
   at build time, which is the precondition for future dead-selector elimination
-  and minification.
-- Selector anchors lower from `:host` to `<tag>[data-wl]`; functional
-  `:host(<compound>)` lowers to `<tag>[data-wl]:is(<compound>)`. The host owns
-  `data-wl` and never carries the descendant marker. A bare top-level `:scope`
-  lowers the same way, preserving the meaning it had under the generated `@scope`
-  root; inside an authored `@scope` it keeps its platform meaning. Strings,
-  comments, declaration values, and custom properties are never
-  selector-rewritten.
+  and minification. Enclosed components are not eligible for those passes, since
+  their matchable element set is open.
+
+Stamping was measured against the enclosure it fast-paths, on a 26-component app
+served from two independently built release binaries. The two shapes produce
+byte-identical computed styles (~642,000 declarations compared across four
+routes), and stamping recalculates styles 13-15% faster at load and 7-9% faster
+across a route change at a 100% and 76-85% paired win rate respectively, at
+roughly +4% compressed document bytes. Anchoring rules on the host as a plain
+descendant selector (`<tag>[data-wl] .sel`) was also measured and is rejected
+permanently: it is slower than stamping *and* leaks parent rules into nested
+components. The `@scope` prelude's lower boundary is a saving, not a cost —
+removing it measured 5.4% slower, because it prunes nested component subtrees out
+of the scope.
+
+Two behaviors differ between the shapes, both by construction:
+
+- **Imperative DOM.** DOM created imperatively inside a stamped component
+  (`element.innerHTML = '<div class="x">'`) carries no marker and is not styled by
+  that component's CSS; an enclosed component covers it. Component hosts created
+  with `document.createElement` are unaffected in either shape: their content
+  comes from the compiled template. This is documented in the styling guide.
+- **Projected children.** A stamped component's CSS cannot style children
+  projected into it by its parent, because those carry the parent's marker. An
+  enclosed component's CSS can, since projected children sit under the scope root
+  and above the `[data-wl] > *` limit. This only surfaces for a component that
+  uses a raw binding, receives projected children, *and* styles them.
+
+Shared by both shapes:
+
+- Selector anchors lower from `:host` to `<tag>[data-wl]` when stamped and to
+  `:scope` when enclosed; functional `:host(<compound>)` lowers to the same anchor
+  followed by `:is(<compound>)`. The host owns `data-wl` and never carries the
+  descendant marker. A bare top-level `:scope` lowers the same way as `:host`;
+  inside an authored `@scope` it keeps its platform meaning. Strings, comments,
+  declaration values, and custom properties are never selector-rewritten.
 - Block grouping rules (`@media`, `@supports`, `@container`, `@layer`, and
   authored `@scope`) remain nested, and an authored `@scope` prelude has both its
   root and limit selector lists qualified. Global or statement-form at-rules that
@@ -1563,9 +1597,9 @@ Link filename hashing or Style/Module storage:
   prefix (`wui<tag-length>-<tag>-<name>`, whose length delimiter keeps
   `<x-foo>`/`bar-baz` distinct from `<x-foo-bar>`/`baz`), and static
   `animation` / `animation-name` references (including vendor-prefixed forms) are
-  rewritten token-by-token. Dynamic references that could name a local keyframe
-  fail with `dynamic-light-keyframe` rather than silently targeting an
-  unnamespaced rule.
+  rewritten token-by-token. Neither shape isolates `@keyframes`, so this applies
+  to both. Dynamic references that could name a local keyframe fail with
+  `dynamic-light-keyframe` rather than silently targeting an unnamespaced rule.
 
 The same compiled bytes feed Link assets and hashes, inline Style content, Module
 data URIs, component CSS storage, and token diagnostics.

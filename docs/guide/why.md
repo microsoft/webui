@@ -44,7 +44,8 @@ Historically, frameworks existed because the web platform lacked key primitives.
 
 - **Web Components** - reusable custom elements with a standard lifecycle, no framework runtime required
 - **Declarative Shadow DOM** - server-renderable encapsulation without JavaScript
-- **CSS scoping** - build-time scope markers for Light component styles
+- **CSS scoping** - build-time scope markers, and native `@scope` where a
+  component renders markup the compiler cannot see
 - **Adopted stylesheets** - shared, constructable stylesheets when module
   delivery is selected
 - **Navigation API** - client-side routing without framework abstractions
