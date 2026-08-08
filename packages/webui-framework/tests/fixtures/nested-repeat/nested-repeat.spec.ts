@@ -231,3 +231,29 @@ test.describe('sibling repeat after root-level nested repeat (#405)', () => {
     await expect(others).toHaveText(['Three', 'Four']);
   });
 });
+
+test.describe('repeat that revisits an earlier parent (#431)', () => {
+  test('hydrates the trailing repeat against its own marker', async ({ page }) => {
+    await page.goto('/nested-repeat/fixture.html');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-repeat-interleaved');
+      return el && (el as unknown as { $ready?: boolean }).$ready === true;
+    });
+
+    const host = page.locator('test-repeat-interleaved');
+
+    await expect(host.locator('.head-item')).toHaveText(['H1', 'H2']);
+    await expect(host.locator('.panel-head .inner-item')).toHaveText(['I1', 'I2']);
+    await expect(host.locator('.tail-item')).toHaveText(['T1', 'T2']);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-repeat-interleaved') as HTMLElement & {
+        replaceTail(): void;
+      }).replaceTail();
+    });
+
+    await expect(host.locator('.tail-item')).toHaveText(['T3', 'T4', 'T5']);
+    await expect(host.locator('.head-item')).toHaveText(['H1', 'H2']);
+    await expect(host.locator('.panel-head .inner-item')).toHaveText(['I1', 'I2']);
+  });
+});

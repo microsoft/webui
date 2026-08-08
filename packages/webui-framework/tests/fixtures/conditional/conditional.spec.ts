@@ -10,8 +10,10 @@ test.describe('conditional fixture', () => {
     await page.waitForFunction(() => {
       const conditional = document.querySelector('test-conditional');
       const ranges = document.querySelector('test-conditional-hydration-ranges');
+      const interleaved = document.querySelector('test-conditional-interleaved');
       return conditional && (conditional as any).$ready === true
-        && ranges && (ranges as any).$ready === true;
+        && ranges && (ranges as any).$ready === true
+        && interleaved && (interleaved as any).$ready === true;
     });
   });
 
@@ -135,5 +137,43 @@ test.describe('conditional fixture', () => {
       (document.querySelector('test-conditional') as any).count = 0;
     });
     await expect(page.locator('test-conditional .gt-zero')).toHaveCount(0);
+  });
+
+  test('anchors a conditional that revisits an earlier parent to its own marker', async ({ page }) => {
+    const host = page.locator('test-conditional-interleaved');
+
+    // SSR places every branch correctly.
+    await expect(host.locator('.head')).toHaveText('head');
+    await expect(host.locator('.stats .cell .num.pending')).toHaveText('pending');
+    await expect(host.locator('.head .num')).toHaveCount(0);
+
+    // A conditional nested inside the second root-level `<if>` updates on the client.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-interleaved') as any).value = '42';
+    });
+
+    await expect(host.locator('.stats .cell .num')).toHaveText('42');
+    await expect(host.locator('.stats .cell .num.pending')).toHaveCount(0);
+    await expect(host.locator('.head .num')).toHaveCount(0);
+    await expect(host.locator('.head')).toHaveText('head');
+  });
+
+  test('toggles a root conditional that revisits an earlier parent', async ({ page }) => {
+    const host = page.locator('test-conditional-interleaved');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-interleaved') as any).showStats = false;
+    });
+    await expect(host.locator('.head')).toHaveCount(0);
+    await expect(host.locator('.stats')).toHaveCount(0);
+    await expect(host.locator('.box .box-body')).toHaveText('body');
+    await expect(host.locator('.box .full-title')).toHaveText('full title');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-interleaved') as any).showStats = true;
+    });
+    await expect(host.locator('.head')).toHaveText('head');
+    await expect(host.locator('.stats .cell .num.pending')).toHaveText('pending');
+    await expect(host.locator('.box .full-title')).toHaveText('full title');
   });
 });

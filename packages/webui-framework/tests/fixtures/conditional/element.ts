@@ -47,3 +47,11 @@ export class TestConditionalHydrationRanges extends WebUIElement {
 }
 
 TestConditionalHydrationRanges.define('test-conditional-hydration-ranges');
+
+export class TestConditionalInterleaved extends WebUIElement {
+  @observable showStats = true;
+  @observable compact = false;
+  @observable value = '';
+}
+
+TestConditionalInterleaved.define('test-conditional-interleaved');

@@ -125,6 +125,17 @@ export class TestRepeatSiblings extends WebUIElement {
   }
 }
 
+export class TestRepeatInterleaved extends WebUIElement {
+  @observable headItems: string[] = [];
+  @observable innerItems: string[] = [];
+  @observable tailItems: string[] = [];
+
+  replaceTail(): void {
+    this.tailItems = ['T3', 'T4', 'T5'];
+  }
+}
+
 TestNestedRepeat.define('test-nested-repeat');
 TestRepeatSiblings.define('test-repeat-siblings');
 TestNestedRepeatKeyedChain.define('test-nested-repeat-keyed-chain');
+TestRepeatInterleaved.define('test-repeat-interleaved');

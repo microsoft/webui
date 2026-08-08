@@ -1313,8 +1313,16 @@ export class TemplateElement extends HTMLElement {
 
     // Conditional bindings — use <!--wc--> markers as anchors
     if (meta.c) {
+      // Compiled conditionals are in source order, but consecutive entries can
+      // sit under different parents and later return to an earlier one (a root
+      // `<if>`, a static subtree holding its own `<if>`s, then another root
+      // `<if>`).  A single cursor would restart that parent's scan and reclaim
+      // an already-consumed marker, so each parent keeps its own cursor.  The
+      // map is allocated only once a second parent appears — templates whose
+      // conditionals all share one parent never pay for it.
       let lastCondMarker: Node | null = null;
       let lastCondParent: Node | null = null;
+      let condCursors: Map<Node, Node | null> | null = null;
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath] = slotMeta;
@@ -1322,9 +1330,13 @@ export class TemplateElement extends HTMLElement {
         const blockMeta = this.$block(blockIndex);
         let condInstance: TemplateInstance | null = null;
 
-        // Reset cursor when parent changes between iterations
+        // Switch cursors when the parent changes between iterations
         if (ssrParent !== lastCondParent) {
-          lastCondMarker = null;
+          if (lastCondParent) {
+            condCursors ??= new Map();
+            condCursors.set(lastCondParent, lastCondMarker);
+          }
+          lastCondMarker = condCursors?.get(ssrParent) ?? null;
           lastCondParent = ssrParent;
         }
 
@@ -1372,16 +1384,22 @@ export class TemplateElement extends HTMLElement {
 
     // Repeat bindings — use <!--wr--> markers as anchors, <!--wi--> for items
     if (meta.r) {
+      // Per-parent cursors, for the same reason as conditionals above.
       let lastRepMarker: Node | null = null;
       let lastRepParent: Node | null = null;
+      let repCursors: Map<Node, Node | null> | null = null;
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
         const [parentPath] = slotMeta;
         const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
 
-        // Reset cursor when parent changes between iterations
+        // Switch cursors when the parent changes between iterations
         if (ssrParent !== lastRepParent) {
-          lastRepMarker = null;
+          if (lastRepParent) {
+            repCursors ??= new Map();
+            repCursors.set(lastRepParent, lastRepMarker);
+          }
+          lastRepMarker = repCursors?.get(ssrParent) ?? null;
           lastRepParent = ssrParent;
         }
         const blockMeta = this.$block(blockIndex);
