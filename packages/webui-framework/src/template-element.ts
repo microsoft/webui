@@ -74,9 +74,7 @@ import {
   MARKER_COND_END,
   MARKER_REPEAT_START,
 } from './element/markers.js';
-import {
-  injectModuleStyle,
-} from './element/styles.js';
+import { claimSsrComponentStyles, installComponentStyles } from './element/styles.js';
 import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
@@ -355,7 +353,10 @@ export class TemplateElement extends HTMLElement {
       return ACTIVATION_MISSING_TEMPLATE;
     }
     this.$meta = meta;
-    if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
+    if (!this.$shouldActivateOnBoundaryCommit()) {
+      this.$installStyles(meta);
+      return ACTIVATION_STATIC_HOST_OPT_OUT;
+    }
     this.$activateDeferredSSR(state);
     return ACTIVATION_ACTIVATED;
   }
@@ -479,6 +480,10 @@ export class TemplateElement extends HTMLElement {
       isSSR = false;
     }
 
+    // Styles are required even when a compiler-owned SSR host remains dormant.
+    // Install them after root selection but before the hydration deferral.
+    this.$installStyles(meta);
+
     if (isSSR && !forceSSR && this.$shouldDeferSSRHydration()) {
       this.$meta = meta;
       this.$deferredSSR = true;
@@ -488,8 +493,9 @@ export class TemplateElement extends HTMLElement {
 
     hydrationStart();
     try {
-      // Inject CSS module stylesheet after root is determined
-      if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
+      if (!isSSR && !wantShadow && !this.hasAttribute('data-wl')) {
+        this.setAttribute('data-wl', '');
+      }
 
       if (isSSR) {
         // Seed explicit authored state. A streamed activation (forceSSR) supplies
@@ -539,6 +545,23 @@ export class TemplateElement extends HTMLElement {
       this.$notifyHydrated();
     } finally {
       hydrationEnd();
+    }
+  }
+
+  private $installStyles(meta: TemplateMeta): void {
+    const wantShadow = !!this.shadowRoot || !!meta.sd;
+    const containingRoot = this.getRootNode();
+    const styleTarget = wantShadow
+      ? this.shadowRoot!
+      : containingRoot.nodeType === 11 && 'host' in containingRoot
+        ? containingRoot as ShadowRoot
+        : this.ownerDocument;
+    claimSsrComponentStyles(this, styleTarget);
+    const installation = installComponentStyles(this.localName, styleTarget);
+    if (installation) {
+      void installation.catch((error) => {
+        console.error(error);
+      });
     }
   }
 

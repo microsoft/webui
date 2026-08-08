@@ -38,10 +38,15 @@ pub struct WebUIProtocol {
     pub components: HashMap<String, ComponentData>,
     /// Build-wide CSS delivery strategy (Link, Style, or Module).
     pub css_strategy: CssStrategy,
-    /// Build-wide DOM encapsulation strategy (Shadow or Light).
-    pub dom_strategy: DomStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Ordered component style resources for each CSS-tree entry point.
+    pub style_closures: HashMap<String, ComponentStyleClosure>,
+}
+
+pub struct ComponentStyleClosure {
+    /// Component tags in cascade-sensitive first-discovery order.
+    pub component_tags: Vec<String>,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -50,7 +55,7 @@ pub struct WebUIProtocol {
 pub struct ComponentData {
     /// Non-WebUI client-side template payload, such as FAST `<f-template>` HTML.
     pub template: String,
-    /// Component CSS content for the Module strategy.
+    /// Compiled component CSS content for Style and Module strategies.
     pub css: String,
     /// External stylesheet href for the Link CSS strategy.
     /// Default format is `<component-name>.css`, but build-time naming
@@ -58,10 +63,7 @@ pub struct ComponentData {
     /// prepend a CDN/public base URL.
     /// Always set when CssStrategy::Link is active and the component has CSS.
     /// Empty for Style/Module strategies and for components without CSS.
-    /// The handler uses `css_strategy` and `dom_strategy` on `WebUIProtocol` to
-    /// decide what to emit in `<head>`:
-    ///   Link + Shadow → `<link rel="preload">` (shadow root has the stylesheet)
-    ///   Link + Light  → `<link rel="stylesheet">` (no shadow root to host it)
+    /// Ordered style closures decide which CSS tree receives this resource.
     pub css_href: String,
     /// WebUI plugin JSON-safe component metadata.
     pub template_json: String,
@@ -76,6 +78,8 @@ pub struct ComponentData {
     /// Present for protocols with exact navigation projection metadata.
     /// Absence means the surface is unknown and requires full state.
     pub navigation_mode: Option<StateProjectionMode>,
+    /// Whether the component authors a sole open declarative Shadow root.
+    pub uses_shadow_dom: bool,
 }
 
 pub enum InitialStateStrategy {
@@ -375,10 +379,10 @@ values into the response. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
-- `templateStyles`: CSS module definition tags (`<script type="importmap">{"imports":{"...":"data:text/css,..."}}</script>` strings - see [CssStrategy::Module](#css-strategy)) for newly shipped components. Empty array for Link/Style modes. The client appends these to `<head>` before installing template closure arrays so adopted stylesheets are available
+- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots, filtered by the same inventory bitmask as templates. A closure may omit a shared resource definition only when the incoming inventory bit proves that component's template and style metadata was already registered; uninventoried closure dependencies are transmitted with the new root. Module resources carry both their specifier and compiled CSS
 - `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
-- `inventory`: updated hex bitmask of loaded templates
+- `inventory`: updated hex bitmask of loaded component template and style metadata
 - `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
@@ -424,6 +428,7 @@ Every module default-exports an asset object. The relevant graph fields are:
 
 ```js
 export default {
+  version: 3,
   type: "webui-component-asset",
   kind: "root",
   root: "mail-thread",
@@ -435,7 +440,12 @@ export default {
     href: new URL("./chunk-mail-message.webui.js", import.meta.url).href,
     load: () => import("./chunk-mail-message.webui.js")
   }],
-  templateStyles: [],
+  componentStyles: {
+    version: 1,
+    strategy: "link",
+    resources: {},
+    closures: {}
+  },
   templates: {}
 };
 ```
@@ -446,6 +456,10 @@ export default {
 real dynamic import edges to shared chunks. A chunk uses `kind: "chunk"`,
 omits `root`, and has an empty `imports` array. The payload intentionally omits
 `inventory`: a static build cannot know the page's loaded template bitset.
+Component assets use version 3 and require `componentStyles`, whose resource
+catalog and ordered root closures use the same registration and install
+contract as SSR and partial navigation. Other asset versions and assets that
+omit the catalog are rejected before any templates or styles are registered.
 Every required component must have exactly one local payload, external
 prerequisite, or chunk import, and a root must include itself in
 `requiredComponents`. The framework loader rejects malformed coverage before
@@ -491,6 +505,12 @@ blocking on data by default, and can opt into bounded data blocking with
 
 FAST plugin builds can emit the same graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
+A plugin whose client runtime builds its own roots from the captured template
+owns component style delivery: WebUI keeps its own templates style-free because
+the handler installs the stored closure, but a Shadow component's CSS stays
+inline in that plugin-facing template so a client-created element is styled.
+Light CSS is never inlined there — it is Document-owned, and its `@scope` root
+cannot be resolved from inside a runtime-created root.
 
 **Navigation cache:** The client router exposes an optional tagged navigation
 cache tier. The default `Router.start()` path does not import or instantiate the
@@ -512,7 +532,7 @@ overlap with the invalidated tags.
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of full HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates already loaded — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata already loaded - server skips re-sending it |
 
 The `chain` field is produced by `Protocol::render_partial()`, which walks the
 fragment graph and matches routes at each nesting level using request-local
@@ -1160,6 +1180,26 @@ pub struct HtmlParser {
 }
 ```
 
+#### Component DOM Invariant
+
+Every unwrapped component uses Light DOM. A component uses Shadow DOM only when
+its complete template is a sole top-level
+`<template shadowrootmode="open">`. It must contain the
+complete component and be the only top-level content other than whitespace and
+comments. A dynamic value, `closed`, any value other than `open`, more than one
+`shadowrootmode`, placement on a non-template element, or additional top-level
+content fails with `invalid-shadow-root-mode`. The compiler never generates a
+Shadow wrapper.
+
+Native `<slot>` is Shadow-only. A `<slot>` anywhere in a Light
+component fails the build with `light-dom-slot` and help to wrap the complete
+component in a sole top-level `<template shadowrootmode="open">`.
+
+`ComponentData.uses_shadow_dom` stores this parser-derived boolean once per
+component. It controls HTML structure, style-tree boundaries, CSS
+transformation, and client-created DOM without runtime template scans. The root
+protocol has no DOM mode.
+
 #### CSS Strategy
 ```rust
 /// Strategy for how component CSS is delivered in rendered output.
@@ -1167,21 +1207,154 @@ pub enum CssStrategy {
     /// Emit `<link rel="stylesheet" href="./component.css">` tags for
     /// components that actually have discovered CSS (default).
     Link,
-    /// Embed CSS content inline in `<style>` tags within the shadow DOM template.
+    /// Embed CSS content inline in a component-local `<style>` tag.
     Style,
-    /// Register each component's CSS module via a `<script type="importmap">`
-    /// data-URI definition (one per component, deduped) and reference it via
-    /// `shadowrootadoptedstylesheets` on each shadow root `<template>`.
+    /// Deliver an SSR style fallback and a CSS module specifier for browser
+    /// adoption.
     Module,
 }
 ```
 
-- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links. Handler-emitted `<head>` links are ordered by **document/traversal order** (the order components are first discovered while walking the fragment graph), not alphabetically by tag name. This keeps the Light-DOM cascade aligned with source order (stable across component renames) and prioritizes Shadow-DOM `<link rel="preload">` hints by appearance. The order is deterministic because the graph walk is deterministic.
-- **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
-- **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), the parser preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. Multi-specifier values already authored by the developer (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before installing component template closure arrays). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
+- **Link** (default): Stores an external `.css` href for each component with CSS.
+  Output filenames use `[name]`, `[hash]`, and `[ext]`, default to
+  `[name].[ext]`, and may use a public base URL.
+- **Style**: Stores compiled CSS bytes for delivery in `<style>` elements. No
+  separate CSS files are written.
+- **Module**: Stores the same compiled bytes and a component specifier. SSR
+  provides an immediately usable style fallback, while the browser can import
+  one shared CSS module and adopt its `CSSStyleSheet` into each target CSS tree.
+  No separate CSS files are written. Module loading requires CSS Module Scripts
+  support.
+
+All three strategies use the ordered component style closures below. CSS
+strategy changes delivery, not component discovery, Shadow ownership,
+transformation, or cascade order.
+
+#### Component CSS Isolation
+
+Developers author one ordinary paired component stylesheet and use `:host` as the
+Light/Shadow host API. After legal-comment processing, Shadow components retain
+those CSS bytes unchanged. Light components are compiled before
+Link filename hashing or Style/Module storage:
+
+- Rules are enclosed in `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)`.
+  The lower boundary prevents parent rules from entering a nested Light component
+  while still allowing selectors to style that nested component's host. It is
+  also the fastest measured shape: removing the limit, or making it implicit,
+  costs 5.4% more style recalculation because the limit prunes nested component
+  subtrees out of the scope. Narrowing the root, tightening the limit, or
+  wrapping it in `:where()` each measure 3-5% slower.
+  Two shapes that abandon `@scope` were measured and rejected. Anchoring rules
+  on the host as a plain descendant selector (`<tag>[data-wl] .sel`) is 23-28%
+  faster but leaks parent rules into nested components, and was observed
+  changing computed styles on real pages; it is strictly dominated and must not
+  be reintroduced. Per-element marker stamping (`.sel:where([data-wN])`) is
+  27-35% faster and renders identically, at roughly +200 bytes of compressed
+  markup per document; its blocker is that only elements known at build time can
+  be marked, so DOM created outside a compiled template would go unstyled, which
+  `@scope` handles natively. Stamping is therefore a deliberate future change
+  carrying its own authoring contract, not a drop-in substitution.
+  Note that inside `@scope` a bare selector is *relative* — `.sel` behaves as
+  `:scope .sel` and never matches the scoping root — so any stamping scheme must
+  mark descendants only and never give a host its own marker.
+- Selector anchors lower from `:host` to `:scope`; functional
+  `:host(<compound>)` lowers to `:scope:is(<compound>)`. Strings, comments,
+  declaration values, and custom properties are never selector-rewritten.
+- Block grouping rules (`@media`, `@supports`, `@container`, `@layer`, and
+  authored `@scope`) remain nested. Global or statement-form at-rules that cannot
+  be isolated fail with `unsupported-light-css`.
+- Shadow-only `:host-context()` and `::slotted()` are rejected in Light
+  CSS with `unsupported-light-css`. Authors must use entry CSS or opt that
+  component into `<template shadowrootmode="open">`.
+- Component-local keyframes receive a deterministic, collision-free component
+  prefix (`wui<tag-length>-<tag>-<name>`, whose length delimiter keeps
+  `<x-foo>`/`bar-baz` distinct from `<x-foo-bar>`/`baz` because `@scope` does
+  not isolate `@keyframes`), and static
+  `animation` / `animation-name` references (including vendor-prefixed forms) are
+  rewritten token-by-token. Dynamic references that could name a local keyframe
+  fail with `dynamic-light-keyframe` rather than silently targeting an
+  unnamespaced rule.
+
+The same compiled bytes feed Link assets and hashes, inline Style content, Module
+data URIs, component CSS storage, and token diagnostics.
+
+#### Component Style Closures
+
+A CSS tree is one `Document` or one `ShadowRoot` instance. The compiler stores a
+`ComponentStyleClosure` for every root entry fragment and compiled component root
+in `WebUIProtocol.style_closures` (protobuf field 9). Each closure is a repeated
+component-tag list in cascade-sensitive first-discovery order; it is never sorted
+or derived from the component-asset set traversal. Link builds consider a tag a
+style resource only when `css_href` is nonempty. Style and Module builds use
+nonempty retained compiled `ComponentData.css`.
+
+For a component-root closure, that component's paired CSS is first when present.
+The iterative graph walk then follows fragment source order. Light children
+contribute their CSS once and their fragment graph is traversed in the same CSS
+tree. Shadow children are cut points: neither their CSS nor
+their descendants enter the caller's closure, but scanning resumes after the
+host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
+and attribute-template dependencies are followed conservatively. Routes are
+activation edges, not static closure edges: route bodies, pending/error
+components, and outlet children do not enter the declaring fragment's closure.
+Each matched Light route root installs its own stored closure as compiler-owned
+children of the active `<webui-route>`, immediately before the generated host,
+in the inherited Document or ShadowRoot CSS tree. A matched Shadow route root
+installs its closure at the compiler hook inside its declarative root.
+Visited-fragment and first-style sets make malformed or cyclic protocols finite
+without changing first-discovery order.
+
+Every Light host receives a persistent `data-wl` marker in SSR and
+client-created DOM. The marker is both the scope anchor and nested-Light lower
+boundary and is reserved: authored static or bound ownership fails with
+`reserved-light-dom-marker`. Servers and clients consume stored closures
+directly and must not expand the fragment graph per request. A styled protocol
+without required closure metadata is invalid.
+
+The handler keeps Document delivered-resource state directly and uses a lazily
+allocated stack of component indexes only while rendering Shadow
+roots. Each closure is installed in stored order and each resource is emitted at
+most once in that tree for the lifetime of the render. Full-document SSR installs
+the Document closure before `</head>`. When the document omits an explicit head,
+the closure precedes document content while remaining immediately after any
+leading doctype. The browser therefore places resources in the document head and
+the doctype remains the first token.
+Document fragment renders install their closure before fragment content. A
+matched Light route installs only its active closure before its generated host;
+inactive route closures are not emitted or installed during hydration. Link
+builds emit ordered preload hints for the matched route closures before module
+preloads, so styles owned by a later ShadowRoot begin fetching without waiting
+for body discovery; the actual stylesheet still installs only in its owning CSS
+tree. Before any component closure installs, the framework scans that complete
+Document or ShadowRoot for compiler-owned SSR markers and claims them in place.
+It rescans an activating route's direct children for later streaming markers.
+Loaded Link elements are never reparented, avoiding a second request for
+non-cacheable CSS; the router preserves those route-owned markers across
+component remounts. Module fallbacks are adopted in marker order and removed
+after adoption. A Shadow component used directly as the entry or as a matched
+route installs its component closure at the compiler hook inside the declarative
+root. The same Document state is retained across progressive streaming
+checkpoints. Partial navigation sends a versioned `componentStyles` catalog
+containing the newly needed resources and closures; the browser registers it per
+Document and installs each resource at most once per Document or ShadowRoot.
+Version-3 component assets carry the same catalog, so SSR, navigation,
+streaming, and deferred assets share the ordering and deduplication contract.
+Module sheets reserve their adoption slot when their closure requests them, so
+a descendant closure whose load resolves first never adopts ahead of its
+caller, and an adopted SSR fallback element is dropped from marker state with
+the node.
+
+Shadow roots are closure cut points. A caller's closure stops at an effective
+Shadow host, and the child's closure begins inside that root. Light descendants
+remain in the caller's closure. Link and Style resources install as elements.
+Module resources carry `{ kind: "module", specifier, css }`. Catalog
+registration creates each nonce-bearing import-map definition once per
+Document before publishing templates. SSR resource markers seed that
+definition set. The SSR style fallback remains until module adoption succeeds;
+failed asynchronous module installs remain retryable.
 
 Set at construction time with
-`HtmlParser::with_options(ParserOptions::try_new(css, dom, css_file_name_template, css_public_base, legal_comments))`.
+`HtmlParser::with_options(ParserOptions::try_new(css, css_file_name_template, css_public_base, legal_comments))`.
 
 #### Legal Comments
 ```rust
@@ -1215,6 +1388,10 @@ attributes, capture finalized component templates, and emit per-element hydratio
 metadata without requiring the build layer to downcast concrete plugin types.
 
 ```rust
+pub struct ComponentTemplateContext {
+    pub uses_shadow_dom: bool,
+}
+
 pub trait ParserPlugin {
     fn start_fragment(&mut self, fragment_id: &str) {}
     fn register_component_template(
@@ -1222,10 +1399,22 @@ pub trait ParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()>;
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
+}
+
+pub enum ComponentStyleDelivery<'a> {
+    Link { href: &'a str },
+    Inline { css: &'a str },
+    Adopted { specifier: &'a str },
+}
+
+pub struct ComponentTemplateContext<'a> {
+    pub uses_shadow_dom: bool,
+    pub style: Option<ComponentStyleDelivery<'a>>,
 }
 ```
 
@@ -1233,7 +1422,8 @@ pub trait ParserPlugin {
 - **Fragment start**: `start_fragment` runs before each `HtmlParser::parse(...)` call so plugins can reset fragment-local counters
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
-- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
+- **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
+- **Style delivery**: `ComponentTemplateContext` carries `uses_shadow_dom` plus the resolved `style` delivery — a neutral statement of fact, never a request. The parser injects nothing into any template. WebUI ignores `style` because the handler installs its precomputed closures; FAST reads it and keeps an inline `<link>`/`<style>` inside the Shadow template its runtime uses to build roots. `style` is reported only for components that authored a Shadow root: Light CSS is Document-owned and its `@scope` root cannot match from inside a runtime-created root. SSR output is style-free either way.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1610,7 +1800,7 @@ update hot paths still call the function directly.
 
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
-| `h`   | `string`                          | Marker-free static HTML for client-created DOM, including baked-in `<link>` / `<style>` nodes for link/style CSS strategies |
+| `h`   | `string`                          | Marker-free static component HTML for client-created DOM |
 | `tx`  | `[slot, parts][]`                 | Client text runs inserted at precompiled slots     |
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
 | `ag`  | `[elementPath, start, count][]`   | Attribute-target groups for `a[]`                  |
@@ -1618,7 +1808,6 @@ update hot paths still call the function directly.
 | `r`   | `[collection, itemVar, blockIndex, slot, keyPath?][]` | Repeat blocks; `keyPath` is relative to the item variable |
 | `eg`  | `[event, [[handler, argSpecs, targetPath, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
-| `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
 | `re`  | `[event, handler, argSpecs][]`    | Root events, attached to `this.shadowRoot ?? this` |
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
@@ -1858,17 +2047,19 @@ contract rather than introduce a parallel one.
    payload binds the *emitter*; a reader ignores unrecognized terminal payload
    fields rather than halting a page that has already fully rendered (rule 21).
 3. **Self-sufficient records.** Given all prior records, a record carries
-   everything needed to commit itself: its own template delta, inventory delta,
-   and projected state. A record never forward-references a later one, so a
-   truncated response is always a prefix of a valid one.
+   everything needed to commit itself: its own template delta, component-style
+   closure delta, inventory delta, and projected state. A record never
+   forward-references a later one, so a truncated response is always a prefix of
+   a valid one.
 4. **Additive global merge; ordered island state.** Global handoff merges
    accumulate only:
    inventory bits are OR-ed, CSS/style lists are appended with deduplication,
-   templates are registered additively. No record may overwrite or invalidate
-   an earlier record's contribution. Boundary state is ephemeral and never
-   published to `window.__webui.state`. A state-update record is a shallow
-   patch applied in record order to one already-committed updatable boundary;
-   repeated writes to the same key are last-writer-wins.
+   component-style resources and closures are registered once, and templates
+   are registered additively. No record may overwrite or invalidate an earlier
+   record's contribution. Boundary state is ephemeral and never published to
+   `window.__webui.state`. A state-update record is a shallow patch applied in
+   record order to one already-committed updatable boundary; repeated writes to
+   the same key are last-writer-wins.
 5. **Identity is not placement.** A record never contains a selector, node
    path, or DOM position. Checkpoints carry the compiler-assigned integer
    boundary ID in `target`; state updates carry the same ID. The integer
@@ -1876,10 +2067,14 @@ contract rather than introduce a parallel one.
    range walk and never requires a document scan. Placement remains expressed
    only through the marker pair the browser's HTML parser materializes.
 6. **Boundary-local payload.** A record carries only the templates and state
-   reachable from its own roots. Boundary 0 must not contain metadata or state
-   reachable only from a later boundary. This requires a state-projection
-   manifest; without one the build falls back to full state and every
-   checkpoint costs `O(boundaries × full state)`, which the compiler reports as
+   reachable from its own roots. Boundary 0 must not contain template metadata
+   or state reachable only from a later boundary. Component-style closures
+   remain CSS-tree metadata: the first entry closure can include static
+   transitive resources used by later boundaries, but never resources reachable
+   only through an inactive route. Each resource definition and closure is
+   serialized at most once per response. State locality requires a
+   state-projection manifest; without one the build falls back to full state and
+   every checkpoint costs `O(boundaries × full state)`, which the compiler reports as
    a `streaming-without-projection` warning.
 
 **Coordinator**
@@ -2353,7 +2548,8 @@ CSS delivery strategy is selected once per build and is not boundary-local.
 4. Passes the checkpoint-local projected state directly into component
    activation. It does not merge ephemeral state into `window.__webui.state`.
    Inventory deltas are ORed into the cumulative global bitmask; CSS/style
-   bookkeeping deltas are appended with deduplication.
+   bookkeeping deltas are appended with deduplication; component-style
+   resources and closures are registered only on first delivery.
 5. Hydrates outer roots before descendants. After each successful first
    hydration or mount, `hydratedCallback()` runs synchronously exactly once;
    reconnects and callback exceptions do not retry it.

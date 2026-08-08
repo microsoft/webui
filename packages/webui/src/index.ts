@@ -94,6 +94,18 @@ export interface ProtocolOptions {
  */
 export type BoundaryMode = "final" | "updatable";
 
+export type ComponentStyleResource =
+  | { kind: "link"; href: string }
+  | { kind: "style"; css: string }
+  | { kind: "module"; specifier: string; css: string };
+
+export interface ComponentStyles {
+  version: 1;
+  strategy: "link" | "style" | "module";
+  resources: Record<string, ComponentStyleResource>;
+  closures: Record<string, string[]>;
+}
+
 /** Per-response settings for a host-driven streaming session. */
 export interface StreamOptions {
   /** Fragment ID to start rendering from (default: "index.html"). */
@@ -110,8 +122,8 @@ export interface StreamOptions {
 
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
-  /** Module CSS `<style>` strings for the requested components. */
-  templateStyles: string[];
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
@@ -128,6 +140,8 @@ export interface PartialResponse {
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
   templateFunctions?: Record<string, string>;
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
   /** The request path. */

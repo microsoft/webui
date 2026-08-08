@@ -2,12 +2,14 @@
 // Licensed under the MIT license.
 
 import { registerTemplateData } from './template.js';
+import { registerComponentStyles } from './element/styles.js';
 import type { BoundaryBootstrap } from './streaming-protocol.js';
 
 /** Register template data and merge response-scoped checkpoint metadata. */
 export function applyBoundaryBootstrap(
   bootstrap: BoundaryBootstrap,
 ): void {
+  registerComponentStyles(bootstrap.componentStyles);
   if (bootstrap.templates) registerTemplateData(bootstrap.templates);
 
   const w = window as Window;
@@ -17,7 +19,7 @@ export function applyBoundaryBootstrap(
     const key = keys[i];
     // Templates are merged by registerTemplateData; boundary state remains
     // ephemeral and is handed directly to roots by the activation walk.
-    if (key === 'templates' || key === 'state') continue;
+    if (key === 'templates' || key === 'state' || key === 'componentStyles') continue;
     if (key === 'inventory') {
       w.__webui.inventory = mergeInventory(
         w.__webui.inventory,

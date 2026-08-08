@@ -34,6 +34,8 @@ use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtoco
 /// individual metadata lookups.
 pub struct Protocol {
     protocol: WebUIProtocol,
+    style_metadata_error: Option<String>,
+    css_strategy: webui_protocol::CssStrategy,
     component_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     streaming_plans: HashMap<String, crate::streaming::PreparedStreamingEntryPlan>,
@@ -48,12 +50,25 @@ impl Protocol {
     ///
     /// Returns a protocol error when `bytes` is not a valid WebUI protobuf.
     pub fn from_protobuf(bytes: &[u8]) -> std::result::Result<Self, webui_protocol::ProtocolError> {
-        WebUIProtocol::from_protobuf(bytes).map(Self::new)
+        let protocol = WebUIProtocol::from_protobuf(bytes)?;
+        if let Some(error) = Self::validate_component_style_metadata(&protocol) {
+            return Err(webui_protocol::ProtocolError::Validation(error));
+        }
+        Ok(Self::new_with_style_metadata(protocol, None))
     }
 
     /// Create a reusable runtime protocol from an already decoded document.
     #[must_use]
     pub fn new(protocol: WebUIProtocol) -> Self {
+        let style_metadata_error = Self::validate_component_style_metadata(&protocol);
+        Self::new_with_style_metadata(protocol, style_metadata_error)
+    }
+
+    fn new_with_style_metadata(
+        protocol: WebUIProtocol,
+        style_metadata_error: Option<String>,
+    ) -> Self {
+        let css_strategy = protocol.css_strategy();
         let component_index = build_component_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
         let streaming_plans = protocol
@@ -74,6 +89,8 @@ impl Protocol {
             .collect();
         Self {
             protocol,
+            style_metadata_error,
+            css_strategy,
             component_index,
             component_reachability: OnceLock::new(),
             streaming_plans,
@@ -84,6 +101,16 @@ impl Protocol {
 
     pub(crate) fn protocol(&self) -> &WebUIProtocol {
         &self.protocol
+    }
+
+    pub(crate) fn ensure_style_metadata(&self) -> Result<(), HandlerError> {
+        self.style_metadata_error
+            .as_ref()
+            .map_or(Ok(()), |error| Err(HandlerError::Invariant(error.clone())))
+    }
+
+    pub(crate) fn css_strategy(&self) -> webui_protocol::CssStrategy {
+        self.css_strategy
     }
 
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
@@ -129,6 +156,7 @@ impl Protocol {
         request_path: &str,
         inventory_hex: &str,
     ) -> Result<String, HandlerError> {
+        self.ensure_style_metadata()?;
         let mut index = self.request_index();
         let (response, state_selection) = render_partial_indexed_with_state(
             self.protocol(),
@@ -146,6 +174,7 @@ impl Protocol {
         component_tags: &[&str],
         inventory_hex: &str,
     ) -> Result<Value, HandlerError> {
+        self.ensure_style_metadata()?;
         let mut index = self.request_index();
         render_component_templates_indexed(
             self.protocol(),
@@ -155,6 +184,96 @@ impl Protocol {
         )
     }
 
+    fn validate_component_style_metadata(protocol: &WebUIProtocol) -> Option<String> {
+        if protocol.style_closures.is_empty() {
+            let requires_closures = protocol.components.iter().any(|(tag, component)| {
+                protocol.component_style_resource(tag).is_some() || component.uses_shadow_dom
+            });
+            if requires_closures {
+                return Some(
+                    "component style closure metadata is required by this protocol".to_string(),
+                );
+            }
+            return None;
+        }
+        let mut seen_resources = HashSet::new();
+        for (root, closure) in &protocol.style_closures {
+            seen_resources.clear();
+            seen_resources.reserve(closure.component_tags.len());
+            for tag in &closure.component_tags {
+                if !seen_resources.insert(tag.as_str()) {
+                    return Some(format!(
+                        "component style closure `{root}` contains duplicate resource `{tag}`"
+                    ));
+                }
+                if protocol.component_style_resource(tag).is_none() {
+                    return Some(format!(
+                        "component style closure `{root}` references missing resource `{tag}`"
+                    ));
+                }
+            }
+        }
+        for (fragment_id, fragments) in &protocol.fragments {
+            for fragment in &fragments.fragments {
+                let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
+                    continue;
+                };
+                let Some(root) = crate::structural_signal_value(signal)
+                    .and_then(|value| value.strip_prefix("shadow_styles:"))
+                else {
+                    continue;
+                };
+                let Some(component) = protocol.components.get(fragment_id) else {
+                    return Some(format!(
+                        "Shadow style hook `{root}` references unknown component `{fragment_id}`"
+                    ));
+                };
+                if root != fragment_id.as_str() || !component.uses_shadow_dom {
+                    return Some(format!(
+                        "Shadow style hook `{root}` does not match component fragment `{fragment_id}`"
+                    ));
+                }
+            }
+        }
+        for (tag, component) in &protocol.components {
+            if !component.uses_shadow_dom {
+                continue;
+            }
+            let Some(fragments) = protocol.fragments.get(tag) else {
+                continue;
+            };
+            if !protocol.style_closures.contains_key(tag) {
+                return Some(format!(
+                    "component style closure metadata is missing Shadow root `{tag}`"
+                ));
+            }
+            let hook_count = fragments
+                .fragments
+                .iter()
+                .filter(|fragment| {
+                    matches!(
+                        fragment.fragment.as_ref(),
+                        Some(Fragment::Signal(signal))
+                            if crate::structural_signal_value(signal)
+                                .and_then(|value| value.strip_prefix("shadow_styles:"))
+                                == Some(tag.as_str())
+                    )
+                })
+                .count();
+            if hook_count == 0 {
+                return Some(format!(
+                    "Shadow component `{tag}` is missing its compiler style insertion hook"
+                ));
+            }
+            if hook_count > 1 {
+                return Some(format!(
+                    "Shadow component `{tag}` emitted more than one style insertion hook"
+                ));
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     fn render_partial_metadata(
         &self,
@@ -162,6 +281,7 @@ impl Protocol {
         request_path: &str,
         inventory_hex: &str,
     ) -> Result<Value, HandlerError> {
+        self.ensure_style_metadata()?;
         let mut index = self.request_index();
         render_partial_indexed(
             self.protocol(),
@@ -197,9 +317,144 @@ struct ProtocolIndex {
 }
 
 struct ComponentAssets {
-    styles: Vec<Value>,
+    component_styles: Value,
     templates: serde_json::Map<String, Value>,
     functions: serde_json::Map<String, Value>,
+}
+
+/// Build the versioned, tree-local component style metadata for the requested
+/// roots.
+pub(crate) fn collect_component_styles<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(protocol, roots, None)
+}
+
+#[derive(Clone, Copy)]
+struct ComponentInventoryView<'a> {
+    bits: &'a [u8],
+    index: &'a HashMap<String, u32>,
+}
+
+impl ComponentInventoryView<'_> {
+    fn contains(self, tag: &str) -> bool {
+        self.index
+            .get(tag)
+            .is_some_and(|&index| has_component(self.bits, index))
+    }
+}
+
+pub(crate) fn collect_component_style_delta<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    client_inventory: &[u8],
+    component_index: &HashMap<String, u32>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(
+        protocol,
+        roots,
+        Some(ComponentInventoryView {
+            bits: client_inventory,
+            index: component_index,
+        }),
+    )
+}
+
+fn collect_component_styles_inner<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    client_inventory: Option<ComponentInventoryView<'_>>,
+) -> Result<Value, HandlerError> {
+    if protocol.style_closures.is_empty() {
+        if protocol
+            .components
+            .keys()
+            .any(|tag| protocol.component_style_resource(tag).is_some())
+        {
+            return Err(HandlerError::Invariant(
+                "component style closure metadata is required by this protocol".to_string(),
+            ));
+        }
+        return Ok(component_styles_payload(
+            protocol.css_strategy(),
+            serde_json::Map::new(),
+            serde_json::Map::new(),
+        ));
+    }
+
+    let mut resources = serde_json::Map::new();
+    let mut closures = serde_json::Map::new();
+    let mut seen_roots = HashSet::new();
+
+    for root in roots {
+        if !seen_roots.insert(root) {
+            continue;
+        }
+        let Some(closure) = protocol.style_closures.get(root) else {
+            if !protocol.fragments.contains_key(root) && !protocol.components.contains_key(root) {
+                continue;
+            }
+            return Err(HandlerError::Invariant(format!(
+                "component style closure metadata is missing root `{root}`"
+            )));
+        };
+        let mut ordered = Vec::with_capacity(closure.component_tags.len());
+        for tag in &closure.component_tags {
+            let resource = protocol.component_style_resource(tag).ok_or_else(|| {
+                HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing resource `{tag}`"
+                ))
+            })?;
+            if client_inventory.is_none_or(|inventory| !inventory.contains(tag))
+                && !resources.contains_key(tag.as_str())
+            {
+                let mut entry = serde_json::Map::new();
+                match protocol.css_strategy() {
+                    webui_protocol::CssStrategy::Link => {
+                        entry.insert("kind".into(), Value::String("link".into()));
+                        entry.insert("href".into(), Value::String(resource.to_owned()));
+                    }
+                    webui_protocol::CssStrategy::Style => {
+                        entry.insert("kind".into(), Value::String("style".into()));
+                        entry.insert("css".into(), Value::String(resource.to_owned()));
+                    }
+                    webui_protocol::CssStrategy::Module => {
+                        entry.insert("kind".into(), Value::String("module".into()));
+                        entry.insert("specifier".into(), Value::String(tag.clone()));
+                        entry.insert("css".into(), Value::String(resource.to_owned()));
+                    }
+                }
+                resources.insert(tag.clone(), Value::Object(entry));
+            }
+            ordered.push(Value::String(tag.clone()));
+        }
+        closures.insert(root.to_owned(), Value::Array(ordered));
+    }
+
+    Ok(component_styles_payload(
+        protocol.css_strategy(),
+        resources,
+        closures,
+    ))
+}
+
+fn component_styles_payload(
+    strategy: webui_protocol::CssStrategy,
+    resources: serde_json::Map<String, Value>,
+    closures: serde_json::Map<String, Value>,
+) -> Value {
+    let strategy = match strategy {
+        webui_protocol::CssStrategy::Link => "link",
+        webui_protocol::CssStrategy::Style => "style",
+        webui_protocol::CssStrategy::Module => "module",
+    };
+    let mut payload = serde_json::Map::new();
+    payload.insert("version".into(), Value::from(1));
+    payload.insert("strategy".into(), Value::String(strategy.into()));
+    payload.insert("resources".into(), Value::Object(resources));
+    payload.insert("closures".into(), Value::Object(closures));
+    Value::Object(payload)
 }
 
 #[cfg(test)]
@@ -501,6 +756,7 @@ pub fn get_needed_components(
 /// templates needed for the current `request_path`.
 ///
 /// Returns `(needed_names, updated_inventory_hex)`.
+#[cfg(test)]
 pub(crate) fn get_needed_components_for_request(
     protocol: &WebUIProtocol,
     entry_id: &str,
@@ -1036,6 +1292,21 @@ pub fn filter_needed_components(
     inventory_hex: &str,
     index: &HashMap<String, u32>,
 ) -> Result<(Vec<String>, String), HandlerError> {
+    let filtered = filter_components_with_inventory(component_names, inventory_hex, index)?;
+    Ok((filtered.needed, filtered.updated_inventory))
+}
+
+struct FilteredComponents {
+    needed: Vec<String>,
+    updated_inventory: String,
+    client_inventory: Vec<u8>,
+}
+
+fn filter_components_with_inventory(
+    component_names: &[String],
+    inventory_hex: &str,
+    index: &HashMap<String, u32>,
+) -> Result<FilteredComponents, HandlerError> {
     let client_inv = parse_inventory(inventory_hex)?;
     let mut updated_inv = client_inv.clone();
 
@@ -1054,7 +1325,11 @@ pub fn filter_needed_components(
         }
     }
 
-    Ok((needed, encode_inventory(&updated_inv)))
+    Ok(FilteredComponents {
+        needed,
+        updated_inventory: encode_inventory(&updated_inv),
+        client_inventory: client_inv,
+    })
 }
 
 fn has_template_payload(component: &webui_protocol::ComponentData) -> bool {
@@ -1769,7 +2044,7 @@ fn walk_children_for_inventory_and_chain(
 /// Use [`render_partial`] for a complete JSON response.
 ///
 /// Returns a `serde_json::Value` object with fields:
-/// - `templateStyles`: module CSS definition tags for inventory-new components (empty for Link/Style)
+/// - `componentStyles`: versioned tree-local resources and ordered closures
 /// - `templates`: client template metadata keyed by component tag (inventory-filtered)
 /// - `templateFunctions`: component-local condition closure arrays keyed by component tag
 /// - `inventory`: updated hex bitmask
@@ -1849,8 +2124,8 @@ fn render_partial_indexed_with_state<'a>(
     let state_selection =
         crate::collect_navigation_state(protocol, component_ids.iter().map(String::as_str));
 
-    let (needed_names, updated_inv) =
-        filter_needed_components(&component_ids, inventory_hex, index.component_index)?;
+    let filtered =
+        filter_components_with_inventory(&component_ids, inventory_hex, index.component_index)?;
 
     // Resolve cache tags and invalidation templates with accumulated params.
     let mut accumulated_params: HashMap<String, String> = HashMap::new();
@@ -1865,16 +2140,19 @@ fn render_partial_indexed_with_state<'a>(
         all_resolved_tags.extend(entry.cache_tags.iter().cloned());
     }
 
-    let tag_refs: Vec<&str> = needed_names.iter().map(|s| s.as_str()).collect();
-    let assets = collect_component_assets(protocol, &tag_refs, index)?;
+    let tag_refs: Vec<&str> = filtered.needed.iter().map(String::as_str).collect();
+    let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let chain_array = Value::Array(chain.iter().map(RouteChainEntry::to_json).collect());
 
     let mut result = serde_json::Map::with_capacity(7);
-    result.insert("templateStyles".into(), Value::Array(assets.styles));
+    result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
-    result.insert("inventory".into(), Value::String(updated_inv));
+    result.insert(
+        "inventory".into(),
+        Value::String(filtered.updated_inventory),
+    );
     result.insert("path".into(), Value::String(request_path.to_string()));
     result.insert("chain".into(), chain_array);
     if !all_resolved_tags.is_empty() {
@@ -1999,27 +2277,36 @@ fn render_component_templates_indexed(
         .filter(|s| seen.insert(**s))
         .map(|s| (*s).to_string())
         .collect();
-    let (needed, updated_inv) =
-        filter_needed_components(&requested, inventory_hex, index.component_index)?;
+    let filtered =
+        filter_components_with_inventory(&requested, inventory_hex, index.component_index)?;
 
-    let tag_refs: Vec<&str> = needed.iter().map(|s| s.as_str()).collect();
-    let assets = collect_component_assets(protocol, &tag_refs, index)?;
+    let tag_refs: Vec<&str> = filtered.needed.iter().map(String::as_str).collect();
+    let assets = collect_component_assets(protocol, &tag_refs, &filtered.client_inventory, index)?;
 
     let mut result = serde_json::Map::with_capacity(4);
-    result.insert("templateStyles".into(), Value::Array(assets.styles));
+    result.insert("componentStyles".into(), assets.component_styles);
     result.insert("templates".into(), Value::Object(assets.templates));
     result.insert("templateFunctions".into(), Value::Object(assets.functions));
-    result.insert("inventory".into(), Value::String(updated_inv));
+    result.insert(
+        "inventory".into(),
+        Value::String(filtered.updated_inventory),
+    );
     Ok(Value::Object(result))
 }
 
-/// Shared helper: collect templates and module CSS styles for a set of component tags.
+/// Shared helper: collect templates and style metadata for component tags.
 fn collect_component_assets(
     protocol: &WebUIProtocol,
     tags: &[&str],
+    client_inventory: &[u8],
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<ComponentAssets, HandlerError> {
-    let mut style_array = Vec::new();
+    let component_styles = collect_component_style_delta(
+        protocol,
+        tags.iter().copied(),
+        client_inventory,
+        index.component_index,
+    )?;
     let mut tmpl_map = serde_json::Map::new();
     let mut function_map = serde_json::Map::new();
 
@@ -2033,13 +2320,6 @@ fn collect_component_assets(
         };
         if !has_template_payload(component) {
             continue;
-        }
-        if !component.css.is_empty() {
-            // No nonce here — the per-request CSP nonce is attached
-            // client-side by the router when it materializes each
-            // importmap script tag into the DOM.
-            let tag_html = crate::css_module::build_importmap_tag(tag, &component.css, None);
-            style_array.push(Value::String(tag_html));
         }
         if !component.template_json.is_empty() {
             let template_value = cached_template_metadata(
@@ -2060,7 +2340,7 @@ fn collect_component_assets(
     }
 
     Ok(ComponentAssets {
-        styles: style_array,
+        component_styles,
         templates: tmpl_map,
         functions: function_map,
     })
@@ -3368,7 +3648,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_partial_separates_module_styles_from_templates() {
+    fn test_render_partial_carries_module_css_in_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -3384,29 +3664,31 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
-        assert_eq!(styles.len(), 1);
-        let style_html = styles[0].as_str().unwrap_or_default();
-        assert!(
-            style_html.starts_with(r#"<script type="importmap""#)
-                && style_html.contains(r#""my-page":"data:text/css,"#),
-            "module style entry should be an importmap registering the component specifier: {style_html}"
+        assert_eq!(partial["componentStyles"]["version"], 1);
+        assert_eq!(partial["componentStyles"]["strategy"], "module");
+        assert_eq!(
+            partial["componentStyles"]["resources"]["my-page"],
+            serde_json::json!({
+                "kind": "module",
+                "specifier": "my-page",
+                "css": ".page{color:red}"
+            })
         );
-        assert!(
-            style_html.contains(".page{color:red}"),
-            "module style entry should contain the CSS content verbatim inside the data: URI: {style_html}"
+        assert_eq!(
+            partial["componentStyles"]["closures"]["my-page"],
+            serde_json::json!(["my-page"])
         );
 
         // templates should contain only JSON-safe metadata
@@ -3416,12 +3698,60 @@ mod tests {
         assert_eq!(templates.len(), 1);
         let template = templates.get("my-page").expect("my-page template");
         assert_eq!(template["h"], "<p>page</p>");
+
+        let inventory = partial["inventory"].as_str().expect("inventory");
+        let repeated =
+            render_partial_metadata(&protocol, "index.html", "/", inventory, &mut index).unwrap();
+        assert!(repeated["templates"].as_object().unwrap().is_empty());
+        assert_eq!(
+            repeated["componentStyles"]["resources"],
+            serde_json::json!({}),
+            "inventoried style definitions must not be retransmitted"
+        );
+        assert_eq!(
+            repeated["componentStyles"]["closures"],
+            serde_json::json!({}),
+            "inventoried style closures must not be retransmitted"
+        );
     }
 
     #[test]
-    fn test_render_partial_link_strategy_has_empty_template_styles() {
-        // Link-strategy components have css_href but no css content.
-        // templateStyles should be empty; templates should contain metadata.
+    fn styled_protocol_without_closures_is_rejected() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::component("legacy-page")],
+                },
+            ),
+            (
+                "legacy-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Legacy</p>")],
+                },
+            ),
+        ]);
+        protocol.components.insert(
+            "legacy-page".to_string(),
+            webui_protocol::ComponentData {
+                template_json: r#"{"h":"<p>Legacy</p>"}"#.to_string(),
+                css: ".legacy{display:block}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
+
+        let mut index = ProtocolIndex::new(&protocol);
+        let error = render_partial_metadata(&protocol, "index.html", "/", "", &mut index)
+            .expect_err("styled protocols require closure metadata");
+        assert!(error
+            .to_string()
+            .contains("component style closure metadata is required"));
+    }
+
+    #[test]
+    fn test_render_partial_link_strategy_uses_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -3437,6 +3767,7 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
         let component = protocol
             .components
             .entry("my-page".to_string())
@@ -3444,29 +3775,24 @@ mod tests {
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css_href = "my-page.css".to_string();
         // css is empty — Link strategy stores href, not content
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
         let templates = partial["templates"]
             .as_object()
             .expect("templates should be an object");
 
-        assert!(
-            styles.is_empty(),
-            "Link strategy should produce empty templateStyles: {styles:?}"
-        );
         assert_eq!(templates.len(), 1, "should include template metadata");
+        assert_eq!(
+            partial["componentStyles"]["resources"]["my-page"],
+            serde_json::json!({"kind": "link", "href": "my-page.css"})
+        );
     }
 
     #[test]
-    fn test_render_partial_style_strategy_has_empty_template_styles() {
-        // Style-strategy components have CSS embedded in the template HTML
-        // (as <style>...</style>), not in component.css.
-        // templateStyles should be empty; templates should contain metadata.
+    fn test_render_partial_style_strategy_uses_component_styles() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -3482,41 +3808,31 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
-        // Style strategy: CSS is inside the template HTML, not in component.css
-        component.template_json = r#"{"h":"<style>.p{color:red}</style><p>page</p>"}"#.to_string();
-        // css is empty for Style strategy
+        component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
+        component.css = ".p{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
         let templates = partial["templates"]
             .as_object()
             .expect("templates should be an object");
 
-        assert!(
-            styles.is_empty(),
-            "Style strategy should produce empty templateStyles: {styles:?}"
-        );
         assert_eq!(templates.len(), 1, "should include template metadata");
-        assert!(
-            templates
-                .get("my-page")
-                .and_then(|template| template["h"].as_str())
-                .unwrap_or_default()
-                .contains("<style>"),
-            "Style strategy template should contain inline <style> tag"
+        assert_eq!(
+            partial["componentStyles"]["resources"]["my-page"],
+            serde_json::json!({"kind": "style", "css": ".p{color:red}"})
         );
     }
 
     #[test]
-    fn test_render_partial_empty_styles_for_no_css_components() {
+    fn test_render_partial_emits_empty_component_styles_for_no_css_components() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -3542,17 +3858,18 @@ mod tests {
         let mut index = ProtocolIndex::new(&protocol);
         let partial =
             render_partial_metadata(&protocol, "index.html", "/", "", &mut index).unwrap();
-        let styles = partial["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
-        assert!(
-            styles.is_empty(),
-            "templateStyles should be empty when components have no CSS"
+        assert_eq!(
+            partial["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            partial["componentStyles"]["closures"],
+            serde_json::json!({})
         );
     }
 
     #[test]
-    fn test_render_partial_sends_styles_even_when_templates_filtered_by_inventory() {
+    fn test_render_partial_filters_styles_with_template_inventory() {
         let mut fragments = HashMap::new();
         fragments.insert(
             "index.html".to_string(),
@@ -3568,12 +3885,14 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let component = protocol
             .components
             .entry("my-page".to_string())
             .or_default();
         component.template_json = r#"{"h":"<p>page</p>"}"#.to_string();
         component.css = ".page{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         // First call to establish inventory
@@ -3582,15 +3901,8 @@ mod tests {
         let inv = partial1["inventory"].as_str().unwrap_or_default();
         assert!(!inv.is_empty());
 
-        // Second call with the inventory — both templates and styles should be empty
-        // because the inventory covers this component.  The SSR handler emits all
-        // module style definitions in <head> for inventoried components, so the
-        // client already has the CSS definition.
         let partial2 =
             render_partial_metadata(&protocol, "index.html", "/", inv, &mut index).unwrap();
-        let styles = partial2["templateStyles"]
-            .as_array()
-            .expect("templateStyles should be an array");
         let templates = partial2["templates"]
             .as_object()
             .expect("templates should be an object");
@@ -3599,9 +3911,72 @@ mod tests {
             templates.is_empty(),
             "templates should be empty when inventory is full"
         );
+        assert_eq!(
+            partial2["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            partial2["componentStyles"]["closures"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn component_style_delta_sends_missing_and_reuses_registered_closure_resources() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["page-b", "shared-card"] {
+            protocol.fragments.insert(
+                tag.to_string(),
+                FragmentList {
+                    fragments: Vec::new(),
+                },
+            );
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.style_closures.insert(
+            "page-b".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["page-b".to_string(), "shared-card".to_string()],
+            },
+        );
+        protocol.style_closures.insert(
+            "shared-card".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["shared-card".to_string()],
+            },
+        );
+        let mut index = ProtocolIndex::new(&protocol);
+
+        let first_page =
+            render_component_templates(&protocol, &["page-b"], "", &mut index).unwrap();
+        assert!(first_page["componentStyles"]["resources"]["page-b"].is_object());
         assert!(
-            styles.is_empty(),
-            "module styles should be empty when inventory is full — SSR already placed them"
+            first_page["componentStyles"]["resources"]["shared-card"].is_object(),
+            "a missing closure dependency must be sent with its new root"
+        );
+
+        let shared =
+            render_component_templates(&protocol, &["shared-card"], "", &mut index).unwrap();
+        let shared_inventory = shared["inventory"].as_str().unwrap_or_default();
+        let page = render_component_templates(&protocol, &["page-b"], shared_inventory, &mut index)
+            .unwrap();
+        assert_eq!(
+            page["componentStyles"]["closures"]["page-b"],
+            serde_json::json!(["page-b", "shared-card"])
+        );
+        assert!(page["componentStyles"]["resources"]["page-b"].is_object());
+        assert!(
+            page["componentStyles"]["resources"]
+                .get("shared-card")
+                .is_none(),
+            "a resource already covered by inventory must not be retransmitted"
         );
     }
 
@@ -3936,33 +4311,28 @@ mod tests {
             },
         );
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let comp = protocol
             .components
             .entry("settings-dialog".to_string())
             .or_default();
         comp.template_json = r#"{"h":"<div>Settings</div>"}"#.to_string();
         comp.css = ".dialog{position:fixed}".to_string();
+        protocol.populate_style_closures(&["settings-dialog"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         let result =
             render_component_templates(&protocol, &["settings-dialog"], "", &mut index).unwrap();
         let templates = result["templates"].as_object().expect("templates object");
-        let styles = result["templateStyles"].as_array().expect("styles array");
-
         assert_eq!(templates.len(), 1);
         assert_eq!(templates["settings-dialog"]["h"], "<div>Settings</div>");
-        assert_eq!(styles.len(), 1);
-        let style_html = styles[0].as_str().unwrap();
-        assert!(
-            style_html.starts_with(r#"<script type="importmap""#)
-                && style_html.contains(r#""settings-dialog":"data:text/css,"#),
-            "templateStyles entry should be an importmap registering settings-dialog: {style_html}"
-        );
-        // CSS content is embedded inside the data: URI verbatim — `{`, `}`,
-        // `\` are not in the percent-encode set.
-        assert!(
-            style_html.contains(".dialog{position:fixed}"),
-            "templateStyles entry should contain the CSS content verbatim: {style_html}"
+        assert_eq!(
+            result["componentStyles"]["resources"]["settings-dialog"],
+            serde_json::json!({
+                "kind": "module",
+                "specifier": "settings-dialog",
+                "css": ".dialog{position:fixed}"
+            })
         );
         assert!(
             index
@@ -3982,12 +4352,14 @@ mod tests {
             },
         );
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let comp = protocol
             .components
             .entry("my-dialog".to_string())
             .or_default();
         comp.template_json = r#"{"h":"<div>Dialog</div>"}"#.to_string();
         comp.css = ".d{color:red}".to_string();
+        protocol.populate_style_closures(&["my-dialog"]);
 
         let mut index = ProtocolIndex::new(&protocol);
         // First call: no inventory → should return the component
@@ -4000,7 +4372,14 @@ mod tests {
         let result2 =
             render_component_templates(&protocol, &["my-dialog"], inv, &mut index).unwrap();
         assert_eq!(result2["templates"].as_object().unwrap().len(), 0);
-        assert_eq!(result2["templateStyles"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            result2["componentStyles"]["closures"],
+            serde_json::json!({})
+        );
+        assert_eq!(
+            result2["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
     }
 
     #[test]
@@ -4012,7 +4391,10 @@ mod tests {
         let result =
             render_component_templates(&protocol, &["nonexistent-widget"], "", &mut index).unwrap();
         assert_eq!(result["templates"].as_object().unwrap().len(), 0);
-        assert_eq!(result["templateStyles"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            result["componentStyles"]["resources"],
+            serde_json::json!({})
+        );
     }
 
     #[test]

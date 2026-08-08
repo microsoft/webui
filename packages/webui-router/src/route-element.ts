@@ -62,7 +62,7 @@ export function hasState(state?: Record<string, unknown> | null): state is Recor
 /**
  * Get the render root of a component element.
  * Returns shadowRoot if present, otherwise the element itself.
- * This allows the router to work in both shadow and light DOM modes.
+ * This allows the router to work with both authored Shadow roots and Light DOM.
  */
 export function renderRoot(el: Element): Element | ShadowRoot {
   return (el as HTMLElement).shadowRoot ?? el;

@@ -39,7 +39,6 @@ pub use webui_handler::{
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
-pub use webui_parser::DomStrategy;
 pub use webui_parser::LegalComments;
 pub use webui_parser::ParserError;
 pub use webui_parser::ParserOptions;
@@ -252,8 +251,6 @@ pub struct BuildOptions {
     pub entry: String,
     /// CSS delivery strategy for component stylesheets.
     pub css: CssStrategy,
-    /// DOM strategy for component rendering (shadow or light).
-    pub dom: DomStrategy,
     /// Framework plugin to load.
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
@@ -312,7 +309,6 @@ impl Default for BuildOptions {
             app_dir: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
@@ -514,7 +510,6 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     }
     let parser_options = ParserOptions::try_new(
         options.css,
-        options.dom,
         &options.css_file_name_template,
         options.css_public_base.as_deref(),
         options.legal_comments,
@@ -611,6 +606,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                 .map(|css| (component.tag_name.clone(), css.clone()))
         })
         .collect();
+    let component_shadow_dom_usage: Vec<(String, bool)> = parser
+        .component_shadow_dom_usage()
+        .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
+        .collect();
 
     // Collect CSS token analysis before consuming the parser.
     let token_analysis = parser.token_analysis();
@@ -688,30 +687,35 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         warnings.append(&mut preloads.warnings);
     }
 
-    // Record build-wide strategies so the handler can decide rendering behavior.
+    // Record CSS delivery and per-component Shadow DOM ownership.
     protocol.set_css_strategy(match options.css {
         CssStrategy::Link => webui_protocol::CssStrategy::Link,
         CssStrategy::Style => webui_protocol::CssStrategy::Style,
         CssStrategy::Module => webui_protocol::CssStrategy::Module,
     });
-    protocol.set_dom_strategy(match options.dom {
-        DomStrategy::Shadow => webui_protocol::DomStrategy::Shadow,
-        DomStrategy::Light => webui_protocol::DomStrategy::Light,
-    });
+    for (tag_name, uses_shadow_dom) in component_shadow_dom_usage {
+        if !protocol.fragments.contains_key(&tag_name) {
+            continue;
+        }
+        protocol
+            .components
+            .entry(tag_name)
+            .or_default()
+            .uses_shadow_dom = uses_shadow_dom;
+    }
 
-    // Process component CSS in a single pass: store Module CSS content,
+    // Process component CSS in a single pass: retain compiled Style/Module CSS,
     // set Link-strategy css_href, and collect external CSS files.
-    let is_module = options.css == CssStrategy::Module;
-    let is_link = options.css == CssStrategy::Link;
+    let stores_css = options.css != CssStrategy::Link;
     let mut css_files: Vec<(String, String)> = Vec::new();
     let mut emitted_names: HashSet<String> = HashSet::new();
     for (tag, css) in css_snapshot {
         if !protocol.fragments.contains_key(&tag) {
             continue;
         }
-        if is_module {
-            protocol.components.entry(tag).or_default().css = css.trim().to_string();
-        } else if is_link {
+        if stores_css {
+            protocol.components.entry(tag).or_default().css = css;
+        } else {
             let resolved = css_link_options.resolve(&tag, &css);
             if !emitted_names.insert(resolved.filename.clone()) {
                 return Err(WebUIError::InvalidBuildOptions(format!(
@@ -722,9 +726,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             protocol.components.entry(tag).or_default().css_href = resolved.href;
             css_files.push((resolved.filename, css));
         }
-        // Style strategy: CSS is already baked into raw fragments by the
-        // parser — nothing to store in the protocol or emit as files.
     }
+
+    // CSS order is load-bearing, so compute this independently from the sorted
+    // component-asset reachability sets.
+    protocol.populate_style_closures(&[options.entry.as_str()]);
 
     // Store compiled client templates in the protocol so any host server can
     // query them. Scriptless templates retain navigation metadata but contribute
@@ -954,6 +960,68 @@ mod tests {
         assert_eq!(
             result.protocol.initial_state_strategy,
             webui_protocol::InitialStateStrategy::Full as i32
+        );
+    }
+
+    #[test]
+    fn build_uses_light_unless_component_authors_shadow() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<my-card></my-card><shadow-card></shadow-card>",
+            ),
+            ("my-card.html", "<p>content</p>"),
+            (
+                "shadow-card.html",
+                r#"<template shadowrootmode="open"><p>shadow</p></template>"#,
+            ),
+        ]);
+
+        let result = build(BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            ..BuildOptions::default()
+        })
+        .unwrap();
+        assert!(!result.protocol.component_uses_shadow_dom("my-card"));
+        assert!(result.protocol.component_uses_shadow_dom("shadow-card"));
+        let light_html: String = result.protocol.fragments["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!light_html.contains("shadowrootmode"));
+
+        let shadow_html: String = result.protocol.fragments["shadow-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(shadow_html.contains(r#"<template shadowrootmode="open">"#));
+    }
+
+    #[test]
+    fn build_rejects_slot_in_unwrapped_light_component() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<div><slot></slot></div>"),
+        ]);
+
+        let error = build(BuildOptions {
+            app_dir: app.path().to_path_buf(),
+            ..BuildOptions::default()
+        })
+        .expect_err("unwrapped Light DOM slot must fail the build");
+
+        assert!(
+            error.chain_message().contains("[light-dom-slot]"),
+            "unexpected build error: {}",
+            error.chain_message()
         );
     }
 
@@ -1389,7 +1457,10 @@ mod tests {
     fn test_build_with_component_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
             ("my-card.ts", "export {};"),
         ]);
@@ -1402,10 +1473,219 @@ mod tests {
     }
 
     #[test]
+    fn light_css_bytes_align_across_link_style_and_module() {
+        let authored = " \n:host(.ready){color:red}\n ";
+        let expected = concat!(
+            "@scope (my-card[data-wl]) to (:scope [data-wl] > *) {\n",
+            " \n:scope:is(.ready){color:red}\n ",
+            "\n}"
+        );
+
+        for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
+            let app = create_app_dir(&[
+                ("index.html", "<my-card></my-card>"),
+                ("my-card.html", "<p>content</p>"),
+                ("my-card.css", authored),
+            ]);
+            let mut options = default_options(app.path());
+            options.css = strategy;
+            if strategy == CssStrategy::Link {
+                options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+            }
+            let result = build(options).unwrap();
+
+            let actual = match strategy {
+                CssStrategy::Link => {
+                    let expected_name = webui_parser::CssLinkOptions::try_new(
+                        "[name]-[hash].[ext]".to_string(),
+                        None,
+                    )
+                    .unwrap()
+                    .resolve("my-card", expected)
+                    .filename;
+                    assert_eq!(result.css_files[0].0, expected_name);
+                    result.css_files[0].1.clone()
+                }
+                CssStrategy::Module => result.protocol.components["my-card"].css.clone(),
+                CssStrategy::Style => {
+                    assert_eq!(result.protocol.components["my-card"].css, expected);
+                    result.protocol.components["my-card"].css.clone()
+                }
+            };
+            assert_eq!(actual, expected, "mismatch for {strategy:?}");
+            if strategy != CssStrategy::Link {
+                assert_eq!(
+                    result.protocol.component_style_resource("my-card"),
+                    Some(expected)
+                );
+            }
+            assert_eq!(
+                result
+                    .protocol
+                    .style_closure("index.html")
+                    .expect("entry closure"),
+                ["my-card"],
+                "Light CSS must be installed by the Document closure"
+            );
+
+            let protocol = Protocol::new(result.protocol.clone());
+            let mut writer = StringWriter { buf: String::new() };
+            WebUIHandler::new()
+                .render(
+                    &protocol,
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            match strategy {
+                CssStrategy::Link => {
+                    let href = &result.protocol.components["my-card"].css_href;
+                    assert!(writer.buf.contains(&format!(
+                        r#"<link rel="stylesheet" href="{href}" data-webui-resource="my-card" data-webui-strategy="link">"#
+                    )));
+                }
+                CssStrategy::Style | CssStrategy::Module => {
+                    let kind = if strategy == CssStrategy::Module {
+                        "module"
+                    } else {
+                        "style"
+                    };
+                    assert!(writer.buf.contains(&format!(
+                        r#"<style data-webui-resource="my-card" data-webui-strategy="{kind}">{expected}</style>"#
+                    )));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn build_precomputes_style_closures_with_authored_shadow_cut() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<light-card></light-card><shadow-card><after-card></after-card></shadow-card>",
+            ),
+            ("light-card.html", "<nested-card></nested-card>"),
+            ("light-card.css", ".light{}"),
+            (
+                "shadow-card.html",
+                r#"<template shadowrootmode="open"><nested-card></nested-card></template>"#,
+            ),
+            ("shadow-card.css", ".shadow{}"),
+            ("nested-card.html", "<span>nested</span>"),
+            ("nested-card.css", ".nested{}"),
+            ("after-card.html", "<span>after</span>"),
+            ("after-card.css", ".after{}"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result
+                .protocol
+                .style_closure("index.html")
+                .expect("entry closure"),
+            ["light-card", "nested-card", "after-card"]
+        );
+        assert_eq!(
+            result
+                .protocol
+                .style_closure("shadow-card")
+                .expect("Shadow closure"),
+            ["shadow-card", "nested-card"]
+        );
+    }
+
+    #[test]
+    fn authored_shadow_css_bytes_are_not_lowered_or_trimmed() {
+        let authored =
+            " \n:host(.ready){color:red}:host-context(body){color:blue}::slotted(*){color:green}\n ";
+
+        for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
+            let app = create_app_dir(&[
+                ("index.html", "<my-card></my-card>"),
+                (
+                    "my-card.html",
+                    r#"<template shadowrootmode="open"><p>content</p></template>"#,
+                ),
+                ("my-card.css", authored),
+            ]);
+            let mut options = default_options(app.path());
+            options.css = strategy;
+            let result = build(options).unwrap();
+
+            match strategy {
+                CssStrategy::Link => assert_eq!(result.css_files[0].1, authored),
+                CssStrategy::Style | CssStrategy::Module => {
+                    assert_eq!(result.protocol.components["my-card"].css, authored);
+                    assert_eq!(
+                        result.protocol.component_style_resource("my-card"),
+                        Some(authored)
+                    );
+                }
+            }
+            assert_eq!(
+                result
+                    .protocol
+                    .style_closure("my-card")
+                    .expect("component closure"),
+                ["my-card"],
+                "the authored Shadow root owns its exact CSS resource"
+            );
+
+            let protocol = Protocol::new(result.protocol.clone());
+            let mut writer = StringWriter { buf: String::new() };
+            WebUIHandler::new()
+                .render(
+                    &protocol,
+                    &serde_json::json!({}),
+                    &RenderOptions::new("index.html", "/"),
+                    &mut writer,
+                )
+                .unwrap();
+            match strategy {
+                CssStrategy::Link => {
+                    let href = &result.protocol.components["my-card"].css_href;
+                    assert!(writer.buf.contains(&format!(
+                        r#"<template shadowrootmode="open"><link rel="stylesheet" href="{href}" data-webui-resource="my-card" data-webui-strategy="link">"#
+                    )));
+                }
+                CssStrategy::Style | CssStrategy::Module => {
+                    let kind = if strategy == CssStrategy::Module {
+                        "module"
+                    } else {
+                        "style"
+                    };
+                    assert!(writer.buf.contains(&format!(
+                        r#"<style data-webui-resource="my-card" data-webui-strategy="{kind}">{authored}</style>"#
+                    )));
+                    let template_start = writer
+                        .buf
+                        .find(r#"<template shadowrootmode="open""#)
+                        .expect("declarative Shadow root");
+                    let style_start = writer
+                        .buf
+                        .find(&format!(
+                            r#"<style data-webui-resource="my-card" data-webui-strategy="{kind}">"#
+                        ))
+                        .expect("tree-local style");
+                    let content_start = writer.buf.find("<p>content</p>").expect("component body");
+                    assert!(template_start < style_start && style_start < content_start);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_build_strips_non_legal_css_comments_from_output_file() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             (
                 "my-card.css",
                 "/* remove var(--ignored) */ .card { color: var(--textColor); }",
@@ -1421,7 +1701,10 @@ mod tests {
     fn test_build_preserves_legal_css_comments_by_default() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             (
                 "my-card.css",
                 "/*! @license MIT */ .card { color: red; } /* remove */",
@@ -1439,7 +1722,10 @@ mod tests {
     fn test_build_legal_comments_none_strips_legal_css_comments() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", "/*! @license MIT */ .card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1453,7 +1739,10 @@ mod tests {
     fn test_build_with_css_hashed_filename_template() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1479,7 +1768,10 @@ mod tests {
     fn test_css_public_base_prefixes_css_href_only() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1501,13 +1793,16 @@ mod tests {
     }
 
     #[test]
-    fn test_css_public_base_emits_parser_and_handler_links() {
+    fn test_css_public_base_emits_protocol_handler_and_payload_resources() {
         let app = create_app_dir(&[
             (
                 "index.html",
                 "<html><head></head><body><my-card>Hello</my-card></body></html>",
             ),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1517,19 +1812,16 @@ mod tests {
 
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
-        let component_html = result.protocol.fragments["my-card"]
-            .fragments
-            .iter()
-            .filter_map(|fragment| match fragment.fragment.as_ref() {
-                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-        assert!(
-            component_html.contains(&format!(
-                r#"<link rel="stylesheet" href="{expected_href}">"#
-            )),
-            "parser-generated component template should use CDN href: {component_html}"
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
+        assert_eq!(
+            result
+                .protocol
+                .style_closure("my-card")
+                .expect("component closure"),
+            ["my-card"]
         );
 
         let handler = WebUIHandler::new();
@@ -1545,18 +1837,29 @@ mod tests {
             .unwrap();
         assert!(
             writer.buf.contains(&format!(
-                r#"<link rel="preload" href="{expected_href}" as="style" data-webui-ssr-preload="style">"#
+                r#"<link rel="stylesheet" href="{}" data-webui-resource="my-card" data-webui-strategy="link">"#,
+                expected_href.replace('/', "&#x2F;")
             )),
-            "handler head preload should use CDN href: {}",
+            "handler Shadow-root resource should use CDN href: {}",
             writer.buf
+        );
+        let payload = protocol
+            .render_component_templates(&["my-card"], "")
+            .expect("component resource payload");
+        assert_eq!(
+            payload["componentStyles"]["resources"]["my-card"]["href"],
+            expected_href
         );
     }
 
     #[test]
-    fn test_css_public_base_emits_webui_plugin_template_links() {
+    fn test_css_public_base_keeps_webui_template_style_free() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
             ("my-card.ts", "export {};"),
         ]);
@@ -1569,17 +1872,24 @@ mod tests {
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
         let template = &result.protocol.components["my-card"].template_json;
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
         assert!(
-            template.contains(&format!(r#"href=\"{expected_href}\""#)),
-            "plugin component template should use CDN href: {template}"
+            !template.contains(&expected_href),
+            "WebUI templates must not duplicate handler-owned CSS links: {template}"
         );
     }
 
     #[test]
-    fn test_css_public_base_emits_fast_plugin_template_links() {
+    fn test_css_public_base_keeps_shadow_fast_template_styled() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1591,9 +1901,42 @@ mod tests {
         let filename = &result.css_files[0].0;
         let expected_href = format!("https://cdn.example.com/assets/{filename}");
         let template = &result.protocol.components["my-card"].template;
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
         assert!(
-            template.contains(&format!(r#"href="{expected_href}""#)),
-            "FAST component template should use CDN href: {template}"
+            template.contains(&expected_href),
+            "a Shadow FAST template owns its own CSS so client-created elements are styled: {template}"
+        );
+    }
+
+    /// Light CSS is Document-owned and its `@scope` root cannot resolve from
+    /// inside a FAST-created root, so it must never be inlined into the
+    /// plugin-facing template.
+    #[test]
+    fn test_light_fast_template_stays_style_free() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card>Hello</my-card>"),
+            ("my-card.html", "<div>card</div>"),
+            ("my-card.css", ".card { color: red; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::FastV3);
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/assets".to_string());
+        let result = build(options).unwrap();
+
+        let filename = &result.css_files[0].0;
+        let expected_href = format!("https://cdn.example.com/assets/{filename}");
+        let template = &result.protocol.components["my-card"].template;
+        assert_eq!(
+            result.protocol.component_style_resource("my-card"),
+            Some(expected_href.as_str())
+        );
+        assert!(
+            !template.contains(&expected_href),
+            "Light templates must not duplicate handler-owned CSS links: {template}"
         );
     }
 
@@ -1601,7 +1944,10 @@ mod tests {
     fn test_invalid_css_template_is_rejected() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1615,9 +1961,15 @@ mod tests {
     fn test_css_filename_collision_is_rejected() {
         let app = create_app_dir(&[
             ("index.html", "<card-a>A</card-a><card-b>B</card-b>"),
-            ("card-a.html", "<div><slot></slot></div>"),
+            (
+                "card-a.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-a.css", ".x { color: red; }"),
-            ("card-b.html", "<div><slot></slot></div>"),
+            (
+                "card-b.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-b.css", ".x { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -1651,7 +2003,7 @@ mod tests {
             .contains(r#""type":"webui-component-asset""#));
         assert!(result.component_asset_files[0]
             .content
-            .contains(r#""version":2"#));
+            .contains(r#""version":3"#));
         assert!(result.component_asset_files[0]
             .content
             .contains(r#""kind":"root""#));
@@ -1667,6 +2019,42 @@ mod tests {
                 .any(|key| key.starts_with("__webui_asset_root_")),
             "synthetic asset root fragments must not be serialized"
         );
+    }
+
+    #[test]
+    fn component_assets_emit_enhanced_style_catalog_for_all_strategies() {
+        for (strategy, kind) in [
+            (CssStrategy::Link, "link"),
+            (CssStrategy::Style, "style"),
+            (CssStrategy::Module, "module"),
+        ] {
+            let app = create_app_dir(&[
+                ("index.html", "<app-shell></app-shell>"),
+                ("app-shell.html", "<p>Entry</p>"),
+                ("lazy-panel.html", "<p>Lazy</p>"),
+                ("lazy-panel.css", ".lazy{color:red}"),
+            ]);
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::WebUI);
+            options.css = strategy;
+            options.component_asset_roots = vec!["lazy-panel".to_string()];
+
+            let result = build(options).unwrap();
+            let asset = &result.component_asset_files[0].content;
+            assert!(asset.contains(r#""version":3"#));
+            assert!(asset.contains(&format!(
+                r#""componentStyles":{{"version":1,"strategy":"{kind}""#
+            )));
+            assert!(asset.contains(&format!(r#""lazy-panel":{{"kind":"{kind}""#)));
+            assert!(asset.contains(r#""closures":{"lazy-panel":["lazy-panel"]}"#));
+            if strategy == CssStrategy::Module {
+                assert!(asset
+                    .contains(r#""lazy-panel":{"kind":"module","specifier":"lazy-panel","css":"#,));
+            }
+            if strategy == CssStrategy::Link {
+                assert!(asset.contains(r#""href":new URL("lazy-panel.css",import.meta.url).href"#,));
+            }
+        }
     }
 
     #[test]
@@ -1727,7 +2115,7 @@ mod tests {
             ]
         );
         let lazy = &result.component_asset_files[0].content;
-        assert!(lazy.contains(r#""version":2"#));
+        assert!(lazy.contains(r#""version":3"#));
         assert!(lazy.contains(r#""kind":"root""#));
         assert!(lazy.contains(r#""externalComponents":["entry-badge"]"#));
         assert!(lazy
@@ -1934,12 +2322,11 @@ mod tests {
     fn test_css_href_set_for_light_dom_link_strategy() {
         let app = create_app_dir(&[
             ("index.html", "<has-css>A</has-css><no-css>B</no-css>"),
-            ("has-css.html", "<p><slot></slot></p>"),
+            ("has-css.html", "<p>styled</p>"),
             ("has-css.css", ".yes { color: green; }"),
-            ("no-css.html", "<p><slot></slot></p>"),
+            ("no-css.html", "<p>plain</p>"),
         ]);
-        let mut options = default_options(app.path());
-        options.dom = DomStrategy::Light;
+        let options = default_options(app.path());
         let result = build(options).unwrap();
 
         let href = result
@@ -1966,13 +2353,92 @@ mod tests {
     }
 
     #[test]
+    fn test_plugin_free_build_persists_component_shadow_usage() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<light-card></light-card><shadow-card></shadow-card>",
+            ),
+            ("light-card.html", "<p>light</p>"),
+            (
+                "shadow-card.html",
+                "<template shadowrootmode=\"open\"><slot></slot></template>",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = None;
+        let result = build(options).unwrap();
+
+        assert!(!result.protocol.component_uses_shadow_dom("light-card"));
+        assert!(result.protocol.component_uses_shadow_dom("shadow-card"));
+        assert!(!result.protocol.components["light-card"].uses_shadow_dom);
+        assert!(result.protocol.components["shadow-card"].uses_shadow_dom);
+
+        let entry_html: String = result.protocol.fragments["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(entry_html.contains("<light-card data-wl>"));
+        assert!(entry_html.contains("<shadow-card>"));
+        assert!(!entry_html.contains("<shadow-card data-wl"));
+    }
+
+    #[test]
+    fn test_authored_shadow_under_light_matches_ssr_protocol_and_webui_metadata() {
+        let app = create_app_dir(&[
+            ("index.html", "<shadow-card>projected</shadow-card>"),
+            (
+                "shadow-card.html",
+                "<!-- lead --><template shadowrootmode=\"open\"><slot></slot></template><!-- tail -->",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        let result = build(options).unwrap();
+
+        assert!(result.protocol.component_uses_shadow_dom("shadow-card"));
+        assert!(result.protocol.components["shadow-card"]
+            .template_json
+            .contains("\"sd\":1"));
+
+        let component_html: String = result.protocol.fragments["shadow-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            component_html,
+            "<template shadowrootmode=\"open\"><slot></slot></template>"
+        );
+        let entry_html: String = result.protocol.fragments["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!entry_html.contains("data-wl"));
+    }
+
+    #[test]
     fn test_shadow_dom_link_strategy_sets_css_href() {
         // Shadow×Link: css_href is always set for Link-strategy components.
-        // The handler uses protocol.css_strategy + dom_strategy to decide
-        // whether to emit preload (Shadow) or stylesheet (Light) in <head>.
+        // The handler uses protocol.css_strategy + component Shadow metadata
+        // to decide preload (Shadow) vs stylesheet (Light) in <head>.
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
-            ("my-card.html", "<p><slot></slot></p>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><p><slot></slot></p></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let result = build(default_options(app.path())).unwrap();
@@ -1988,10 +2454,6 @@ mod tests {
             result.protocol.css_strategy(),
             webui_protocol::CssStrategy::Link,
         );
-        assert_eq!(
-            result.protocol.dom_strategy(),
-            webui_protocol::DomStrategy::Shadow,
-        );
 
         // CSS file should still be emitted for the server to serve
         assert_eq!(
@@ -2005,7 +2467,10 @@ mod tests {
     fn test_css_href_empty_for_style_strategy() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
-            ("my-card.html", "<p><slot></slot></p>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><p><slot></slot></p></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2025,7 +2490,10 @@ mod tests {
     fn test_css_href_empty_for_module_strategy() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>A</my-card>"),
-            ("my-card.html", "<p><slot></slot></p>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><p><slot></slot></p></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2049,7 +2517,10 @@ mod tests {
     fn test_build_to_disk_writes_files() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
             ("my-card.ts", "export {};"),
         ]);
@@ -2098,7 +2569,10 @@ mod tests {
     fn test_build_inline_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2115,7 +2589,10 @@ mod tests {
     fn test_build_module_css() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
@@ -2195,7 +2672,7 @@ mod tests {
         let ext_dir = TempDir::new().unwrap();
         fs::write(
             ext_dir.path().join("ext-card.html"),
-            "<div class=\"card\"><slot></slot></div>",
+            r#"<template shadowrootmode="open"><div class="card"><slot></slot></div></template>"#,
         )
         .unwrap();
         fs::write(
@@ -2474,7 +2951,10 @@ mod tests {
     fn test_build_to_disk_css_stays_in_output_dir() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();
@@ -2536,7 +3016,10 @@ mod tests {
     fn test_build_to_disk_inline_mode_no_css_files() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();
@@ -2562,9 +3045,15 @@ mod tests {
     fn test_build_multiple_components_css() {
         let app = create_app_dir(&[
             ("index.html", "<card-a>A</card-a><card-b>B</card-b>"),
-            ("card-a.html", "<div><slot></slot></div>"),
+            (
+                "card-a.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-a.css", ".a { color: red; }"),
-            ("card-b.html", "<span><slot></slot></span>"),
+            (
+                "card-b.html",
+                r#"<template shadowrootmode="open"><span><slot></slot></span></template>"#,
+            ),
             ("card-b.css", ".b { color: blue; }"),
         ]);
         let result = build(default_options(app.path())).unwrap();
@@ -2581,9 +3070,15 @@ mod tests {
         // card-b is registered but not referenced in index.html
         let app = create_app_dir(&[
             ("index.html", "<card-a>A</card-a>"),
-            ("card-a.html", "<div><slot></slot></div>"),
+            (
+                "card-a.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("card-a.css", ".a { color: red; }"),
-            ("card-b.html", "<span><slot></slot></span>"),
+            (
+                "card-b.html",
+                r#"<template shadowrootmode="open"><span><slot></slot></span></template>"#,
+            ),
             ("card-b.css", ".b { color: blue; }"),
         ]);
         let result = build(default_options(app.path())).unwrap();
@@ -2810,7 +3305,10 @@ mod tests {
     fn test_build_to_disk_returns_accurate_stats() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card><p>{{name}}</p>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out = TempDir::new().unwrap();

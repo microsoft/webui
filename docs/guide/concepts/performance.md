@@ -196,34 +196,40 @@ data from a 2,400-component email client:
 
 ### When to Use Each
 
-**Shadow DOM** (default) - use when:
-- Style encapsulation is important (shared component libraries)
-- Components are used in contexts where CSS conflicts are likely
-- You need slot-based composition
-
-**Light DOM** - use when:
+**Light DOM** - leave the component unwrapped when:
 - Performance is critical (high-component-count pages)
-- Components are leaf nodes (list items, cards, badges)
-- You control the full page CSS and don't need encapsulation
+- Components benefit from normal CSS inheritance
+- Native slot composition is not required
 
-### Switching to Light DOM
+**Shadow DOM** - use when:
+- You need native `<slot>` composition
+- Components run in unknown host pages
+- A native Shadow boundary is an explicit requirement
 
-Build with the `--dom=light` flag:
+### Authoring Shadow DOM
 
-```bash
-webui build ./src --out ./dist --dom=light
-```
+Every unwrapped component is Light. A component uses Shadow only when its
+complete template is a sole top-level `<template shadowrootmode="open">`. Use
+that only for components that need
+slots or native encapsulation. Invalid or closed wrappers and `<slot>` in an
+unwrapped component fail the build.
 
-In Rust handlers, use `DomStrategy::Light`:
+Keep authoring ordinary paired CSS in both modes. The compiler scopes Light CSS,
+lowers `:host`, and namespaces static keyframes. It rejects selectors and
+dynamic local-keyframe references that cannot be isolated safely.
 
-```rust
-let options = RenderOptions::new("index.html", "/")
-    .with_dom_strategy(DomStrategy::Light);
-```
+Template and style metadata share the router inventory. A partial navigation
+sends CSS definitions and ordered closures only for newly discovered
+components. New closures can omit shared resources only when the incoming
+inventory proves they were already registered; uninventoried dependencies are
+sent with the new root.
 
-CSS differences:
-- Shadow DOM: `:host { display: block; }`
-- Light DOM: `my-component { display: block; }` (use the tag name)
+Progressive streaming keeps a separate request-local style resource inventory.
+Each closure and CSS definition is serialized at most once per response, even
+when later boundaries reuse a component or a resource arrived transitively
+through an earlier closure.
+
+Add open wrappers only to slot and encapsulation components.
 
 ## Performance Rules
 

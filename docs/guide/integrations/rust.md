@@ -368,6 +368,10 @@ delivery from a cancelled or stalled stream.
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
+Every unwrapped component uses Light DOM. A component uses Shadow only when its
+complete template is a sole top-level `<template shadowrootmode="open">`;
+native `<slot>` is Shadow-only.
+
 `BuildResult::component_asset_files` contains root and shared chunk modules.
 Entry-reachable dependencies remain in the protocol and are external
 prerequisites; single-root dependencies stay inline; dependencies with an

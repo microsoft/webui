@@ -314,9 +314,11 @@ onThemeChanged(): void {
 ```
 
 ```html
-<div ?data-dark="{{theme == 'dark'}}">
-  <slot></slot>
-</div>
+<template shadowrootmode="open">
+  <div ?data-dark="{{theme == 'dark'}}">
+    <slot></slot>
+  </div>
+</template>
 ```
 
 ```css
@@ -368,7 +370,9 @@ This is roughly 15 KB - the handler renders faster, the network transfer is smal
 
 ## Light DOM vs Shadow DOM
 
-WebUI defaults to Shadow DOM for style encapsulation, but Light DOM is available when performance is the priority.
+Every unwrapped component uses Light DOM. The compiler scopes its ordinary
+paired CSS, so an unwrapped template does not require global component styles
+or rewriting `:host`.
 
 ### Performance Comparison
 
@@ -380,31 +384,32 @@ WebUI defaults to Shadow DOM for style encapsulation, but Light DOM is available
 
 ### When to Use Each
 
-**Shadow DOM** (default):
+**Light DOM** (unwrapped templates):
 
-- Components with styles that must not leak or be affected by the page
+- Most application components
+- High-component-count pages such as tables and long lists
+- Components that benefit from normal inheritance and a flatter DOM
+
+**Shadow DOM**:
+
+- Components that use native `<slot>` composition
 - Third-party components embedded in unknown host pages
-- Design system components where style isolation is a requirement
+- Components that specifically require a native Shadow boundary
 
-**Light DOM**:
+### Authoring Shadow DOM
 
-- High-component-count pages (tables with hundreds of rows, long lists)
-- Performance-critical rendering paths where FCP matters
-- Pages where global CSS is acceptable and preferred
+Every unwrapped component is Light. To use Shadow, wrap the complete component
+in the sole top-level element:
 
-### Enabling Light DOM
-
-```bash
-webui build ./src --out ./dist --dom=light
+```html
+<template shadowrootmode="open">
+  <slot></slot>
+</template>
 ```
 
-In Rust handler configuration, use `DomStrategy::Light`.
-
-<webui-blockquote appearance="tip" title="Tip" icon="💡">
-
-Start with Shadow DOM (the default). Switch individual components or pages to Light DOM only when profiling shows a measurable benefit.
-
-</webui-blockquote>
+Only `open` is supported. A closed root, invalid wrapper placement or value, or
+native `<slot>` in an unwrapped component is a build error. Add open wrappers
+only to components that need slots or native Shadow encapsulation.
 
 ## Summary
 
@@ -416,4 +421,5 @@ Start with Shadow DOM (the default). Switch individual components or pages to Li
 | Check `.length` for empty arrays | Server and client disagree on bare `[]`; `.length` of `0` is falsy on both |
 | Return route-scoped state | Smaller payloads, faster rendering |
 | Prefer declarative bindings over imperative DOM manipulation | Template bindings are reactive and SSR-compatible |
-| Use Light DOM for performance-critical pages | Measurably faster FCP and fewer layout operations |
+| Leave a component unwrapped unless it needs Shadow | Scoped CSS with fewer shadow roots |
+| Put native `<slot>` only in a Shadow component | Native slots do not work in Light DOM |

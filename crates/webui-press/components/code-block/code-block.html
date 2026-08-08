@@ -1,4 +1,6 @@
-<div class="wrapper">
-  <button class="copy-btn" @click="{copy()}" aria-label="Copy code">{{label}}</button>
-  <slot></slot>
-</div>
+<template shadowrootmode="open">
+  <div class="wrapper">
+    <button class="copy-btn" @click="{copy()}" aria-label="Copy code">{{label}}</button>
+    <slot></slot>
+  </div>
+</template>

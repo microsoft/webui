@@ -265,6 +265,10 @@ JavaScript loader or empty class. Create a custom element only when the route
 component is interactive: event handlers, custom lifecycle code, imperative
 methods, or JavaScript-owned state.
 
+Initial SSR delivers component CSS only for the matched route chain. Styles for
+inactive routes remain deferred until navigation activates those components,
+including when an `<outlet />` is inside a Shadow component.
+
 ### Tagged Cache
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
@@ -670,7 +674,20 @@ When `Accept: application/json` or `application/x-ndjson`:
 ```json
 {
   "state": { "name": "Alice", "email": "alice@example.com" },
-  "templateStyles": ["<script type=\"importmap\">{\"imports\":{\"user-detail\":\"data:text/css,...\"}}</script>"],
+  "componentStyles": {
+    "version": 1,
+    "strategy": "module",
+    "resources": {
+      "user-detail": {
+        "kind": "module",
+        "specifier": "user-detail",
+        "css": "@scope (user-detail[data-wl]) { ... }"
+      }
+    },
+    "closures": {
+      "user-detail": ["user-detail"]
+    }
+  },
   "templates": {
     "user-detail": { "h": "<section></section>" }
   },
@@ -697,9 +714,9 @@ When `Accept: application/json` or `application/x-ndjson`:
 | Field | Description |
 |-------|-------------|
 | `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
-| `templateStyles` | Module CSS definition tags (empty for Link/Style modes) |
+| `componentStyles` | Required versioned CSS resource and closure delta; a shared resource is omitted only when the incoming inventory proves it was already registered |
 | `templates` | Client template payloads filtered by inventory bitmask |
-| `inventory` | Updated hex bitmask of loaded templates |
+| `inventory` | Updated hex bitmask of loaded component template and style metadata |
 | `path` | The matched request path |
 | `chain` | Matched route chain - one entry per nesting level |
 | `cacheTags` | Resolved cache tags from the full chain (union of all levels) |
@@ -715,13 +732,13 @@ custom-element registration, not by a server `client` flag.
 | Header | Value | Purpose |
 |--------|-------|---------|
 | `Accept` | `application/x-ndjson, application/json` | Requests NDJSON streaming or JSON partial instead of HTML |
-| `X-WebUI-Inventory` | Hex bitmask | Templates the client already has — server skips re-sending them |
+| `X-WebUI-Inventory` | Hex bitmask | Component template and style metadata the client already has - server skips re-sending it |
 
 ### Full HTML (initial load)
 
 Without `Accept: application/json`, return the full SSR'd page. The handler
 includes the route chain, template inventory, and CSS list needed for client
-bootstrap.
+bootstrap. The CSS list contains the matched route chain, not inactive siblings.
 
 ### Partial Navigation
 

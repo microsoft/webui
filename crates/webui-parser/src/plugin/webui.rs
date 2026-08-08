@@ -28,7 +28,6 @@
 //!   "c": [[[0, ["state"]], 0, [[0], 1]]],
 //!   "eg": [["click", [["onClick", [], [0]]]]],
 //!   "b": [{ "h": "<span class=\"check\">✓</span>" }],
-//!   "sa": "my-component",
 //!   "re": [["submit", "onSubmit", [["e"]]]]
 //! }
 //! ```
@@ -61,13 +60,14 @@
 //!    compiles each tracked component into JSON metadata plus condition closures.
 
 use super::{
-    AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts, StateSurface,
+    AttributeAction, ComponentTemplateArtifact, ComponentTemplateContext, ParserPlugin,
+    ParserPluginArtifacts, StateSurface,
 };
 use crate::comment_policy;
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
-use crate::html_parser::{find_tag_close, parse_tag, style_element_bounds};
-use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
+use crate::html_parser::{find_matching_end, find_tag_close, parse_tag, style_element_bounds};
+use crate::{ConditionParser, Result};
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
@@ -81,6 +81,12 @@ struct TrackedComponent {
     template_html: String,
     root_event_source: String,
     client_module: ClientModule,
+    uses_shadow_dom: bool,
+}
+
+struct TrackedClientContext {
+    client_module: ClientModule,
+    uses_shadow_dom: bool,
 }
 
 /// Authored client-module ownership.
@@ -127,8 +133,6 @@ pub struct WebUIParserPlugin {
     element_events: Cell<u32>,
     /// Global event index, incremented across all elements in a component.
     next_event_idx: Cell<u32>,
-    /// DOM strategy — shadow or light.
-    dom_strategy: DomStrategy,
 }
 
 impl WebUIParserPlugin {
@@ -138,7 +142,6 @@ impl WebUIParserPlugin {
             components: Vec::new(),
             element_events: Cell::new(0),
             next_event_idx: Cell::new(0),
-            dom_strategy: DomStrategy::default(),
         }
     }
 
@@ -159,7 +162,6 @@ impl WebUIParserPlugin {
     /// Returns [`crate::ParserError::Template`] if any tracked component
     /// contains an invalid `@event` handler or a non-braced `w-ref` binding.
     fn take_component_templates(&self) -> Result<Vec<ComponentTemplateArtifact>> {
-        let use_shadow = matches!(self.dom_strategy, DomStrategy::Shadow);
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
             let is_authored = c.client_module.is_authored();
@@ -167,7 +169,7 @@ impl WebUIParserPlugin {
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
-                use_shadow,
+                c.uses_shadow_dom,
                 !is_authored,
             )?;
             // The parser plugin performs no JavaScript/TypeScript analysis: it
@@ -191,6 +193,7 @@ impl WebUIParserPlugin {
                     c.tag_name.clone(),
                     payload.template_json,
                     payload.template_functions,
+                    c.uses_shadow_dom,
                 )
                 .with_hydration(hydration)
                 .with_navigation(navigation)
@@ -206,22 +209,43 @@ impl WebUIParserPlugin {
         tag_name: &str,
         template_html: &str,
         root_event_source: &str,
-        client_module: ClientModule,
+        client: TrackedClientContext,
     ) {
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
             component.template_html.push_str(template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
-            component.client_module = client_module;
+            component.client_module = client.client_module;
+            component.uses_shadow_dom = client.uses_shadow_dom;
             return;
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
             template_html: template_html.to_string(),
             root_event_source: root_event_source.to_string(),
-            client_module,
+            client_module: client.client_module,
+            uses_shadow_dom: client.uses_shadow_dom,
         });
+    }
+
+    #[cfg(test)]
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()> {
+        <Self as ParserPlugin>::register_component_template(
+            self,
+            tag_name,
+            component,
+            processed_template,
+            ComponentTemplateContext {
+                uses_shadow_dom: false,
+                style: None,
+            },
+        )
     }
 }
 
@@ -235,10 +259,6 @@ impl ParserPlugin for WebUIParserPlugin {
     fn start_fragment(&mut self, _fragment_id: &str) {
         self.element_events.set(0);
         self.next_event_idx.set(0);
-    }
-
-    fn configure(&mut self, options: &ParserOptions) {
-        self.dom_strategy = options.dom_strategy;
     }
 
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
@@ -257,12 +277,16 @@ impl ParserPlugin for WebUIParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()> {
         self.store_component_template(
             tag_name,
             processed_template,
             &component.html_content,
-            ClientModule::from_component(component),
+            TrackedClientContext {
+                client_module: ClientModule::from_component(component),
+                uses_shadow_dom: context.uses_shadow_dom,
+            },
         );
         Ok(())
     }
@@ -459,8 +483,7 @@ struct TemplateBuildMetadata {
     has_events: bool,
 }
 
-struct TemplatePayloadOptions<'a> {
-    adopted_stylesheet: Option<&'a str>,
+struct TemplatePayloadOptions {
     shadow_dom: bool,
     emit_static_host: bool,
 }
@@ -518,7 +541,7 @@ impl ConditionFunctionEmitter {
 /// # Flow
 ///
 /// 1. Extract `@event` bindings from the `<template>` wrapper (→ `root_events`).
-/// 2. Strip the `<template shadowrootmode="…">` wrapper if present.
+/// 2. Strip the open declarative Shadow DOM wrapper if present.
 /// 3. Compile the inner body via [`compile_to_metadata`].
 /// 4. Serialize into JSON metadata and component-local condition closures.
 ///
@@ -534,7 +557,6 @@ impl ConditionFunctionEmitter {
 /// | `<for each="v in coll">body</for>`    | `r[]` + `rl[]` + `b[]`     | block removed; anchor slot stored |
 /// | first concrete `key="{{v.id}}"`       | optional fifth `r[]` field | relative repeat key path stored   |
 /// | `<link>` / `<style>` child nodes      | `h`                        | preserved in static HTML          |
-/// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
 /// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
 /// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
@@ -562,9 +584,18 @@ fn generate_compiled_template_with_root_source(
     scriptless: bool,
 ) -> Result<CompiledTemplatePayload> {
     let trimmed = html_content.trim();
-    let root_events = extract_root_events(tag_name, root_event_source.trim())?;
-    let adopted_stylesheet = extract_adopted_stylesheet_specifier(trimmed);
-    let body = strip_template_wrapper(trimmed);
+    let shadow_body = shadow_template_body(trimmed);
+    let authored_shadow_root = shadow_body.is_some();
+    let mut root_events = if authored_shadow_root {
+        extract_root_events(tag_name, trimmed)?
+    } else {
+        Vec::new()
+    };
+    let raw_root = root_event_source.trim();
+    if root_events.is_empty() && raw_root != trimmed && shadow_template_body(raw_root).is_some() {
+        root_events = extract_root_events(tag_name, raw_root)?;
+    }
+    let body = shadow_body.unwrap_or(trimmed);
     let meta = compile_to_metadata(tag_name, body, root_events)?;
     let build_meta = collect_template_build_metadata(&meta);
     if scriptless && build_meta.has_events {
@@ -575,7 +606,6 @@ fn generate_compiled_template_with_root_source(
         &meta,
         &build_meta,
         TemplatePayloadOptions {
-            adopted_stylesheet: adopted_stylesheet.as_deref(),
             shadow_dom,
             emit_static_host: scriptless,
         },
@@ -586,18 +616,13 @@ fn emit_compiled_template_payload(
     html_content: &str,
     meta: &TemplateMeta,
     build_meta: &TemplateBuildMetadata,
-    options: TemplatePayloadOptions<'_>,
+    options: TemplatePayloadOptions,
 ) -> CompiledTemplatePayload {
     let mut conditions = ConditionFunctionEmitter::new(128);
     let mut out = String::with_capacity(512 + html_content.len());
     out.push('{');
 
     emit_json_template_section(&meta.root, &mut out, &mut conditions);
-
-    if let Some(adopted_stylesheet) = options.adopted_stylesheet {
-        out.push_str(",\"sa\":");
-        emit_js_string(adopted_stylesheet, &mut out);
-    }
 
     // sd: shadow DOM flag — tells the client runtime to use shadow root
     if options.shadow_dom {
@@ -2244,21 +2269,24 @@ fn is_inside_tag(input: &str, pos: usize) -> bool {
     false
 }
 
-/// Strip `<template shadowrootmode="…">…</template>` wrapper, returning inner content.
-/// Returns the input unchanged if no wrapper is present.
-fn strip_template_wrapper(html: &str) -> &str {
-    if !html.starts_with("<template") {
-        return html;
+/// Return the body of a complete open declarative Shadow DOM template.
+fn shadow_template_body(html: &str) -> Option<&str> {
+    let tag = parse_tag(html)?;
+    if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
+        return None;
     }
-    let Some(open_end) = find_tag_close(html) else {
-        return html;
-    };
-    let inner_start = open_end + 1;
-    let inner_end = html.rfind("</template>").unwrap_or(html.len());
-    if inner_start >= inner_end {
-        return "";
+    let is_open = tag.attrs().any(|attr| {
+        attr.name.eq_ignore_ascii_case("shadowrootmode")
+            && attr
+                .value
+                .is_some_and(|value| value.eq_ignore_ascii_case("open"))
+    });
+    if !is_open {
+        return None;
     }
-    &html[inner_start..inner_end]
+    let inner_start = tag.close + 1;
+    let (inner_end, close_end) = find_matching_end(html, tag.name, inner_start)?;
+    (close_end == html.len()).then_some(&html[inner_start..inner_end])
 }
 
 fn find_next_block_token(input: &str, cursor: usize, token: &str) -> Option<usize> {
@@ -3160,13 +3188,13 @@ fn parse_attr_parts(value: &str) -> Option<Vec<CompiledAttrPart>> {
 /// These become "root events" (`re` array) attached to the host element
 /// rather than to an element inside the shadow DOM.
 fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>> {
-    if !html.starts_with("<template") {
-        return Ok(Vec::new());
-    }
-    let Some(close) = find_tag_close(html) else {
+    let Some(root) = parse_tag(html) else {
         return Ok(Vec::new());
     };
-    let tag = &html[..close];
+    if root.closing || !root.name.eq_ignore_ascii_case("template") {
+        return Ok(Vec::new());
+    }
+    let tag = &html[..root.close];
     let mut events = Vec::new();
     let bytes = tag.as_bytes();
     let len = bytes.len();
@@ -3184,18 +3212,6 @@ fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>>
     }
 
     Ok(events)
-}
-
-fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
-    if !html.starts_with("<template") {
-        return None;
-    }
-    let close = find_tag_close(html)?;
-    let tag = &html[..close];
-    let attr = "shadowrootadoptedstylesheets=\"";
-    let start = tag.find(attr)? + attr.len();
-    let end = tag[start..].find('"')? + start;
-    Some(tag[start..end].to_string())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
@@ -3808,6 +3824,28 @@ mod tests {
     }
 
     #[test]
+    fn test_preserves_ordinary_template_in_light_client_html() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<template data-kind="ordinary"><p>content</p></template>"#,
+        );
+        assert!(
+            result.contains(r#""h":"<template data-kind=\"ordinary\"><p>content</p></template>""#)
+        );
+        assert!(!result.contains(r#","sd":1"#));
+    }
+
+    #[test]
+    fn test_shadow_wrapper_matching_is_ascii_case_insensitive() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<TEMPLATE SHADOWROOTMODE="OPEN"><p>content</p></TEMPLATE>"#,
+        );
+        assert!(result.contains(r#""h":"<p>content</p>""#));
+        assert!(!result.contains("SHADOWROOTMODE"));
+    }
+
+    #[test]
     fn test_root_template_allows_gt_in_quoted_attr_values() {
         let result = generate_compiled_template(
             "my-comp",
@@ -3993,15 +4031,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compiled_template_emits_adopted_stylesheet_specifier() {
-        let result = generate_compiled_template(
-            "my-comp",
-            r#"<template shadowrootmode="open" shadowrootadoptedstylesheets="my-comp"><p>hi</p></template>"#,
-        );
-        assert!(result.contains(r#","sa":"my-comp""#));
-    }
-
-    #[test]
     fn test_plugin_uses_processed_link_template_html() {
         let mut plugin = WebUIParserPlugin::new();
 
@@ -4049,7 +4078,7 @@ mod tests {
     }
 
     #[test]
-    fn test_plugin_uses_processed_module_template_html() {
+    fn module_template_does_not_emit_stylesheet_specifier_metadata() {
         let mut plugin = WebUIParserPlugin::new();
 
         let comp = test_component("test-el", "<p>hi</p>", Some(".root { color: red; }"), true);
@@ -4063,7 +4092,7 @@ mod tests {
             .unwrap();
         let templates = plugin.take_component_templates().unwrap();
         assert_eq!(templates.len(), 1);
-        assert!(templates[0].template_json.contains(r#","sa":"test-el""#));
+        assert!(!templates[0].template_json.contains(r#""sa":"#));
     }
 
     #[test]

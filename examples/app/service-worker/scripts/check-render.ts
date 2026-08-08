@@ -40,7 +40,7 @@ for (const name of apiFiles) {
   if (!html.includes("card")) {
     throw new Error(`Rendered ${sanitized.entry} did not include expected card markup`);
   }
-  if (!html.includes("<style>")) {
+  if (!html.includes('<style data-webui-resource="')) {
     throw new Error(`Rendered ${sanitized.entry} did not include component CSS`);
   }
   if (html.includes("styles.css")) {

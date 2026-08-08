@@ -1,3 +1,4 @@
+<template shadowrootmode="open">
 <div class="controls">
   <button class="replace" @click="{replaceItems()}">Replace</button>
   <button class="clear" @click="{clearItems()}">Clear</button>
@@ -5,3 +6,4 @@
 </div>
 <test-item-list :items="{{items}}"></test-item-list>
 <test-cond-child :data="{{condData}}"></test-cond-child>
+</template>

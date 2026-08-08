@@ -20,7 +20,7 @@ let result = protocol.render_component_templates(
     &["settings-dialog", "notification-panel"],
     &inventory_hex,
 );
-// Returns: { templates: [...], templateStyles: [...], inventory: "..." }
+// Returns: { componentStyles: {...}, templates: {...}, inventory: "..." }
 ```
 
 Available via all bindings: Rust (`Protocol::render_component_templates`), Node/WASM/npm (`Protocol.renderComponentTemplates`), and FFI (`webui_protocol_render_component_templates`).

@@ -20,7 +20,11 @@ Your backend handler loads the pre-compiled protocol, receives state data, and p
 
 ### 3. Hydrate - Interactive islands come alive
 
-On the client, only **Web Components marked as interactive** hydrate. Each component is an island - self-contained with its own Shadow DOM, styles, and behavior. A page with 10 components where only 2 need click handlers ships JavaScript for just those 2. The other 8 remain server-rendered HTML with zero client-side cost.
+On the client, only **Web Components marked as interactive** hydrate. Each
+component is an island with its own template, scoped styles, and behavior.
+Unwrapped components use Light DOM and can opt into Shadow when needed. A page
+with 10 components where only 2 need click handlers ships JavaScript for just
+those 2. The other 8 remain server-rendered HTML with zero client-side cost.
 
 ## Key Concepts
 

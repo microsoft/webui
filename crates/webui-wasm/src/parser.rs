@@ -77,6 +77,51 @@ fn has_component_script(files: &HashMap<String, String>, tag_name: &str) -> bool
     files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
 }
 
+type ComponentDeliverySnapshot = (Vec<(String, String)>, Vec<(String, bool)>);
+
+fn component_delivery_snapshot(parser: &HtmlParser) -> ComponentDeliverySnapshot {
+    let css = parser
+        .component_registry()
+        .get_all()
+        .filter(|component| parser.has_fragment(&component.tag_name))
+        .filter_map(|component| {
+            component
+                .css_content
+                .as_ref()
+                .map(|css| (component.tag_name.clone(), css.clone()))
+        })
+        .collect();
+    let shadow_dom = parser
+        .component_shadow_dom_usage()
+        .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
+        .collect();
+    (css, shadow_dom)
+}
+
+fn apply_component_delivery(
+    protocol: &mut WebUIProtocol,
+    snapshot: ComponentDeliverySnapshot,
+    entry: &str,
+) {
+    protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+    for (tag_name, uses_shadow_dom) in snapshot.1 {
+        if !protocol.fragments.contains_key(&tag_name) {
+            continue;
+        }
+        protocol
+            .components
+            .entry(tag_name)
+            .or_default()
+            .uses_shadow_dom = uses_shadow_dom;
+    }
+    for (tag_name, css) in snapshot.0 {
+        if protocol.fragments.contains_key(&tag_name) {
+            protocol.components.entry(tag_name).or_default().css = css;
+        }
+    }
+    protocol.populate_style_closures(&[entry]);
+}
+
 /// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`
 /// with the WebUI plugin.
 pub(crate) fn parse_to_protocol(
@@ -92,6 +137,7 @@ pub(crate) fn parse_to_protocol(
         HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), CssStrategy::Style);
     register_components(&mut parser, files, entry)?;
     parser.parse(entry, entry_html)?;
+    let component_delivery = component_delivery_snapshot(&parser);
     let templates = match parser.take_plugin_artifacts()? {
         ParserPluginArtifacts::None => Vec::new(),
         ParserPluginArtifacts::ComponentTemplates(templates) => templates,
@@ -147,6 +193,7 @@ pub(crate) fn parse_to_protocol(
         component.navigation_mode = Some(navigation_mode);
         component.navigation_keys = navigation_keys;
     }
+    apply_component_delivery(&mut protocol, component_delivery, entry);
 
     fn merge_projection_manifests(
         manifests: &[ProjectionManifest],
@@ -235,6 +282,35 @@ mod tests {
         assert_eq!(component.hydration_mode, StateProjectionMode::All as i32);
         assert!(component.hydration_keys.is_empty());
         assert!(!component.template_json.is_empty());
+        assert!(component.uses_shadow_dom);
+        assert!(protocol.style_closures.contains_key("my-card"));
+    }
+
+    #[test]
+    fn parse_to_protocol_marks_unwrapped_light_dom() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><body><my-card></my-card></body></html>".to_string(),
+            ),
+            (
+                "my-card.html".to_string(),
+                "<p>Light content</p>".to_string(),
+            ),
+            (
+                "my-card.css".to_string(),
+                ":host { display: block; }".to_string(),
+            ),
+        ]);
+
+        let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        assert_eq!(protocol.css_strategy(), webui_protocol::CssStrategy::Style);
+        assert!(!protocol.components["my-card"].uses_shadow_dom);
+        assert!(protocol.components["my-card"].css.contains("@scope"));
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            ["my-card"]
+        );
     }
 
     #[test]

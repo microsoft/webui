@@ -58,6 +58,12 @@ const result = build({
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
 
+Every unwrapped component uses Light DOM. A component uses Shadow only with a
+sole top-level `<template shadowrootmode="open">` containing its complete
+template; native `<slot>` is Shadow-only.
+There is no global DOM override. Components that require native slots or native
+encapsulation must author the open wrapper.
+
 Static component assets use a root/chunk graph. Entry-reachable dependencies
 remain external, dependencies used by one root stay inline, and dependencies
 with an identical multi-root consumer set are emitted once as dynamic chunks.
@@ -230,11 +236,11 @@ Produces a JSON partial response for client-side navigation, including state, te
 
 ### `protocol.renderComponentTemplates(componentTags, inventoryHex): string`
 
-Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `templateStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
+Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `componentStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
 
 ```js
 const json = protocol.renderComponentTemplates(["settings-dialog"], inventoryHex);
-const { templates, templateFunctions, templateStyles, inventory } = JSON.parse(json);
+const { templates, templateFunctions, componentStyles, inventory } = JSON.parse(json);
 ```
 
 ## CLI

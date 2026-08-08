@@ -53,7 +53,11 @@ before(() => {
 </html>
 `);
 
-  writeFileSync(join(appDir, 'my-card.html'), '<div class="card"><slot></slot></div>');
+  writeFileSync(join(appDir, 'my-card.html'), '<div class="card">Content</div>');
+  writeFileSync(
+    join(appDir, 'shadow-card.html'),
+    '<template shadowrootmode="open"><div><slot></slot></div></template>',
+  );
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
   writeFileSync(join(appDir, 'app-shell.html'), '<div>{{name}}</div>');
@@ -100,6 +104,21 @@ describe('build', () => {
     assert.ok(result.stats.componentCount > 0);
     assert.equal(result.cssFiles.length, 2); // [filename, content]
     assert.equal(result.stats.cssFileCount, 1);
+  });
+
+  test('uses Light DOM unless a component authors a Shadow wrapper', () => {
+    const light = build({ appDir, entry: 'index2.html' });
+    assert.ok(!inspect(light.protocol).includes('shadowrootmode'));
+
+    writeFileSync(join(appDir, 'index-shadow.html'), '<shadow-card>slot</shadow-card>');
+    const shadow = build({ appDir, entry: 'index-shadow.html' });
+    assert.ok(inspect(shadow.protocol).includes('shadowrootmode'));
+  });
+
+  test('BuildOptions has no DOM strategy option', () => {
+    // @ts-expect-error DOM ownership is authored in each component template.
+    const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'shadow' };
+    assert.equal(options.appDir, appDir);
   });
 
   test('emits static component asset files and an analyzable metafile', async () => {
@@ -490,7 +509,7 @@ describe('renderComponentTemplates', () => {
     const json = protocol.renderComponentTemplates(['my-card'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.equal(typeof parsed.templates, 'object');
-    assert.ok(Array.isArray(parsed.templateStyles));
+    assert.equal(typeof parsed.componentStyles, 'object');
     assert.equal(typeof parsed.templateFunctions, 'object');
     assert.equal(typeof parsed.inventory, 'string');
   });
@@ -502,7 +521,8 @@ describe('renderComponentTemplates', () => {
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.deepEqual(parsed.templates, {});
     assert.deepEqual(parsed.templateFunctions, {});
-    assert.deepEqual(parsed.templateStyles, []);
+    assert.deepEqual(parsed.componentStyles.resources, {});
+    assert.deepEqual(parsed.componentStyles.closures, {});
   });
 });
 

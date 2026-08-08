@@ -271,6 +271,21 @@ pub fn warning_diagnostic(diag: &Diagnostic) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// `console` color enablement is process-global, so tests that force it on
+    /// must not run concurrently with each other or they observe each other's
+    /// restore and see uncolored output.
+    static COLOR_LOCK: Mutex<()> = Mutex::new(());
+
+    fn force_colors() -> (MutexGuard<'static, ()>, bool) {
+        let guard = COLOR_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous = console::colors_enabled();
+        console::set_colors_enabled(true);
+        (guard, previous)
+    }
 
     fn template_error() -> anyhow::Error {
         let diag = Diagnostic::error("invalid <for> each expression")
@@ -292,8 +307,7 @@ mod tests {
         // `console.error`; ANSI escape codes would render as literal garbage
         // and break the single-line SSE frame. It must stay color-free even
         // when terminal color is forced on.
-        let prev = console::colors_enabled();
-        console::set_colors_enabled(true);
+        let (_guard, prev) = force_colors();
         let (_display, message) = build_error_renderings(&template_error());
         console::set_colors_enabled(prev);
 
@@ -309,8 +323,7 @@ mod tests {
 
     #[test]
     fn build_error_display_is_colorized_for_terminal() {
-        let prev = console::colors_enabled();
-        console::set_colors_enabled(true);
+        let (_guard, prev) = force_colors();
         let (display, _message) = build_error_renderings(&template_error());
         console::set_colors_enabled(prev);
 

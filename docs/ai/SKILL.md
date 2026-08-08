@@ -288,10 +288,7 @@ state that a template binding could express.
 
 ### The `<template>` tag
 
-The `<template shadowrootmode="open">` wrapper is **optional**. The build tool
-auto-injects it when absent.
-
-Omit it for most components:
+Every unwrapped component uses Light DOM:
 
 ```html
 <!-- my-card.html -->
@@ -299,8 +296,9 @@ Omit it for most components:
 <p>{{description}}</p>
 ```
 
-Include it only when you need root host events on the component root (the shadow
-root when present, otherwise the host element):
+Use a sole top-level `<template shadowrootmode="open">` only when the component
+needs native `<slot>`, a native Shadow boundary, or root events on the shadow
+root:
 
 ```html
 <!-- todo-app.html -->
@@ -313,6 +311,11 @@ root when present, otherwise the host element):
   </for>
 </template>
 ```
+
+The wrapper must contain the complete component. `closed`, a dynamic or invalid
+value, placement on another element, multiple declarations, or extra top-level
+content fails the build. `<slot>` is a build error in an unwrapped Light
+component.
 
 Root host events catch custom events bubbling up from child components. They see
 only events that bubble; `this.$emit()` sets `bubbles: true`, but a hand-built
@@ -350,8 +353,9 @@ to trade per-row listeners for a single handler on a very long list. Use
 
 ## Styling
 
-CSS is scoped per component via Shadow DOM. No CSS-in-JS, no inline styles
-written from script, no runtime style injection.
+Keep ordinary paired component CSS. The compiler scopes Light CSS, lowers
+`:host`, and namespaces static keyframes. Shadow components retain native
+Shadow CSS scoping. No CSS-in-JS or styles written from script.
 
 ```css
 /* my-component.css */
@@ -372,8 +376,11 @@ written from script, no runtime style injection.
 .header { font-weight: bold; }
 ```
 
-- `:host` styles the component root; `:host([attr])` styles by attribute.
-- Internal selectors are scoped to the shadow root. No styles leak in or out.
+- `:host` styles the component root; `:host([attr])` styles by attribute in
+  both Light and Shadow components.
+- Light DOM preserves normal inheritance while compiler scoping bounds
+  component rules. Shadow DOM creates a native boundary.
+- Shadow-only selectors and unsafe Light keyframe references fail the build.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Malformed CSS fails the build, including unterminated `var()` calls,
@@ -797,6 +804,8 @@ routed components.
 - Child paths are relative to the parent (no leading `/`).
 - Use `exact` on leaf routes; omit it on parents that have `<outlet />`.
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all).
+- Initial SSR delivers CSS only for the matched route chain; inactive route
+  styles remain deferred until navigation.
 
 | Attribute | Example | Description |
 |---|---|---|
@@ -1056,6 +1065,8 @@ Before emitting WebUI code, confirm:
 - [ ] `::view-transition-*` rules are in the entry template, not component CSS.
 - [ ] `prefers-reduced-motion` is honored wherever motion is used.
 - [ ] No conditions mix `&&` with `||`, use parentheses, or use a ternary.
+- [ ] Every native `<slot>` is inside a component whose sole top-level element
+      is `<template shadowrootmode="open">`.
 
 ## Build and run
 
@@ -1071,9 +1082,12 @@ webui inspect ./dist/protocol.bin
 ```
 
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
-`--dom <shadow|light>`, `--components`, `--theme`,
+`--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
+
+Every unwrapped component is Light. A component uses Shadow only when its
+complete template is a sole top-level `<template shadowrootmode="open">`.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

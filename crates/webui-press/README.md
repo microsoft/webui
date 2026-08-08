@@ -17,8 +17,14 @@ Most documentation site generators are JavaScript first. They run a Node.js serv
 - **Single Rust binary.** No Node.js server, no build server, no JavaScript runtime on the server. Drop the binary into CI, run it, ship the `dist/` folder.
 - **Pre-compiled templates.** Pages are compiled into the WebUI binary protocol once, then rendered with state. Repeat builds reuse the cached protocol.
 - **Parallel everything.** Page rendering is parallelized with [rayon](https://docs.rs/rayon). Syntax highlighting reuses one preloaded `syntect` syntax set across threads. Markdown parsing is per-page and free of cross-page state.
-- **Hydration that works on GitHub Pages.** The output is static HTML with Declarative Shadow DOM pre-expanded. The browser parses it as HTML, no JavaScript required for first paint. Optional client-side hydration upgrades interactive components without re-rendering anything.
-- **Custom Web Components in markdown.** Drop a component into `components/`, reference it from any `.md` file with normal HTML, and it gets server-rendered with full DSD output. Page-specific scripts can opt into esbuild bundling when they need npm imports.
+- **Hydration that works on GitHub Pages.** The output is static, server-rendered
+  HTML using Light DOM for unwrapped components and Declarative Shadow DOM for opted-in
+  components. No JavaScript is required for first paint. Optional client-side
+  hydration upgrades interactive components without re-rendering anything.
+- **Custom Web Components in markdown.** Drop a component into `components/`,
+  reference it from any `.md` file with normal HTML, and it is server-rendered.
+  Page-specific scripts can opt into esbuild bundling when they need npm
+  imports.
 
 ---
 
@@ -132,7 +138,7 @@ The build pipeline:
 1. Parse config              → DocsConfig
 2. Discover .md files        → walk(contentDir) for every .md
 3. Render markdown           → comrak GFM + syntect highlighting
-4. Pre-expand DSD            → Declarative Shadow DOM in content
+4. Render component DOM      → Light DOM or opted-in Declarative Shadow DOM
 5. Build WebUI protocol      → compiled per page, cached templates
 6. Write base + theme CSS    → docs.css and theme.css emitted to outDir
 7. Render pages in parallel  → rayon + WebUI handler
@@ -422,11 +428,13 @@ Reference it from any `.md`:
 Components are:
 
 1. Compiled into the WebUI protocol at build time
-2. Server-rendered with **Declarative Shadow DOM** pre-expanded, visible without JavaScript
+2. Server-rendered as Light DOM when unwrapped or **Declarative Shadow DOM** when
+   selected by a sole top-level `<template shadowrootmode="open">`
 3. Auto-imported into the root script for template chrome or a page script when page content uses the component tag
 4. Shared through esbuild chunks when multiple pages use the same component or dependency
 
-Markdown inside slots is rendered as markdown, so you can mix prose and components freely.
+Native slots require the component's open Shadow wrapper. Markdown inside those
+slots is rendered as markdown, so you can mix prose and components freely.
 
 See the [WebUI Framework component guide](https://microsoft.github.io/webui/guide/concepts/components) for authoring details.
 
@@ -589,10 +597,15 @@ The output is fully renderable without JavaScript:
 
 - Markdown → HTML at build time
 - Components rendered server-side via the WebUI protocol
-- Declarative Shadow DOM pre-expanded inline
-- Critical styles inlined per component shadow root
+- Light DOM for unwrapped components, with Declarative Shadow DOM pre-expanded for opted-in components
+- Component styles installed in compiler-defined order
 
-When the browser loads the generated root/page scripts (deferred, after first paint), the framework finds existing DSD shadow roots and **upgrades** them in place, no re-render, no flash, no virtual DOM. Event handlers and observable state are bound to the already-painted DOM. Page scripts import only the local component scripts and explicit bundled scripts needed by that page, with shared dependencies split into reusable chunks.
+When the browser loads the generated root/page scripts (deferred, after first
+paint), the framework finds the existing Light or Shadow DOM and **upgrades** it
+in place, with no re-render, flash, or virtual DOM. Event handlers and
+observable state are bound to the already-painted DOM. Page scripts import only
+the local component scripts and explicit bundled scripts needed by that page,
+with shared dependencies split into reusable chunks.
 
 This is the WebUI Framework's [`webui` plugin](https://microsoft.github.io/webui/guide/concepts/plugins/) at work, and it is what makes the site feel instant on slow connections.
 

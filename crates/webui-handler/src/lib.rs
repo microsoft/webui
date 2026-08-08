@@ -338,6 +338,18 @@ pub struct WebUIHandler {
     plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum StyleClosureInstall {
+    Static,
+    Routed,
+}
+
+pub(crate) struct ShadowStyleRoot {
+    component_index: u32,
+    static_closure_emitted: bool,
+    routed_resources: Vec<u32>,
+}
+
 /// Context object for processing WebUI fragments
 pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) protocol: &'protocol WebUIProtocol,
@@ -372,6 +384,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Component-name → bit-position map built once when the runtime
     /// [`Protocol`] is created and shared by every render.
     pub(crate) component_index: &'protocol HashMap<String, u32>,
+    /// CSS strategy declared by the compiled protocol.
+    pub(crate) css_strategy: webui_protocol::CssStrategy,
     /// HTML emitted at the structural `head_end` boundary (before
     /// `</head>`), after the built-in nonce/CSS-preload emissions.
     /// Zero-copy borrow of the caller's `RenderOptions<'a>::head_inject`
@@ -410,6 +424,9 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Incremented each time a matched route is rendered, allowing O(1) element
     /// binding on the client side instead of DOM-walking.
     pub(crate) route_chain_index: usize,
+    /// Matched route metadata computed at most once when head preloads or body
+    /// bootstrap first need it, then shared by streaming checkpoints.
+    pub(crate) route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
     /// Present only for the opt-in progressive streaming render path.
     pub(crate) streaming: Option<&'output mut StreamingRenderState<'protocol>>,
     /// Reusable JSON serialization scratch buffer, owned by the render context.
@@ -425,6 +442,12 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// bucket capacity rather than reallocating a fresh `HashMap`. Bounded
     /// ([`SCOPE_POOL_CAP`]) and dropped with the context at request end.
     pub(crate) scope_pool: Vec<HashMap<String, Value>>,
+    /// Resources delivered into the Document CSS tree. The empty set does not
+    /// allocate, and streaming retains it across checkpoints.
+    pub(crate) document_style_resources: HashSet<String>,
+    /// Active Shadow roots and their route-activated resource indexes. The
+    /// route vector allocates only when a matched Light route contributes CSS.
+    pub(crate) shadow_style_roots: Vec<ShadowStyleRoot>,
 }
 
 /// Compiler-owned signal namespace. The leading `}}}` cannot be produced by
@@ -438,6 +461,42 @@ pub(crate) fn structural_signal_value(
         return None;
     }
     signal.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
+}
+
+/// Find the end of a leading doctype without treating quoted `>` bytes in
+/// legacy PUBLIC or SYSTEM identifiers as the declaration close.
+fn doctype_prefix_end(raw: &str) -> Option<usize> {
+    const PREFIX: &[u8] = b"<!doctype";
+
+    let bytes = raw.as_bytes();
+    let mut cursor = usize::from(bytes.starts_with(b"\xEF\xBB\xBF")) * 3;
+    while bytes
+        .get(cursor)
+        .is_some_and(|byte| byte.is_ascii_whitespace())
+    {
+        cursor += 1;
+    }
+
+    let prefix_end = cursor.checked_add(PREFIX.len())?;
+    if !bytes.get(cursor..prefix_end)?.eq_ignore_ascii_case(PREFIX) {
+        return None;
+    }
+    let separator = *bytes.get(prefix_end)?;
+    if separator != b'>' && !separator.is_ascii_whitespace() {
+        return None;
+    }
+
+    let mut quote = None;
+    for (offset, byte) in bytes[prefix_end..].iter().copied().enumerate() {
+        match quote {
+            Some(active) if byte == active => quote = None,
+            Some(_) => {}
+            None if matches!(byte, b'\'' | b'"') => quote = Some(byte),
+            None if byte == b'>' => return Some(prefix_end + offset + 1),
+            None => {}
+        }
+    }
+    None
 }
 
 /// Maximum scope maps retained in the request-local pool. Small: sibling
@@ -468,6 +527,7 @@ pub(crate) struct WebUiBootstrap<'a> {
     pub(crate) nonce: Option<&'a str>,
     pub(crate) css_hrefs: &'a [&'a str],
     pub(crate) style_specs: &'a [&'a str],
+    pub(crate) component_styles: &'a Value,
     pub(crate) templates: &'a [WebUiTemplatePayload<'a>],
 }
 
@@ -851,6 +911,15 @@ pub(crate) fn write_webui_bootstrap(
     if !bootstrap.chain.is_empty() {
         write_json_field(writer, scratch, &mut wrote_field, "chain", bootstrap.chain)?;
     }
+    // Definitions must be visible before template metadata can cause the
+    // runtime to create a component root.
+    write_json_field(
+        writer,
+        scratch,
+        &mut wrote_field,
+        "componentStyles",
+        bootstrap.component_styles,
+    )?;
     if !bootstrap.css_hrefs.is_empty() {
         write_json_field(
             writer,
@@ -1008,6 +1077,15 @@ impl WebUIHandler {
         fragments: &'data [WebUIFragment],
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
+        self.process_fragment_from(fragments, 0, context)
+    }
+
+    fn process_fragment_from<'data>(
+        &self,
+        fragments: &'data [WebUIFragment],
+        start: usize,
+        context: &mut WebUIProcessContext<'data, '_, '_>,
+    ) -> Result<()> {
         // Pre-scan: find the best matching route among sibling routes by specificity.
         // This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal).
         // Resolves relative paths (`./`) using the current route_base.
@@ -1017,7 +1095,7 @@ impl WebUIHandler {
             &context.route_base,
             context.route_index,
         );
-        self.process_fragment_range(fragments, 0..fragments.len(), &best_route, context)
+        self.process_fragment_range(fragments, start..fragments.len(), &best_route, context)
     }
 
     fn process_fragment_range<'data>(
@@ -1154,8 +1232,12 @@ impl WebUIHandler {
                 write_usize(context.writer, ri)?;
                 context.writer.write("\" active>")?;
 
+                if !Self::component_owns_css_tree(comp, context.protocol) {
+                    self.emit_component_style_closure(comp, StyleClosureInstall::Routed, context)?;
+                }
                 context.writer.write("<")?;
                 context.writer.write(comp)?;
+                self.write_light_dom_marker(comp, context)?;
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
@@ -1215,7 +1297,7 @@ impl WebUIHandler {
     /// scripts honor `script-src`).
     ///
     /// Example for `my-comp` with CSS `span{color:blue;}`:
-    /// `<script type="importmap" nonce="...">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>`
+    /// `<script type="importmap" nonce="..." data-webui-resource="my-comp">{"imports":{"my-comp":"data:text/css,span{color:blue;}"}}</script>`
     fn emit_css_module_importmap(
         &self,
         specifier: &str,
@@ -1227,20 +1309,228 @@ impl WebUIHandler {
         Ok(())
     }
 
+    /// Install one compiler-ordered closure into the active CSS tree.
+    fn emit_component_style_closure(
+        &self,
+        root: &str,
+        install: StyleClosureInstall,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if context.protocol.style_closures.is_empty() {
+            return Ok(());
+        }
+        let shadow_static_tags = if install == StyleClosureInstall::Routed {
+            match context.shadow_style_roots.last() {
+                Some(shadow_root) => {
+                    if !shadow_root.static_closure_emitted {
+                        return Err(HandlerError::Invariant(
+                            "routed styles reached a ShadowRoot before its static style hook"
+                                .to_string(),
+                        ));
+                    }
+                    let root_name = context
+                        .component_index
+                        .iter()
+                        .find_map(|(name, index)| {
+                            (*index == shadow_root.component_index).then_some(name.as_str())
+                        })
+                        .ok_or_else(|| {
+                            HandlerError::Invariant(
+                                "active Shadow style root lost its protocol index".to_string(),
+                            )
+                        })?;
+                    Some(context.protocol.style_closure(root_name).ok_or_else(|| {
+                        HandlerError::Invariant(format!(
+                            "component style closure metadata is missing Shadow root `{root_name}`"
+                        ))
+                    })?)
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+        let closure = context.protocol.style_closures.get(root).ok_or_else(|| {
+            HandlerError::Invariant(format!(
+                "component style closure metadata is missing root `{root}`"
+            ))
+        })?;
+        let is_document_tree = context.shadow_style_roots.is_empty();
+        let strategy = context.css_strategy;
+
+        for tag in &closure.component_tags {
+            let resource = context
+                .protocol
+                .component_style_resource(tag)
+                .ok_or_else(|| {
+                    HandlerError::Invariant(format!(
+                        "component style closure `{root}` references missing resource `{tag}`"
+                    ))
+                })?;
+            if is_document_tree && !context.document_style_resources.insert(tag.clone()) {
+                continue;
+            }
+            if let Some(static_tags) = shadow_static_tags {
+                if static_tags.iter().any(|static_tag| static_tag == tag) {
+                    continue;
+                }
+                let resource_index = context
+                    .component_index
+                    .get(tag.as_str())
+                    .copied()
+                    .ok_or_else(|| {
+                        HandlerError::Invariant(format!(
+                            "component style resource `{tag}` is missing its protocol index"
+                        ))
+                    })?;
+                let shadow_root = context.shadow_style_roots.last_mut().ok_or_else(|| {
+                    HandlerError::Invariant(
+                        "active Shadow style root disappeared during routed style delivery"
+                            .to_string(),
+                    )
+                })?;
+                if shadow_root.routed_resources.contains(&resource_index) {
+                    continue;
+                }
+                shadow_root.routed_resources.push(resource_index);
+            }
+
+            match strategy {
+                webui_protocol::CssStrategy::Link => {
+                    context.writer.write("<link rel=\"stylesheet\" href=\"")?;
+                    context
+                        .writer
+                        .write(&crate::html_encode::encode_safe(resource))?;
+                    context.writer.write("\" data-webui-resource=\"")?;
+                    context
+                        .writer
+                        .write(&crate::html_encode::encode_safe(tag))?;
+                    context.writer.write("\" data-webui-strategy=\"link\">")?;
+                }
+                strategy => {
+                    context.writer.write("<style")?;
+                    if let Some(nonce) = context.nonce {
+                        context.writer.write(" nonce=\"")?;
+                        context
+                            .writer
+                            .write(&crate::html_encode::encode_safe(nonce))?;
+                        context.writer.write("\"")?;
+                    }
+                    context.writer.write(" data-webui-resource=\"")?;
+                    context
+                        .writer
+                        .write(&crate::html_encode::encode_safe(tag))?;
+                    context.writer.write("\" data-webui-strategy=\"")?;
+                    context
+                        .writer
+                        .write(if strategy == webui_protocol::CssStrategy::Module {
+                            "module"
+                        } else {
+                            "style"
+                        })?;
+                    context.writer.write("\">")?;
+                    crate::html_encode::write_style_text(context.writer, resource)?;
+                    context.writer.write("</style>")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_request_route_chain(context: &mut WebUIProcessContext) {
+        if context.route_chain.is_none() {
+            context.route_chain = Some(crate::route_handler::collect_route_chain(
+                context.protocol,
+                context.entry_id,
+                context.request_path,
+                context.route_index,
+            ));
+        }
+    }
+
+    fn emit_route_style_preloads(&self, context: &mut WebUIProcessContext) -> Result<()> {
+        if context.css_strategy != webui_protocol::CssStrategy::Link {
+            return Ok(());
+        }
+        Self::ensure_request_route_chain(context);
+        let mut seen = Vec::new();
+        let entry_root = std::iter::once(context.entry_id);
+        let route_roots = context
+            .route_chain
+            .as_deref()
+            .into_iter()
+            .flatten()
+            .map(|entry| entry.component.as_str());
+        for root in entry_root.chain(route_roots) {
+            let Some(closure) = context.protocol.style_closure(root) else {
+                continue;
+            };
+            for tag in closure {
+                if context.document_style_resources.contains(tag) || seen.contains(&tag) {
+                    continue;
+                }
+                let Some(href) = context.protocol.component_style_resource(tag) else {
+                    continue;
+                };
+                context
+                    .writer
+                    .write("<link rel=\"preload\" as=\"style\" href=\"")?;
+                context
+                    .writer
+                    .write(&crate::html_encode::encode_safe(href))?;
+                context.writer.write("\">")?;
+                seen.push(tag);
+            }
+        }
+        Ok(())
+    }
+
+    fn process_shadow_style_signal(
+        &self,
+        root: &str,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        let Some(root_index) = context.component_index.get(root).copied() else {
+            return Err(HandlerError::Invariant(format!(
+                "Shadow style hook `{root}` references an unknown component"
+            )));
+        };
+        if context
+            .shadow_style_roots
+            .last()
+            .map(|shadow_root| shadow_root.component_index)
+            != Some(root_index)
+        {
+            return Err(HandlerError::Invariant(format!(
+                "Shadow style hook `{root}` does not match the active component root"
+            )));
+        }
+        self.emit_component_style_closure(root, StyleClosureInstall::Static, context)?;
+        let shadow_root = context.shadow_style_roots.last_mut().ok_or_else(|| {
+            HandlerError::Invariant(
+                "active Shadow style root disappeared after its static style hook".to_string(),
+            )
+        })?;
+        shadow_root.static_closure_emitted = true;
+        Ok(())
+    }
+
     /// Emit a component's CSS module importmap on its first render
     /// (deduped by `rendered_components`) into the component's light DOM,
     /// so the browser registers it under the component's specifier
     /// before the shadow root template is parsed. See
     /// [`Self::emit_css_module_importmap`] for the emitted shape.
     ///
-    /// Only components rendered on the current route get inline
-    /// definitions; others receive theirs via `templateStyles` during
-    /// SPA partial navigation.
+    /// Only components rendered on the current route get inline definitions;
+    /// navigation responses carry later definitions in `componentStyles`.
     fn emit_css_module(
         &self,
         component: &webui_protocol::WebUIFragmentComponent,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
+        if context.css_strategy != webui_protocol::CssStrategy::Module {
+            return Ok(());
+        }
         let metadata_already_streamed = context.streaming.as_ref().is_some_and(|streaming| {
             streaming_template_already_sent(
                 streaming,
@@ -1260,6 +1550,18 @@ impl WebUIHandler {
             {
                 self.emit_css_module_importmap(&component.fragment_id, css, context)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Mark a handler-generated component host when it uses Light DOM.
+    fn write_light_dom_marker(
+        &self,
+        component: &str,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if !context.protocol.component_uses_shadow_dom(component) {
+            context.writer.write(" data-wl")?;
         }
         Ok(())
     }
@@ -1311,12 +1613,20 @@ impl WebUIHandler {
 
                 context.route_children = route_frag.children.clone();
 
+                if !Self::component_owns_css_tree(&route_frag.fragment_id, context.protocol) {
+                    self.emit_component_style_closure(
+                        &route_frag.fragment_id,
+                        StyleClosureInstall::Routed,
+                        context,
+                    )?;
+                }
                 let comp = webui_protocol::WebUIFragmentComponent {
                     fragment_id: route_frag.fragment_id.clone(),
                 };
 
                 context.writer.write("<")?;
                 context.writer.write(&route_frag.fragment_id)?;
+                self.write_light_dom_marker(&route_frag.fragment_id, context)?;
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
@@ -1366,6 +1676,11 @@ impl WebUIHandler {
                 .insert(component.fragment_id.clone());
         }
 
+        let owns_css_tree = Self::component_owns_css_tree(&component.fragment_id, context.protocol);
+        if owns_css_tree {
+            Self::push_shadow_style_root(&component.fragment_id, context)?;
+        }
+
         // Save parent scope. `mem::take` leaves an alloc-free empty map behind.
         let saved_local_vars = std::mem::take(&mut context.local_vars);
         // The component's accumulated attrs become its local vars; the next
@@ -1381,7 +1696,12 @@ impl WebUIHandler {
             p.push_scope();
         }
 
-        self.process_fragment_id(&component.fragment_id, context)?;
+        let render_result = self.process_fragment_id(&component.fragment_id, context);
+
+        if owns_css_tree {
+            Self::pop_shadow_style_root(&component.fragment_id, context)?;
+        }
+        render_result?;
 
         if let Some(p) = &mut context.plugin {
             p.pop_scope();
@@ -1395,6 +1715,47 @@ impl WebUIHandler {
         // next sibling while retaining its bucket capacity.
         context.component_attrs.clear();
 
+        Ok(())
+    }
+
+    #[inline]
+    fn component_owns_css_tree(component: &str, protocol: &WebUIProtocol) -> bool {
+        !protocol.style_closures.is_empty()
+            && protocol
+                .components
+                .get(component)
+                .is_some_and(|data| data.uses_shadow_dom)
+    }
+
+    fn push_shadow_style_root(component: &str, context: &mut WebUIProcessContext) -> Result<()> {
+        if !context.protocol.style_closures.contains_key(component) {
+            return Err(HandlerError::Invariant(format!(
+                "component style closure metadata is missing Shadow root `{component}`"
+            )));
+        }
+        let root_index = context
+            .component_index
+            .get(component)
+            .copied()
+            .ok_or_else(|| {
+                HandlerError::Invariant(format!(
+                    "Shadow component `{component}` is missing its protocol index"
+                ))
+            })?;
+        context.shadow_style_roots.push(ShadowStyleRoot {
+            component_index: root_index,
+            static_closure_emitted: false,
+            routed_resources: Vec::new(),
+        });
+        Ok(())
+    }
+
+    fn pop_shadow_style_root(component: &str, context: &mut WebUIProcessContext) -> Result<()> {
+        context.shadow_style_roots.pop().ok_or_else(|| {
+            HandlerError::Invariant(format!(
+                "Shadow component `{component}` lost its active style root"
+            ))
+        })?;
         Ok(())
     }
 
@@ -1536,6 +1897,10 @@ impl WebUIHandler {
             return self.process_state_signal(signal, context);
         };
 
+        if let Some(root) = structural_value.strip_prefix("shadow_styles:") {
+            return self.process_shadow_style_signal(root, context);
+        }
+
         if context.streaming.is_some()
             && self.process_streaming_signal(structural_value, context)?
         {
@@ -1557,47 +1922,10 @@ impl WebUIHandler {
                 context.writer.write("\">")?;
             }
 
-            // Emit CSS <link> tags in <head> for Link-strategy components.
-            // For components with a non-empty css_href:
-            //   Link + Shadow → <link rel="preload"> (stylesheet is in shadow root)
-            //   Link + Light  → <link rel="stylesheet"> (no shadow root)
-            //
-            // Style and Module strategies emit their CSS during component
-            // rendering (shadow-DOM template / importmap respectively).
-            let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
-            let is_shadow = context.protocol.dom_strategy() == webui_protocol::DomStrategy::Shadow;
-
-            if is_link {
-                let (needed_components, _) =
-                    crate::route_handler::get_needed_components_for_request(
-                        context.protocol,
-                        context.entry_id,
-                        context.request_path,
-                        "",
-                        (context.component_index, context.route_index),
-                    )?;
-
-                for name in &needed_components {
-                    if let Some(href) = context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|c| c.css_href.as_str())
-                        .filter(|h| !h.is_empty())
-                    {
-                        if is_shadow {
-                            context.writer.write("<link rel=\"preload\" href=\"")?;
-                            context.writer.write(href)?;
-                            context
-                                .writer
-                                .write("\" as=\"style\" data-webui-ssr-preload=\"style\">")?;
-                        } else {
-                            context.writer.write("<link rel=\"stylesheet\" href=\"")?;
-                            context.writer.write(href)?;
-                            context.writer.write("\">")?;
-                        }
-                    }
-                }
+            if !context.protocol.style_closures.is_empty() {
+                let entry_id = context.entry_id;
+                self.emit_component_style_closure(entry_id, StyleClosureInstall::Static, context)?;
+                self.emit_route_style_preloads(context)?;
             }
 
             // Compiler-resolved `modulepreload` hints for the shared chunks
@@ -1638,9 +1966,8 @@ impl WebUIHandler {
             }
         }
 
-        // Hook: emit state-supplied HTML immediately after `<body>`.
-        // Guarded by its own dedup flag so a malformed protocol emitting
-        // the signal twice cannot duplicate the injected markup.
+        // Hook: emit state-supplied HTML immediately after `<body>`. Guarded
+        // by its own dedup flag so a malformed protocol cannot duplicate it.
         if structural_value == "body_start" && !context.body_start_emitted {
             context.body_start_emitted = true;
             if let Some(html) = context.state_inject.body_start {
@@ -1674,16 +2001,18 @@ impl WebUIHandler {
                 // Emit CSS module importmaps for reachable-but-unrendered
                 // components so the framework can adopt them when an `<if>`
                 // condition flips true client-side.
-                for name in &reachable {
-                    if !context.rendered_components.contains(name) {
-                        if let Some(css) = context
-                            .protocol
-                            .components
-                            .get(name)
-                            .map(|c| c.css.as_str())
-                            .filter(|s| !s.is_empty())
-                        {
-                            self.emit_css_module_importmap(name, css, context)?;
+                if context.css_strategy == webui_protocol::CssStrategy::Module {
+                    for name in &reachable {
+                        if !context.rendered_components.contains(name) {
+                            if let Some(css) = context
+                                .protocol
+                                .components
+                                .get(name)
+                                .map(|c| c.css.as_str())
+                                .filter(|s| !s.is_empty())
+                            {
+                                self.emit_css_module_importmap(name, css, context)?;
+                            }
                         }
                     }
                 }
@@ -1715,19 +2044,19 @@ impl WebUIHandler {
                 );
 
                 // Chain
-                let chain = crate::route_handler::collect_route_chain(
-                    context.protocol,
-                    context.entry_id,
-                    context.request_path,
-                    context.route_index,
-                );
+                Self::ensure_request_route_chain(context);
+                let chain = context.route_chain.as_deref().ok_or_else(|| {
+                    HandlerError::Invariant(
+                        "request route chain disappeared after collection".to_string(),
+                    )
+                })?;
                 let chain_json: Vec<Value> = chain
                     .iter()
                     .map(crate::route_handler::RouteChainEntry::to_json)
                     .collect();
 
                 // CSS hrefs emitted during SSR (Link-strategy components)
-                let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+                let is_link = context.css_strategy == webui_protocol::CssStrategy::Link;
                 let mut css_hrefs: Vec<&str> = Vec::new();
                 if is_link {
                     for name in &reachable {
@@ -1745,20 +2074,36 @@ impl WebUIHandler {
 
                 // Module style specifiers emitted during SSR
                 let mut style_specs: Vec<&str> = Vec::new();
-                for name in &reachable {
-                    if context
-                        .protocol
-                        .components
-                        .get(name)
-                        .map(|c| !c.css.is_empty())
-                        .unwrap_or(false)
-                    {
-                        style_specs.push(name);
+                if context.css_strategy == webui_protocol::CssStrategy::Module {
+                    for name in &reachable {
+                        if context
+                            .protocol
+                            .components
+                            .get(name)
+                            .map(|c| !c.css.is_empty())
+                            .unwrap_or(false)
+                        {
+                            style_specs.push(name);
+                        }
                     }
                 }
 
                 let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
                 let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
+                let mut style_roots = Vec::with_capacity(reachable.len() + chain.len() * 3 + 1);
+                style_roots.push(context.entry_id);
+                for entry in chain {
+                    style_roots.push(entry.component.as_str());
+                    if !entry.pending_component.is_empty() {
+                        style_roots.push(entry.pending_component.as_str());
+                    }
+                    if !entry.error_component.is_empty() {
+                        style_roots.push(entry.error_component.as_str());
+                    }
+                }
+                style_roots.extend(reachable.iter().map(String::as_str));
+                let component_styles =
+                    crate::route_handler::collect_component_styles(context.protocol, style_roots)?;
                 write_webui_data_block(
                     context.writer,
                     &mut context.json_scratch,
@@ -1770,6 +2115,7 @@ impl WebUIHandler {
                         nonce: context.nonce,
                         css_hrefs: &css_hrefs,
                         style_specs: &style_specs,
+                        component_styles: &component_styles,
                         templates: payloads,
                     },
                 )?;
@@ -2031,10 +2377,36 @@ impl WebUIHandler {
         options: &RenderOptions<'a>,
         writer: &'a mut dyn ResponseWriter,
     ) -> Result<()> {
+        protocol.ensure_style_metadata()?;
         let document = protocol.protocol();
-        if !document.fragments.contains_key(options.entry_id) {
-            return Err(HandlerError::MissingFragment(options.entry_id.to_string()));
-        }
+        let entry = document
+            .fragments
+            .get(options.entry_id)
+            .ok_or_else(|| HandlerError::MissingFragment(options.entry_id.to_string()))?;
+        let entry_owns_css_tree = Self::component_owns_css_tree(options.entry_id, document);
+        let has_document_head_boundary = !entry_owns_css_tree
+            && !document.style_closures.is_empty()
+            && entry.fragments.iter().any(|fragment| {
+                matches!(
+                    fragment.fragment.as_ref(),
+                    Some(Fragment::Signal(signal))
+                        if structural_signal_value(signal) == Some("head_end")
+                )
+            });
+        let doctype_split = (!entry_owns_css_tree
+            && !has_document_head_boundary
+            && !document.style_closures.is_empty())
+        .then(|| {
+            let Some(Fragment::Raw(raw)) = entry
+                .fragments
+                .first()
+                .and_then(|fragment| fragment.fragment.as_ref())
+            else {
+                return None;
+            };
+            doctype_prefix_end(&raw.value).map(|end| (raw.value.as_str(), end))
+        })
+        .flatten();
         let mut context = WebUIProcessContext {
             protocol: document,
             state,
@@ -2056,15 +2428,49 @@ impl WebUIHandler {
             head_end_emitted: false,
             body_start_emitted: false,
             component_index: protocol.component_index(),
+            css_strategy: protocol.css_strategy(),
             body_end_emitted: false,
             route_index: protocol.route_index(),
             route_chain_index: 0,
+            route_chain: None,
             streaming: None,
             json_scratch: Vec::new(),
             scope_pool: Vec::new(),
+            document_style_resources: HashSet::new(),
+            shadow_style_roots: Vec::new(),
         };
 
-        self.process_fragment_id(options.entry_id, &mut context)?;
+        if entry_owns_css_tree {
+            Self::push_shadow_style_root(options.entry_id, &mut context)?;
+        }
+
+        let render_result = if let Some((first_raw, split)) = doctype_split {
+            context.writer.write(&first_raw[..split])?;
+            self.emit_component_style_closure(
+                options.entry_id,
+                StyleClosureInstall::Static,
+                &mut context,
+            )?;
+            context.writer.write(&first_raw[split..])?;
+            self.process_fragment_from(&entry.fragments, 1, &mut context)
+        } else {
+            if !entry_owns_css_tree
+                && !has_document_head_boundary
+                && !document.style_closures.is_empty()
+            {
+                self.emit_component_style_closure(
+                    options.entry_id,
+                    StyleClosureInstall::Static,
+                    &mut context,
+                )?;
+            }
+            self.process_fragment_id(options.entry_id, &mut context)
+        };
+
+        if entry_owns_css_tree {
+            Self::pop_shadow_style_root(options.entry_id, &mut context)?;
+        }
+        render_result?;
         writer.end()?;
 
         Ok(())
@@ -2103,10 +2509,10 @@ mod tests {
     use crate::streaming::STREAMING_MARKER;
     use std::cell::RefCell;
     use std::sync::Arc;
-    use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
+    use webui_parser::{ComponentRegistration, HtmlParser};
     use webui_protocol::{
         web_ui_fragment, ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator,
-        WebUIFragmentAttribute,
+        WebUIFragmentAttribute, WebUiFragmentRoute,
     };
     use webui_test_utils::test_json;
 
@@ -6448,7 +6854,7 @@ mod tests {
             "dashboard route should exist"
         );
         assert!(
-            html.contains("active>") && html.contains("<dash-page>"),
+            html.contains("active>") && html.contains("<dash-page"),
             "matched route should be active with component tag: {html}"
         );
         assert!(
@@ -6488,7 +6894,7 @@ mod tests {
         let detail_end = after_detail.find("</webui-route>").expect("closing tag");
         let detail_body = &after_detail[..detail_end];
         assert!(
-            !detail_body.contains("<detail-page>"),
+            !detail_body.contains("<detail-page"),
             "non-matched route should not render component content: {detail_body}"
         );
     }
@@ -6509,7 +6915,7 @@ mod tests {
 
         // Detail route matches /contacts/42
         assert!(
-            html.contains("active>") && html.contains("<detail-page>"),
+            html.contains("active>") && html.contains("<detail-page"),
             "detail route should be active: {html}"
         );
         assert!(html.contains("<p>Detail</p>"), "detail should have content");
@@ -6525,7 +6931,7 @@ mod tests {
         let dash_end = after_dash.find("</webui-route>").expect("closing tag");
         let dash_body = &after_dash[..dash_end];
         assert!(
-            !dash_body.contains("<dash-page>"),
+            !dash_body.contains("<dash-page"),
             "dashboard should not render component content: {dash_body}"
         );
     }
@@ -6825,11 +7231,13 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         protocol
             .components
             .entry("my-card".to_string())
             .or_default()
             .css = "p{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -6951,7 +7359,7 @@ mod tests {
 
         assert!(
             !html.contains(r#"<style type="module""#),
-            "Non-module strategy should not emit legacy CSS module tags in <head>: {html}"
+            "Non-module strategy should not emit CSS module tags in <head>: {html}"
         );
         assert!(
             !html.contains(r#"<script type="importmap""#),
@@ -7044,7 +7452,6 @@ mod tests {
 
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
 
         let comp = protocol
             .components
@@ -7052,6 +7459,7 @@ mod tests {
             .or_default();
         comp.css_href = "my-card.css".to_string();
         comp.template_json = r#"{"h":"<div>card</div>"}"#.to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -7067,7 +7475,7 @@ mod tests {
         let html = writer.get_content();
 
         let head_end = html.find("</head>").expect("</head> missing");
-        let link_pos = html.find(r#"<link rel="stylesheet" href="my-card.css">"#);
+        let link_pos = html.find(r#"<link rel="stylesheet" href="my-card.css""#);
         assert!(
             link_pos.is_some_and(|p| p < head_end),
             "Light DOM Link strategy should emit <link rel=stylesheet> in <head>: {html}"
@@ -7087,91 +7495,617 @@ mod tests {
     }
 
     #[test]
-    fn test_link_strategy_shadow_dom_emits_preload_in_head() {
-        // Shadow DOM + Link strategy: handler emits <link rel="preload">
-        // with data-webui-ssr-preload in <head>. No stylesheet — the shadow
-        // root template already contains <link rel="stylesheet">.
-        let mut fragments = HashMap::new();
-        fragments.insert(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>".to_string()),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</head><body><o-loading-state>".to_string()),
-                    WebUIFragment::component("o-loading-state"),
-                    WebUIFragment::raw("</o-loading-state><my-card>".to_string()),
-                    WebUIFragment::component("my-card"),
-                    WebUIFragment::raw("</my-card>".to_string()),
-                    structural_fragment("body_end"),
-                    WebUIFragment::raw("</body></html>".to_string()),
-                ],
-            },
-        );
-        fragments.insert(
-            "o-loading-state".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<div>loading</div>".to_string())],
-            },
-        );
-        fragments.insert(
-            "my-card".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<div>card</div>".to_string())],
-            },
-        );
-
+    fn tree_local_styles_deduplicate_per_root_and_resume_caller_frame() {
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>".to_string()),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body><outer-box>".to_string()),
+                        WebUIFragment::component("outer-box"),
+                        WebUIFragment::raw("</outer-box></body></html>".to_string()),
+                    ],
+                },
+            ),
+            (
+                "outer-box".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">".to_string()),
+                        structural_fragment("shadow_styles:outer-box"),
+                        WebUIFragment::raw("<light-card>".to_string()),
+                        WebUIFragment::component("light-card"),
+                        WebUIFragment::raw("</light-card><light-card>".to_string()),
+                        WebUIFragment::component("light-card"),
+                        WebUIFragment::raw("</light-card><inner-box>".to_string()),
+                        WebUIFragment::component("inner-box"),
+                        WebUIFragment::raw("</inner-box><light-card>".to_string()),
+                        WebUIFragment::component("light-card"),
+                        WebUIFragment::raw("</light-card></template>".to_string()),
+                    ],
+                },
+            ),
+            (
+                "inner-box".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">".to_string()),
+                        structural_fragment("shadow_styles:inner-box"),
+                        WebUIFragment::raw("<light-card>".to_string()),
+                        WebUIFragment::component("light-card"),
+                        WebUIFragment::raw("</light-card></template>".to_string()),
+                    ],
+                },
+            ),
+            (
+                "light-card".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>card</p>".to_string())],
+                },
+            ),
+        ]);
         let mut protocol = WebUIProtocol::new(fragments);
-        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Shadow);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for (tag, css, uses_shadow_dom) in [
+            ("outer-box", ".outer{}", true),
+            ("inner-box", ".inner{}", true),
+            ("light-card", ".card{}", false),
+        ] {
+            let component = protocol.components.entry(tag.to_string()).or_default();
+            component.css = css.to_string();
+            component.uses_shadow_dom = uses_shadow_dom;
+        }
+        protocol.populate_style_closures(&["index.html"]);
 
-        let comp1 = protocol
-            .components
-            .entry("o-loading-state".to_string())
-            .or_default();
-        comp1.css_href = "o-loading-state.css".to_string();
-        comp1.template_json = r#"{"h":"<div>loading</div>"}"#.to_string();
-
-        let comp2 = protocol
-            .components
-            .entry("my-card".to_string())
-            .or_default();
-        comp2.css_href = "my-card.css".to_string();
-        comp2.template_json = r#"{"h":"<div>card</div>"}"#.to_string();
-
-        let state = test_json!({});
         let mut writer = TestWriter::new();
-
         handle(
             &protocol,
-            &state,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/").with_nonce("css-nonce"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        assert_eq!(html.matches("data-webui-resource=\"outer-box\"").count(), 1);
+        assert_eq!(html.matches("data-webui-resource=\"inner-box\"").count(), 1);
+        assert_eq!(
+            html.matches("data-webui-resource=\"light-card\"").count(),
+            2,
+            "the Light resource installs once in each Shadow tree: {html}"
+        );
+        assert_eq!(
+            html.matches("data-webui-resource=").count(),
+            4,
+            "outer-box + light-card and inner-box + light-card are the four tree-local installs"
+        );
+        assert_eq!(
+            html.matches("nonce=\"css-nonce\"").count(),
+            4,
+            "each inline style resource carries the nonce"
+        );
+        assert!(html.contains(r#"<meta name="webui-nonce" content="css-nonce">"#));
+        let inner_end = html.find("</inner-box>").expect("inner host close");
+        let caller_continuation = &html[inner_end..];
+        let trailing_card = caller_continuation
+            .find("<p>card</p>")
+            .expect("caller continues after nested Shadow root");
+        assert!(trailing_card > 0);
+        assert!(
+            !caller_continuation.contains("data-webui-resource=\"light-card\""),
+            "returning from the nested Shadow root must restore the outer frame's delivered set"
+        );
+    }
+
+    #[test]
+    fn routed_document_styles_include_only_the_active_component() {
+        let route = WebUiFragmentRoute {
+            path: "/".to_string(),
+            fragment_id: "app-shell".to_string(),
+            children: vec![
+                WebUiFragmentRoute {
+                    path: String::new(),
+                    fragment_id: "dashboard-page".to_string(),
+                    exact: true,
+                    ..Default::default()
+                },
+                WebUiFragmentRoute {
+                    path: "details".to_string(),
+                    fragment_id: "detail-page".to_string(),
+                    exact: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_start"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body>"),
+                        structural_fragment("body_start"),
+                        structural_fragment("boundary_start:0"),
+                        WebUIFragment::route_from(route),
+                        structural_fragment("boundary_end:0"),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                },
+            ),
+            (
+                "app-shell".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<header>App</header>"),
+                        WebUIFragment::outlet(),
+                    ],
+                },
+            ),
+            (
+                "dashboard-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Dashboard</main>")],
+                },
+            ),
+            (
+                "detail-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Detail</main>")],
+                },
+            ),
+        ]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for tag in ["app-shell", "dashboard-page", "detail-page"] {
+            let component = protocol.components.entry(tag.to_string()).or_default();
+            component.css_href = format!("/{tag}.css");
+            component.template_json = r#"{"h":""}"#.to_string();
+        }
+        protocol.populate_style_closures(&["index.html"]);
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
             &RenderOptions::new("index.html", "/"),
             &mut writer,
         )
         .unwrap();
-
         let html = writer.get_content();
-        let head_end = html.find("</head>").expect("</head> missing");
-        let head_section = &html[..head_end];
 
-        // Both preload hints must be present with data-webui-ssr-preload attr
+        assert_eq!(
+            html.matches(r#"data-webui-resource="app-shell""#).count(),
+            1,
+            "the matched route shell must install once: {html}"
+        );
+        assert_eq!(
+            html.matches(r#"data-webui-resource="dashboard-page""#)
+                .count(),
+            1,
+            "the matched child route must install once: {html}"
+        );
         assert!(
-            head_section.contains(
-                r#"<link rel="preload" href="o-loading-state.css" as="style" data-webui-ssr-preload="style">"#
+            !html.contains(r#"data-webui-resource="detail-page""#),
+            "inactive route CSS must not be delivered: {html}"
+        );
+        let head_end = html.find("</head>").expect("head close");
+        let head = &html[..head_end];
+        for href in ["/app-shell.css", "/dashboard-page.css"] {
+            let encoded_href = crate::html_encode::encode_safe(href);
+            assert!(
+                head.contains(&format!(
+                    r#"<link rel="preload" as="style" href="{encoded_href}">"#
+                )),
+                "matched route CSS must start before module preloads: {html}"
+            );
+        }
+        assert!(
+            !head.contains("detail-page.css"),
+            "inactive route CSS must not be preloaded: {html}"
+        );
+        let app_style = html
+            .find(r#"data-webui-resource="app-shell""#)
+            .expect("app style");
+        let dashboard_style = html
+            .find(r#"data-webui-resource="dashboard-page""#)
+            .expect("dashboard style");
+        let app_host = html.find("<app-shell data-wl").expect("app route host");
+        let dashboard_host = html
+            .find("<dashboard-page data-wl")
+            .expect("dashboard route host");
+        assert!(
+            head_end < app_style
+                && app_style < app_host
+                && app_host < dashboard_style
+                && dashboard_style < dashboard_host,
+            "matched route closures must precede their generated hosts in render order: {html}"
+        );
+    }
+
+    #[test]
+    fn routed_shadow_styles_stay_tree_local_and_deduplicate_static_resources() {
+        let route = WebUiFragmentRoute {
+            path: "/".to_string(),
+            fragment_id: "app-shell".to_string(),
+            children: vec![
+                WebUiFragmentRoute {
+                    path: String::new(),
+                    fragment_id: "dashboard-page".to_string(),
+                    exact: true,
+                    ..Default::default()
+                },
+                WebUiFragmentRoute {
+                    path: "details".to_string(),
+                    fragment_id: "detail-page".to_string(),
+                    exact: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_start"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body>"),
+                        structural_fragment("body_start"),
+                        structural_fragment("boundary_start:0"),
+                        WebUIFragment::route_from(route),
+                        structural_fragment("boundary_end:0"),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                },
             ),
-            "Missing preload for o-loading-state.css in <head>: {html}"
-        );
-        assert!(
-            head_section.contains(
-                r#"<link rel="preload" href="my-card.css" as="style" data-webui-ssr-preload="style">"#
+            (
+                "app-shell".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">"),
+                        structural_fragment("shadow_styles:app-shell"),
+                        WebUIFragment::raw("<shared-card data-wl"),
+                        structural_fragment("streaming_root:shared-card"),
+                        WebUIFragment::raw(">"),
+                        WebUIFragment::component("shared-card"),
+                        WebUIFragment::raw("</shared-card>"),
+                        WebUIFragment::outlet(),
+                        WebUIFragment::raw("</template>"),
+                    ],
+                },
             ),
-            "Missing preload for my-card.css in <head>: {html}"
-        );
-        // No stylesheet links — shadow root handles that
+            (
+                "dashboard-page".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<shared-card data-wl"),
+                        structural_fragment("streaming_root:shared-card"),
+                        WebUIFragment::raw(">"),
+                        WebUIFragment::component("shared-card"),
+                        WebUIFragment::raw("</shared-card><main>Dashboard</main>"),
+                    ],
+                },
+            ),
+            (
+                "detail-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Detail</main>")],
+                },
+            ),
+            (
+                "shared-card".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Shared</p>")],
+                },
+            ),
+        ]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["app-shell", "dashboard-page", "detail-page", "shared-card"] {
+            let component = protocol.components.entry(tag.to_string()).or_default();
+            component.css = format!(".{tag}{{display:block}}");
+            component.template_json = r#"{"h":""}"#.to_string();
+        }
+        protocol
+            .components
+            .get_mut("app-shell")
+            .expect("app shell component")
+            .uses_shadow_dom = true;
+        protocol.populate_style_closures(&["index.html"]);
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        for resource in ["app-shell", "shared-card", "dashboard-page"] {
+            assert_eq!(
+                html.matches(&format!(r#"data-webui-resource="{resource}""#))
+                    .count(),
+                1,
+                "{resource} must install once in the active ShadowRoot: {html}"
+            );
+        }
         assert!(
-            !head_section.contains(r#"<link rel="stylesheet""#),
-            "Shadow DOM should NOT emit <link rel=stylesheet> in <head>: {html}"
+            !html.contains(r#"data-webui-resource="detail-page""#),
+            "inactive route CSS must not enter the ShadowRoot: {html}"
         );
+        let shadow_start = html
+            .find("<template shadowrootmode=\"open\">")
+            .expect("Shadow template");
+        let dashboard_style = html
+            .find(r#"data-webui-resource="dashboard-page""#)
+            .expect("dashboard style");
+        let dashboard_host = html
+            .find("<dashboard-page data-wl")
+            .expect("dashboard route host");
+        let shadow_end = html.find("</template>").expect("Shadow template close");
+        assert!(
+            shadow_start < dashboard_style
+                && dashboard_style < dashboard_host
+                && dashboard_host < shadow_end,
+            "active route CSS must precede its generated host inside the owning ShadowRoot: {html}"
+        );
+
+        let protocol = Protocol::new(protocol);
+        let mut streamed = FlushTestWriter::default();
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut streamed,
+            )
+            .unwrap();
+        for resource in ["app-shell", "shared-card", "dashboard-page"] {
+            assert_eq!(
+                streamed
+                    .output
+                    .matches(&format!(r#"data-webui-resource="{resource}""#))
+                    .count(),
+                1,
+                "streaming must preserve tree-local delivery for {resource}: {}",
+                streamed.output
+            );
+        }
+        assert!(
+            !streamed
+                .output
+                .contains(r#"data-webui-resource="detail-page""#),
+            "streaming must omit inactive route CSS: {}",
+            streamed.output
+        );
+    }
+
+    #[test]
+    fn document_styles_follow_doctype_before_headless_document_content() {
+        for entry_fragments in [
+            vec![
+                WebUIFragment::raw("<!DOCTYPE html><html><body>"),
+                structural_fragment("body_start"),
+                WebUIFragment::raw("<my-card data-wl>"),
+                WebUIFragment::component("my-card"),
+                WebUIFragment::raw("</my-card></body></html>"),
+            ],
+            vec![
+                WebUIFragment::raw("<!doctype html><html><my-card data-wl>"),
+                WebUIFragment::component("my-card"),
+                WebUIFragment::raw("</my-card></html>"),
+            ],
+        ] {
+            let mut protocol = WebUIProtocol::new(HashMap::from([
+                (
+                    "index.html".to_string(),
+                    FragmentList {
+                        fragments: entry_fragments,
+                    },
+                ),
+                (
+                    "my-card".to_string(),
+                    FragmentList {
+                        fragments: vec![WebUIFragment::raw("<p>card</p>")],
+                    },
+                ),
+            ]));
+            protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+            let component = protocol
+                .components
+                .entry("my-card".to_string())
+                .or_default();
+            component.css = ".card{color:red}".to_string();
+            component.uses_shadow_dom = false;
+            protocol.populate_style_closures(&["index.html"]);
+
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .expect("render");
+            let html = writer.get_content();
+
+            assert!(
+                html.to_ascii_lowercase().starts_with("<!doctype html>"),
+                "the doctype must remain the first document token: {html}"
+            );
+            let style = html.find("data-webui-resource=\"my-card\"").expect("style");
+            let document = html.find("<html").expect("document root");
+            let component = html.find("<my-card data-wl>").expect("component host");
+            assert!(
+                style < document && style < component,
+                "headless document styles must precede document content: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn authored_shadow_component_can_render_as_entry_fragment() {
+        let mut protocol = WebUIProtocol::new(HashMap::from([(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<template shadowrootmode=\"open\">"),
+                    structural_fragment("shadow_styles:my-card"),
+                    WebUIFragment::raw("<p>card</p></template>"),
+                ],
+            },
+        )]));
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        let component = protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default();
+        component.css = ".card{color:red}".to_string();
+        component.uses_shadow_dom = true;
+        protocol.populate_style_closures(&["my-card"]);
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("my-card", "/"),
+            &mut writer,
+        )
+        .expect("render");
+        let html = writer.get_content();
+
+        assert!(html.starts_with("<template shadowrootmode=\"open\"><style "));
+        assert_eq!(html.matches("data-webui-resource=\"my-card\"").count(), 1);
+        assert!(html.ends_with("<p>card</p></template>"));
+    }
+
+    #[test]
+    fn component_style_closures_escape_mixed_case_style_end_tags() {
+        for strategy in [
+            webui_protocol::CssStrategy::Style,
+            webui_protocol::CssStrategy::Module,
+        ] {
+            let mut protocol = WebUIProtocol::new(HashMap::from([
+                (
+                    "index.html".to_string(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<html><head>"),
+                            structural_fragment("head_end"),
+                            WebUIFragment::raw("</head><body><safe-card>"),
+                            WebUIFragment::component("safe-card"),
+                            WebUIFragment::raw("</safe-card></body></html>"),
+                        ],
+                    },
+                ),
+                (
+                    "safe-card".to_string(),
+                    FragmentList {
+                        fragments: vec![WebUIFragment::raw("<p>Safe</p>")],
+                    },
+                ),
+            ]));
+            protocol.set_css_strategy(strategy);
+            protocol.components.insert(
+                "safe-card".to_string(),
+                webui_protocol::ComponentData {
+                    css: ".safe{content:'</StYlE>'}".to_string(),
+                    ..Default::default()
+                },
+            );
+            protocol.populate_style_closures(&["index.html"]);
+            let mut writer = TestWriter::new();
+
+            handle(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+            let html = writer.get_content();
+            assert!(html.contains(".safe{content:'<\\/StYlE>'}"), "{html}");
+            assert!(!html.contains(".safe{content:'</StYlE>'}"), "{html}");
+        }
+    }
+
+    #[test]
+    fn shadow_closure_supports_link_and_module_ssr_paths() {
+        for strategy in [
+            webui_protocol::CssStrategy::Link,
+            webui_protocol::CssStrategy::Module,
+        ] {
+            let mut protocol = WebUIProtocol::new(HashMap::from([
+                (
+                    "index.html".to_string(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<html><head>".to_string()),
+                            structural_fragment("head_end"),
+                            WebUIFragment::raw("</head><body><my-card>".to_string()),
+                            WebUIFragment::component("my-card"),
+                            WebUIFragment::raw("</my-card></body></html>".to_string()),
+                        ],
+                    },
+                ),
+                (
+                    "my-card".to_string(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<template shadowrootmode=\"open\">".to_string()),
+                            structural_fragment("shadow_styles:my-card"),
+                            WebUIFragment::raw("<p>card</p></template>".to_string()),
+                        ],
+                    },
+                ),
+            ]));
+            protocol.set_css_strategy(strategy);
+            let component = protocol
+                .components
+                .entry("my-card".to_string())
+                .or_default();
+            component.css = ".card{color:red}".to_string();
+            component.css_href = "/my-card.css".to_string();
+            component.uses_shadow_dom = true;
+            protocol.populate_style_closures(&["index.html"]);
+
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+            let html = writer.get_content();
+            match strategy {
+                webui_protocol::CssStrategy::Link => {
+                    let escaped_href = crate::html_encode::encode_safe("/my-card.css");
+                    assert!(html.contains(&format!(
+                        "<template shadowrootmode=\"open\"><link rel=\"stylesheet\" href=\"{escaped_href}\" data-webui-resource=\"my-card\" data-webui-strategy=\"link\">"
+                    )));
+                }
+                webui_protocol::CssStrategy::Module => {
+                    assert!(html.contains(
+                        "<template shadowrootmode=\"open\"><style data-webui-resource=\"my-card\" data-webui-strategy=\"module\">.card{color:red}</style>"
+                    ));
+                    assert_eq!(html.matches("<script type=\"importmap\"").count(), 1);
+                }
+                webui_protocol::CssStrategy::Style => unreachable!(),
+            }
+        }
     }
 
     #[test]
@@ -7291,7 +8225,6 @@ mod tests {
 
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
 
         let z = protocol
             .components
@@ -7306,6 +8239,7 @@ mod tests {
             .or_default();
         a.css_href = "a-widget.css".to_string();
         a.template_json = r#"{"h":"<div>a</div>"}"#.to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -7323,10 +8257,10 @@ mod tests {
         let head_section = &html[..head_end];
 
         let z_pos = head_section
-            .find(r#"<link rel="stylesheet" href="z-widget.css">"#)
+            .find(r#"<link rel="stylesheet" href="z-widget.css""#)
             .expect("z-widget stylesheet link missing from <head>");
         let a_pos = head_section
-            .find(r#"<link rel="stylesheet" href="a-widget.css">"#)
+            .find(r#"<link rel="stylesheet" href="a-widget.css""#)
             .expect("a-widget stylesheet link missing from <head>");
 
         assert!(
@@ -7363,11 +8297,13 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         protocol
             .components
             .entry("my-card".to_string())
             .or_default()
             .css = "p{color:red}".to_string();
+        protocol.populate_style_closures(&["index.html"]);
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -7401,6 +8337,49 @@ mod tests {
     }
 
     #[test]
+    fn styled_protocol_without_closures_is_rejected_for_full_ssr() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<legacy-card>"),
+                        WebUIFragment::component("legacy-card"),
+                        WebUIFragment::raw("</legacy-card>"),
+                    ],
+                },
+            ),
+            (
+                "legacy-card".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<p>Legacy</p>")],
+                },
+            ),
+        ]);
+        protocol.components.insert(
+            "legacy-card".to_string(),
+            webui_protocol::ComponentData {
+                css: ".legacy{color:red}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
+        let mut writer = TestWriter::new();
+
+        let error = handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .expect_err("styled protocols require closure metadata");
+        assert!(error
+            .to_string()
+            .contains("component style closure metadata is required"));
+    }
+
+    #[test]
     fn test_css_module_emitted_for_route_components() {
         // Route components get CSS modules emitted inline in their light DOM.
         let template = r#"<h1>Dashboard</h1>"#;
@@ -7427,12 +8406,14 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let comp = protocol
             .components
             .entry("dash-page".to_string())
             .or_default();
         comp.css = "h1{font-size:2rem}".to_string();
         comp.template_json = r#"{"h":"<h1>Dashboard</h1>"}"#.to_string();
+        protocol.populate_style_closures(&["index.html"]);
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -7453,6 +8434,27 @@ mod tests {
         assert!(
             html.contains("<h1>Dashboard</h1>"),
             "Route component should render content: {html}"
+        );
+        let fallback = html
+            .find(r#"data-webui-resource="dash-page" data-webui-strategy="module""#)
+            .expect("route Module fallback");
+        let host_open = html.find("<dash-page data-wl>").expect("route host");
+        let content = html.find("<h1>Dashboard</h1>").expect("route content");
+        assert!(
+            fallback < host_open && host_open < content,
+            "the Module fallback must precede the generated Light route host: {html}"
+        );
+        // The importmap belongs to the component's own Light DOM, never to the
+        // route element. The router only treats `<link>`/`<style>` markers as
+        // route-owned styles, so an importmap emitted as a direct route child
+        // would be cleared on navigation and mistaken for the mounted
+        // component. Keep it inside the host so that can never happen.
+        let importmap = html
+            .find(r#"<script type="importmap""#)
+            .expect("route CSS module importmap");
+        assert!(
+            host_open < importmap,
+            "the CSS module importmap must live inside the route host, not as a route child: {html}"
         );
     }
 
@@ -7490,7 +8492,6 @@ mod tests {
 
         let mut protocol = WebUIProtocol::new(fragments);
         protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
-        protocol.set_dom_strategy(webui_protocol::DomStrategy::Light);
 
         // Only has-css has an external stylesheet (Link strategy)
         protocol
@@ -7498,6 +8499,12 @@ mod tests {
             .entry("has-css".to_string())
             .or_default()
             .css_href = "has-css.css".to_string();
+        protocol
+            .components
+            .entry("no-css".to_string())
+            .or_default()
+            .template_json = r#"{"h":"<p>plain</p>"}"#.to_string();
+        protocol.populate_style_closures(&["index.html"]);
 
         let state = test_json!({});
         let mut writer = TestWriter::new();
@@ -7516,7 +8523,7 @@ mod tests {
 
         let html = writer.get_content();
         assert!(
-            html.contains(r#"<link rel="stylesheet" href="has-css.css">"#),
+            html.contains(r#"<link rel="stylesheet" href="has-css.css""#),
             "Component with CSS should get a <link rel=stylesheet> in <head>: {html}"
         );
         assert!(
@@ -7585,6 +8592,7 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
         for name in ["app-shell", "cart-panel", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
@@ -7598,6 +8606,7 @@ mod tests {
                 comp.template_functions = r#"[function(v,s){return !!v("ready",s)}]"#.to_string();
             }
         }
+        protocol.populate_style_closures(&["index.html"]);
 
         // Render with hasItems=false — product-card should NOT be rendered
         let state = test_json!({ "hasItems": false });
@@ -7711,12 +8720,14 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         let comp = protocol
             .components
             .entry("dash-page".to_string())
             .or_default();
         comp.css = "h1{font-size:2rem}".to_string();
         comp.template_json = r#"{"h":"<h1>Dashboard</h1>"}"#.to_string();
+        protocol.populate_style_closures(&["index.html"]);
         let state = test_json!({});
         let mut writer = TestWriter::new();
 
@@ -7732,7 +8743,7 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
+                r#"<script type="importmap" nonce="test-nonce-123" data-webui-resource="dash-page">{"imports":{"dash-page":"data:text/css,h1{font-size:2rem}"}}</script>"#
             ),
             "CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
@@ -7782,11 +8793,13 @@ mod tests {
         );
 
         let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Module);
         for name in ["app-shell", "product-card"] {
             let comp = protocol.components.entry(name.to_string()).or_default();
             comp.template_json = format!(r#"{{"h":"<div class=\"{name}\"></div>"}}"#);
             comp.css = format!(".{name}{{display:block}}");
         }
+        protocol.populate_style_closures(&["index.html"]);
 
         // Render with hasItems=false so product-card is reachable but not
         // rendered, forcing its CSS module emission through the body_end path.
@@ -7809,7 +8822,7 @@ mod tests {
 
         assert!(
             html.contains(
-                r#"<script type="importmap" nonce="test-nonce-123">{"imports":{"product-card":"data:text/css,.product-card{display:block}"}}</script>"#
+                r#"<script type="importmap" nonce="test-nonce-123" data-webui-resource="product-card">{"imports":{"product-card":"data:text/css,.product-card{display:block}"}}</script>"#
             ),
             "Unrendered (body_end) CSS module importmap tag should include nonce attribute in canonical order: {html}"
         );
@@ -9482,7 +10495,8 @@ mod tests {
         let first_flush = &writer.output[..writer.flushes[0]];
         assert!(first_flush.contains("<!--wb:0-->"));
         assert!(first_flush.contains("<!--/wb:0-->"));
-        assert!(first_flush.contains(r#"[1,0,0,0,{"inventory":"01","state":{"count":1}"#));
+        assert!(first_flush.contains(r#"[1,0,0,0,{"componentStyles":"#));
+        assert!(first_flush.contains(r#""inventory":"01","state":{"count":1}"#));
         assert!(first_flush.contains(r#""templates":{"my-counter":"#));
         assert!(!first_flush.contains("slow tail"));
         assert!(!writer.output.contains("id=\"webui-data\""));
@@ -10059,7 +11073,11 @@ mod tests {
     /// compiler-owned `streaming_root:<tag>` signal (optionally emitted) lands
     /// inside the tag, exactly as `HtmlParser` produces. Components `comp-a` and
     /// `comp-b` carry disjoint templates and disjoint hydration keys.
-    fn disjoint_streaming_protocol_ext(hosts: &[&str], emit_root_signal: bool) -> Protocol {
+    fn disjoint_streaming_protocol_ext(
+        hosts: &[&str],
+        emit_root_signal: bool,
+        include_styles: bool,
+    ) -> Protocol {
         let mut fragments = HashMap::new();
         let mut entry = vec![
             WebUIFragment::raw("<!DOCTYPE html><html><head>"),
@@ -10123,11 +11141,21 @@ mod tests {
                 ..Default::default()
             },
         );
+        if include_styles {
+            document.set_css_strategy(webui_protocol::CssStrategy::Style);
+            document.components.get_mut("comp-a").unwrap().css = ".comp-a{color:red}".to_string();
+            document.components.get_mut("comp-b").unwrap().css = ".comp-b{color:blue}".to_string();
+            document.populate_style_closures(&["index.html"]);
+        }
         Protocol::new(document)
     }
 
     fn disjoint_streaming_protocol(hosts: &[&str]) -> Protocol {
-        disjoint_streaming_protocol_ext(hosts, true)
+        disjoint_streaming_protocol_ext(hosts, true, false)
+    }
+
+    fn styled_disjoint_streaming_protocol(hosts: &[&str]) -> Protocol {
+        disjoint_streaming_protocol_ext(hosts, true, true)
     }
 
     fn streaming_plan_validation_protocol(signals: &[&str], names: &[&str]) -> Protocol {
@@ -10632,8 +11660,8 @@ mod tests {
     fn streaming_root_signal_preserves_ordinary_output_bytes() {
         // Ordinary rendering ignores `streaming_root` byte-for-byte: identical
         // output with and without the signal, and never a `data-ws` attribute.
-        let with_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], true);
-        let without_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], false);
+        let with_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], true, false);
+        let without_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], false, false);
         let state = test_json!({ "a_count": 1, "b_count": 2 });
         let plugin = || {
             WebUIHandler::with_plugin(
@@ -10815,7 +11843,7 @@ mod tests {
     }
 
     fn parser_route_protocol(with_boundary: bool) -> Protocol {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        let mut parser = HtmlParser::new();
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -10862,7 +11890,7 @@ mod tests {
         assert!(
             writer
                 .output
-                .contains("<route-page data-ws><p>route content</p></route-page>"),
+                .contains("<route-page data-wl data-ws><p>route content</p></route-page>"),
             "matched route host must be deferred before upgrade: {}",
             writer.output
         );
@@ -11075,6 +12103,7 @@ mod tests {
                 },
             );
         }
+        document.populate_style_closures(&["index.html"]);
         let protocol = Protocol::new(document);
         assert_eq!(
             protocol
@@ -11133,6 +12162,22 @@ mod tests {
             ),
             "checkpoint metadata lost source order: {checkpoint}"
         );
+        assert!(
+            checkpoint.contains(r#""componentStyles":"#)
+                && checkpoint.contains(r#""strategy":"link""#)
+                && checkpoint.contains(r#""static-shell":["static-shell","static-hidden"]"#),
+            "checkpoint is missing tree-local style metadata: {checkpoint}"
+        );
+        for resource in ["static-shell", "static-hidden", "route-shell", "route-page"] {
+            assert_eq!(
+                writer
+                    .output
+                    .matches(&format!(r#"data-webui-resource="{resource}""#))
+                    .count(),
+                1,
+                "Document delivery state must persist across streamed checkpoints"
+            );
+        }
     }
 
     #[test]
@@ -11176,14 +12221,16 @@ mod tests {
         // Boundary 0: only comp-a's template/state; no comp-b artifacts.
         assert!(b0.contains(r#""templates":{"comp-a":"#), "b0: {b0}");
         assert!(b0.contains(r#""a_count":1"#), "b0: {b0}");
-        assert!(b0.contains(r#"[1,0,0,0,{"inventory":"01""#), "b0: {b0}");
+        assert!(b0.contains(r#"[1,0,0,0,{"componentStyles":"#), "b0: {b0}");
+        assert!(b0.contains(r#""inventory":"01""#), "b0: {b0}");
         assert!(!b0.contains("comp-b"), "b0 leaked comp-b: {b0}");
         assert!(!b0.contains("b_count"), "b0 leaked b_count: {b0}");
 
         // Boundary 1: only comp-b's template/state; no duplicate comp-a template.
         assert!(b1.contains(r#""templates":{"comp-b":"#), "b1: {b1}");
         assert!(b1.contains(r#""b_count":2"#), "b1: {b1}");
-        assert!(b1.contains(r#"[1,1,0,1,{"inventory":"02""#), "b1: {b1}");
+        assert!(b1.contains(r#"[1,1,0,1,{"componentStyles":"#), "b1: {b1}");
+        assert!(b1.contains(r#""inventory":"02""#), "b1: {b1}");
         assert!(
             !b1.contains(r#""templates":{"comp-a"#),
             "b1 re-sent comp-a: {b1}"
@@ -11192,7 +12239,8 @@ mod tests {
 
         // Boundary 2: comp-a reused — state present, template absent (empty delta).
         assert!(b2.contains(r#""a_count":1"#), "b2: {b2}");
-        assert!(b2.contains(r#"[1,2,0,2,{"inventory":"""#), "b2: {b2}");
+        assert!(b2.contains(r#"[1,2,0,2,{"componentStyles":"#), "b2: {b2}");
+        assert!(b2.contains(r#""inventory":"""#), "b2: {b2}");
         assert!(
             !b2.contains(r#""templates""#),
             "b2 re-sent a template: {b2}"
@@ -11200,6 +12248,71 @@ mod tests {
 
         // Server-only state never leaks into any envelope.
         assert!(!writer.output.contains("serverOnly"));
+    }
+
+    #[test]
+    fn streaming_checkpoints_emit_style_resources_and_closures_once() {
+        let protocol = styled_disjoint_streaming_protocol(&["comp-a", "comp-b", "comp-a"]);
+        let handler = WebUIHandler::with_plugin(|| {
+            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
+        });
+        let mut writer = FlushTestWriter::default();
+        handler
+            .render_streaming(
+                &protocol,
+                &test_json!({ "a_count": 1, "b_count": 2 }),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        let segment = |index: usize| -> &str {
+            let start = if index == 0 {
+                0
+            } else {
+                writer.flushes[index - 1]
+            };
+            &writer.output[start..writer.flushes[index]]
+        };
+        let checkpoint_styles = |checkpoint: &str| -> Value {
+            let script = checkpoint
+                .rfind(r#"<script type="application/json" data-webui-boundary"#)
+                .unwrap();
+            let payload_start = script + checkpoint[script..].find('>').unwrap() + 1;
+            let payload_end =
+                payload_start + checkpoint[payload_start..].find("</script>").unwrap();
+            let record: Value =
+                serde_json::from_str(&checkpoint[payload_start..payload_end]).unwrap();
+            record[4]["componentStyles"].clone()
+        };
+
+        let first = checkpoint_styles(segment(0));
+        assert!(first["resources"]["comp-a"].is_object());
+        assert!(first["resources"]["comp-b"].is_object());
+        assert!(first["closures"]["index.html"].is_array());
+        assert!(first["closures"]["comp-a"].is_array());
+
+        let second = checkpoint_styles(segment(1));
+        assert_eq!(second["resources"], test_json!({}));
+        assert_eq!(second["closures"], test_json!({ "comp-b": ["comp-b"] }));
+
+        let repeated = checkpoint_styles(segment(2));
+        assert_eq!(repeated["resources"], test_json!({}));
+        assert_eq!(repeated["closures"], test_json!({}));
+        for resource in ["comp-a", "comp-b"] {
+            assert_eq!(
+                [&first, &second, &repeated]
+                    .iter()
+                    .filter(|styles| {
+                        styles["resources"]
+                            .as_object()
+                            .is_some_and(|resources| resources.contains_key(resource))
+                    })
+                    .count(),
+                1,
+                "{resource} style metadata was serialized more than once"
+            );
+        }
     }
 
     #[test]
@@ -11252,6 +12365,7 @@ mod tests {
             ),
         ]);
         let mut document = WebUIProtocol::new(fragments);
+        document.set_css_strategy(webui_protocol::CssStrategy::Module);
         document.initial_state_strategy = InitialStateStrategy::Components as i32;
         document.components.insert(
             "comp-a".to_string(),
@@ -11272,6 +12386,7 @@ mod tests {
                 ..Default::default()
             },
         );
+        document.populate_style_closures(&["index.html"]);
         let protocol = Protocol::new(document);
         let handler = WebUIHandler::with_plugin(|| {
             Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
@@ -11308,7 +12423,7 @@ mod tests {
         assert!(first.contains(r#""hidden_count":7"#), "first: {first}");
         assert!(first.contains(r#""inventory":"01""#), "first: {first}");
         assert!(
-            first.contains(r#"<script type="importmap">"#),
+            first.contains(r#"<script type="importmap""#),
             "first: {first}"
         );
         assert!(
@@ -11321,16 +12436,13 @@ mod tests {
             "second re-sent metadata: {second}"
         );
         assert!(
-            !second.contains(r#"<script type="importmap">"#),
+            !second.contains(r#"<script type="importmap""#),
             "second re-sent CSS: {second}"
         );
         assert!(second.contains(r#""hidden_count":7"#), "second: {second}");
         assert!(second.contains(r#""inventory":"02""#), "second: {second}");
         assert_eq!(
-            writer
-                .output
-                .matches(r#"<script type="importmap">"#)
-                .count(),
+            writer.output.matches(r#"<script type="importmap""#).count(),
             1
         );
     }

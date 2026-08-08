@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser};
+use webui_parser::{plugin::fast_v2::FastV2ParserPlugin, CssStrategy, HtmlParser, ParserOptions};
 
 fn build_simple_template() -> String {
     let mut html = String::with_capacity(256);
@@ -100,6 +100,18 @@ fn build_style_heavy_template(blocks: usize) -> String {
 
     html.push_str("<div>{{content}}</div></body>");
     html
+}
+
+fn build_component_stylesheet(rules: usize) -> String {
+    let mut css = String::with_capacity(rules * 140 + 160);
+    css.push_str(":host { display: block; }");
+    css.push_str("@keyframes pulse { from { opacity: .6; } to { opacity: 1; } }");
+    for idx in 0..rules {
+        css.push_str(".item-");
+        css.push_str(&idx.to_string());
+        css.push_str(":hover { color: var(--webui-color); animation: pulse 1s ease; }");
+    }
+    css
 }
 
 fn build_todo_app_template() -> String {
@@ -322,9 +334,7 @@ fn parser_with_bench_components() -> HtmlParser {
     parser
 }
 
-fn parser_with_bench_components_and_options(
-    options: impl Into<webui_parser::ParserOptions>,
-) -> HtmlParser {
+fn parser_with_bench_components_and_options(options: impl Into<ParserOptions>) -> HtmlParser {
     let mut parser = HtmlParser::with_options(options);
     register_bench_components(&mut parser);
     parser
@@ -341,7 +351,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-bench-button",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -349,7 +359,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-card",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -357,7 +367,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-panel",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -365,7 +375,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-banner",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -373,7 +383,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-dialog",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -381,7 +391,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-item",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -389,7 +399,7 @@ fn register_bench_components(parser: &mut HtmlParser) {
     registry
         .register_component(webui_parser::ComponentRegistration::new(
             "x-stats-card",
-            "<slot></slot>",
+            r#"<template shadowrootmode="open"><slot></slot></template>"#,
             None,
             true,
         ))
@@ -495,6 +505,41 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
                 .unwrap_or_else(|error| panic!("inline css parse failed: {error}"));
         });
     });
+
+    group.finish();
+}
+
+fn parser_light_css_boundary_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_light_css_boundary");
+    let input = "<x-styled-card></x-styled-card>";
+    let css = build_component_stylesheet(40);
+    group.throughput(Throughput::Bytes((input.len() + css.len()) as u64));
+
+    for (name, component_html) in [
+        (
+            "authored_shadow",
+            r#"<template shadowrootmode="open"><div class="item-0">Styled</div></template>"#,
+        ),
+        ("light", r#"<div class="item-0">Styled</div>"#),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                let mut parser = HtmlParser::new();
+                parser
+                    .component_registry_mut()
+                    .register_component(webui_parser::ComponentRegistration::new(
+                        "x-styled-card",
+                        component_html,
+                        Some(black_box(css.as_str())),
+                        true,
+                    ))
+                    .unwrap_or_else(|error| panic!("failed to register styled component: {error}"));
+                parser
+                    .parse("index.html", black_box(input))
+                    .unwrap_or_else(|error| panic!("{name} CSS boundary parse failed: {error}"));
+            });
+        });
+    }
 
     group.finish();
 }
@@ -605,6 +650,7 @@ criterion_group!(
     parser_parse_fresh_vs_reuse,
     parser_plugin_bench,
     parser_css_strategy_bench,
+    parser_light_css_boundary_bench,
     parser_size_sweep_bench,
     parser_realistic_bench,
     parser_text_vs_directive_bench,

@@ -11,13 +11,12 @@ cargo add webui
 ## Quick Start
 
 ```rust
-use webui::{build, BuildOptions, DomStrategy};
+use webui::{build, BuildOptions};
 
 // Build a WebUI application from an app directory
 let result = build(BuildOptions {
     app_dir: "my-app/src".into(),
     entry: "index.html".into(),
-    dom: DomStrategy::Shadow,
     ..Default::default()
 })?;
 
@@ -38,14 +37,13 @@ let result = build(BuildOptions {
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and component assets to disk |
 
 ```rust
-use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
+use webui::{build_to_disk, BuildOptions, CssStrategy, LegalComments, Plugin};
 
 build_to_disk(
     BuildOptions {
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
-        dom: DomStrategy::Shadow,      // or DomStrategy::Light for light DOM
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
@@ -54,6 +52,10 @@ build_to_disk(
     Path::new("dist"),
 )?;
 ```
+
+Every unwrapped component uses Light DOM. A component uses Shadow only with a
+sole top-level `<template shadowrootmode="open">` containing its complete
+template. Native `<slot>` is Shadow-only.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:
@@ -148,7 +150,7 @@ let partial = protocol.render_partial(
 | `WebUIHandler` | Rendering engine (stateless, thread-safe) |
 | `RenderOptions` | Render configuration (entry_id, request_path) |
 | `ResponseWriter` | Trait for streaming rendered output |
-| `CssStrategy` | CSS delivery mode (Link or Style) |
+| `CssStrategy` | CSS delivery mode (Link, Style, or Module) |
 | `WebUIError` | Error type for build/inspect operations |
 
 ## License

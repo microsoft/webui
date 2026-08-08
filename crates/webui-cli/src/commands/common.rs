@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::path::{Path, PathBuf};
 pub use webui::CssStrategy;
-pub use webui::DomStrategy;
 pub use webui::LegalComments;
 pub use webui::Plugin;
 pub use webui::DEFAULT_ASSET_FILE_NAME_TEMPLATE;
@@ -24,10 +23,6 @@ pub struct AppArgs {
     /// CSS delivery strategy for component stylesheets
     #[arg(long, value_enum, default_value_t = CssStrategy::Link)]
     pub css: CssStrategy,
-
-    /// DOM strategy for component rendering (shadow or light)
-    #[arg(long, value_enum, default_value_t = DomStrategy::Shadow)]
-    pub dom: DomStrategy,
 
     /// Framework plugin to load
     #[arg(long, value_enum)]
@@ -61,7 +56,6 @@ impl AppArgs {
             app_dir: app_dir.to_path_buf(),
             entry: self.entry.clone(),
             css: self.css,
-            dom: self.dom,
             plugin: self.plugin,
             components: self.components.clone(),
             component_asset_roots: Vec::new(),
@@ -91,6 +85,24 @@ pub fn load_theme(theme: &str, search_root: &Path) -> Result<webui::TokenFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::{CommandFactory, Parser};
+
+    #[derive(Parser)]
+    struct TestArgs {
+        #[command(flatten)]
+        app: AppArgs,
+    }
+
+    #[test]
+    fn dom_option_is_rejected() {
+        assert!(TestArgs::try_parse_from(["test"]).is_ok());
+        assert!(TestArgs::try_parse_from(["test", "--dom=light"]).is_err());
+        assert!(TestArgs::try_parse_from(["test", "--dom=shadow"]).is_err());
+        assert!(!TestArgs::command()
+            .render_long_help()
+            .to_string()
+            .contains("--dom"));
+    }
 
     #[test]
     fn to_build_options_passes_asset_file_output_settings() {
@@ -98,7 +110,6 @@ mod tests {
             app: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
-            dom: DomStrategy::Shadow,
             plugin: None,
             components: Vec::new(),
             projection_manifests: vec![
