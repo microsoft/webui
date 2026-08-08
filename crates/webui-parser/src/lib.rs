@@ -6,6 +6,7 @@
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
 mod asset_filename;
 mod comment_policy;
+mod component_policy;
 mod component_registry;
 mod condition_parser;
 mod css_link;
@@ -30,6 +31,11 @@ pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 pub use webui_tokens::CssFallbackChain;
 
+use crate::component_policy::{
+    parse_component_render_policy, HYDRATE_ATTR as COMPONENT_HYDRATE_ATTR,
+    RENDER_ATTR as COMPONENT_RENDER_ATTR,
+    RESERVE_BLOCK_SIZE_ATTR as COMPONENT_RESERVE_BLOCK_SIZE_ATTR,
+};
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
 use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use std::collections::{HashMap, HashSet};
@@ -591,6 +597,12 @@ pub struct HtmlParser {
 struct BuiltComponentTemplate {
     ssr: String,
     artifact: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+struct ComponentTemplateMode {
+    preserve_runtime_attrs: bool,
+    policy_wrapper: bool,
 }
 
 impl BuiltComponentTemplate {
@@ -2339,21 +2351,6 @@ impl HtmlParser {
 
         self.flush_raw_buffer(fragments);
 
-        let (html_content, css_content) = {
-            let component = self.component_registry.get(element.name()).ok_or_else(|| {
-                self.authoring_error_at(
-                    codes::UNKNOWN_COMPONENT,
-                    format!("unknown component <{}>", element.name()),
-                    element,
-                )
-                .help(self.unknown_component_help(element.name()))
-            })?;
-            (
-                component.html_content.clone(),
-                component.css_content.clone(),
-            )
-        };
-
         if !self.fragment_records.contains_key(element.name()) {
             let component_data = self
                 .component_registry
@@ -2369,8 +2366,8 @@ impl HtmlParser {
                 .clone();
             let built = self.build_component_templates(
                 element.name(),
-                &html_content,
-                css_content.as_deref(),
+                &component_data.html_content,
+                component_data.css_content.as_deref(),
                 self.plugin.is_some(),
             )?;
 
@@ -3201,13 +3198,19 @@ impl HtmlParser {
         };
 
         let artifact_differs = artifact_needed && Self::template_has_stripped_runtime_attrs(html);
-        let ssr =
-            self.process_component_template(html, css_injection.as_deref(), adopted_specifier)?;
+        let policy_wrapper = parse_component_render_policy(tag_name, html)?.is_authored();
+        let ssr = self.process_component_policy_template(
+            html,
+            css_injection.as_deref(),
+            adopted_specifier,
+            policy_wrapper,
+        )?;
         let artifact = if artifact_differs {
             Some(self.process_component_artifact_template(
                 html,
                 css_injection.as_deref(),
                 adopted_specifier,
+                policy_wrapper,
             )?)
         } else {
             None
@@ -3240,13 +3243,32 @@ impl HtmlParser {
     /// Performance: zero recursion, zero regex. The dev-template path uses
     /// quote-aware scanners for opening-tag queries and pre-sizes the output
     /// buffer to avoid reallocation in the hot path.
+    #[cfg(test)]
     fn process_component_template(
         &mut self,
         html: &str,
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
     ) -> Result<String> {
-        self.process_component_template_with_mode(html, css_snippet, adopted_specifier, false)
+        self.process_component_policy_template(html, css_snippet, adopted_specifier, false)
+    }
+
+    fn process_component_policy_template(
+        &mut self,
+        html: &str,
+        css_snippet: Option<&str>,
+        adopted_specifier: Option<&str>,
+        policy_wrapper: bool,
+    ) -> Result<String> {
+        self.process_component_template_with_mode(
+            html,
+            css_snippet,
+            adopted_specifier,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: false,
+                policy_wrapper,
+            },
+        )
     }
 
     fn process_component_artifact_template(
@@ -3254,8 +3276,17 @@ impl HtmlParser {
         html: &str,
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
+        policy_wrapper: bool,
     ) -> Result<String> {
-        self.process_component_template_with_mode(html, css_snippet, adopted_specifier, true)
+        self.process_component_template_with_mode(
+            html,
+            css_snippet,
+            adopted_specifier,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: true,
+                policy_wrapper,
+            },
+        )
     }
 
     fn process_component_template_with_mode(
@@ -3263,19 +3294,32 @@ impl HtmlParser {
         html: &str,
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
-        preserve_runtime_attrs: bool,
+        mode: ComponentTemplateMode,
     ) -> Result<String> {
         let trimmed = html.trim();
         let snippet = css_snippet.unwrap_or_default();
 
         let processed = if trimmed.starts_with("<template") {
-            let base = if preserve_runtime_attrs {
-                trimmed.to_string()
+            let authored_shadow =
+                html::parse_tag(trimmed).is_some_and(|tag| tag.has_attr("shadowrootmode"));
+            let base = self.strip_template_build_attrs(trimmed, mode.preserve_runtime_attrs);
+            let with_shadow = if mode.policy_wrapper
+                && matches!(self.options.dom_strategy, DomStrategy::Shadow)
+            {
+                Self::append_shadow_mode_if_missing(base)
             } else {
-                self.strip_runtime_attrs_from_template(trimmed)
+                base
             };
-            let with_adopted = Self::append_adopted_attr_if_missing(base, adopted_specifier);
-            Self::inject_css_snippet_into_template(with_adopted, snippet)
+            let with_adopted = Self::append_adopted_attr_if_missing(with_shadow, adopted_specifier);
+            let injected = Self::inject_css_snippet_into_template(with_adopted, snippet);
+            if mode.policy_wrapper
+                && matches!(self.options.dom_strategy, DomStrategy::Light)
+                && !authored_shadow
+            {
+                Self::unwrap_component_policy_template(injected)
+            } else {
+                injected
+            }
         } else {
             match self.options.dom_strategy {
                 DomStrategy::Shadow => {
@@ -3348,6 +3392,34 @@ impl HtmlParser {
         Self::push_adopted_attr(&mut result, adopted);
         result.push_str(&html[tag.close..]);
         result
+    }
+
+    fn append_shadow_mode_if_missing(html: String) -> String {
+        let Some(tag) = html::parse_tag(&html) else {
+            return html;
+        };
+        if tag.name != "template" || tag.closing || tag.has_attr("shadowrootmode") {
+            return html;
+        }
+
+        const SHADOW_MODE: &str = " shadowrootmode=\"open\"";
+        let mut result = String::with_capacity(html.len() + SHADOW_MODE.len());
+        result.push_str(&html[..tag.close]);
+        result.push_str(SHADOW_MODE);
+        result.push_str(&html[tag.close..]);
+        result
+    }
+
+    fn unwrap_component_policy_template(html: String) -> String {
+        let Some(tag) = html::parse_tag(&html) else {
+            return html;
+        };
+        let inner_start = tag.close + 1;
+        let inner_end = html.rfind("</template>").unwrap_or(html.len());
+        if inner_start >= inner_end {
+            return String::new();
+        }
+        html[inner_start..inner_end].to_string()
     }
 
     fn push_adopted_attr(out: &mut String, adopted: &str) {
@@ -3453,21 +3525,26 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Strip attributes starting with `@`, `:`, or `?` from the opening
+    /// Strip compiler-owned component policy attributes and, for the SSR view,
+    /// runtime attributes starting with `@`, `:`, or `?` from the opening
     /// `<template>` tag.
     ///
     /// Uses the same quote-aware tag scanner as the main HTML pipeline.
-    fn strip_runtime_attrs_from_template(&mut self, html: &str) -> String {
+    fn strip_template_build_attrs(&mut self, html: &str, preserve_runtime_attrs: bool) -> String {
         let Some(tag) = html::parse_tag(html) else {
             return html.to_string();
         };
 
         let mut removals: Vec<(usize, usize)> = Vec::new();
         for attr in tag.attrs() {
-            if attr.name.starts_with('@')
+            let runtime_attr = attr.name.starts_with('@')
                 || attr.name.starts_with(':')
-                || attr.name.starts_with('?')
-            {
+                || attr.name.starts_with('?');
+            let policy_attr = matches!(
+                attr.name,
+                COMPONENT_RENDER_ATTR | COMPONENT_HYDRATE_ATTR | COMPONENT_RESERVE_BLOCK_SIZE_ATTR
+            );
+            if policy_attr || (!preserve_runtime_attrs && runtime_attr) {
                 let mut start = attr.raw_range.start;
                 while start > 0 && html.as_bytes()[start - 1].is_ascii_whitespace() {
                     start -= 1;
@@ -5861,6 +5938,28 @@ mod tests {
             processed.contains("</template>"),
             "[--dom=shadow] framework-added wrapper must be closed, got: {processed}"
         );
+    }
+
+    #[test]
+    fn component_policy_wrapper_uses_selected_dom_strategy_and_is_build_only() {
+        let html = r#"<template w-hydrate="lazy"><div>hi</div></template>"#;
+
+        let mut shadow = HtmlParser::with_options(DomStrategy::Shadow);
+        let shadow_built = shadow
+            .build_component_templates("my-comp", html, None, true)
+            .expect("shadow policy wrapper should compile");
+        assert_eq!(
+            shadow_built.ssr,
+            r#"<template shadowrootmode="open"><div>hi</div></template>"#
+        );
+        assert!(!shadow_built.artifact().contains("w-hydrate"));
+
+        let mut light = HtmlParser::with_options(DomStrategy::Light);
+        let light_built = light
+            .build_component_templates("my-comp", html, None, true)
+            .expect("light policy wrapper should compile");
+        assert_eq!(light_built.ssr, "<div>hi</div>");
+        assert_eq!(light_built.artifact(), "<div>hi</div>");
     }
 
     // ── CSS-module adoption on dev-authored <template> wrappers ────────

@@ -1,3 +1,4 @@
+<template w-hydrate="lazy">
 <button type="button" @click="{increment()}">
   <span class="label">{{label}}</span>
   <output class="count">{{count}}</output>
@@ -11,3 +12,4 @@
 <div class="hover-target" @mouseenter="{recordHover()}">
   Hover <output class="hover-count">{{hoverCount}}</output>
 </div>
+</template>

@@ -167,6 +167,7 @@ const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
 const ACTIVATION_MISSING_TEMPLATE = 3;
 
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
+const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
 
 type TemplateObservedConstructor = CustomElementConstructor & {
   readonly observedAttributes?: readonly string[];
@@ -283,6 +284,10 @@ function hasAuthoredMember(instance: object, key: string): boolean {
  * reachable runtime.
  */
 export class TemplateElement extends HTMLElement {
+  private static readonly $ancestorReleaseQueue: TemplateElement[] = [];
+  private static $ancestorReleaseIndex = 0;
+  private static $ancestorReleaseActive = false;
+
   private $root: TemplateInstance | null = null;
   private $meta?: TemplateMeta;
   private $ready = false;
@@ -291,6 +296,14 @@ export class TemplateElement extends HTMLElement {
   private $hasMounted = false;
   private $deferredSSR = false;
   private $activatingDeferredSSR = false;
+  declare private $deferredAncestor: TemplateElement | undefined;
+  declare private $pendingAncestor: Element | undefined;
+  declare private $deferredDescendants: TemplateElement[] | undefined;
+  declare private $deferredByAncestor: boolean | undefined;
+  declare private $ancestorBoundaryState:
+    | Record<string, unknown>
+    | undefined;
+  declare private $hasAncestorBoundaryState: boolean | undefined;
   /** True once a repeat produced an SSR item scope whose collection state is
    *  absent on the client. Only these instances need the per-binding
    *  scope-known walk in `$updateBindings`; authored components never set this,
@@ -364,6 +377,14 @@ export class TemplateElement extends HTMLElement {
     }
     this.$meta = meta;
     if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
+    const ancestor = this.$nearestHydrationBarrier();
+    if (ancestor) {
+      this.$deferredByAncestor = true;
+      this.$ancestorBoundaryState = state;
+      this.$hasAncestorBoundaryState = true;
+      this.$registerWithHydrationBarrier(ancestor);
+      return ACTIVATION_ACTIVATED;
+    }
     this.$activatingDeferredSSR = true;
     try {
       this.$activateDeferredSSR(state);
@@ -375,7 +396,12 @@ export class TemplateElement extends HTMLElement {
 
   /** Clear element-owned streaming deferral after a fatal stream failure. */
   [STREAMING_BOUNDARY_ABANDON](): void {
+    this.$detachDeferredAncestor();
+    this.$abandonDeferredDescendants();
     this.$deferredSSR = false;
+    this.$deferredByAncestor = undefined;
+    this.$ancestorBoundaryState = undefined;
+    this.$hasAncestorBoundaryState = undefined;
     this.$activatingDeferredSSR = false;
     this.$ready = false;
     this.$preReadyWrites = null;
@@ -404,9 +430,20 @@ export class TemplateElement extends HTMLElement {
 
   connectedCallback(): void {
     const tag = this.tagName.toLowerCase();
+    this.$adoptPendingDescendants();
 
     if (this.$deferredSSR) {
       this.$ready = true;
+      if (this.$deferredByAncestor) {
+        const ancestor = this.$nearestHydrationBarrier();
+        if (ancestor) {
+          this.$registerWithHydrationBarrier(ancestor);
+          return;
+        }
+        this.$detachDeferredAncestor();
+        this.$releaseAncestorBarrier();
+        return;
+      }
       this.$didDeferSSRHydration();
       return;
     }
@@ -526,14 +563,27 @@ export class TemplateElement extends HTMLElement {
     if (
       isSSR &&
       !forceSSR &&
-      !reconnecting &&
-      this.$shouldDeferSSRHydration()
+      !reconnecting
     ) {
-      this.$meta = meta;
-      this.$deferredSSR = true;
-      this.$ready = true;
-      this.$didDeferSSRHydration();
-      return;
+      const ancestor = this.$nearestHydrationBarrier();
+      if (ancestor) {
+        this.$meta = meta;
+        this.$deferredSSR = true;
+        this.$deferredByAncestor = true;
+        this.$ready = true;
+        this.$primeSSRStateForDeferral();
+        this.$registerWithHydrationBarrier(ancestor);
+        return;
+      }
+      if (!this.$shouldDeferSSRHydration(meta)) {
+        // Continue into ordinary eager hydration below.
+      } else {
+        this.$meta = meta;
+        this.$deferredSSR = true;
+        this.$ready = true;
+        this.$didDeferSSRHydration();
+        return;
+      }
     }
 
     hydrationStart();
@@ -601,13 +651,14 @@ export class TemplateElement extends HTMLElement {
         this.$appendStagedChildren(root, clientRoot);
         this.$root.container = root as ParentNode & Node;
       }
-      this.$notifyHydrated();
+      this.$finishHydration();
     } finally {
       hydrationEnd();
     }
   }
 
   disconnectedCallback(): void {
+    this.$detachDeferredAncestor();
     // Schedule teardown on microtask — if the element is re-connected
     // before then (e.g. repeat reconciliation), skip the cleanup.
     if (this.$root) {
@@ -624,7 +675,12 @@ export class TemplateElement extends HTMLElement {
    */
   $destroy(): void {
     if (!this.$root) {
+      this.$detachDeferredAncestor();
+      this.$abandonDeferredDescendants();
       this.$deferredSSR = false;
+      this.$deferredByAncestor = undefined;
+      this.$ancestorBoundaryState = undefined;
+      this.$hasAncestorBoundaryState = undefined;
       this.$ready = false;
       this.$hasUnknownScopes = false;
       if (this.$deferredWrites) this.$deferredWrites = undefined;
@@ -731,12 +787,189 @@ export class TemplateElement extends HTMLElement {
    * Compiler-owned static hosts override this to retain their existing
    * dormant-until-state-write behavior.
    */
-  protected $shouldDeferSSRHydration(): boolean {
+  protected $shouldDeferSSRHydration(_meta?: TemplateMeta): boolean {
     return false;
   }
 
   /** Respond after an SSR instance enters or reconnects in deferred mode. */
   protected $didDeferSSRHydration(): void {
+  }
+
+  /** Retain boundary-local state when a streamed child remains visibility-deferred. */
+  protected $didDeferStreamedSSRHydration(
+    _state: Record<string, unknown> | undefined,
+  ): void {
+    this.$didDeferSSRHydration();
+  }
+
+  /** Return this instance's compiled component metadata when available. */
+  protected $currentTemplateMetadata(): TemplateMeta | undefined {
+    return this.$meta ?? this.$templateMeta();
+  }
+
+  private $nearestHydrationBarrier(): Element | undefined {
+    let current: Element = this;
+    while (true) {
+      let parent: Element | null =
+        current.assignedSlot ?? current.parentElement;
+      if (!parent) {
+        const getRootNode = (
+          current as Element & { getRootNode?: () => Node }
+        ).getRootNode;
+        const root = typeof getRootNode === 'function'
+          ? getRootNode.call(current)
+          : null;
+        parent = typeof ShadowRoot !== 'undefined' &&
+          root instanceof ShadowRoot
+          ? root.host
+          : null;
+      }
+      if (!parent) return undefined;
+      if (parent instanceof TemplateElement) {
+        const parentMeta = parent.$meta ?? parent.$templateMeta();
+        if (parentMeta?.th) {
+          current = parent;
+          continue;
+        }
+        if (parent.$deferredSSR || !parent.$hydrated) return parent;
+      } else {
+        const parentMeta = getTemplate(parent.tagName.toLowerCase());
+        if (parentMeta && !parentMeta.th) return parent;
+      }
+      current = parent;
+    }
+  }
+
+  private $registerWithHydrationBarrier(ancestor: Element): void {
+    if (ancestor instanceof TemplateElement) {
+      ancestor.$registerDeferredDescendant(this);
+      return;
+    }
+
+    this.$detachDeferredAncestor();
+    this.$pendingAncestor = ancestor;
+    const descendants = pendingAncestorDescendants.get(ancestor);
+    if (descendants) {
+      descendants.push(this);
+    } else {
+      pendingAncestorDescendants.set(ancestor, [this]);
+    }
+  }
+
+  private $adoptPendingDescendants(): void {
+    const descendants = pendingAncestorDescendants.get(this);
+    if (!descendants) return;
+    pendingAncestorDescendants.delete(this);
+    for (let i = 0; i < descendants.length; i++) {
+      const descendant = descendants[i];
+      if (descendant.$pendingAncestor !== this) continue;
+      descendant.$pendingAncestor = undefined;
+      if (descendant.isConnected) this.$registerDeferredDescendant(descendant);
+    }
+  }
+
+  private $registerDeferredDescendant(descendant: TemplateElement): void {
+    if (descendant.$deferredAncestor === this) return;
+    descendant.$detachDeferredAncestor();
+    descendant.$deferredAncestor = this;
+    (this.$deferredDescendants ??= []).push(descendant);
+  }
+
+  private $detachDeferredAncestor(): void {
+    const pendingAncestor = this.$pendingAncestor;
+    if (pendingAncestor) {
+      this.$pendingAncestor = undefined;
+      const pending = pendingAncestorDescendants.get(pendingAncestor);
+      if (pending) {
+        const pendingIndex = pending.indexOf(this);
+        if (pendingIndex >= 0) pending.splice(pendingIndex, 1);
+        if (pending.length === 0) {
+          pendingAncestorDescendants.delete(pendingAncestor);
+        }
+      }
+    }
+
+    const ancestor = this.$deferredAncestor;
+    if (!ancestor) return;
+    this.$deferredAncestor = undefined;
+    const descendants = ancestor.$deferredDescendants;
+    if (!descendants) return;
+    const index = descendants.indexOf(this);
+    if (index >= 0) descendants.splice(index, 1);
+    if (descendants.length === 0) ancestor.$deferredDescendants = undefined;
+  }
+
+  private $releaseDeferredDescendants(): void {
+    const descendants = this.$deferredDescendants;
+    if (!descendants) return;
+    this.$deferredDescendants = undefined;
+    const queue = TemplateElement.$ancestorReleaseQueue;
+    for (let i = 0; i < descendants.length; i++) {
+      const descendant = descendants[i];
+      if (descendant.$deferredAncestor !== this) continue;
+      descendant.$deferredAncestor = undefined;
+      queue.push(descendant);
+    }
+    if (TemplateElement.$ancestorReleaseActive) return;
+
+    TemplateElement.$ancestorReleaseActive = true;
+    let errors: unknown[] | undefined;
+    try {
+      while (TemplateElement.$ancestorReleaseIndex < queue.length) {
+        const descendant = queue[TemplateElement.$ancestorReleaseIndex];
+        TemplateElement.$ancestorReleaseIndex++;
+        try {
+          descendant.$releaseAncestorBarrier();
+        } catch (error) {
+          (errors ??= []).push(error);
+        }
+      }
+    } finally {
+      queue.length = 0;
+      TemplateElement.$ancestorReleaseIndex = 0;
+      TemplateElement.$ancestorReleaseActive = false;
+    }
+    if (errors) {
+      if (errors.length === 1) throw errors[0];
+      throw new AggregateError(
+        errors,
+        'multiple deferred descendants failed to hydrate',
+      );
+    }
+  }
+
+  private $releaseAncestorBarrier(): void {
+    if (!this.$deferredByAncestor || !this.isConnected) return;
+    this.$deferredByAncestor = undefined;
+    const hasBoundaryState = this.$hasAncestorBoundaryState === true;
+    const boundaryState = this.$ancestorBoundaryState;
+    this.$hasAncestorBoundaryState = undefined;
+    this.$ancestorBoundaryState = undefined;
+    const meta = this.$meta;
+    if (meta && this.$shouldDeferSSRHydration(meta)) {
+      if (hasBoundaryState) {
+        this.$didDeferStreamedSSRHydration(boundaryState);
+      } else {
+        this.$didDeferSSRHydration();
+      }
+      return;
+    }
+    if (hasBoundaryState) {
+      this.$activateDeferredSSRFromBoundary(boundaryState);
+    } else {
+      this.$activateDeferredSSR();
+    }
+  }
+
+  private $abandonDeferredDescendants(): void {
+    const descendants = this.$deferredDescendants;
+    if (!descendants) return;
+    this.$deferredDescendants = undefined;
+    for (let i = 0; i < descendants.length; i++) {
+      if (descendants[i].$deferredAncestor === this) {
+        descendants[i].$deferredAncestor = undefined;
+      }
+    }
   }
 
   /**
@@ -837,6 +1070,30 @@ export class TemplateElement extends HTMLElement {
     // retry of a lifecycle that has already been entered.
     this.$hasMounted = true;
     this.hydratedCallback();
+  }
+
+  private $finishHydration(): void {
+    let callbackFailed = false;
+    let callbackError: unknown;
+    try {
+      this.$notifyHydrated();
+    } catch (error) {
+      callbackFailed = true;
+      callbackError = error;
+    }
+
+    try {
+      this.$releaseDeferredDescendants();
+    } catch (releaseError) {
+      if (callbackFailed) {
+        throw new AggregateError(
+          [callbackError, releaseError],
+          'component callback and deferred descendant hydration failed',
+        );
+      }
+      throw releaseError;
+    }
+    if (callbackFailed) throw callbackError;
   }
 
   /** Decide whether hidden template state should be initialized from SSR state. */

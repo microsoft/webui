@@ -1,3 +1,4 @@
+<template w-hydrate="lazy">
 <button class="replace" type="button" @click="{replaceItems()}">Replace</button>
 <button class="toggle-summary" type="button" @click="{toggleSummary()}">Toggle summary</button>
 <if condition="showSummary">
@@ -18,3 +19,4 @@
     <span class="sparse-item" data-value="{{value}}">{{value}}</span>
   </for>
 </div>
+</template>

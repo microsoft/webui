@@ -96,8 +96,16 @@ pub(crate) fn parse_to_protocol(
         ParserPluginArtifacts::None => Vec::new(),
         ParserPluginArtifacts::ComponentTemplates(templates) => templates,
     };
+    let component_render_css = parser.component_registry().render_policy_css(
+        parser
+            .component_registry()
+            .get_all()
+            .filter(|component| parser.has_fragment(&component.tag_name))
+            .map(|component| component.tag_name.as_str()),
+    );
 
     let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+    protocol.component_render_css = component_render_css;
     let projection = merge_projection_manifests(projection_manifests)?;
     protocol.initial_state_strategy = if projection.is_some() {
         InitialStateStrategy::Components as i32
@@ -323,5 +331,43 @@ mod tests {
         assert!(component.hydration_keys.is_empty());
         assert_eq!(component.navigation_keys, ["name"]);
         assert!(component.template_json.contains(r#""th":1"#));
+    }
+
+    #[test]
+    fn parse_to_protocol_preserves_lazy_render_policy() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><head></head><body><my-card></my-card></body></html>".to_string(),
+            ),
+            (
+                "my-card.html".to_string(),
+                concat!(
+                    r#"<template w-render="lazy" "#,
+                    r#"w-reserve-block-size="18rem"><p>{{name}}</p></template>"#,
+                )
+                .to_string(),
+            ),
+            (
+                "unused-card.html".to_string(),
+                concat!(
+                    r#"<template w-render="lazy" "#,
+                    r#"w-reserve-block-size="99px"><p>unused</p></template>"#,
+                )
+                .to_string(),
+            ),
+            ("my-card.ts".to_string(), "class MyCard {}".to_string()),
+        ]);
+
+        let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        let component = protocol.components.get("my-card").unwrap();
+        assert!(component.template_json.contains(r#""wp":2"#));
+        assert_eq!(
+            protocol.component_render_css,
+            concat!(
+                r#"my-card:not([w-render="eager"]){content-visibility:auto;"#,
+                "contain-intrinsic-block-size:auto 18rem;}",
+            )
+        );
     }
 }

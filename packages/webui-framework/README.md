@@ -108,33 +108,62 @@ lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
 
-### Component-level hydration strategy
+### Offscreen work reduction
 
-For components repeated beyond the initial viewport, import the optional entry
-once before component modules:
+For components repeated beyond the initial viewport, put the complete policy on
+the component template:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+>
+  <!-- Component content -->
+</template>
+```
+
+`w-render="lazy"` combines visibility-deferred hydration with the browser's
+`content-visibility: auto` rendering deferral. The reservation is the typical
+rendered block size of one instance; WebUI emits it as
+`contain-intrinsic-block-size: auto 18rem` before first layout. The SSR DOM
+remains present, searchable, and accessible while the browser skips offscreen
+style, layout, and paint work. The generated policy applies to instances in the
+document, Light DOM, and standard Shadow DOM components. A `--dom=light`
+component inside an authored shadow root needs the `style` CSS strategy or an
+equivalent rule in that root's stylesheet because document styles cannot cross
+the boundary.
+
+Import the optional coordinator entry once before component modules:
 
 ```ts
-import '@microsoft/webui-framework/visible-hydration.js';
+import '@microsoft/webui-framework/lazy-hydration.js';
 import './product-card.js';
 ```
 
-```ts
-export class ProductCard extends WebUIElement {
-  static override readonly hydration = 'visible';
-}
-
-ProductCard.define('product-card');
-```
-
-Hydration is eager by default. Use `w-hydrate="eager"` for an above-the-fold
-instance of a visible-hydrated class:
+Use hydration-only deferral when rendering containment is not safe for a
+component:
 
 ```html
-<product-card w-hydrate="eager"></product-card>
+<template w-hydrate="lazy">
+  <!-- Component content -->
+</template>
 ```
 
-Keep small, fully visible groups eager. See
-[Visible Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#visible-hydration).
+Components are eager by default. Instance attributes provide explicit escape
+hatches:
+
+```html
+<!-- Keep rendering deferral, but hydrate this instance immediately. -->
+<product-card w-hydrate="eager"></product-card>
+
+<!-- Disable both rendering and hydration deferral for this instance. -->
+<product-card w-render="eager"></product-card>
+```
+
+Client-created instances and reconnects after a successful mount remain eager.
+If the optional entry or `IntersectionObserver` is unavailable, hydration falls
+back to eager; `content-visibility` remains browser-managed. See
+[Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
 
 ### Build with the WebUI plugin
 
@@ -251,7 +280,6 @@ Base class for framework components.
 
 | Member | Purpose |
 |--------|---------|
-| `static hydration` | Set to `'visible'` to defer SSR instances near the viewport (requires the optional `visible-hydration.js` entry) |
 | `static define(tagName)` | Register the class as a custom element |
 | `protected hydratedCallback()` | Run once after the first successful hydration or client mount |
 | `$emit(name, detail?)` | Dispatch a bubbling, composed `CustomEvent` |

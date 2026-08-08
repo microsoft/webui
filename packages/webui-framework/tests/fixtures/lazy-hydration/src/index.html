@@ -6,14 +6,20 @@
   <title>Lazy Hydration Fixture</title>
   <style>
     body {
-      min-height: 7000px;
+      min-height: 9000px;
       margin: 0;
     }
 
     test-lazy-item,
     test-lazy-parent,
     test-lazy-list,
-    test-lazy-image {
+    test-lazy-image,
+    test-offscreen-item,
+    test-late-offscreen-item,
+    test-barrier-parent,
+    test-streamed-lazy-parent,
+    test-shadow-policy-parent,
+    test-static-parent {
       display: block;
     }
 
@@ -71,6 +77,46 @@
       top: 6200px;
     }
 
+    #render-offscreen,
+    #render-hydrate-eager,
+    #render-eager {
+      position: absolute;
+      top: 6600px;
+    }
+
+    #render-hydrate-eager {
+      top: 6800px;
+    }
+
+    #render-eager {
+      top: 7000px;
+    }
+
+    #render-native-near {
+      position: absolute;
+      top: 1200px;
+    }
+
+    #barrier-parent {
+      position: absolute;
+      top: 7400px;
+    }
+
+    #static-parent {
+      position: absolute;
+      top: 7800px;
+    }
+
+    #streamed-nested {
+      position: absolute;
+      top: 8200px;
+    }
+
+    #shadow-policy-parent {
+      position: absolute;
+      top: 8500px;
+    }
+
     #nested-scroller {
       position: absolute;
       top: 100px;
@@ -108,5 +154,34 @@
   <test-lazy-image id="early-image"></test-lazy-image>
   <test-lazy-image id="early-image-error"></test-lazy-image>
   <test-lazy-item id="streamed" data-ws label="Streamed SSR" count="1"></test-lazy-item>
+  <test-offscreen-item id="render-offscreen" label="Rendered offscreen" count="0"></test-offscreen-item>
+  <test-offscreen-item
+    id="render-hydrate-eager"
+    w-hydrate="eager"
+    label="Hydrate eager"
+    count="0"
+  ></test-offscreen-item>
+  <test-offscreen-item
+    id="render-eager"
+    w-render="eager"
+    label="Render eager"
+    count="0"
+  ></test-offscreen-item>
+  <test-late-offscreen-item
+    id="render-native-near"
+    label="Native near"
+    count="0"
+  ></test-late-offscreen-item>
+  <test-barrier-parent id="barrier-parent"></test-barrier-parent>
+  <test-streamed-lazy-parent
+    id="streamed-nested"
+  ></test-streamed-lazy-parent>
+  <test-shadow-policy-parent
+    id="shadow-policy-parent"
+  ></test-shadow-policy-parent>
+  <test-static-parent
+    id="static-parent"
+    label="Static child"
+  ></test-static-parent>
 </body>
 </html>

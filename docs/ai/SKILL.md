@@ -599,25 +599,34 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
-For a component with many initially offscreen SSR instances, add
-`static override readonly hydration = 'visible'` and import the optional
-`@microsoft/webui-framework/visible-hydration.js` entry once before component
-definitions:
+For a component with many initially offscreen SSR instances, put the complete
+policy on its root template:
 
-```typescript
-import '@microsoft/webui-framework/visible-hydration.js';
-import './feed-item.js';
-
-export class FeedItem extends WebUIElement {
-  static override readonly hydration = 'visible';
-}
+```html
+<template w-render="lazy" w-reserve-block-size="72px">
+  <!-- Component content -->
+</template>
 ```
 
-Use `w-hydrate="eager"` for priority instances. Use `hydratedCallback()` for
-work that requires bindings or refs. Missing browser support falls back to eager
-hydration. Visible hydration does not delay image fetching; use native
-`loading="lazy"` and reconcile an already-complete `w-ref` image from
-`hydratedCallback()` when component state depends on `@load` or `@error`.
+This combines visibility-deferred hydration with `content-visibility: auto`.
+The reservation is required and should approximate one instance's normal block
+size. Use `<template w-hydrate="lazy">` only when hydration should defer but
+rendering containment is unsafe.
+
+Import the optional coordinator once before component definitions:
+
+```typescript
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './feed-item.js';
+```
+
+On an instance, `w-hydrate="eager"` keeps rendering deferral but hydrates
+immediately; `w-render="eager"` disables both. Use `hydratedCallback()` for work
+that requires bindings or refs. Missing coordinator or browser support falls
+back to eager hydration. Visibility-deferred hydration does not delay image
+fetching; use native `loading="lazy"` and reconcile an already-complete `w-ref`
+image from `hydratedCallback()` when component state depends on `@load` or
+`@error`.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
@@ -627,7 +636,6 @@ hydration. Visible hydration does not delay image fetching; use native
 
 | Method / property | Description |
 |---|---|
-| `static override readonly hydration = 'visible'` | Defer SSR instances within 200px of visibility until the optional `visible-hydration.js` coordinator activates them |
 | `this.$emit(name, detail?)` | Dispatch a bubbling CustomEvent |
 | `this.$update()` | Force a reactive update cycle |
 | `this.$flushUpdates()` | Synchronously flush pending updates |
@@ -677,7 +685,7 @@ mismatch` warning (development-only; stripped from production via
 If the value must appear in the first render, put it in the SSR state JSON.
 Otherwise assign it in `hydratedCallback()`. On buffered SSR and client-created
 mounts, `super.connectedCallback()` hydrates synchronously, but streamed hosts
-and `hydration = 'visible'` hosts (without `w-hydrate="eager"`) can return
+and visibility-policy hosts (without an eager instance override) can return
 while still deferred.
 `hydratedCallback()` is the cross-mode signal: it runs synchronously exactly
 once after the first successful hydration or mount, and reconnects or callback

@@ -58,23 +58,29 @@ Object.defineProperty(globalThis, 'window', {
 
 const { WebUIElement } = await import('./element.js');
 const {
-  registerVisibleHydrationCoordinator,
+  registerLazyHydrationCoordinator,
   __resetLazyHydrationContractForTests,
-} = await import('./lazy-hydration.js');
-type LazyHydrationTarget = import('./lazy-hydration.js').LazyHydrationTarget;
+} = await import('./lazy-hydration-contract.js');
+type LazyHydrationTarget = import('./lazy-hydration-contract.js').LazyHydrationTarget;
+type LazyHydrationMode = import('./lazy-hydration-contract.js').LazyHydrationMode;
+type TemplateMeta = import('./template.js').TemplateMeta;
 
 /** A no-op coordinator implementation, overridable per test. */
 function fakeCoordinator(
   overrides: Partial<{
-    supportsVisibleHydration(): boolean;
-    observe(target: LazyHydrationTarget): void;
-    observeStreamed(target: LazyHydrationTarget, state: Record<string, unknown> | undefined): void;
+    supportsLazyHydration(): boolean;
+    observe(target: LazyHydrationTarget, mode: LazyHydrationMode): void;
+    observeStreamed(
+      target: LazyHydrationTarget,
+      state: Record<string, unknown> | undefined,
+      mode: LazyHydrationMode,
+    ): void;
     disconnect(target: LazyHydrationTarget): void;
     isStreamedActivation(target: LazyHydrationTarget): boolean;
   }> = {},
 ) {
   return {
-    supportsVisibleHydration: () => true,
+    supportsLazyHydration: () => true,
     observe: () => {},
     observeStreamed: () => {},
     disconnect: () => {},
@@ -84,8 +90,12 @@ function fakeCoordinator(
 }
 
 /** Bypass the `protected` modifier the same way `template-element.test.ts` does. */
-function shouldDefer(el: object): boolean {
-  return (el as unknown as { $shouldDeferSSRHydration(): boolean }).$shouldDeferSSRHydration();
+function shouldDefer(el: object, wp?: 1 | 2): boolean {
+  return (
+    el as unknown as {
+      $shouldDeferSSRHydration(meta: TemplateMeta): boolean;
+    }
+  ).$shouldDeferSSRHydration({ h: '', wp });
 }
 
 function withConsoleWarn<T>(run: (calls: unknown[][]) => T): T {
@@ -101,18 +111,10 @@ function withConsoleWarn<T>(run: (calls: unknown[][]) => T): T {
   }
 }
 
-describe('WebUIElement.hydration — eager default', () => {
-  test('rejects unsupported hydration strategies at type-check time', () => {
-    // @ts-expect-error "visibel" is not a supported hydration strategy.
-    class InvalidItem extends WebUIElement {
-      static override readonly hydration = 'visibel';
-    }
-    assert.equal(InvalidItem.hydration, 'visibel');
-  });
-
+describe('WebUIElement — eager default', () => {
   test('an ordinary component never defers, even with a coordinator installed', () => {
     __resetLazyHydrationContractForTests();
-    registerVisibleHydrationCoordinator(fakeCoordinator());
+    registerLazyHydrationCoordinator(fakeCoordinator());
 
     class EagerItem extends WebUIElement {}
     const el = new EagerItem();
@@ -122,7 +124,7 @@ describe('WebUIElement.hydration — eager default', () => {
   test('an ordinary component skips coordinator disconnect bookkeeping', () => {
     __resetLazyHydrationContractForTests();
     let disconnectCalls = 0;
-    registerVisibleHydrationCoordinator(
+    registerLazyHydrationCoordinator(
       fakeCoordinator({
         disconnect: () => {
           disconnectCalls++;
@@ -137,31 +139,36 @@ describe('WebUIElement.hydration — eager default', () => {
   });
 });
 
-describe('WebUIElement.hydration — "visible" opt-in', () => {
-  test('defers once the optional coordinator is installed and supported', () => {
+describe('WebUIElement — compiler-owned work policy', () => {
+  test('defers lazy hydration once the optional coordinator is installed and supported', () => {
     __resetLazyHydrationContractForTests();
-    registerVisibleHydrationCoordinator(fakeCoordinator());
+    registerLazyHydrationCoordinator(fakeCoordinator());
 
-    class VisibleItem extends WebUIElement {
-      static override readonly hydration = 'visible';
-    }
-    const el = new VisibleItem();
-    assert.equal(shouldDefer(el), true);
+    class LazyItem extends WebUIElement {}
+    const el = new LazyItem();
+    assert.equal(shouldDefer(el, 1), true);
+  });
+
+  test('defers the combined offscreen policy through the same coordinator', () => {
+    __resetLazyHydrationContractForTests();
+    registerLazyHydrationCoordinator(fakeCoordinator());
+
+    class OffscreenItem extends WebUIElement {}
+    const el = new OffscreenItem();
+    assert.equal(shouldDefer(el, 2), true);
   });
 
   test('falls back to eager, without warning, when the coordinator reports no browser support', () => {
     __resetLazyHydrationContractForTests();
-    registerVisibleHydrationCoordinator(
-      fakeCoordinator({ supportsVisibleHydration: () => false }),
+    registerLazyHydrationCoordinator(
+      fakeCoordinator({ supportsLazyHydration: () => false }),
     );
 
-    class VisibleItem extends WebUIElement {
-      static override readonly hydration = 'visible';
-    }
+    class LazyItem extends WebUIElement {}
 
     withConsoleWarn((calls) => {
-      const el = new VisibleItem();
-      assert.equal(shouldDefer(el), false);
+      const el = new LazyItem();
+      assert.equal(shouldDefer(el, 1), false);
       assert.equal(calls.length, 0, 'missing IntersectionObserver support is an expected fallback, not a misconfiguration');
     });
   });
@@ -169,18 +176,16 @@ describe('WebUIElement.hydration — "visible" opt-in', () => {
   test('falls back to eager and warns once when the optional entry was never installed', () => {
     __resetLazyHydrationContractForTests();
 
-    class VisibleItem extends WebUIElement {
-      static override readonly hydration = 'visible';
-    }
+    class LazyItem extends WebUIElement {}
 
     withConsoleWarn((calls) => {
-      const first = new VisibleItem();
-      assert.equal(shouldDefer(first), false);
+      const first = new LazyItem();
+      assert.equal(shouldDefer(first, 1), false);
       assert.equal(calls.length, 1, 'a missing optional entry warns in development');
-      assert.match(String(calls[0][0]), /visible-hydration\.js/);
+      assert.match(String(calls[0][0]), /lazy-hydration\.js/);
 
-      const second = new VisibleItem();
-      assert.equal(shouldDefer(second), false);
+      const second = new LazyItem();
+      assert.equal(shouldDefer(second, 1), false);
       assert.equal(calls.length, 1, 'the missing-entry warning fires at most once per session');
     });
   });
@@ -189,7 +194,7 @@ describe('WebUIElement.hydration — "visible" opt-in', () => {
 describe('WebUIElement — w-hydrate="eager" SSR escape hatch', () => {
   test('forces synchronous hydration for one instance, without touching the coordinator', () => {
     __resetLazyHydrationContractForTests();
-    registerVisibleHydrationCoordinator(
+    registerLazyHydrationCoordinator(
       fakeCoordinator({
         observe: () => {
           throw new Error('must not observe an eager-escaped instance');
@@ -197,39 +202,43 @@ describe('WebUIElement — w-hydrate="eager" SSR escape hatch', () => {
       }),
     );
 
-    class VisibleItem extends WebUIElement {
-      static override readonly hydration = 'visible';
-    }
-    const el = new VisibleItem();
+    class LazyItem extends WebUIElement {}
+    const el = new LazyItem();
     (el as unknown as { setAttribute(n: string, v: string): void }).setAttribute('w-hydrate', 'eager');
-    assert.equal(shouldDefer(el), false);
+    assert.equal(shouldDefer(el, 1), false);
   });
 
   test('does not warn about a missing optional entry — the override makes eager intentional', () => {
     __resetLazyHydrationContractForTests();
 
-    class VisibleItem extends WebUIElement {
-      static override readonly hydration = 'visible';
-    }
-    const el = new VisibleItem();
+    class LazyItem extends WebUIElement {}
+    const el = new LazyItem();
     (el as unknown as { setAttribute(n: string, v: string): void }).setAttribute('w-hydrate', 'eager');
 
     withConsoleWarn((calls) => {
-      assert.equal(shouldDefer(el), false);
+      assert.equal(shouldDefer(el, 1), false);
       assert.equal(calls.length, 0);
     });
   });
 
   test('is ignored for any value other than the exact string "eager"', () => {
     __resetLazyHydrationContractForTests();
-    registerVisibleHydrationCoordinator(fakeCoordinator());
+    registerLazyHydrationCoordinator(fakeCoordinator());
 
-    class VisibleItem extends WebUIElement {
-      static override readonly hydration = 'visible';
-    }
-    const el = new VisibleItem();
+    class LazyItem extends WebUIElement {}
+    const el = new LazyItem();
     (el as unknown as { setAttribute(n: string, v: string): void }).setAttribute('w-hydrate', 'Eager');
-    assert.equal(shouldDefer(el), true, 'a near-miss value must not silently opt an instance out');
+    assert.equal(shouldDefer(el, 1), true, 'a near-miss value must not silently opt an instance out');
+  });
+
+  test('w-render="eager" disables the complete offscreen policy', () => {
+    __resetLazyHydrationContractForTests();
+    registerLazyHydrationCoordinator(fakeCoordinator());
+
+    class OffscreenItem extends WebUIElement {}
+    const el = new OffscreenItem();
+    el.setAttribute('w-render', 'eager');
+    assert.equal(shouldDefer(el, 2), false);
   });
 
   test('ordinary eager components never read the w-hydrate attribute', () => {
@@ -243,6 +252,6 @@ describe('WebUIElement — w-hydrate="eager" SSR escape hatch', () => {
       return null;
     };
     assert.equal(shouldDefer(el), false);
-    assert.equal(read, false, 'the static hydration check must short-circuit before any attribute lookup');
+    assert.equal(read, false, 'compiler metadata must short-circuit before any attribute lookup');
   });
 });

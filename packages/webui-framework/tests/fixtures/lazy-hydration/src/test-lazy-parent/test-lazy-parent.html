@@ -1,3 +1,5 @@
+<template w-hydrate="lazy">
 <section>
-  <test-lazy-item id="nested-child" label="{{label}}" count="0"></test-lazy-item>
+  <test-lazy-item id="nested-child" w-hydrate="eager" label="{{label}}" count="0"></test-lazy-item>
 </section>
+</template>

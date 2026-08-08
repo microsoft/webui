@@ -22,16 +22,15 @@ const FRAMEWORK_SRC = process.env.WEBUI_LAZY_HYDRATION_FRAMEWORK_SRC
   );
 
 export const TODO_TAG = 'bench-todo-item';
-export const ITEM_COUNTS = [10, 1_000] as const;
+export const ITEM_COUNTS = [10, 100, 1_000] as const;
 
 /**
  * Which bundle to produce. Coordinator inclusion is a build-time (static
- * import) decision, not a runtime flag: the `visible` bundle additionally
- * imports the optional `visible-hydration-entry.ts` before defining the
- * component with `static override readonly hydration = 'visible'`; the `eager` bundle
- * never references it.
+ * import) decision, not a runtime flag: the `lazy-hydrate` and `lazy-render` bundles
+ * import the optional `lazy-hydration-entry.ts`; the `eager` bundle never
+ * references it. Compiler metadata in the page selects the runtime policy.
  */
-export type LazyBenchMode = 'eager' | 'visible';
+export type LazyBenchMode = 'eager' | 'lazy-hydrate' | 'lazy-render';
 
 const TODO_TEMPLATE = {
   h: '<article><input type="checkbox"><span></span><small></small><strong></strong><time></time><button type="button">Toggle</button><button type="button">Delete</button></article>',
@@ -51,12 +50,9 @@ const TODO_TEMPLATE = {
 } as const;
 
 function entrySource(mode: LazyBenchMode): string {
-  const optionalImport = mode === 'visible'
-    ? "import './visible-hydration-entry.js';\n"
-    : '';
-  const hydrationField = mode === 'visible'
-    ? "  static override readonly hydration = 'visible';\n\n"
-    : '';
+  const optionalImport = mode === 'eager'
+    ? ''
+    : "import './lazy-hydration-entry.js';\n";
   return `
 ${optionalImport}import { WebUIElement } from './index.js';
 
@@ -76,7 +72,7 @@ function noteHydration(el, started) {
 }
 
 class BenchTodoItem extends WebUIElement {
-${hydrationField}  connectedCallback() {
+  connectedCallback() {
     const started = performance.now();
     super.connectedCallback();
     noteHydration(this, started);
@@ -147,9 +143,12 @@ export async function buildLazyFixture(mode: LazyBenchMode): Promise<LazyFixture
   };
 }
 
-export function lazyBaseHtml(): string {
+export function lazyBaseHtml(mode: LazyBenchMode): string {
+  const template = mode === 'eager'
+    ? TODO_TEMPLATE
+    : { ...TODO_TEMPLATE, wp: mode === 'lazy-hydrate' ? 1 : 2 };
   const bootstrap = {
-    templates: { [TODO_TAG]: TODO_TEMPLATE },
+    templates: { [TODO_TAG]: template },
     state: {
       title: 'Todo',
       description: 'A representative task with several bound fields',
@@ -157,10 +156,14 @@ export function lazyBaseHtml(): string {
       due: '2030-01-01',
     },
   };
+  const renderPolicy = mode === 'lazy-render'
+    ? `${TODO_TAG}:not([w-render="eager"]){content-visibility:auto;`
+      + 'contain-intrinsic-block-size:auto 72px}'
+    : '';
   return '<!doctype html><html><head><meta charset="utf-8">'
     + '<style>body{margin:0}bench-todo-item{display:block;height:72px}'
     + 'article{box-sizing:border-box;height:68px;padding:8px;border-bottom:1px solid #ccc}'
-    + 'span,small,strong,time{display:inline-block;margin-inline:8px}</style>'
+    + `span,small,strong,time{display:inline-block;margin-inline:8px}${renderPolicy}</style>`
     + '</head><body>'
     + `<script id="webui-data" type="application/json">${JSON.stringify(bootstrap)}</script>`
     + '</body></html>';

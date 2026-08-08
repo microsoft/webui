@@ -12,6 +12,7 @@ async function installControllableObserver(page: Page): Promise<void> {
     const observed = window as unknown as {
       __triggerLazyIntersections?: (targets: Element[]) => void;
       __settleLazyIntersections?: () => void;
+      __isLazyObserved?: (target: Element) => boolean;
     };
     const targets = new Set<Element>();
     let notify: IntersectionObserverCallback | undefined;
@@ -38,6 +39,8 @@ async function installControllableObserver(page: Page): Promise<void> {
           })) as IntersectionObserverEntry[];
           notify?.(entries, this as unknown as IntersectionObserver);
         };
+        observed.__isLazyObserved = (target: Element): boolean =>
+          targets.has(target);
       }
 
       observe(target: Element): void {
@@ -122,11 +125,27 @@ test.describe('component lazy hydration', () => {
         ).__allOffscreenCompleteCount ?? 0
       )
     ).toBe(1);
-    // Only lazy roots should still be inert here — the `w-hydrate="eager"`
-    // instance mounts synchronously regardless of visibility and is excluded.
-    await expect(
-      page.locator('[data-hydrated]:not(#offscreen-eager-escape)'),
-    ).toHaveCount(0);
+    // Hydration-only roots remain controlled by the mocked observer. Complete
+    // rendering-policy roots may also follow the browser's independent native
+    // content-visibility relevance signal.
+    const unexpectedlyHydrated = await page.evaluate((ids) =>
+      ids.filter((id) =>
+        document.getElementById(id)?.hasAttribute('data-hydrated'),
+      ), [
+        'visible',
+        'near',
+        'offscreen',
+        'scrolled',
+        'nested',
+        'reconnect',
+        'list-root',
+        'early-image',
+        'early-image-error',
+        'streamed',
+        'barrier-parent',
+        'streamed-nested',
+      ]);
+    expect(unexpectedlyHydrated).toEqual([]);
   });
 
   test('keeps SSR visible and hydrates only the viewport plus 200px margin', async ({ page }) => {
@@ -297,6 +316,17 @@ test.describe('component lazy hydration', () => {
   test('activates nested lazy components parent-first', async ({ page }) => {
     await page.goto(FIXTURE);
 
+    await expect(page.locator('#nested')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#nested-child')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await page.evaluate(() => {
+      if (window.__webui) delete window.__webui.state;
+    });
     await page.locator('#nested-child button').evaluate((button) => {
       (button as HTMLElement).click();
     });
@@ -307,6 +337,268 @@ test.describe('component lazy hydration', () => {
     expect(child).toBeGreaterThan(parent);
     await expect(page.locator('#nested')).toHaveAttribute('data-hydrated', '');
     await expect(page.locator('#nested-child')).toHaveAttribute('data-hydrated', '');
+    expect(
+      await page.locator('#nested-child').evaluate(
+        (element) => (element as HTMLElement & { note: string }).note,
+      ),
+    ).toBe('SSR note');
+  });
+
+  test('keeps streamed eager children behind a visible parent barrier', async ({ page }) => {
+    await page.goto(FIXTURE);
+
+    const boundary = await page.evaluate(() => {
+      const activate = Symbol.for('microsoft.webui.boundaryActivate');
+      const streamingMode = window.__enableStreamingModeForTest?.();
+      type BoundaryActivatable = HTMLElement & {
+        [key: symbol]: (state?: Record<string, unknown>) => number;
+      };
+      const parent = document.querySelector('#streamed-nested') as
+        BoundaryActivatable;
+      const child = parent.shadowRoot?.querySelector(
+        '#streamed-nested-child',
+      ) as BoundaryActivatable;
+      const boundaryState = { note: 'Streamed boundary note' };
+      parent.setAttribute('data-ws', 'test-boundary');
+      child.setAttribute('data-ws', 'test-boundary');
+      const hydratedBefore = [
+        parent.hasAttribute('data-hydrated'),
+        child.hasAttribute('data-hydrated'),
+      ];
+      const deferredBefore = [
+        (parent as unknown as { $deferredSSR: boolean }).$deferredSSR,
+        (child as unknown as { $deferredSSR: boolean }).$deferredSSR,
+      ];
+      const hadMarkers = [
+        parent.hasAttribute('data-ws'),
+        child.hasAttribute('data-ws'),
+      ];
+      const parentOutcome = parent[activate](boundaryState);
+      const hydratedAfterParent = [
+        parent.hasAttribute('data-hydrated'),
+        child.hasAttribute('data-hydrated'),
+      ];
+      const outcomes = [
+        parentOutcome,
+        child[activate](boundaryState),
+      ];
+      parent.removeAttribute('data-ws');
+      child.removeAttribute('data-ws');
+      if (window.__webui) delete window.__webui.state;
+      return {
+        deferredBefore,
+        hadMarkers,
+        hydratedBefore,
+        hydratedAfterParent,
+        hydratedAfter: [
+          parent.hasAttribute('data-hydrated'),
+          child.hasAttribute('data-hydrated'),
+        ],
+        outcomes,
+        streamingMode,
+      };
+    });
+
+    expect(boundary).toEqual({
+      deferredBefore: [true, true],
+      hadMarkers: [true, true],
+      hydratedBefore: [false, false],
+      hydratedAfterParent: [false, false],
+      hydratedAfter: [false, false],
+      outcomes: [1, 1],
+      streamingMode: true,
+    });
+    await expect(page.locator('#streamed-nested')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#streamed-nested-child')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await page.locator('#streamed-nested-child button').evaluate((button) => {
+      (button as HTMLElement).click();
+    });
+
+    const log = await page.evaluate(() => window.__lazyHydrationLog);
+    const parent = log?.indexOf('streamed-nested') ?? -1;
+    const child = log?.indexOf('streamed-nested-child') ?? -1;
+    expect(parent).toBeGreaterThanOrEqual(0);
+    expect(child).toBeGreaterThan(parent);
+    await expect(page.locator('#streamed-nested-child .count')).toHaveText('1');
+    expect(
+      await page.locator('#streamed-nested-child').evaluate(
+        (element) => (element as HTMLElement & { note: string }).note,
+      ),
+    ).toBe('Streamed boundary note');
+  });
+
+  test('releases every eager child when parent and sibling callbacks fail', async ({ page }) => {
+    await page.goto(FIXTURE);
+
+    await expect(page.locator('#barrier-parent')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#barrier-healthy-child')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await page.locator('#barrier-healthy-child button').evaluate((button) => {
+      (button as HTMLElement).click();
+    });
+
+    await expect(page.locator('#barrier-failing-child')).toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#barrier-healthy-child')).toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#barrier-healthy-child .count')).toHaveText('1');
+  });
+
+  test('applies the build-time offscreen policy and honors both eager escape hatches', async ({ page }) => {
+    await page.goto(FIXTURE);
+
+    await expect(page.locator('style[data-webui-render-policy]')).toHaveCount(1);
+    await expect(page.locator('#render-offscreen button')).toHaveAccessibleName(
+      'Rendered offscreen',
+    );
+    await expect(
+      page.locator('#render-offscreen').getByRole('status'),
+    ).toHaveText('0');
+    await expect(page.locator('#render-offscreen')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#render-hydrate-eager')).toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect(page.locator('#render-eager')).toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+
+    const styles = await page.evaluate(() => {
+      const offscreen = getComputedStyle(
+        document.querySelector('#render-offscreen')!,
+      );
+      const hydrateEager = getComputedStyle(
+        document.querySelector('#render-hydrate-eager')!,
+      );
+      const renderEager = getComputedStyle(
+        document.querySelector('#render-eager')!,
+      );
+      const shadowParent = document.querySelector(
+        '#shadow-policy-parent',
+      )?.shadowRoot;
+      const shadowOffscreen = getComputedStyle(
+        shadowParent?.querySelector('#shadow-render-offscreen')!,
+      );
+      const shadowEager = getComputedStyle(
+        shadowParent?.querySelector('#shadow-render-eager')!,
+      );
+      return {
+        offscreen: [
+          offscreen.contentVisibility,
+          offscreen.containIntrinsicBlockSize,
+        ],
+        hydrateEager: hydrateEager.contentVisibility,
+        renderEager: renderEager.contentVisibility,
+        shadowOffscreen: [
+          shadowOffscreen.contentVisibility,
+          shadowOffscreen.containIntrinsicBlockSize,
+        ],
+        shadowEager: shadowEager.contentVisibility,
+      };
+    });
+    expect(styles.offscreen).toEqual(['auto', 'auto 72px']);
+    expect(styles.hydrateEager).toBe('auto');
+    expect(styles.renderEager).toBe('visible');
+    expect(styles.shadowOffscreen).toEqual(['auto', 'auto 72px']);
+    expect(styles.shadowEager).toBe('visible');
+  });
+
+  test('uses native content-visibility relevance after initial observer classification', async ({ page }) => {
+    await page.goto(FIXTURE);
+    await expect(page.locator('#render-offscreen')).not.toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await expect.poll(() =>
+      page.evaluate(() =>
+        'ContentVisibilityAutoStateChangeEvent' in window
+      )
+    ).toBe(true);
+
+    await page.evaluate(() => window.scrollTo(0, 6_350));
+    await expect(page.locator('#render-offscreen')).toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await page.locator('#render-offscreen button').click();
+    await expect(page.locator('#render-offscreen .count')).toHaveText('1');
+  });
+
+  test('ignores bubbled content-visibility events from light DOM descendants', async ({ page }) => {
+    await installControllableObserver(page);
+    await page.goto(FIXTURE);
+
+    const result = await page.evaluate(() => {
+      const activateHost = document.querySelector('#offscreen');
+      const retainedHost = document.querySelector('#reconnect');
+      const isObserved = (
+        window as unknown as {
+          __isLazyObserved?: (target: Element) => boolean;
+        }
+      ).__isLazyObserved;
+      if (!activateHost || !retainedHost || !isObserved) {
+        throw new Error('lazy hydration probes are missing');
+      }
+      const dispatch = (host: Element, skipped: boolean): void => {
+        const child = document.createElement('span');
+        host.appendChild(child);
+        const event = new Event('contentvisibilityautostatechange', {
+          bubbles: true,
+        });
+        Object.defineProperty(event, 'skipped', { value: skipped });
+        child.dispatchEvent(event);
+      };
+      dispatch(activateHost, false);
+      dispatch(retainedHost, true);
+      return {
+        activated: activateHost.hasAttribute('data-hydrated'),
+        fallbackRetained: isObserved(retainedHost),
+      };
+    });
+
+    expect(result).toEqual({
+      activated: false,
+      fallbackRetained: true,
+    });
+  });
+
+  test('retains the observer fallback when native relevance predates definition', async ({ page }) => {
+    await page.goto(FIXTURE);
+    const host = page.locator('#render-native-near');
+    const button = host.locator('button');
+    expect(
+      await button.evaluate((element) =>
+        element.checkVisibility({ contentVisibilityAuto: true })
+      ),
+    ).toBe(true);
+
+    await page.evaluate(() => window.__defineLateOffscreenItem?.());
+    await expect(host).not.toHaveAttribute('data-hydrated', '');
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+
+    await page.evaluate(() => window.scrollTo(0, 400));
+    await expect(host).toHaveAttribute('data-hydrated', '');
   });
 
   test('activates observer targets through shadow roots parent-first', async ({ page }) => {
@@ -917,7 +1209,7 @@ test.describe('component lazy hydration', () => {
     // A missing IntersectionObserver is an expected, documented fallback on
     // older browsers — never a misconfiguration warning.
     expect(
-      warnings.filter((warning) => warning.includes('visible-hydration.js')),
+      warnings.filter((warning) => warning.includes('lazy-hydration.js')),
     ).toEqual([]);
   });
 
@@ -982,6 +1274,17 @@ test.describe('component lazy hydration', () => {
 });
 
 test.describe('w-hydrate="eager" SSR escape hatch', () => {
+  test('hydrates through a dormant compiler-owned parent', async ({ page }) => {
+    await page.goto(FIXTURE);
+
+    await expect(page.locator('#static-child')).toHaveAttribute(
+      'data-hydrated',
+      '',
+    );
+    await page.locator('#static-child button').click();
+    await expect(page.locator('#static-child .count')).toHaveText('1');
+  });
+
   test('hydrates synchronously despite being offscreen, while a normal visible sibling still defers', async ({ page }) => {
     await page.goto(FIXTURE);
 

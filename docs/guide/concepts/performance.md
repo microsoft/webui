@@ -129,31 +129,49 @@ instance for the server lifetime.
 **Browser state is client-facing.** Never put credentials, private tokens, or other secrets in state rendered to
 the browser.
 
-## Visible Hydration Showdown
+## Offscreen Work Reduction Showdown
 
-Visible hydration is intended for long lists where most instances start
-offscreen.
+The complete `<template w-render="lazy">` policy is intended for long
+lists where most instances start outside the browser's relevant region. The
+production Chromium matrix uses 30 timing/heap runs and five trace runs per
+cell. "Staged ready" adds initial render presentation to hydration readiness
+because the harness deliberately isolates those phases.
 
-| Mode | Items | CPU median | Ready median | Initially hydrated | Retained heap |
-|---|---:|---:|---:|---:|---:|
-| Eager | 10 | 1.20 ms | 1.70 ms | 10 | 366.9 KiB |
-| Visible | 10 | 1.40 ms | 25.10 ms | 10 | 412.3 KiB |
-| Eager | 1,000 | 9.90 ms | 27.00 ms | 1,000 | 1,470.1 KiB |
-| Visible | 1,000 | 5.10 ms | 29.50 ms | 13 | 774.0 KiB |
+| Items | Eager staged ready | `w-render="lazy"` staged ready | Render ready reduction | Hydration CPU reduction | Initially hydrated | Total retained heap reduction |
+|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 25.0 ms | 41.3 ms | 20% faster | 27% slower | 10 / 10 | 12% more |
+| 100 | 24.7 ms | 42.5 ms | unchanged | 7% less | 13 / 100 | 2% less |
+| 1,000 | 77.7 ms | 58.0 ms | 54% faster | 35% less | 13 / 1,000 | 44% less |
 
-At 1,000 items, visible hydration used 49% less initial CPU and 47% less
-retained heap, with 2.5ms additional readiness latency. At 10 items it saved no
-work and added 23.4ms of observer scheduling latency, so keep small visible
-groups eager.
+At 1,000 rows, the complete policy also reduced Chromium style CPU by 70%,
+layout CPU by 65%, pre-paint CPU by 86%, paint CPU by 54%, and live layout
+objects by 91%. The trace window ends before hydration and interactions, so
+these figures isolate initial rendering. HTML parsing stayed at 3.3ms and the
+DOM stayed at 15,002 nodes in both arms. That is expected: the policy preserves
+SSR semantics and reduces rendering/hydration work, not parsing or DOM
+construction. Raster CPU was 7.4ms versus 5.5ms in this run; Chromium already
+avoids most raster work outside the viewport, so layout and pre-paint are the
+more stable work-reduction signals.
 
-The optional entry adds 1,311 gzip bytes. Apps that stay eager do not ship that
-code.
+Hydration-only `w-hydrate="lazy"` at 1,000 rows reduced hydration CPU from
+12.4ms to 7.2ms and total retained heap from 1,480.5KiB to 811.3KiB, but staged
+readiness was 83.8ms because it did not reduce layout and paint. This is why
+`w-render="lazy"` is the recommended long-list policy and
+`w-hydrate="lazy"` is the containment escape hatch.
+
+The crossover sits between 100 and 1,000 rows. Below it, the observer round
+trip costs more than the deferred work returns. Keep small, fully visible
+groups eager. Eager is the default, so applications that do not opt in retain
+the existing behavior and ship no coordinator code. The optional entry adds
+1,446 gzip bytes.
 
 Reproduce the matrix:
 
 ```bash
 cd examples/integration/streaming-browser-bench
-WEBUI_LAZY_HYDRATION_RUNS=30 pnpm test:lazy-hydration
+WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_TRACE_RUNS=5 \
+pnpm test:lazy-hydration
 ```
 
 ## Why WebUI is Fast

@@ -106,6 +106,10 @@
                 "link": "/guide/concepts/directives/attributes"
               },
               {
+                "text": "Lazy policy",
+                "link": "/guide/concepts/directives/lazy"
+              },
+              {
                 "text": "Routes <route>",
                 "link": "/guide/concepts/directives/route"
               },

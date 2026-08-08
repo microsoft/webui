@@ -1,7 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-export type LazyMode = 'eager' | 'visible';
+export type LazyMode = 'eager' | 'lazy-hydrate' | 'lazy-render';
+
+export interface LazyRenderMetrics {
+  domConstructionMs: number;
+  forcedStyleLayoutMs: number;
+  presentationMs: number;
+  initialRenderReadyMs: number;
+  documentHeight: number;
+}
 
 export interface LazyRunMetrics {
   bundleInitMs: number;
@@ -15,19 +23,42 @@ export interface LazyRunMetrics {
   visibleInteractionMs: number;
   dormantInteractionMs: number;
   dormantInteractionHydrated: boolean;
+  dormantContentSkipped: boolean | null;
   interactionCount: number;
   liveRootCount: number;
 }
 
-export function insertLazyRoots(html: string): void {
+export async function insertLazyRoots(
+  html: string,
+): Promise<LazyRenderMetrics> {
+  const started = performance.now();
+  const domStarted = performance.now();
   document.body.insertAdjacentHTML('beforeend', html);
+  const domConstructionMs = performance.now() - domStarted;
+
+  const styleLayoutStarted = performance.now();
+  const documentHeight = document.documentElement.scrollHeight;
+  const forcedStyleLayoutMs = performance.now() - styleLayoutStarted;
+
+  const presentationStarted = performance.now();
+  await new Promise<void>((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+
+  return {
+    domConstructionMs,
+    forcedStyleLayoutMs,
+    presentationMs: performance.now() - presentationStarted,
+    initialRenderReadyMs: performance.now() - started,
+    documentHeight,
+  };
 }
 
 /**
  * Drive one already-defined `bench-todo-item` fixture through hydration.
  * `mode` only affects the expected-count math below (which roots must hydrate
  * up front) — the fixture bundle passed to the page already baked in the
- * matching `hydration` strategy at build time (see `lazy-fixtures.ts`).
+ * matching compiler policy metadata (see `lazy-fixtures.ts`).
  */
 export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> {
   const win = window as unknown as {
@@ -71,11 +102,14 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
   const baseHeap = heapSize();
   win.__benchPeakHeap = baseHeap ?? 0;
   const roots = document.getElementsByTagName('bench-todo-item');
-  const viewportLimit = window.innerHeight + 200;
-  let expectedInitialCount = 0;
-  for (let i = 0; i < roots.length; i++) {
-    if (roots[i].getBoundingClientRect().top > viewportLimit) break;
-    expectedInitialCount++;
+  let expectedInitialCount = roots.length;
+  if (mode !== 'eager') {
+    const viewportLimit = window.innerHeight + 200;
+    expectedInitialCount = 0;
+    for (let i = 0; i < roots.length; i++) {
+      if (roots[i].getBoundingClientRect().top > viewportLimit) break;
+      expectedInitialCount++;
+    }
   }
 
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -121,6 +155,9 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
   if (!firstButton || !lastRoot || !lastButton) {
     throw new Error('lazy hydration benchmark roots are incomplete');
   }
+  const dormantContentSkipped = typeof lastButton.checkVisibility === 'function'
+    ? !lastButton.checkVisibility({ contentVisibilityAuto: true })
+    : null;
 
   const visibleStarted = performance.now();
   firstButton.click();
@@ -158,6 +195,7 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
     visibleInteractionMs,
     dormantInteractionMs,
     dormantInteractionHydrated: afterDormant > beforeDormant,
+    dormantContentSkipped,
     interactionCount: win.__benchInteractionCount ?? 0,
     liveRootCount: roots.length,
   };

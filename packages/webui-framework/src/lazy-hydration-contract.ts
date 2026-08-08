@@ -2,30 +2,35 @@
 // Licensed under the MIT license.
 
 /**
- * Tiny contract bridging `WebUIElement` to the optional visible-hydration
+ * Tiny contract bridging `WebUIElement` to the optional lazy-hydration
  * coordinator.
  *
  * The real viewport/interaction coordinator (a shared `IntersectionObserver`,
  * activation queue, and wake listeners) lives in
- * `visible-hydration-coordinator.ts` and is reachable only through the
- * optional `@microsoft/webui-framework/visible-hydration.js` entry (see
- * `visible-hydration-entry.ts`). `element.ts` imports only this module, so a
- * `static hydration = 'visible'` opt-in never pulls the coordinator into the
- * default framework entry — an application that never imports the optional
- * entry never bundles it, and a component whose `hydration` stays at the
- * eager default never calls anything below beyond a single `undefined`
- * check.
+ * `lazy-hydration-coordinator.ts` and is reachable only through the
+ * optional `@microsoft/webui-framework/lazy-hydration.js` entry (see
+ * `lazy-hydration-entry.ts`). `element.ts` imports only this module, so a
+ * build-time component policy never pulls the coordinator into the default
+ * framework entry — an application that never imports the optional entry
+ * never bundles it. Component policy is compiled from the authored
+ * root template, so ordinary components never call anything below beyond a
+ * single `undefined` check.
  *
  * Kept dependency-free (no imports) so it can sit underneath both
  * `element.ts` and the coordinator without risking a circular-init race:
  * the coordinator module registers itself here as a side effect of
- * `installVisibleHydrationCoordinator()`, which always runs before any
+ * `installLazyHydrationCoordinator()`, which always runs before any
  * component `.define()` body in the same module graph (the optional entry
  * is import-ordered ahead of component modules, mirroring `streaming.js`).
  */
 
 /** Shared activation hook a coordinator invokes on a deferred target. */
 export const LAZY_HYDRATION_ACTIVATE = Symbol();
+export const LAZY_HYDRATION_VIEWPORT = 1;
+export const LAZY_HYDRATION_CONTENT_VISIBILITY = 2;
+export type LazyHydrationMode =
+  | typeof LAZY_HYDRATION_VIEWPORT
+  | typeof LAZY_HYDRATION_CONTENT_VISIBILITY;
 
 export type LazyHydrationTarget = HTMLElement & {
   [LAZY_HYDRATION_ACTIVATE](
@@ -33,16 +38,17 @@ export type LazyHydrationTarget = HTMLElement & {
   ): void;
 };
 
-/** Implemented by `visible-hydration-coordinator.ts` and installed once. */
-export interface VisibleHydrationCoordinator {
+/** Implemented by `lazy-hydration-coordinator.ts` and installed once. */
+export interface LazyHydrationCoordinator {
   /** Whether this browser can defer hydration without risking inert UI. */
-  supportsVisibleHydration(): boolean;
+  supportsLazyHydration(): boolean;
   /** Register an ordinary SSR component for viewport/interaction activation. */
-  observe(target: LazyHydrationTarget): void;
+  observe(target: LazyHydrationTarget, mode: LazyHydrationMode): void;
   /** Register a streamed SSR component only after its boundary commits. */
   observeStreamed(
     target: LazyHydrationTarget,
     state: Record<string, unknown> | undefined,
+    mode: LazyHydrationMode,
   ): void;
   /** Stop observing a disconnected component without losing reconnect eligibility. */
   disconnect(target: LazyHydrationTarget): void;
@@ -50,33 +56,36 @@ export interface VisibleHydrationCoordinator {
   isStreamedActivation(target: LazyHydrationTarget): boolean;
 }
 
-let coordinator: VisibleHydrationCoordinator | undefined;
+let coordinator: LazyHydrationCoordinator | undefined;
 
 /**
- * Install the shared visible-hydration coordinator. Called once, by
- * `installVisibleHydrationCoordinator()` in `visible-hydration-coordinator.ts`
- * (via the optional `visible-hydration.js` entry). A later registration
+ * Install the shared lazy-hydration coordinator. Called once, by
+ * `installLazyHydrationCoordinator()` in `lazy-hydration-coordinator.ts`
+ * (via the optional `lazy-hydration.js` entry). A later registration
  * replaces the implementation, which supports isolated coordinator tests.
  */
-export function registerVisibleHydrationCoordinator(
-  impl: VisibleHydrationCoordinator,
+export function registerLazyHydrationCoordinator(
+  impl: LazyHydrationCoordinator,
 ): void {
   coordinator = impl;
 }
 
-/** Whether the optional `visible-hydration.js` entry has been imported. */
-export function isVisibleHydrationCoordinatorInstalled(): boolean {
+/** Whether the optional `lazy-hydration.js` entry has been imported. */
+export function isLazyHydrationCoordinatorInstalled(): boolean {
   return coordinator !== undefined;
 }
 
 /** Whether this browser/coordinator combination can defer hydration safely. */
 export function supportsLazyHydration(): boolean {
-  return coordinator?.supportsVisibleHydration() ?? false;
+  return coordinator?.supportsLazyHydration() ?? false;
 }
 
 /** Register an ordinary SSR component for viewport and interaction activation. */
-export function observeLazyHydration(target: LazyHydrationTarget): void {
-  coordinator?.observe(target);
+export function observeLazyHydration(
+  target: LazyHydrationTarget,
+  mode: LazyHydrationMode,
+): void {
+  coordinator?.observe(target, mode);
 }
 
 /**
@@ -86,8 +95,9 @@ export function observeLazyHydration(target: LazyHydrationTarget): void {
 export function observeStreamedLazyHydration(
   target: LazyHydrationTarget,
   state: Record<string, unknown> | undefined,
+  mode: LazyHydrationMode,
 ): void {
-  coordinator?.observeStreamed(target, state);
+  coordinator?.observeStreamed(target, state, mode);
 }
 
 /** Stop observing a disconnected component without losing reconnect eligibility. */

@@ -1,0 +1,17 @@
+<template w-hydrate="lazy">
+  <section>
+    <test-lazy-item
+      id="barrier-failing-child"
+      w-hydrate="eager"
+      data-throw-on-hydrate
+      label="Failing child"
+      count="0"
+    ></test-lazy-item>
+    <test-lazy-item
+      id="barrier-healthy-child"
+      w-hydrate="eager"
+      label="Healthy child"
+      count="0"
+    ></test-lazy-item>
+  </section>
+</template>

@@ -8,11 +8,9 @@ holds **three** independent benches:
 2. **Progressive hydration matrix** (`hydration_matrix.spec.ts`) - the real
    streaming coordinator plus real `WebUIElement` hydration, measured
    across 1/3/10/100 boundaries against an ordinary one-shot control.
-3. **Lazy hydration matrix** (`lazy_hydration_matrix.spec.ts`) - production
-   component hydration for representative 10-item and 1,000-item todo lists,
-   comparing the default eager strategy against an opt-in
-   `hydration = 'visible'` bundle that additionally imports the optional
-   `visible-hydration.js` entry.
+3. **Offscreen work-reduction matrix** (`lazy_hydration_matrix.spec.ts`) -
+   production component hydration and rendering for representative 10-item,
+   100-item, and 1,000-item todo lists, comparing eager, hydration-only lazy\n   hydration, and complete lazy rendering policies.
 
 ## Transport bench
 
@@ -176,23 +174,26 @@ compare regression (CPU, elapsed, retained, or peak) fails the run.
 These are structured and documented separately so timing/heap noise never fails a
 normal run.
 
-## Lazy hydration matrix
+## Offscreen work-reduction matrix
 
-This matrix builds **two** separate production bundles with esbuild
+This matrix builds **three** production modes with esbuild
 (`__WEBUI_DEV__=false`): an **eager** bundle (the framework default entry
-only) and a **visible** bundle that additionally imports the optional
-`visible-hydration.js` entry before defining the component with
-`static override readonly hydration = 'visible'`. Coordinator inclusion is a
-build-time (static import) decision, matching production - there is no
-runtime toggle. Both bundles define a todo item with four text bindings and
-two direct event listeners. Each SSR row has a fixed 72px height. The 10-item
-list fits inside the viewport plus the 200px lead margin; the 1,000-item list
-leaves almost every row dormant.
+only), a hydration-only **lazy-hydrate** bundle, and a complete **lazy-render** bundle.
+The latter two import the optional `lazy-hydration.js` entry. Page compiler
+metadata selects `wp: 1` or `wp: 2`; the lazy-render page also contains the exact
+build-generated `content-visibility: auto` and
+`contain-intrinsic-block-size: auto 72px` rule before first layout.
+Coordinator inclusion is a build-time static import decision, matching
+production. All modes define a todo item with four text bindings and two direct
+event listeners. Each SSR row has a fixed 72px height. The 10-item list fits
+inside the viewport plus the 200px lead margin; the 100-item and 1,000-item
+lists leave offscreen rows dormant.
 
 Before running the matrix, the spec inspects each bundle's esbuild
 **metafile** (its actual module input graph, not an inferred byte count) and
-asserts the eager bundle never reaches `visible-hydration-coordinator.ts`
-while the visible bundle does - the same "measurable zero-coordinator"
+asserts the eager bundle never reaches `lazy-hydration-coordinator.ts`
+while the lazy-hydrate and lazy-render bundles do - the same "measurable
+zero-coordinator"
 guarantee the framework's own `index-decoupling.test.ts` enforces for the
 default entry point.
 
@@ -202,6 +203,11 @@ Each arm runs in a fresh page and records:
 |---|---|
 | component CPU | instrumented real `connectedCallback` and deferred activation |
 | bundle initialization, definition, and first-screen readiness | `performance.now()` in separate measurement windows |
+| DOM construction | synchronous `insertAdjacentHTML` parser wall time |
+| forced style/layout and presentation readiness | `scrollHeight` flush plus two animation frames |
+| style and layout CPU/counts | deltas from Chromium `Performance.getMetrics` |
+| parse, style, layout, pre-paint, paint, and raster CPU | medians from separate `devtools.timeline` trace runs stopped immediately after initial rendering, before hydration and interaction probes |
+| DOM and layout objects | Chromium node and layout-object deltas; proves which work is and is not reduced |
 | hydrated roots | successful hydration count |
 | installed listeners | actual root cleanup records after successful hydration |
 | peak heap | precise `performance.memory` sampling during hydration |
@@ -210,13 +216,15 @@ Each arm runs in a fresh page and records:
 | first visible and dormant interaction | synchronous click timing |
 | bundle size | exact production minified and gzip bytes, per bundle |
 
-The dormant interaction must hydrate the last row synchronously. The visible
-1,000-item arm must hydrate fewer roots than it renders, while the eager arms
-must hydrate every root. The driver also fails if the expected initial roots do
-not hydrate before its frame deadline. These correctness assertions are always
-enforced. Run order reverses on alternating rounds to reduce fixed-order bias.
-Runs default to 15; set `WEBUI_LAZY_HYDRATION_RUNS` for a larger median/p95
-sample.
+The dormant interaction must hydrate the last row synchronously. The lazy-hydrate\nand lazy-render 100/1,000-item arms must hydrate fewer roots than they render,
+while eager arms must hydrate every root. The lazy-render last-row descendant must
+report skipped through `checkVisibility({ contentVisibilityAuto: true })`, and
+all modes must preserve the full fixed-height scroll range. The driver also
+fails if expected initial roots do not hydrate before its frame deadline. These
+correctness assertions are always enforced. Run order reverses on alternating
+rounds to reduce fixed-order bias. Timing/heap runs default to 15; trace runs
+default to 3. Set `WEBUI_LAZY_HYDRATION_RUNS` and
+`WEBUI_LAZY_HYDRATION_TRACE_RUNS` for larger samples.
 
 ### Known limitations
 
@@ -299,15 +307,19 @@ retained- and peak-heap KiB deltas. A strict comparison requires a compatible
 baseline and checks it before running the measurement matrix; a missing or stale
 baseline fails with the command needed to create a new one.
 
-The lazy matrix uses separate environment variables and snapshot files:
+The work-reduction matrix uses separate environment variables and snapshot
+files. `WEBUI_LAZY_HYDRATION_MODES` accepts a comma-separated subset of
+`eager,lazy-hydrate,lazy-render`:
 
 ```bash
-WEBUI_LAZY_HYDRATION_MODES=eager \
+WEBUI_LAZY_HYDRATION_MODES=eager,lazy-hydrate,lazy-render \
 WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_TRACE_RUNS=5 \
 WEBUI_LAZY_HYDRATION_SAVE=before \
 pnpm test:lazy-hydration
 
 WEBUI_LAZY_HYDRATION_RUNS=30 \
+WEBUI_LAZY_HYDRATION_TRACE_RUNS=5 \
 WEBUI_LAZY_HYDRATION_COMPARE=before \
 WEBUI_LAZY_HYDRATION_SAVE=after \
 pnpm test:lazy-hydration
@@ -317,7 +329,8 @@ Snapshots live at
 `target/bench-baselines/browser-lazy-hydration-<name>.json`.
 Set `WEBUI_LAZY_HYDRATION_FRAMEWORK_SRC` to an extracted framework `src`
 directory to compare the current harness against an earlier runtime without
-changing the benchmark worktree.
+changing the benchmark worktree. A runtime predating compiler policy metadata
+is compatible only with the eager arm.
 
 
 ## What it measures

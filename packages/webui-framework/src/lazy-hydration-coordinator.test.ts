@@ -20,7 +20,7 @@ function replaceGlobal(name: string, value: unknown): () => void {
   };
 }
 
-describe('installVisibleHydrationCoordinator — idempotency', () => {
+describe('installLazyHydrationCoordinator — idempotency', () => {
   test('seals startup observation at load when DOMContentLoaded was missed', async () => {
     let resetContract: (() => void) | undefined;
     let resetCoordinator: (() => void) | undefined;
@@ -51,17 +51,20 @@ describe('installVisibleHydrationCoordinator — idempotency', () => {
     ];
 
     try {
-      const contract = await import('./lazy-hydration.js');
-      const coordinator = await import('./visible-hydration-coordinator.js');
+      const contract = await import('./lazy-hydration-contract.js');
+      const coordinator = await import('./lazy-hydration-coordinator.js');
       resetContract = contract.__resetLazyHydrationContractForTests;
-      resetCoordinator = coordinator.__resetVisibleHydrationCoordinatorForTests;
-      coordinator.installVisibleHydrationCoordinator();
+      resetCoordinator = coordinator.__resetLazyHydrationCoordinatorForTests;
+      coordinator.installLazyHydrationCoordinator();
 
       const target = {
         isConnected: true,
         [contract.LAZY_HYDRATION_ACTIVATE]() {},
       } as unknown as Parameters<typeof contract.observeLazyHydration>[0];
-      contract.observeLazyHydration(target);
+      contract.observeLazyHydration(
+        target,
+        contract.LAZY_HYDRATION_VIEWPORT,
+      );
       contract.disconnectLazyHydration(target);
       assert.equal(completionCount, 0);
       fakeWindow.dispatchEvent(new Event('load'));
@@ -78,26 +81,26 @@ describe('installVisibleHydrationCoordinator — idempotency', () => {
   test('a repeated call never re-registers, so a later manual registration survives it', async () => {
     const {
       observeLazyHydration,
-      registerVisibleHydrationCoordinator,
-      isVisibleHydrationCoordinatorInstalled,
+      registerLazyHydrationCoordinator,
+      isLazyHydrationCoordinatorInstalled,
       __resetLazyHydrationContractForTests,
-    } = await import('./lazy-hydration.js');
+    } = await import('./lazy-hydration-contract.js');
     const {
-      installVisibleHydrationCoordinator,
-      __resetVisibleHydrationCoordinatorForTests,
-    } = await import('./visible-hydration-coordinator.js');
+      installLazyHydrationCoordinator,
+      __resetLazyHydrationCoordinatorForTests,
+    } = await import('./lazy-hydration-coordinator.js');
     __resetLazyHydrationContractForTests();
-    __resetVisibleHydrationCoordinatorForTests();
+    __resetLazyHydrationCoordinatorForTests();
 
     // First import/call: installs the real coordinator implementation.
-    installVisibleHydrationCoordinator();
-    assert.equal(isVisibleHydrationCoordinatorInstalled(), true);
+    installLazyHydrationCoordinator();
+    assert.equal(isLazyHydrationCoordinatorInstalled(), true);
 
     // Swap in a distinguishable fake, standing in for whatever a duplicate
     // module evaluation would observe through the shared contract module.
     let observeCalls = 0;
-    registerVisibleHydrationCoordinator({
-      supportsVisibleHydration: () => true,
+    registerLazyHydrationCoordinator({
+      supportsLazyHydration: () => true,
       observe: () => {
         observeCalls++;
       },
@@ -106,13 +109,16 @@ describe('installVisibleHydrationCoordinator — idempotency', () => {
       isStreamedActivation: () => false,
     });
 
-    // A second `installVisibleHydrationCoordinator()` call — e.g. from the
+    // A second `installLazyHydrationCoordinator()` call — e.g. from the
     // optional entry being reachable twice in a graph — must be a no-op. If
     // it were not idempotent, it would re-register the real implementation
     // here and silently discard the fake above.
-    installVisibleHydrationCoordinator();
+    installLazyHydrationCoordinator();
 
-    observeLazyHydration({} as unknown as Parameters<typeof observeLazyHydration>[0]);
+    observeLazyHydration(
+      {} as unknown as Parameters<typeof observeLazyHydration>[0],
+      1,
+    );
     assert.equal(observeCalls, 1, 'the fake registered after the first install must still be active');
   });
 });

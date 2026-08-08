@@ -18,12 +18,15 @@ import { TemplateElement } from './template-element.js';
 import {
   disconnectLazyHydration,
   isStreamedLazyActivation,
-  isVisibleHydrationCoordinatorInstalled,
+  isLazyHydrationCoordinatorInstalled,
   LAZY_HYDRATION_ACTIVATE,
+  LAZY_HYDRATION_CONTENT_VISIBILITY,
+  LAZY_HYDRATION_VIEWPORT,
   observeLazyHydration,
   observeStreamedLazyHydration,
   supportsLazyHydration,
-} from './lazy-hydration.js';
+  type LazyHydrationMode,
+} from './lazy-hydration-contract.js';
 import {
   isStreamingHydrationMode,
   STREAMED_HOST_ATTR,
@@ -48,48 +51,41 @@ import type {
 type EventHandler = (...args: unknown[]) => unknown;
 
 /**
- * Component-level hydration strategy. `'eager'` (the universal default)
- * hydrates synchronously like every other WebUI component; `'visible'` defers
- * SSR instances until the shared viewport/interaction coordinator activates
- * them (see `static hydration` below).
- */
-export type HydrationStrategy = 'eager' | 'visible';
-
-/**
- * Per-instance SSR escape hatch for a `hydration = 'visible'` class: the
- * exact attribute value `"eager"` suppresses viewport deferral for that one
- * instance. Any other value is ignored — this is a narrow, exact-match
- * contract rather than a general directive, so it costs nothing beyond one
- * attribute read, and only for components that already opted into
- * `'visible'`.
+ * Per-instance escape hatches. `w-render="eager"` disables the complete
+ * lazy policy; `w-hydrate="eager"` keeps rendering deferral but wires the
+ * SSR component synchronously.
  */
 const HYDRATE_ATTR = 'w-hydrate';
+const RENDER_ATTR = 'w-render';
 const HYDRATE_EAGER = 'eager';
 
 // ── Development build flag ──────────────────────────────────────
 // See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
 // bundler-folded compile-time constant, declared and consumed module-locally
 // so a production build (`--define:__WEBUI_DEV__=false`) can constant-fold
-// `DEV` to `false` and dead-code-eliminate `warnMissingVisibleHydrationEntry`'s
+// `DEV` to `false` and dead-code-eliminate `warnMissingLazyHydrationEntry`'s
 // body, while `tsc`, unit tests, and `webui-press serve` keep it active.
 declare const __WEBUI_DEV__: boolean;
 const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
-let warnedMissingVisibleHydrationEntry = false;
+let warnedMissingLazyHydrationEntry = false;
 
 /**
- * Warn once, in development, when a `hydration = 'visible'` component falls
- * back to eager hydration because the optional
- * `@microsoft/webui-framework/visible-hydration.js` entry was never imported.
+ * Warn once, in development, when a visibility-deferred component falls back
+ * to eager hydration because the optional
+ * `@microsoft/webui-framework/lazy-hydration.js` entry was never imported.
  * Never warns for a missing `IntersectionObserver` — that fallback is
  * documented, expected behavior on older browsers, not a misconfiguration.
  */
-function warnMissingVisibleHydrationEntry(tag: string): void {
-  if (!DEV || warnedMissingVisibleHydrationEntry) return;
-  warnedMissingVisibleHydrationEntry = true;
+function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
+  if (!DEV || warnedMissingLazyHydrationEntry) return;
+  warnedMissingLazyHydrationEntry = true;
+  const directive = policy === LAZY_HYDRATION_CONTENT_VISIBILITY
+    ? 'w-render="lazy"'
+    : 'w-hydrate="lazy"';
   console.warn(
-    `[WebUI] <${tag}> sets \`static hydration = 'visible'\`, but ` +
-    "'@microsoft/webui-framework/visible-hydration.js' was never imported, " +
+    `[WebUI] <${tag}> was compiled with \`${directive}\`, but ` +
+    "'@microsoft/webui-framework/lazy-hydration.js' was never imported, " +
     'so it hydrated eagerly instead. Import that optional entry once before ' +
     'your component definitions to enable visibility-deferred hydration.',
   );
@@ -101,29 +97,11 @@ function warnMissingVisibleHydrationEntry(tag: string): void {
  * `$emit`. HTML-only components never reach this class.
  */
 export class WebUIElement extends TemplateElement {
-  /**
-   * Component-level hydration strategy. Eager is the universal default.
-   *
-   * Set `static override readonly hydration = 'visible'` to defer SSR instances until
-   * they are within 200px of the viewport. Server-rendered DOM remains
-   * visible and interaction, focus, or keyboard input activates the
-   * component synchronously regardless. Client-created instances always
-   * mount eagerly.
-   *
-   * `'visible'` requires the optional
-   * `@microsoft/webui-framework/visible-hydration.js` entry to be imported
-   * before component definitions; without it (or without
-   * `IntersectionObserver`), the component falls back to eager hydration
-   * rather than staying inert. An individual SSR instance can force eager
-   * hydration regardless of this static mode with `w-hydrate="eager"`.
-   *
-   * The policy is readonly because changing it after instances connect would
-   * make one class follow inconsistent hydration semantics.
-   */
-  static readonly hydration: HydrationStrategy = 'eager';
+  private $lazyHydrationMode: LazyHydrationMode | undefined;
 
-  protected override $shouldDeferSSRHydration(): boolean {
-    return this.$isVisibleHydrationEligible();
+  protected override $shouldDeferSSRHydration(meta?: TemplateMeta): boolean {
+    this.$lazyHydrationMode = this.$resolveLazyHydrationMode(meta);
+    return this.$lazyHydrationMode !== undefined;
   }
 
   protected override $didDeferSSRHydration(): void {
@@ -133,44 +111,69 @@ export class WebUIElement extends TemplateElement {
       !this.hasAttribute(STREAMED_HOST_ATTR)
     ) {
       this.$primeSSRStateForDeferral();
-      observeLazyHydration(this);
+      const mode = this.$lazyHydrationMode;
+      if (mode !== undefined) observeLazyHydration(this, mode);
     }
+  }
+
+  protected override $didDeferStreamedSSRHydration(
+    state: Record<string, unknown> | undefined,
+  ): void {
+    const mode = this.$lazyHydrationMode;
+    if (mode === undefined) {
+      super.$didDeferStreamedSSRHydration(state);
+      return;
+    }
+    observeStreamedLazyHydration(this, state, mode);
   }
 
   protected override $activateDeferredSSR(
     state?: Record<string, unknown>,
   ): void {
     if (isStreamedLazyActivation(this)) {
+      this.$lazyHydrationMode = undefined;
       super.$activateDeferredSSRFromBoundary(state);
       return;
     }
+    const mode = this.$lazyHydrationMode ??
+      this.$resolveLazyHydrationMode(this.$currentTemplateMetadata());
     if (
       isStreamingHydrationMode() &&
       this.hasAttribute(STREAMED_HOST_ATTR) &&
-      this.$isVisibleHydrationEligible()
+      mode !== undefined
     ) {
-      observeStreamedLazyHydration(this, state);
+      this.$lazyHydrationMode = mode;
+      observeStreamedLazyHydration(this, state, mode);
       return;
     }
+    this.$lazyHydrationMode = undefined;
     super.$activateDeferredSSR(state);
   }
 
   /**
    * Whether this SSR instance should defer to the viewport/interaction
-   * coordinator. Checks the static `hydration` mode first — an ordinary
-   * eager component (the common case) returns `false` immediately and never
-   * reaches the `w-hydrate` attribute lookup or the coordinator.
+   * coordinator. Checks compact compiler metadata first, so an ordinary eager
+   * component returns without reading an attribute or touching the optional
+   * coordinator contract.
    */
-  private $isVisibleHydrationEligible(): boolean {
-    if ((this.constructor as typeof WebUIElement).hydration !== 'visible') {
-      return false;
+  private $resolveLazyHydrationMode(
+    meta?: TemplateMeta,
+  ): LazyHydrationMode | undefined {
+    const policy = meta?.wp;
+    if (policy === undefined) return undefined;
+    if (
+      policy === LAZY_HYDRATION_CONTENT_VISIBILITY &&
+      this.getAttribute(RENDER_ATTR) === HYDRATE_EAGER
+    ) return undefined;
+    if (this.getAttribute(HYDRATE_ATTR) === HYDRATE_EAGER) return undefined;
+    if (!isLazyHydrationCoordinatorInstalled()) {
+      warnMissingLazyHydrationEntry(this.tagName, policy);
+      return undefined;
     }
-    if (this.getAttribute(HYDRATE_ATTR) === HYDRATE_EAGER) return false;
-    if (!isVisibleHydrationCoordinatorInstalled()) {
-      warnMissingVisibleHydrationEntry(this.tagName);
-      return false;
-    }
-    return supportsLazyHydration();
+    if (!supportsLazyHydration()) return undefined;
+    return policy === LAZY_HYDRATION_CONTENT_VISIBILITY
+      ? LAZY_HYDRATION_CONTENT_VISIBILITY
+      : LAZY_HYDRATION_VIEWPORT;
   }
 
   [LAZY_HYDRATION_ACTIVATE](
@@ -182,7 +185,7 @@ export class WebUIElement extends TemplateElement {
   }
 
   override disconnectedCallback(): void {
-    if ((this.constructor as typeof WebUIElement).hydration === 'visible') {
+    if (this.$lazyHydrationMode !== undefined) {
       disconnectLazyHydration(this);
     }
     super.disconnectedCallback();

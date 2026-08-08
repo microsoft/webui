@@ -23,10 +23,10 @@
         "default": "./dist/streaming-entry.js"
       }
     },
-    "./visible-hydration.js": {
+    "./lazy-hydration.js": {
       "import": {
-        "types": "./dist/visible-hydration-entry.d.ts",
-        "default": "./dist/visible-hydration-entry.js"
+        "types": "./dist/lazy-hydration-entry.d.ts",
+        "default": "./dist/lazy-hydration-entry.js"
       }
     }
   },

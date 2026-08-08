@@ -14,11 +14,11 @@ import { fileURLToPath } from 'node:url';
  * (`streaming-entry.ts`), so a non-streaming host never pays for the
  * coordinator.
  *
- * Same guarantee applies to visible hydration: the default entry must not
+ * Same guarantee applies to lazy hydration: the default entry must not
  * pull in the viewport/interaction coordinator. That is opt-in via the
- * `@microsoft/webui-framework/visible-hydration.js` subpath
- * (`visible-hydration-entry.ts`); `static hydration = 'visible'` alone falls
- * back to eager without it.
+ * `@microsoft/webui-framework/lazy-hydration.js` subpath
+ * (`lazy-hydration-entry.ts`); compiled visibility policy alone falls back
+ * to eager without it.
  *
  * The build is plain `tsc` (no bundler), so emitted JS preserves every static
  * and dynamic relative import. We walk the real emitted graph from `index.js`
@@ -42,16 +42,16 @@ import { fileURLToPath } from 'node:url';
 const ALLOWED_STREAMING_MODULES = new Set(['./streaming-mode.js']);
 
 /**
- * The one visible-hydration module the default entry is allowed to reach.
+ * The one lazy-hydration module the default entry is allowed to reach.
  *
- * `lazy-hydration.js` is a dependency-free contract: the activation symbol,
+ * `lazy-hydration-contract.js` is a dependency-free contract: the activation symbol,
  * types, and a coordinator registry that `element.ts` consults through an
  * optional-chained reference. It contains no `IntersectionObserver` usage,
  * activation queue, or DOM traversal — that all lives in
- * `visible-hydration-coordinator.js`, reachable only from the optional
- * `@microsoft/webui-framework/visible-hydration.js` entry.
+ * `lazy-hydration-coordinator.js`, reachable only from the optional
+ * `@microsoft/webui-framework/lazy-hydration.js` entry.
  */
-const ALLOWED_VISIBLE_HYDRATION_MODULES = new Set(['./lazy-hydration.js']);
+const ALLOWED_LAZY_HYDRATION_MODULES = new Set(['./lazy-hydration-contract.js']);
 
 /**
  * Walk the emitted static/dynamic import graph starting from `./index.js`.
@@ -130,38 +130,38 @@ describe('default entry decoupling', () => {
     assert.ok(visited.size > 3, 'import-graph walk should visit multiple modules');
   });
 
-  test('dist/index.js has no static or dynamic path to the visible-hydration coordinator', () => {
+  test('dist/index.js has no static or dynamic path to the lazy-hydration coordinator', () => {
     const distDir = dirname(fileURLToPath(import.meta.url));
 
-    const visibleHydrationModules = readdirSync(distDir)
+    const lazyHydrationModules = readdirSync(distDir)
       .filter(
         (name) =>
-          (name.startsWith('lazy-hydration') || name.startsWith('visible-hydration')) &&
+          (name.startsWith('lazy-hydration') || name.startsWith('lazy-hydration')) &&
           name.endsWith('.js') &&
           !name.endsWith('.test.js'),
       )
       .map((name) => `./${name}`);
 
     assert.ok(
-      visibleHydrationModules.length > 1,
-      'expected the emitted visible-hydration modules to be discoverable in dist/',
+      lazyHydrationModules.length > 1,
+      'expected the emitted lazy-hydration modules to be discoverable in dist/',
     );
-    for (const allowed of ALLOWED_VISIBLE_HYDRATION_MODULES) {
+    for (const allowed of ALLOWED_LAZY_HYDRATION_MODULES) {
       assert.ok(
-        visibleHydrationModules.includes(allowed),
+        lazyHydrationModules.includes(allowed),
         `${allowed} is allow-listed but was not emitted — update the allow-list`,
       );
     }
 
     const visited = walkIndexImportGraph(distDir);
 
-    const leaked = visibleHydrationModules.filter(
-      (name) => visited.has(name) && !ALLOWED_VISIBLE_HYDRATION_MODULES.has(name),
+    const leaked = lazyHydrationModules.filter(
+      (name) => visited.has(name) && !ALLOWED_LAZY_HYDRATION_MODULES.has(name),
     );
     assert.deepEqual(
       leaked,
       [],
-      `the default index entry must not reach the visible-hydration coordinator, but reached: ${leaked.join(', ')}`,
+      `the default index entry must not reach the lazy-hydration coordinator, but reached: ${leaked.join(', ')}`,
     );
   });
 });

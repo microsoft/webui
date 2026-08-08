@@ -42,6 +42,9 @@ pub struct WebUIProtocol {
     pub dom_strategy: DomStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Deterministic document-level CSS for build-authored component rendering
+    /// policies. Empty when no component uses `w-render="lazy"`.
+    pub component_render_css: String,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -1624,6 +1627,7 @@ update hot paths still call the function directly.
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
 | `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
+| `wp`  | `1 \| 2`                          | Component work policy: `1` = lazy hydration only, `2` = lazy rendering plus lazy hydration |
 
 All arrays are optional and omitted from the output when empty to minimize payload.
 
@@ -1769,8 +1773,61 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
+| `<template w-hydrate="lazy">`     | `wp: 1`                | policy wrapper/attributes stripped |
+| `<template w-render="lazy" w-reserve-block-size="72px">` | `wp: 2` | policy wrapper/attributes stripped |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
+
+Component policies are visible to the Rust build because they live on the root
+component `<template>`, not on a TypeScript class. Under `DomStrategy::Shadow`
+that authored wrapper becomes the declarative shadow-root template after its
+build-only policy attributes are removed. Under `DomStrategy::Light` the
+wrapper is unwrapped. `w-render="lazy"` requires one non-negative CSS
+length in `w-reserve-block-size`; the parser accepts absolute,
+font-relative, viewport, and container-query length units, and rejects
+percentages, negative values, CSS functions, keywords, duplicates, missing
+values, misplaced policy attributes, and reservations without the rendering
+policy. Invalid input returns the stable diagnostics
+`invalid-component-render-policy`, `missing-render-reservation`, or
+`invalid-render-reservation`.
+
+For every entry- or component-asset-reachable `wp: 2` component, the registry
+emits one deterministic tag rule into `WebUIProtocol.component_render_css`:
+
+```css
+activity-row:not([w-render="eager"]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 72px;
+}
+```
+
+Rules are sorted by component tag and concatenated once at build time. The
+handler writes them verbatim in one nonce-aware
+`<style data-webui-render-policy>` at the structural `</head>` boundary, before
+component CSS links. This guarantees that containment can affect first layout
+without runtime style injection or per-request rule construction.
+
+The build also appends the same declarations to each lazy-rendered component's
+stylesheet with a shadow-scoped selector:
+
+```css
+:host(activity-row:not([w-render="eager"])),
+activity-row:not([w-render="eager"]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 72px;
+}
+```
+
+The document rule covers document and Light DOM instances. In a component
+stylesheet, the qualified `:host(...)` selector covers a Shadow DOM component
+without matching an unrelated enclosing host. The tag selector also covers a
+Light DOM instance nested in an authored shadow root when that stylesheet is
+delivered into the root, as it is with `CssStrategy::Style`. Link and Module
+stylesheets for a `DomStrategy::Light` build remain document-scoped and do not
+cross an authored shadow boundary; that existing mixed-mode configuration must
+use Style delivery or include the containment rule in the authored shadow-root
+stylesheet. Both generated rules are build-time output, and `w-render="eager"`
+disables both.
 
 Repeat identity is positional by default. At runtime, the existing block at
 index `i` receives the current collection item at index `i`; only tail growth
@@ -3850,66 +3907,81 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   must appear after all such instances. Under this loading contract,
   `TemplateElement.connectedCallback()` hydrates synchronously, so
   `super.connectedCallback()` returns only after that component's bindings,
-  events, and references are wired, unless the authored class explicitly sets
-  `static override readonly hydration = 'visible'` (and, for that instance, no `w-hydrate="eager"`
-  SSR escape hatch — see below).
-- **Component-level hydration strategy.** `WebUIElement.hydration` defaults to
-  `'eager'` — the universal default and safe fallback for every other case
-  below. An authored subclass overriding it to `'visible'`
-  (`static override readonly hydration = 'visible'`) defers only SSR instances; client-created
-  instances always mount eagerly. The readonly field is typed as the exported
-  `HydrationStrategy` union, so unsupported strategy names fail type checking
-  while the exact override above remains a one-line opt-in.
-  - `'visible'` requires the optional
-    `@microsoft/webui-framework/visible-hydration.js` entry to have been
-    imported before component definitions in the same module graph (see
-    "Optional visible-hydration entry" below). Without it, or without
-    `IntersectionObserver`, the component falls back to eager hydration —
-    it is never left inert. A missing optional entry logs one
-    development-only console warning per session; a missing
-    `IntersectionObserver` never warns, since that fallback is expected on
-    older browsers.
-  - **`w-hydrate="eager"` SSR escape hatch.** An individual `hydration =
-    'visible'` SSR instance can force eager hydration with the attribute
-    `w-hydrate="eager"`, regardless of viewport position. Only the exact
-    string `"eager"` is recognized (case-sensitive, exact match) — this is a
-    narrow, hard-coded contract rather than a general directive, so it costs
-    nothing beyond one attribute read, and only for components whose static
-    `hydration` is already `'visible'`; ordinary eager components never read
-    the attribute. Any other value is ignored and normal visibility deferral
-    applies. The framework never strips or rewrites `w-hydrate`, so it
-    naturally survives hydration and any later reconnect.
-- **Optional visible-hydration entry.** The shared viewport/interaction
-  coordinator lives in `visible-hydration-coordinator.ts`, reachable only
-  through the optional `@microsoft/webui-framework/visible-hydration.js` entry
-  (`visible-hydration-entry.ts`), mirroring the streaming coordinator's split
+  events, and references are wired, unless compiler metadata selects a
+  visibility policy and no eager instance override applies.
+- **Component-level work policy.** The absence of `wp` metadata is the universal
+  eager default. `wp: 1`, compiled from
+  `<template w-hydrate="lazy">`, defers only SSR hydration. `wp: 2`, compiled
+  from `<template w-render="lazy"
+  w-reserve-block-size="<length>">`, combines that hydration policy with
+  browser-managed `content-visibility: auto` and an intrinsic block-size
+  reservation emitted before first layout. Client-created instances always
+  mount eagerly.
+  - Both policies require the optional
+    `@microsoft/webui-framework/lazy-hydration.js` entry before component
+    definitions in the same module graph. Without it, or without
+    `IntersectionObserver`, hydration falls back to eager and the component is
+    never left inert. A missing optional entry logs one development-only
+    warning per session. A missing `IntersectionObserver` never warns because
+    the eager fallback is expected on older browsers. A `wp: 2` rendering rule
+    remains browser-managed independently of the hydration fallback.
+  - **Instance escape hatches.** `w-hydrate="eager"` makes either policy hydrate
+    synchronously. On `wp: 2`, rendering deferral remains active.
+    `w-render="eager"` excludes a `wp: 2` instance from the generated CSS selector
+    and also hydrates it synchronously, disabling the complete policy. Only the
+    exact, case-sensitive string `"eager"` is recognized. Other values are
+    ignored. Ordinary eager components short-circuit on absent `wp` metadata
+    before reading either attribute. The framework does not strip instance
+    overrides, so they survive hydration and reconnect.
+- **Optional lazy-hydration entry.** The shared viewport/interaction
+  coordinator lives in `lazy-hydration-coordinator.ts`, reachable only
+  through the optional `@microsoft/webui-framework/lazy-hydration.js` entry
+  (`lazy-hydration-entry.ts`), mirroring the streaming coordinator's split
   (`streaming.js`). `element.ts` imports only a tiny, dependency-free contract
-  module (`lazy-hydration.ts`: an activation symbol, types, and a
+  module (`lazy-hydration-contract.ts`: an activation symbol, types, and a
   coordinator registry `element.ts` consults through an optional-chained
   reference), so an application that never imports the optional entry never
-  bundles the coordinator — a `hydration = 'visible'` opt-in alone does not
-  pull it in. The optional entry installs the coordinator synchronously as an
+  bundles the coordinator. The optional entry installs it synchronously as an
   import side effect, before any authored `.define()` body in the same module
   graph, exactly like the streaming entry.
-- Deferred DOM stays visible and
-  structurally untouched. One lazily created `IntersectionObserver` is shared
-  across the realm with `root: null` and `threshold: 0`. Browsers exposing
+- Deferred SSR DOM remains present and structurally untouched. The complete
+  policy does not defer HTML parsing, DOM construction, declarative shadow-root
+  construction, custom-element definition/upgrade, or resource discovery.
+  `content-visibility: auto` preserves find-in-page and accessibility semantics
+  while allowing the browser to skip offscreen style, layout, paint, and raster.
+  WebUI does not add explicit `contain: layout paint`; the platform's
+  `content-visibility: auto` containment is sufficient and avoids expanding the
+  behavior change.
+- One lazily created `IntersectionObserver` is shared across the realm with
+  `root: null` and `threshold: 0`. Browsers exposing
   `IntersectionObserver.scrollMargin` receive `scrollMargin: "200px"` and
   `rootMargin: "0px"` so the document scrollport is expanded exactly once.
   Older implementations receive `rootMargin: "200px"`; nested scroll containers
   then activate at their own clip boundary instead of receiving an additional
-  lead. If `IntersectionObserver` is absent, hydration remains eager. The
-  observer keeps a strong `Set` only for currently connected targets so it can
-  unobserve and remove global listeners, while weak state retains reconnect
+  lead.
+  - Every target enters this observer once for initial classification. This
+    closes the race where a `contentvisibilityautostatechange` transition occurs
+    before the component listener is installed and is not replayed.
+  - A `wp: 2` target retains the observer fallback until a native event proves
+    that its direct listener has observed the current state. A received
+    `skipped === true` event classifies the target as dormant and retires its
+    observer registration; `skipped === false` activates it. This prevents a
+    late component definition from missing an earlier relevant-state event and
+    then becoming stranded between the browser's relevance margin and WebUI's
+    200px observer margin. The event bubbles but is not composed across shadow
+    roots, so delegation cannot replace direct listeners.
+  - Unsupported browsers and `wp: 1` targets remain under the shared observer.
+- The observer keeps a strong `Set` only for currently connected targets so it
+  can unobserve and remove global listeners, while weak state retains reconnect
   eligibility without retaining detached elements. Observation generations
   reject queued or delivered records from an earlier connection. A successful
   mount latch survives delayed disconnect teardown. Reconnect therefore skips
-  fresh-SSR bootstrap replay and visibility deferral, rewires marker-safe DOM
-  in place, and reconciles available current client state while retaining
-  unknown trusted values. Templates containing conditionals or repeats remount
-  from the instance's current state instead of attempting to reclaim SSR ranges
-  whose closing markers were already removed. Client-created visible-strategy
-  instances follow the same eager reconnect path.
+  fresh-SSR bootstrap replay and visibility deferral, rewires marker-safe DOM in
+  place, and reconciles available current client state while retaining unknown
+  trusted values. Templates containing conditionals or repeats remount from the
+  instance's current state instead of attempting to reclaim SSR ranges whose
+  closing markers were already removed. Client-created policy-bearing instances
+  follow the same eager reconnect path.
 - Lazy intersection batches enqueue each composed ancestor as an individual
   parent-first work item and run synchronously until they consume an 8ms budget.
   Remaining targets continue through
@@ -3964,7 +4036,21 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 - Before a containing WebUI component hydrates, descendants must not
   structurally mutate its SSR subtree. Hydration resolves compiled node paths
   against the trusted server DOM and does not recover from pre-hydration node
-  insertion, removal, or reordering.
+  insertion, removal, or reordering. `TemplateElement` therefore applies a
+  parent-first barrier to nested SSR components. A child that upgrades before
+  an already-deferred parent registers with that parent. A child that upgrades
+  before a compiled parent tag has upgraded registers in a weak pending map
+  keyed by the ancestor element; the parent adopts those children in
+  `connectedCallback()`. Compiler-owned `th: 1` hosts are pass-through because
+  they may intentionally remain dormant indefinitely and a child owns the DOM
+  inside its own host. An ancestor-barrier child copies ordinary bootstrap state
+  into component-local storage before the page-wide handoff can be released.
+  After the parent hydrates it releases descendants through one reusable
+  iterative queue. Each child then applies its own policy or eager override;
+  one child failure is retained while later queue entries continue, then the
+  collected error is rethrown. This supports arbitrarily deep definition order
+  without recursion, per-depth promise allocation, lost state, or child
+  mutation of authored-parent markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
   upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
   embedded in `c` / `r`, and event target paths directly, then applies the first binding pass before

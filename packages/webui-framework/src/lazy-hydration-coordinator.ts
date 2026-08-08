@@ -2,26 +2,28 @@
 // Licensed under the MIT license.
 
 /**
- * Shared component-level visible-hydration coordinator.
+ * Shared component-level lazy-hydration coordinator.
  *
- * A single viewport observer serves every `hydration = 'visible'`
- * `WebUIElement`. Interaction capture closes the asynchronous-observer race,
+ * A single viewport observer serves every visibility-deferred `WebUIElement`.
+ * Interaction capture closes the asynchronous-observer race,
  * while a bounded drain keeps a large visible batch from monopolizing the
  * main thread.
  *
  * This module is never imported by the default framework entry. It is
- * reachable only through the optional `visible-hydration-entry.ts` (published
- * as `@microsoft/webui-framework/visible-hydration.js`), which calls
- * `installVisibleHydrationCoordinator()` to register the implementation below
- * with the tiny contract in `lazy-hydration.ts`. An application that never
+ * reachable only through the optional `lazy-hydration-entry.ts` (published
+ * as `@microsoft/webui-framework/lazy-hydration.js`), which calls
+ * `installLazyHydrationCoordinator()` to register the implementation below
+ * with the tiny contract in `lazy-hydration-contract.ts`. An application that never
  * imports the optional entry never bundles any of this.
  */
 
 import {
   LAZY_HYDRATION_ACTIVATE,
-  registerVisibleHydrationCoordinator,
+  LAZY_HYDRATION_CONTENT_VISIBILITY,
+  registerLazyHydrationCoordinator,
+  type LazyHydrationMode,
   type LazyHydrationTarget,
-} from './lazy-hydration.js';
+} from './lazy-hydration-contract.js';
 import {
   hydrationEnd,
   hydrationStart,
@@ -39,6 +41,7 @@ const initialObservationTargets = new WeakSet<LazyHydrationTarget>();
 const activationGenerations = new WeakMap<LazyHydrationTarget, number>();
 const queuedGenerations = new WeakMap<LazyHydrationTarget, number>();
 const observationStartTimes = new WeakMap<LazyHydrationTarget, number>();
+const nativeVisibilityTargets = new WeakSet<LazyHydrationTarget>();
 const activationQueue: LazyHydrationTarget[] = [];
 const activationQueueGenerations: number[] = [];
 const ancestorScratch: LazyHydrationTarget[] = [];
@@ -50,6 +53,7 @@ const WAKE_EVENTS = [
   'click',
 ] as const;
 const HYDRATION_BUDGET_MS = 8;
+const CONTENT_VISIBILITY_EVENT = 'contentvisibilityautostatechange';
 
 let observer: IntersectionObserver | undefined;
 let queueIndex = 0;
@@ -64,18 +68,31 @@ let startupObservationGateSealed = false;
 let installed = false;
 
 /** Whether this browser can defer hydration without risking an inert component. */
-function supportsVisibleHydration(): boolean {
+function supportsLazyHydration(): boolean {
   return typeof IntersectionObserver !== 'undefined';
 }
 
 /** Register an ordinary SSR component for viewport and interaction activation. */
-function observe(target: LazyHydrationTarget): void {
+function observe(
+  target: LazyHydrationTarget,
+  mode: LazyHydrationMode,
+): void {
   pendingTargets.add(target);
   if (!target.isConnected || observedTargets.has(target)) return;
   observedTargets.add(target);
   advanceActivationGeneration(target);
   observationStartTimes.set(target, performance.now());
   trackInitialObservation(target);
+  if (
+    mode === LAZY_HYDRATION_CONTENT_VISIBILITY &&
+    supportsContentVisibilityEvents()
+  ) {
+    nativeVisibilityTargets.add(target);
+    target.addEventListener(
+      CONTENT_VISIBILITY_EVENT,
+      handleContentVisibilityChange,
+    );
+  }
   getObserver().observe(target);
   installWakeListeners();
 }
@@ -87,9 +104,10 @@ function observe(target: LazyHydrationTarget): void {
 function observeStreamed(
   target: LazyHydrationTarget,
   state: Record<string, unknown> | undefined,
+  mode: LazyHydrationMode,
 ): void {
   boundaryStates.set(target, state);
-  observe(target);
+  observe(target, mode);
 }
 
 /** Stop observing a disconnected component without losing reconnect eligibility. */
@@ -98,6 +116,7 @@ function disconnect(target: LazyHydrationTarget): void {
   advanceActivationGeneration(target);
   settleInitialObservation(target);
   observer?.unobserve(target);
+  removeContentVisibilityListener(target);
   removeWakeListenersWhenIdle();
 }
 
@@ -107,15 +126,15 @@ function isStreamedActivation(target: LazyHydrationTarget): boolean {
 }
 
 /**
- * Install this implementation as the shared visible-hydration coordinator.
- * Called once by the optional `visible-hydration.js` entry; idempotent so a
+ * Install this implementation as the shared lazy-hydration coordinator.
+ * Called once by the optional `lazy-hydration.js` entry; idempotent so a
  * duplicate import (or direct test call) never re-registers or resets state.
  */
-export function installVisibleHydrationCoordinator(): void {
+export function installLazyHydrationCoordinator(): void {
   if (installed) return;
   installed = true;
-  registerVisibleHydrationCoordinator({
-    supportsVisibleHydration,
+  registerLazyHydrationCoordinator({
+    supportsLazyHydration,
     observe,
     observeStreamed,
     disconnect,
@@ -124,7 +143,7 @@ export function installVisibleHydrationCoordinator(): void {
 }
 
 /** Test-only: clear the installer latch for the idempotency unit test. */
-export function __resetVisibleHydrationCoordinatorForTests(): void {
+export function __resetLazyHydrationCoordinatorForTests(): void {
   installed = false;
 }
 
@@ -140,6 +159,12 @@ function getObserver(): IntersectionObserver {
     observer = new IntersectionObserver(handleIntersections, options);
   }
   return observer;
+}
+
+function supportsContentVisibilityEvents(): boolean {
+  if ('ContentVisibilityAutoStateChangeEvent' in globalThis) return true;
+  const root = document.documentElement;
+  return !!root && `on${CONTENT_VISIBILITY_EVENT}` in root;
 }
 
 function handleIntersections(entries: IntersectionObserverEntry[]): void {
@@ -164,7 +189,31 @@ function handleIntersections(entries: IntersectionObserverEntry[]): void {
       enqueueActivationChain(target);
     }
   }
+
   if (!queued) return;
+  if (!continuationPending) drainActivationQueue();
+}
+
+function handleContentVisibilityChange(event: Event): void {
+  const target = event.currentTarget as LazyHydrationTarget | null;
+  if (
+    !target ||
+    event.target !== target ||
+    !target.isConnected ||
+    !observedTargets.has(target)
+  ) return;
+  const skipped = (event as Event & { skipped?: boolean }).skipped;
+  if (skipped === true) {
+    // Receiving a native state event proves that future transitions cannot be
+    // lost to late listener installation, so the shared observer can retire.
+    settleInitialObservation(target);
+    observer?.unobserve(target);
+    return;
+  }
+  if (skipped !== false) return;
+
+  beginHydrationBatch();
+  enqueueActivationChain(target);
   if (!continuationPending) drainActivationQueue();
 }
 
@@ -317,6 +366,7 @@ function activate(target: LazyHydrationTarget): void {
   if (!target.isConnected || !pendingTargets.delete(target)) return;
   settleInitialObservation(target);
   if (observedTargets.delete(target)) observer?.unobserve(target);
+  removeContentVisibilityListener(target);
   removeWakeListenersWhenIdle();
 
   const streamed = boundaryStates.has(target);
@@ -328,6 +378,15 @@ function activate(target: LazyHydrationTarget): void {
   } finally {
     if (streamed) streamedActivations.delete(target);
   }
+
+}
+
+function removeContentVisibilityListener(target: LazyHydrationTarget): void {
+  if (!nativeVisibilityTargets.delete(target)) return;
+  target.removeEventListener(
+    CONTENT_VISIBILITY_EVENT,
+    handleContentVisibilityChange,
+  );
 }
 
 function trackInitialObservation(target: LazyHydrationTarget): void {
