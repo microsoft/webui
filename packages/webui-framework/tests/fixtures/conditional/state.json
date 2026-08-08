@@ -8,5 +8,8 @@
   "innerOpen": false,
   "showStats": true,
   "compact": false,
-  "value": ""
+  "value": "",
+  "outer": true,
+  "inner": false,
+  "tail": true
 }

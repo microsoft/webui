@@ -55,3 +55,11 @@ export class TestConditionalInterleaved extends WebUIElement {
 }
 
 TestConditionalInterleaved.define('test-conditional-interleaved');
+
+export class TestConditionalSiblingAfterNested extends WebUIElement {
+  @observable outer = true;
+  @observable inner = false;
+  @observable tail = true;
+}
+
+TestConditionalSiblingAfterNested.define('test-conditional-sibling-after-nested');

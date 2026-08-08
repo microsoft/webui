@@ -135,7 +135,18 @@ export class TestRepeatInterleaved extends WebUIElement {
   }
 }
 
+export class TestRepeatAfterConditional extends WebUIElement {
+  @observable showInner = true;
+  @observable innerRows: string[] = [];
+  @observable tailRows: string[] = [];
+
+  replaceTailRows(): void {
+    this.tailRows = ['Y3', 'Y4', 'Y5'];
+  }
+}
+
 TestNestedRepeat.define('test-nested-repeat');
 TestRepeatSiblings.define('test-repeat-siblings');
 TestNestedRepeatKeyedChain.define('test-nested-repeat-keyed-chain');
 TestRepeatInterleaved.define('test-repeat-interleaved');
+TestRepeatAfterConditional.define('test-repeat-after-conditional');

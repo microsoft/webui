@@ -3,7 +3,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
-import { collectItemMarkers, nextElement, findByOrdinal } from './markers.js';
+import { collectItemMarkers, nextElement, findByOrdinal, skipBlockRange } from './markers.js';
 
 // ── Mock helpers ────────────────────────────────────────────────
 // markers.ts only reads nodeType, data, and nextSibling — lightweight
@@ -393,5 +393,68 @@ describe('findByOrdinal', () => {
       findByOrdinal(parent as unknown as Node, ELEMENT, 0), null,
       'should return null for parent with no children',
     );
+  });
+});
+
+// ── skipBlockRange ──────────────────────────────────────────────
+
+describe('skipBlockRange', () => {
+  function chain(...nodes: MockNode[]): MockNode {
+    for (let i = 0; i < nodes.length - 1; i++) nodes[i].nextSibling = nodes[i + 1];
+    return nodes[0];
+  }
+  const el = (): MockNode => ({ nodeType: ELEMENT, nextSibling: null }) as MockNode;
+  const comment = (data: string): MockNode =>
+    ({ nodeType: COMMENT, data, nextSibling: null }) as MockNode;
+
+  test('returns the node after a simple conditional range', () => {
+    const start = comment('wc');
+    const inner = el();
+    const end = comment('/wc');
+    const after = el();
+    chain(start, inner, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), after);
+  });
+
+  test('consumes nested ranges of the same type via depth tracking', () => {
+    const start = comment('wc');
+    const nestedStart = comment('wc');
+    const nestedEnd = comment('/wc');
+    const end = comment('/wc');
+    const after = el();
+    chain(start, nestedStart, nestedEnd, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), after);
+  });
+
+  test('ignores a different block type inside the range', () => {
+    const start = comment('wc');
+    const repeatStart = comment('wr');
+    const repeatEnd = comment('/wr');
+    const end = comment('/wc');
+    const after = el();
+    chain(start, repeatStart, repeatEnd, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), after);
+  });
+
+  test('skips a repeat range and returns the following sibling', () => {
+    const start = comment('wr');
+    const item = comment('wi');
+    const node = el();
+    const end = comment('/wr');
+    const after = el();
+    chain(start, item, node, end, after);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wr'), after);
+  });
+
+  test('returns null when the range is unterminated', () => {
+    const start = comment('wc');
+    const inner = el();
+    chain(start, inner);
+
+    assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), null);
   });
 });

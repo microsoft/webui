@@ -74,6 +74,30 @@ export function nextElement(marker: Comment): Element | null {
 }
 
 /**
+ * Skip a complete structural block range and return the node that follows it.
+ *
+ * `start` must be a `<!--wc-->` or `<!--wr-->` comment.  Walks forward with
+ * depth tracking over same-type markers so nested blocks of the same kind are
+ * consumed as part of the range, and returns the sibling after the matching
+ * closing marker (or `null` when the range is unterminated).
+ */
+export function skipBlockRange(start: Comment, data: string): ChildNode | null {
+  const endTag = data === MARKER_COND_START ? MARKER_COND_END : MARKER_REPEAT_END;
+  let depth = 1;
+  let node: ChildNode | null = start.nextSibling;
+  while (node && depth > 0) {
+    if (node.nodeType === 8 /* COMMENT_NODE */) {
+      const d = (node as Comment).data;
+      if (d === data) depth++;
+      else if (d === endTag) depth--;
+    }
+    if (depth > 0) node = node.nextSibling;
+  }
+  // Advance past the closing marker itself
+  return node ? node.nextSibling : null;
+}
+
+/**
  * Find the Nth child of a given nodeType, skipping structural block ranges.
  *
  * The compiled template static HTML (`meta.h`) does not contain conditional
@@ -100,19 +124,7 @@ export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): 
     if (child.nodeType === 8 /* COMMENT_NODE */) {
       const data = (child as Comment).data;
       if (data === MARKER_COND_START || data === MARKER_REPEAT_START) {
-        const endTag = data === MARKER_COND_START ? MARKER_COND_END : MARKER_REPEAT_END;
-        let depth = 1;
-        child = child.nextSibling;
-        while (child && depth > 0) {
-          if (child.nodeType === 8 /* COMMENT_NODE */) {
-            const d = (child as Comment).data;
-            if (d === data) depth++;
-            else if (d === endTag) depth--;
-          }
-          if (depth > 0) child = child.nextSibling;
-        }
-        // Advance past the closing marker itself
-        if (child) child = child.nextSibling;
+        child = skipBlockRange(child as Comment, data);
         continue;
       }
     }

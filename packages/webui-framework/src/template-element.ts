@@ -70,6 +70,7 @@ import {
   collectItemMarkers,
   nextElement,
   findByOrdinal,
+  skipBlockRange,
   MARKER_COND_START,
   MARKER_COND_END,
   MARKER_REPEAT_START,
@@ -1363,7 +1364,10 @@ export class TemplateElement extends HTMLElement {
           if (condInstance) condInstance.parent = instance;
         }
 
-        // Collect <!--/wc--> end marker for deferred removal.
+        // Collect <!--/wc--> end marker for deferred removal, and advance the
+        // cursor past it.  Resuming at the start marker would walk back into
+        // this branch's own content and let the next sibling conditional claim
+        // a <!--wc--> that belongs to a nested block.
         // Do NOT remove here — later phases (repeats, events) still need
         // intact marker pairs for $resolveSSR structural-block skipping.
         if (marker) {
@@ -1371,6 +1375,7 @@ export class TemplateElement extends HTMLElement {
           const endMarker = lastNode?.nextSibling;
           if (endMarker && endMarker.nodeType === 8 && (endMarker as Comment).data === MARKER_COND_END) {
             staleMarkers.push(endMarker);
+            lastCondMarker = endMarker;
           }
         }
 
@@ -1616,12 +1621,21 @@ export class TemplateElement extends HTMLElement {
   /**
    * Find the next marker comment with the given data among a parent's children.
    * Starts searching from `after` (exclusive) if provided, or from firstChild.
+   *
+   * Structural ranges encountered along the way are skipped whole: the blocks
+   * nested inside a `<!--wc-->`/`<!--wr-->` pair belong to that block's own
+   * metadata, so a sibling block must never claim one of their markers.
    */
   private $findMarker(parent: Node, data: string, after?: Node | null): Comment | null {
     let child = after ? after.nextSibling : parent.firstChild;
     while (child) {
-      if (child.nodeType === 8 && (child as Comment).data === data) {
-        return child as Comment;
+      if (child.nodeType === 8) {
+        const d = (child as Comment).data;
+        if (d === data) return child as Comment;
+        if (d === MARKER_COND_START || d === MARKER_REPEAT_START) {
+          child = skipBlockRange(child as Comment, d);
+          continue;
+        }
       }
       child = child.nextSibling;
     }

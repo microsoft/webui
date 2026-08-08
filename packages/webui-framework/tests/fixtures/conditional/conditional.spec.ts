@@ -139,6 +139,38 @@ test.describe('conditional fixture', () => {
     await expect(page.locator('test-conditional .gt-zero')).toHaveCount(0);
   });
 
+  test('anchors a sibling conditional after a root-level nested conditional', async ({ page }) => {
+    const host = page.locator('test-conditional-sibling-after-nested');
+
+    // SSR: outer branch is open, inner is closed, tail is open.
+    await expect(host.locator('.nested-outer')).toHaveText('outer');
+    await expect(host.locator('.nested-inner')).toHaveCount(0);
+    await expect(host.locator('.nested-tail')).toHaveText('tail');
+    await expect(host.locator('.nested-static')).toHaveText('static');
+
+    // The tail conditional must own its own marker, not the inner one.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-sibling-after-nested') as any).tail = false;
+    });
+    await expect(host.locator('.nested-tail')).toHaveCount(0);
+    await expect(host.locator('.nested-outer')).toHaveText('outer');
+    await expect(host.locator('.nested-static')).toHaveText('static');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-sibling-after-nested') as any).tail = true;
+    });
+    await expect(host.locator('.nested-tail')).toHaveCount(1);
+    await expect(host.locator('.nested-tail')).toHaveText('tail');
+
+    // The inner conditional still belongs to the outer branch.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-sibling-after-nested') as any).inner = true;
+    });
+    await expect(host.locator('.nested-inner')).toHaveCount(1);
+    await expect(host.locator('.nested-inner')).toHaveText('inner');
+    await expect(host.locator('.nested-tail')).toHaveCount(1);
+  });
+
   test('anchors a conditional that revisits an earlier parent to its own marker', async ({ page }) => {
     const host = page.locator('test-conditional-interleaved');
 

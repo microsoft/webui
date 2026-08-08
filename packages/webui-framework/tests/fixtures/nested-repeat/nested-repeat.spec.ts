@@ -257,3 +257,31 @@ test.describe('repeat that revisits an earlier parent (#431)', () => {
     await expect(host.locator('.panel-head .inner-item')).toHaveText(['I1', 'I2']);
   });
 });
+
+test.describe('repeat after a root-level conditional-nested repeat', () => {
+  test('hydrates the trailing repeat against its own marker', async ({ page }) => {
+    await page.goto('/nested-repeat/fixture.html');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('test-repeat-after-conditional');
+      return el && (el as unknown as { $ready?: boolean }).$ready === true;
+    });
+
+    const host = page.locator('test-repeat-after-conditional');
+
+    await expect(host.locator('.nested-row')).toHaveText(['X1', 'X2']);
+    await expect(host.locator('.nested-label')).toHaveText('label');
+    await expect(host.locator('.tail-row')).toHaveText(['Y1', 'Y2']);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-repeat-after-conditional') as HTMLElement & {
+        replaceTailRows(): void;
+      }).replaceTailRows();
+    });
+
+    // The trailing repeat owns its own <!--wr--> range; the repeat nested
+    // inside the conditional branch must be untouched.
+    await expect(host.locator('.tail-row')).toHaveText(['Y3', 'Y4', 'Y5']);
+    await expect(host.locator('.nested-row')).toHaveText(['X1', 'X2']);
+    await expect(host.locator('.nested-label')).toHaveText('label');
+  });
+});
