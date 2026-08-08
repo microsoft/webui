@@ -1475,11 +1475,7 @@ mod tests {
     #[test]
     fn light_css_bytes_align_across_link_style_and_module() {
         let authored = " \n:host(.ready){color:red}\n ";
-        let expected = concat!(
-            "@scope (my-card[data-wl]) to (:scope [data-wl] > *) {\n",
-            " \n:scope:is(.ready){color:red}\n ",
-            "\n}"
-        );
+        let expected = " \nmy-card[data-wl]:is(.ready){color:red}\n ";
 
         for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
             let app = create_app_dir(&[
@@ -1911,7 +1907,7 @@ mod tests {
         );
     }
 
-    /// Light CSS is Document-owned and its `@scope` root cannot resolve from
+    /// Light CSS is Document-owned and its host selector cannot resolve from
     /// inside a FAST-created root, so it must never be inlined into the
     /// plugin-facing template.
     #[test]

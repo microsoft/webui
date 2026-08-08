@@ -18,17 +18,26 @@ test.describe('light-dom pipeline', () => {
       'rgb(12, 34, 56)',
     );
 
-    const result = await page.locator('#light-root').evaluate((host) => ({
-      hasShadow: !!host.shadowRoot,
-      lightMarker: host.hasAttribute('data-wl'),
-      scopedCss: Array.from(
-        document.head.querySelectorAll('style[data-webui-resource]'),
-        style => style.textContent,
-      ).some(css => css?.includes('@scope (test-light-dom[data-wl])')),
-    }));
+    const result = await page.locator('#light-root').evaluate((host) => {
+      const marker = Array.from(
+        host.querySelector('.greeting')?.attributes ?? [],
+        attribute => attribute.name,
+      ).find(name => name.startsWith('data-wl-'));
+      return {
+        hasShadow: !!host.shadowRoot,
+        lightMarker: host.hasAttribute('data-wl'),
+        // The host owns `data-wl`; only its declared content is stamped.
+        hostUnstamped: !marker || !host.hasAttribute(marker),
+        scopedCss: !!marker && Array.from(
+          document.head.querySelectorAll('style[data-webui-resource]'),
+          style => style.textContent,
+        ).some(css => css?.includes(`:where([${marker}])`)),
+      };
+    });
     expect(result).toEqual({
       hasShadow: false,
       lightMarker: true,
+      hostUnstamped: true,
       scopedCss: true,
     });
   });
@@ -57,6 +66,34 @@ test.describe('light-dom pipeline', () => {
       'rgb(34, 139, 34)',
     );
     expect(await resourceIds()).toEqual(['test-light-dom', 'test-light-child']);
+  });
+
+  test('a parent may style a nested Light host but never its internals', async ({ page }) => {
+    const child = page.locator('test-light-child').first();
+
+    // The nested host is declared by the parent template, so it carries the
+    // parent's marker and the parent's `test-light-child` rule applies.
+    await expect(child).toHaveCSS('outline-color', 'rgb(1, 2, 3)');
+    await expect(child).toHaveCSS('display', 'block');
+
+    // `.child-label` is declared by the child template, so it carries only the
+    // child's marker. The parent's identically-named rule must not reach it.
+    await expect(child.locator('.child-label')).toHaveCSS(
+      'color',
+      'rgb(34, 139, 34)',
+    );
+
+    const markers = await child.evaluate((host) => {
+      const label = host.querySelector('.child-label');
+      const names = (element: Element | null) => (element
+        ? element.getAttributeNames().filter(name => name.startsWith('data-wl-'))
+        : []);
+      return { host: names(host), label: names(label) };
+    });
+
+    expect(markers.host).toHaveLength(1);
+    expect(markers.label).toHaveLength(1);
+    expect(markers.host).not.toEqual(markers.label);
   });
 
   test('Shadow opt-in cuts the Document closure and projects a native slot', async ({ page }) => {

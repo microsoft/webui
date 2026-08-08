@@ -380,7 +380,17 @@ Shadow CSS scoping. No CSS-in-JS or styles written from script.
   both Light and Shadow components.
 - Light DOM preserves normal inheritance while compiler scoping bounds
   component rules. Shadow DOM creates a native boundary.
+- Light scoping is applied at build time: every element your template declares
+  is stamped with a per-component marker attribute, and every selector is
+  qualified against it. **Elements you create imperatively from script (setting
+  `innerHTML`, `document.createElement` inside a component) carry no marker and
+  are not styled by that component's CSS.** Declare markup in the template, or
+  render it through `<if>` / `<for>`, and it is scoped automatically. Creating a
+  *component host* from script is fine — its content comes from the compiled
+  template.
 - Shadow-only selectors and unsafe Light keyframe references fail the build.
+- `data-wl` and `data-wl-*` are reserved for scoping; authoring either fails the
+  build.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Malformed CSS fails the build, including unterminated `var()` calls,

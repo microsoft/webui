@@ -1,3 +1,18 @@
 .greeting {
   color: rgb(12, 34, 56);
 }
+
+/*
+ * Isolation contract: this class also exists inside <test-light-child>, whose
+ * own template declares it. Only elements this template declares carry this
+ * component's marker, so the nested child must keep its own color.
+ */
+.child-label {
+  color: rgb(200, 0, 0);
+}
+
+/* The nested host is declared here, so the parent may style its box. */
+test-light-child {
+  display: block;
+  outline: 1px solid rgb(1, 2, 3);
+}

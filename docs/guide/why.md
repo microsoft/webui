@@ -44,7 +44,7 @@ Historically, frameworks existed because the web platform lacked key primitives.
 
 - **Web Components** - reusable custom elements with a standard lifecycle, no framework runtime required
 - **Declarative Shadow DOM** - server-renderable encapsulation without JavaScript
-- **CSS scoping** - native `@scope` for compiler-scoped Light component styles
+- **CSS scoping** - build-time scope markers for Light component styles
 - **Adopted stylesheets** - shared, constructable stylesheets when module
   delivery is selected
 - **Navigation API** - client-side routing without framework abstractions
@@ -52,7 +52,7 @@ Historically, frameworks existed because the web platform lacked key primitives.
 WebUI builds directly on these platform primitives rather than wrapping them in
 an abstraction layer. Templates use standard HTML and native Web Components.
 The optional client-side router uses the Navigation API. Styling uses ordinary
-paired CSS, native `@scope` in Light DOM, and Shadow scoping when selected. No
+paired CSS, build-time scoping in Light DOM, and Shadow scoping when opted in. No
 proprietary component model or virtual DOM is required.
 
 When you build on the web platform, you inherit its improvements for free. Every browser performance optimization, every new CSS feature, every platform API lands in your app without a framework upgrade.
