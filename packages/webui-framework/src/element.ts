@@ -25,7 +25,7 @@ import type {
   CompiledEventArgs,
   TemplateBlockMeta,
   TemplateMeta,
-  TemplateNodePath,
+  TemplateNodeIndex,
 } from './template.js';
 import type {
   ScopeFrame,
@@ -73,7 +73,7 @@ export class WebUIElement extends TemplateElement {
     instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
@@ -93,7 +93,7 @@ export class WebUIElement extends TemplateElement {
     instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
     const groups = meta.eg;

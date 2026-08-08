@@ -40,7 +40,7 @@ export type {
   CompiledTextRunMeta,
   TemplateBlockMeta,
   TemplateMeta,
-  TemplateNodePath,
+  TemplateNodeIndex,
   TemplateSlotPath,
 } from './template-types.js';
 import {

@@ -500,8 +500,8 @@ describe('buildSSRIndex', () => {
 
     const index = build(tpl, ssr);
 
-    assert.strictEqual(index.elements.get(tplA as unknown as Node), ssrA);
-    assert.strictEqual(index.elements.get(tplB as unknown as Node), ssrB);
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
   });
 
   test('collects block markers in document order across depths', () => {
@@ -535,7 +535,7 @@ describe('buildSSRIndex', () => {
 
     const index = build(tpl, ssr);
 
-    assert.strictEqual(index.elements.get(tplDiv as unknown as Node), ssrDiv);
+    assert.strictEqual(index.elements[1], ssrDiv);
   });
 
   test('descends into a template-empty element to find its block marker', () => {
@@ -565,6 +565,6 @@ describe('buildSSRIndex', () => {
     const ssrSpan = el('SPAN');
     const ssr = el('ROOT', el('MY-CHILD', ssrSpan));
 
-    assert.strictEqual(build(tpl, ssr).elements.get(tplSpan as unknown as Node), ssrSpan);
+    assert.strictEqual(build(tpl, ssr).elements[2], ssrSpan);
   });
 });
