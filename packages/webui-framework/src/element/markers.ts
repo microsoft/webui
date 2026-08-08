@@ -98,6 +98,106 @@ export function skipBlockRange(start: Comment, data: string): ChildNode | null {
 }
 
 /**
+ * A resolved view of one SSR subtree, built in a single pre-order pass.
+ *
+ * `elements` maps each template element to the SSR element it hydrates, and
+ * `conds` / `repeats` list the structural markers in document order.
+ */
+export interface SSRIndex {
+  elements: Map<Node, Node>;
+  conds: Comment[];
+  repeats: Comment[];
+}
+
+/**
+ * Pair a template subtree with its server-rendered counterpart in one walk.
+ *
+ * Resolving each binding independently costs O(bindings × width) because every
+ * lookup rescans its parent's children from the start.  The compiler emits
+ * bindings in source order and the server renders in source order, so a single
+ * pre-order walk can resolve every target at once and hand out block markers in
+ * the order the compiled `c` / `r` tables expect.
+ *
+ * Two properties of the SSR output shape the pairing:
+ *
+ *  - The renderer drops inter-element whitespace that `meta.h` keeps, so text
+ *    nodes do **not** line up positionally.  Only elements are paired here.
+ *  - Structural blocks render as `<!--wc-->`…`<!--/wc-->` / `<!--wr-->`…
+ *    `<!--/wr-->` ranges that the template does not contain, so those ranges
+ *    are skipped whole — their contents belong to the block's own metadata.
+ *
+ * The walk descends only where the template has children, which keeps it inside
+ * the component that owns the template: a child component contributes no
+ * children to `meta.h`, so its markers are never mistaken for this section's.
+ *
+ * Iterative by design — templates nest arbitrarily deep and recursion would put
+ * that on the call stack.
+ */
+export function buildSSRIndex(tplRoot: Node, ssrRoot: Node, needMarkers: boolean): SSRIndex {
+  const elements = new Map<Node, Node>();
+  const conds: Comment[] = [];
+  const repeats: Comment[] = [];
+  const stack: Array<{ t: ChildNode | null; s: ChildNode | null }> = [
+    { t: tplRoot.firstChild, s: ssrRoot.firstChild },
+  ];
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+
+    // Advance the SSR cursor to the next element, recording block markers in
+    // document order and stepping over their ranges.
+    let s = frame.s;
+    while (s) {
+      const type = s.nodeType;
+      if (type === 8 /* COMMENT_NODE */) {
+        const data = (s as Comment).data;
+        if (data === MARKER_COND_START) {
+          conds.push(s as Comment);
+          s = skipBlockRange(s as Comment, data);
+          continue;
+        }
+        if (data === MARKER_REPEAT_START) {
+          repeats.push(s as Comment);
+          s = skipBlockRange(s as Comment, data);
+          continue;
+        }
+      } else if (type === 1 /* ELEMENT_NODE */) {
+        break;
+      }
+      s = s.nextSibling;
+    }
+
+    // Advance the template cursor to the next element.
+    let t = frame.t;
+    while (t && t.nodeType !== 1 /* ELEMENT_NODE */) t = t.nextSibling;
+
+    if (!t || !s) {
+      stack.pop();
+      continue;
+    }
+
+    elements.set(t, s);
+    frame.t = t.nextSibling;
+    frame.s = s.nextSibling;
+
+    // Descend when there is anything of ours down there.  Template children
+    // always qualify.  An element with none can still hold block markers —
+    // `<ul><for …></ul>` compiles to an empty `<ul>` — so it is worth walking
+    // too, but only when this section actually has blocks to place.  A custom
+    // element is the exception either way: with no template children it
+    // contributes no slotted content, and whatever the server rendered inside
+    // belongs to that component, not to this one.
+    if (t.firstChild) {
+      stack.push({ t: t.firstChild, s: s.firstChild });
+    } else if (needMarkers && s.firstChild && (t as Element).tagName.indexOf('-') < 0) {
+      stack.push({ t: null, s: s.firstChild });
+    }
+  }
+
+  return { elements, conds, repeats };
+}
+
+/**
  * Find the Nth child of a given nodeType, skipping structural block ranges.
  *
  * The compiled template static HTML (`meta.h`) does not contain conditional

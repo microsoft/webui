@@ -3843,7 +3843,7 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 `@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
 
-- SSR hydration uses one DOM walk to discover `<!--wr-->`, `<!--wi-->`, and `<!--wc-->` comment markers, wire the relevant bindings using compiled metadata path indices, then remove SSR-only markers.
+- SSR hydration performs one pre-order walk per component that pairs each template element with the server-rendered element it hydrates and collects `<!--wc-->` / `<!--wr-->` markers in document order. Because the compiler emits `c` / `r` in source order and the server renders in source order, the two line up by index, so each block's anchor is unambiguous. Bindings then resolve by lookup rather than by rescanning, keeping hydration linear in subtree size instead of proportional to bindings times sibling count. The walk skips whole `<!--wc-->` / `<!--wr-->` ranges — that content belongs to the block's own metadata — and stops at child components, which contribute no children to the parent's `h`. `<!--wi-->` item markers and SSR-only closing markers are removed afterwards.
 - Authored browser entries execute only after every SSR instance they may
   upgrade has complete markup. Parser-inserted, non-async ES module scripts and
   classic `defer` scripts satisfy this automatically; blocking classic scripts

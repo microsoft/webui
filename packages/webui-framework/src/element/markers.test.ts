@@ -3,7 +3,13 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
-import { collectItemMarkers, nextElement, findByOrdinal, skipBlockRange } from './markers.js';
+import {
+  collectItemMarkers,
+  nextElement,
+  findByOrdinal,
+  skipBlockRange,
+  buildSSRIndex,
+} from './markers.js';
 
 // ── Mock helpers ────────────────────────────────────────────────
 // markers.ts only reads nodeType, data, and nextSibling — lightweight
@@ -456,5 +462,109 @@ describe('skipBlockRange', () => {
     chain(start, inner);
 
     assert.strictEqual(skipBlockRange(start as unknown as Comment, 'wc'), null);
+  });
+});
+
+// ── buildSSRIndex ───────────────────────────────────────────────
+
+describe('buildSSRIndex', () => {
+  interface TreeNode {
+    nodeType: number;
+    data?: string;
+    tagName?: string;
+    firstChild: TreeNode | null;
+    nextSibling: TreeNode | null;
+  }
+
+  function el(tagName: string, ...children: TreeNode[]): TreeNode {
+    for (let i = 0; i < children.length - 1; i++) children[i].nextSibling = children[i + 1];
+    return { nodeType: ELEMENT, tagName, firstChild: children[0] ?? null, nextSibling: null };
+  }
+  function txt(): TreeNode {
+    return { nodeType: TEXT, firstChild: null, nextSibling: null };
+  }
+  function cmt(data: string): TreeNode {
+    return { nodeType: COMMENT, data, firstChild: null, nextSibling: null };
+  }
+  const build = (t: TreeNode, s: TreeNode, markers = true) =>
+    buildSSRIndex(t as unknown as Node, s as unknown as Node, markers);
+
+  test('pairs elements while ignoring whitespace the server dropped', () => {
+    // The compiled template keeps authored whitespace; SSR does not.
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', txt(), tplA, txt(), tplB, txt());
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements.get(tplA as unknown as Node), ssrA);
+    assert.strictEqual(index.elements.get(tplB as unknown as Node), ssrB);
+  });
+
+  test('collects block markers in document order across depths', () => {
+    // <!--wc-->A  <section><!--wc-->C</section>  <!--wc-->B
+    // A and B sit at the root, C inside a static element; the compiled
+    // `c` table lists all three in that same source order.
+    const tplSection = el('SECTION', el('INNER'));
+    const tpl = el('ROOT', tplSection);
+
+    const markerA = cmt('wc');
+    const endA = cmt('/wc');
+    const markerC = cmt('wc');
+    const endC = cmt('/wc');
+    const markerB = cmt('wc');
+    const endB = cmt('/wc');
+    const ssrSection = el('SECTION', markerC, endC, el('INNER'));
+    const ssr = el('ROOT', markerA, endA, ssrSection, markerB, endB);
+
+    const index = build(tpl, ssr);
+
+    assert.deepStrictEqual(index.conds, [markerA, markerC, markerB]);
+  });
+
+  test('does not pair elements inside a structural range', () => {
+    // The <p> rendered inside the conditional belongs to the block's own
+    // metadata, so the template's first element must pair with <div>.
+    const tplDiv = el('DIV');
+    const tpl = el('ROOT', tplDiv);
+    const ssrDiv = el('DIV');
+    const ssr = el('ROOT', cmt('wc'), el('P'), cmt('/wc'), ssrDiv);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements.get(tplDiv as unknown as Node), ssrDiv);
+  });
+
+  test('descends into a template-empty element to find its block marker', () => {
+    // <ul><for …></ul> compiles to an empty <ul>.
+    const tplUl = el('UL');
+    const tpl = el('ROOT', tplUl);
+    const marker = cmt('wr');
+    const ssr = el('ROOT', el('UL', marker, cmt('/wr')));
+
+    assert.deepStrictEqual(build(tpl, ssr).repeats, [marker]);
+    // Sections without blocks skip that descent entirely.
+    assert.deepStrictEqual(build(tpl, ssr, false).repeats, []);
+  });
+
+  test('stops at a child component that contributes no template children', () => {
+    // Whatever the server rendered inside <my-child> belongs to that
+    // component, so its markers must not be collected here.
+    const tpl = el('ROOT', el('MY-CHILD'));
+    const ssr = el('ROOT', el('MY-CHILD', cmt('wc'), cmt('/wc')));
+
+    assert.deepStrictEqual(build(tpl, ssr).conds, []);
+  });
+
+  test('pairs slotted children the parent template owns', () => {
+    const tplSpan = el('SPAN');
+    const tpl = el('ROOT', el('MY-CHILD', tplSpan));
+    const ssrSpan = el('SPAN');
+    const ssr = el('ROOT', el('MY-CHILD', ssrSpan));
+
+    assert.strictEqual(build(tpl, ssr).elements.get(tplSpan as unknown as Node), ssrSpan);
   });
 });

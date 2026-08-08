@@ -70,10 +70,9 @@ import {
   collectItemMarkers,
   nextElement,
   findByOrdinal,
-  skipBlockRange,
+  buildSSRIndex,
   MARKER_COND_START,
   MARKER_COND_END,
-  MARKER_REPEAT_START,
 } from './element/markers.js';
 import {
   injectModuleStyle,
@@ -139,8 +138,18 @@ const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
  *  Avoids re-counting element/text siblings on every $resolveSSR call. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
 
-function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
-  let map = tplOrdinalCache.get(tplNode);
+/**
+ * Template node resolved from a compiled path, keyed by the path array itself.
+ *
+ * The parsed template DOM is cached per metadata object and compiled paths are
+ * parsed once with it, so a path always resolves to the same template node —
+ * for every instance of the component, for the life of the page.  Caching it
+ * turns each per-instance lookup into a map hit instead of another walk down
+ * `childNodes`, which is what made wide templates expensive to hydrate.
+ */
+const tplNodeByPath = new WeakMap<TemplateNodePath, Node>();
+
+function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {  let map = tplOrdinalCache.get(tplNode);
   if (map) return map;
   map = new Map();
   let elemOrd = 0;
@@ -1280,6 +1289,29 @@ export class TemplateElement extends HTMLElement {
     // All phases use $resolveSSR, so markers must survive until the end.
     const staleMarkers: Node[] = [];
 
+    // Resolve the whole subtree up front.  Every binding used to walk down
+    // from the root on its own, rescanning each parent's children, which made
+    // hydration cost O(bindings × width).  One pre-order pass pairs template
+    // elements with their SSR counterparts and collects the block markers in
+    // document order, so each binding below is an O(1) lookup.
+    //
+    // Built before any mutation: the phases below insert text nodes and
+    // anchors, but never add or permanently remove elements outside a block
+    // range, so the element pairing stays valid for the whole pass.
+    const tplStart = pathStart > 0 ? tplDom.children[0] : tplDom;
+    const ssrIndex = buildSSRIndex(tplStart ?? tplDom, ssrRoot, meta.c !== undefined || meta.r !== undefined);
+    if (tplStart) ssrIndex.elements.set(tplStart, ssrRoot);
+    const resolveSSR = (path: TemplateNodePath): Node | null => {
+      let tplNode = tplNodeByPath.get(path);
+      if (tplNode === undefined) {
+        const resolved = this.$resolve(tplDom, path, pathStart);
+        if (!resolved) return null;
+        tplNode = resolved;
+        tplNodeByPath.set(path, tplNode);
+      }
+      return ssrIndex.elements.get(tplNode) ?? null;
+    };
+
     // Text bindings — find existing text nodes rendered by the server
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
@@ -1287,7 +1319,7 @@ export class TemplateElement extends HTMLElement {
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
         const [parentPath, beforeIndex] = slot;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart);
+        const ssrParent = resolveSSR(parentPath);
         if (!ssrParent) continue;
         const tplParent = this.$resolve(tplDom, parentPath, pathStart);
         if (!tplParent) continue;
@@ -1308,41 +1340,24 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Attribute bindings
-    this.$wireAttrs(instance, meta, scope, (p) =>
-      this.$resolveSSR(ssrRoot, tplDom, p, pathStart) as Element,
-    );
+    this.$wireAttrs(instance, meta, scope, (p) => resolveSSR(p) as Element);
 
     // Conditional bindings — use <!--wc--> markers as anchors
     if (meta.c) {
-      // Compiled conditionals are in source order, but consecutive entries can
-      // sit under different parents and later return to an earlier one (a root
-      // `<if>`, a static subtree holding its own `<if>`s, then another root
-      // `<if>`).  A single cursor would restart that parent's scan and reclaim
-      // an already-consumed marker, so each parent keeps its own cursor.  The
-      // map is allocated only once a second parent appears — templates whose
-      // conditionals all share one parent never pay for it.
-      let lastCondMarker: Node | null = null;
-      let lastCondParent: Node | null = null;
-      let condCursors: Map<Node, Node | null> | null = null;
+      // `meta.c` is in source order and the server renders in source order, so
+      // the markers collected in document order line up one-for-one.  Indexing
+      // them is what makes a block's anchor unambiguous: reconstructing it from
+      // a parent plus a scan cursor is what previously let a block claim a
+      // marker belonging to a nested or already-hydrated sibling.
+      const condMarkers = ssrIndex.conds.length === meta.c.length ? ssrIndex.conds : null;
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
         const [parentPath] = slotMeta;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
         let condInstance: TemplateInstance | null = null;
 
-        // Switch cursors when the parent changes between iterations
-        if (ssrParent !== lastCondParent) {
-          if (lastCondParent) {
-            condCursors ??= new Map();
-            condCursors.set(lastCondParent, lastCondMarker);
-          }
-          lastCondMarker = condCursors?.get(ssrParent) ?? null;
-          lastCondParent = ssrParent;
-        }
-
-        // Find the next <!--wc--> marker in ssrParent (after any previously found one)
-        const marker = this.$findMarker(ssrParent, MARKER_COND_START, lastCondMarker);
+        const marker = condMarkers ? condMarkers[i] : null;
+        const ssrParent = (marker ? marker.parentNode : resolveSSR(parentPath)) ?? ssrRoot;
         let condAnchor: Comment;
         if (marker) {
           condAnchor = marker;
@@ -1353,8 +1368,6 @@ export class TemplateElement extends HTMLElement {
           const insertRef = ssrParent.childNodes[beforeIndex ?? ssrParent.childNodes.length] ?? null;
           ssrParent.insertBefore(condAnchor, insertRef);
         }
-        if (marker) lastCondMarker = marker;
-
         // Trust the SSR marker range regardless of the current condition.
         // Parent bindings may not have arrived yet, so the client value can
         // temporarily disagree with SSR. An empty range must stay empty rather
@@ -1364,18 +1377,14 @@ export class TemplateElement extends HTMLElement {
           if (condInstance) condInstance.parent = instance;
         }
 
-        // Collect <!--/wc--> end marker for deferred removal, and advance the
-        // cursor past it.  Resuming at the start marker would walk back into
-        // this branch's own content and let the next sibling conditional claim
-        // a <!--wc--> that belongs to a nested block.
-        // Do NOT remove here — later phases (repeats, events) still need
-        // intact marker pairs for $resolveSSR structural-block skipping.
+        // Collect the <!--/wc--> end marker for deferred removal.  Do NOT remove
+        // it here — later phases still need intact marker pairs to skip
+        // structural block content.
         if (marker) {
           const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
           const endMarker = lastNode?.nextSibling;
           if (endMarker && endMarker.nodeType === 8 && (endMarker as Comment).data === MARKER_COND_END) {
             staleMarkers.push(endMarker);
-            lastCondMarker = endMarker;
           }
         }
 
@@ -1389,32 +1398,21 @@ export class TemplateElement extends HTMLElement {
 
     // Repeat bindings — use <!--wr--> markers as anchors, <!--wi--> for items
     if (meta.r) {
-      // Per-parent cursors, for the same reason as conditionals above.
-      let lastRepMarker: Node | null = null;
-      let lastRepParent: Node | null = null;
-      let repCursors: Map<Node, Node | null> | null = null;
+      // Indexed the same way as conditionals above.  A repeat whose collection
+      // never reached the server renders no marker at all, so fall back to slot
+      // positions unless every repeat in this section has one.
+      const repMarkers = ssrIndex.repeats.length === meta.r.length ? ssrIndex.repeats : null;
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
         const [parentPath] = slotMeta;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
-
-        // Switch cursors when the parent changes between iterations
-        if (ssrParent !== lastRepParent) {
-          if (lastRepParent) {
-            repCursors ??= new Map();
-            repCursors.set(lastRepParent, lastRepMarker);
-          }
-          lastRepMarker = repCursors?.get(ssrParent) ?? null;
-          lastRepParent = ssrParent;
-        }
+        const marker = repMarkers ? repMarkers[i] : null;
+        const ssrParent = (marker ? marker.parentNode : resolveSSR(parentPath)) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
         const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
         const rootTag = blockMeta && blockTplDom?.childNodes.length === 1 && blockTplDom.children.length === 1
           ? this.$rootTag(blockMeta)
           : null;
 
-        // Find the next <!--wr--> marker in ssrParent (after any previously found one)
-        const marker = this.$findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
         let anchor: Comment;
         if (marker) {
           anchor = marker;
@@ -1436,7 +1434,6 @@ export class TemplateElement extends HTMLElement {
         const { items: itemMarkers, end: endMarker } = marker
           ? collectItemMarkers(anchor)
           : { items: [] as Comment[], end: null as Comment | null };
-        lastRepMarker = endMarker ?? anchor;
 
         if (blockMeta && blockTplDom && anchor.parentNode && itemMarkers.length > 0) {
           if (
@@ -1524,7 +1521,7 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Events + refs — this is the last phase that uses $resolveSSR.
-    this.$finalize(instance, ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart), scope);
+    this.$finalize(instance, ssrRoot, meta, (_r, p) => resolveSSR(p), scope);
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping.  Start markers
@@ -1616,30 +1613,6 @@ export class TemplateElement extends HTMLElement {
     if (container) this.$replaceInstanceContainer(inst, wrapper, container);
     // Same as above — trust SSR DOM, skip binding evaluation.
     return inst;
-  }
-
-  /**
-   * Find the next marker comment with the given data among a parent's children.
-   * Starts searching from `after` (exclusive) if provided, or from firstChild.
-   *
-   * Structural ranges encountered along the way are skipped whole: the blocks
-   * nested inside a `<!--wc-->`/`<!--wr-->` pair belong to that block's own
-   * metadata, so a sibling block must never claim one of their markers.
-   */
-  private $findMarker(parent: Node, data: string, after?: Node | null): Comment | null {
-    let child = after ? after.nextSibling : parent.firstChild;
-    while (child) {
-      if (child.nodeType === 8) {
-        const d = (child as Comment).data;
-        if (d === data) return child as Comment;
-        if (d === MARKER_COND_START || d === MARKER_REPEAT_START) {
-          child = skipBlockRange(child as Comment, d);
-          continue;
-        }
-      }
-      child = child.nextSibling;
-    }
-    return null;
   }
 
   /**
