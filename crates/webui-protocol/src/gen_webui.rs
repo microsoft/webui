@@ -114,6 +114,10 @@ pub struct WebUiProtocol {
         ::prost::alloc::string::String,
         StreamingBoundaryList,
     >,
+    /// Build-generated document-level rules for component rendering policies.
+    /// Empty when no component opts into lazy rendering.
+    #[prost(string, tag = "9")]
+    pub component_render_css: ::prost::alloc::string::String,
 }
 /// Ordered compile-time boundary names for one entry fragment.
 #[derive(serde::Serialize, serde::Deserialize)]

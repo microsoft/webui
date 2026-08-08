@@ -117,6 +117,9 @@ message WebUIProtocol {
   // declaration order. Hosts resolve a name once to its zero-based BoundaryId;
   // names never reach the rendered HTML response.
   map<string, StreamingBoundaryList> streaming_boundaries = 8;
+  // Build-generated document-level rules for component rendering policies.
+  // Empty when no component opts into lazy rendering.
+  string component_render_css = 9;
 }
 
 // Ordered compile-time boundary names for one entry fragment.

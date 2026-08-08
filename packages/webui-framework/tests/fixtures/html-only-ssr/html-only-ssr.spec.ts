@@ -26,7 +26,7 @@ test.describe('HTML-only dormant host fixture', () => {
     await expect(page.locator('test-html-only .filter')).toHaveText('all');
     await expect(page.locator('test-html-only .status')).toHaveText('Ready');
     await expect(page.locator('test-html-only .detail-link')).toHaveAttribute('href', '/items/42');
-    await expect(page.locator('test-html-only .item')).toHaveText(['Ada', 'Grace']);
+    await expect(page.locator('test-html-only .item-name')).toHaveText(['Ada', 'Grace']);
     await expect(page.locator('test-html-only .details')).toHaveCount(0);
     const data = await page.evaluate(() => ({
       state: window.__webui?.state,
@@ -61,7 +61,7 @@ test.describe('HTML-only dormant host fixture', () => {
     await expect(page.locator('test-html-only .heading')).toHaveText('Updated contacts');
     await expect(page.locator('test-html-only .status')).toHaveText('Loaded');
     await expect(page.locator('test-html-only .detail-link')).toHaveAttribute('href', '/items/99');
-    await expect(page.locator('test-html-only .item')).toHaveText(['Linus', 'Margaret', 'Radia']);
+    await expect(page.locator('test-html-only .item-name')).toHaveText(['Linus', 'Margaret', 'Radia']);
     await expect(page.locator('test-html-only .details')).toHaveText('Loaded from state');
     expect(await page.evaluate(
       () => performance.getEntriesByName('webui:hydrate:total', 'measure').length,
@@ -93,16 +93,75 @@ test.describe('HTML-only dormant host fixture', () => {
       const host = document.querySelector('test-html-only') as {
         setState(state: Record<string, unknown>): void;
       } | null;
-      host?.setState({ status: 'Partially updated' });
+      host?.setState({
+        status: 'Partially updated',
+        unrelated: 'Ignored',
+      });
     });
 
     await expect(page.locator('test-html-only .status')).toHaveText('Partially updated');
     await expect(page.locator('test-html-only .heading')).toHaveText('Contacts');
     await expect(page.locator('test-html-only .filter')).toHaveText('all');
+    await expect(page.locator('test-html-only .mixed')).toHaveText(
+      'Ready / Contacts',
+    );
     await expect(page.locator('test-html-only .detail-link')).toHaveAttribute('href', '/items/42');
-    await expect(page.locator('test-html-only .item')).toHaveText(['Ada', 'Grace']);
+    await expect(page.locator('test-html-only .item-name')).toHaveText(['Ada', 'Grace']);
     await expect(page.locator('test-html-only .details')).toHaveCount(0);
     expect(warnings.filter((warning) => warning.includes('repeat marker count'))).toHaveLength(0);
+
+    await page.evaluate(() => {
+      const host = document.querySelector('test-html-only') as {
+        setState(state: Record<string, unknown>): void;
+      } | null;
+      host?.setState({
+        status: 'Second update',
+        items: [{ name: 'Ada' }, { name: 'Grace' }],
+      });
+    });
+    await expect(page.locator('test-html-only .status')).toHaveText('Second update');
+    await expect(page.locator('test-html-only .mixed')).toHaveText(
+      'Ready / Contacts',
+    );
+    await expect(page.locator('test-html-only .item-mixed')).toHaveText([
+      'Ready / Contacts / Ada',
+      'Ready / Contacts / Grace',
+    ]);
+  });
+
+  test('treats explicit undefined as a dormant state write', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('test-html-only') as {
+        setState(state: Record<string, unknown>): void;
+      } | null;
+      host?.setState({ status: undefined, items: undefined });
+    });
+
+    await expect(page.locator('test-html-only .status')).toHaveText('');
+    await expect(page.locator('test-html-only .item-name')).toHaveCount(0);
+    await expect(page.locator('test-html-only .mixed')).toHaveText(
+      'Ready / Contacts',
+    );
+  });
+
+  test('clears live text and repeat state with explicit undefined', async ({ page }) => {
+    await page.evaluate(() => {
+      const host = document.querySelector('test-html-only') as {
+        setState(state: Record<string, unknown>): void;
+      } | null;
+      host?.setState({
+        heading: 'Live contacts',
+        status: 'Live',
+        items: [{ name: 'Ada' }],
+      });
+      host?.setState({ status: undefined, items: undefined });
+    });
+
+    await expect(page.locator('test-html-only .status')).toHaveText('');
+    await expect(page.locator('test-html-only .mixed')).toHaveText(
+      ' / Live contacts',
+    );
+    await expect(page.locator('test-html-only .item-name')).toHaveCount(0);
   });
 
   test('removes excess SSR repeat items on first activation', async ({ page }) => {
@@ -120,7 +179,7 @@ test.describe('HTML-only dormant host fixture', () => {
       });
     });
 
-    await expect(page.locator('test-html-only .item')).toHaveText(['Radia']);
+    await expect(page.locator('test-html-only .item-name')).toHaveText(['Radia']);
     expect(warnings.filter((warning) => warning.includes('repeat marker count'))).toHaveLength(0);
   });
 });

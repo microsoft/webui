@@ -148,6 +148,13 @@ pub mod codes {
     pub const UNSAFE_MODULE_PRELOAD: &str = "unsafe-module-preload";
     /// Static component assets were requested for a graph containing `<route>`.
     pub const COMPONENT_ASSETS_WITH_ROUTES: &str = "component-assets-with-routes";
+    /// A component's root rendering or hydration policy is malformed.
+    pub const INVALID_COMPONENT_RENDER_POLICY: &str = "invalid-component-render-policy";
+    /// Lazy rendering omitted the intrinsic block-size estimate needed to
+    /// reserve scroll geometry while the browser skips layout.
+    pub const MISSING_RENDER_RESERVATION: &str = "missing-render-reservation";
+    /// A lazy-render intrinsic block-size estimate is malformed or misplaced.
+    pub const INVALID_RENDER_RESERVATION: &str = "invalid-render-reservation";
 }
 
 /// A build-time template-authoring diagnostic.

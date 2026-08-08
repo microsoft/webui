@@ -22,6 +22,12 @@
         "types": "./dist/streaming-entry.d.ts",
         "default": "./dist/streaming-entry.js"
       }
+    },
+    "./lazy-hydration.js": {
+      "import": {
+        "types": "./dist/lazy-hydration-entry.d.ts",
+        "default": "./dist/lazy-hydration-entry.js"
+      }
     }
   },
   "files": [

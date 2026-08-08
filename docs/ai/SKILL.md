@@ -599,6 +599,35 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
+For a component with many initially offscreen SSR instances, put the complete
+policy on its root template:
+
+```html
+<template w-render="lazy" w-reserve-block-size="72px">
+  <!-- Component content -->
+</template>
+```
+
+This combines visibility-deferred hydration with `content-visibility: auto`.
+The reservation is required and should approximate one instance's normal block
+size. Use `<template w-hydrate="lazy">` only when hydration should defer but
+rendering containment is unsafe.
+
+Import the optional coordinator once before component definitions:
+
+```typescript
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './feed-item.js';
+```
+
+On an instance, `w-hydrate="eager"` keeps rendering deferral but hydrates
+immediately; `w-render="eager"` disables both. Use `hydratedCallback()` for work
+that requires bindings or refs. Missing coordinator or browser support falls
+back to eager hydration. Visibility-deferred hydration does not delay image
+fetching; use native `loading="lazy"` and reconcile an already-complete `w-ref`
+image from `hydratedCallback()` when component state depends on `@load` or
+`@error`.
+
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
 | `@attr` | HTML attribute reflection | Yes; an existing SSR host attribute wins | Yes |
@@ -656,9 +685,13 @@ mismatch` warning (development-only; stripped from production via
 If the value must appear in the first render, put it in the SSR state JSON.
 Otherwise assign it in `hydratedCallback()`. On buffered SSR and client-created
 mounts, `super.connectedCallback()` hydrates synchronously, but streamed hosts
-can return while still deferred. `hydratedCallback()` is the cross-mode signal:
-it runs synchronously exactly once after the first successful hydration or
-mount, and reconnects or callback exceptions do not retry it.
+and visibility-policy hosts (without an eager instance override) can return
+while still deferred.
+`hydratedCallback()` is the cross-mode signal: it runs synchronously exactly
+once after the first successful hydration or mount, and reconnects or callback
+exceptions do not retry it. Once a host has deferred, later state writes
+are retained and replayed; this exception does not make constructor or
+pre-`super.connectedCallback()` writes safe.
 
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a
@@ -715,8 +748,9 @@ directive is removed at compile time and emits no application DOM wrapper.
   unconditional `performance.mark()` (`webui:boundary:<id>`,
   `webui:boundary:<id>:update`, `webui:streaming:terminal`) that tooling can
   read retroactively without a listener.
-  `webui:hydration-complete` fires only after the terminal record and all
-  pending hydration work complete.
+  `webui:hydration-complete` fires only after the terminal record and eager
+  pending hydration work complete. Visibility-deferred lazy roots do not keep
+  this one-shot startup event open.
 - `window.__WEBUI_STREAMING_SLICE_MS__` opts into a time-sliced drain that
   yields between boundaries. Use it only when an intermediary coalesces the
   response into one chunk; it costs total hydration time.

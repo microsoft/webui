@@ -16,6 +16,8 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
+  /** DOM strategy for component rendering: "shadow" (default) or "light". */
+  dom?: "shadow" | "light";
   /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */

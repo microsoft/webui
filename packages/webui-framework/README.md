@@ -108,6 +108,63 @@ lifecycle code, imperative methods, or state that TypeScript code reads or
 mutates. `@observable` and `@attr` are optional; add them when JavaScript needs
 to access the value or when the value is part of the component's public API.
 
+### Offscreen work reduction
+
+For components repeated beyond the initial viewport, put the complete policy on
+the component template:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+>
+  <!-- Component content -->
+</template>
+```
+
+`w-render="lazy"` combines visibility-deferred hydration with the browser's
+`content-visibility: auto` rendering deferral. The reservation is the typical
+rendered block size of one instance; WebUI emits it as
+`contain-intrinsic-block-size: auto 18rem` before first layout. The SSR DOM
+remains present, searchable, and accessible while the browser skips offscreen
+style, layout, and paint work. The generated policy applies to instances in the
+document, Light DOM, and standard Shadow DOM components. A `--dom=light`
+component inside an authored shadow root needs the `style` CSS strategy or an
+equivalent rule in that root's stylesheet because document styles cannot cross
+the boundary.
+
+Import the optional coordinator entry once before component modules:
+
+```ts
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './product-card.js';
+```
+
+Use hydration-only deferral when rendering containment is not safe for a
+component:
+
+```html
+<template w-hydrate="lazy">
+  <!-- Component content -->
+</template>
+```
+
+Components are eager by default. Instance attributes provide explicit escape
+hatches:
+
+```html
+<!-- Keep rendering deferral, but hydrate this instance immediately. -->
+<product-card w-hydrate="eager"></product-card>
+
+<!-- Disable both rendering and hydration deferral for this instance. -->
+<product-card w-render="eager"></product-card>
+```
+
+Client-created instances and reconnects after a successful mount remain eager.
+If the optional entry or `IntersectionObserver` is unavailable, hydration falls
+back to eager; `content-visibility` remains browser-managed. See
+[Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
+
 ### Build with the WebUI plugin
 
 ```bash
@@ -184,17 +241,17 @@ development-only and is dead-code-eliminated from production bundles via the
 Override the protected `hydratedCallback()` hook for work that requires the
 component's bindings, events, and `w-ref` references to be ready. It runs
 synchronously exactly once after the first successful ordinary SSR hydration,
-client-created mount, deferred streamed activation, or dormant static-host wake.
-Its once-latch is set before author code runs, so a thrown callback is not
-retried on reconnect.
+client-created mount, lazy activation, deferred streamed activation, or dormant
+static-host wake. Its once-latch is set before author code runs, so a thrown
+callback is not retried on reconnect.
 
 `connectedCallback()` remains a native per-connection lifecycle. On ordinary
 SSR and client-created mounts, `super.connectedCallback()` hydrates
-synchronously, but a streamed `data-ws` root returns while still deferred and
-hydrates only when its boundary commits. Therefore `connectedCallback()` cannot
-be used as a universal post-hydration signal. Descendants must not structurally
-mutate a containing component's SSR subtree before it hydrates, because
-hydration relies on stable compiled paths.
+synchronously, but a lazy root or streamed `data-ws` root can return while still
+deferred. Therefore `connectedCallback()` cannot be used as a universal
+post-hydration signal. Descendants must not structurally mutate a containing
+component's SSR subtree before it hydrates, because hydration relies on stable
+compiled paths.
 
 ### DOM strategy (`--dom`)
 
@@ -852,9 +909,14 @@ The runtime exposes hydration timing via the Performance API:
 
 ```ts
 window.addEventListener('webui:hydration-complete', () => {
-  console.log('All initial framework components are hydrated.');
+  console.log('The startup hydration cohort is complete.');
 });
 ```
+
+Parser-startup lazy components hold this event only through their first
+intersection result. Initially visible roots finish first; dormant roots do not
+hold the one-shot event open or redispatch it later. Use `hydratedCallback()`
+for instance readiness.
 
 ---
 

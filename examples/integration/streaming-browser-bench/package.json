@@ -7,6 +7,7 @@
   "scripts": {
     "test": "playwright test",
     "test:hydration": "playwright test -c playwright.hydration.config.ts",
+    "test:lazy-hydration": "playwright test -c playwright.lazy-hydration.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start:server": "cargo run -p streaming-browser-bench-server --release"
   },
