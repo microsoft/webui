@@ -43,7 +43,7 @@ Most components omit it and write just the content:
 <p>{{email}}</p>
 ```
 
-Include it explicitly when you need **root host events** - event listeners on the shadow root that catch events bubbling up from children:
+Include it explicitly when you need **root host events** - event listeners on the component root that catch events bubbling up from children, including events targeted at the host element itself:
 
 ```html
 <!-- task-list.html -->
