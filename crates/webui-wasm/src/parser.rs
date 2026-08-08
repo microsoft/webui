@@ -314,7 +314,9 @@ mod tests {
         let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
         assert_eq!(protocol.css_strategy(), webui_protocol::CssStrategy::Style);
         assert!(!protocol.components["my-card"].uses_shadow_dom);
-        assert!(protocol.components["my-card"].css.contains("@scope"));
+        assert!(protocol.components["my-card"]
+            .css
+            .contains("my-card[data-wl]"));
         assert_eq!(
             protocol.style_closure("index.html").expect("entry closure"),
             ["my-card"]

@@ -12,10 +12,13 @@ mod condition_parser;
 mod css_boundary;
 mod css_link;
 mod css_parser;
+mod css_scan;
+mod css_selector;
 mod diagnostic;
 mod error;
 mod handlebars_parser;
 mod html_parser;
+mod light_scope;
 pub mod plugin;
 mod route_parser;
 mod suggest;
@@ -544,6 +547,8 @@ pub struct HtmlParser {
 
     /// Components whose registry CSS has already been lowered for Light DOM.
     compiled_light_css: HashSet<String>,
+    /// Derived Light scope marker -> owning tag, to catch hash collisions.
+    light_scope_markers: HashMap<String, String>,
 
     /// Top-level fragments parsed by callers. Token graph traversal starts
     /// from these roots after parsing completes.
@@ -682,6 +687,18 @@ struct ShadowRootModeOccurrence<'a> {
     value: Option<&'a str>,
 }
 
+#[cold]
+#[inline(never)]
+fn light_scope_collision_error(tag_name: &str, owner: &str, marker: &str) -> ParserError {
+    Diagnostic::error("two components derive the same Light DOM scope marker")
+        .code(codes::LIGHT_SCOPE_COLLISION)
+        .component(tag_name)
+        .help(format!(
+            "`{tag_name}` and `{owner}` both hash to `{marker}`, so their styles would cross; rename one component"
+        ))
+        .into()
+}
+
 fn analyze_component_dom(tag_name: &str, source: &str) -> Result<ComponentDomAnalysis> {
     let mut ranges = Vec::with_capacity(8);
     ranges.push((0..source.len(), true));
@@ -708,6 +725,13 @@ fn analyze_component_dom(tag_name: &str, source: &str) -> Result<ComponentDomAna
 
                     for attr in element.attrs() {
                         let attr_name = attr.name.strip_prefix([':', '?']).unwrap_or(attr.name);
+                        if light_scope::is_reserved_marker(attr_name) {
+                            return Err(reserved_scope_marker_error(
+                                tag_name,
+                                source,
+                                element.start + attr.raw_range.start,
+                            ));
+                        }
                         if attr_name.eq_ignore_ascii_case("shadowrootmode") {
                             if shadow_mode.is_some() {
                                 return Err(invalid_shadow_root_mode_error(
@@ -829,6 +853,18 @@ fn invalid_shadow_root_mode_error(
         .at_offset(source, offset)
         .snippet(source_line_snippet(source, offset))
         .help(help)
+        .into()
+}
+
+#[cold]
+#[inline(never)]
+fn reserved_scope_marker_error(tag_name: &str, source: &str, offset: usize) -> ParserError {
+    Diagnostic::error("`data-wl-*` is reserved for Light DOM style scoping")
+        .code(codes::RESERVED_LIGHT_DOM_MARKER)
+        .component(tag_name)
+        .at_offset(source, offset)
+        .snippet(source_line_snippet(source, offset))
+        .help("remove the attribute; WebUI stamps and manages these markers automatically")
         .into()
 }
 
@@ -1138,6 +1174,7 @@ impl HtmlParser {
             plugin: None,
             component_dom_analyses: HashMap::new(),
             compiled_light_css: HashSet::new(),
+            light_scope_markers: HashMap::new(),
             token_roots: Vec::new(),
             fragment_css_tokens: HashMap::new(),
             in_progress_fragments: HashSet::new(),
@@ -3447,6 +3484,25 @@ impl HtmlParser {
         .into()
     }
 
+    /// Derive this component's Light scope marker, rejecting hash collisions.
+    ///
+    /// Two tags sharing a marker would silently cross-style each other, so the
+    /// build fails instead. Renaming either component resolves it.
+    fn light_scope_marker(&mut self, tag_name: &str) -> Result<String> {
+        let marker = light_scope::marker_attribute(tag_name);
+        match self.light_scope_markers.get(&marker) {
+            Some(owner) if owner != tag_name => {
+                return Err(light_scope_collision_error(tag_name, owner, &marker));
+            }
+            Some(_) => {}
+            None => {
+                self.light_scope_markers
+                    .insert(marker.clone(), tag_name.to_string());
+            }
+        }
+        Ok(marker)
+    }
+
     fn process_text(&mut self, content: &str, fragments: &mut Vec<WebUIFragment>) -> Result<()> {
         if !Self::should_emit_text_content(content) {
             return Ok(());
@@ -4296,10 +4352,15 @@ impl HtmlParser {
     const ADOPTED_STYLESHEETS_ATTR: &str = "shadowrootadoptedstylesheets";
 
     fn is_skipped_attribute(name: &str) -> bool {
-        Self::SKIPPED_ATTRIBUTES.contains(&name)
+        (Self::SKIPPED_ATTRIBUTES.contains(&name)
             || Self::SKIPPED_ATTRIBUTE_PREFIXES
                 .iter()
-                .any(|prefix| name.starts_with(prefix))
+                .any(|prefix| name.starts_with(prefix)))
+            // A compiler-owned scope marker matches the `data-` prefix but is not
+            // an author binding: skipping defers an attribute to a client-side
+            // update, which would leave the SSR bytes unstyled and only apply the
+            // marker after hydration. Markers must be emitted verbatim.
+            && !light_scope::is_reserved_marker(name)
     }
 
     /// Properties that must never be set via `:attr` complex bindings.
@@ -4317,7 +4378,12 @@ impl HtmlParser {
         artifact_needed: bool,
     ) -> Result<BuiltComponentTemplate> {
         let dom_analysis = self.analyze_component_dom(tag_name, html)?;
-        let compiled_css = if !dom_analysis.uses_shadow_dom {
+        let scope_marker = if dom_analysis.uses_shadow_dom {
+            None
+        } else {
+            Some(self.light_scope_marker(tag_name)?)
+        };
+        let compiled_css = if let Some(marker) = scope_marker.as_deref() {
             if self.compiled_light_css.contains(tag_name) {
                 self.component_registry
                     .get(tag_name)
@@ -4325,7 +4391,7 @@ impl HtmlParser {
                     .or_else(|| css_content.map(str::to_string))
             } else {
                 let compiled = css_content
-                    .map(|css| css_boundary::compile(tag_name, css))
+                    .map(|css| css_boundary::compile(tag_name, marker, css))
                     .transpose()?;
                 if let Some(css) = compiled.as_ref() {
                     self.component_registry
@@ -4338,6 +4404,10 @@ impl HtmlParser {
             None
         };
         let css_content = compiled_css.as_deref().or(css_content);
+        // Only a component that ships CSS needs markers; stamping a style-free
+        // template would be pure payload.
+        let scope_marker =
+            scope_marker.filter(|_| css_content.is_some_and(|css| !css.trim().is_empty()));
         let adopted_specifier = match self.options.css_strategy {
             CssStrategy::Module if css_content.is_some() => Some(tag_name),
             _ => None,
@@ -4350,8 +4420,8 @@ impl HtmlParser {
         // The resolved delivery is reported to the plugin as build context; a
         // plugin whose client runtime builds its own roots from the captured
         // template decides for itself what to do with it. Light CSS is never
-        // reported: it is Document-owned and its `@scope` root cannot match
-        // from inside a runtime-created root.
+        // reported: it is Document-owned, and its markers are stamped into the
+        // compiled template rather than into any runtime-created root.
         let style = if dom_analysis.uses_shadow_dom && self.plugin.is_some() {
             self.component_style_delivery(tag_name, css_content)
         } else {
@@ -4374,6 +4444,18 @@ impl HtmlParser {
             )?)
         } else {
             None
+        };
+        // Stamp the compiled templates rather than the authored source: these
+        // are the exact strings that reach SSR and `meta.h`, and keeping the
+        // authored bytes untouched leaves reserved-marker validation free to
+        // reject the whole `data-wl-*` family without tripping over WebUI's own
+        // markers.
+        let (ssr, artifact) = match scope_marker.as_deref() {
+            Some(marker) => (
+                light_scope::stamp_template(&ssr, marker).unwrap_or(ssr),
+                artifact.map(|html| light_scope::stamp_template(&html, marker).unwrap_or(html)),
+            ),
+            None => (ssr, artifact),
         };
         Ok(BuiltComponentTemplate {
             ssr,
@@ -5008,7 +5090,7 @@ mod tests {
     }
 
     /// The handler installs Light CSS from the stored closure, so the context
-    /// never reports it: `@scope` cannot resolve its root from inside a
+    /// never reports it: the Light host selector cannot match from inside a
     /// runtime-created shadow root.
     #[test]
     fn fast_plugin_omits_light_css_from_captured_template() {
@@ -5407,12 +5489,15 @@ mod tests {
             ]
         );
 
-        // Component template stream should contain the component content (no shadow DOM wrapper)
+        // Component template stream should contain the component content (no
+        // shadow DOM wrapper), with the Light scope marker stamped on.
         let comp = &records["my-component"].fragments;
         assert_eq!(comp.len(), 1);
         assert!(
             matches!(comp[0].fragment.as_ref(), Some(Fragment::Raw(raw)) if
-                !raw.value.contains("<template shadowrootmode") && raw.value.contains("<div>My Component</div>"))
+                !raw.value.contains("<template shadowrootmode")
+                    && raw.value.contains("<div data-wl-")
+                    && raw.value.contains(">My Component</div>"))
         );
     }
 
@@ -5843,7 +5928,8 @@ mod tests {
         // Light DOM with a developer-supplied <template> wrapper preserves
         // the wrapper verbatim. CSS is the default `Link` strategy, which
         // injects only in Shadow DOM, so there is no CSS snippet to splice
-        // into this unwrapped component.
+        // into this unwrapped component. The template's content carries the
+        // Light scope marker; the inert wrapper itself does not.
         let mut parser = HtmlParser::new();
         parser
             .component_registry
@@ -5861,7 +5947,9 @@ mod tests {
         assert_stream!(
             records,
             "custom-element",
-            [raw(r#"<template foo="bar"><div>content</div></template>"#),]
+            [raw(
+                r#"<template foo="bar"><div data-wl-oo63a3>content</div></template>"#
+            ),]
         );
     }
 
@@ -7476,7 +7564,7 @@ mod tests {
             .register_component(ComponentRegistration::new(
                 "my-card",
                 "<p>content</p>",
-                Some(":host{color:red}"),
+                Some(".label{color:red}"),
                 false,
             ))
             .expect("register component");
@@ -7503,7 +7591,59 @@ mod tests {
             .get("my-card")
             .and_then(|component| component.css_content.as_deref())
             .expect("compiled CSS");
-        assert_eq!(css.matches("@scope (").count(), 1);
+        assert_eq!(css.matches(":where([data-wl-").count(), 1);
+    }
+
+    /// A nested Light host is declared by its parent's template, so it carries
+    /// the parent's scope marker and the parent may style its box. The marker is
+    /// valueless and `data-`-prefixed, which the component attribute path
+    /// otherwise defers to a client-side update; markers must survive into SSR
+    /// bytes so no-JavaScript renders are styled.
+    #[test]
+    fn nested_light_host_keeps_the_parent_scope_marker_in_ssr() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "my-child",
+                "<p class=\"inner\">child</p>",
+                Some(".inner{color:green}"),
+                false,
+            ))
+            .expect("register child");
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "my-card",
+                "<my-child></my-child>",
+                Some("my-child{display:block}"),
+                false,
+            ))
+            .expect("register parent");
+        parser
+            .parse("index.html", "<my-card></my-card>")
+            .expect("parse component");
+
+        let parent_marker = light_scope::marker_attribute("my-card");
+        let child_marker = light_scope::marker_attribute("my-child");
+        let records = parser.into_fragment_records();
+        let raw: String = records["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match &fragment.fragment {
+                Some(web_ui_fragment::Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            raw.contains(&format!("<my-child data-wl {parent_marker}>")),
+            "nested host lost the parent marker: {raw}"
+        );
+        assert!(
+            !raw.contains(&child_marker),
+            "nested host must not carry its own descendant marker: {raw}"
+        );
     }
 
     #[test]

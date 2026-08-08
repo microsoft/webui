@@ -642,7 +642,7 @@ A plugin whose client runtime builds its own roots from the captured template
 owns component style delivery: WebUI keeps its own templates style-free because
 the handler installs the stored closure, but a Shadow component's CSS stays
 inline in that plugin-facing template so a client-created element is styled.
-Light CSS is never inlined there — it is Document-owned, and its `@scope` root
+Light CSS is never inlined there — it is Document-owned, and its host selector
 cannot be resolved from inside a runtime-created root.
 
 **Navigation cache:** The client router exposes an optional tagged navigation
@@ -1511,39 +1511,57 @@ Light/Shadow host API. After legal-comment processing, Shadow components retain
 those CSS bytes unchanged. Light components are compiled before
 Link filename hashing or Style/Module storage:
 
-- Rules are enclosed in `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)`.
-  The lower boundary prevents parent rules from entering a nested Light component
-  while still allowing selectors to style that nested component's host. It is
-  also the fastest measured shape: removing the limit, or making it implicit,
-  costs 5.4% more style recalculation because the limit prunes nested component
-  subtrees out of the scope. Narrowing the root, tightening the limit, or
-  wrapping it in `:where()` each measure 3-5% slower.
-  Two shapes that abandon `@scope` were measured and rejected. Anchoring rules
-  on the host as a plain descendant selector (`<tag>[data-wl] .sel`) is 23-28%
-  faster but leaks parent rules into nested components, and was observed
-  changing computed styles on real pages; it is strictly dominated and must not
-  be reintroduced. Per-element marker stamping (`.sel:where([data-wN])`) is
-  27-35% faster and renders identically, at roughly +200 bytes of compressed
-  markup per document; its blocker is that only elements known at build time can
-  be marked, so DOM created outside a compiled template would go unstyled, which
-  `@scope` handles natively. Stamping is therefore a deliberate future change
-  carrying its own authoring contract, not a drop-in substitution.
-  Note that inside `@scope` a bare selector is *relative* — `.sel` behaves as
-  `:scope .sel` and never matches the scoping root — so any stamping scheme must
-  mark descendants only and never give a host its own marker.
-- Selector anchors lower from `:host` to `:scope`; functional
-  `:host(<compound>)` lowers to `:scope:is(<compound>)`. Strings, comments,
-  declaration values, and custom properties are never selector-rewritten.
+- Every element the component's template declares is stamped at build time with a
+  presence-only marker attribute `data-wl-<id>`, where `<id>` is a base36 FNV-1a
+  hash of the tag name. Hashing rather than counting keeps the marker independent
+  of compilation order, which is lazy and route-dependent. Two tags that derive
+  the same id fail with `light-scope-collision` rather than cross-styling
+  silently.
+- Every top-level compound in every selector is qualified with
+  `:where([data-wl-<id>])`, which contributes zero specificity so authored
+  cascade order is preserved exactly. Qualifying every compound, not just the
+  subject, is what prevents an ancestor *outside* the component from satisfying a
+  leading compound. Functional pseudo-class arguments are never descended into,
+  and a qualifier is always spliced before a pseudo-element.
+- Inert elements (`<template>`, `<script>`, `<style>`, `<link>`, `<meta>`,
+  `<title>`, `<base>`, `<head>`) are not stamped, since no rendered-content
+  selector can match them. `<template>` *content* is stamped, because WebUI
+  clones it into the live tree for repeats and conditionals.
+- This shape replaced a native
+  `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)` prelude, and the swap was
+  measured on a 26-component app: stamping reproduces the previous computed
+  styles exactly (~12,500 declarations per route, two routes, verified against an
+  identity-rebuild control) for 27-35% less style recalculation, at roughly +200
+  bytes of compressed markup per document. Anchoring rules on the host as a plain
+  descendant selector (`<tag>[data-wl] .sel`) was also measured and is rejected
+  permanently: it is slower than stamping *and* leaks parent rules into nested
+  components.
+- The trade-off is an authoring contract. DOM created imperatively inside a
+  component (`element.innerHTML = '<div class="x">'`) carries no marker and is not
+  styled by that component's CSS, which native `@scope` covered. Component hosts
+  created with `document.createElement` are unaffected: their content comes from
+  the compiled, stamped template. This is documented in the styling guide.
+- Selectors are qualified rather than nested, so a rule is statically bounded to
+  one template. That makes the element inventory for a stylesheet finite and known
+  at build time, which is the precondition for future dead-selector elimination
+  and minification.
+- Selector anchors lower from `:host` to `<tag>[data-wl]`; functional
+  `:host(<compound>)` lowers to `<tag>[data-wl]:is(<compound>)`. The host owns
+  `data-wl` and never carries the descendant marker. A bare top-level `:scope`
+  lowers the same way, preserving the meaning it had under the generated `@scope`
+  root; inside an authored `@scope` it keeps its platform meaning. Strings,
+  comments, declaration values, and custom properties are never
+  selector-rewritten.
 - Block grouping rules (`@media`, `@supports`, `@container`, `@layer`, and
-  authored `@scope`) remain nested. Global or statement-form at-rules that cannot
-  be isolated fail with `unsupported-light-css`.
+  authored `@scope`) remain nested, and an authored `@scope` prelude has both its
+  root and limit selector lists qualified. Global or statement-form at-rules that
+  cannot be isolated fail with `unsupported-light-css`.
 - Shadow-only `:host-context()` and `::slotted()` are rejected in Light
   CSS with `unsupported-light-css`. Authors must use entry CSS or opt that
   component into `<template shadowrootmode="open">`.
 - Component-local keyframes receive a deterministic, collision-free component
   prefix (`wui<tag-length>-<tag>-<name>`, whose length delimiter keeps
-  `<x-foo>`/`bar-baz` distinct from `<x-foo-bar>`/`baz` because `@scope` does
-  not isolate `@keyframes`), and static
+  `<x-foo>`/`bar-baz` distinct from `<x-foo-bar>`/`baz`), and static
   `animation` / `animation-name` references (including vendor-prefixed forms) are
   rewritten token-by-token. Dynamic references that could name a local keyframe
   fail with `dynamic-light-keyframe` rather than silently targeting an
@@ -1579,9 +1597,10 @@ Visited-fragment and first-style sets make malformed or cyclic protocols finite
 without changing first-discovery order.
 
 Every Light host receives a persistent `data-wl` marker in SSR and
-client-created DOM. The marker is both the scope anchor and nested-Light lower
-boundary and is reserved: authored static or bound ownership fails with
-`reserved-light-dom-marker`. Servers and clients consume stored closures
+client-created DOM, and every element its template declares receives the
+component's `data-wl-<id>` scope marker. Both are reserved: authored static or
+bound ownership fails with `reserved-light-dom-marker`. Servers and clients
+consume stored closures
 directly and must not expand the fragment graph per request. A styled protocol
 without required closure metadata is invalid.
 
@@ -1732,7 +1751,7 @@ pub struct ComponentTemplateContext<'a> {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
-- **Style delivery**: `ComponentTemplateContext` carries `uses_shadow_dom` plus the resolved `style` delivery — a neutral statement of fact, never a request. The parser injects nothing into any template. WebUI ignores `style` because the handler installs its precomputed closures; FAST reads it and keeps an inline `<link>`/`<style>` inside the Shadow template its runtime uses to build roots. `style` is reported only for components that authored a Shadow root: Light CSS is Document-owned and its `@scope` root cannot match from inside a runtime-created root. SSR output is style-free either way.
+- **Style delivery**: `ComponentTemplateContext` carries `uses_shadow_dom` plus the resolved `style` delivery — a neutral statement of fact, never a request. The parser injects nothing into any template. WebUI ignores `style` because the handler installs its precomputed closures; FAST reads it and keeps an inline `<link>`/`<style>` inside the Shadow template its runtime uses to build roots. `style` is reported only for components that authored a Shadow root: Light CSS is Document-owned and its host selector cannot match from inside a runtime-created root. SSR output is style-free either way.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**

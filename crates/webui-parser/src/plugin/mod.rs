@@ -197,7 +197,7 @@ pub struct ComponentTemplateContext<'a> {
     ///
     /// A plugin whose client runtime builds roots from the template it captures
     /// here is outside WebUI's style registry, so it can use this to keep those
-    /// roots styled. Light CSS is Document-owned and its `@scope` root cannot
+    /// roots styled. Light CSS is Document-owned and its host selector cannot
     /// match from inside a runtime-created root, so it is reported only for
     /// components that authored a Shadow root.
     pub style: Option<ComponentStyleDelivery<'a>>,

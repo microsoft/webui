@@ -91,8 +91,10 @@ pub mod codes {
     pub const LIGHT_DOM_SLOT: &str = "light-dom-slot";
     /// A declarative Shadow DOM wrapper has an unsupported mode or placement.
     pub const INVALID_SHADOW_ROOT_MODE: &str = "invalid-shadow-root-mode";
-    /// Authored markup attempts to own WebUI's Light DOM host marker.
+    /// Authored markup attempts to own a WebUI Light DOM marker.
     pub const RESERVED_LIGHT_DOM_MARKER: &str = "reserved-light-dom-marker";
+    /// Two component tags derive the same Light DOM scope marker.
+    pub const LIGHT_SCOPE_COLLISION: &str = "light-scope-collision";
     /// Light component CSS contains a selector or at-rule that cannot be scoped.
     pub const UNSUPPORTED_LIGHT_CSS: &str = "unsupported-light-css";
     /// A Light component refers to a component-local keyframe dynamically.
