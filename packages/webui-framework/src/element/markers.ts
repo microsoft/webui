@@ -124,13 +124,13 @@ export interface SSRIndex {
  *    nodes do **not** line up positionally.  Only elements are paired here.
  *  - Structural blocks render as `<!--wc-->`…`<!--/wc-->` / `<!--wr-->`…
  *    `<!--/wr-->` ranges that the template does not contain, so those ranges
- *    are skipped whole — their contents belong to the block's own metadata.
+ *    are skipped whole - their contents belong to the block's own metadata.
  *
  * The walk descends only where the template has children, which keeps it inside
  * the component that owns the template: a child component contributes no
  * children to `meta.h`, so its markers are never mistaken for this section's.
  *
- * Iterative by design — templates nest arbitrarily deep and recursion would put
+ * Iterative by design - templates nest arbitrarily deep and recursion would put
  * that on the call stack.
  */
 export function buildSSRIndex(tplRoot: Node, ssrRoot: Node, needMarkers: boolean): SSRIndex {
@@ -181,8 +181,8 @@ export function buildSSRIndex(tplRoot: Node, ssrRoot: Node, needMarkers: boolean
     frame.s = s.nextSibling;
 
     // Descend when there is anything of ours down there.  Template children
-    // always qualify.  An element with none can still hold block markers —
-    // `<ul><for …></ul>` compiles to an empty `<ul>` — so it is worth walking
+    // always qualify.  An element with none can still hold block markers -
+    // `<ul><for …></ul>` compiles to an empty `<ul>` - so it is worth walking
     // too, but only when this section actually has blocks to place.  A custom
     // element is the exception either way: with no template children it
     // contributes no slotted content, and whatever the server rendered inside

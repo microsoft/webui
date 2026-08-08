@@ -142,7 +142,7 @@ const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal
  * Template node resolved from a compiled path, keyed by the path array itself.
  *
  * The parsed template DOM is cached per metadata object and compiled paths are
- * parsed once with it, so a path always resolves to the same template node —
+ * parsed once with it, so a path always resolves to the same template node -
  * for every instance of the component, for the life of the page.  Caching it
  * turns each per-instance lookup into a map hit instead of another walk down
  * `childNodes`, which is what made wide templates expensive to hydrate.
@@ -1378,7 +1378,7 @@ export class TemplateElement extends HTMLElement {
         }
 
         // Collect the <!--/wc--> end marker for deferred removal.  Do NOT remove
-        // it here — later phases still need intact marker pairs to skip
+        // it here - later phases still need intact marker pairs to skip
         // structural block content.
         if (marker) {
           const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
