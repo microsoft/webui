@@ -67,6 +67,8 @@ pub(crate) fn compile(tag_name: &str, source: &str) -> Result<String> {
     // element set Blink computes scope activations for. Narrowing the root to
     // a bare tag, tightening the limit, or wrapping it in `:where()` all
     // measured 3-5% slower. Do not "simplify" this prelude without measuring.
+    // Shapes that abandon `@scope` entirely are evaluated in DESIGN.md; the
+    // plain-descendant form is faster but leaks into nested components.
     output.push_str("@scope (");
     output.push_str(tag_name);
     output.push_str("[data-wl]) to (:scope [data-wl] > *) {\n");
