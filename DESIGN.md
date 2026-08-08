@@ -1517,9 +1517,20 @@ Link filename hashing or Style/Module storage:
   also the fastest measured shape: removing the limit, or making it implicit,
   costs 5.4% more style recalculation because the limit prunes nested component
   subtrees out of the scope. Narrowing the root, tightening the limit, or
-  wrapping it in `:where()` each measure 3-5% slower. Per-element marker
-  stamping is faster still but raises every rule's specificity, which changes
-  the cascade against entry CSS, so it is not a drop-in replacement.
+  wrapping it in `:where()` each measure 3-5% slower.
+  Two shapes that abandon `@scope` were measured and rejected. Anchoring rules
+  on the host as a plain descendant selector (`<tag>[data-wl] .sel`) is 23-28%
+  faster but leaks parent rules into nested components, and was observed
+  changing computed styles on real pages; it is strictly dominated and must not
+  be reintroduced. Per-element marker stamping (`.sel:where([data-wN])`) is
+  27-35% faster and renders identically, at roughly +200 bytes of compressed
+  markup per document; its blocker is that only elements known at build time can
+  be marked, so DOM created outside a compiled template would go unstyled, which
+  `@scope` handles natively. Stamping is therefore a deliberate future change
+  carrying its own authoring contract, not a drop-in substitution.
+  Note that inside `@scope` a bare selector is *relative* — `.sel` behaves as
+  `:scope .sel` and never matches the scoping root — so any stamping scheme must
+  mark descendants only and never give a host its own marker.
 - Selector anchors lower from `:host` to `:scope`; functional
   `:host(<compound>)` lowers to `:scope:is(<compound>)`. Strings, comments,
   declaration values, and custom properties are never selector-rewritten.
