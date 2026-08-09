@@ -413,7 +413,10 @@ fn rewrite_css(
     let mut scope_blocks = vec![false];
     let mut authored_scope_depth = 0usize;
     let mut pending_block = None;
-    let mut pending_scope_at = None;
+    // The at-rule prelude awaiting its `{`, and whether it is an authored
+    // `@scope`. An at-rule prelude is never a selector list, so it must never
+    // be qualified.
+    let mut pending_at_prelude: Option<(usize, bool)> = None;
     let mut copy_start = 0usize;
     let mut index = 0usize;
     let mut segment_start = true;
@@ -524,6 +527,7 @@ fn rewrite_css(
                         copy_start = rule.name_end;
                     }
                     pending_block = Some((rule.block_start, BlockKind::Keyframes));
+                    pending_at_prelude = Some((rule.block_start, false));
                     index = rule.name_end;
                 }
                 AtRule::Grouping {
@@ -531,9 +535,7 @@ fn rewrite_css(
                     is_scope,
                 } => {
                     pending_block = Some((block_start, current_block(&blocks)));
-                    if is_scope {
-                        pending_scope_at = Some(block_start);
-                    }
+                    pending_at_prelude = Some((block_start, is_scope));
                     index += 1;
                 }
             }
@@ -566,20 +568,30 @@ fn rewrite_css(
             }
             b'{' => {
                 let kind = block_for_open(&mut pending_block, index);
-                let authored_scope = pending_scope_at == Some(index);
-                if authored_scope {
-                    pending_scope_at = None;
-                }
+                let at_prelude = match pending_at_prelude {
+                    Some((block_start, is_scope)) if block_start == index => {
+                        pending_at_prelude = None;
+                        Some(is_scope)
+                    }
+                    _ => None,
+                };
+                let authored_scope = at_prelude == Some(true);
                 if let Some(start) = prelude_start.take() {
                     output.push_str(&source[copy_start..index]);
                     copy_start = index;
                     let end = output.len();
-                    // A keyframe selector (`from`, `50%`) opens a Style block
-                    // but is not a selector and must never be stamped.
-                    if kind == BlockKind::Style && current_block(&blocks) != BlockKind::Keyframes {
-                        stamper.qualify(&mut output, start..end, authored_scope_depth == 0);
-                    } else if authored_scope {
+                    if authored_scope {
                         stamper.qualify_scope_prelude(&mut output, start);
+                    } else if at_prelude.is_none()
+                        && kind == BlockKind::Style
+                        && current_block(&blocks) != BlockKind::Keyframes
+                    {
+                        // Only a real selector list is qualified. A keyframe
+                        // selector (`from`, `50%`) opens a Style block but is
+                        // not a selector, and a nested at-rule inherits the
+                        // enclosing Style kind, so qualifying its prelude
+                        // would corrupt the at-rule itself.
+                        stamper.qualify(&mut output, start..end, authored_scope_depth == 0);
                     }
                 }
                 blocks.push(kind);
@@ -770,11 +782,14 @@ fn declaration_at(source: &str, start: usize) -> Option<Declaration> {
     }
     let value_start = colon + 1;
     let value_end = declaration_value_end(source, value_start);
-    // A declaration value never contains a top-level `{`. When one appears this
-    // is a nested rule whose selector merely looks like a property, e.g.
-    // `div:hover { … }`, and the caller must scan it as a selector so it gets
-    // scoped like any other.
-    if source[value_start..value_end].contains('{') {
+    // A standard declaration value never contains a top-level `{`. When one
+    // appears this is a nested rule whose selector merely looks like a
+    // property, e.g. `div:hover { … }`, and the caller must scan it as a
+    // selector so it gets scoped like any other. A custom property is exempt:
+    // its value is an arbitrary token stream that may legally contain braces.
+    if !source[property_start..property_end].starts_with("--")
+        && source[value_start..value_end].contains('{')
+    {
         return None;
     }
     Some(Declaration {
@@ -1302,6 +1317,163 @@ mod tests {
 
     fn enclose(source: &str) -> Result<String> {
         super::compile("my-card", LightScope::Enclosed, source)
+    }
+
+    /// Modern CSS constructs whose preludes are *not* selector lists, plus the
+    /// selector shapes they nest around.
+    ///
+    /// A nested at-rule inherits the enclosing style block's kind, so a scoping
+    /// pass that keys off block kind alone will happily qualify `@media` as if
+    /// it were a compound and destroy the rule. Every entry pins the exact
+    /// output so that regression cannot return silently.
+    const MODERN_CSS_CORPUS: &[(&str, &str)] = &[
+        (
+            ".a { color: red; @media (min-width: 1px) { color: blue } }",
+            ".a:where([data-wl-t3stid]) { color: red; @media (min-width: 1px) { color: blue } }",
+        ),
+        (
+            ".a { @supports (display: grid) { color: blue } }",
+            ".a:where([data-wl-t3stid]) { @supports (display: grid) { color: blue } }",
+        ),
+        (
+            ".a { @container (min-width: 1px) { color: blue } }",
+            ".a:where([data-wl-t3stid]) { @container (min-width: 1px) { color: blue } }",
+        ),
+        (
+            ".a { @layer overrides { color: blue } }",
+            ".a:where([data-wl-t3stid]) { @layer overrides { color: blue } }",
+        ),
+        (
+            ".a { @starting-style { opacity: 0 } }",
+            ".a:where([data-wl-t3stid]) { @starting-style { opacity: 0 } }",
+        ),
+        (
+            ".a { @media print { .b { color: blue } } }",
+            ".a:where([data-wl-t3stid]) { @media print { .b:where([data-wl-t3stid]) { color: blue } } }",
+        ),
+        (
+            ".a { .b { @media print { color: red } } }",
+            ".a:where([data-wl-t3stid]) { .b:where([data-wl-t3stid]) { @media print { color: red } } }",
+        ),
+        // A nested `@scope` prelude is a selector list, so it is qualified —
+        // but through the prelude-aware path, not as a bare compound.
+        (
+            ".a { @scope (.b) to (.c) { .d { color: red } } }",
+            ".a:where([data-wl-t3stid]) { @scope (.b:where([data-wl-t3stid])) to (.c:where([data-wl-t3stid])) { .d:where([data-wl-t3stid]) { color: red } } }",
+        ),
+        // A custom property value is an arbitrary token stream and may hold
+        // braces; it must not be mistaken for a nested rule.
+        (
+            ".a { --x: { color: red }; }",
+            ".a:where([data-wl-t3stid]) { --x: { color: red }; }",
+        ),
+        (
+            ".a:has(> .b) { color: red }",
+            ".a:has(> .b):where([data-wl-t3stid]) { color: red }",
+        ),
+        (
+            "my-child::part(label) { color: red }",
+            "my-child:where([data-wl-t3stid])::part(label) { color: red }",
+        ),
+        (
+            ".a:nth-child(2 of .b) { color: red }",
+            ".a:nth-child(2 of .b):where([data-wl-t3stid]) { color: red }",
+        ),
+        (
+            "[data-x=\"A\" i] { color: red }",
+            "[data-x=\"A\" i]:where([data-wl-t3stid]) { color: red }",
+        ),
+        (
+            ".a > * { color: red }",
+            ".a:where([data-wl-t3stid]) > *:where([data-wl-t3stid]) { color: red }",
+        ),
+    ];
+
+    /// An at-rule prelude is never a selector list, at any nesting depth.
+    #[test]
+    fn never_qualifies_an_at_rule_prelude() {
+        for (source, expected) in MODERN_CSS_CORPUS {
+            assert_eq!(
+                &compile(source).expect("compile"),
+                expected,
+                "input: {source}"
+            );
+        }
+    }
+
+    /// Stamping may only *insert* qualifiers — it may never otherwise alter the
+    /// authored bytes.
+    ///
+    /// Deleting every qualifier the stamper inserted must reproduce the
+    /// enclosed shape's body exactly. This catches dropped, duplicated, or
+    /// reordered source bytes, but *not* a qualifier inserted in the wrong
+    /// place: stripping it would undo the mistake. Placement is covered by
+    /// [`never_qualifies_an_at_rule_prelude`] and
+    /// [`no_qualifier_lands_in_an_at_rule_prelude`].
+    #[test]
+    fn stamping_only_inserts_qualifiers() {
+        let qualifier = format!(":where([{MARKER}])");
+        for (source, _) in MODERN_CSS_CORPUS {
+            assert!(
+                !source.contains(":host"),
+                "host lowering differs between shapes: {source}"
+            );
+            let stripped = compile(source).expect("compile").replace(&qualifier, "");
+            let enclosed = enclose(source).expect("enclose");
+            let body = enclosed
+                .trim_start_matches(|ch| ch != '\n')
+                .trim_start_matches('\n')
+                .trim_end_matches('}')
+                .trim_end();
+            assert_eq!(stripped, body, "input: {source}");
+        }
+    }
+
+    /// No qualifier may land between an at-keyword and the `{` it opens.
+    ///
+    /// This is the postcondition that the block-kind bookkeeping exists to
+    /// uphold, checked on the output rather than trusted from the input, so a
+    /// new corpus entry is covered without anyone remembering to assert it.
+    /// `@scope` is the sole exception: its prelude really is a selector list.
+    #[test]
+    fn no_qualifier_lands_in_an_at_rule_prelude() {
+        let qualifier = format!(":where([{MARKER}])");
+        for (source, _) in MODERN_CSS_CORPUS {
+            let compiled = compile(source).expect("compile");
+            for prelude in at_rule_preludes(&compiled) {
+                assert!(
+                    !prelude.contains(&qualifier),
+                    "qualifier landed in at-rule prelude `{prelude}` for input: {source}"
+                );
+            }
+        }
+    }
+
+    /// Every non-`@scope` at-rule prelude in `css`, from `@` to its `{` or `;`.
+    fn at_rule_preludes(css: &str) -> Vec<&str> {
+        let bytes = css.as_bytes();
+        let mut preludes = Vec::new();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' | b'\'' => index = quoted_end(css, index),
+                b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                    index = block_comment_end(css, index);
+                }
+                b'@' => {
+                    let (name, keyword_end) = at_keyword(css, index);
+                    let end = css[keyword_end..]
+                        .find(['{', ';'])
+                        .map_or(css.len(), |at| keyword_end + at);
+                    if !css_identifier_eq(name, "scope") {
+                        preludes.push(&css[index..end]);
+                    }
+                    index = end.max(index + 1);
+                }
+                _ => index = next_char_boundary(css, index),
+            }
+        }
+        preludes
     }
 
     #[test]
