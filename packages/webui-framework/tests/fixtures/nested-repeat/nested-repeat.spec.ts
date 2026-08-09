@@ -88,10 +88,10 @@ test.describe('nested repeat fixture', () => {
 });
 
 // ── SSR hydration regression (#175 / #176) ──────────────────────
-// Exercises $resolveSSR and $resolve with pathStart > 0 on paths
-// deeper than the block root (e.g. [0, 1]).  Before the fix, the
-// template cursor was not advanced through skipped path segments,
-// so inner repeats failed to find their parent element and markers.
+// Exercises in-place hydration of a single-root block, where the walk
+// starts at the block's own root element rather than at its section root.
+// Bindings deeper than that root must still resolve, and the original
+// defect left inner repeats unable to find their parent or markers.
 
 test.describe('nested repeat SSR hydration', () => {
   test.beforeEach(async ({ page }) => {

@@ -28,8 +28,8 @@
  * as the runtime condition anchor.
  *
  * **Marker removal is deferred** until after all path-based resolution
- * (`$resolveSSR`, `$findSSRText`, `$finalize`) is complete.  This is
- * critical because `$resolveSSR` uses marker pairs to skip structural
+ * (`buildSSRIndex`, `$findSSRText`, `$finalize`) is complete.  This is
+ * critical because both use marker pairs to skip structural
  * block content when counting element/text ordinals — removing a closing
  * marker mid-hydration would break later resolution calls.
  *
@@ -136,7 +136,7 @@ const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
 
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
- *  Avoids re-counting element/text siblings on every $resolveSSR call. */
+ *  Avoids re-counting siblings on every text-slot resolution. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
 
 /**
@@ -156,7 +156,8 @@ function getTemplateElements(tplRoot: Node): Array<Node | undefined> {
   return cached;
 }
 
-function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {  let map = tplOrdinalCache.get(tplNode);
+function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
+  let map = tplOrdinalCache.get(tplNode);
   if (map) return map;
   map = new Map();
   let elemOrd = 0;
@@ -979,33 +980,6 @@ export class TemplateElement extends HTMLElement {
   // Compiled paths are childNode indices in meta.h parsed by the browser.
   // For client-created components the DOM matches meta.h exactly.
 
-  // ── DOM resolution: SSR hydration path ────────────────────────
-  //
-  // Compiled template metadata stores binding targets as paths of
-  // childNode indices into the *static* template HTML (`meta.h`).
-  // The SSR DOM, however, contains extra nodes injected by the server
-  // for rendered structural blocks:
-  //
-  //   - Conditional (`<if>`) blocks: `<!--wc-->` content `<!--/wc-->`
-  //   - Repeat (`<for>`) blocks: `<!--wr-->` items `<!--/wr-->`
-  //
-  // These extra nodes shift element/text ordinals in the SSR DOM
-  // relative to the template.  For example, a template with:
-  //
-  //     <div class="grid"></div>          ← element ordinal 0
-  //
-  // becomes in SSR (when a prior <if> block renders a <p>):
-  //
-  //     <!--wc--><p>no results</p><!--/wc-->  ← extra content
-  //     <div class="grid">...</div>           ← now element ordinal 1
-  //
-  // To resolve the correct element, `$resolveSSR` walks SSR children
-  // in parallel with the template DOM, skipping everything between
-  // structural marker pairs.  This requires closing markers to still
-  // be present — marker removal is deferred to the end of $hydrate().
-  //
-  // pathStart: skip leading path segments for in-place block hydration.
-
   // ── Template parsing ──────────────────────────────────────────
 
   private $parseTemplate(meta: TemplateBlockMeta): DocumentFragment {
@@ -1237,13 +1211,13 @@ export class TemplateElement extends HTMLElement {
 
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
-    // the DOM throughout the entire hydration pass so that $resolveSSR
+    // the DOM throughout the entire hydration pass so that the index walk
     // and $findSSRText can correctly skip structural block content when
     // counting element/text ordinals.  All collected markers are removed
     // in a single cleanup pass after $finalize() (events + refs).
     //
     // Hydration order:  text → attrs → conditionals → repeats → events
-    // All phases use $resolveSSR, so markers must survive until the end.
+    // Every phase reads the index or the markers, so both must survive to the end.
     const staleMarkers: Node[] = [];
 
     // Resolve the whole subtree up front.  Every binding used to walk down
@@ -1472,7 +1446,7 @@ export class TemplateElement extends HTMLElement {
       }
     }
 
-    // Events + refs — this is the last phase that uses $resolveSSR.
+    // Events + refs - this is the last phase that reads the resolved index.
     this.$finalize(instance, ssrRoot, meta, (_r, i) => ssrElements[i] ?? null, scope);
 
     // All path-based resolution is complete. Remove the SSR markers that
@@ -1572,7 +1546,9 @@ export class TemplateElement extends HTMLElement {
   /**
    * Find existing SSR text node by mapping template text-node ordinal.
    *
-   * Similar to `$resolveSSR`, the SSR DOM may contain extra text nodes
+   * Elements are numbered in pre-order, but text cannot be: the renderer
+   * strips inter-element whitespace that `meta.h` keeps.  Text slots therefore
+   * resolve by ordinal, and the SSR DOM may contain extra text nodes
    * inside structural blocks (`<if>`/`<for>`) that are not in the
    * compiled template.  We skip `<!--wc-->...<!--/wc-->` and
    * `<!--wr-->...<!--/wr-->` ranges to keep text ordinals aligned.
@@ -1587,7 +1563,7 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Find the matching text node in SSR DOM, skipping structural block
-    // content — same algorithm as $resolveSSR (see findByOrdinal).
+    // content - see findByOrdinal for the skipping algorithm.
     const found = findByOrdinal(ssrParent, 3 /* TEXT_NODE */, textOrd);
     if (found) return found as Text;
 
@@ -1647,8 +1623,8 @@ export class TemplateElement extends HTMLElement {
   ): void {
     if (!meta.a || !meta.ag) return;
     for (let g = 0; g < meta.ag.length; g++) {
-      const [targetPath, start, count] = meta.ag[g];
-      const el = resolve(targetPath);
+      const [targetIndex, start, count] = meta.ag[g];
+      const el = resolve(targetIndex);
       if (!el || el.nodeType !== 1) continue;
       for (let j = 0; j < count; j++) {
         const entry = meta.a[start + j];

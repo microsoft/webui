@@ -617,7 +617,7 @@ streaming boundary commits.
 
 Descendants must not structurally mutate a containing WebUI component's SSR
 subtree before that component hydrates. Inserting, removing, or reordering nodes
-can shift compiled paths before WebUI wires them.
+can shift compiled element indices before WebUI wires them.
 
 ```ts
 export class MyCounter extends WebUIElement {

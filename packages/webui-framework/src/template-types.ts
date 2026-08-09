@@ -22,12 +22,12 @@ export type CompiledAttrPart = string | [path: string];
  * array index instead of by walking a path of child offsets.
  */
 export type TemplateNodeIndex = number;
-export type TemplateSlotPath = [
+export type TemplateSlot = [
   parentIndex: TemplateNodeIndex,
   beforeIndex: number,
   order?: number,
 ];
-export type CompiledTextRunMeta = [slot: TemplateSlotPath, parts: CompiledAttrPart[], raw?: 1];
+export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], raw?: 1];
 export type CompiledAttrGroupMeta = [
   target: TemplateNodeIndex,
   start: number,
@@ -46,7 +46,7 @@ export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
-export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlot];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
@@ -58,7 +58,7 @@ export type CompiledRepeatMeta = [
   collection: string,
   itemVar: string,
   blockIndex: number,
-  slot: TemplateSlotPath,
+  slot: TemplateSlot,
   keyPath?: string,
 ];
 export type CompiledEventArg =

@@ -663,7 +663,7 @@ mount, and reconnects or callback exceptions do not retry it.
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a
 containing WebUI component's SSR subtree before it hydrates - insertion,
-removal, or reordering shifts compiled paths.
+removal, or reordering shifts compiled element indices.
 
 ### Progressive streaming hydration
 

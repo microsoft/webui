@@ -405,7 +405,7 @@ resource-constrained devices.
 
 5. **Single-pass hydration via path mapping.**
    SSR DOM is matched to compiled template bindings through
-   template-parallel traversal (`$resolveSSR`). Ordinary buffered hydration
+   the lockstep hydration walk (`buildSSRIndex`). Ordinary buffered hydration
    needs no marker comments or data attributes for binding resolution. The
    hydration walk touches each DOM node exactly once.
 
@@ -469,7 +469,7 @@ Angular all require a JavaScript runtime on the server.  This framework's SSR
 is driven by data (template metadata + state values), not code.  Any language
 that can read the compiled metadata and produce HTML can serve as the SSR
 backend.  No comment markers or data attributes are needed — the runtime
-resolves ordinary buffered SSR nodes via template-parallel path traversal.
+resolves ordinary buffered SSR nodes via the lockstep hydration walk.
 Progressive streaming uses temporary checkpoint scaffolding only to delay
 activation until a complete region arrives; it removes that scaffolding after
 commit.
@@ -505,7 +505,7 @@ flowchart LR
 
 ```mermaid
 graph TD
-    EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>$resolveSSR, $applySSRState,<br/>$update, events, cleanup"]
+    EL["element.ts (~850 lines)<br/><i>Orchestrator</i><br/>$mount, $wire, $hydrate,<br/>buildSSRIndex, $applySSRState,<br/>$update, events, cleanup"]
 
     DIFF["element/diff.ts<br/><i>List Reconciliation</i><br/>positional + explicit-key diffing<br/>for &lt;for&gt; repeat blocks"]
 
@@ -556,7 +556,7 @@ sequenceDiagram
     FW->>FW: SSR DOM detected (shadow root or children exist)
     FW->>FW: $applySSRState() — seed decorated state
     FW->>FW: $hydrate() — template-parallel path resolution
-    FW->>FW: $resolveSSR() — match SSR nodes via ordinal traversal
+    FW->>FW: buildSSRIndex() — number SSR nodes in one pre-order walk
     FW->>FW: $wireEvents() + $wireRefs()
     FW->>FW: $buildPathIndex(), $ready = true
     FW->>CE: hydratedCallback() (once)
@@ -605,7 +605,7 @@ interface TemplateMeta {
   ag?: [path, start, count][];         // Attribute target groups
   c?: [conditionAST, blockIndex, slot][]; // Conditional blocks
   r?: [collection, itemVar, blockIdx, slot][]; // Repeat blocks
-  eg?: [event, [[handler, argSpecs, targetPath, usesEvent?]]][]; // Events
+  eg?: [event, [[handler, argSpecs, targetIndex, usesEvent?]]][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
   sa?: string;                         // Adopted stylesheet specifier
   sd?: 1;                              // Shadow DOM flag for client-created
@@ -760,7 +760,7 @@ valid identity is re-established.
 
 On initial hydration, the repeat system walks existing SSR children and
 reconstructs collection instances by matching them against the compiled
-template via `$resolveSSR` path traversal.  State is already seeded from
+template via the `buildSSRIndex` walk.  State is already seeded from
 `window.__webui.state`, so repeat items reflect the server-rendered list
 without parsing marker comments.
 
@@ -785,36 +785,36 @@ stylesheet specifier for a component.
 ## Path-Based Binding Resolution
 
 Unlike frameworks that use comment markers or data attributes to locate each
-dynamic binding, this framework uses **compiled template paths** — arrays of
-child-node indices that describe exactly where each binding lives in the DOM
-tree. Progressive streaming's temporary boundary markers locate complete
+dynamic binding, this framework uses **compiled element indices** — each
+binding names its element by pre-order position within its compiled section. Progressive streaming's temporary boundary markers locate complete
 activation regions, not individual bindings.
 
-### Client-created resolution (`$resolve`)
+### Client-created resolution (`collectTemplateElements`)
 
-For client-created components, the DOM matches `meta.h` exactly (it was cloned
-from the parsed template fragment).  Resolution is a simple child-node index
-walk:
+For client-created components the DOM matches `meta.h` exactly (it was cloned
+from the parsed template fragment), so a plain pre-order walk reproduces the
+compiled numbering:
 
 ```typescript
-// path = [1, 0] → root.childNodes[1].childNodes[0]
-let cur: Node = root;
-for (const idx of path) {
-  cur = cur.childNodes[idx];
-}
+// elements[0] is the section root; elements[i] is the i-th element
+// a depth-first walk of the template meets.
+const elements = collectTemplateElements(root);
+const target = elements[index];
 ```
 
-### SSR resolution (`$resolveSSR`)
+### SSR resolution (`buildSSRIndex`)
 
-SSR DOM may differ from the compiled template — the browser's HTML parser can
-strip whitespace-only text nodes.  `$resolveSSR` walks the SSR DOM and the
-compiled template DOM **in parallel**, translating each child-node index into
-an element-ordinal or text-ordinal lookup:
+SSR DOM differs from the compiled template: the renderer strips inter-element
+whitespace, and `<if>` / `<for>` bodies are rendered inline between markers.
+`buildSSRIndex` walks the SSR DOM and the compiled template DOM **in lockstep**,
+skipping whole marker ranges, and numbers the result the same way:
 
 ```typescript
-// For element nodes: count element siblings up to idx in template,
-// then find the element at that ordinal in SSR DOM.
-// For text nodes: same approach with text node ordinals.
+// Elements are paired positionally and numbered in pre-order.
+// Structural ranges are skipped whole — that content belongs to
+// the block's own metadata.
+// Text is the exception: whitespace stripping means text nodes do
+// not line up, so text slots still resolve by ordinal.
 ```
 
 This template-parallel traversal eliminates the need for any marker comments,
@@ -826,7 +826,7 @@ This template-parallel traversal eliminates the need for any marker comments,
 
 | Operation | Cost | Why |
 |-----------|------|-----|
-| Initial hydration | O(bindings) | Single pass over compiled path mappings |
+| Initial hydration | O(nodes) | One pre-order walk numbers the subtree; each binding is then an index lookup |
 | Reactive update | O(affected) | Per-path index skips unrelated bindings |
 | Conditional toggle | O(block size) | Create/destroy a block instance |
 | Repeat reconciliation | O(items) | Positional scan; explicit keys use a reusable map only when order changes |
