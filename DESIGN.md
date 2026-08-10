@@ -1619,7 +1619,7 @@ update hot paths still call the function directly.
 | `eg`  | `[event, [[handler, argSpecs, targetPath, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
 | `sa`  | `string`                          | Optional module-mode adopted stylesheet specifier copied from `shadowrootadoptedstylesheets` |
-| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element; observe `composed` events only |
+| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element; observe host-targeted events plus `composed` events leaving the shadow tree |
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |

@@ -14,6 +14,7 @@ export class TestHostToggle extends WebUIElement {
   @observable label = 'off';
 
   lastTarget = '';
+  lastOrigin = '';
 
   private readonly internals = this.attachInternals();
 
@@ -36,6 +37,9 @@ export class TestHostToggle extends WebUIElement {
 
   private record(e: Event): void {
     this.lastTarget = (e.target as HTMLElement)?.tagName ?? '';
+    // Unlike `target`, `composedPath()[0]` is never retargeted, so it reports
+    // where the event really originated.
+    this.lastOrigin = (e.composedPath()[0] as HTMLElement)?.tagName ?? '';
     this.checked = !this.checked;
     this.activations += 1;
     this.label = this.checked ? 'on' : 'off';

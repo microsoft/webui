@@ -25,17 +25,19 @@ test.describe('host-interactive fixture', () => {
   });
 
   test('the click really did target the host, not shadow content', async ({ page }) => {
-    // Guards the fixture itself: if the shadow indicator ever became clickable
-    // the other tests would pass through the old shadow-root path and stop
-    // covering the host case.
+    // Guards the fixture itself: `target` is retargeted to the host either way,
+    // so assert on the un-retargeted origin. If the shadow indicator ever became
+    // clickable, this catches it and the other tests stop silently degrading
+    // into the ordinary shadow-tree case.
     await expect(page.locator('test-host-toggle')).toHaveAttribute('tabindex', '0');
     await page.locator('test-host-toggle').click();
 
-    const target = await page.evaluate(() => {
+    const seen = await page.evaluate(() => {
       const el = document.querySelector('test-host-toggle') as any;
-      return el?.lastTarget;
+      return { target: el?.lastTarget, origin: el?.lastOrigin };
     });
-    expect(target).toBe('TEST-HOST-TOGGLE');
+    expect(seen.origin).toBe('TEST-HOST-TOGGLE');
+    expect(seen.target).toBe('TEST-HOST-TOGGLE');
   });
 
   test('a real keystroke on the focused host fires the root @keydown binding', async ({ page }) => {

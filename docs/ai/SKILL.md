@@ -313,10 +313,12 @@ Include it only when you need root host events on the component root:
 </template>
 ```
 
-Root host events catch custom events bubbling up from child components. They see
-only events that bubble and are `composed`; `this.$emit()` sets both, but a
-hand-built `new CustomEvent(name)` defaults to neither and will never reach the
-root - pass `{ bubbles: true, composed: true }` or bind it on the child element.
+Root host events catch custom events bubbling up from child components. To arrive
+from a child, an event must bubble and - to cross the child's shadow boundary -
+be `composed`; `this.$emit()` sets both whenever the emitting component has a
+shadow root (the default), but a hand-built `new CustomEvent(name)` defaults to
+neither and will never reach the root - pass `{ bubbles: true, composed: true }`
+or bind it on the child element.
 
 The binding sits on the host element, so it also catches events targeted at the
 host itself - what host-interactive components (host `tabindex`, presentational

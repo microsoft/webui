@@ -112,7 +112,7 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 
 When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - listeners on the component root that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
 
-Root host events only see events that **bubble** and are **composed**. `this.$emit()` dispatches with both, so emitted events reach the root. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself (`composed` is what lets it cross the shadow boundary).
+To reach a root binding from a **child component**, an event must **bubble** and - because it has to cross the child's shadow boundary - be **composed**. `this.$emit()` sets both whenever the emitting component has a shadow root, which is the default. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
 
 A root binding lives on the **host element**, so it also catches events targeted at the host itself - what host-interactive components (host `tabindex`, presentational shadow content) rely on. It does not see non-composed events (`change`, `submit`, `select`, media events), which stop at the shadow boundary because they identify one specific inner element; bind those per element - `<input @change="{onChange(e)}">`.
 
