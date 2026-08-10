@@ -24,8 +24,13 @@ pub(crate) struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn load(app_root: &Path, css: webui::CssStrategy, base_path: &str) -> Result<Self> {
-        let frontend = FrontendRuntime::load(app_root, css)?;
+    pub(crate) fn load(
+        app_root: &Path,
+        css: webui::CssStrategy,
+        css_bundle: bool,
+        base_path: &str,
+    ) -> Result<Self> {
+        let frontend = FrontendRuntime::load(app_root, css, css_bundle)?;
         Self::with_frontend(app_root, base_path, frontend)
     }
 

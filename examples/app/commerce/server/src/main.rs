@@ -36,6 +36,11 @@ struct ApiArgs {
     #[arg(long, default_value = "link")]
     css: String,
 
+    /// Group component stylesheets into per-tree bundles, splitting shared
+    /// sheets into their own chunk. Not supported with `--css module`.
+    #[arg(long)]
+    css_bundle: bool,
+
     /// Disable TLS and serve plain HTTP.  Use behind a TLS-terminating
     /// reverse proxy (e.g. Azure Container Apps ingress).
     #[arg(long)]
@@ -69,7 +74,7 @@ fn main() -> Result<()> {
     };
     let app_root = std::env::current_dir().context("Failed to determine commerce app directory")?;
 
-    let app_state = AppState::load(&app_root, css, &args.base_path)?;
+    let app_state = AppState::load(&app_root, css, args.css_bundle, &args.base_path)?;
 
     eprintln!(
         "Commerce server: {} products, {} images ({} variants)",
