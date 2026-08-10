@@ -6,12 +6,21 @@ import type {
   TemplateMeta,
 } from '../template.js';
 import {
-  prepareComponentStyles,
+  requireComponentStyles,
   type ComponentStyles,
 } from '../element/styles.js';
 
 const ASSET_TYPE = 'webui-component-asset';
 const COMPONENT_STYLES_ASSET_VERSION = 3;
+
+/**
+ * Detached style catalogs already produced by {@link validateAsset}.
+ *
+ * Preparing a catalog validates and deep-copies every resource and closure.
+ * Validation and payload preparation are separate steps that both need the
+ * result, so the first one keeps it instead of making the second redo the walk.
+ */
+const preparedAssetStyles = new WeakMap<object, ComponentStyles>();
 
 /** Dynamic import edge from a component asset root to a shared chunk. */
 export interface ComponentAssetImport {
@@ -39,8 +48,24 @@ export interface ComponentAsset {
   templateFunctions?: Record<string, CompiledConditionFn[]>;
 }
 
-/** Read the default payload exported by an imported component asset module. */
-export function readComponentAssetModule(module: unknown): unknown {
+/**
+ * Validate and detach an asset's style catalog, remembering the result.
+ *
+ * Returns the same detached catalog on repeat calls for one raw payload, so
+ * validation and payload preparation share a single deep copy.
+ */
+export function prepareAssetComponentStyles(value: unknown): ComponentStyles {
+  if (typeof value === 'object' && value !== null) {
+    const cached = preparedAssetStyles.get(value);
+    if (cached) return cached;
+    const prepared = requireComponentStyles(value);
+    preparedAssetStyles.set(value, prepared);
+    return prepared;
+  }
+  return requireComponentStyles(value);
+}
+
+/** Read the default payload exported by an imported component asset module. */export function readComponentAssetModule(module: unknown): unknown {
   if (!isObject(module) || !isObject(module.default)) {
     throw new Error('[WebUI] Component asset module must default-export an asset object.');
   }
@@ -76,7 +101,7 @@ export function validateAsset(
   if (!Array.isArray(asset.imports)) {
     throw new Error('[WebUI] Component asset imports must be an array.');
   }
-  prepareComponentStyles(asset.componentStyles);
+  prepareAssetComponentStyles(asset.componentStyles);
   if (!isObject(asset.templates)) {
     throw new Error('[WebUI] Component asset templates must be an object.');
   }

@@ -1,6 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+// `__WEBUI_DEV__` is a compile-time constant a bundler folds to a literal, so
+// the `if (DEV)` diagnostics below become dead code in production builds. See
+// the longer note in `template-element.ts`; the flag is declared module-locally
+// on purpose, because esbuild does not inline an imported constant.
+declare const __WEBUI_DEV__: boolean;
+const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
+
 /** One addressable component stylesheet definition. */
 export type ComponentStyleResource = (
   | { kind: 'link'; href: string }
@@ -30,6 +37,20 @@ interface SsrStyleMarkerState {
 }
 
 /**
+ * Cached anchor elements for one CSS tree's direct resource markers.
+ *
+ * `count` is the `childElementCount` observed when `markers` was last known to
+ * be accurate. Every install we perform updates both fields, so the common case
+ * — repeated closure installs into a head we are the only writer of — never
+ * rescans. A count that no longer matches means somebody else mutated the tree,
+ * and the scan is redone.
+ */
+interface ResourceMarkerCache {
+  count: number;
+  markers: Map<string, Element>;
+}
+
+/**
  * Module adoption bookkeeping for one CSS tree.
  *
  * `order` is the closure request order, so a descendant closure whose network
@@ -56,6 +77,7 @@ const installed = new WeakMap<StyleTarget, Set<string>>();
 const completedClosures = new WeakMap<StyleTarget, Set<string>>();
 const pending = new WeakMap<StyleTarget, Map<string, Promise<CSSStyleSheet>>>();
 const ssrMarkers = new WeakMap<StyleTarget, SsrStyleMarkerState>();
+const resourceMarkers = new WeakMap<StyleTarget, ResourceMarkerCache>();
 const moduleAdoption = new WeakMap<StyleTarget, ModuleAdoptionState>();
 const moduleImportsInstalled = new WeakMap<Document, Set<string>>();
 const moduleImportsSeeded = new WeakSet<Document>();
@@ -384,22 +406,49 @@ export function claimSsrComponentStyles(source: Element, target: StyleTarget): v
   }
 }
 
+function markerScope(target: StyleTarget): Element | ShadowRoot {
+  return isDocument(target) ? target.head : target;
+}
+
+/**
+ * Anchor elements for the resources already present in a CSS tree.
+ *
+ * `installElements` uses these to insert new resources in closure order without
+ * re-searching the tree per resource. The result is cached and kept current by
+ * {@link appendResource}, because otherwise every closure install re-reads
+ * `data-webui-resource` from every element in a head that we ourselves keep
+ * growing — quadratic in the number of installed resources.
+ */
 function directResourceMarkers(
   target: StyleTarget,
   catalog: DocumentCatalog,
 ): Map<string, Element> | undefined {
-  const scope: Element | ShadowRoot = isDocument(target) ? target.head : target;
+  const scope = markerScope(target);
+  const cached = resourceMarkers.get(target);
+  if (cached && cached.count === scope.childElementCount) {
+    return cached.markers.size > 0 ? cached.markers : undefined;
+  }
   const candidates = scope.children;
-  let markers: Map<string, Element> | undefined;
+  const markers = new Map<string, Element>();
   for (let i = 0; i < candidates.length; i++) {
     const id = candidates[i].getAttribute('data-webui-resource');
     if (id === null) continue;
     const resource = catalog.resources.get(id);
     if (!resource || !isMatchingResourceMarker(candidates[i], resource)) continue;
-    if (!markers) markers = new Map();
     if (!markers.has(id)) markers.set(id, candidates[i]);
   }
-  return markers;
+  resourceMarkers.set(target, { count: candidates.length, markers });
+  return markers.size > 0 ? markers : undefined;
+}
+
+/** Keep the marker cache current for a resource element we just inserted. */
+function noteMarkerInserted(target: StyleTarget, id: string, element: Element): void {
+  const cached = resourceMarkers.get(target);
+  if (!cached) return;
+  // Exactly one element was inserted into the scanned scope, so the expected
+  // child count advances by one without re-reading the live collection.
+  cached.count++;
+  if (!cached.markers.has(id)) cached.markers.set(id, element);
 }
 
 function appendResource(
@@ -416,6 +465,7 @@ function appendResource(
     link.href = resource.href;
     link.setAttribute('data-webui-resource', id);
     parent.insertBefore(link, before ?? null);
+    noteMarkerInserted(target, id, link);
     return;
   }
   if (resource.kind === 'style') {
@@ -425,6 +475,7 @@ function appendResource(
     style.textContent = resource.css;
     style.setAttribute('data-webui-resource', id);
     parent.insertBefore(style, before ?? null);
+    noteMarkerInserted(target, id, style);
     return;
   }
   throw new Error(`[WebUI] Module resource "${id}" cannot be installed as an element.`);
@@ -522,18 +573,55 @@ function installElementRange(
   }
 }
 
+/**
+ * Warn when a closure asks for an order the tree has already contradicted.
+ *
+ * Resources are installed once and shared, so the first closure to run fixes
+ * their relative order. A later closure that wants the opposite order gets
+ * silently ignored — its rules cascade the wrong way with no signal. Detect it
+ * by checking that every anchor we found still appears in closure order.
+ */
+function warnOnContradictoryOrder(
+  rootId: string,
+  closure: readonly string[],
+  markers: Map<string, Element>,
+): void {
+  let previousId: string | undefined;
+  let previous: Element | undefined;
+  for (let i = 0; i < closure.length; i++) {
+    const marker = markers.get(closure[i]);
+    if (!marker) continue;
+    if (
+      previous &&
+      typeof previous.compareDocumentPosition === 'function' &&
+      // Bit 4 is DOCUMENT_POSITION_FOLLOWING: `marker` comes after `previous`,
+      // which is what closure order requires.
+      (previous.compareDocumentPosition(marker) & 4) === 0
+    ) {
+      console.warn(
+        `[WebUI] Closure "${rootId}" wants "${previousId}" before "${closure[i]}", but they are already installed in the opposite order. The first closure to install decides, so these rules cascade against this closure's intent.`,
+      );
+      return;
+    }
+    previousId = closure[i];
+    previous = marker;
+  }
+}
+
 function installElements(
   target: StyleTarget,
   catalog: DocumentCatalog,
   closure: readonly string[],
   targetInstalled: Set<string>,
   markers: Map<string, Element> | undefined,
+  rootId: string,
 ): void {
   // Existing markers delimit ranges that can be inserted in closure order
   // without searching the target again for every resource.
   let segmentEnd = closure.length;
   let before: Element | undefined;
   if (markers) {
+    if (DEV) warnOnContradictoryOrder(rootId, closure, markers);
     for (let i = closure.length - 1; i >= 0; i--) {
       const marker = markers.get(closure[i]);
       if (!marker) continue;
@@ -684,6 +772,16 @@ async function finishModuleLoads(
  * Link and Style resources complete synchronously and return undefined. Module
  * resources return a promise that rejects on import failure; failed pending
  * entries are removed for retry.
+ *
+ * Failure policy — the two outcomes are deliberately different:
+ *
+ * - **An unknown `rootId` returns quietly.** A component with no CSS has no
+ *   closure at all, and every mounting host calls this unconditionally, so a
+ *   missing closure is the normal "nothing to install" answer, not an error.
+ * - **A known closure naming an unknown resource throws.** The compiler emits
+ *   closures and resources together, so a closure that references an ID the
+ *   catalog does not define means the payload was truncated or mismatched.
+ *   Rendering on would leave the component visibly unstyled with no signal.
  */
 export function installComponentStyles(
   rootId: string,
@@ -731,6 +829,7 @@ export function installComponentStyles(
       closure,
       targetInstalled,
       directResourceMarkers(target, catalog),
+      rootId,
     );
   }
 

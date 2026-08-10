@@ -1265,12 +1265,23 @@ exist, and the compiler picks the strongest one each component's DOM permits:
   `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)` prelude, which resolves
   membership at match time.
 
-A component takes the enclosed path when its template contains a raw HTML binding
-(`{{{expr}}}`), which interpolates author-supplied markup at render time. Such
-elements exist in no compiled template, so a stamped selector would silently stop
-matching them; `@scope` covers them natively. The detection is conservative and
-purely textual, so a false positive costs the fast path but never correctness.
-Every other binding form escapes its value into text and is safe to stamp.
+A component takes the enclosed path when either of two things is true.
+
+The first is a raw HTML binding (`{{{expr}}}`) in its template, which interpolates
+author-supplied markup at render time. Such elements exist in no compiled template,
+so a stamped selector would silently stop matching them; `@scope` covers them
+natively. The detection is conservative and purely textual, so a false positive
+costs the fast path but never correctness. Every other binding form escapes its
+value into text and is safe to stamp.
+
+The second is CSS the stamper cannot represent — a `:host` inside a functional
+pseudo-class argument, for instance, where lowering would have to rewrite a
+selector the stamper deliberately never descends into. A pre-scan
+(`stamping_is_representable`) answers this before a boundary is chosen, using the
+same tokenizer the stamper uses, so the two can never disagree. Because that
+decision depends on the component's stylesheet rather than its template, it is
+memoized per tag: a component reached first through a CSS-less path and later
+through its stylesheet must not switch shapes mid-build.
 
 The stamped shape:
 
@@ -1331,8 +1342,10 @@ Shared by both shapes:
   declaration values, and custom properties are never selector-rewritten.
 - Block grouping rules (`@media`, `@supports`, `@container`, `@layer`, and
   authored `@scope`) remain nested, and an authored `@scope` prelude has both its
-  root and limit selector lists qualified. Global or statement-form at-rules that
-  cannot be isolated fail with `unsupported-light-css`.
+  root and limit selector lists qualified. Statement-form `@layer` (`@layer a, b;`)
+  declares cascade layer order and carries no rules, so it is emitted verbatim.
+  Other global or statement-form at-rules that cannot be isolated fail with
+  `unsupported-light-css`.
 - Shadow-only `:host-context()` and `::slotted()` are rejected in Light
   CSS with `unsupported-light-css`. Authors must use entry CSS or opt that
   component into `<template shadowrootmode="open">`.

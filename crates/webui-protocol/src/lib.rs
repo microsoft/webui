@@ -496,6 +496,33 @@ impl WebUiProtocol {
             .map(|chunk| chunk.component_tags.as_slice())
     }
 
+    /// Map every component whose stylesheet a bundled chunk already ships to
+    /// that chunk's index.
+    ///
+    /// This is the single definition of "already covered by a chunk", and every
+    /// delivery path must agree on it. A closure carries `style_chunks` only
+    /// when the bundler treated it as a root; other closures still list their
+    /// members individually, and delivering those members verbatim in a bundled
+    /// build re-ships bytes the covering chunk already contains. Resolving a
+    /// member through this map instead keeps each closure self-sufficient, so
+    /// correctness never depends on which closure happens to install first.
+    ///
+    /// Empty for unbundled builds. Build it once per render: it allocates.
+    #[must_use]
+    pub fn style_chunk_index(&self) -> HashMap<&str, u32> {
+        let mut index = HashMap::new();
+        for (position, chunk) in self.style_chunks.iter().enumerate() {
+            let Ok(position) = u32::try_from(position) else {
+                break;
+            };
+            index.reserve(chunk.component_tags.len());
+            for tag in &chunk.component_tags {
+                index.insert(tag.as_str(), position);
+            }
+        }
+        index
+    }
+
     /// Return the bundled chunk indices for `root`, in cascade order.
     ///
     /// Empty when the build did not bundle CSS, in which case callers deliver

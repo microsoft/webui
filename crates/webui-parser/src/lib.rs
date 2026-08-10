@@ -468,6 +468,13 @@ pub struct HtmlParser {
 
     /// Components whose registry CSS has already been lowered for Light DOM.
     compiled_light_css: HashSet<String>,
+    /// Light components pinned to the `@scope` enclosure.
+    ///
+    /// The boundary is chosen from authored CSS, but `compiled_light_css`
+    /// rebuilds see the already-lowered CSS instead, where the `:host` that
+    /// forced the enclosure has become `:scope`. Remembering the decision keeps
+    /// a rebuild from re-deriving the wrong shape and stamping unused markers.
+    light_scope_enclosed: HashSet<String>,
     /// Derived Light scope marker -> owning tag, to catch hash collisions.
     light_scope_markers: HashMap<String, String>,
 
@@ -1088,6 +1095,7 @@ impl HtmlParser {
             plugin: None,
             component_dom_analyses: HashMap::new(),
             compiled_light_css: HashSet::new(),
+            light_scope_enclosed: HashSet::new(),
             light_scope_markers: HashMap::new(),
             token_roots: Vec::new(),
             fragment_css_tokens: HashMap::new(),
@@ -3507,11 +3515,19 @@ impl HtmlParser {
     ) -> Result<BuiltComponentTemplate> {
         let dom_analysis = self.analyze_component_dom(tag_name, html)?;
         let is_light = !dom_analysis.uses_shadow_dom;
-        // Pick the strongest boundary this component's DOM permits. A template
-        // that can interpolate opaque markup keeps the `@scope` enclosure,
-        // which scopes at match time and therefore covers elements no compiled
-        // template declares; everything else takes the stamped fast path.
-        let marker = if is_light && !light_scope::renders_opaque_html(html) {
+        // Pick the strongest boundary this component's DOM *and* CSS permit. A
+        // template that can interpolate opaque markup keeps the `@scope`
+        // enclosure, which scopes at match time and therefore covers elements
+        // no compiled template declares; so does CSS that stamping cannot
+        // express. Everything else takes the stamped fast path.
+        let stampable = is_light
+            && !light_scope::renders_opaque_html(html)
+            && !self.light_scope_enclosed.contains(tag_name)
+            && css_content.is_none_or(css_boundary::stamping_is_representable);
+        if is_light && !stampable {
+            self.light_scope_enclosed.insert(tag_name.to_string());
+        }
+        let marker = if stampable {
             Some(self.light_scope_marker(tag_name)?)
         } else {
             None
