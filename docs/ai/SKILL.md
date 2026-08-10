@@ -409,7 +409,9 @@ Shadow CSS scoping. No CSS-in-JS or styles written from script.
   render it through `<if>` / `<for>`, and it is scoped automatically. Creating a
   *component host* from script is fine — its content comes from the compiled
   template. A template that interpolates raw HTML (`{{{expr}}}`) is scoped with a
-  native `@scope` enclosure instead, which covers the interpolated markup.
+  native `@scope` enclosure instead, which covers the interpolated markup, as is
+  a component whose CSS uses a shape the stamper cannot rewrite (for example
+  `:host` nested inside `:is(...)`).
 - Shadow-only selectors and unsafe Light keyframe references fail the build.
 - `data-wl` and `data-wl-*` are reserved for scoping; authoring either fails the
   build.

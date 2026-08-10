@@ -47,8 +47,9 @@ use crate::css_selector::for_each_compound;
 use crate::diagnostic::{codes, Diagnostic};
 use crate::{comment_policy, css_scan, ParserError, Result, LIGHT_DOM_MARKER_ATTR};
 use css_scan::{
-    block_comment_end, css_identifier_eq, ident_end, identifier_value, is_ident_start_byte,
-    is_identifier_token_start, matching_paren_end, next_char_boundary, pseudo_name, quoted_end,
+    block_comment_end, css_escape_end, css_identifier_eq, ident_end, identifier_value,
+    is_ident_start_byte, is_identifier_token_start, matching_paren_end, next_char_boundary,
+    pseudo_name, quoted_end,
 };
 use std::fmt::Write;
 use std::ops::Range;
@@ -92,8 +93,16 @@ struct AnimationShorthandState {
 }
 
 enum AtRule {
-    Grouping { block_start: usize, is_scope: bool },
+    Grouping {
+        block_start: usize,
+        is_scope: bool,
+    },
     Keyframes(KeyframeRule),
+    /// A statement-form at-rule with no selector list and no block, copied
+    /// through verbatim because there is nothing to scope.
+    Statement {
+        end: usize,
+    },
 }
 
 /// How a Light component's CSS is bounded to the DOM its own template owns.
@@ -263,6 +272,66 @@ impl Stamper {
     }
 }
 
+/// Whether `source` can be bounded by attribute stamping.
+///
+/// Stamping qualifies each compound with `:where([data-wl-<id>])`, which bounds
+/// a selector to the elements one template declares. A `:host` nested inside a
+/// functional pseudo-class (`:not(:host)`, `:is(:host, .a)`, `.card:has(:host)`)
+/// has no such qualifier: the host carries `data-wl` while its descendants carry
+/// `data-wl-<id>`, so no single zero-specificity token bounds both branches of
+/// the argument. Those components take the `@scope` enclosure instead, where
+/// `:host` lowers to `:scope` and the enclosure bounds the selector at match
+/// time.
+///
+/// Runs once per component at build time, over CSS that has already been read
+/// from disk, so a single extra byte scan is not measurable.
+#[must_use]
+pub(crate) fn stamping_is_representable(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut index = 0usize;
+    let mut paren_depth = 0usize;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' | b'\'' => {
+                index = quoted_end(source, index);
+            }
+            b'\\' => {
+                index = css_escape_end(bytes, index, bytes.len());
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = block_comment_end(source, index);
+            }
+            b'/' if comment_policy::is_css_line_comment_start(source, index) => {
+                index = line_comment_end(source, index);
+            }
+            b'(' => {
+                paren_depth += 1;
+                index += 1;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                index += 1;
+            }
+            b':' => {
+                let Some(pseudo) = pseudo_name(source, index) else {
+                    index += 1;
+                    continue;
+                };
+                let raw_name = &source[pseudo.name.clone()];
+                let decoded = raw_name.contains('\\').then(|| identifier_value(raw_name));
+                let name = decoded.as_deref().unwrap_or(raw_name);
+                if paren_depth > 0 && !pseudo.is_element && name.eq_ignore_ascii_case("host") {
+                    return false;
+                }
+                index = pseudo.name.end;
+            }
+            _ => index = next_char_boundary(source, index),
+        }
+    }
+    true
+}
+
 /// Compile developer-authored component CSS for one Light DOM component.
 ///
 /// `scope` selects the boundary shape; see [`LightScope`].
@@ -320,7 +389,7 @@ fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<Ke
                 index = block_comment_end(source, index);
             }
             b'/' if comment_policy::is_css_line_comment_start(source, index) => {
-                index = comment_policy::find_css_line_comment_end(source, index + 2);
+                index = line_comment_end(source, index);
             }
             b'@' if segment_start => {
                 match parse_at_rule(tag_name, source, index)? {
@@ -342,6 +411,11 @@ fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<Ke
                     AtRule::Grouping { block_start, .. } => {
                         pending_block = Some((block_start, current_block(&blocks)));
                         index += 1;
+                    }
+                    AtRule::Statement { end } => {
+                        index = end + 1;
+                        segment_start = true;
+                        continue;
                     }
                 }
                 segment_start = false;
@@ -471,7 +545,16 @@ fn rewrite_css(
             continue;
         }
         if bytes[index] == b'/' && comment_policy::is_css_line_comment_start(source, index) {
-            index = comment_policy::find_css_line_comment_end(source, index + 2);
+            index = line_comment_end(source, index);
+            continue;
+        }
+        // An escape sequence hides whatever byte follows it. Consuming it whole
+        // keeps `\{`, `\(`, and `\:host` from being read as real structure,
+        // which would emit invalid CSS or desync the depth counters for the
+        // remainder of the stylesheet.
+        if bytes[index] == b'\\' {
+            index = css_escape_end(bytes, index, bytes.len());
+            segment_start = false;
             continue;
         }
 
@@ -499,6 +582,23 @@ fn rewrite_css(
                     ));
                 }
                 if !pseudo.is_element && name.eq_ignore_ascii_case("host") {
+                    // A nested `:host` cannot be represented by stamping: the
+                    // host carries `data-wl` while descendants carry
+                    // `data-wl-<id>`, so no single qualifier bounds both
+                    // branches of the argument. `stamping_is_representable`
+                    // routes such CSS to the enclosed shape before compilation,
+                    // so reaching here means that check and this scanner
+                    // disagreed - fail loudly rather than emit a rule that
+                    // silently matches the whole document.
+                    if paren_depth > 0 && stamper.is_stamped() {
+                        return Err(unsupported_light_css_error(
+                            tag_name,
+                            source,
+                            index,
+                            "`:host` inside a functional pseudo-class cannot be scoped by stamping",
+                            "move the rule to entry CSS, or wrap the component in `<template shadowrootmode=\"open\">`",
+                        ));
+                    }
                     let end = rewrite_host_selector(
                         HostRewrite {
                             tag_name,
@@ -537,6 +637,14 @@ fn rewrite_css(
                     pending_block = Some((block_start, current_block(&blocks)));
                     pending_at_prelude = Some((block_start, is_scope));
                     index += 1;
+                }
+                AtRule::Statement { end } => {
+                    // Nothing to scope: leaving the statement in the pending
+                    // copy range emits it verbatim on the next flush.
+                    index = end + 1;
+                    prelude_start = None;
+                    segment_start = true;
+                    continue;
                 }
             }
             segment_start = false;
@@ -798,6 +906,20 @@ fn declaration_at(source: &str, start: usize) -> Option<Declaration> {
     })
 }
 
+/// End of a `//` line comment, stopped at a `}` that would close its block.
+///
+/// `//` is a WebUI dialect extension rather than standard CSS, so a `}` later on
+/// the same line still terminates the block the comment sits in. Swallowing it
+/// would leave that block open and silently un-scope every rule that follows.
+fn line_comment_end(source: &str, start: usize) -> usize {
+    let end = comment_policy::find_css_line_comment_end(source, start + 2);
+    let bytes = source.as_bytes();
+    match bytes[start..end].iter().position(|byte| *byte == b'}') {
+        Some(offset) => start + offset,
+        None => end,
+    }
+}
+
 fn declaration_value_end(source: &str, start: usize) -> usize {
     let bytes = source.as_bytes();
     let mut index = start;
@@ -808,11 +930,12 @@ fn declaration_value_end(source: &str, start: usize) -> usize {
     while index < bytes.len() {
         match bytes[index] {
             b'"' | b'\'' => index = quoted_end(source, index),
+            b'\\' => index = css_escape_end(bytes, index, bytes.len()),
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(source, index);
             }
             b'/' if comment_policy::is_css_line_comment_start(source, index) => {
-                index = comment_policy::find_css_line_comment_end(source, index + 2);
+                index = line_comment_end(source, index);
             }
             b'(' => {
                 paren_depth += 1;
@@ -866,6 +989,9 @@ fn parse_at_rule(tag_name: &str, source: &str, start: usize) -> Result<AtRule> {
             block_start,
             is_scope: css_identifier_eq(name, "scope"),
         }),
+        // `@layer a, b;` only declares cascade-layer order: no selector list and
+        // no block, so copying it through preserves it exactly.
+        Some((end, b';')) if css_identifier_eq(name, "layer") => Ok(AtRule::Statement { end }),
         _ => Err(unsupported_light_css_error(
             tag_name,
             source,
@@ -1428,6 +1554,15 @@ mod tests {
         ".a { anchor-name: --x; position-anchor: --y }",
         ".a { background: url('a{b}c.png') }",
         ".a { content: '::before' }",
+        // Escapes. An escaped structural character is a literal, and consuming
+        // it as syntax desynchronizes every scanner for the rest of the file.
+        ".hover\\:underline { color: red }",
+        ".w-1\\/2 { width: 50% }",
+        ".bg-\\[\\#bada55\\] { color: red }",
+        ".a\\{b { color: red }",
+        ".a\\(b { color: red }",
+        ".a\\:host { color: red }",
+        ".a { content: '\\}' }",
     ];
 
     /// Every input the invariants run over, from both corpora.
@@ -1436,6 +1571,166 @@ mod tests {
             .iter()
             .map(|(source, _)| *source)
             .chain(MODERN_CSS_INVARIANTS.iter().copied())
+    }
+
+    /// Every input the output-shape invariants run over.
+    ///
+    /// Wider than [`invariant_inputs`] because the structural checks inspect
+    /// the compiled output only and so are unaffected by `:host` lowering
+    /// differing between shapes.
+    fn structural_inputs() -> impl Iterator<Item = &'static str> {
+        invariant_inputs().chain(HOST_CORPUS.iter().map(|(source, _, _)| *source))
+    }
+
+    /// Whether `source` spells a real `:host` selector rather than an escaped
+    /// literal such as `.a\:host`, which is an ordinary class name.
+    ///
+    /// An odd number of preceding backslashes escapes the colon; an even
+    /// number leaves it structural.
+    fn contains_host_selector(source: &str) -> bool {
+        let bytes = source.as_bytes();
+        let mut index = 0usize;
+        while let Some(offset) = source[index..].find(":host") {
+            let at = index + offset;
+            let backslashes = bytes[..at]
+                .iter()
+                .rev()
+                .take_while(|b| **b == b'\\')
+                .count();
+            if backslashes % 2 == 0 {
+                return true;
+            }
+            index = at + ":host".len();
+        }
+        false
+    }
+
+    /// `:host` lowering under stamping, pinned per shape.
+    ///
+    /// `:host` is the one construct whose output legitimately differs between
+    /// the two shapes — `tag[data-wl]` when stamped, `:scope` when enclosed —
+    /// so the strip-and-compare oracle cannot cover it and
+    /// [`stamping_only_inserts_qualifiers`] excludes it by assertion. Pinning
+    /// both shapes here is what makes that exclusion safe rather than a hole.
+    ///
+    /// The host compound is never qualified: inside its own scope the host is
+    /// the root, and it does not carry the descendant marker.
+    const HOST_CORPUS: &[(&str, &str, &str)] = &[
+        (":host { color: red }", "my-card[data-wl]", ":scope"),
+        (
+            ":host:has(.error) { color: red }",
+            "my-card[data-wl]:has(.error)",
+            ":scope:has(.error)",
+        ),
+        (
+            ":host([disabled]):hover { color: red }",
+            "my-card[data-wl]:is([disabled]):hover",
+            ":scope:is([disabled]):hover",
+        ),
+        (
+            ":host:not([hidden]) { color: red }",
+            "my-card[data-wl]:not([hidden])",
+            ":scope:not([hidden])",
+        ),
+        (
+            ":host::before { content: '' }",
+            "my-card[data-wl]::before",
+            ":scope::before",
+        ),
+        (
+            ":host .child { color: red }",
+            "my-card[data-wl] .child:where([data-wl-t3stid])",
+            ":scope .child",
+        ),
+        (
+            ":host, .a { color: red }",
+            "my-card[data-wl], .a:where([data-wl-t3stid])",
+            ":scope, .a",
+        ),
+    ];
+
+    /// `:host` lowers correctly under both shapes, and the host is never
+    /// qualified with the descendant marker it does not carry.
+    #[test]
+    fn lowers_host_selectors_per_shape() {
+        for (source, stamped_selector, enclosed_selector) in HOST_CORPUS {
+            let stamped = compile(source).expect("compile");
+            assert!(
+                stamped.starts_with(stamped_selector),
+                "stamped `{source}` -> `{stamped}`, expected prefix `{stamped_selector}`"
+            );
+            let enclosed = enclose(source).expect("enclose");
+            assert!(
+                enclosed.contains(enclosed_selector),
+                "enclosed `{source}` -> `{enclosed}`, expected `{enclosed_selector}`"
+            );
+        }
+    }
+
+    /// `:host` nests and groups like any other selector under stamping.
+    #[test]
+    fn lowers_host_selectors_inside_grouping_and_nesting() {
+        assert_eq!(
+            compile("@media print { :host { color: red } }").expect("compile"),
+            "@media print { my-card[data-wl] { color: red } }"
+        );
+        assert_eq!(
+            compile(":host { .child { color: red } }").expect("compile"),
+            "my-card[data-wl] { .child:where([data-wl-t3stid]) { color: red } }"
+        );
+    }
+
+    /// `:host` inside a functional pseudo-class cannot be stamped, and both
+    /// scanners that decide so must agree.
+    ///
+    /// `:is(:host, .a)` has no marker-based equivalent: the host carries no
+    /// descendant marker, so a qualifier appended to the compound would fail
+    /// to match the host, and one placed inside the argument would apply to
+    /// every branch. [`stamping_is_representable`] must route such CSS to the
+    /// enclosed shape *before* compilation. The in-loop guard is the backstop
+    /// for the two scanners disagreeing, and asserting them together is what
+    /// keeps that backstop from becoming reachable in production.
+    #[test]
+    fn host_inside_a_functional_pseudo_is_not_stampable() {
+        for source in [
+            ":is(:host, .a) { color: red }",
+            ":not(:host) .b { color: red }",
+            ".a:has(:host) { color: red }",
+            "@media print { :is(:host, .a) { color: red } }",
+        ] {
+            assert!(
+                !stamping_is_representable(source),
+                "pre-scan must reject: {source}"
+            );
+            let error = compile(source).expect_err("in-loop guard must reject");
+            assert!(
+                matches!(
+                    error,
+                    ParserError::Template(ref diagnostic)
+                        if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
+                ),
+                "guard must raise the documented code: {source}"
+            );
+            enclose(source).expect("enclosed shape is the fallback and must compile");
+        }
+    }
+
+    /// The pre-scan must not reject CSS the stamper handles.
+    ///
+    /// A false negative is silent: it downgrades a component to `@scope` and
+    /// forfeits the measured recalculation win with nothing to observe. Running
+    /// the whole corpus through both keeps the two scanners honest in the
+    /// direction the guard cannot catch.
+    #[test]
+    fn pre_scan_accepts_everything_the_stamper_compiles() {
+        let host_sources = HOST_CORPUS.iter().map(|(source, _, _)| *source);
+        for source in invariant_inputs().chain(host_sources) {
+            assert!(
+                stamping_is_representable(source),
+                "pre-scan rejected stampable CSS: {source}"
+            );
+            compile(source).expect("stamper compiles what the pre-scan accepts");
+        }
     }
 
     /// An at-rule prelude is never a selector list, at any nesting depth.
@@ -1464,8 +1759,8 @@ mod tests {
         let qualifier = format!(":where([{MARKER}])");
         for source in invariant_inputs() {
             assert!(
-                !source.contains(":host"),
-                "host lowering differs between shapes: {source}"
+                !contains_host_selector(source),
+                "host lowering differs between shapes, so this belongs in HOST_CORPUS: {source}"
             );
             let stripped = compile(source).expect("compile").replace(&qualifier, "");
             let enclosed = enclose(source).expect("enclose");
@@ -1487,7 +1782,7 @@ mod tests {
     #[test]
     fn no_qualifier_lands_in_an_at_rule_prelude() {
         let qualifier = format!(":where([{MARKER}])");
-        for source in invariant_inputs() {
+        for source in structural_inputs() {
             let compiled = compile(source).expect("compile");
             for prelude in at_rule_preludes(&compiled) {
                 assert!(
@@ -1509,7 +1804,7 @@ mod tests {
     #[test]
     fn no_qualifier_follows_a_pseudo_element() {
         let qualifier = format!(":where([{MARKER}])");
-        for source in invariant_inputs() {
+        for source in structural_inputs() {
             let compiled = compile(source).expect("compile");
             for selector in selector_texts(&compiled) {
                 assert!(
@@ -1963,7 +2258,6 @@ mod tests {
     fn rejects_global_at_rules() {
         for source in [
             "@font-face{font-family:x;src:url(x)}",
-            "@layer reset;",
             "@import url(global.css);",
             // Postdate the stamper; all reject rather than corrupt.
             "@property --x{syntax:'<length>';inherits:false;initial-value:0px}",
@@ -1978,6 +2272,29 @@ mod tests {
                     if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
             ));
         }
+    }
+
+    /// Statement-form `@layer` declares cascade-layer order and carries no
+    /// selectors, so it is copied through instead of rejected. Rejecting it
+    /// would force authors to abandon layers entirely just to keep a component
+    /// Light, and the ordering it declares is exactly what a later block-form
+    /// `@layer name { ... }` in the same file depends on.
+    #[test]
+    fn preserves_statement_form_layer() {
+        let compiled = compile("@layer reset,theme;@layer theme{.a{color:red}}")
+            .expect("statement-form @layer compiles");
+        assert!(
+            compiled.starts_with("@layer reset,theme;"),
+            "statement copied verbatim: {compiled}"
+        );
+        assert!(
+            compiled.contains("@layer theme{"),
+            "following block at-rule still parsed as an at-rule: {compiled}"
+        );
+        assert!(
+            compiled.contains(&format!(".a:where([{MARKER}])")),
+            "rules after the statement are still scoped: {compiled}"
+        );
     }
 
     /// Everything outside a selector prelude is copied through untouched.

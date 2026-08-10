@@ -50,6 +50,11 @@ class FakeParent {
     return this.childElements;
   }
 
+  /** Mirrors the DOM property, which reading must not count as a scan. */
+  get childElementCount(): number {
+    return this.childElements.length;
+  }
+
   querySelectorAll(): FakeElement[] {
     return this.childElements.concat(this.nestedElements).filter(child =>
       child.getAttribute('data-webui-resource') !== null
@@ -284,6 +289,52 @@ describe('component style resources', () => {
     assert.deepEqual(
       parent.children.map(child => child.getAttribute('data-webui-resource')),
       ['first', 'second'],
+    );
+  });
+
+  test('successive closures reuse cached markers instead of rescanning', async () => {
+    const document = fakeDocument();
+    const head = document.head as unknown as FakeParent;
+    registerComponentStyles(
+      styles({ 'root-a': ['first'], 'root-b': ['first', 'second'] }),
+      document,
+    );
+
+    await installComponentStyles('root-a', document);
+    const afterFirst = head.markerScans;
+    await installComponentStyles('root-b', document);
+
+    assert.equal(
+      head.markerScans,
+      afterFirst,
+      'the second closure must reuse the marker cache the first install updated',
+    );
+    assert.deepEqual(
+      head.children.map(child => child.getAttribute('data-webui-resource')),
+      ['first', 'second'],
+      'reused markers must still anchor the new resource in closure order',
+    );
+  });
+
+  test('external mutation of the style scope invalidates the marker cache', async () => {
+    const document = fakeDocument();
+    const head = document.head as unknown as FakeParent;
+    registerComponentStyles(
+      styles({ 'root-a': ['second'], 'root-b': ['first', 'second'] }),
+      document,
+    );
+
+    await installComponentStyles('root-a', document);
+    // Somebody else drops our marker. The cached anchor is now stale, so the
+    // next install has to notice and rescan rather than insert before a
+    // detached element.
+    head.children[0].remove();
+    await installComponentStyles('root-b', document);
+
+    assert.deepEqual(
+      head.children.map(child => child.getAttribute('data-webui-resource')),
+      ['first'],
+      'only the resource that was not already installed should be appended',
     );
   });
 

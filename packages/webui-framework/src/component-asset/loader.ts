@@ -7,6 +7,7 @@ import {
   registerTemplateData,
 } from '../template.js';
 import {
+  prepareAssetComponentStyles,
   readComponentAssetModule,
   sameComponents,
   validateAsset,
@@ -16,7 +17,6 @@ import {
 import {
   hasRegisteredComponentStyleResource,
   registerPreparedComponentStyles,
-  requireComponentStyles,
   sameComponentStyleResource,
   validateComponentStylesRegistration,
   type ComponentStyleResource,
@@ -124,7 +124,9 @@ function importAndPrepareChunk(
 }
 
 function prepareComponentPayload(asset: ComponentAsset): PreparedComponentAsset {
-  const componentStyles = requireComponentStyles(asset.componentStyles);
+  // `validateAsset` already produced this catalog; reuse it rather than
+  // validating and deep-copying the same payload a second time.
+  const componentStyles = prepareAssetComponentStyles(asset.componentStyles);
   prepareAssetTemplateData(asset.templates, asset.templateFunctions);
   return {
     asset,
@@ -186,16 +188,19 @@ function validatePreparedGraph(graph: readonly PreparedComponentAsset[]): void {
       }
     }
   }
+  const missing: string[] = [];
   for (let i = 0; i < graph.length; i++) {
     const asset = graph[i].asset;
     for (const required of asset.requiredComponents) {
-      if (!provided.has(required) && !getTemplate(required)) {
-        throw new Error(
-          `[WebUI] Component asset is missing required template: <${required}>.`,
-        );
-      }
+      if (provided.has(required) || getTemplate(required)) continue;
+      if (missing.indexOf(required) < 0) missing.push(required);
     }
   }
+  if (missing.length === 0) return;
+
+  throw new Error(
+    `[WebUI] Component asset is missing required templ${missing.length === 1 ? 'ate' : 'ates'} ${missing.map(tag => `<${tag}>`).join(', ')}. Load the application entry bundle and protocol before deferred component assets.`,
+  );
 }
 
 function componentsAlreadyRegistered(components: readonly string[]): boolean {

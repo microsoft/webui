@@ -258,10 +258,16 @@ function loadWebUIDataBlock(): void {
     const templateFns = window.__webui?.templateFns;
     const componentAssetStyles = window.__webui?.componentAssetStyles;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
-    registerComponentStyles(parsed.componentStyles);
     if (templateFns) parsed.templateFns = templateFns;
-    if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
+    // Publish before registering styles. A malformed `componentStyles` throws,
+    // and doing it the other way round loses the templates and state that
+    // parsed fine — then re-parses the whole block on the next lookup, because
+    // nothing recorded that the work was already done.
     window.__webui = parsed;
+    el.remove();
+    webuiDataLoaded = true;
+    registerComponentStyles(parsed.componentStyles);
+    return;
   }
   el.remove();
   webuiDataLoaded = true;

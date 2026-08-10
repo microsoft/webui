@@ -484,6 +484,8 @@ fn collect_component_styles_inner<'a>(
         .filter(|root| seen_roots.insert(*root))
         .collect();
     let covered_components = covered_components(protocol, &roots, client_inventory);
+    let chunk_index = protocol.style_chunk_index();
+    let mut emitted = HashSet::new();
 
     for root in roots {
         let Some(closure) = protocol.style_closures.get(root) else {
@@ -510,31 +512,50 @@ fn collect_component_styles_inner<'a>(
             chunks.len()
         };
         let mut ordered = Vec::with_capacity(unit_count);
+        emitted.clear();
         for position in 0..unit_count {
             // A bundled build ships one resource per chunk. The client installs
             // resources by name in closure order either way, so only the names
             // and their grouping change.
-            let (name, resource, client_has_it, members) = if chunks.is_empty() {
-                let tag = closure.component_tags[position].as_str();
-                let resource = protocol.component_style_resource(tag).ok_or_else(|| {
-                    HandlerError::Invariant(format!(
-                        "component style closure `{root}` references missing resource `{tag}`"
-                    ))
-                })?;
-                let has =
-                    client_inventory.is_some_and(|inventory| inventory.contains_component(tag));
-                (tag, resource, has, None)
+            let chunk = if chunks.is_empty() {
+                // This closure lists members rather than chunks, which only
+                // means the bundler did not treat it as a root. Resolving each
+                // member to its covering chunk keeps the closure self-sufficient
+                // instead of relying on some other closure installing first.
+                chunk_index
+                    .get(closure.component_tags[position].as_str())
+                    .copied()
             } else {
-                let index = chunks[position];
-                let (name, resource) = protocol.style_chunk_resource(index).ok_or_else(|| {
-                    HandlerError::Invariant(format!(
-                        "component style closure `{root}` references missing style chunk {index}"
-                    ))
-                })?;
-                let members = protocol.style_chunk_members(index).unwrap_or_default();
-                let has = client_inventory.is_some_and(|inventory| inventory.contains_chunk(name));
-                (name, resource, has, Some(members))
+                Some(chunks[position])
             };
+            let (name, resource, client_has_it, members) = match chunk {
+                Some(index) => {
+                    let (name, resource) = protocol.style_chunk_resource(index).ok_or_else(|| {
+                        HandlerError::Invariant(format!(
+                            "component style closure `{root}` references missing style chunk {index}"
+                        ))
+                    })?;
+                    let members = protocol.style_chunk_members(index).unwrap_or_default();
+                    let has =
+                        client_inventory.is_some_and(|inventory| inventory.contains_chunk(name));
+                    (name, resource, has, Some(members))
+                }
+                None => {
+                    let tag = closure.component_tags[position].as_str();
+                    let resource = protocol.component_style_resource(tag).ok_or_else(|| {
+                        HandlerError::Invariant(format!(
+                            "component style closure `{root}` references missing resource `{tag}`"
+                        ))
+                    })?;
+                    let has =
+                        client_inventory.is_some_and(|inventory| inventory.contains_component(tag));
+                    (tag, resource, has, None)
+                }
+            };
+            // Several members of one closure can resolve to the same chunk.
+            if !emitted.insert(name) {
+                continue;
+            }
             if !client_has_it && !resources.contains_key(name) {
                 let mut entry = serde_json::Map::new();
                 match protocol.css_strategy() {
@@ -4720,6 +4741,108 @@ mod tests {
             serde_json::json!({}),
             "the exact style-resource inventory should suppress a registered chunk"
         );
+    }
+
+    /// A closure that lists members must still deliver the chunk that ships
+    /// them.
+    ///
+    /// Only closures the bundler treated as roots carry `style_chunks`; a plain
+    /// Light component keeps its member list. Delivering those members verbatim
+    /// re-ships bytes the covering chunk already contains, and leaves the
+    /// closure correct only if some other closure installs the chunk first.
+    /// Resolving each member through the chunk index removes both problems.
+    #[test]
+    fn member_closures_deliver_the_chunk_that_covers_them() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["a-card", "b-card"] {
+            protocol
+                .fragments
+                .insert(tag.to_string(), FragmentList::default());
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol
+            .fragments
+            .insert("lazy-panel".to_string(), FragmentList::default());
+        // Not a bundler root, so it keeps its member list.
+        protocol.style_closures.insert(
+            "lazy-panel".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-a-card-2".to_string(),
+            css: ".a-card{display:block}\n.b-card{display:block}".to_string(),
+            css_href: String::new(),
+            component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+        });
+
+        let styles = collect_component_styles(&protocol, ["lazy-panel"]).unwrap();
+        assert_eq!(
+            styles["closures"],
+            serde_json::json!({ "lazy-panel": ["_chunk-a-card-2"] }),
+            "both members resolve to one chunk, named once"
+        );
+        assert_eq!(
+            styles["resources"].as_object().map(serde_json::Map::len),
+            Some(1),
+            "the per-member stylesheets the chunk already contains are not re-shipped"
+        );
+        assert!(
+            styles["resources"]["_chunk-a-card-2"].is_object(),
+            "the closure carries the chunk itself, not a dependency on another closure"
+        );
+    }
+
+    /// A member with no covering chunk still delivers its own stylesheet.
+    #[test]
+    fn member_closures_fall_back_when_no_chunk_covers_them() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["a-card", "solo-card"] {
+            protocol
+                .fragments
+                .insert(tag.to_string(), FragmentList::default());
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol
+            .fragments
+            .insert("lazy-panel".to_string(), FragmentList::default());
+        protocol.style_closures.insert(
+            "lazy-panel".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string(), "solo-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-a-card-1".to_string(),
+            css: ".a-card{display:block}".to_string(),
+            css_href: String::new(),
+            component_tags: vec!["a-card".to_string()],
+        });
+
+        let styles = collect_component_styles(&protocol, ["lazy-panel"]).unwrap();
+        assert_eq!(
+            styles["closures"],
+            serde_json::json!({ "lazy-panel": ["_chunk-a-card-1", "solo-card"] }),
+            "cascade order is preserved across the chunked and unchunked members"
+        );
+        assert!(styles["resources"]["solo-card"].is_object());
     }
 
     #[test]

@@ -10,21 +10,21 @@
  */
 
 import type { TemplateMeta } from './template.js';
-import type { ComponentStyles } from './element/styles.js';
 
 /** DOM event emitted when WebUI template data becomes available at runtime. */
 export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
-/** Validated template registration event detail. */
-export interface TemplateRegistrationDetail {
-  templates?: Record<string, TemplateMeta>;
-  waitUntil?: (promise: PromiseLike<unknown>) => void;
-}
-
-/** Notify optional runtimes that templates have been registered. */
+/**
+ * Notify optional runtimes that templates have been registered.
+ *
+ * Styles are deliberately not announced here. This dispatcher runs only after
+ * the framework has already accepted them, so repeating them would ask every
+ * listener to register the same catalog twice. The router has its own
+ * dispatcher and *does* attach styles, but only when the framework bridge was
+ * absent — which is why {@link templateRegistrationDetail} still reads them.
+ */
 export function dispatchTemplatesRegistered(
   templates: Record<string, TemplateMeta>,
-  componentStyles?: ComponentStyles,
 ): void {
   if (
     typeof window === 'undefined' ||
@@ -35,7 +35,7 @@ export function dispatchTemplatesRegistered(
   }
 
   window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates, componentStyles },
+    detail: { templates },
   }));
 }
 
