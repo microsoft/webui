@@ -2,10 +2,14 @@
 // Licensed under the MIT license.
 
 /** One addressable component stylesheet definition. */
-export type ComponentStyleResource =
+export type ComponentStyleResource = (
   | { kind: 'link'; href: string }
   | { kind: 'style'; css: string }
-  | { kind: 'module'; specifier: string; css: string };
+  | { kind: 'module'; specifier: string; css: string }
+) & {
+  /** Component resource IDs whose rules this bundled resource covers. */
+  members?: string[];
+};
 
 /** Versioned stylesheet catalog shared by server and client registration paths. */
 export interface ComponentStyles {
@@ -111,6 +115,14 @@ export function sameComponentStyleResource(
   next: ComponentStyleResource,
 ): boolean {
   if (current === next) return true;
+  const currentMembers = current.members;
+  const nextMembers = next.members;
+  if (
+    currentMembers?.length !== nextMembers?.length ||
+    currentMembers?.some((member, index) => member !== nextMembers?.[index])
+  ) {
+    return false;
+  }
   switch (current.kind) {
     case 'link':
       return next.kind === 'link' && current.href === next.href;
@@ -143,16 +155,34 @@ export function prepareComponentStyles(value: unknown): ComponentStyles | undefi
     if (!id || !isObject(resource) || resource.kind !== strategy) {
       throw new Error(`[WebUI] Invalid component style resource "${id}".`);
     }
+    let members: string[] | undefined;
+    if (resource.members !== undefined) {
+      if (
+        !Array.isArray(resource.members) ||
+        resource.members.length < 2 ||
+        resource.members.some(member => typeof member !== 'string' || !member) ||
+        new Set(resource.members).size !== resource.members.length
+      ) {
+        throw new Error(`[WebUI] Invalid component style resource members "${id}".`);
+      }
+      members = [...resource.members] as string[];
+    }
     if (resource.kind === 'link' && typeof resource.href === 'string' && resource.href) {
-      resources[id] = { kind: 'link', href: resource.href };
+      resources[id] = members
+        ? { kind: 'link', href: resource.href, members }
+        : { kind: 'link', href: resource.href };
     } else if (resource.kind === 'style' && typeof resource.css === 'string') {
-      resources[id] = { kind: 'style', css: resource.css };
+      resources[id] = members
+        ? { kind: 'style', css: resource.css, members }
+        : { kind: 'style', css: resource.css };
     } else if (
       resource.kind === 'module' &&
       typeof resource.specifier === 'string' && resource.specifier &&
       typeof resource.css === 'string'
     ) {
-      resources[id] = { kind: 'module', specifier: resource.specifier, css: resource.css };
+      resources[id] = members
+        ? { kind: 'module', specifier: resource.specifier, css: resource.css, members }
+        : { kind: 'module', specifier: resource.specifier, css: resource.css };
     } else {
       throw new Error(`[WebUI] Invalid component style resource "${id}".`);
     }
@@ -265,6 +295,17 @@ function targetInstalledResources(target: StyleTarget): Set<string> {
   return targetInstalled;
 }
 
+function markResourceInstalled(
+  targetInstalled: Set<string>,
+  id: string,
+  resource: ComponentStyleResource,
+): void {
+  targetInstalled.add(id);
+  const members = resource.members;
+  if (!members) return;
+  for (let i = 0; i < members.length; i++) targetInstalled.add(members[i]);
+}
+
 function isMatchingResourceMarker(
   candidate: Element,
   resource: ComponentStyleResource,
@@ -289,7 +330,7 @@ function scanSsrMarkerElements(
     const resource = catalog.resources.get(id);
     if (!resource || !isMatchingResourceMarker(candidate, resource)) continue;
     if (resource.kind !== 'module') {
-      targetInstalled.add(id);
+      markResourceInstalled(targetInstalled, id, resource);
       continue;
     }
     let moduleElements = state.moduleElements;
@@ -477,7 +518,7 @@ function installElementRange(
     const resource = catalog.resources.get(id);
     if (!resource || resource.kind === 'module') continue;
     appendResource(target, id, resource, before);
-    targetInstalled.add(id);
+    markResourceInstalled(targetInstalled, id, resource);
   }
 }
 
@@ -507,7 +548,7 @@ function installElements(
       );
       const resource = catalog.resources.get(closure[i]);
       if (resource && resource.kind !== 'module') {
-        targetInstalled.add(closure[i]);
+        markResourceInstalled(targetInstalled, closure[i], resource);
       }
       before = marker;
       segmentEnd = i;
@@ -584,6 +625,7 @@ function commitModules(
   targetInstalled: Set<string>,
 ): void {
   const state = moduleAdoptionState(target);
+  const catalog = catalogFor(owningDocument(target));
   for (let i = 0; i < sheets.length; i++) {
     const id = ids[i];
     if (!state.reserved.has(id)) {
@@ -596,7 +638,9 @@ function commitModules(
   const targetPending = pending.get(target);
   for (let i = 0; i < sheets.length; i++) {
     const id = ids[i];
-    targetInstalled.add(id);
+    const resource = catalog.resources.get(id);
+    if (resource) markResourceInstalled(targetInstalled, id, resource);
+    else targetInstalled.add(id);
     targetPending?.delete(id);
     // Drop the element reference with the node so an adopted fallback does not
     // stay reachable for the lifetime of the CSS tree.

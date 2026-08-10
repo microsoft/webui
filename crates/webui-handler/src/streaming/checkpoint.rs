@@ -220,7 +220,7 @@ impl WebUIHandler {
                 context.protocol,
                 style_roots,
                 style_inventory,
-                context.component_index,
+                context.style_resource_index,
             )?
         };
         let resources = component_styles
@@ -228,7 +228,7 @@ impl WebUIHandler {
             .and_then(serde_json::Value::as_object)
             .ok_or_else(component_style_payload_resources_missing_error)?;
         for resource in resources.keys() {
-            let Some(&index) = context.component_index.get(resource) else {
+            let Some(&index) = context.style_resource_index.get(resource) else {
                 continue;
             };
             mark_streaming_style_resource_sent(streaming_state(context)?, index)?;

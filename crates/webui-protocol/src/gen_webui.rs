@@ -136,6 +136,12 @@ pub struct WebUiProtocol {
         ::prost::alloc::string::String,
         ComponentStyleClosure,
     >,
+    /// Bundled stylesheets in global cascade order. Empty unless the build
+    /// enabled CSS bundling, in which case every component that owns a style
+    /// resource belongs to exactly one chunk and handlers deliver chunks instead
+    /// of individual component resources.
+    #[prost(message, repeated, tag = "10")]
+    pub style_chunks: ::prost::alloc::vec::Vec<StyleChunk>,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -143,6 +149,33 @@ pub struct WebUiProtocol {
 pub struct ComponentStyleClosure {
     /// Component tags in cascade-sensitive first-discovery order.
     #[prost(string, repeated, tag = "1")]
+    pub component_tags: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Indices into WebUIProtocol.style_chunks covering exactly the components in
+    /// component_tags, in the same cascade order. Empty unless the build enabled
+    /// CSS bundling. A chunk is listed only when the closure consumes every
+    /// component the chunk carries, so delivering a chunk never over-delivers.
+    #[prost(uint32, repeated, tag = "2")]
+    pub style_chunks: ::prost::alloc::vec::Vec<u32>,
+}
+/// One bundled stylesheet carrying a contiguous run of component styles that
+/// share the same set of consuming CSS trees.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct StyleChunk {
+    /// Stable build-time chunk name. Surfaces as the data-webui-resource value so
+    /// delivered stylesheets stay attributable without a source map.
+    #[prost(string, tag = "1")]
+    pub name: ::prost::alloc::string::String,
+    /// Concatenated compiled CSS for the Style and Module strategies.
+    /// Empty for Link.
+    #[prost(string, tag = "2")]
+    pub css: ::prost::alloc::string::String,
+    /// External stylesheet href for the Link strategy.
+    /// Empty for Style and Module.
+    #[prost(string, tag = "3")]
+    pub css_href: ::prost::alloc::string::String,
+    /// Component tags whose CSS this chunk concatenates, in cascade order.
+    #[prost(string, repeated, tag = "4")]
     pub component_tags: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).

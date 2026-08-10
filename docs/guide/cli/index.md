@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -44,6 +44,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--out <OUT>` | Output folder for protocol and assets, or a `.bin` file path to set the protocol filename (e.g. `./dist/app1.bin`) | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
@@ -84,6 +85,39 @@ truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
 emitted in `<link>` tags. Templates must be ASCII filenames. URL delimiters
 (`#`, `%`, and `?`), path separators, whitespace, control characters, and
 Windows-reserved filename characters are rejected.
+
+**CSS bundling:**
+
+Every component stylesheet is render-blocking, so one file per component costs a
+request each and forfeits cross-file compression. `--css-bundle` merges component
+stylesheets into shared chunks:
+
+```bash
+webui build ./my-app --out ./dist --css link --css-bundle
+```
+
+It composes with `--css` rather than replacing it: bundling decides how
+stylesheets are *grouped*, `--css` decides how they *reach the page*. A Link
+build gets fewer `<link>` tags and requests, and a Style build gets fewer inline
+blocks.
+
+Chunks split rather than duplicate. Only components reached by an identical set
+of CSS trees share a chunk, so a stylesheet used by several routes lands in its
+own chunk and is downloaded and cached once instead of being copied into every
+route bundle. Cascade order is preserved exactly: a chunk's members must be
+adjacent and identically ordered in every closure that contains them. The
+compiler verifies both properties and splits any incompatible chunk.
+
+Chunks are named `_chunk-<first-member>-<count>`, or the component's own tag when
+a chunk has a single member. The leading underscore keeps multi-member resource
+IDs distinct from legal component tags. Link builds retain per-component files
+as independently loaded component and older-handler fallbacks, but current
+handlers link only chunks on the bundled path, so the fallbacks add no requests.
+
+`--css-bundle` is rejected with `--css module`, which already inlines every
+stylesheet as a data URI: there is no request to merge, and module specifiers are
+resolved per component at compile time. Bundling is off by default, so protocol
+size and emitted resource names are unchanged unless you opt in.
 
 **Component assets:**
 
@@ -267,7 +301,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -281,6 +315,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |

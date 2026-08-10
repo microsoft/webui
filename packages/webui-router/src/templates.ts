@@ -312,6 +312,17 @@ function validateComponentStyles(value: unknown): ComponentStyles {
     ) {
       throw new Error(`[Router] Invalid component style resource "${id}".`);
     }
+    if (
+      resource.members !== undefined &&
+      (
+        !Array.isArray(resource.members) ||
+        resource.members.length < 2 ||
+        resource.members.some(member => typeof member !== 'string' || !member) ||
+        new Set(resource.members).size !== resource.members.length
+      )
+    ) {
+      throw new Error(`[Router] Invalid component style resource members "${id}".`);
+    }
   }
   for (const root of Object.keys(styles.closures)) {
     const closure = styles.closures[root];

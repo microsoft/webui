@@ -204,12 +204,38 @@ pub(super) fn style_injection_snippet(style: ComponentStyleDelivery<'_>) -> Opti
             let trimmed = css.trim();
             let mut style = String::with_capacity(15 + trimmed.len());
             style.push_str("<style>");
-            style.push_str(trimmed);
+            push_style_text(&mut style, trimmed);
             style.push_str("</style>");
             Some(style)
         }
         ComponentStyleDelivery::Adopted { .. } => None,
     }
+}
+
+/// Append CSS inside an HTML raw-text element without permitting `</style`
+/// (ASCII case-insensitive) to terminate the element.
+fn push_style_text(output: &mut String, css: &str) {
+    let bytes = css.as_bytes();
+    let mut chunk_start = 0usize;
+    let mut index = 0usize;
+    while index + 7 <= bytes.len() {
+        if bytes[index] == b'<'
+            && bytes[index + 1] == b'/'
+            && bytes[index + 2].eq_ignore_ascii_case(&b's')
+            && bytes[index + 3].eq_ignore_ascii_case(&b't')
+            && bytes[index + 4].eq_ignore_ascii_case(&b'y')
+            && bytes[index + 5].eq_ignore_ascii_case(&b'l')
+            && bytes[index + 6].eq_ignore_ascii_case(&b'e')
+        {
+            output.push_str(&css[chunk_start..index + 1]);
+            output.push_str("\\/");
+            chunk_start = index + 2;
+            index += 7;
+        } else {
+            index += 1;
+        }
+    }
+    output.push_str(&css[chunk_start..]);
 }
 
 /// Serialize one `<f-template>`, injecting `css_injection` inside the root
@@ -910,6 +936,19 @@ mod tests {
         assert!(
             !html.contains("<link"),
             "Style strategy should not emit <link> tags"
+        );
+    }
+
+    #[test]
+    fn inline_component_css_cannot_terminate_the_style_element() {
+        let snippet = style_injection_snippet(ComponentStyleDelivery::Inline {
+            css: ".a{content:'</StYlE>'}</template><img src=x onerror=alert(1)>",
+        })
+        .expect("inline style snippet");
+
+        assert_eq!(
+            snippet,
+            "<style>.a{content:'<\\/StYlE>'}</template><img src=x onerror=alert(1)></style>"
         );
     }
 

@@ -42,10 +42,27 @@ pub struct WebUIProtocol {
     pub initial_state_strategy: InitialStateStrategy,
     /// Ordered component style resources for each CSS-tree entry point.
     pub style_closures: HashMap<String, ComponentStyleClosure>,
+    /// Bundled stylesheet chunks, empty unless the build enabled `css_bundle`.
+    pub style_chunks: Vec<StyleChunk>,
 }
 
 pub struct ComponentStyleClosure {
     /// Component tags in cascade-sensitive first-discovery order.
+    pub component_tags: Vec<String>,
+    /// Indices into `WebUIProtocol.style_chunks`, in the same cascade order.
+    /// Empty unless the build bundled CSS, in which case consumers deliver
+    /// `component_tags` resources individually.
+    pub style_chunks: Vec<u32>,
+}
+
+pub struct StyleChunk {
+    /// Stable resource name, used for `data-webui-resource` and dedup.
+    pub name: String,
+    /// Concatenated CSS for Style and Module strategies.
+    pub css: String,
+    /// External stylesheet href for the Link strategy.
+    pub css_href: String,
+    /// Merged component tags, in cascade order.
     pub component_tags: Vec<String>,
 }
 
@@ -456,7 +473,7 @@ values into the response. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
-- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots, filtered by the same inventory bitmask as templates. A closure may omit a shared resource definition only when the incoming inventory bit proves that component's template and style metadata was already registered; uninventoried closure dependencies are transmitted with the new root. Module resources carry both their specifier and compiled CSS
+- `componentStyles`: required versioned style resources and ordered closures for newly shipped component roots. Component resources may use the template inventory, but bundled chunks are distinct resources and are never inferred from component bits. A multi-member chunk carries its ordered `members`; registering or claiming that chunk marks those component resources covered in the same CSS tree. Module resources carry both their specifier and compiled CSS
 - `templates`: JSON-safe authored and compiler-owned template metadata keyed by component tag, filtered by inventory bitmask
 - `templateFunctions`: JavaScript condition closure array strings keyed by component tag, filtered alongside `templates`; omitted or empty for templates with no conditions
 - `inventory`: updated hex bitmask of loaded component template and style metadata
@@ -1664,6 +1681,11 @@ root. The same Document state is retained across progressive streaming
 checkpoints. Partial navigation sends a versioned `componentStyles` catalog
 containing the newly needed resources and closures; the browser registers it per
 Document and installs each resource at most once per Document or ShadowRoot.
+Bundled resources carry their ordered component `members`. Installing or
+claiming a chunk marks both its own ID and every member ID as present in that CSS
+tree, so descendant Light hosts do not reinstall their per-component fallbacks.
+When one requested tree closure already covers a component closure completely,
+the handler omits that redundant closure and its duplicate CSS definitions.
 Version-3 component assets carry the same catalog, so SSR, navigation,
 streaming, and deferred assets share the ordering and deduplication contract.
 Module sheets reserve their adoption slot when their closure requests them, so
@@ -1717,6 +1739,73 @@ client-mount gate.
 
 Set at construction time with
 `HtmlParser::with_options(ParserOptions::try_new(css, css_file_name_template, css_public_base, legal_comments))`.
+
+#### Bundled Style Chunks
+
+`--css-bundle` (`BuildOptions::css_bundle`) merges component stylesheets into
+shared chunks. It composes with `--css` rather than replacing it: bundling
+decides how stylesheets are *grouped*, the strategy decides how they *reach the
+page*. Link and Style builds therefore each have a bundled and an unbundled form.
+Module builds reject `--css-bundle`: they already inline every stylesheet as a
+data URI, so there is no request to merge, and their import-map specifiers are
+resolved per component during parsing, before chunks exist.
+
+Chunks are planned only for the closures a runtime installs *as a unit* into one
+CSS tree: the entry document, every authored-Shadow component, and every route
+root, including its `pending_component`, `error_component`, and nested
+`children`. A plain Light component also keeps a stored closure for independent
+loading, but it does not own a CSS tree: its normal ancestor tree installs the
+covering chunk before the host connects. Treating those fallbacks as roots would
+make every component its own consumer and prevent all merging. The asymmetry is
+deliberate: tree closures drive chunk planning, while retained per-component
+resources preserve independent-loading and older-handler compatibility.
+
+Merging stylesheets reorders rules, which can silently change computed styles.
+Two rules make that impossible, and the second is verified rather than assumed:
+
+1. **Equal consumer sets.** Only components reached by an identical set of CSS
+   trees may share a chunk. Every tree that needs one member needs all of them,
+   so a chunk is never over-delivered and no tree receives a rule it would not
+   otherwise have.
+2. **Contiguity and relative order in every consumer.** A chunk's members must be
+   adjacent and appear in the same order in every closure that contains them.
+   Emitting each chunk at its first member then reproduces the unbundled rule
+   sequence exactly.
+
+The planner verifies both uninterrupted membership and each member's canonical
+position while walking every closure. Any interleaved or differently ordered
+chunk is split into single-component chunks, and one pass suffices. Correctness
+therefore never depends on the grouping heuristic being clever. The entry root
+forms chunks first, then the remaining roots in sorted order, so plans are
+deterministic and reproducible.
+
+Chunk indices are stable `u32` handles into `WebUIProtocol.style_chunks`.
+`ComponentStyleClosure.style_chunks` holds them in the same cascade order as
+`component_tags`, and stays empty for unbundled builds so protocol size and
+existing `data-webui-resource` values are unchanged. Handlers branch once on
+that emptiness; a bundled protocol never mixes the two, so
+`ShadowStyleRoot.routed_resources` holds chunk indices under bundling and
+component indices otherwise. Link preloads and the `componentStyles` navigation
+catalog are emitted per chunk: a chunk shared by several routes is the highest
+value preload target. Progressive streaming deduplicates exact resource IDs in
+a separate style inventory; a component-template inventory never stands in for
+chunk registration.
+
+Multi-member chunks are named `_chunk-<first-member>-<count>`; the leading
+underscore cannot begin a custom-element tag, so the resource ID cannot collide
+with a component. A single-member chunk keeps bare `<tag>`. Link builds emit one
+file per chunk and retain per-component files as independently loaded component
+and older-handler fallbacks. Current handlers link only chunks on the bundled
+path, so fallbacks add no render-blocking requests.
+
+An authored-Shadow component's own stylesheet is never merged. Parsing resolves
+it into artifacts that address it by tag before chunks exist: the `css_href` a
+plugin injects into the shadow template its runtime builds roots from, and the
+module specifier recorded on `shadowrootadoptedstylesheets`. A single-member
+chunk is named after its sole member and carries that member's exact bytes, so
+keeping these unmerged keeps both references valid without a rewrite pass. Light
+components carry no such parse-time identity and merge freely, which under a
+Light-first default is nearly all of them.
 
 #### Legal Comments
 ```rust

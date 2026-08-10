@@ -143,6 +143,7 @@ mod tests {
     fn add_page_style_closures(protocol: &mut WebUIProtocol) {
         let closure = ComponentStyleClosure {
             component_tags: vec!["my-page".to_string()],
+            style_chunks: Vec::new(),
         };
         protocol
             .style_closures

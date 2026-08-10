@@ -116,8 +116,10 @@ pub(crate) struct StreamingProgress {
 }
 
 impl StreamingProgress {
-    pub(crate) fn new(component_count: usize) -> Self {
+    /// Allocate request-local bitsets for indexed components and style resources.
+    pub(crate) fn new(component_count: usize, style_resource_count: usize) -> Self {
         let inventory_bytes = component_count.div_ceil(8);
+        let style_inventory_bytes = style_resource_count.div_ceil(8);
         Self {
             head_marker_emitted: false,
             active_boundary: None,
@@ -131,7 +133,7 @@ impl StreamingProgress {
             inventory_delta: vec![0; inventory_bytes],
             inventory_hex: String::with_capacity(inventory_bytes * 2),
             template_inventory: vec![0; inventory_bytes],
-            style_resource_inventory: vec![0; inventory_bytes],
+            style_resource_inventory: vec![0; style_inventory_bytes],
             checkpoint_tags: Vec::new(),
             checkpoint_walk_roots: Vec::new(),
             checkpoint_seen: vec![0; inventory_bytes],

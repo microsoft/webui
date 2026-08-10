@@ -146,6 +146,38 @@ describe('component style resources', () => {
     );
   });
 
+  test('a bundled resource covers its member component closures', async () => {
+    const document = fakeDocument();
+    registerComponentStyles({
+      version: 1,
+      strategy: 'style',
+      resources: {
+        '_chunk-first-2': {
+          kind: 'style',
+          css: '.first{}.second{}',
+          members: ['first', 'second'],
+        },
+        first: { kind: 'style', css: '.first{}' },
+        second: { kind: 'style', css: '.second{}' },
+      },
+      closures: {
+        root: ['_chunk-first-2'],
+        first: ['first'],
+        second: ['second'],
+      },
+    }, document);
+
+    await installComponentStyles('root', document);
+    await installComponentStyles('first', document);
+    await installComponentStyles('second', document);
+
+    assert.deepEqual(
+      (document.head as unknown as FakeParent).children
+        .map(child => child.getAttribute('data-webui-resource')),
+      ['_chunk-first-2'],
+    );
+  });
+
   test('claims nested SSR route styles before a descendant installs', async () => {
     const document = fakeDocument();
     const root = fakeShadow(document);

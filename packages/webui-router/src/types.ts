@@ -33,10 +33,14 @@ declare global {
  * Public type definitions for @microsoft/webui-router.
  */
 
-export type ComponentStyleResource =
+export type ComponentStyleResource = (
   | { kind: 'link'; href: string }
   | { kind: 'style'; css: string }
-  | { kind: 'module'; specifier: string; css: string };
+  | { kind: 'module'; specifier: string; css: string }
+) & {
+  /** Component resource IDs whose rules this bundled resource covers. */
+  members?: string[];
+};
 
 export interface ComponentStyles {
   version: 1;

@@ -42,6 +42,7 @@ pub struct Protocol {
     style_metadata_error: Option<String>,
     css_strategy: webui_protocol::CssStrategy,
     component_index: HashMap<String, u32>,
+    style_resource_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     fragment_ids: Vec<Arc<str>>,
     fragment_slots: HashMap<Arc<str>, u32>,
@@ -87,6 +88,7 @@ impl Protocol {
     ) -> Self {
         let css_strategy = protocol.css_strategy();
         let component_index = build_component_index(&protocol);
+        let style_resource_index = build_style_resource_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
         let mut fragment_ids: Vec<Arc<str>> = protocol
             .fragments
@@ -105,6 +107,7 @@ impl Protocol {
             style_metadata_error,
             css_strategy,
             component_index,
+            style_resource_index,
             component_reachability: OnceLock::new(),
             fragment_ids,
             fragment_slots,
@@ -131,6 +134,14 @@ impl Protocol {
 
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
         &self.component_index
+    }
+
+    pub(crate) fn style_resource_index(&self) -> &HashMap<String, u32> {
+        if self.style_resource_index.is_empty() {
+            &self.component_index
+        } else {
+            &self.style_resource_index
+        }
     }
 
     pub(crate) fn component_reachability(&self) -> &ComponentReachabilityIndex {
@@ -391,31 +402,54 @@ pub(crate) fn collect_component_styles<'a>(
 }
 
 #[derive(Clone, Copy)]
-struct ComponentInventoryView<'a> {
+struct StyleInventoryView<'a> {
     bits: &'a [u8],
     index: &'a HashMap<String, u32>,
+    chunks_are_indexed: bool,
 }
 
-impl ComponentInventoryView<'_> {
-    fn contains(self, tag: &str) -> bool {
+impl StyleInventoryView<'_> {
+    fn contains_component(self, tag: &str) -> bool {
         self.index
             .get(tag)
             .is_some_and(|&index| has_component(self.bits, index))
+    }
+
+    fn contains_chunk(self, name: &str) -> bool {
+        self.chunks_are_indexed && self.contains_component(name)
     }
 }
 
 pub(crate) fn collect_component_style_delta<'a>(
     protocol: &WebUIProtocol,
     roots: impl IntoIterator<Item = &'a str>,
-    client_inventory: &[u8],
+    style_inventory: &[u8],
+    style_resource_index: &HashMap<String, u32>,
+) -> Result<Value, HandlerError> {
+    collect_component_styles_inner(
+        protocol,
+        roots,
+        Some(StyleInventoryView {
+            bits: style_inventory,
+            index: style_resource_index,
+            chunks_are_indexed: true,
+        }),
+    )
+}
+
+fn collect_component_styles_for_inventory<'a>(
+    protocol: &WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    component_inventory: &[u8],
     component_index: &HashMap<String, u32>,
 ) -> Result<Value, HandlerError> {
     collect_component_styles_inner(
         protocol,
         roots,
-        Some(ComponentInventoryView {
-            bits: client_inventory,
+        Some(StyleInventoryView {
+            bits: component_inventory,
             index: component_index,
+            chunks_are_indexed: false,
         }),
     )
 }
@@ -423,7 +457,7 @@ pub(crate) fn collect_component_style_delta<'a>(
 fn collect_component_styles_inner<'a>(
     protocol: &WebUIProtocol,
     roots: impl IntoIterator<Item = &'a str>,
-    client_inventory: Option<ComponentInventoryView<'_>>,
+    client_inventory: Option<StyleInventoryView<'_>>,
 ) -> Result<Value, HandlerError> {
     if protocol.style_closures.is_empty() {
         if protocol
@@ -445,11 +479,13 @@ fn collect_component_styles_inner<'a>(
     let mut resources = serde_json::Map::new();
     let mut closures = serde_json::Map::new();
     let mut seen_roots = HashSet::new();
+    let roots: Vec<&str> = roots
+        .into_iter()
+        .filter(|root| seen_roots.insert(*root))
+        .collect();
+    let covered_components = covered_components(protocol, &roots, client_inventory);
 
     for root in roots {
-        if !seen_roots.insert(root) {
-            continue;
-        }
         let Some(closure) = protocol.style_closures.get(root) else {
             if !protocol.fragments.contains_key(root) && !protocol.components.contains_key(root) {
                 continue;
@@ -458,16 +494,48 @@ fn collect_component_styles_inner<'a>(
                 "component style closure metadata is missing root `{root}`"
             )));
         };
-        let mut ordered = Vec::with_capacity(closure.component_tags.len());
-        for tag in &closure.component_tags {
-            let resource = protocol.component_style_resource(tag).ok_or_else(|| {
-                HandlerError::Invariant(format!(
-                    "component style closure `{root}` references missing resource `{tag}`"
-                ))
-            })?;
-            if client_inventory.is_none_or(|inventory| !inventory.contains(tag))
-                && !resources.contains_key(tag.as_str())
-            {
+        if closure.style_chunks.is_empty()
+            && !closure.component_tags.is_empty()
+            && closure
+                .component_tags
+                .iter()
+                .all(|tag| covered_components.contains(tag.as_str()))
+        {
+            continue;
+        }
+        let chunks = closure.style_chunks.as_slice();
+        let unit_count = if chunks.is_empty() {
+            closure.component_tags.len()
+        } else {
+            chunks.len()
+        };
+        let mut ordered = Vec::with_capacity(unit_count);
+        for position in 0..unit_count {
+            // A bundled build ships one resource per chunk. The client installs
+            // resources by name in closure order either way, so only the names
+            // and their grouping change.
+            let (name, resource, client_has_it, members) = if chunks.is_empty() {
+                let tag = closure.component_tags[position].as_str();
+                let resource = protocol.component_style_resource(tag).ok_or_else(|| {
+                    HandlerError::Invariant(format!(
+                        "component style closure `{root}` references missing resource `{tag}`"
+                    ))
+                })?;
+                let has =
+                    client_inventory.is_some_and(|inventory| inventory.contains_component(tag));
+                (tag, resource, has, None)
+            } else {
+                let index = chunks[position];
+                let (name, resource) = protocol.style_chunk_resource(index).ok_or_else(|| {
+                    HandlerError::Invariant(format!(
+                        "component style closure `{root}` references missing style chunk {index}"
+                    ))
+                })?;
+                let members = protocol.style_chunk_members(index).unwrap_or_default();
+                let has = client_inventory.is_some_and(|inventory| inventory.contains_chunk(name));
+                (name, resource, has, Some(members))
+            };
+            if !client_has_it && !resources.contains_key(name) {
                 let mut entry = serde_json::Map::new();
                 match protocol.css_strategy() {
                     webui_protocol::CssStrategy::Link => {
@@ -480,13 +548,19 @@ fn collect_component_styles_inner<'a>(
                     }
                     webui_protocol::CssStrategy::Module => {
                         entry.insert("kind".into(), Value::String("module".into()));
-                        entry.insert("specifier".into(), Value::String(tag.clone()));
+                        entry.insert("specifier".into(), Value::String(name.to_owned()));
                         entry.insert("css".into(), Value::String(resource.to_owned()));
                     }
                 }
-                resources.insert(tag.clone(), Value::Object(entry));
+                if let Some(members) = members.filter(|members| members.len() > 1) {
+                    entry.insert(
+                        "members".into(),
+                        Value::Array(members.iter().cloned().map(Value::String).collect()),
+                    );
+                }
+                resources.insert(name.to_owned(), Value::Object(entry));
             }
-            ordered.push(Value::String(tag.clone()));
+            ordered.push(Value::String(name.to_owned()));
         }
         closures.insert(root.to_owned(), Value::Array(ordered));
     }
@@ -496,6 +570,36 @@ fn collect_component_styles_inner<'a>(
         resources,
         closures,
     ))
+}
+
+fn covered_components<'a>(
+    protocol: &'a WebUIProtocol,
+    roots: &[&str],
+    inventory: Option<StyleInventoryView<'_>>,
+) -> HashSet<&'a str> {
+    let mut covered = HashSet::with_capacity(protocol.components.len());
+    for root in roots {
+        let Some(closure) = protocol.style_closures.get(*root) else {
+            continue;
+        };
+        for index in &closure.style_chunks {
+            if let Some(chunk) = usize::try_from(*index)
+                .ok()
+                .and_then(|index| protocol.style_chunks.get(index))
+            {
+                covered.extend(chunk.component_tags.iter().map(String::as_str));
+            }
+        }
+    }
+
+    if let Some(inventory) = inventory {
+        for chunk in &protocol.style_chunks {
+            if inventory.contains_chunk(&chunk.name) {
+                covered.extend(chunk.component_tags.iter().map(String::as_str));
+            }
+        }
+    }
+    covered
 }
 
 fn component_styles_payload(
@@ -597,6 +701,35 @@ pub(crate) fn build_component_index(protocol: &WebUIProtocol) -> HashMap<String,
         #[allow(clippy::cast_possible_truncation)]
         let idx = i as u32;
         index.insert(name.clone(), idx);
+    }
+    index
+}
+
+/// Build the exact resource-ID index used by streaming style deduplication.
+fn build_style_resource_index(protocol: &WebUIProtocol) -> HashMap<String, u32> {
+    if protocol.style_chunks.is_empty() {
+        return HashMap::new();
+    }
+    let mut sorted: Vec<&str> = protocol
+        .components
+        .keys()
+        .filter(|tag| protocol.component_style_resource(tag).is_some())
+        .map(String::as_str)
+        .chain(
+            protocol
+                .style_chunks
+                .iter()
+                .map(|chunk| chunk.name.as_str()),
+        )
+        .collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut index = HashMap::with_capacity(sorted.len());
+    for (position, name) in sorted.into_iter().enumerate() {
+        // The protocol cannot hold enough resource records for this to truncate.
+        #[allow(clippy::cast_possible_truncation)]
+        let position = position as u32;
+        index.insert(name.to_string(), position);
     }
     index
 }
@@ -2532,7 +2665,7 @@ fn collect_component_assets(
     client_inventory: &[u8],
     index: &mut RequestProtocolIndex<'_>,
 ) -> Result<ComponentAssets, HandlerError> {
-    let component_styles = collect_component_style_delta(
+    let component_styles = collect_component_styles_for_inventory(
         protocol,
         tags.iter().copied(),
         client_inventory,
@@ -4461,12 +4594,14 @@ mod tests {
             "page-b".to_string(),
             webui_protocol::ComponentStyleClosure {
                 component_tags: vec!["page-b".to_string(), "shared-card".to_string()],
+                style_chunks: Vec::new(),
             },
         );
         protocol.style_closures.insert(
             "shared-card".to_string(),
             webui_protocol::ComponentStyleClosure {
                 component_tags: vec!["shared-card".to_string()],
+                style_chunks: Vec::new(),
             },
         );
         let mut index = ProtocolIndex::new(&protocol);
@@ -4494,6 +4629,96 @@ mod tests {
                 .get("shared-card")
                 .is_none(),
             "a resource already covered by inventory must not be retransmitted"
+        );
+    }
+
+    #[test]
+    fn bundled_style_metadata_tracks_chunks_independently_and_covers_members() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        for tag in ["a-card", "b-card"] {
+            protocol
+                .fragments
+                .insert(tag.to_string(), FragmentList::default());
+            protocol.components.insert(
+                tag.to_string(),
+                webui_protocol::ComponentData {
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+            protocol.style_closures.insert(
+                tag.to_string(),
+                webui_protocol::ComponentStyleClosure {
+                    component_tags: vec![tag.to_string()],
+                    style_chunks: Vec::new(),
+                },
+            );
+        }
+        protocol
+            .fragments
+            .insert("index.html".to_string(), FragmentList::default());
+        protocol.style_closures.insert(
+            "index.html".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+                style_chunks: vec![0],
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-a-card-2".to_string(),
+            css: ".a-card{display:block}\n.b-card{display:block}".to_string(),
+            css_href: String::new(),
+            component_tags: vec!["a-card".to_string(), "b-card".to_string()],
+        });
+
+        let initial =
+            collect_component_styles(&protocol, ["index.html", "a-card", "b-card"]).unwrap();
+        assert_eq!(
+            initial["resources"]["_chunk-a-card-2"]["members"],
+            serde_json::json!(["a-card", "b-card"])
+        );
+        assert_eq!(
+            initial["closures"],
+            serde_json::json!({ "index.html": ["_chunk-a-card-2"] }),
+            "member closures already covered by the requested tree must not duplicate CSS"
+        );
+        assert_eq!(
+            initial["resources"].as_object().map(serde_json::Map::len),
+            Some(1)
+        );
+
+        let component_index = build_component_index(&protocol);
+        let mut component_inventory = vec![0u8; component_index.len().div_ceil(8)];
+        for index in component_index.values() {
+            set_component(&mut component_inventory, *index);
+        }
+        let from_component_inventory = collect_component_styles_for_inventory(
+            &protocol,
+            ["index.html"],
+            &component_inventory,
+            &component_index,
+        )
+        .unwrap();
+        assert!(
+            from_component_inventory["resources"]["_chunk-a-card-2"].is_object(),
+            "component-template bits do not prove that the client registered a chunk"
+        );
+
+        let style_index = build_style_resource_index(&protocol);
+        let mut style_inventory = vec![0u8; style_index.len().div_ceil(8)];
+        set_component(&mut style_inventory, style_index["_chunk-a-card-2"]);
+        let from_style_inventory = collect_component_style_delta(
+            &protocol,
+            ["index.html"],
+            &style_inventory,
+            &style_index,
+        )
+        .unwrap();
+        assert_eq!(
+            from_style_inventory["resources"],
+            serde_json::json!({}),
+            "the exact style-resource inventory should suppress a registered chunk"
         );
     }
 

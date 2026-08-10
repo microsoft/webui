@@ -20,12 +20,14 @@
 //! println!("Built {} fragments in {:?}", result.stats.fragment_count, result.stats.duration);
 //! ```
 
+mod chunking;
 mod component_assets;
 mod error;
 mod module_preload;
 mod projection;
 pub mod server;
 pub mod streaming;
+mod style_bundle;
 
 pub use component_assets::{render_component_assets, ComponentAssetFile, ComponentAssetGraph};
 pub use error::WebUIError;
@@ -252,6 +254,13 @@ pub struct BuildOptions {
     pub entry: String,
     /// CSS delivery strategy for component stylesheets.
     pub css: CssStrategy,
+    /// Whether to merge component stylesheets into bundled chunks.
+    ///
+    /// Composes with [`BuildOptions::css`] instead of replacing it: bundling
+    /// decides how stylesheets are grouped, the strategy decides how they reach
+    /// the page. Stylesheets reached from more than one CSS tree are split into
+    /// their own chunk so they are downloaded and cached once.
+    pub css_bundle: bool,
     /// Framework plugin to load.
     pub plugin: Option<Plugin>,
     /// Additional component sources (npm packages or local paths).
@@ -310,6 +319,7 @@ impl Default for BuildOptions {
             app_dir: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            css_bundle: false,
             plugin: None,
             components: Vec::new(),
             component_asset_roots: Vec::new(),
@@ -508,6 +518,9 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let projection_enabled = !options.projection_manifests.is_empty();
     if projection_enabled && options.plugin != Some(Plugin::WebUI) {
         return Err(projection::incompatible_plugin_error());
+    }
+    if options.css_bundle && options.css == CssStrategy::Module {
+        return Err(css_bundle_module_error());
     }
     let parser_options = ParserOptions::try_new(
         options.css,
@@ -715,9 +728,13 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let stores_css = options.css != CssStrategy::Link;
     let mut css_files: Vec<(String, String)> = Vec::new();
     let mut emitted_names: HashSet<String> = HashSet::new();
+    let mut bundle_inputs: Vec<(String, String)> = Vec::new();
     for (tag, css) in css_snapshot {
         if !protocol.fragments.contains_key(&tag) {
             continue;
+        }
+        if options.css_bundle {
+            bundle_inputs.push((tag.clone(), css.clone()));
         }
         if stores_css {
             protocol.components.entry(tag).or_default().css = css;
@@ -737,6 +754,42 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     // CSS order is load-bearing, so compute this independently from the sorted
     // component-asset reachability sets.
     protocol.populate_style_closures(&[options.entry.as_str()]);
+
+    if options.css_bundle {
+        // Chunks are planned from the closures above, so this has to run after
+        // them and after per-component resources exist to plan over.
+        let by_tag = bundle_inputs
+            .iter()
+            .map(|(tag, css)| (tag.as_str(), css.as_str()))
+            .collect();
+        let chunk_files = style_bundle::bundle_style_chunks(
+            &mut protocol,
+            options.entry.as_str(),
+            &by_tag,
+            &css_link_options,
+        )?;
+        if !stores_css {
+            // Keep component files as compatibility and independently-loaded
+            // component fallbacks. Current handlers render chunk links, so these
+            // files add no requests to the normal bundled path.
+            for (filename, css) in chunk_files {
+                if emitted_names.insert(filename.clone()) {
+                    css_files.push((filename, css));
+                    continue;
+                }
+                // A single-component chunk resolves to that component's own
+                // filename and bytes, so the file is already written.
+                let identical = css_files
+                    .iter()
+                    .any(|(name, existing)| *name == filename && *existing == css);
+                if !identical {
+                    return Err(WebUIError::InvalidBuildOptions(format!(
+                        "CSS filename collision between bundled chunk '{filename}' and a component stylesheet of the same name. Adjust the asset filename template to include [hash] or another unique segment."
+                    )));
+                }
+            }
+        }
+    }
 
     // Store compiled client templates in the protocol so any host server can
     // query them. Scriptless templates retain navigation metadata but contribute
@@ -908,6 +961,14 @@ fn output_file_collision_error(name: &OsStr) -> WebUIError {
         "output filename collision for '{}'. Adjust the asset filename template to include [ext] or another unique asset-type segment.",
         name.to_string_lossy()
     ))
+}
+
+#[cold]
+#[inline(never)]
+fn css_bundle_module_error() -> WebUIError {
+    WebUIError::InvalidBuildOptions(
+        "CSS bundling is not supported with the Module strategy. Module builds already inline every stylesheet as a data URI, so there are no requests to merge, and their import-map specifiers are resolved per component before chunks exist. Use --css link (or --css style) with --css-bundle, or drop --css-bundle.".to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1609,6 +1670,433 @@ mod tests {
                 .expect("Shadow closure"),
             ["shadow-card", "nested-card"]
         );
+    }
+
+    /// A fixture that exercises both bundling outcomes at once: two components
+    /// used only by the entry merge, and one reached from a second CSS tree is
+    /// split out so neither tree over-delivers.
+    fn bundling_app() -> tempfile::TempDir {
+        create_app_dir(&[
+            (
+                "index.html",
+                "<a-card></a-card><b-card></b-card><shared-card></shared-card>\
+                 <shadow-card></shadow-card>",
+            ),
+            ("a-card.html", "<span>a</span>"),
+            ("a-card.css", ".a{color:red}"),
+            ("b-card.html", "<span>b</span>"),
+            ("b-card.css", ".b{color:green}"),
+            ("shared-card.html", "<span>shared</span>"),
+            ("shared-card.css", ".shared{color:blue}"),
+            (
+                "shadow-card.html",
+                r#"<template shadowrootmode="open"><shared-card></shared-card></template>"#,
+            ),
+            ("shadow-card.css", ".shadow{color:black}"),
+        ])
+    }
+
+    /// Concatenate a closure's CSS the way the browser cascade sees it, once
+    /// per component and once per chunk.
+    fn closure_css(protocol: &WebUIProtocol, root: &str) -> (String, String) {
+        let closure = protocol.style_closures.get(root).expect("closure");
+        let unbundled = closure
+            .component_tags
+            .iter()
+            .filter_map(|tag| protocol.components.get(tag))
+            .map(|component| component.css.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let bundled = closure
+            .style_chunks
+            .iter()
+            .filter_map(|index| protocol.style_chunk_resource(*index))
+            .map(|(_, css)| css)
+            .collect::<Vec<_>>()
+            .join("\n");
+        (unbundled, bundled)
+    }
+
+    #[test]
+    fn bundling_preserves_the_cascade_of_every_closure() {
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        options.css_bundle = true;
+        let result = build(options).unwrap();
+
+        let roots: Vec<String> = result.protocol.style_closures.keys().cloned().collect();
+        assert!(roots.len() >= 2, "fixture must produce several CSS trees");
+        let mut chunked = 0usize;
+        for root in roots {
+            let (unbundled, bundled) = closure_css(&result.protocol, &root);
+            // A closure the runtime never installs as a unit keeps no chunks and
+            // falls back to per-component delivery, which is the unbundled path.
+            if bundled.is_empty() && !unbundled.is_empty() {
+                continue;
+            }
+            chunked += 1;
+            assert_eq!(
+                bundled, unbundled,
+                "chunked cascade diverged from the per-component cascade for `{root}`"
+            );
+        }
+        assert!(chunked >= 2, "fixture must chunk several CSS trees");
+    }
+
+    #[test]
+    fn bundling_merges_entry_local_styles_and_splits_shared_ones() {
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        options.css_bundle = true;
+        let result = build(options).unwrap();
+
+        let members: Vec<&[String]> = result
+            .protocol
+            .style_chunks
+            .iter()
+            .map(|chunk| chunk.component_tags.as_slice())
+            .collect();
+        assert!(
+            members.contains(&["a-card".to_string(), "b-card".to_string()].as_slice()),
+            "entry-local components should merge: {members:?}"
+        );
+        assert!(
+            members.contains(&["shared-card".to_string()].as_slice()),
+            "a component reached from two CSS trees must stay alone: {members:?}"
+        );
+
+        // The shared chunk is the same index in both trees, so it is fetched and
+        // cached once.
+        let entry = result.protocol.style_closure_chunks("index.html").unwrap();
+        let shadow = result.protocol.style_closure_chunks("shadow-card").unwrap();
+        let shared = entry
+            .iter()
+            .find(|index| shadow.contains(index))
+            .expect("both trees should share a chunk");
+        assert_eq!(
+            result.protocol.style_chunk_members(*shared).unwrap(),
+            ["shared-card"]
+        );
+    }
+
+    #[test]
+    fn bundling_is_off_by_default_and_leaves_the_protocol_unchanged() {
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+
+        assert!(result.protocol.style_chunks.is_empty());
+        for closure in result.protocol.style_closures.values() {
+            assert!(closure.style_chunks.is_empty());
+        }
+    }
+
+    #[test]
+    fn bundling_link_emits_chunks_and_component_fallback_files() {
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css_bundle = true;
+        let result = build(options).unwrap();
+
+        let names: Vec<&str> = result
+            .css_files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        for (tag, component) in &result.protocol.components {
+            if component.css_href.is_empty() {
+                continue;
+            }
+            assert!(
+                names.contains(&component.css_href.as_str()),
+                "`{tag}` needs its independently loaded fallback file: {names:?}"
+            );
+        }
+        for chunk in &result.protocol.style_chunks {
+            assert!(!chunk.css_href.is_empty(), "Link chunks need an href");
+            assert!(
+                names.contains(&chunk.css_href.as_str()),
+                "every rendered chunk needs an emitted file: {names:?}"
+            );
+            assert!(
+                chunk.css.is_empty(),
+                "Link chunks ship their CSS as a file, not inline"
+            );
+        }
+    }
+
+    #[test]
+    fn bundling_keeps_component_files_when_component_assets_need_them() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<a-card></a-card><b-card></b-card><shared-card></shared-card>",
+            ),
+            ("a-card.html", "<span>a</span>"),
+            ("a-card.css", ".a{color:red}"),
+            ("b-card.html", "<span>b</span>"),
+            ("b-card.css", ".b{color:green}"),
+            ("shared-card.html", "<span>shared</span>"),
+            ("shared-card.css", ".shared{color:blue}"),
+            ("lazy-panel.html", "<p>lazy</p>"),
+            ("lazy-panel.css", ".lazy{color:gray}"),
+            ("lazy-panel.ts", "export {};"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.css_bundle = true;
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+        let result = build(options).unwrap();
+
+        let names: Vec<&str> = result
+            .css_files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        assert!(
+            names.iter().any(|name| name.starts_with("lazy-panel")),
+            "static assets fetch a component's own stylesheet: {names:?}"
+        );
+        assert!(
+            names.iter().any(|name| name.starts_with("_chunk-")),
+            "bundled chunks are still emitted: {names:?}"
+        );
+    }
+
+    /// Render a built protocol and return the emitted HTML.
+    fn render_html(protocol: &WebUIProtocol, route: &str) -> String {
+        let protocol = Protocol::new(protocol.clone());
+        let mut writer = StringWriter { buf: String::new() };
+        WebUIHandler::new()
+            .render(
+                &protocol,
+                &serde_json::json!({}),
+                &RenderOptions::new("index.html", route),
+                &mut writer,
+            )
+            .unwrap();
+        writer.buf
+    }
+
+    /// Every stylesheet URL the rendered page tells the browser to fetch.
+    fn linked_stylesheets(html: &str) -> Vec<&str> {
+        let mut hrefs = Vec::new();
+        let mut rest = html;
+        while let Some(start) = rest.find("href=\"") {
+            rest = &rest[start + "href=\"".len()..];
+            let Some(end) = rest.find('"') else { break };
+            let href = &rest[..end];
+            if href.ends_with(".css") {
+                hrefs.push(href);
+            }
+            rest = &rest[end..];
+        }
+        hrefs
+    }
+
+    /// The `data-webui-resource` values in emitted order.
+    fn emitted_resources(html: &str) -> Vec<&str> {
+        let mut resources = Vec::new();
+        let mut rest = html;
+        while let Some(start) = rest.find("data-webui-resource=\"") {
+            rest = &rest[start + "data-webui-resource=\"".len()..];
+            match rest.find('"') {
+                Some(end) => {
+                    resources.push(&rest[..end]);
+                    rest = &rest[end..];
+                }
+                None => break,
+            }
+        }
+        resources
+    }
+
+    #[test]
+    fn bundled_rendering_emits_one_resource_per_chunk() {
+        for strategy in [CssStrategy::Link, CssStrategy::Style] {
+            let app = bundling_app();
+            let mut options = default_options(app.path());
+            options.css = strategy;
+            options.css_bundle = true;
+            let result = build(options).unwrap();
+
+            let html = render_html(&result.protocol, "/");
+            let resources = emitted_resources(&html);
+            assert!(
+                resources.contains(&"_chunk-a-card-2"),
+                "{strategy:?} should deliver the merged chunk once: {resources:?}"
+            );
+            assert!(
+                !resources.contains(&"a-card") && !resources.contains(&"b-card"),
+                "{strategy:?} must not also deliver merged members: {resources:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundling_never_merges_an_authored_shadow_stylesheet() {
+        // `shadow-card` sits between two Light components that share its exact
+        // consumer set, so ordering alone would let all three merge.
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<a-card></a-card><shadow-card></shadow-card><b-card></b-card>",
+            ),
+            ("a-card.html", "<span>a</span>"),
+            ("a-card.css", ".a{color:red}"),
+            ("b-card.html", "<span>b</span>"),
+            ("b-card.css", ".b{color:green}"),
+            (
+                "shadow-card.html",
+                r#"<template shadowrootmode="open"><span>s</span></template>"#,
+            ),
+            ("shadow-card.css", ".shadow{color:black}"),
+        ]);
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        options.css_bundle = true;
+        let result = build(options).unwrap();
+
+        let chunk = result
+            .protocol
+            .style_chunks
+            .iter()
+            .find(|chunk| chunk.component_tags.iter().any(|tag| tag == "shadow-card"))
+            .expect("shadow-card is styled, so it belongs to a chunk");
+        // A single-member chunk is named after its member and carries its exact
+        // bytes, which is what keeps the parse-time `css_href` and
+        // `shadowrootadoptedstylesheets` references valid under bundling.
+        assert_eq!(
+            chunk.component_tags,
+            vec!["shadow-card".to_string()],
+            "an authored-Shadow stylesheet must stay in a chunk of its own"
+        );
+        assert_eq!(chunk.name, "shadow-card");
+        assert_eq!(
+            chunk.css, result.protocol.components["shadow-card"].css,
+            "its chunk must carry the component's own bytes unchanged"
+        );
+    }
+
+    #[test]
+    fn bundling_never_links_a_stylesheet_the_build_did_not_write() {
+        // The rendered page is the contract: every stylesheet URL the browser is
+        // told to fetch — document links and declarative Shadow roots alike —
+        // must name a file the bundled build actually emitted.
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Link;
+        options.css_bundle = true;
+        let result = build(options).unwrap();
+
+        let emitted: HashSet<&str> = result
+            .css_files
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        let html = render_html(&result.protocol, "/");
+        let linked = linked_stylesheets(&html);
+        assert!(
+            !linked.is_empty(),
+            "the page should link at least one stylesheet: {html}"
+        );
+        for href in &linked {
+            let name = href.rsplit('/').next().unwrap_or(href);
+            assert!(
+                emitted.contains(name),
+                "page links `{href}`, which the bundled build did not write: {emitted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundling_is_rejected_for_the_module_strategy() {
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Module;
+        options.css_bundle = true;
+
+        let Err(WebUIError::InvalidBuildOptions(message)) = build(options) else {
+            panic!("Module builds resolve import-map specifiers per component");
+        };
+        assert!(
+            message.contains("--css link"),
+            "the error should name a strategy that works: {message}"
+        );
+    }
+
+    #[test]
+    fn bundled_rendering_delivers_the_same_css_in_the_same_order() {
+        // Style mode inlines the CSS, so the rendered document carries the whole
+        // cascade and the two builds can be compared rule for rule.
+        let extract = |html: &str| -> Vec<String> {
+            let mut blocks = Vec::new();
+            let mut rest = html;
+            while let Some(start) = rest.find("data-webui-strategy=\"style\">") {
+                rest = &rest[start + "data-webui-strategy=\"style\">".len()..];
+                match rest.find("</style>") {
+                    Some(end) => {
+                        blocks.push(rest[..end].to_string());
+                        rest = &rest[end..];
+                    }
+                    None => break,
+                }
+            }
+            blocks
+        };
+
+        let mut plan = Vec::new();
+        for bundle in [false, true] {
+            let app = bundling_app();
+            let mut options = default_options(app.path());
+            options.css = CssStrategy::Style;
+            options.css_bundle = bundle;
+            let result = build(options).unwrap();
+            let html = render_html(&result.protocol, "/");
+            plan.push(extract(&html).join("\n"));
+        }
+
+        assert_eq!(
+            plan[1], plan[0],
+            "bundling must not change the delivered cascade"
+        );
+        assert!(!plan[0].is_empty(), "fixture must deliver CSS");
+    }
+
+    #[test]
+    fn bundled_rendering_never_repeats_a_chunk_across_css_trees() {
+        let app = bundling_app();
+        let mut options = default_options(app.path());
+        options.css = CssStrategy::Style;
+        options.css_bundle = true;
+        let result = build(options).unwrap();
+
+        let html = render_html(&result.protocol, "/");
+        let resources = emitted_resources(&html);
+        // `shared-card` is reached by the document tree and by `shadow-card`'s
+        // ShadowRoot. Each tree scopes styles separately, so it is delivered once
+        // per tree and never twice within one.
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for resource in &resources {
+            *counts.entry(*resource).or_insert(0) += 1;
+        }
+        let shadow_start = html
+            .find(r#"<template shadowrootmode="open""#)
+            .expect("declarative Shadow root");
+        let document_resources = emitted_resources(&html[..shadow_start]);
+        let mut document_counts: HashMap<&str, usize> = HashMap::new();
+        for resource in &document_resources {
+            *document_counts.entry(*resource).or_insert(0) += 1;
+        }
+        for (resource, count) in &document_counts {
+            assert_eq!(
+                *count, 1,
+                "`{resource}` was delivered {count} times in the document tree: {resources:?}"
+            );
+        }
     }
 
     #[test]

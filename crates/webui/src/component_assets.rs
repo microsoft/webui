@@ -189,12 +189,14 @@ mod tests {
             "index.html".to_string(),
             ComponentStyleClosure {
                 component_tags: vec!["kept-card".to_string(), "removed-card".to_string()],
+                style_chunks: Vec::new(),
             },
         );
         protocol.style_closures.insert(
             "removed-card".to_string(),
             ComponentStyleClosure {
                 component_tags: vec!["removed-card".to_string()],
+                style_chunks: Vec::new(),
             },
         );
         let graph = ComponentAssetGraph {
@@ -283,12 +285,14 @@ mod tests {
             "entry-card".to_string(),
             ComponentStyleClosure {
                 component_tags: vec!["entry-card".to_string()],
+                style_chunks: Vec::new(),
             },
         );
         protocol.style_closures.insert(
             "deferred-card".to_string(),
             ComponentStyleClosure {
                 component_tags: vec!["deferred-card".to_string(), "entry-card".to_string()],
+                style_chunks: Vec::new(),
             },
         );
 

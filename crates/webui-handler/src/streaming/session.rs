@@ -383,6 +383,7 @@ impl WebUIHandler {
             )?),
         };
         let component_count = protocol.component_index().len();
+        let style_resource_count = protocol.style_resource_index().len();
         let entry_route = crate::route_renderer::find_best_route_match(
             &fragments.fragments,
             options.request_path,
@@ -420,7 +421,7 @@ impl WebUIHandler {
             route_chain: None,
             entry_route,
             streaming: StreamingRenderState::from_progress(
-                StreamingProgress::new(component_count),
+                StreamingProgress::new(component_count, style_resource_count),
                 protocol.component_reachability(),
             ),
             json_scratch: Vec::new(),
@@ -931,6 +932,7 @@ mod tests {
             entry_id: self.entry_id,
             nonce: self.nonce,
             component_index: self.protocol.component_index(),
+            style_resource_index: self.protocol.style_resource_index(),
             css_strategy: self.protocol.css_strategy(),
             head_inject: self.head_inject,
             body_inject: self.body_inject,

@@ -427,6 +427,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Component-name → bit-position map built once when the runtime
     /// [`Protocol`] is created and shared by every render.
     pub(crate) component_index: &'protocol HashMap<String, u32>,
+    /// Style-resource ID → request-local dedup bit built with [`Protocol`].
+    pub(crate) style_resource_index: &'protocol HashMap<String, u32>,
     /// CSS strategy declared by the compiled protocol.
     pub(crate) css_strategy: webui_protocol::CssStrategy,
     /// HTML emitted at the structural `head_end` boundary (before
@@ -1573,7 +1575,7 @@ impl WebUIHandler {
         if context.protocol.style_closures.is_empty() {
             return Ok(());
         }
-        let shadow_static_tags = if install == StyleClosureInstall::Routed {
+        let shadow_static_closure = if install == StyleClosureInstall::Routed {
             match context.shadow_style_roots.last() {
                 Some(shadow_root) => {
                     if !shadow_root.static_closure_emitted {
@@ -1593,11 +1595,17 @@ impl WebUIHandler {
                                 "active Shadow style root lost its protocol index".to_string(),
                             )
                         })?;
-                    Some(context.protocol.style_closure(root_name).ok_or_else(|| {
-                        HandlerError::Invariant(format!(
+                    Some(
+                        context
+                            .protocol
+                            .style_closures
+                            .get(root_name)
+                            .ok_or_else(|| {
+                                HandlerError::Invariant(format!(
                             "component style closure metadata is missing Shadow root `{root_name}`"
                         ))
-                    })?)
+                            })?,
+                    )
                 }
                 None => None,
             }
@@ -1612,31 +1620,61 @@ impl WebUIHandler {
         let is_document_tree = context.shadow_style_roots.is_empty();
         let strategy = context.css_strategy;
 
-        for tag in &closure.component_tags {
-            let resource = context
-                .protocol
-                .component_style_resource(tag)
-                .ok_or_else(|| {
-                    HandlerError::Invariant(format!(
-                        "component style closure `{root}` references missing resource `{tag}`"
-                    ))
-                })?;
-            if is_document_tree && !context.document_style_resources.insert(tag.clone()) {
-                continue;
-            }
-            if let Some(static_tags) = shadow_static_tags {
-                if static_tags.iter().any(|static_tag| static_tag == tag) {
-                    continue;
-                }
-                let resource_index = context
-                    .component_index
-                    .get(tag.as_str())
-                    .copied()
+        // A bundled build delivers merged chunks; otherwise every component
+        // delivers its own stylesheet. Both walk the closure in the same order,
+        // so the emitted cascade is identical either way. Bundling is a
+        // build-wide decision, so the two never mix within one protocol.
+        let chunks = closure.style_chunks.as_slice();
+        let unit_count = if chunks.is_empty() {
+            closure.component_tags.len()
+        } else {
+            chunks.len()
+        };
+
+        for position in 0..unit_count {
+            let (name, resource, chunk) = if chunks.is_empty() {
+                let tag = &closure.component_tags[position];
+                let resource = context
+                    .protocol
+                    .component_style_resource(tag)
                     .ok_or_else(|| {
                         HandlerError::Invariant(format!(
-                            "component style resource `{tag}` is missing its protocol index"
+                            "component style closure `{root}` references missing resource `{tag}`"
                         ))
                     })?;
+                (tag.as_str(), resource, None)
+            } else {
+                let index = chunks[position];
+                let (name, resource) =
+                    context.protocol.style_chunk_resource(index).ok_or_else(|| {
+                        HandlerError::Invariant(format!(
+                            "component style closure `{root}` references missing style chunk {index}"
+                        ))
+                    })?;
+                (name, resource, Some(index))
+            };
+            if is_document_tree && !context.document_style_resources.insert(name.to_string()) {
+                continue;
+            }
+            if let Some(static_closure) = shadow_static_closure {
+                let resource_index = match chunk {
+                    Some(index) => {
+                        if static_closure.style_chunks.contains(&index) {
+                            continue;
+                        }
+                        index
+                    }
+                    None => {
+                        if static_closure.component_tags.iter().any(|tag| tag == name) {
+                            continue;
+                        }
+                        context.component_index.get(name).copied().ok_or_else(|| {
+                            HandlerError::Invariant(format!(
+                                "component style resource `{name}` is missing its protocol index"
+                            ))
+                        })?
+                    }
+                };
                 let shadow_root = context.shadow_style_roots.last_mut().ok_or_else(|| {
                     HandlerError::Invariant(
                         "active Shadow style root disappeared during routed style delivery"
@@ -1658,7 +1696,7 @@ impl WebUIHandler {
                     context.writer.write("\" data-webui-resource=\"")?;
                     context
                         .writer
-                        .write(&crate::html_encode::encode_safe(tag))?;
+                        .write(&crate::html_encode::encode_safe(name))?;
                     context.writer.write("\" data-webui-strategy=\"link\">")?;
                 }
                 strategy => {
@@ -1673,7 +1711,7 @@ impl WebUIHandler {
                     context.writer.write(" data-webui-resource=\"")?;
                     context
                         .writer
-                        .write(&crate::html_encode::encode_safe(tag))?;
+                        .write(&crate::html_encode::encode_safe(name))?;
                     context.writer.write("\" data-webui-strategy=\"")?;
                     context
                         .writer
@@ -1707,7 +1745,7 @@ impl WebUIHandler {
             return Ok(());
         }
         Self::ensure_request_route_chain(context);
-        let mut seen = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
         let entry_root = std::iter::once(context.entry_id);
         let route_roots = context
             .route_chain
@@ -1716,16 +1754,33 @@ impl WebUIHandler {
             .flatten()
             .map(|entry| entry.component.as_str());
         for root in entry_root.chain(route_roots) {
-            let Some(closure) = context.protocol.style_closure(root) else {
+            let Some(closure) = context.protocol.style_closures.get(root) else {
                 continue;
             };
-            for tag in closure {
-                if context.document_style_resources.contains(tag) || seen.contains(&tag) {
+            // Under bundling a chunk shared by several routes is the highest
+            // value hint here: one preload covers every route that needs it.
+            let chunks = closure.style_chunks.as_slice();
+            let unit_count = if chunks.is_empty() {
+                closure.component_tags.len()
+            } else {
+                chunks.len()
+            };
+            for position in 0..unit_count {
+                let (name, href) = if chunks.is_empty() {
+                    let tag = closure.component_tags[position].as_str();
+                    match context.protocol.component_style_resource(tag) {
+                        Some(href) => (tag, href),
+                        None => continue,
+                    }
+                } else {
+                    match context.protocol.style_chunk_resource(chunks[position]) {
+                        Some(unit) => unit,
+                        None => continue,
+                    }
+                };
+                if context.document_style_resources.contains(name) || seen.contains(&name) {
                     continue;
                 }
-                let Some(href) = context.protocol.component_style_resource(tag) else {
-                    continue;
-                };
                 context
                     .writer
                     .write("<link rel=\"preload\" as=\"style\" href=\"")?;
@@ -1733,7 +1788,7 @@ impl WebUIHandler {
                     .writer
                     .write(&crate::html_encode::encode_safe(href))?;
                 context.writer.write("\">")?;
-                seen.push(tag);
+                seen.push(name);
             }
         }
         Ok(())
@@ -2720,6 +2775,7 @@ impl WebUIHandler {
             body_start_emitted: false,
             component_asset_styles_emitted: false,
             component_index: protocol.component_index(),
+            style_resource_index: protocol.style_resource_index(),
             css_strategy: protocol.css_strategy(),
             body_end_emitted: false,
             route_index: protocol.route_index(),
