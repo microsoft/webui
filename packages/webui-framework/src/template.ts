@@ -11,7 +11,7 @@
  * - `ag` — attribute target groups `[path, startIndex, count]`
  * - `c`  — conditional blocks `[conditionRef, blockIndex, slot]`
  * - `r`  — repeat/for blocks `[collection, itemVar, blockIndex, slot, keyPath?]`
- * - `eg` — grouped element events `[eventName, [[handlerName, argSpecs, targetPath, usesEvent?]]]`
+ * - `eg` — grouped element events `[eventName, [[handlerName, argSpecs, targetIndex, usesEvent?]]]`
  * - `b`  — nested compiled block metadata
  * - `sd` — shadow DOM flag for client-created components
  * - `re` — root events on the host element
@@ -39,8 +39,8 @@ export type {
   CompiledTextRunMeta,
   TemplateBlockMeta,
   TemplateMeta,
-  TemplateNodePath,
-  TemplateSlotPath,
+  TemplateNodeIndex,
+  TemplateSlot,
 } from './template-types.js';
 import {
   dispatchTemplatesRegistered,

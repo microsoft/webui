@@ -114,12 +114,17 @@ The compiler scopes the paired CSS for this Light component.
 
 The open template must be the sole top-level element and wrap the complete
 component. Use it when the component needs native `<slot>` composition, a
-native Shadow boundary, or root events on the shadow root. `closed`, another
-value, invalid placement, multiple wrappers, or extra top-level content fails
-the build. A native `<slot>` in an unwrapped component is also a build
-error.
+native Shadow boundary, or **root host events** - listeners on the component
+root that catch events bubbling up from child components (`@toggle-item`,
+`@delete-item` above). `closed`, another value, invalid placement, multiple
+wrappers, or extra top-level content fails the build. A native `<slot>` in an
+unwrapped component is also a build error.
 
-Root host events only see events that **bubble**. `this.$emit()` dispatches with `bubbles: true`, so emitted events reach the root. A hand-built `new CustomEvent('my-event')` defaults to `bubbles: false` and will never arrive - bind it on the child element instead, or pass `{ bubbles: true }` yourself.
+To reach a root binding from a **child component**, an event must **bubble** and - because it has to cross the child's shadow boundary - be **composed**. `this.$emit()` sets both whenever the emitting component has a shadow root, which is the default. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
+
+A root binding lives on the **host element**, so it also catches events targeted at the host itself - what host-interactive components (host `tabindex`, presentational shadow content) rely on. It does not see non-composed events (`change`, `submit`, `select`, media events), which stop at the shadow boundary because they identify one specific inner element; bind those per element - `<input @change="{onChange(e)}">`.
+
+Since the listener is on the host, `e.target` is the host for events raised inside the shadow tree. Use `e.composedPath()[0]` to get the element that was actually hit.
 
 Decorators define how properties behave and how they connect to the template.
 
@@ -633,7 +638,7 @@ streaming boundary commits.
 
 Descendants must not structurally mutate a containing WebUI component's SSR
 subtree before that component hydrates. Inserting, removing, or reordering nodes
-can shift compiled paths before WebUI wires them.
+can shift compiled element indices before WebUI wires them.
 
 ```ts
 export class MyCounter extends WebUIElement {

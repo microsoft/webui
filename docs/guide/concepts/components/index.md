@@ -43,7 +43,9 @@ content:
 ```
 
 Use a sole top-level `<template shadowrootmode="open">` when a component needs
-native `<slot>`, native Shadow encapsulation, or root events on the shadow root:
+native `<slot>`, native Shadow encapsulation, or root events on the host
+element - listeners on the component root that catch events bubbling up from
+children, including events targeted at the host element itself:
 
 ```html
 <!-- task-list.html -->

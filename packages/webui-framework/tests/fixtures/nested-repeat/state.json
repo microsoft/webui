@@ -1,6 +1,12 @@
 {
   "others": ["One", "Two"],
   "selected": "none",
+  "headItems": ["H1", "H2"],
+  "innerItems": ["I1", "I2"],
+  "tailItems": ["T1", "T2"],
+  "showInner": true,
+  "innerRows": ["X1", "X2"],
+  "tailRows": ["Y1", "Y2"],
   "groups": [
     {
       "name": "Color",

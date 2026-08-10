@@ -43,4 +43,16 @@ test.describe('root-event fixture', () => {
     });
     expect(action).toBe('pong');
   });
+
+  test('root binding retargets e.target to the host for inner events', async ({ page }) => {
+    await page.locator('test-root-event .action').click();
+
+    const seen = await page.evaluate(() => {
+      const el = document.querySelector('test-root-event') as any;
+      return { target: el?.lastClickTarget, origin: el?.lastClickOrigin };
+    });
+    // The listener sits on the host, so `e.target` is retargeted. Handlers must
+    // use `e.composedPath()[0]` to reach the element inside the shadow tree.
+    expect(seen).toEqual({ target: 'TEST-ROOT-EVENT', origin: 'BUTTON' });
+  });
 });
