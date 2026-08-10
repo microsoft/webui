@@ -299,8 +299,7 @@ Omit it for most components:
 <p>{{description}}</p>
 ```
 
-Include it only when you need root host events on the component root (the shadow
-root when present, otherwise the host element):
+Include it only when you need root host events on the component root:
 
 ```html
 <!-- todo-app.html -->
@@ -314,14 +313,22 @@ root when present, otherwise the host element):
 </template>
 ```
 
-Root host events catch custom events bubbling up from child components. They see
-only events that bubble; `this.$emit()` sets `bubbles: true`, but a hand-built
-`new CustomEvent(name)` defaults to `bubbles: false` and will never reach the
-root - bind that on the child element instead.
+Root host events catch custom events bubbling up from child components. To arrive
+from a child, an event must bubble and - to cross the child's shadow boundary -
+be `composed`; `this.$emit()` sets both whenever the emitting component has a
+shadow root (the default), but a hand-built `new CustomEvent(name)` defaults to
+neither and will never reach the root - pass `{ bubbles: true, composed: true }`
+or bind it on the child element.
+
+The binding sits on the host element, so it also catches events targeted at the
+host itself - what host-interactive components (host `tabindex`, presentational
+shadow content) rely on. It does not see non-composed events (`change`,
+`submit`, `select`, media); bind those per element.
 
 One root listener also serves an arbitrarily large `<for>`, so this is the way
-to trade per-row listeners for a single handler on a very long list. Use
-`e.composedPath()` to find the row that was hit.
+to trade per-row listeners for a single handler on a very long list. For rows
+inside the shadow tree `e.target` is the host, so use `e.composedPath()[0]` to
+find the element that was hit.
 
 ### Outlet
 
@@ -696,7 +703,7 @@ pre-`super.connectedCallback()` writes safe.
 Load buffered definitions through a parser-inserted, non-async ES module script
 or a classic `defer` script. Descendants must not structurally mutate a
 containing WebUI component's SSR subtree before it hydrates - insertion,
-removal, or reordering shifts compiled paths.
+removal, or reordering shifts compiled element indices.
 
 ### Progressive streaming hydration
 
@@ -891,6 +898,31 @@ Full detail: [Routing](/guide/concepts/routing).
 **Route-scoped state.** Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes
 bandwidth and render time.
+
+### Reserved `$webui` state
+
+The top-level `"$webui"` object is reserved for trusted host HTML emitted at
+document boundaries:
+
+```json
+{
+  "$webui": {
+    "headEnd": "<link rel=\"preload\" as=\"image\" href=\"/hero.avif\">",
+    "bodyStart": "<!-- immediately after <body> -->",
+    "bodyEnd": "<script src=\"/livereload.js\"></script>"
+  }
+}
+```
+
+All three members are optional strings. `headEnd`, `bodyStart`, and `bodyEnd`
+are emitted raw immediately before `</head>`, after `<body>`, and before
+`</body>`, respectively. Missing, empty, `null`, or non-string members are
+ignored. WebUI strips the reserved object from hydration and partial-navigation
+state, so client-side templates and code cannot read it.
+
+**Never put request-derived or otherwise untrusted content in `$webui`.** The
+values are not escaped and can create an XSS vulnerability. See
+[Integrations](/guide/integrations/) for host-specific rendering details.
 
 ### Truthiness
 

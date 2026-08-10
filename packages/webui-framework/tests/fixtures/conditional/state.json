@@ -5,5 +5,14 @@
   "count": 1,
   "clientOnlyOpen": false,
   "outerOpen": true,
-  "innerOpen": false
+  "innerOpen": false,
+  "showStats": true,
+  "compact": false,
+  "value": "",
+  "outer": true,
+  "inner": false,
+  "tail": true,
+  "escOuter": true,
+  "escInner": true,
+  "escAfter": true
 }

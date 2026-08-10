@@ -15,8 +15,9 @@ import { registerCompiledTemplate } from '@microsoft/webui-test-support';
 registerCompiledTemplate('test-light-dom', {
   h: '<span class="greeting"></span> <span class="name"></span>!',
   tx: [
-    [[[0], 0], [['greeting']]],
-    [[[2], 0], [['name']]],
+    // Pre-order element indices: 1 is .greeting, 2 is .name.
+    [[1, 0], [['greeting']]],
+    [[2, 0], [['name']]],
   ],
 });
 

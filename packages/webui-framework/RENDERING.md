@@ -15,9 +15,9 @@ This document is for framework contributors, plugin authors, and anyone debuggin
 
 WebUI is built on a hard rule: the server emits HTML, the browser parses HTML, and the framework adopts that HTML in place. Nothing is re-rendered. No virtual DOM, no diff against a fresh tree, no `innerHTML = ...` to swap content. To make that work without DOM annotations on every dynamic node, the framework leans on:
 
-- compiled template metadata (path indices, not selectors),
+- compiled template metadata (element indices, not selectors),
 - five lightweight HTML comment markers around structural blocks,
-- a parallel walk of the SSR DOM and the parsed template DOM to keep ordinals aligned,
+- a single pre-order walk pairing the SSR DOM with the parsed template DOM,
 - a per-component path index so reactive updates touch only the bindings that actually depend on a changed property.
 
 The rest of this document explains each of those pieces, in the order the runtime executes them.
@@ -41,7 +41,7 @@ Compile metadata        Inject SSR markers         existing DOM,
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
 5. **`$applySSRState` seeds observables.** Backing fields (`_count`, `_title`, ...) are written directly from `window.__webui.state` so reactive bindings observe values that match the painted DOM.
-6. **`$hydrate` walks the DOM once.** Text, attribute, conditional, repeat, and event bindings are resolved by a single in-order pass that uses path indices plus marker-aware ordinal traversal.
+6. **`$hydrate` walks the DOM once.** One marker-aware pre-order pass numbers the subtree; text, attribute, conditional, repeat, and event bindings then resolve by index.
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
 
@@ -61,13 +61,13 @@ The handler emits exactly five comment markers, all defined in `src/element/mark
 | `<!--wc-->` | Conditional block start (one per `<if>`) |
 | `<!--/wc-->` | Conditional block end |
 
-Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled path indices.
+Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled element indices.
 
 ### Why markers exist for blocks but not bindings
 
-Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled path indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from path indices alone. The markers make that boundary explicit.
+Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from those indices alone. The markers make that boundary explicit.
 
-Static-position bindings (text, attributes, events) do not have this problem. Their position relative to the static skeleton is fixed at compile time, so a path index plus a marker-aware ordinal walk is enough.
+Static-position bindings (text, attributes, events) do not have this problem. Their position relative to the static skeleton is fixed at compile time, so a pre-order element index is enough.
 
 ### Example
 
@@ -98,11 +98,11 @@ Server output:
 </template>
 ```
 
-Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Path indices reach those.
+Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Pre-order element indices reach those.
 
 ### Marker removal is deferred
 
-`<!--/wc-->`, `<!--/wr-->`, and `<!--wi-->` must remain in the DOM for the **entire** hydration pass, because the ordinal-traversal algorithm uses marker pairs to skip block content when counting siblings. Removing a closing marker mid-pass corrupts later resolution calls. The framework collects them into a `staleMarkers` array and deletes them after `$finalize` (events + refs).
+`<!--/wc-->`, `<!--/wr-->`, and `<!--wi-->` must remain in the DOM for the **entire** hydration pass, because the walk uses marker pairs to skip block content. Removing a closing marker mid-pass corrupts later resolution calls. The framework collects them into a `staleMarkers` array and deletes them after `$finalize` (events + refs).
 
 `<!--wc-->` and `<!--wr-->` start markers are kept after hydration as runtime anchors. They are the insertion points used when the condition flips or the repeat collection grows.
 
@@ -154,12 +154,12 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
-| `re` | Root-level host events (attached to `this.shadowRoot ?? this`: the shadow root when present, otherwise the host element). |
+| `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
 
 The same metadata serves both paths:
 
-- **SSR hydration** reads paths to compute ordinals, which are then translated against the live SSR DOM.
-- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, walks paths directly, and applies initial bindings before the staged nodes are appended to the connected DOM.
+- **SSR hydration** numbers the live SSR DOM in the same pre-order the compiler numbered the template, skipping structural block ranges.
+- **Client-created creation** clones `h` into a detached staging root, upgrades custom elements, numbers it with a plain pre-order walk, and applies initial bindings before the staged nodes are appended to the connected DOM.
 
 ### Condition references
 
@@ -178,42 +178,55 @@ before hydration or client-created wiring.
 
 ---
 
-## DOM resolution: two algorithms, one metadata
+## DOM resolution: one numbering, two walks
 
-### `$resolve` (client-created)
+Every locator names an element by its **pre-order index** within its own
+compiled section: `0` is the section root, and elements are numbered `1..N` in
+the order a depth-first walk of `h` meets them. The root template and each
+`<if>` / `<for>` block number independently, matching the `b[]` split.
 
-The DOM was cloned from `meta.h`, so child-node indices line up. Resolution is a flat index walk:
+Both paths rebuild that numbering in a single walk, then resolve every binding
+by array index.
 
-```typescript
-let cur: Node = root;
-for (const idx of path) {
-  cur = cur.childNodes[idx];   // path = [1, 0] → root.childNodes[1].childNodes[0]
-}
-return cur;
-```
+### `collectTemplateElements` (client-created)
 
-### `$resolveSSR` (server-rendered)
+The DOM was cloned from `meta.h`, so it matches the template node for node. A
+plain pre-order walk reproduces the compiled indices - no markers are involved
+and nothing is skipped.
 
-The SSR DOM contains extra content the static template does not, specifically the rendered bodies of `<if>` and `<for>` blocks delimited by markers. Naive child-index walking would land on the wrong node after the first block.
+### `buildSSRIndex` (server-rendered)
 
-`$resolveSSR` walks the SSR DOM and the parsed template DOM **in parallel**. At each step:
+The SSR DOM contains extra content the static template does not: the rendered
+bodies of `<if>` and `<for>` blocks, delimited by markers. The walk pairs the
+template with the server output in lockstep and **skips entire
+`<!--wc-->...<!--/wc-->` and `<!--wr-->...<!--/wr-->` ranges** (with depth
+tracking for nested blocks), because that content belongs to the block's own
+metadata. This is why closing markers must survive the whole hydration pass:
+they delimit the regions to skip.
 
-1. Look up the next template-side child's `nodeType` (element vs text) and its **ordinal among same-type siblings** in the template. This lookup is cached per-template-node in a `WeakMap` to avoid recounting.
-2. Call `findByOrdinal(ssrParent, nodeType, ordinal)`, which walks SSR siblings, **skips entire `<!--wc-->...<!--/wc-->` and `<!--wr-->...<!--/wr-->` ranges** (with depth tracking for nested blocks), and returns the Nth element-or-text of the requested type.
+The same pass collects `<!--wc-->` and `<!--wr-->` markers in document order.
+The compiler emits `c` / `r` in source order and the server renders in source
+order, so the two line up by index - which is what makes each block's anchor
+unambiguous.
 
-This is why closing markers must survive the whole hydration pass: they delimit the regions to skip.
+Two details shape the walk:
+
+- The counter follows the **template**, never the server output. A run of
+  missing SSR elements leaves holes rather than shifting every later index onto
+  the wrong node.
+- It descends where the template has children, and also into a template-empty
+  element when the section has blocks to place - `<ul><for …></ul>` compiles to
+  an empty `<ul>`. Child components are the exception: they contribute no
+  children to the parent's `h`, so whatever the server rendered inside belongs
+  to them.
 
 ### `$findSSRText`
 
-A specialized variant of `$resolveSSR` for text bindings. The compiler emits text-slot positions as `[parentPath, beforeIndex]` where `beforeIndex` is the static template's child index. `$findSSRText` walks SSR text-node ordinals up to that index, again skipping marker ranges.
-
----
-
-## Ordinal cache
-
-`getTplOrdinals(tplNode)` returns a `Map<childIndex, [nodeType, ordinal]>` cached in a `WeakMap` keyed by the template-DOM node. The map is built once on first access and reused for every binding inside that block.
-
-This avoids quadratic behaviour when a block has dozens of bindings: without the cache, every binding would re-walk the parent's children to count element vs text ordinals. With the cache, each parent is walked once per block lifetime.
+Text is the one thing that cannot be indexed. The renderer strips
+inter-element whitespace that `meta.h` keeps, so text nodes do not line up
+positionally even though elements do. The compiler emits text-slot positions as
+`[parentIndex, beforeIndex]`, and `$findSSRText` walks SSR text-node ordinals up
+to that index, skipping marker ranges.
 
 ---
 
@@ -361,7 +374,7 @@ Two flavours:
 - **Element events** (`@click="{handler(item.id, e)}"`): wired via `$wireEvents`. The compiled metadata emits `eg` groups shaped as `[event, [[handler, argSpecs, targetPath, usesEvent?]]]`. Hydration resolves `targetPath` to the real element and captures the active scope frame so `argSpecs` resolve against the same repeat item or component state at dispatch time. Listeners attach to the bound element, so `event.currentTarget` is correct and `stopPropagation()` behaves as authored.
 
   Bindings are never delegated to the render root. `$wireEvents` runs once per block instance and the render root is shared across instances, so delegating would stack one listener per block on the same node and fire all of them per dispatch — O(N) for no reduction in listener count. It would also miss non-bubbling events (`focus`, `blur`, `mouseenter`, `load`, `error`, `toggle`, media) and app-defined events dispatched without `bubbles: true`, which no shipped event-name table can cover.
-- **Root events** (`re` field): attached to `this.shadowRoot ?? this` (the shadow root when present, otherwise the host element). Used for `@custom-event` on the component's `<template>` root. When shadow DOM is present, slotted light-DOM events must be composed to reach this listener.
+- **Root events** (`re` field): used for `@custom-event` on the component's `<template>` root. Attached to the **host element**, the only node that observes both events dispatched on the host itself (which never enter the shadow tree) and `composed` events on their way out of it. Non-composed events (`change`, `submit`, `select`, media) stop at the shadow root by design and are bound per element instead. Because the listener is on the host, `event.target` is retargeted to the host for inner events — use `event.composedPath()[0]` to recover the originating element.
 
 Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` via a microtask, so repeat reconciliation moves don't trigger teardown) removes everything wired during `$mount`.
 
@@ -447,11 +460,11 @@ per-instance readiness.
 ```
 src/
 ├── element.ts                  Orchestrator: $mount, $hydrate, $wire,
-│                               $resolve, $resolveSSR, $update, events,
+│                               $wire, $hydrate, $update, events,
 │                               teardown, path index
 ├── element/
 │   ├── markers.ts              Marker constants, collectItemMarkers,
-│   │                           findByOrdinal (block-skipping ordinal walk)
+│   │                           buildSSRIndex (block-skipping pre-order walk)
 │   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
 │   ├── styles.ts               injectModuleStyle (adopted CSS modules)
 │   └── types.ts                AttrBinding, CondBinding, RepeatBinding,

@@ -125,6 +125,28 @@ export class TestRepeatSiblings extends WebUIElement {
   }
 }
 
+export class TestRepeatInterleaved extends WebUIElement {
+  @observable headItems: string[] = [];
+  @observable innerItems: string[] = [];
+  @observable tailItems: string[] = [];
+
+  replaceTail(): void {
+    this.tailItems = ['T3', 'T4', 'T5'];
+  }
+}
+
+export class TestRepeatAfterConditional extends WebUIElement {
+  @observable showInner = true;
+  @observable innerRows: string[] = [];
+  @observable tailRows: string[] = [];
+
+  replaceTailRows(): void {
+    this.tailRows = ['Y3', 'Y4', 'Y5'];
+  }
+}
+
 TestNestedRepeat.define('test-nested-repeat');
 TestRepeatSiblings.define('test-repeat-siblings');
 TestNestedRepeatKeyedChain.define('test-nested-repeat-keyed-chain');
+TestRepeatInterleaved.define('test-repeat-interleaved');
+TestRepeatAfterConditional.define('test-repeat-after-conditional');

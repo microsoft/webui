@@ -28,8 +28,8 @@
  * as the runtime condition anchor.
  *
  * **Marker removal is deferred** until after all path-based resolution
- * (`$resolveSSR`, `$findSSRText`, `$finalize`) is complete.  This is
- * critical because `$resolveSSR` uses marker pairs to skip structural
+ * (`buildSSRIndex`, `$findSSRText`, `$finalize`) is complete.  This is
+ * critical because both use marker pairs to skip structural
  * block content when counting element/text ordinals — removing a closing
  * marker mid-hydration would break later resolution calls.
  *
@@ -51,7 +51,7 @@ import type {
   CompiledAttrMeta,
   CompiledAttrPart,
   CompiledCondition,
-  TemplateNodePath,
+  TemplateNodeIndex,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
@@ -70,9 +70,10 @@ import {
   collectItemMarkers,
   nextElement,
   findByOrdinal,
+  buildSSRIndex,
+  collectTemplateElements,
   MARKER_COND_START,
   MARKER_COND_END,
-  MARKER_REPEAT_START,
 } from './element/markers.js';
 import {
   injectModuleStyle,
@@ -135,8 +136,25 @@ const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
 
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
- *  Avoids re-counting element/text siblings on every $resolveSSR call. */
+ *  Avoids re-counting siblings on every text-slot resolution. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
+
+/**
+ * Pre-order element table for a parsed template, keyed by its root.
+ *
+ * The parsed template DOM is cached per metadata object, so this is built once
+ * per component type and shared by every instance.
+ */
+const tplElementCache = new WeakMap<Node, Array<Node | undefined>>();
+
+function getTemplateElements(tplRoot: Node): Array<Node | undefined> {
+  let cached = tplElementCache.get(tplRoot);
+  if (!cached) {
+    cached = collectTemplateElements(tplRoot);
+    tplElementCache.set(tplRoot, cached);
+  }
+  return cached;
+}
 
 function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
   let map = tplOrdinalCache.get(tplNode);
@@ -1361,87 +1379,6 @@ export class TemplateElement extends HTMLElement {
   // Compiled paths are childNode indices in meta.h parsed by the browser.
   // For client-created components the DOM matches meta.h exactly.
 
-  private $resolve(root: Node, path: TemplateNodePath, pathStart = 0): Node | null {
-    let cur: Node = root;
-    // When pathStart > 0, advance through the skipped segments so `cur`
-    // aligns with the already-positioned SSR root.
-    for (let i = 0; i < pathStart; i++) {
-      const child = cur.childNodes[path[i]];
-      if (!child) return null;
-      cur = child;
-    }
-    for (let i = pathStart; i < path.length; i++) {
-      const child = cur.childNodes[path[i]];
-      if (!child) return null;
-      cur = child;
-    }
-    return cur;
-  }
-
-  // ── DOM resolution: SSR hydration path ────────────────────────
-  //
-  // Compiled template metadata stores binding targets as paths of
-  // childNode indices into the *static* template HTML (`meta.h`).
-  // The SSR DOM, however, contains extra nodes injected by the server
-  // for rendered structural blocks:
-  //
-  //   - Conditional (`<if>`) blocks: `<!--wc-->` content `<!--/wc-->`
-  //   - Repeat (`<for>`) blocks: `<!--wr-->` items `<!--/wr-->`
-  //
-  // These extra nodes shift element/text ordinals in the SSR DOM
-  // relative to the template.  For example, a template with:
-  //
-  //     <div class="grid"></div>          ← element ordinal 0
-  //
-  // becomes in SSR (when a prior <if> block renders a <p>):
-  //
-  //     <!--wc--><p>no results</p><!--/wc-->  ← extra content
-  //     <div class="grid">...</div>           ← now element ordinal 1
-  //
-  // To resolve the correct element, `$resolveSSR` walks SSR children
-  // in parallel with the template DOM, skipping everything between
-  // structural marker pairs.  This requires closing markers to still
-  // be present — marker removal is deferred to the end of $hydrate().
-  //
-  // pathStart: skip leading path segments for in-place block hydration.
-
-  private $resolveSSR(ssrRoot: Node, tplRoot: Node, path: TemplateNodePath, pathStart = 0): Node | null {
-    let ssr: Node = ssrRoot;
-    let tpl: Node = tplRoot;
-
-    // When pathStart > 0, ssr has already descended to the block root
-    // but tpl still points at the wrapper from getTemplateDom().
-    // Advance tpl through the skipped path segments to align them.
-    for (let i = 0; i < pathStart; i++) {
-      const tplChild = tpl.childNodes[path[i]];
-      if (!tplChild) return null;
-      tpl = tplChild;
-    }
-
-    for (let i = pathStart; i < path.length; i++) {
-      const idx = path[i];
-      const tplChild = tpl.childNodes[idx];
-      if (!tplChild) return null;
-
-      // Look up the target's nodeType and ordinal from the template.
-      // getTplOrdinals maps childNode index → [nodeType, ordinal],
-      // counting elements and text nodes separately (comments ignored).
-      const ordinals = getTplOrdinals(tpl);
-      const entry = ordinals.get(idx);
-      if (!entry) return null;
-
-      // Walk SSR children to find the Nth element/text node, skipping
-      // structural block content that exists in SSR but not in meta.h.
-      // See findByOrdinal() for the full algorithm and invariants.
-      const [nodeType, ordinal] = entry;
-      const child = findByOrdinal(ssr, nodeType, ordinal);
-      if (!child) return null;
-      ssr = child;
-      tpl = tplChild;
-    }
-    return ssr;
-  }
-
   // ── Template parsing ──────────────────────────────────────────
 
   private $parseTemplate(meta: TemplateBlockMeta): DocumentFragment {
@@ -1512,6 +1449,10 @@ export class TemplateElement extends HTMLElement {
     // Resolve ALL slot reference nodes BEFORE inserting any anchors.
     // Inserting comment anchors shifts childNode indices, so we must
     // capture target positions from the untouched DOM first.
+    //
+    // Cloned template DOM matches `h` exactly, so numbering its elements in
+    // pre-order reproduces the indices the compiler assigned.
+    const elements = collectTemplateElements(root);
 
     // Pre-resolve text binding slots
     const textRefs = new Array<{ parent: Node; ref: Node | null; parts: CompiledAttrPart[]; raw?: boolean }>(meta.tx?.length ?? 0);
@@ -1521,8 +1462,8 @@ export class TemplateElement extends HTMLElement {
         const entry = meta.tx[i];
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
-        const [parentPath, beforeIndex] = slot;
-        const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
+        const [parentIndex, beforeIndex] = slot;
+        const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         textRefs[textRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, parts, raw };
         textRefCount += 1;
@@ -1536,8 +1477,8 @@ export class TemplateElement extends HTMLElement {
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
-        const [parentPath, beforeIndex] = slotMeta;
-        const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
+        const [parentIndex, beforeIndex] = slotMeta;
+        const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         condRefs[condRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, condition: condition as CompiledCondition, blockIndex };
         condRefCount += 1;
@@ -1558,8 +1499,8 @@ export class TemplateElement extends HTMLElement {
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
-        const [parentPath, beforeIndex] = slotMeta;
-        const parent = parentPath.length > 0 ? this.$resolve(root, parentPath) : root;
+        const [parentIndex, beforeIndex] = slotMeta;
+        const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
         repRefs[repRefCount] = {
           parent,
@@ -1574,12 +1515,12 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Attribute bindings (no DOM mutation — safe to resolve inline)
-    this.$wireAttrs(instance, meta, scope, (p) => this.$resolve(root, p));
+    this.$wireAttrs(instance, meta, scope, (i) => elements[i] ?? null);
 
     // Events + refs — resolve BEFORE anchors shift childNode indices.
     // Events target element nodes (not text/comment positions), but anchor
     // insertions still shift childNode indices for sibling elements.
-    this.$finalize(instance, root, meta, (r, p) => this.$resolve(r, p), scope);
+    this.$finalize(instance, root, meta, (_r, i) => elements[i] ?? null, scope);
 
     // Now insert anchors using pre-resolved references
 
@@ -1669,14 +1610,32 @@ export class TemplateElement extends HTMLElement {
 
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
-    // the DOM throughout the entire hydration pass so that $resolveSSR
+    // the DOM throughout the entire hydration pass so that the index walk
     // and $findSSRText can correctly skip structural block content when
     // counting element/text ordinals.  All collected markers are removed
     // in a single cleanup pass after $finalize() (events + refs).
     //
     // Hydration order:  text → attrs → conditionals → repeats → events
-    // All phases use $resolveSSR, so markers must survive until the end.
+    // Every phase reads the index or the markers, so both must survive to the end.
     const staleMarkers: Node[] = [];
+
+    // Resolve the whole subtree up front.  Every binding used to walk down
+    // from the root on its own, rescanning each parent's children, which made
+    // hydration cost O(bindings × width).  One pre-order pass pairs template
+    // elements with their SSR counterparts and collects the block markers in
+    // document order, so each binding below is an O(1) lookup.
+    //
+    // Built before any mutation: the phases below insert text nodes and
+    // anchors, but never add or permanently remove elements outside a block
+    // range, so the element pairing stays valid for the whole pass.
+    const ssrIndex = buildSSRIndex(
+      tplDom,
+      ssrRoot,
+      meta.c !== undefined || meta.r !== undefined,
+      pathStart > 0,
+    );
+    const ssrElements = ssrIndex.elements;
+    const tplElements = getTemplateElements(tplDom);
 
     // Text bindings — find existing text nodes rendered by the server
     if (meta.tx) {
@@ -1684,10 +1643,10 @@ export class TemplateElement extends HTMLElement {
         const entry = meta.tx[i];
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
-        const [parentPath, beforeIndex] = slot;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart);
+        const [parentIndex, beforeIndex] = slot;
+        const ssrParent = ssrElements[parentIndex];
         if (!ssrParent) continue;
-        const tplParent = this.$resolve(tplDom, parentPath, pathStart);
+        const tplParent = tplElements[parentIndex];
         if (!tplParent) continue;
         if (raw) {
           const rawParent = ssrParent as Element;
@@ -1706,29 +1665,24 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Attribute bindings
-    this.$wireAttrs(instance, meta, scope, (p) =>
-      this.$resolveSSR(ssrRoot, tplDom, p, pathStart) as Element,
-    );
+    this.$wireAttrs(instance, meta, scope, (i) => ssrElements[i] as Element);
 
     // Conditional bindings — use <!--wc--> markers as anchors
     if (meta.c) {
-      let lastCondMarker: Node | null = null;
-      let lastCondParent: Node | null = null;
+      // `meta.c` is in source order and the server renders in source order, so
+      // the markers collected in document order line up one-for-one.  Indexing
+      // them is what makes a block's anchor unambiguous: reconstructing it from
+      // a parent plus a scan cursor is what previously let a block claim a
+      // marker belonging to a nested or already-hydrated sibling.
+      const condMarkers = ssrIndex.conds.length === meta.c.length ? ssrIndex.conds : null;
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
-        const [parentPath] = slotMeta;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
+        const [parentIndex] = slotMeta;
         const blockMeta = this.$block(blockIndex);
         let condInstance: TemplateInstance | null = null;
 
-        // Reset cursor when parent changes between iterations
-        if (ssrParent !== lastCondParent) {
-          lastCondMarker = null;
-          lastCondParent = ssrParent;
-        }
-
-        // Find the next <!--wc--> marker in ssrParent (after any previously found one)
-        const marker = this.$findMarker(ssrParent, MARKER_COND_START, lastCondMarker);
+        const marker = condMarkers ? condMarkers[i] : null;
+        const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
         let condAnchor: Comment;
         if (marker) {
           condAnchor = marker;
@@ -1739,8 +1693,6 @@ export class TemplateElement extends HTMLElement {
           const insertRef = ssrParent.childNodes[beforeIndex ?? ssrParent.childNodes.length] ?? null;
           ssrParent.insertBefore(condAnchor, insertRef);
         }
-        if (marker) lastCondMarker = marker;
-
         // Trust the SSR marker range regardless of the current condition.
         // Parent bindings may not have arrived yet, so the client value can
         // temporarily disagree with SSR. An empty range must stay empty rather
@@ -1750,9 +1702,9 @@ export class TemplateElement extends HTMLElement {
           if (condInstance) condInstance.parent = instance;
         }
 
-        // Collect <!--/wc--> end marker for deferred removal.
-        // Do NOT remove here — later phases (repeats, events) still need
-        // intact marker pairs for $resolveSSR structural-block skipping.
+        // Collect the <!--/wc--> end marker for deferred removal.  Do NOT remove
+        // it here - later phases still need intact marker pairs to skip
+        // structural block content.
         if (marker) {
           const lastNode = condInstance ? condInstance.nodes[condInstance.nodes.length - 1] : condAnchor;
           const endMarker = lastNode?.nextSibling;
@@ -1771,26 +1723,21 @@ export class TemplateElement extends HTMLElement {
 
     // Repeat bindings — use <!--wr--> markers as anchors, <!--wi--> for items
     if (meta.r) {
-      let lastRepMarker: Node | null = null;
-      let lastRepParent: Node | null = null;
+      // Indexed the same way as conditionals above.  A repeat whose collection
+      // never reached the server renders no marker at all, so fall back to slot
+      // positions unless every repeat in this section has one.
+      const repMarkers = ssrIndex.repeats.length === meta.r.length ? ssrIndex.repeats : null;
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
-        const [parentPath] = slotMeta;
-        const ssrParent = this.$resolveSSR(ssrRoot, tplDom, parentPath, pathStart) ?? ssrRoot;
-
-        // Reset cursor when parent changes between iterations
-        if (ssrParent !== lastRepParent) {
-          lastRepMarker = null;
-          lastRepParent = ssrParent;
-        }
+        const [parentIndex] = slotMeta;
+        const marker = repMarkers ? repMarkers[i] : null;
+        const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
         const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
         const rootTag = blockMeta && blockTplDom?.childNodes.length === 1 && blockTplDom.children.length === 1
           ? this.$rootTag(blockMeta)
           : null;
 
-        // Find the next <!--wr--> marker in ssrParent (after any previously found one)
-        const marker = this.$findMarker(ssrParent, MARKER_REPEAT_START, lastRepMarker);
         let anchor: Comment;
         if (marker) {
           anchor = marker;
@@ -1798,7 +1745,7 @@ export class TemplateElement extends HTMLElement {
           // No marker — insert anchor at the slot position for client-created content
           anchor = document.createComment('');
           const [, beforeIndex] = slotMeta;
-          const tplParent = this.$resolve(tplDom, parentPath, pathStart);
+          const tplParent = tplElements[parentIndex];
           const staticCount = tplParent ? tplParent.childNodes.length : 0;
           const insertRef = ssrParent.childNodes[Math.min(beforeIndex ?? staticCount, ssrParent.childNodes.length)] ?? null;
           ssrParent.insertBefore(anchor, insertRef);
@@ -1812,7 +1759,6 @@ export class TemplateElement extends HTMLElement {
         const { items: itemMarkers, end: endMarker } = marker
           ? collectItemMarkers(anchor)
           : { items: [] as Comment[], end: null as Comment | null };
-        lastRepMarker = endMarker ?? anchor;
 
         if (blockMeta && blockTplDom && anchor.parentNode && itemMarkers.length > 0) {
           if (
@@ -1899,8 +1845,8 @@ export class TemplateElement extends HTMLElement {
       }
     }
 
-    // Events + refs — this is the last phase that uses $resolveSSR.
-    this.$finalize(instance, ssrRoot, meta, (r, p) => this.$resolveSSR(r, tplDom, p, pathStart), scope);
+    // Events + refs - this is the last phase that reads the resolved index.
+    this.$finalize(instance, ssrRoot, meta, (_r, i) => ssrElements[i] ?? null, scope);
 
     // All path-based resolution is complete. Remove the SSR markers that
     // were kept alive for structural-block skipping.  Start markers
@@ -1939,14 +1885,16 @@ export class TemplateElement extends HTMLElement {
 
   /** Return whether a compiled block has structural slots beside its root element. */
   private $hasRootStructuralSlot(meta: TemplateBlockMeta): boolean {
+    // Index 0 is the section root, so a slot anchored there sits outside the
+    // block's own root element and rules out in-place single-root hydration.
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
-        if (meta.c[i][2][0].length === 0) return true;
+        if (meta.c[i][2][0] === 0) return true;
       }
     }
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
-        if (meta.r[i][3][0].length === 0) return true;
+        if (meta.r[i][3][0] === 0) return true;
       }
     }
     return false;
@@ -1995,24 +1943,11 @@ export class TemplateElement extends HTMLElement {
   }
 
   /**
-   * Find the next marker comment with the given data among a parent's children.
-   * Starts searching from `after` (exclusive) if provided, or from firstChild.
-   */
-  private $findMarker(parent: Node, data: string, after?: Node | null): Comment | null {
-    let child = after ? after.nextSibling : parent.firstChild;
-    while (child) {
-      if (child.nodeType === 8 && (child as Comment).data === data) {
-        return child as Comment;
-      }
-      child = child.nextSibling;
-    }
-    return null;
-  }
-
-  /**
    * Find existing SSR text node by mapping template text-node ordinal.
    *
-   * Similar to `$resolveSSR`, the SSR DOM may contain extra text nodes
+   * Elements are numbered in pre-order, but text cannot be: the renderer
+   * strips inter-element whitespace that `meta.h` keeps.  Text slots therefore
+   * resolve by ordinal, and the SSR DOM may contain extra text nodes
    * inside structural blocks (`<if>`/`<for>`) that are not in the
    * compiled template.  We skip `<!--wc-->...<!--/wc-->` and
    * `<!--wr-->...<!--/wr-->` ranges to keep text ordinals aligned.
@@ -2027,7 +1962,7 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Find the matching text node in SSR DOM, skipping structural block
-    // content — same algorithm as $resolveSSR (see findByOrdinal).
+    // content - see findByOrdinal for the skipping algorithm.
     const found = findByOrdinal(ssrParent, 3 /* TEXT_NODE */, textOrd);
     if (found) return found as Text;
 
@@ -2083,12 +2018,12 @@ export class TemplateElement extends HTMLElement {
     instance: TemplateInstance,
     meta: TemplateBlockMeta,
     scope: ScopeFrame | undefined,
-    resolve: (path: TemplateNodePath) => Node | null,
+    resolve: (index: TemplateNodeIndex) => Node | null,
   ): void {
     if (!meta.a || !meta.ag) return;
     for (let g = 0; g < meta.ag.length; g++) {
-      const [targetPath, start, count] = meta.ag[g];
-      const el = resolve(targetPath);
+      const [targetIndex, start, count] = meta.ag[g];
+      const el = resolve(targetIndex);
       if (!el || el.nodeType !== 1) continue;
       for (let j = 0; j < count; j++) {
         const entry = meta.a[start + j];
@@ -2106,7 +2041,7 @@ export class TemplateElement extends HTMLElement {
     _instance: TemplateInstance,
     _root: Node,
     _meta: TemplateBlockMeta,
-    _resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    _resolver: (root: Node, index: TemplateNodeIndex) => Node | null,
     _scope?: ScopeFrame,
   ): void {}
 

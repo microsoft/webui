@@ -41,7 +41,7 @@ import type {
   CompiledEventArgs,
   TemplateBlockMeta,
   TemplateMeta,
-  TemplateNodePath,
+  TemplateNodeIndex,
 } from './template.js';
 import type {
   ScopeFrame,
@@ -224,7 +224,7 @@ export class WebUIElement extends TemplateElement {
     instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
     this.$wireEvents(instance, root, meta, resolver, scope);
@@ -244,7 +244,7 @@ export class WebUIElement extends TemplateElement {
     instance: TemplateInstance,
     root: Node,
     meta: TemplateBlockMeta,
-    resolver: (root: Node, path: TemplateNodePath) => Node | null,
+    resolver: (root: Node, path: TemplateNodeIndex) => Node | null,
     scope?: ScopeFrame,
   ): void {
     const groups = meta.eg;
@@ -261,11 +261,18 @@ export class WebUIElement extends TemplateElement {
     }
   }
 
-  /** Wire root-level events on the shadow root when present, otherwise the host element. */
+  /**
+   * Wire root-level events from the `<template>` wrapper onto the host element.
+   *
+   * The host observes events dispatched on the host itself (which never enter
+   * the shadow tree) plus every `composed` event on its way out of it.
+   * Non-composed events (`change`, `submit`, `select`, media) stop at the
+   * shadow root by design and are bound per element instead. `event.target` is
+   * retargeted to the host for inner events; use `event.composedPath()[0]`.
+   */
   private $wireRoot(instance: TemplateInstance, re: [string, string, CompiledEventArgs][]): void {
-    const target = this.shadowRoot ?? this;
     for (let i = 0; i < re.length; i++) {
-      this.$addEvent(instance, target, re[i][0], re[i][1], re[i][2], undefined);
+      this.$addEvent(instance, this, re[i][0], re[i][1], re[i][2], undefined);
     }
   }
 

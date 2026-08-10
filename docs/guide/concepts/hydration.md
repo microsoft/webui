@@ -55,8 +55,9 @@ bindings, events, and `w-ref` references are ready. Progressive streaming pages
 use the early async module contract described below instead.
 
 Until a containing WebUI component hydrates, descendants must not insert,
-remove, or reorder nodes in its SSR subtree. Hydration resolves compiled paths
-against the trusted server DOM and cannot recover after those paths shift.
+remove, or reorder nodes in its SSR subtree. Hydration numbers the trusted
+server DOM to match the compiled template and cannot recover once that
+numbering shifts.
 
 Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template

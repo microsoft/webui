@@ -11,15 +11,25 @@
  */
 
 export type CompiledAttrPart = string | [path: string];
-export type TemplateNodePath = number[];
-export type TemplateSlotPath = [
-  parentPath: TemplateNodePath,
+
+/**
+ * Pre-order index of an element within one compiled section's static HTML.
+ *
+ * `0` is the section root; elements are numbered `1..N` in the order a
+ * depth-first walk of `h` meets them.  Each section — the root template and
+ * every `<if>` / `<for>` block — numbers independently, and hydration rebuilds
+ * the same numbering from the server-rendered DOM, so a binding resolves by
+ * array index instead of by walking a path of child offsets.
+ */
+export type TemplateNodeIndex = number;
+export type TemplateSlot = [
+  parentIndex: TemplateNodeIndex,
   beforeIndex: number,
   order?: number,
 ];
-export type CompiledTextRunMeta = [slot: TemplateSlotPath, parts: CompiledAttrPart[], raw?: 1];
+export type CompiledTextRunMeta = [slot: TemplateSlot, parts: CompiledAttrPart[], raw?: 1];
 export type CompiledAttrGroupMeta = [
-  target: TemplateNodePath,
+  target: TemplateNodeIndex,
   start: number,
   count: number,
 ];
@@ -36,7 +46,7 @@ export type CompiledConditionFn = (v: (path: string, s?: unknown) => unknown, s?
 export type CompiledCondition = [fn: CompiledConditionFn, paths: string[]];
 export type SerializedCompiledCondition = [fnIndex: number, paths: string[]];
 export type TemplateCondition = CompiledCondition | SerializedCompiledCondition;
-export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlotPath];
+export type CompiledConditionalMeta = [condition: TemplateCondition, blockIndex: number, slot: TemplateSlot];
 
 export type CompiledAttrMeta =
   | [name: string, kind: 0, value: string]
@@ -48,7 +58,7 @@ export type CompiledRepeatMeta = [
   collection: string,
   itemVar: string,
   blockIndex: number,
-  slot: TemplateSlotPath,
+  slot: TemplateSlot,
   keyPath?: string,
 ];
 export type CompiledEventArg =
@@ -62,7 +72,7 @@ export type CompiledEventArgs = CompiledEventArg[];
 export type CompiledEventBindingMeta = [
   handler: string,
   args: CompiledEventArgs,
-  target: TemplateNodePath,
+  target: TemplateNodeIndex,
   usesEvent?: 1,
 ];
 export type CompiledEventGroupMeta = [name: string, bindings: CompiledEventBindingMeta[]];

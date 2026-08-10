@@ -10,8 +10,12 @@ test.describe('conditional fixture', () => {
     await page.waitForFunction(() => {
       const conditional = document.querySelector('test-conditional');
       const ranges = document.querySelector('test-conditional-hydration-ranges');
+      const interleaved = document.querySelector('test-conditional-interleaved');
+      const escape = document.querySelector('test-conditional-block-escape');
       return conditional && (conditional as any).$ready === true
-        && ranges && (ranges as any).$ready === true;
+        && ranges && (ranges as any).$ready === true
+        && interleaved && (interleaved as any).$ready === true
+        && escape && (escape as any).$ready === true;
     });
   });
 
@@ -135,5 +139,98 @@ test.describe('conditional fixture', () => {
       (document.querySelector('test-conditional') as any).count = 0;
     });
     await expect(page.locator('test-conditional .gt-zero')).toHaveCount(0);
+  });
+
+  test('keeps a nested block hydration inside its own marker range', async ({ page }) => {
+    const host = page.locator('test-conditional-block-escape');
+
+    // SSR renders every branch; hydration must adopt them, not re-create them.
+    await expect(host.locator('.wrap .inner-hit')).toHaveText('inner');
+    await expect(host.locator('.inner-hit')).toHaveCount(1);
+    await expect(host.locator('.after-hit')).toHaveCount(1);
+
+    // The inner conditional lives inside the outer block, so hydrating that
+    // block must not reach the sibling conditional that follows it.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-block-escape') as any).escInner = false;
+    });
+    await expect(host.locator('.inner-hit')).toHaveCount(0);
+    await expect(host.locator('.after-hit')).toHaveCount(1);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-block-escape') as any).escInner = true;
+    });
+    await expect(host.locator('.wrap .inner-hit')).toHaveText('inner');
+    await expect(host.locator('.inner-hit')).toHaveCount(1);
+  });
+
+  test('anchors a sibling conditional after a root-level nested conditional', async ({ page }) => {
+    const host = page.locator('test-conditional-sibling-after-nested');
+
+    // SSR: outer branch is open, inner is closed, tail is open.
+    await expect(host.locator('.nested-outer')).toHaveText('outer');
+    await expect(host.locator('.nested-inner')).toHaveCount(0);
+    await expect(host.locator('.nested-tail')).toHaveText('tail');
+    await expect(host.locator('.nested-static')).toHaveText('static');
+
+    // The tail conditional must own its own marker, not the inner one.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-sibling-after-nested') as any).tail = false;
+    });
+    await expect(host.locator('.nested-tail')).toHaveCount(0);
+    await expect(host.locator('.nested-outer')).toHaveText('outer');
+    await expect(host.locator('.nested-static')).toHaveText('static');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-sibling-after-nested') as any).tail = true;
+    });
+    await expect(host.locator('.nested-tail')).toHaveCount(1);
+    await expect(host.locator('.nested-tail')).toHaveText('tail');
+
+    // The inner conditional still belongs to the outer branch.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-sibling-after-nested') as any).inner = true;
+    });
+    await expect(host.locator('.nested-inner')).toHaveCount(1);
+    await expect(host.locator('.nested-inner')).toHaveText('inner');
+    await expect(host.locator('.nested-tail')).toHaveCount(1);
+  });
+
+  test('anchors a conditional that revisits an earlier parent to its own marker', async ({ page }) => {
+    const host = page.locator('test-conditional-interleaved');
+
+    // SSR places every branch correctly.
+    await expect(host.locator('.head')).toHaveText('head');
+    await expect(host.locator('.stats .cell .num.pending')).toHaveText('pending');
+    await expect(host.locator('.head .num')).toHaveCount(0);
+
+    // A conditional nested inside the second root-level `<if>` updates on the client.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-interleaved') as any).value = '42';
+    });
+
+    await expect(host.locator('.stats .cell .num')).toHaveText('42');
+    await expect(host.locator('.stats .cell .num.pending')).toHaveCount(0);
+    await expect(host.locator('.head .num')).toHaveCount(0);
+    await expect(host.locator('.head')).toHaveText('head');
+  });
+
+  test('toggles a root conditional that revisits an earlier parent', async ({ page }) => {
+    const host = page.locator('test-conditional-interleaved');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-interleaved') as any).showStats = false;
+    });
+    await expect(host.locator('.head')).toHaveCount(0);
+    await expect(host.locator('.stats')).toHaveCount(0);
+    await expect(host.locator('.box .box-body')).toHaveText('body');
+    await expect(host.locator('.box .full-title')).toHaveText('full title');
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-interleaved') as any).showStats = true;
+    });
+    await expect(host.locator('.head')).toHaveText('head');
+    await expect(host.locator('.stats .cell .num.pending')).toHaveText('pending');
+    await expect(host.locator('.box .full-title')).toHaveText('full title');
   });
 });

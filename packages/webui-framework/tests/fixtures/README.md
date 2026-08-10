@@ -10,7 +10,7 @@ fixtures/<name>/
     index.html                 Page template (uses the component)
     <tag-name>/
       <tag-name>.html          Component template (real WebUI syntax)
-      <tag-name>.css           Component CSS (optional, for css-module fixtures)
+      <tag-name>.css           Component CSS (optional; needs a `css` mode in webui.config.json)
   state.json                   Initial render state (all bound properties)
   element.ts                   Component class (extends WebUIElement)
   <name>.spec.ts               Playwright tests

@@ -345,8 +345,8 @@ struct TemplateSectionMeta {
     text_runs: Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
     /// Attribute bindings in source order, shared by SSR markers and client `ag[]` locators.
     attr_bindings: Vec<CompiledAttrBinding>,
-    /// Client attribute groups: `(element_path, start, count)`.
-    attr_groups: Vec<(Vec<usize>, usize, usize)>,
+    /// Client attribute groups: `(element_index, start, count)`.
+    attr_groups: Vec<(usize, usize, usize)>,
     /// Conditional blocks: `(condition_expression_ast, block_index)`.
     conditionals: Vec<(ConditionExpr, usize)>,
     /// Client conditional anchor slots aligned to `conditionals`.
@@ -357,13 +357,15 @@ struct TemplateSectionMeta {
     repeat_slots: Vec<SlotLocator>,
     /// Body-level events: `(event_name, handler_method, argument_specs)`.
     events: Vec<EventBinding>,
-    /// Client event target element paths aligned to `events`.
-    event_targets: Vec<Vec<usize>>,
+    /// Client event target element indices aligned to `events`.
+    event_targets: Vec<usize>,
 }
 
 #[derive(Clone)]
 struct SlotLocator {
-    parent_path: Vec<usize>,
+    /// Pre-order index of the parent element: 0 is the section root, elements
+    /// are numbered 1..N in the order a depth-first walk of `html` meets them.
+    parent_index: usize,
     before_index: usize,
     order: usize,
 }
@@ -768,7 +770,7 @@ struct EventGroup<'a> {
     bindings: Vec<usize>,
 }
 
-fn emit_js_event_groups(events: &[EventBinding], targets: &[Vec<usize>], out: &mut String) {
+fn emit_js_event_groups(events: &[EventBinding], targets: &[usize], out: &mut String) {
     let groups = collect_event_groups(events);
     out.push_str(",\"eg\":[");
     for (group_index, group) in groups.iter().enumerate() {
@@ -783,13 +785,13 @@ fn emit_js_event_groups(events: &[EventBinding], targets: &[Vec<usize>], out: &m
                 out.push(',');
             }
             let (_, handler, args) = &events[*event_index];
-            let target = &targets[*event_index];
+            let target = targets[*event_index];
             out.push('[');
             emit_js_string(handler, out);
             out.push(',');
             emit_js_event_args(args, out);
             out.push(',');
-            emit_js_node_path(target, out);
+            let _ = write!(out, "{}", target);
             if event_args_use_event(args) {
                 out.push_str(",1");
             }
@@ -1177,20 +1179,9 @@ fn collect_condition_paths(condition: &ConditionExpr, paths: &mut Vec<String>) {
     }
 }
 
-fn emit_js_node_path(path: &[usize], out: &mut String) {
-    out.push('[');
-    for (i, index) in path.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        let _ = write!(out, "{}", index);
-    }
-    out.push(']');
-}
-
 fn emit_js_slot(slot: &SlotLocator, out: &mut String) {
     out.push('[');
-    emit_js_node_path(&slot.parent_path, out);
+    let _ = write!(out, "{}", slot.parent_index);
     out.push(',');
     let _ = write!(out, "{}", slot.before_index);
     if slot.order > 0 {
@@ -1257,12 +1248,12 @@ fn emit_json_template_section(
 
     if !meta.attr_groups.is_empty() {
         out.push_str(",\"ag\":[");
-        for (i, (path, start, count)) in meta.attr_groups.iter().enumerate() {
+        for (i, (element_index, start, count)) in meta.attr_groups.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
             out.push('[');
-            emit_js_node_path(path, out);
+            let _ = write!(out, "{}", element_index);
             out.push(',');
             let _ = write!(out, "{}", start);
             out.push(',');
@@ -1627,7 +1618,8 @@ struct FragmentAttr {
 fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
-    let nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    insert_implied_tbody(&mut nodes);
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -1637,9 +1629,10 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let mut event_targets = vec![None; meta.events.len()];
     let mut event_cursor = 0usize;
 
+    let mut element_cursor = 0usize;
     process_fragment_children(
         &nodes,
-        &[],
+        0,
         &text_bindings,
         &mut finalized_html,
         &mut text_runs,
@@ -1648,6 +1641,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
         &mut repeat_slots,
         &mut event_targets,
         &mut event_cursor,
+        &mut element_cursor,
     );
     debug_assert_eq!(event_cursor, meta.events.len());
 
@@ -1662,15 +1656,16 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
 #[allow(clippy::too_many_arguments)]
 fn process_fragment_children(
     nodes: &[FragmentNode],
-    parent_path: &[usize],
+    parent_index: usize,
     text_bindings: &[(String, bool)],
     out: &mut String,
     text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
-    attr_groups: &mut Vec<(Vec<usize>, usize, usize)>,
+    attr_groups: &mut Vec<(usize, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
-    event_targets: &mut [Option<Vec<usize>>],
+    event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
+    element_cursor: &mut usize,
 ) {
     let mut child_index = 0usize;
     let mut index = 0usize;
@@ -1703,7 +1698,7 @@ fn process_fragment_children(
                 slot_orders.insert(child_index, order + 1);
                 text_runs.push((
                     SlotLocator {
-                        parent_path: parent_path.to_vec(),
+                        parent_index,
                         before_index: child_index,
                         order,
                     },
@@ -1732,7 +1727,7 @@ fn process_fragment_children(
                         let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                         slot_orders.insert(child_index, order + 1);
                         *slot = Some(SlotLocator {
-                            parent_path: parent_path.to_vec(),
+                            parent_index,
                             before_index: child_index,
                             order,
                         });
@@ -1742,7 +1737,7 @@ fn process_fragment_children(
                         let order = slot_orders.get(&child_index).copied().unwrap_or(0);
                         slot_orders.insert(child_index, order + 1);
                         *slot = Some(SlotLocator {
-                            parent_path: parent_path.to_vec(),
+                            parent_index,
                             before_index: child_index,
                             order,
                         });
@@ -1765,11 +1760,11 @@ fn process_fragment_children(
                 }
             }
             FragmentNode::Element(element) => {
-                let mut element_path = parent_path.to_vec();
-                element_path.push(child_index);
+                *element_cursor += 1;
+                let element_index = *element_cursor;
                 serialize_fragment_element(
                     element,
-                    &element_path,
+                    element_index,
                     text_bindings,
                     out,
                     text_runs,
@@ -1778,6 +1773,7 @@ fn process_fragment_children(
                     repeat_slots,
                     event_targets,
                     event_cursor,
+                    element_cursor,
                 );
                 child_index += 1;
                 previous_emitted_text = false;
@@ -1791,30 +1787,30 @@ fn process_fragment_children(
 #[allow(clippy::too_many_arguments)]
 fn serialize_fragment_element(
     element: &FragmentElement,
-    element_path: &[usize],
+    element_index: usize,
     text_bindings: &[(String, bool)],
     out: &mut String,
     text_runs: &mut Vec<(SlotLocator, Vec<CompiledAttrPart>, bool)>,
-    attr_groups: &mut Vec<(Vec<usize>, usize, usize)>,
+    attr_groups: &mut Vec<(usize, usize, usize)>,
     condition_slots: &mut [Option<SlotLocator>],
     repeat_slots: &mut [Option<SlotLocator>],
-    event_targets: &mut [Option<Vec<usize>>],
+    event_targets: &mut [Option<usize>],
     event_cursor: &mut usize,
+    element_cursor: &mut usize,
 ) {
     out.push('<');
     out.push_str(&element.tag_name);
 
     for attr in &element.attrs {
         if let Some((start, count)) = parse_attr_group_marker(&attr.name) {
-            attr_groups.push((element_path.to_vec(), start, count));
+            attr_groups.push((element_index, start, count));
             continue;
         }
 
         if attr.name == "data-ev" {
             if let Some(count) = attr.value.as_deref().and_then(parse_event_marker_count) {
-                let target_path = element_path.to_vec();
                 for slot in event_targets.iter_mut().skip(*event_cursor).take(count) {
-                    *slot = Some(target_path.clone());
+                    *slot = Some(element_index);
                 }
                 *event_cursor += count;
             }
@@ -1836,9 +1832,20 @@ fn serialize_fragment_element(
     }
 
     out.push('>');
+    // `<template>` content is parked in `HTMLTemplateElement.content`, so the
+    // browser never walks it as light DOM and neither runtime numbers it.
+    // Counting it here would shift every index after the template.  The markup
+    // is still emitted verbatim; bindings inside remain unreachable, exactly as
+    // they were before indices replaced node paths.
+    let mut interior = *element_cursor;
+    let counter = if element.tag_name.eq_ignore_ascii_case("template") {
+        &mut interior
+    } else {
+        &mut *element_cursor
+    };
     process_fragment_children(
         &element.children,
-        element_path,
+        element_index,
         text_bindings,
         out,
         text_runs,
@@ -1847,6 +1854,7 @@ fn serialize_fragment_element(
         repeat_slots,
         event_targets,
         event_cursor,
+        counter,
     );
     out.push_str("</");
     out.push_str(&element.tag_name);
@@ -1932,6 +1940,117 @@ fn emit_html_attr_value(value: &str, out: &mut String) {
             _ => out.push(ch),
         }
     }
+}
+
+/// Insert the `<tbody>` the HTML parser implies around bare `<tr>` in a table.
+///
+/// Compiled locators are pre-order element indices, and the browser resolves
+/// them against its own parse of `h`.  A `<tr>` written directly inside
+/// `<table>` is moved into an implied `<tbody>` there, which inserts an element
+/// the compiler never counted and shifts every index after the table.  Adding
+/// the wrapper here keeps the emitted HTML and the numbering agreeing with what
+/// the browser will build.
+///
+/// Only element *order* matters to the numbering, so the parser's other
+/// recovery rules — `<p>`/`<li>` auto-closing and friends — are irrelevant:
+/// they change nesting, not sequence.
+///
+/// Iterative, and addressed by path so the borrow checker can see that only one
+/// child list is held at a time.  This runs once per component at build time.
+fn insert_implied_tbody(nodes: &mut Vec<FragmentNode>) {
+    let mut stack: Vec<Vec<usize>> = vec![Vec::new()];
+
+    while let Some(path) = stack.pop() {
+        let Some(list) = child_list_at(nodes, &path) else {
+            continue;
+        };
+
+        for index in 0..list.len() {
+            if let Some(FragmentNode::Element(element)) = list.get_mut(index) {
+                if element.tag_name.eq_ignore_ascii_case("table") {
+                    wrap_table_rows(element);
+                }
+            }
+        }
+
+        // Re-resolve: wrapping rows above changes this level's length.
+        let Some(list) = child_list_at(nodes, &path) else {
+            continue;
+        };
+        for index in 0..list.len() {
+            if matches!(list.get(index), Some(FragmentNode::Element(_))) {
+                let mut child = path.clone();
+                child.push(index);
+                stack.push(child);
+            }
+        }
+    }
+}
+
+/// Resolve the child list an element path points at.
+fn child_list_at<'a>(
+    roots: &'a mut Vec<FragmentNode>,
+    path: &[usize],
+) -> Option<&'a mut Vec<FragmentNode>> {
+    let mut list = roots;
+    for &index in path {
+        match list.get_mut(index) {
+            Some(FragmentNode::Element(element)) => list = &mut element.children,
+            _ => return None,
+        }
+    }
+    Some(list)
+}
+
+/// Group each run of direct `<tr>` children of a table into one `<tbody>`.
+fn wrap_table_rows(table: &mut FragmentElement) {
+    if !table.children.iter().any(is_bare_row) {
+        return;
+    }
+
+    let mut rewritten = Vec::with_capacity(table.children.len());
+    let mut run: Vec<FragmentNode> = Vec::new();
+
+    for node in std::mem::take(&mut table.children) {
+        if is_bare_row(&node) {
+            run.push(node);
+            continue;
+        }
+        // Whitespace between rows stays inside the section the browser builds.
+        if !run.is_empty() {
+            if let FragmentNode::Text(text) = &node {
+                if text.trim().is_empty() {
+                    run.push(node);
+                    continue;
+                }
+            }
+        }
+        flush_row_run(&mut run, &mut rewritten);
+        rewritten.push(node);
+    }
+    flush_row_run(&mut run, &mut rewritten);
+
+    table.children = rewritten;
+}
+
+fn flush_row_run(run: &mut Vec<FragmentNode>, out: &mut Vec<FragmentNode>) {
+    if run.is_empty() {
+        return;
+    }
+    // Trailing whitespace belongs after the section, matching the parser.
+    while matches!(run.last(), Some(FragmentNode::Text(text)) if text.trim().is_empty()) {
+        run.pop();
+    }
+    out.push(FragmentNode::Element(FragmentElement {
+        tag_name: "tbody".to_string(),
+        attrs: Vec::new(),
+        children: std::mem::take(run),
+        self_closing: false,
+    }));
+}
+
+fn is_bare_row(node: &FragmentNode) -> bool {
+    matches!(node, FragmentNode::Element(element) if element.tag_name.eq_ignore_ascii_case("tr"))
 }
 
 fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<FragmentNode> {
@@ -3326,7 +3445,7 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains(r#""h":"<h1></h1>""#));
         assert!(result.contains("\"title\""));
-        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["title"]]]]"#));
         assert!(!result.contains("{{"));
     }
 
@@ -3415,7 +3534,7 @@ mod tests {
         assert!(result.contains(
             r#""h":"<p></p><style>/*! @license <!--t:0--> */.x { color: red; }</style>""#
         ));
-        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["title"]]]]"#));
         assert!(!result.contains(r#"[[[1],0],[["title"]]]"#));
     }
 
@@ -3455,7 +3574,7 @@ mod tests {
         );
         let result = payload.template_json;
         assert_no_client_markers(&result);
-        assert!(result.contains(r#""c":[[[0,["state"]],0,[[],0]]]"#));
+        assert!(result.contains(r#""c":[[[0,["state"]],0,[0,0]]]"#));
         assert!(payload
             .template_functions
             .contains(r#"function(v,s){return v("state",s)=="done"}"#));
@@ -3496,7 +3615,7 @@ mod tests {
         assert_no_client_markers(&result);
         assert!(result.contains("\"items\""));
         assert!(result.contains("\"item\""));
-        assert!(result.contains(r#""r":[["items","item",0,[[],0]]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0]]]"#));
         assert!(!result.contains("<for"));
     }
 
@@ -3507,7 +3626,7 @@ mod tests {
             r#"<for each="item in items"><p class="row" key="{{item.id}}">{{item.name}}</p></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
         assert!(!result.contains("key="));
         assert!(!result.contains(r#""a":[["key","#));
     }
@@ -3519,7 +3638,7 @@ mod tests {
             r#"<for each="item in items"><if condition="item.visible"><span key="{{item.id}}">{{item.name}}</span></if></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
         assert!(!result.contains("key="));
     }
 
@@ -3562,8 +3681,8 @@ mod tests {
             r#"<for each="group in groups"><for each="item in group.items"><span key="{{item.id}}">{{item.name}}</span></for></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["groups","group",0,[[],0]]]"#));
-        assert!(result.contains(r#""r":[["group.items","item",1,[[],0],"id"]]"#));
+        assert!(result.contains(r#""r":[["groups","group",0,[0,0]]]"#));
+        assert!(result.contains(r#""r":[["group.items","item",1,[0,0],"id"]]"#));
     }
 
     #[test]
@@ -3573,9 +3692,9 @@ mod tests {
             r#"<for each="group in groups"><for each="section in group.sections"><if condition="section.visible"><for each="item in section.items"><span key="{{item.id}}">{{item.name}}</span></for></if></for></for>"#,
         );
 
-        assert!(result.contains(r#"["groups","group",0,[[],0]]"#));
-        assert!(result.contains(r#"["group.sections","section",1,[[],0]]"#));
-        assert!(result.contains(r#"["section.items","item",3,[[],0],"id"]"#));
+        assert!(result.contains(r#"["groups","group",0,[0,0]]"#));
+        assert!(result.contains(r#"["group.sections","section",1,[0,0]]"#));
+        assert!(result.contains(r#"["section.items","item",3,[0,0],"id"]"#));
         assert!(!result.contains("key="));
     }
 
@@ -3586,7 +3705,7 @@ mod tests {
             r#"<for each="item in items"><p data-key="{{item.id}}">{{item.name}}</p></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["items","item",0,[[],0]]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0]]]"#));
         assert!(result.contains(r#""a":[["data-key",0,"item.id"]]"#));
     }
 
@@ -3597,7 +3716,7 @@ mod tests {
             r#"<for each="item in items"><p key="{{item}}">{{item}}</p></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["items","item",0,[[],0],""]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],""]]"#));
     }
 
     #[test]
@@ -3621,7 +3740,7 @@ mod tests {
             r#"<for each="item in items"><p key="{{item.id}}" data-key="{{item.label}}">{{item}}</p></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
         assert!(result.contains(r#""a":[["data-key",0,"item.label"]]"#));
     }
 
@@ -3664,7 +3783,7 @@ mod tests {
             r#"<for each="item in items"><!-- row --><p key="{{item.id}}">{{item.name}}</p></for>"#,
         );
 
-        assert!(result.contains(r#""r":[["items","item",0,[[],0],"id"]]"#));
+        assert!(result.contains(r#""r":[["items","item",0,[0,0],"id"]]"#));
         assert!(!result.contains("key="));
     }
 
@@ -3746,7 +3865,7 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<input title="{{title}}" />"#);
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#","ag":[[1,0,1]]"#));
         assert!(result.contains(r#"["title",0,"title"]"#));
         assert!(!result.contains(r#"title=\"<!--t:"#));
     }
@@ -3759,7 +3878,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,2]]"#));
+        assert!(result.contains(r#","ag":[[1,0,2]]"#));
         assert!(result.contains(r#"["href",3,["/product/",["handle"]]]"#));
         assert!(result.contains(r#"["class",3,["card ",["variant"]]]"#));
         assert!(!result.contains(r#"/product/<!--t:"#));
@@ -3774,7 +3893,7 @@ mod tests {
         let result = payload.template_json;
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#","ag":[[1,0,1]]"#));
         assert!(result.contains(r#"["data-active",2,[0,["page"]]]"#));
         assert!(payload
             .template_functions
@@ -3789,7 +3908,7 @@ mod tests {
         );
         assert_no_client_markers(&result);
         assert!(result.contains(r#","a":["#));
-        assert!(result.contains(r#","ag":[[[0],0,1]]"#));
+        assert!(result.contains(r#","ag":[[1,0,1]]"#));
         assert!(result.contains(r#""config",1,"settings""#));
     }
 
@@ -3845,7 +3964,7 @@ mod tests {
         );
         assert!(!result.contains("shadowrootmode"));
         assert_no_client_markers(&result);
-        assert!(result.contains(r#","tx":[[[[0],0],[["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["title"]]]]"#));
     }
 
     #[test]
@@ -3870,7 +3989,7 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<span>📚 {{title}}</span>"#);
         assert!(result.contains("📚"));
         assert_no_client_markers(&result);
-        assert!(result.contains(r#","tx":[[[[0],0],["📚 ",["title"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],["📚 ",["title"]]]]"#));
     }
 
     #[test]
@@ -4120,11 +4239,11 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"["items","item",0,[[],0]]"#),
+            result.contains(r#"["items","item",0,[0,0]]"#),
             "repeat block index expected"
         );
         assert!(
-            result.contains(r#"[[0,["item.active"]],1,[[],0]]"#),
+            result.contains(r#"[[0,["item.active"]],1,[0,0]]"#),
             "nested conditional block index expected"
         );
         assert!(!result.contains("<if"), "nested if should be compiled");
@@ -4144,11 +4263,11 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"[[0,["showList"]],0,[[],0]]"#),
+            result.contains(r#"[[0,["showList"]],0,[0,0]]"#),
             "conditional block index expected"
         );
         assert!(
-            result.contains(r#"["items","item",1,[[],0]]"#),
+            result.contains(r#"["items","item",1,[0,0]]"#),
             "nested repeat block index expected"
         );
         assert!(!result.contains("<for"), "nested for should be compiled");
@@ -4168,11 +4287,11 @@ mod tests {
             "compiled block table expected"
         );
         assert!(
-            result.contains(r#"["groups","group",0,[[],0]]"#),
+            result.contains(r#"["groups","group",0,[0,0]]"#),
             "outer repeat block index expected"
         );
         assert!(
-            result.contains(r#"["group.items","item",1,[[0],0]]"#),
+            result.contains(r#"["group.items","item",1,[1,0]]"#),
             "inner repeat block index expected"
         );
         assert!(!result.contains("<for"), "nested for should be compiled");
@@ -4211,6 +4330,80 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_table_row_gains_the_implied_tbody() {
+        // The browser moves a bare <tr> into an implied <tbody>.  Emitting that
+        // wrapper keeps compiled indices aligned with the tree it will build.
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            result.contains(r#"<table><tbody><tr><td></td></tr></tbody></table>"#),
+            "implied tbody expected: {result}"
+        );
+        // table=1, tbody=2, tr=3, td=4, button=5
+        assert!(result.contains(r#""tx":[[[4,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_authored_tbody_is_not_duplicated() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><tbody><tr><td>{{cell}}</td></tr></tbody></table><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            !result.contains("<tbody><tbody>"),
+            "no double wrap: {result}"
+        );
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_table_sections_keep_their_own_rows() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><thead><tr><th>h</th></tr></thead><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+        // thead keeps its row; only the bare trailing row is wrapped.
+        assert!(
+            result
+                .contains(r#"<thead><tr><th>h</th></tr></thead><tbody><tr><td></td></tr></tbody>"#),
+            "{result}"
+        );
+        // table=1, thead=2, tr=3, th=4, tbody=5, tr=6, td=7, button=8
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],8]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_template_content_is_not_numbered() {
+        // <template> children live in `.content`, which neither runtime walk
+        // traverses, so counting them would shift every later index.
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<div><template><span></span></template></div><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            result.contains(r#"<div><template><span></span></template></div>"#),
+            "template markup preserved: {result}"
+        );
+        // div=1, template=2, button=3 — the parked <span> is not counted.
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],3]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
     fn test_empty_template() {
         let result = generate_compiled_template("my-comp", "");
         assert!(result.contains(r#""h":"""#), "empty html expected");
@@ -4238,9 +4431,8 @@ mod tests {
             r#"<p>{{first}}</p><p>{{second}}</p><p>{{third}}</p>"#,
         );
         assert_no_client_markers(&result);
-        assert!(result.contains(
-            r#","tx":[[[[0],0],[["first"]]],[[[1],0],[["second"]]],[[[2],0],[["third"]]]]"#
-        ));
+        assert!(result
+            .contains(r#","tx":[[[1,0],[["first"]]],[[2,0],[["second"]]],[[3,0],[["third"]]]]"#));
         assert!(result.contains("\"first\""));
         assert!(result.contains("\"second\""));
         assert!(result.contains("\"third\""));
@@ -4298,7 +4490,7 @@ mod tests {
         assert!(result.contains("\"click\""));
         assert!(result.contains("\"onClick\""));
         // text binding compiled
-        assert!(result.contains(r#","tx":[[[[0],0],[["label"]]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],[["label"]]]]"#));
         assert!(result.contains("\"label\""));
     }
 
@@ -4307,7 +4499,7 @@ mod tests {
         let result =
             generate_compiled_template("my-comp", r#"<button @click="{onClick()}">Go</button>"#);
         assert!(
-            result.contains(r#"["click",[["onClick",[],[0]]]]"#),
+            result.contains(r#"["click",[["onClick",[],1]]]"#),
             "empty argument list should be preserved"
         );
     }
@@ -4326,7 +4518,7 @@ mod tests {
             "event groups should preserve first-seen order: {result}"
         );
         assert!(
-            result.contains(r#"["click",[["onA",[],[0]],["onB",[["e"]],[2],1]]]"#),
+            result.contains(r#"["click",[["onA",[],1],["onB",[["e"]],3,1]]]"#),
             "duplicate click handlers should share one group: {result}"
         );
     }
@@ -4351,7 +4543,7 @@ mod tests {
         let result = generate_compiled_template("my-comp", r#"<div>{{{rawHtml}}}</div>"#);
         assert_no_client_markers(&result);
         assert!(
-            result.contains(r#","tx":[[[[0],0],[["rawHtml"]],1]]"#),
+            result.contains(r#","tx":[[[1,0],[["rawHtml"]],1]]"#),
             "triple brace produces text locator with raw flag: {result}"
         );
         assert!(
@@ -4389,7 +4581,7 @@ mod tests {
 
         assert_no_client_markers(&result);
         assert!(result.contains(r#""h":"<p></p>""#));
-        assert!(result.contains(r#","tx":[[[[0],0],["Hello ",["name"],"!"]]]"#));
+        assert!(result.contains(r#","tx":[[[1,0],["Hello ",["name"],"!"]]]"#));
     }
 
     #[test]

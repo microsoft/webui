@@ -36,3 +36,14 @@ export class TestBasics extends WebUIElement {
 }
 
 TestBasics.define('test-basics');
+
+export class TestParserQuirks extends WebUIElement {
+  @observable cellValue = 'cell';
+  @observable afterLabel = 'after';
+
+  bump(): void {
+    this.afterLabel = 'bumped';
+  }
+}
+
+TestParserQuirks.define('test-parser-quirks');
