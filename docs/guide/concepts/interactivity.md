@@ -120,7 +120,7 @@ root that catch events bubbling up from child components (`@toggle-item`,
 wrappers, or extra top-level content fails the build. A native `<slot>` in an
 unwrapped component is also a build error.
 
-To reach a root binding from a **child component**, an event must **bubble** and - because it has to cross the child's shadow boundary - be **composed**. `this.$emit()` sets both whenever the emitting component has a shadow root, which is the default. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
+To reach a root binding from a **child component**, an event must **bubble** and be **composed** whenever any Shadow boundary exists between the child and the listener. `this.$emit()` always sets both, including for a Light component nested in another component's Shadow tree. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
 
 A root binding lives on the **host element**, so it also catches events targeted at the host itself - what host-interactive components (host `tabindex`, presentational shadow content) rely on. It does not see non-composed events (`change`, `submit`, `select`, media events), which stop at the shadow boundary because they identify one specific inner element; bind those per element - `<input @change="{onChange(e)}">`.
 

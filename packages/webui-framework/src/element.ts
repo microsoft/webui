@@ -56,13 +56,13 @@ export class WebUIElement extends TemplateElement {
     syncAttrProperties(this, this.constructor as Function);
   }
 
-  /** Dispatch a bubbling custom event. Uses composed:true when in shadow DOM. */
+  /** Dispatch a bubbling, composed custom event for parent communication. */
   $emit(name: string, detail?: unknown): boolean {
     return this.dispatchEvent(
       new CustomEvent(name, {
         bubbles: true,
         cancelable: true,
-        composed: !!this.shadowRoot,
+        composed: true,
         detail,
       }),
     );
