@@ -24,18 +24,18 @@ filename; an absent or whitespace-only name keeps the filename-derived tag. The
 wrapper must contain exactly one inner `<template>`. Unsupported FAST syntax and
 multiple `<f-template>` blocks fail the build with an authoring diagnostic.
 
-For build-time SSR, WebUI adapts the source for `microsoft-fast-convert` and its
-`webui-prerelease` target, supplying a converter-only name when the authored
-name is absent or empty. The converter rewrites supported `<f-repeat>` and
-`<f-when>` directives to WebUI `<for>` and `<if>` directives while preserving
-text interpolation and boolean bindings. WebUI then removes client-only
+For build-time SSR, WebUI internally adapts supported FAST declarative
+constructs into its parser view. It converts `<f-repeat>` and `<f-when>`
+directives to WebUI `<for>` and `<if>` directives while preserving text
+interpolation and boolean bindings. An absent or empty authored name continues
+to use the filename-derived component tag. WebUI then removes client-only
 `@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` attributes from the
 SSR view while retaining their binding counts for FAST hydration. The authored
-inner template, including its client bindings, is retained for the emitted
-`<f-template>` instead of being regenerated from the SSR conversion. It still
-receives normal wrapper normalization, legal comment processing, and CSS
-injection for the selected strategy. Component HTML without an `<f-template>`
-continues through the normal WebUI template path.
+`<f-template>` body, including its inner template and client bindings, is
+retained for the emitted `<f-template>` instead of being regenerated from the
+SSR conversion. It still receives normal wrapper normalization, legal comment
+processing, and CSS injection for the selected strategy. Component HTML without
+an `<f-template>` continues through the normal WebUI template path.
 
 ## Install
 

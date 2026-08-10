@@ -95,6 +95,10 @@ pub mod codes {
     pub const EXCESSIVE_NESTING: &str = "excessive-nesting";
     /// A template references itself (directly or transitively) at build time.
     pub const RECURSIVE_TEMPLATE: &str = "recursive-template";
+    /// A FAST component source contains more than one `<f-template>` element.
+    pub const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str = "unsupported-multiple-f-templates";
+    /// A FAST component source uses malformed or unsupported declarative syntax.
+    pub const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
     /// A `<style>` block contains malformed CSS.
     pub const INVALID_CSS: &str = "invalid-css";
     /// A CSS token required by parser output is missing from the configured theme.

@@ -1,0 +1,75 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT license.
+
+use crate::html_parser::{find_comment_close, find_tag_close};
+use std::ops::Range;
+
+/// Opening-tag scan result without allocating a collection of offsets.
+pub(super) struct NamedTagMatches {
+    pub(super) first: Option<usize>,
+    pub(super) count: usize,
+}
+
+/// Scan opening tags across a bounded source range, ignoring comments.
+pub(super) fn scan_named_open_tags(
+    source: &str,
+    range: Range<usize>,
+    target: &str,
+) -> NamedTagMatches {
+    let mut first = None;
+    let mut count = 0usize;
+    let mut cursor = range.start;
+
+    while cursor < range.end {
+        let Some(relative) = source[cursor..range.end].find('<') else {
+            break;
+        };
+        let start = cursor + relative;
+        let remaining = &source[start..range.end];
+        if remaining.starts_with("<!--") {
+            cursor = find_comment_close(remaining).map_or(range.end, |length| start + length);
+            continue;
+        }
+
+        if read_opening_tag_name(source, start, range.end)
+            .is_some_and(|name| name.eq_ignore_ascii_case(target))
+        {
+            first.get_or_insert(start);
+            count += 1;
+        }
+        cursor = find_tag_end(source, start, range.end).unwrap_or(start + 1);
+    }
+
+    NamedTagMatches { first, count }
+}
+
+/// Find the end after `>` for one tag without scanning beyond `range_end`.
+#[inline]
+pub(super) fn find_tag_end(source: &str, start: usize, range_end: usize) -> Option<usize> {
+    find_tag_close(&source[start..range_end]).map(|close| start + close + 1)
+}
+
+/// Read an opening tag name without requiring a terminating `>`.
+pub(super) fn read_opening_tag_name(source: &str, start: usize, range_end: usize) -> Option<&str> {
+    let bytes = source.as_bytes();
+    if bytes.get(start) != Some(&b'<') {
+        return None;
+    }
+    let mut cursor = start + 1;
+    if matches!(bytes.get(cursor), Some(b'/') | Some(b'!') | Some(b'?')) {
+        return None;
+    }
+    while cursor < range_end && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+
+    let name_start = cursor;
+    while cursor < range_end
+        && !bytes[cursor].is_ascii_whitespace()
+        && bytes[cursor] != b'>'
+        && bytes[cursor] != b'/'
+    {
+        cursor += 1;
+    }
+    (cursor != name_start).then_some(&source[name_start..cursor])
+}

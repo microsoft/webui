@@ -179,7 +179,7 @@ impl ComponentRegistry {
     ///
     /// When no transform is installed, or it returns
     /// [`ComponentSourceResult::Unchanged`], the filename-derived tag and the
-    /// authored HTML are preserved without extra allocation.
+    /// authored HTML are preserved without transforming their contents.
     fn resolve_component_source(
         &self,
         tag_name: &str,
@@ -295,11 +295,7 @@ impl ComponentRegistry {
 
         let render_policy =
             parse_component_render_policy(&resolved.tag_name, &resolved.parser_content)?;
-        Self::append_scoped_policy_css(
-            &mut css_content,
-            &render_policy,
-            &resolved.tag_name,
-        );
+        Self::append_scoped_policy_css(&mut css_content, &render_policy, &resolved.tag_name);
 
         // Create and register the component
         let component = Component {
@@ -356,11 +352,7 @@ impl ComponentRegistry {
 
         let render_policy =
             parse_component_render_policy(&resolved.tag_name, &resolved.parser_content)?;
-        Self::append_scoped_policy_css(
-            &mut css_content,
-            &render_policy,
-            &resolved.tag_name,
-        );
+        Self::append_scoped_policy_css(&mut css_content, &render_policy, &resolved.tag_name);
         let component: Component = Component {
             tag_name: resolved.tag_name,
             html_content: resolved.parser_content,

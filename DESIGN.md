@@ -1418,42 +1418,41 @@ inner `<template>` elements are also invalid. Sources without an `<f-template>`
 return `ComponentSourceResult::Unchanged` and follow the normal component
 template path.
 
-For build-time SSR parsing, the transform adapts the `<f-template>` source for
-`microsoft-fast-convert` with the `webui-prerelease` target. Because the
-converter requires a non-empty name, the adapter supplies an internal name only
-to the converter when the source name is absent or empty. This internal value
-does not replace the filename-derived component tag or appear in the emitted
-client artifact. The returned inner template becomes the parser view returned
-as `TransformedComponentSource::parser_content`:
+For build-time SSR parsing, WebUI internally adapts supported FAST declarative
+constructs into the WebUI parser view. The adapted inner template becomes the
+parser view returned as `TransformedComponentSource::parser_content`:
 
 - `<f-repeat value="{{item in items}}">` converts to
   `<for each="item in items">`.
 - `<f-when value="{{condition}}">` converts to
   `<if condition="condition">`.
-- The converter unwraps the `value` expression for those directives. Text
+- The adaptation unwraps the `value` expression for those directives. Text
   `{{expression}}` bindings and `?boolean` bindings remain available to the
-  WebUI parser; ordinary attributes are not treated as additional converter
-  syntax.
+  WebUI parser; ordinary attributes are not treated as additional FAST
+  declarative syntax.
 - Unsupported `f-*` elements or attributes and malformed directive expressions
-  return structured authoring diagnostics. WebUI does not claim support for
-  FAST constructs that the converter rejects.
+  return structured authoring diagnostics. WebUI claims support only for the
+  FAST constructs described here. Stable codes are
+  `unsupported-multiple-f-templates` for multiple wrappers,
+  `invalid-fast-template` for unsupported or malformed FAST declarative syntax,
+  and the shared `unclosed-html-tag` for unclosed markup.
 - The FAST plugins' `classify_attribute` skips `@event`, `:property`, `f-ref`,
   `f-slotted`, and `f-children` and counts each as a binding, so they are
   absent from the SSR view while the hydration binding count still reflects
   them. No parser-core marker or FAST-named branch is involved.
 
-The transform separately returns the authored inner `<template>` as
-`TransformedComponentSource::artifact_content`, including its client-only
-bindings, rather than deriving it from the converted parser view. The FAST
-plugin wraps that retained source in the resolved `<f-template name="...">`
-for insertion. The artifact is normalized rather than preserved byte-for-byte:
-it passes through the same generic component-template processing as any other
-component, including wrapper normalization, selected CSS-strategy injection,
-module stylesheet adoption where applicable, legal-comment handling, and
-plugin artifact normalization. The deprecated `fast` selector aliases the
-FAST 2 implementation, while `fast_v2` and `fast_v3` use their respective
-hydration marker formats; all three share this transform, conversion, and
-artifact-retention behavior.
+The transform separately returns the authored `<f-template>` body as
+`TransformedComponentSource::artifact_content`, including its inner template
+and client-only bindings, rather than deriving it from the converted parser
+view. The FAST plugin wraps that retained source in the resolved
+`<f-template name="...">` for insertion. The artifact is normalized rather than
+preserved byte-for-byte: it passes through the same generic component-template
+processing as any other component, including wrapper normalization, selected
+CSS-strategy injection, module stylesheet adoption where applicable,
+legal-comment handling, and plugin artifact normalization. The deprecated
+`fast` selector aliases the FAST 2 implementation, while `fast_v2` and `fast_v3`
+use their respective hydration marker formats; all three share this transform,
+conversion, and artifact-retention behavior.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)
