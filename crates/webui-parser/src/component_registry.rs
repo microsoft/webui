@@ -184,7 +184,7 @@ impl ComponentRegistry {
     ///
     /// When no transform is installed, or it returns
     /// [`ComponentSourceResult::Unchanged`], the filename-derived tag and the
-    /// authored HTML are preserved without extra allocation.
+    /// authored HTML are preserved without transforming their contents.
     fn resolve_component_source(
         &self,
         tag_name: &str,

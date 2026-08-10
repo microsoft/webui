@@ -345,7 +345,7 @@ fn build_ordinary_component_source(depth: usize) -> String {
 }
 
 /// Authored FAST component source: the transform must walk it, resolve the
-/// `<f-template name>`, and run the `microsoft-fast-convert` conversion.
+/// `<f-template name>`, and run the internal FAST-to-WebUI conversion.
 fn build_fast_component_source(depth: usize) -> String {
     let mut html = String::with_capacity(depth * 63 + 128);
     html.push_str("<f-template name=\"x-registration-bench\"><template>");

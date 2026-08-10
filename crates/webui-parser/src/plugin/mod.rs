@@ -8,6 +8,7 @@
 //! and emit per-element hydration metadata for the handler.
 
 pub mod fast;
+mod fast_convert;
 mod fast_shared;
 pub mod fast_v2;
 pub mod fast_v3;

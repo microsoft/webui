@@ -141,24 +141,28 @@ are not currently supported and have a dedicated authoring diagnostic.
 
 WebUI uses two views of this source:
 
-- **SSR parse view:** WebUI adapts the source for `microsoft-fast-convert` with
-  the `webui-prerelease` target. When the authored name is absent or empty, the
-  adapter supplies a converter-only name without changing the filename-derived
-  component tag. The converter rewrites supported `f-repeat` and `f-when`
-  directives to WebUI `for` and `if` directives and unwraps their `value`
-  expressions. Text interpolation and boolean bindings remain for WebUI
-  parsing. Unsupported `f-*` constructs fail conversion instead of being
-  silently accepted. The FAST plugins' `classify_attribute` skips `@event`,
-  `:property`, `f-ref`, `f-slotted`, and `f-children` and counts each as a
-  binding, so hydration binding indexes stay aligned without any parser-core
-  marker.
-- **Client artifact view:** WebUI retains the authored inner template, including
-  its client bindings, and emits it inside the resolved `<f-template>` rather
-  than regenerating it from the SSR view. The artifact is normalized and still
-  receives normal wrapper handling, legal comment processing, and CSS injection
-  for the selected strategy. Plugins that return `None` from
+- **SSR parse view:** WebUI internally adapts supported FAST declarative
+  constructs into the WebUI parser view. It rewrites supported `f-repeat` and
+  `f-when` directives to WebUI `for` and `if` directives and unwraps their
+  `value` expressions. Text interpolation and boolean bindings remain available
+  to the WebUI parser. An absent or empty authored name continues to use the
+  filename-derived component tag. Unsupported `f-*` constructs fail conversion
+  instead of being silently accepted. The FAST plugins' `classify_attribute`
+  skips `@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` and counts
+  each as a binding, so hydration binding indexes stay aligned without any
+  parser-core marker.
+- **Client artifact view:** WebUI retains the authored `<f-template>` body,
+  including its inner template and client bindings, and emits it inside the
+  resolved `<f-template>` rather than regenerating it from the SSR view. The
+  artifact is normalized and still receives normal wrapper handling, legal
+  comment processing, and CSS injection for the selected strategy. Plugins that
+  return `None` from
   `component_source_transform` never receive FAST artifacts; they parse the
   component's HTML unchanged.
+
+Multiple wrappers report `unsupported-multiple-f-templates`; malformed or
+unsupported FAST declarative syntax reports `invalid-fast-template`, while
+unclosed markup uses the shared `unclosed-html-tag` diagnostic.
 
 The deprecated `fast` selector aliases FAST 2. `fast`, `fast_v2`, and `fast_v3`
 all share this same transform, conversion, and retained-artifact path.
