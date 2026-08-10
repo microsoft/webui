@@ -149,7 +149,7 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
 | `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
-| `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus `composed` events leaving the shadow tree). |
+| `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
 
 The same metadata serves both paths:
 
