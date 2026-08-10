@@ -110,12 +110,38 @@ message WebUIProtocol {
   // Ordered, deduplicated component style resource tags for each Document or
   // component-root CSS tree entry point.
   map<string, ComponentStyleClosure> style_closures = 9;
+  // Bundled stylesheets in global cascade order. Empty unless the build
+  // enabled CSS bundling, in which case every component that owns a style
+  // resource belongs to exactly one chunk and handlers deliver chunks instead
+  // of individual component resources.
+  repeated StyleChunk style_chunks = 10;
 }
 
 // Compile-time component style resources for one CSS tree.
 message ComponentStyleClosure {
   // Component tags in cascade-sensitive first-discovery order.
   repeated string component_tags = 1;
+  // Indices into WebUIProtocol.style_chunks covering exactly the components in
+  // component_tags, in the same cascade order. Empty unless the build enabled
+  // CSS bundling. A chunk is listed only when the closure consumes every
+  // component the chunk carries, so delivering a chunk never over-delivers.
+  repeated uint32 style_chunks = 2;
+}
+
+// One bundled stylesheet carrying a contiguous run of component styles that
+// share the same set of consuming CSS trees.
+message StyleChunk {
+  // Stable build-time chunk name. Surfaces as the data-webui-resource value so
+  // delivered stylesheets stay attributable without a source map.
+  string name = 1;
+  // Concatenated compiled CSS for the Style and Module strategies.
+  // Empty for Link.
+  string css = 2;
+  // External stylesheet href for the Link strategy.
+  // Empty for Style and Module.
+  string css_href = 3;
+  // Component tags whose CSS this chunk concatenates, in cascade order.
+  repeated string component_tags = 4;
 }
 
 // Ordered compile-time boundary names for one entry fragment.

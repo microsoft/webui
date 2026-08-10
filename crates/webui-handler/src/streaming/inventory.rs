@@ -286,7 +286,7 @@ mod tests {
             Vec::new(),
         ));
         let mut streaming = StreamingRenderState::from_progress(
-            super::super::state::StreamingProgress::new(2),
+            super::super::state::StreamingProgress::new(2, 2),
             protocol.component_reachability(),
         );
         streaming.head_marker_emitted = true;

@@ -714,7 +714,7 @@ When `Accept: application/json` or `application/x-ndjson`:
 | Field | Description |
 |-------|-------------|
 | `state` | Active-route navigation state for reachable authored and scriptless components. `Protocol::render_partial` and all host bindings include it |
-| `componentStyles` | Required versioned CSS resource and closure delta; a shared resource is omitted only when the incoming inventory proves it was already registered |
+| `componentStyles` | Required versioned CSS resource and closure delta; bundled chunks carry their covered component IDs and are tracked independently from template inventory |
 | `templates` | Client template payloads filtered by inventory bitmask |
 | `inventory` | Updated hex bitmask of loaded component template and style metadata |
 | `path` | The matched request path |

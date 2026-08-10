@@ -1101,7 +1101,8 @@ webui inspect ./dist/protocol.bin
 ```
 
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
-`--components`, `--theme`,
+`--css-bundle` (merge component stylesheets into shared chunks; not valid with
+`--css module`), `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 

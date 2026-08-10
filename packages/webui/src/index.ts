@@ -16,6 +16,17 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
+  /**
+   * Merge component stylesheets into shared bundled chunks.
+   *
+   * Composes with `css`: bundling decides how stylesheets are grouped, `css`
+   * decides how they reach the page. Stylesheets reached from more than one CSS
+   * tree are split into their own chunk so they are downloaded and cached once.
+   *
+   * Rejected with `css: "module"`, which already inlines every stylesheet as a
+   * data URI.
+   */
+  cssBundle?: boolean;
   /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
@@ -94,10 +105,14 @@ export interface ProtocolOptions {
  */
 export type BoundaryMode = "final" | "updatable";
 
-export type ComponentStyleResource =
+export type ComponentStyleResource = (
   | { kind: "link"; href: string }
   | { kind: "style"; css: string }
-  | { kind: "module"; specifier: string; css: string };
+  | { kind: "module"; specifier: string; css: string }
+) & {
+  /** Component resource IDs whose rules this bundled resource covers. */
+  members?: string[];
+};
 
 export interface ComponentStyles {
   version: 1;
@@ -163,6 +178,7 @@ interface NativeAddon {
     appDir: string;
     entry?: string;
     css?: string;
+    cssBundle?: boolean;
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];

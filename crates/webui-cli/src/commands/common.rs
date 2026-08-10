@@ -24,6 +24,16 @@ pub struct AppArgs {
     #[arg(long, value_enum, default_value_t = CssStrategy::Link)]
     pub css: CssStrategy,
 
+    /// Merge component stylesheets into shared bundled chunks
+    ///
+    /// Composes with `--css`: bundling decides how stylesheets are grouped,
+    /// `--css` decides how they reach the page. Stylesheets reached from more
+    /// than one CSS tree are split into their own chunk so they are downloaded
+    /// and cached once. Not supported with `--css module`, which already inlines
+    /// every stylesheet as a data URI.
+    #[arg(long)]
+    pub css_bundle: bool,
+
     /// Framework plugin to load
     #[arg(long, value_enum)]
     pub plugin: Option<Plugin>,
@@ -56,6 +66,7 @@ impl AppArgs {
             app_dir: app_dir.to_path_buf(),
             entry: self.entry.clone(),
             css: self.css,
+            css_bundle: self.css_bundle,
             plugin: self.plugin,
             components: self.components.clone(),
             component_asset_roots: Vec::new(),
@@ -110,6 +121,7 @@ mod tests {
             app: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            css_bundle: false,
             plugin: None,
             components: Vec::new(),
             projection_manifests: vec![

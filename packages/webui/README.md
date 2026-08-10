@@ -41,6 +41,7 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link", "style", or "module"
+  cssBundle: true,       // Merge component stylesheets into shared chunks
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
   componentAssetRoots: ["settings-dialog"], // Static .webui.js asset roots

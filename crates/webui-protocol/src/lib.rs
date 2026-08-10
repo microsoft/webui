@@ -49,6 +49,7 @@ pub type WebUIFragmentRoute = WebUiFragmentRoute;
 pub type WebUIFragmentOutlet = WebUiFragmentOutlet;
 pub type ComponentData = proto::ComponentData;
 pub type ComponentStyleClosure = proto::ComponentStyleClosure;
+pub type StyleChunk = proto::StyleChunk;
 pub type StreamingBoundaryList = proto::StreamingBoundaryList;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
@@ -366,6 +367,9 @@ impl WebUiProtocol {
     /// children and route activation edges, and deduplicates resources at first
     /// discovery. Matched route roots install their own stored closures.
     pub fn populate_style_closures(&mut self, entry_fragments: &[&str]) {
+        // Chunks are planned from the closures this call rebuilds, so any
+        // previously planned bundle is stale the moment closures change.
+        self.style_chunks.clear();
         let mut roots: Vec<String> = entry_fragments
             .iter()
             .map(|root| (*root).to_string())
@@ -463,7 +467,44 @@ impl WebUiProtocol {
             }
         }
 
-        ComponentStyleClosure { component_tags }
+        ComponentStyleClosure {
+            component_tags,
+            style_chunks: Vec::new(),
+        }
+    }
+
+    /// Return the delivered style resource for a bundled chunk index.
+    ///
+    /// Mirrors [`Self::component_style_resource`]: Link protocols identify a
+    /// chunk by `css_href`, Style and Module protocols carry the concatenated
+    /// CSS bytes.
+    #[must_use]
+    pub fn style_chunk_resource(&self, chunk: u32) -> Option<(&str, &str)> {
+        let chunk = self.style_chunks.get(chunk as usize)?;
+        let resource = match self.css_strategy() {
+            CssStrategy::Link => chunk.css_href.as_str(),
+            CssStrategy::Style | CssStrategy::Module => chunk.css.as_str(),
+        };
+        (!resource.is_empty()).then_some((chunk.name.as_str(), resource))
+    }
+
+    /// Return the component tags merged into `chunk`, in cascade order.
+    #[must_use]
+    pub fn style_chunk_members(&self, chunk: u32) -> Option<&[String]> {
+        self.style_chunks
+            .get(chunk as usize)
+            .map(|chunk| chunk.component_tags.as_slice())
+    }
+
+    /// Return the bundled chunk indices for `root`, in cascade order.
+    ///
+    /// Empty when the build did not bundle CSS, in which case callers deliver
+    /// [`Self::style_closure`] component resources individually.
+    #[must_use]
+    pub fn style_closure_chunks(&self, root: &str) -> Option<&[u32]> {
+        self.style_closures
+            .get(root)
+            .map(|closure| closure.style_chunks.as_slice())
     }
 
     /// Create a protocol from fragment records with no CSS tokens.
@@ -477,6 +518,7 @@ impl WebUiProtocol {
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
             style_closures: HashMap::new(),
+            style_chunks: Vec::new(),
         }
     }
 
@@ -491,6 +533,7 @@ impl WebUiProtocol {
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
             style_closures: HashMap::new(),
+            style_chunks: Vec::new(),
         }
     }
 }

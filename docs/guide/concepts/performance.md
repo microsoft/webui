@@ -218,11 +218,10 @@ Keep authoring ordinary paired CSS in both modes. The compiler scopes Light CSS,
 lowers `:host`, and namespaces static keyframes. It rejects selectors and
 dynamic local-keyframe references that cannot be isolated safely.
 
-Template and style metadata share the router inventory. A partial navigation
-sends CSS definitions and ordered closures only for newly discovered
-components. New closures can omit shared resources only when the incoming
-inventory proves they were already registered; uninventoried dependencies are
-sent with the new root.
+Component resources can use the router's template inventory, but bundled chunks
+have distinct identities and are never inferred from component bits. Chunk
+metadata lists the component resources it covers, so claiming one SSR marker
+also prevents each Light descendant from reinstalling a fallback stylesheet.
 
 Progressive streaming keeps a separate request-local style resource inventory.
 Each closure and CSS definition is serialized at most once per response, even

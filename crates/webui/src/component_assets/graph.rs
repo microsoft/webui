@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
 
 use super::traversal::{has_template_payload, CollectedClosure, GraphIndex, TraversalScratch};
+use crate::chunking::ConsumerMatrix;
 use crate::WebUIError;
 
 pub(super) struct AssetGraphPlan<'a> {
@@ -79,17 +80,12 @@ pub(super) fn plan_component_assets<'a>(
         ));
     }
 
-    let words = canonical_roots.len().div_ceil(u64::BITS as usize);
-    let matrix_len = index
-        .component_names
-        .len()
-        .checked_mul(words)
+    let mut consumers = ConsumerMatrix::new(index.component_names.len(), canonical_roots.len())
         .ok_or_else(component_graph_too_large)?;
-    let mut consumers = vec![0u64; matrix_len];
     for (root_id, closure) in root_closures.iter().enumerate() {
         for component in &closure.components {
             if !entry_mask[*component] {
-                set_consumer(&mut consumers, words, *component, root_id);
+                consumers.insert(*component, root_id);
             }
         }
     }
@@ -100,17 +96,17 @@ pub(super) fn plan_component_assets<'a>(
         if is_entry_component {
             continue;
         }
-        let row = consumer_row(&consumers, words, component);
-        match consumer_count(row) {
+        match consumers.count(component) {
             0 => {}
-            1 => local_components[single_consumer(row)].push(component),
+            1 => local_components[consumers.single(component)].push(component),
             _ => shared_components.push(component),
         }
     }
 
+    // Sorting by consumer set makes every equal set adjacent, so run grouping
+    // merges all of them. The name tiebreak keeps chunk membership stable.
     shared_components.sort_unstable_by(|left, right| {
-        let rows =
-            consumer_row(&consumers, words, *left).cmp(consumer_row(&consumers, words, *right));
+        let rows = consumers.row(*left).cmp(consumers.row(*right));
         if rows == Ordering::Equal {
             index.component_names[*left].cmp(index.component_names[*right])
         } else {
@@ -118,12 +114,8 @@ pub(super) fn plan_component_assets<'a>(
         }
     });
 
-    let mut chunks = group_shared_components(
-        &shared_components,
-        &consumers,
-        words,
-        &index.component_names,
-    );
+    let mut chunks =
+        group_shared_components(&shared_components, &consumers, &index.component_names);
     chunks.sort_unstable_by(|left, right| left.name.cmp(&right.name));
 
     let mut root_chunk_ids = vec![Vec::new(); canonical_roots.len()];
@@ -201,64 +193,22 @@ fn finalize_plan<'a>(
 
 fn group_shared_components(
     components: &[usize],
-    consumers: &[u64],
-    words: usize,
+    consumers: &ConsumerMatrix,
     component_names: &[&str],
 ) -> Vec<ChunkPlan> {
-    let mut chunks = Vec::new();
-    let mut start = 0usize;
-    while start < components.len() {
-        let row = consumer_row(consumers, words, components[start]);
-        let mut end = start + 1;
-        while end < components.len() && consumer_row(consumers, words, components[end]) == row {
-            end += 1;
-        }
-        let mut chunk_components = components[start..end].to_vec();
-        chunk_components.sort_unstable_by_key(|component| component_names[*component]);
-        let name = format!("chunk-{}", component_names[chunk_components[0]]);
-        chunks.push(ChunkPlan {
-            name,
-            components: chunk_components,
-            consumers: consumers_from_row(row),
-        });
-        start = end;
-    }
-    chunks
-}
-
-fn set_consumer(consumers: &mut [u64], words: usize, component: usize, root: usize) {
-    let offset = component * words + root / u64::BITS as usize;
-    consumers[offset] |= 1u64 << (root % u64::BITS as usize);
-}
-
-fn consumer_row(consumers: &[u64], words: usize, component: usize) -> &[u64] {
-    let start = component * words;
-    &consumers[start..start + words]
-}
-
-fn consumer_count(row: &[u64]) -> u32 {
-    row.iter().map(|word| word.count_ones()).sum()
-}
-
-fn single_consumer(row: &[u64]) -> usize {
-    for (word_index, word) in row.iter().copied().enumerate() {
-        if word != 0 {
-            return word_index * u64::BITS as usize + word.trailing_zeros() as usize;
-        }
-    }
-    0
-}
-
-fn consumers_from_row(row: &[u64]) -> Vec<usize> {
-    let mut consumers = Vec::with_capacity(consumer_count(row) as usize);
-    for (word_index, mut word) in row.iter().copied().enumerate() {
-        while word != 0 {
-            let bit = word.trailing_zeros() as usize;
-            consumers.push(word_index * u64::BITS as usize + bit);
-            word &= word - 1;
-        }
-    }
-    consumers
+    crate::chunking::group_runs(components, consumers)
+        .into_iter()
+        .map(|run| {
+            let mut chunk_components = components[run.clone()].to_vec();
+            chunk_components.sort_unstable_by_key(|component| component_names[*component]);
+            let name = format!("chunk-{}", component_names[chunk_components[0]]);
+            ChunkPlan {
+                name,
+                components: chunk_components,
+                consumers: consumers.expand(components[run.start]),
+            }
+        })
+        .collect()
 }
 
 fn validate_roots(protocol: &WebUIProtocol, roots: &[String]) -> Result<Vec<String>, WebUIError> {
