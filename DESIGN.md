@@ -4763,7 +4763,9 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   explicitly supplied; an explicit empty collection removes repeat items.
   Client-created instances mount immediately from the cached template.
   `WebUIElement` remains the authored layer for events, `w-ref`, lifecycle code,
-  decorators, and `$emit`.
+  decorators, and `$emit`. `$emit()` always dispatches a bubbling, cancelable,
+  composed `CustomEvent`, so a Light component nested in an authored Shadow
+  tree can communicate with a root event binding on the Shadow host.
 - Developer-authored `WebUIElement` classes also treat compiled template roots
   as navigation state. `setState()` stores undecorated template-bound roots in
   hidden framework state, so `@observable` is only required when TypeScript

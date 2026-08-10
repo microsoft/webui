@@ -327,10 +327,17 @@ value, placement on another element, multiple declarations, or extra top-level
 content fails the build. `<slot>` is a build error in an unwrapped Light
 component.
 
-Root host events catch custom events bubbling up from child components. They see
-only events that bubble; `this.$emit()` sets `bubbles: true`, but a hand-built
-`new CustomEvent(name)` defaults to `bubbles: false` and will never reach the
-root - bind that on the child element instead.
+Root host events catch custom events bubbling up from child components. To
+cross any Shadow boundary between the child and the listener, an event must
+bubble and be `composed`; `this.$emit()` always sets both so Light components
+nested in a Shadow tree work too. A hand-built `new CustomEvent(name)` defaults
+to neither and will never reach the root - pass
+`{ bubbles: true, composed: true }` or bind it on the child element.
+
+The binding sits on the host element, so it also catches events targeted at the
+host itself - what host-interactive components (host `tabindex`, presentational
+shadow content) rely on. It does not see non-composed events (`change`,
+`submit`, `select`, media); bind those per element.
 
 One root listener also serves an arbitrarily large `<for>`, so this is the way
 to trade per-row listeners for a single handler on a very long list. For rows
