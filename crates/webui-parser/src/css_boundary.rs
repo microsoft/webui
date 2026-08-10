@@ -1389,6 +1389,55 @@ mod tests {
         ),
     ];
 
+    /// CSS that only has to satisfy the invariants — no expected output.
+    ///
+    /// The three invariant tests below derive their own oracle, so an entry
+    /// here costs one line and still gets full coverage. That is deliberate:
+    /// pinning exact output is what makes a corpus expensive to extend, and an
+    /// expensive corpus stops being extended. Paste the construct in; if the
+    /// stamper mangles it, an invariant fails.
+    ///
+    /// Everything here postdates the stamper, which is the point — none of it
+    /// is recognized by name, and all of it survives on structure alone.
+    const MODERN_CSS_INVARIANTS: &[&str] = &[
+        // Pseudo-elements the stamper has never heard of. A qualifier must land
+        // *before* each one, which it does purely from the `::` spelling.
+        ".a::view-transition-group(card) { color: red }",
+        ".a::details-content { color: red }",
+        ".a::scroll-marker { color: red }",
+        ".a::future-pseudo-elem { color: red }",
+        ".a::before { content: '' }",
+        ".a:before { content: '' }",
+        ".a:hover::after { content: '' }",
+        // Pseudo-classes the stamper has never heard of, plain and functional.
+        // A qualifier must land *after* these, and never inside the argument.
+        ".a:has-slotted { color: red }",
+        ".a:state(checked) { color: red }",
+        ".a:future-pseudo-class { color: red }",
+        ".a:future-fn(.b, .c) { color: red }",
+        ".a:nth-child(even of .b) { color: red }",
+        // Grouping rules whose preludes are not selector lists.
+        "@container style(--x: 1) { .a { color: red } }",
+        "@media (400px <= width <= 700px) { .a { color: red } }",
+        "@starting-style { .a { opacity: 0 } }",
+        "@layer base { @media print { .a::before { content: '' } } }",
+        // Nesting: `&` already carries the parent's qualifier.
+        ".a { &:hover { color: red } }",
+        ".a { & .b::after { content: '' } }",
+        // Declaration values are never selector text.
+        ".a { anchor-name: --x; position-anchor: --y }",
+        ".a { background: url('a{b}c.png') }",
+        ".a { content: '::before' }",
+    ];
+
+    /// Every input the invariants run over, from both corpora.
+    fn invariant_inputs() -> impl Iterator<Item = &'static str> {
+        MODERN_CSS_CORPUS
+            .iter()
+            .map(|(source, _)| *source)
+            .chain(MODERN_CSS_INVARIANTS.iter().copied())
+    }
+
     /// An at-rule prelude is never a selector list, at any nesting depth.
     #[test]
     fn never_qualifies_an_at_rule_prelude() {
@@ -1413,7 +1462,7 @@ mod tests {
     #[test]
     fn stamping_only_inserts_qualifiers() {
         let qualifier = format!(":where([{MARKER}])");
-        for (source, _) in MODERN_CSS_CORPUS {
+        for source in invariant_inputs() {
             assert!(
                 !source.contains(":host"),
                 "host lowering differs between shapes: {source}"
@@ -1438,7 +1487,7 @@ mod tests {
     #[test]
     fn no_qualifier_lands_in_an_at_rule_prelude() {
         let qualifier = format!(":where([{MARKER}])");
-        for (source, _) in MODERN_CSS_CORPUS {
+        for source in invariant_inputs() {
             let compiled = compile(source).expect("compile");
             for prelude in at_rule_preludes(&compiled) {
                 assert!(
@@ -1447,6 +1496,124 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A qualifier may never follow a pseudo-element within the same compound.
+    ///
+    /// `.a::before:where([m])` is invalid CSS — a compound ends at its
+    /// pseudo-element — while `.a:where([m])::before` is the same selector
+    /// correctly qualified. The two differ only by placement, so
+    /// [`stamping_only_inserts_qualifiers`] cannot see it: stripping the
+    /// qualifier undoes the mistake either way. Checked on the output so a new
+    /// corpus entry is covered without anyone remembering to assert it.
+    #[test]
+    fn no_qualifier_follows_a_pseudo_element() {
+        let qualifier = format!(":where([{MARKER}])");
+        for source in invariant_inputs() {
+            let compiled = compile(source).expect("compile");
+            for selector in selector_texts(&compiled) {
+                assert!(
+                    !qualifier_follows_pseudo_element(selector, &qualifier),
+                    "qualifier follows a pseudo-element in `{selector}` for input: {source}"
+                );
+            }
+        }
+    }
+
+    /// Pseudo-elements that legacy syntax spells with one colon.
+    const LEGACY_PSEUDO_ELEMENTS: [&str; 4] = ["before", "after", "first-line", "first-letter"];
+
+    /// Scan one selector for a qualifier placed after a pseudo-element.
+    ///
+    /// Combinators, commas, and whitespace end a compound and so clear the
+    /// pseudo-element flag; parenthesized arguments are opaque.
+    fn qualifier_follows_pseudo_element(selector: &str, qualifier: &str) -> bool {
+        let bytes = selector.as_bytes();
+        let mut index = 0usize;
+        let mut depth = 0usize;
+        let mut saw_pseudo_element = false;
+
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if depth > 0 {
+                if byte == b'(' {
+                    depth += 1;
+                } else if byte == b')' {
+                    depth -= 1;
+                }
+                index += 1;
+                continue;
+            }
+            match byte {
+                b'(' => {
+                    depth += 1;
+                    index += 1;
+                }
+                b',' | b'>' | b'+' | b'~' => {
+                    saw_pseudo_element = false;
+                    index += 1;
+                }
+                _ if byte.is_ascii_whitespace() => {
+                    saw_pseudo_element = false;
+                    index += 1;
+                }
+                b':' if selector[index..].starts_with(qualifier) => {
+                    if saw_pseudo_element {
+                        return true;
+                    }
+                    index += qualifier.len();
+                }
+                b':' => {
+                    let double = bytes.get(index + 1) == Some(&b':');
+                    let name_start = index + if double { 2 } else { 1 };
+                    let name_end = selector[name_start.min(selector.len())..]
+                        .find(|ch: char| !ch.is_alphanumeric() && ch != '-' && ch != '_')
+                        .map_or(selector.len(), |at| name_start + at);
+                    let name = selector.get(name_start..name_end).unwrap_or_default();
+                    if double
+                        || LEGACY_PSEUDO_ELEMENTS
+                            .iter()
+                            .any(|legacy| name.eq_ignore_ascii_case(legacy))
+                    {
+                        saw_pseudo_element = true;
+                    }
+                    index = name_end.max(index + 1);
+                }
+                _ => index += 1,
+            }
+        }
+        false
+    }
+
+    /// Every selector prelude in `css`: the text before a `{` that does not
+    /// introduce an at-rule. Crude by design — the corpus inputs are small.
+    fn selector_texts(css: &str) -> Vec<&str> {
+        let bytes = css.as_bytes();
+        let mut selectors = Vec::new();
+        let mut start = 0usize;
+        let mut index = 0usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' | b'\'' => index = quoted_end(css, index),
+                b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                    index = block_comment_end(css, index);
+                }
+                b'{' => {
+                    let text = css[start..index].trim();
+                    if !text.is_empty() && !text.starts_with('@') {
+                        selectors.push(text);
+                    }
+                    index += 1;
+                    start = index;
+                }
+                b'}' | b';' => {
+                    index += 1;
+                    start = index;
+                }
+                _ => index += 1,
+            }
+        }
+        selectors
     }
 
     /// Every non-`@scope` at-rule prelude in `css`, from `@` to its `{` or `;`.
@@ -1785,12 +1952,24 @@ mod tests {
         assert!(css.contains("animation:var(--animation)"));
     }
 
+    /// An unrecognized at-rule is rejected, never rewritten.
+    ///
+    /// `parse_at_rule` works from an allowlist of grouping keywords, so CSS the
+    /// stamper does not understand fails the build with an actionable
+    /// diagnostic instead of being silently mangled. This is what bounds the
+    /// blast radius of future syntax: the failure mode for anything new and
+    /// block-shaped is a compile error the author sees immediately.
     #[test]
     fn rejects_global_at_rules() {
         for source in [
             "@font-face{font-family:x;src:url(x)}",
             "@layer reset;",
             "@import url(global.css);",
+            // Postdate the stamper; all reject rather than corrupt.
+            "@property --x{syntax:'<length>';inherits:false;initial-value:0px}",
+            "@position-try --fallback{top:0}",
+            "@scroll-timeline t{source:auto}",
+            "@font-feature-values Font{@swash{x:1}}",
         ] {
             let error = compile(source).expect_err("must fail");
             assert!(matches!(
