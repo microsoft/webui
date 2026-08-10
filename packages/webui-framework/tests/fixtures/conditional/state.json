@@ -11,5 +11,8 @@
   "value": "",
   "outer": true,
   "inner": false,
-  "tail": true
+  "tail": true,
+  "escOuter": true,
+  "escInner": true,
+  "escAfter": true
 }

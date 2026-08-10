@@ -30,6 +30,7 @@ test.describe('hydration bench fixture', () => {
     // Hardware-dependent, so assert shape rather than absolute timings.
     expect(totals['test-hydration-wide'].count).toBe(150);
     expect(totals['test-hydration-deep'].count).toBe(150);
+    expect(totals['test-hydration-nested'].count).toBe(40);
     expect(totals['test-hydration-wide'].totalMs).toBeGreaterThan(0);
 
     // Hydration must actually have wired the bindings.

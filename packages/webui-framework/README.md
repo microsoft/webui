@@ -817,8 +817,12 @@ skipping whole marker ranges, and numbers the result the same way:
 // not line up, so text slots still resolve by ordinal.
 ```
 
-This template-parallel traversal eliminates the need for any marker comments,
-`data-*` attributes, or DOM annotations.  The SSR server emits clean HTML.
+This eliminates all *per-binding* annotation: no `data-w-*` attributes, no
+comment per text run, no DOM markers around individual bindings.  What the SSR
+server does emit is the five structural comments documented above
+(`<!--wr-->`, `<!--wi-->`, `<!--/wr-->`, `<!--wc-->`, `<!--/wc-->`), which
+delimit `<if>` / `<for>` bodies and are what the walk skips over and anchors
+blocks on.  They are removed once hydration completes.
 
 ---
 

@@ -161,6 +161,14 @@ export interface SSRIndex {
  *
  * Iterative by design - templates nest arbitrarily deep and recursion would put
  * that on the call stack.
+ *
+ * Cost is linear in the subtree this section owns.  Structurally nested blocks
+ * are not free, though: each `<if>` / `<for>` hydrates its own body, and the
+ * enclosing walk has already stepped over that body to reach its sibling, so a
+ * chain of N nested blocks does O(N²) marker steps overall.  N is nesting
+ * depth, not node count - at a realistic depth of 8 that is ~80 steps for the
+ * whole chain - so `test-hydration-nested` in the hydration benchmark tracks it
+ * rather than paying for a cross-section marker-pairing cache.
  */
 export function buildSSRIndex(
   tplRoot: Node,
@@ -175,8 +183,16 @@ export function buildSSRIndex(
   const elements: Array<Node | undefined> = [ssrIsSectionChild ? undefined : ssrRoot];
   const conds: Comment[] = [];
   const repeats: Comment[] = [];
-  const stack: Array<{ t: ChildNode | null; s: ChildNode | null }> = [
-    { t: tplRoot.firstChild, s: ssrIsSectionChild ? (ssrRoot as ChildNode) : ssrRoot.firstChild },
+  // `solo` bounds a frame to the single element it was entered on.  In-place
+  // block hydration starts inside the block's own `<!--wc-->` range, so an
+  // unbounded frame would run past the closing marker once the template ran
+  // out and adopt a following sibling block's marker as its own.
+  const stack: Array<{ t: ChildNode | null; s: ChildNode | null; solo: boolean }> = [
+    {
+      t: tplRoot.firstChild,
+      s: ssrIsSectionChild ? (ssrRoot as ChildNode) : ssrRoot.firstChild,
+      solo: ssrIsSectionChild,
+    },
   ];
   let index = 0;
 
@@ -221,7 +237,7 @@ export function buildSSRIndex(
     index++;
     if (s) {
       elements[index] = s;
-      frame.s = s.nextSibling;
+      frame.s = frame.solo ? null : s.nextSibling;
     }
     frame.t = t.nextSibling;
 
@@ -233,9 +249,9 @@ export function buildSSRIndex(
     // contributes no slotted content, and whatever the server rendered inside
     // belongs to that component, not to this one.
     if (t.firstChild) {
-      stack.push({ t: t.firstChild, s: s ? s.firstChild : null });
+      stack.push({ t: t.firstChild, s: s ? s.firstChild : null, solo: false });
     } else if (needMarkers && s && s.firstChild && (t as Element).tagName.indexOf('-') < 0) {
-      stack.push({ t: null, s: s.firstChild });
+      stack.push({ t: null, s: s.firstChild, solo: false });
     }
   }
 

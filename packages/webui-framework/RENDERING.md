@@ -15,7 +15,7 @@ This document is for framework contributors, plugin authors, and anyone debuggin
 
 WebUI is built on a hard rule: the server emits HTML, the browser parses HTML, and the framework adopts that HTML in place. Nothing is re-rendered. No virtual DOM, no diff against a fresh tree, no `innerHTML = ...` to swap content. To make that work without DOM annotations on every dynamic node, the framework leans on:
 
-- compiled template metadata (path indices, not selectors),
+- compiled template metadata (element indices, not selectors),
 - five lightweight HTML comment markers around structural blocks,
 - a single pre-order walk pairing the SSR DOM with the parsed template DOM,
 - a per-component path index so reactive updates touch only the bindings that actually depend on a changed property.
@@ -61,11 +61,11 @@ The handler emits exactly five comment markers, all defined in `src/element/mark
 | `<!--wc-->` | Conditional block start (one per `<if>`) |
 | `<!--/wc-->` | Conditional block end |
 
-Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled path indices.
+Text bindings, attribute bindings, and event handlers are **not** marked. They are located via compiled element indices.
 
 ### Why markers exist for blocks but not bindings
 
-Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled path indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from path indices alone. The markers make that boundary explicit.
+Blocks change cardinality. A `<for>` produces zero, one, or many child runs. An `<if>` may render its content or not. The compiled indices in `meta.h` describe the static skeleton, so the framework cannot derive "where does this block live in the SSR DOM" from those indices alone. The markers make that boundary explicit.
 
 Static-position bindings (text, attributes, events) do not have this problem. Their position relative to the static skeleton is fixed at compile time, so a pre-order element index is enough.
 
@@ -98,7 +98,7 @@ Server output:
 </template>
 ```
 
-Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Path indices reach those.
+Notice that there are no markers on `<h1>`, `<button>`, or the text inside `<span>`. Pre-order element indices reach those.
 
 ### Marker removal is deferred
 

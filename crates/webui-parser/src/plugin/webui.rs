@@ -1603,7 +1603,8 @@ struct FragmentAttr {
 fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
-    let nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
+    insert_implied_tbody(&mut nodes);
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -1816,6 +1817,17 @@ fn serialize_fragment_element(
     }
 
     out.push('>');
+    // `<template>` content is parked in `HTMLTemplateElement.content`, so the
+    // browser never walks it as light DOM and neither runtime numbers it.
+    // Counting it here would shift every index after the template.  The markup
+    // is still emitted verbatim; bindings inside remain unreachable, exactly as
+    // they were before indices replaced node paths.
+    let mut interior = *element_cursor;
+    let counter = if element.tag_name.eq_ignore_ascii_case("template") {
+        &mut interior
+    } else {
+        &mut *element_cursor
+    };
     process_fragment_children(
         &element.children,
         element_index,
@@ -1827,7 +1839,7 @@ fn serialize_fragment_element(
         repeat_slots,
         event_targets,
         event_cursor,
-        element_cursor,
+        counter,
     );
     out.push_str("</");
     out.push_str(&element.tag_name);
@@ -1913,6 +1925,117 @@ fn emit_html_attr_value(value: &str, out: &mut String) {
             _ => out.push(ch),
         }
     }
+}
+
+/// Insert the `<tbody>` the HTML parser implies around bare `<tr>` in a table.
+///
+/// Compiled locators are pre-order element indices, and the browser resolves
+/// them against its own parse of `h`.  A `<tr>` written directly inside
+/// `<table>` is moved into an implied `<tbody>` there, which inserts an element
+/// the compiler never counted and shifts every index after the table.  Adding
+/// the wrapper here keeps the emitted HTML and the numbering agreeing with what
+/// the browser will build.
+///
+/// Only element *order* matters to the numbering, so the parser's other
+/// recovery rules — `<p>`/`<li>` auto-closing and friends — are irrelevant:
+/// they change nesting, not sequence.
+///
+/// Iterative, and addressed by path so the borrow checker can see that only one
+/// child list is held at a time.  This runs once per component at build time.
+fn insert_implied_tbody(nodes: &mut Vec<FragmentNode>) {
+    let mut stack: Vec<Vec<usize>> = vec![Vec::new()];
+
+    while let Some(path) = stack.pop() {
+        let Some(list) = child_list_at(nodes, &path) else {
+            continue;
+        };
+
+        for index in 0..list.len() {
+            if let Some(FragmentNode::Element(element)) = list.get_mut(index) {
+                if element.tag_name.eq_ignore_ascii_case("table") {
+                    wrap_table_rows(element);
+                }
+            }
+        }
+
+        // Re-resolve: wrapping rows above changes this level's length.
+        let Some(list) = child_list_at(nodes, &path) else {
+            continue;
+        };
+        for index in 0..list.len() {
+            if matches!(list.get(index), Some(FragmentNode::Element(_))) {
+                let mut child = path.clone();
+                child.push(index);
+                stack.push(child);
+            }
+        }
+    }
+}
+
+/// Resolve the child list an element path points at.
+fn child_list_at<'a>(
+    roots: &'a mut Vec<FragmentNode>,
+    path: &[usize],
+) -> Option<&'a mut Vec<FragmentNode>> {
+    let mut list = roots;
+    for &index in path {
+        match list.get_mut(index) {
+            Some(FragmentNode::Element(element)) => list = &mut element.children,
+            _ => return None,
+        }
+    }
+    Some(list)
+}
+
+/// Group each run of direct `<tr>` children of a table into one `<tbody>`.
+fn wrap_table_rows(table: &mut FragmentElement) {
+    if !table.children.iter().any(is_bare_row) {
+        return;
+    }
+
+    let mut rewritten = Vec::with_capacity(table.children.len());
+    let mut run: Vec<FragmentNode> = Vec::new();
+
+    for node in std::mem::take(&mut table.children) {
+        if is_bare_row(&node) {
+            run.push(node);
+            continue;
+        }
+        // Whitespace between rows stays inside the section the browser builds.
+        if !run.is_empty() {
+            if let FragmentNode::Text(text) = &node {
+                if text.trim().is_empty() {
+                    run.push(node);
+                    continue;
+                }
+            }
+        }
+        flush_row_run(&mut run, &mut rewritten);
+        rewritten.push(node);
+    }
+    flush_row_run(&mut run, &mut rewritten);
+
+    table.children = rewritten;
+}
+
+fn flush_row_run(run: &mut Vec<FragmentNode>, out: &mut Vec<FragmentNode>) {
+    if run.is_empty() {
+        return;
+    }
+    // Trailing whitespace belongs after the section, matching the parser.
+    while matches!(run.last(), Some(FragmentNode::Text(text)) if text.trim().is_empty()) {
+        run.pop();
+    }
+    out.push(FragmentNode::Element(FragmentElement {
+        tag_name: "tbody".to_string(),
+        attrs: Vec::new(),
+        children: std::mem::take(run),
+        self_closing: false,
+    }));
+}
+
+fn is_bare_row(node: &FragmentNode) -> bool {
+    matches!(node, FragmentNode::Element(element) if element.tag_name.eq_ignore_ascii_case("tr"))
 }
 
 fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<FragmentNode> {
@@ -4163,6 +4286,80 @@ mod tests {
         .expect("regular tag should produce output");
 
         assert_eq!(tag_html, r#"<input data-ev="2" />"#);
+    }
+
+    #[test]
+    fn test_bare_table_row_gains_the_implied_tbody() {
+        // The browser moves a bare <tr> into an implied <tbody>.  Emitting that
+        // wrapper keeps compiled indices aligned with the tree it will build.
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            result.contains(r#"<table><tbody><tr><td></td></tr></tbody></table>"#),
+            "implied tbody expected: {result}"
+        );
+        // table=1, tbody=2, tr=3, td=4, button=5
+        assert!(result.contains(r#""tx":[[[4,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_authored_tbody_is_not_duplicated() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><tbody><tr><td>{{cell}}</td></tr></tbody></table><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            !result.contains("<tbody><tbody>"),
+            "no double wrap: {result}"
+        );
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_table_sections_keep_their_own_rows() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><thead><tr><th>h</th></tr></thead><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+        // thead keeps its row; only the bare trailing row is wrapped.
+        assert!(
+            result
+                .contains(r#"<thead><tr><th>h</th></tr></thead><tbody><tr><td></td></tr></tbody>"#),
+            "{result}"
+        );
+        // table=1, thead=2, tr=3, th=4, tbody=5, tr=6, td=7, button=8
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],8]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_template_content_is_not_numbered() {
+        // <template> children live in `.content`, which neither runtime walk
+        // traverses, so counting them would shift every later index.
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<div><template><span></span></template></div><button @click="{go()}"></button>"#,
+        );
+        assert!(
+            result.contains(r#"<div><template><span></span></template></div>"#),
+            "template markup preserved: {result}"
+        );
+        // div=1, template=2, button=3 — the parked <span> is not counted.
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],3]]]]"#),
+            "{result}"
+        );
     }
 
     #[test]

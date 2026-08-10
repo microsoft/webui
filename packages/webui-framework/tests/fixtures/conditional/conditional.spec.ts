@@ -11,9 +11,11 @@ test.describe('conditional fixture', () => {
       const conditional = document.querySelector('test-conditional');
       const ranges = document.querySelector('test-conditional-hydration-ranges');
       const interleaved = document.querySelector('test-conditional-interleaved');
+      const escape = document.querySelector('test-conditional-block-escape');
       return conditional && (conditional as any).$ready === true
         && ranges && (ranges as any).$ready === true
-        && interleaved && (interleaved as any).$ready === true;
+        && interleaved && (interleaved as any).$ready === true
+        && escape && (escape as any).$ready === true;
     });
   });
 
@@ -137,6 +139,29 @@ test.describe('conditional fixture', () => {
       (document.querySelector('test-conditional') as any).count = 0;
     });
     await expect(page.locator('test-conditional .gt-zero')).toHaveCount(0);
+  });
+
+  test('keeps a nested block hydration inside its own marker range', async ({ page }) => {
+    const host = page.locator('test-conditional-block-escape');
+
+    // SSR renders every branch; hydration must adopt them, not re-create them.
+    await expect(host.locator('.wrap .inner-hit')).toHaveText('inner');
+    await expect(host.locator('.inner-hit')).toHaveCount(1);
+    await expect(host.locator('.after-hit')).toHaveCount(1);
+
+    // The inner conditional lives inside the outer block, so hydrating that
+    // block must not reach the sibling conditional that follows it.
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-block-escape') as any).escInner = false;
+    });
+    await expect(host.locator('.inner-hit')).toHaveCount(0);
+    await expect(host.locator('.after-hit')).toHaveCount(1);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-conditional-block-escape') as any).escInner = true;
+    });
+    await expect(host.locator('.wrap .inner-hit')).toHaveText('inner');
+    await expect(host.locator('.inner-hit')).toHaveCount(1);
   });
 
   test('anchors a sibling conditional after a root-level nested conditional', async ({ page }) => {
