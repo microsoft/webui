@@ -271,8 +271,10 @@ extends:
               tag: $(releaseTag)
               title: $(releaseTag)
               releaseNotesSource: inline
-              releaseNotesInline: 'Automated WebUI release.'
-              addChangeLog: false
+              releaseNotesInline: ''
+              addChangeLog: true
+              changeLogCompareToRelease: lastFullRelease
+              changeLogType: issueBased
               assets: |
                 $(Build.SourcesDirectory)/publish_artifacts_npm/*
                 $(Build.ArtifactStagingDirectory)/publish_artifacts_nuget/*
