@@ -93,6 +93,12 @@ extends:
               release_version=$(<"$metadata_dir/release-version.txt")
               validation_mode=$(<"$metadata_dir/validation-mode.txt")
 
+              if [[ "$EXPECTED_VALIDATION_MODE" != true ]] &&
+                [[ "$RELEASE_SOURCE_BRANCH" != refs/heads/main ]]; then
+                echo "##vso[task.logissue type=error]Production releases require a release build from refs/heads/main."
+                exit 1
+              fi
+
               if [[ "$release_tag" != "v${release_version}" ]] ||
                 [[ ! "$release_commit" =~ ^[0-9a-f]{40}$ ]] ||
                 [[ "$validation_mode" != "$EXPECTED_VALIDATION_MODE" ]]; then
@@ -107,6 +113,7 @@ extends:
           env:
             METADATA_INPUT_DIR: $(Pipeline.Workspace)/releaseBuild/release-metadata
             EXPECTED_VALIDATION_MODE: ${{ parameters.validationMode }}
+            RELEASE_SOURCE_BRANCH: $(resources.pipeline.releaseBuild.sourceBranch)
 
         - download: releaseBuild
           artifact: unsigned_npm_packages

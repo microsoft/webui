@@ -33,6 +33,12 @@ stages:
         script: |
           set -euo pipefail
 
+          if [[ "$ALLOW_EXISTING_RELEASE" != true ]] &&
+            [[ "$BUILD_SOURCEBRANCH" != refs/heads/main ]]; then
+            echo "##vso[task.logissue type=error]Production release builds must run from refs/heads/main. Use validationMode=true for other branches."
+            exit 1
+          fi
+
           release_version=$(awk '
             $0 == "[workspace.package]" { in_workspace = 1; next }
             /^\[/ { in_workspace = 0 }
