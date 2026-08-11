@@ -355,7 +355,7 @@ test.describe('component lazy hydration', () => {
       };
       const parent = document.querySelector('#streamed-nested') as
         BoundaryActivatable;
-      const child = parent.shadowRoot?.querySelector(
+      const child = parent.querySelector(
         '#streamed-nested-child',
       ) as BoundaryActivatable;
       const boundaryState = { note: 'Streamed boundary note' };
@@ -686,7 +686,7 @@ test.describe('component lazy hydration', () => {
         deferred: host.$deferredSSR,
         hydrated: host.$hydrated,
         note: host.note,
-        text: host.shadowRoot?.querySelector('.note')?.textContent,
+        text: host.querySelector('.note')?.textContent,
         tornDown,
       };
     });
@@ -1263,7 +1263,7 @@ test.describe('component lazy hydration', () => {
         hydrated: host.$hydrated,
         mountedEagerly,
         note: host.note,
-        text: host.shadowRoot?.querySelector('.note')?.textContent,
+        text: host.querySelector('.note')?.textContent,
         tornDown,
       };
     });
