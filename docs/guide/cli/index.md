@@ -114,6 +114,27 @@ IDs distinct from legal component tags. Link builds retain per-component files
 as independently loaded component and older-handler fallbacks, but current
 handlers link only chunks on the bundled path, so the fallbacks add no requests.
 
+Pair bundling with content-hashed filenames so chunks can be served immutably:
+
+```bash
+webui build ./my-app --out ./dist --css link --css-bundle \
+  --asset-file-name-template "[name]-[hash].[ext]"
+```
+
+The default template is `[name].[ext]`, which emits `_chunk-nav-4.css`. That name
+is stable across builds even when the CSS inside it changes, so it cannot carry a
+long `Cache-Control: max-age=…, immutable`. With `[hash]` the same chunk becomes
+`_chunk-nav-4-36c58ce5.css` and changes only when its bytes change, which is what
+makes a shared chunk worth sharing: it stays in cache across deploys and across
+routes.
+
+Measured on a 26-component example over HTTP/2 with Brotli, bundling is a byte
+and CSSOM optimization first: 14% fewer compressed CSS bytes (identical rules
+compress better in fewer, larger files) and 27% fewer `CSSStyleSheet` objects,
+both deterministic. Load-time metrics improve by low single-digit percentages.
+The win is substantially larger over HTTP/1.1, where request count is bounded by
+head-of-line blocking rather than multiplexed.
+
 `--css-bundle` is rejected with `--css module`, which already inlines every
 stylesheet as a data URI: there is no request to merge, and module specifiers are
 resolved per component at compile time. Bundling is off by default, so protocol
