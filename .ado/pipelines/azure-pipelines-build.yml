@@ -151,9 +151,8 @@ stages:
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
-          rustup default 1.93
 
-          cargo xtask publish-build \
+          cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -218,9 +217,8 @@ stages:
             brew install protobuf
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
-          rustup default 1.93
 
-          cargo xtask publish-build \
+          cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -305,9 +303,8 @@ stages:
           }
 
           rustup toolchain install 1.93 --profile minimal --target $env:TARGET_TRIPLE
-          rustup default 1.93
 
-          cargo xtask publish-build `
+          cargo +1.93 xtask publish-build `
               --target $env:TARGET_TRIPLE `
               --profile release `
               --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME"
@@ -408,10 +405,9 @@ stages:
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
           rustup toolchain install 1.93 --profile minimal
-          rustup default 1.93
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
-          cargo xtask publish-stage --pack-only --profile release
+          cargo +1.93 xtask publish-stage --pack-only --profile release
       env:
         PNPM_STORE_PATH: $(PNPM_STORE_PATH)
     - task: Bash@3
