@@ -93,7 +93,7 @@ stages:
     releaseTag: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseTag'] ]
     releaseCommit: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseCommit'] ]
     releaseVersion: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseVersion'] ]
-    CARGO_HOME: $(Pipeline.Workspace)/.cargo
+    CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
   jobs:
   - job: BuildLinuxAssets
@@ -120,7 +120,7 @@ stages:
         restoreKeys: |
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
-        path: $(CARGO_HOME)
+        path: $(CARGO_CACHE_HOME)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
@@ -152,7 +152,7 @@ stages:
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
-          cargo +1.93 xtask publish-build \
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -189,7 +189,7 @@ stages:
         restoreKeys: |
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
-        path: $(CARGO_HOME)
+        path: $(CARGO_CACHE_HOME)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
@@ -218,7 +218,7 @@ stages:
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
-          cargo +1.93 xtask publish-build \
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -254,7 +254,7 @@ stages:
         restoreKeys: |
           cargo-home | "$(Agent.OS)" | "$(targetTriple)"
           cargo-home | "$(Agent.OS)"
-        path: $(CARGO_HOME)
+        path: $(CARGO_CACHE_HOME)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
@@ -304,6 +304,7 @@ stages:
 
           rustup toolchain install 1.93 --profile minimal --target $env:TARGET_TRIPLE
 
+          $env:CARGO_HOME = $env:CARGO_CACHE_HOME
           cargo +1.93 xtask publish-build `
               --target $env:TARGET_TRIPLE `
               --profile release `
@@ -336,7 +337,7 @@ stages:
         key: 'cargo-home | "$(Agent.OS)" | Cargo.lock'
         restoreKeys: |
           cargo-home | "$(Agent.OS)"
-        path: $(CARGO_HOME)
+        path: $(CARGO_CACHE_HOME)
     - task: Cache@2
       displayName: Restore assembly target cache
       inputs:
@@ -407,7 +408,7 @@ stages:
           rustup toolchain install 1.93 --profile minimal
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
-          cargo +1.93 xtask publish-stage --pack-only --profile release
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage --pack-only --profile release
       env:
         PNPM_STORE_PATH: $(PNPM_STORE_PATH)
     - task: Bash@3
