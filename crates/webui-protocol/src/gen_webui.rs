@@ -110,9 +110,13 @@ pub struct WebUiProtocol {
         ::prost::alloc::string::String,
         StreamingBoundaryList,
     >,
+    /// Build-generated document-level rules for component rendering policies.
+    /// Empty when no component opts into lazy rendering.
+    #[prost(string, tag = "9")]
+    pub component_render_css: ::prost::alloc::string::String,
     /// Ordered, deduplicated component style resource tags for each Document or
     /// component-root CSS tree entry point.
-    #[prost(map = "string, message", tag = "9")]
+    #[prost(map = "string, message", tag = "10")]
     pub style_closures: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         ComponentStyleClosure,
@@ -121,7 +125,7 @@ pub struct WebUiProtocol {
     /// enabled CSS bundling, in which case every component that owns a style
     /// resource belongs to exactly one chunk and handlers deliver chunks instead
     /// of individual component resources.
-    #[prost(message, repeated, tag = "10")]
+    #[prost(message, repeated, tag = "11")]
     pub style_chunks: ::prost::alloc::vec::Vec<StyleChunk>,
 }
 /// Compile-time component style resources for one CSS tree.

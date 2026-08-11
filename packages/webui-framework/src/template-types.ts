@@ -98,4 +98,9 @@ export interface TemplateMeta extends TemplateBlockMeta {
   sd?: 1;
   /** Internal compiler-owned dormant TemplateElement host flag. */
   th?: boolean | 1;
+  /**
+   * Compiler-owned work policy: `1` defers SSR hydration by viewport;
+   * `2` couples hydration to browser-managed lazy rendering relevance.
+   */
+  wp?: 1 | 2;
 }

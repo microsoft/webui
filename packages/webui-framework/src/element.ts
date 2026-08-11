@@ -16,6 +16,22 @@
 
 import { TemplateElement } from './template-element.js';
 import {
+  disconnectLazyHydration,
+  isStreamedLazyActivation,
+  isLazyHydrationCoordinatorInstalled,
+  LAZY_HYDRATION_ACTIVATE,
+  LAZY_HYDRATION_CONTENT_VISIBILITY,
+  LAZY_HYDRATION_VIEWPORT,
+  observeLazyHydration,
+  observeStreamedLazyHydration,
+  supportsLazyHydration,
+  type LazyHydrationMode,
+} from './lazy-hydration-contract.js';
+import {
+  isStreamingHydrationMode,
+  STREAMED_HOST_ATTR,
+} from './streaming-mode.js';
+import {
   attributeNameForProperty,
   getObservableNames,
   syncAttrProperties,
@@ -35,11 +51,146 @@ import type {
 type EventHandler = (...args: unknown[]) => unknown;
 
 /**
+ * Per-instance escape hatches. `w-render="eager"` disables the complete
+ * lazy policy; `w-hydrate="eager"` keeps rendering deferral but wires the
+ * SSR component synchronously.
+ */
+const HYDRATE_ATTR = 'w-hydrate';
+const RENDER_ATTR = 'w-render';
+const HYDRATE_EAGER = 'eager';
+
+// ── Development build flag ──────────────────────────────────────
+// See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
+// bundler-folded compile-time constant, declared and consumed module-locally
+// so a production build (`--define:__WEBUI_DEV__=false`) can constant-fold
+// `DEV` to `false` and dead-code-eliminate `warnMissingLazyHydrationEntry`'s
+// body, while `tsc`, unit tests, and `webui-press serve` keep it active.
+declare const __WEBUI_DEV__: boolean;
+const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
+
+let warnedMissingLazyHydrationEntry = false;
+
+/**
+ * Warn once, in development, when a visibility-deferred component falls back
+ * to eager hydration because the optional
+ * `@microsoft/webui-framework/lazy-hydration.js` entry was never imported.
+ * Never warns for a missing `IntersectionObserver` — that fallback is
+ * documented, expected behavior on older browsers, not a misconfiguration.
+ */
+function warnMissingLazyHydrationEntry(tag: string, policy: 1 | 2): void {
+  if (!DEV || warnedMissingLazyHydrationEntry) return;
+  warnedMissingLazyHydrationEntry = true;
+  const directive = policy === LAZY_HYDRATION_CONTENT_VISIBILITY
+    ? 'w-render="lazy"'
+    : 'w-hydrate="lazy"';
+  console.warn(
+    `[WebUI] <${tag}> was compiled with \`${directive}\`, but ` +
+    "'@microsoft/webui-framework/lazy-hydration.js' was never imported, " +
+    'so it hydrated eagerly instead. Import that optional entry once before ' +
+    'your component definitions to enable visibility-deferred hydration.',
+  );
+}
+
+/**
  * The interactive element base. Authored components extend this to gain event
  * binding (`@click`, root events), decorator-backed state, `w-ref` wiring, and
  * `$emit`. HTML-only components never reach this class.
  */
 export class WebUIElement extends TemplateElement {
+  private $lazyHydrationMode: LazyHydrationMode | undefined;
+
+  protected override $shouldDeferSSRHydration(meta?: TemplateMeta): boolean {
+    this.$lazyHydrationMode = this.$resolveLazyHydrationMode(meta);
+    return this.$lazyHydrationMode !== undefined;
+  }
+
+  protected override $didDeferSSRHydration(): void {
+    // A streamed host cannot hydrate until its boundary-local state arrives.
+    if (
+      !isStreamingHydrationMode() ||
+      !this.hasAttribute(STREAMED_HOST_ATTR)
+    ) {
+      this.$primeSSRStateForDeferral();
+      const mode = this.$lazyHydrationMode;
+      if (mode !== undefined) observeLazyHydration(this, mode);
+    }
+  }
+
+  protected override $didDeferStreamedSSRHydration(
+    state: Record<string, unknown> | undefined,
+  ): void {
+    const mode = this.$lazyHydrationMode;
+    if (mode === undefined) {
+      super.$didDeferStreamedSSRHydration(state);
+      return;
+    }
+    observeStreamedLazyHydration(this, state, mode);
+  }
+
+  protected override $activateDeferredSSR(
+    state?: Record<string, unknown>,
+  ): void {
+    if (isStreamedLazyActivation(this)) {
+      this.$lazyHydrationMode = undefined;
+      super.$activateDeferredSSRFromBoundary(state);
+      return;
+    }
+    const mode = this.$lazyHydrationMode ??
+      this.$resolveLazyHydrationMode(this.$currentTemplateMetadata());
+    if (
+      isStreamingHydrationMode() &&
+      this.hasAttribute(STREAMED_HOST_ATTR) &&
+      mode !== undefined
+    ) {
+      this.$lazyHydrationMode = mode;
+      observeStreamedLazyHydration(this, state, mode);
+      return;
+    }
+    this.$lazyHydrationMode = undefined;
+    super.$activateDeferredSSR(state);
+  }
+
+  /**
+   * Whether this SSR instance should defer to the viewport/interaction
+   * coordinator. Checks compact compiler metadata first, so an ordinary eager
+   * component returns without reading an attribute or touching the optional
+   * coordinator contract.
+   */
+  private $resolveLazyHydrationMode(
+    meta?: TemplateMeta,
+  ): LazyHydrationMode | undefined {
+    const policy = meta?.wp;
+    if (policy === undefined) return undefined;
+    if (
+      policy === LAZY_HYDRATION_CONTENT_VISIBILITY &&
+      this.getAttribute(RENDER_ATTR) === HYDRATE_EAGER
+    ) return undefined;
+    if (this.getAttribute(HYDRATE_ATTR) === HYDRATE_EAGER) return undefined;
+    if (!isLazyHydrationCoordinatorInstalled()) {
+      warnMissingLazyHydrationEntry(this.tagName, policy);
+      return undefined;
+    }
+    if (!supportsLazyHydration()) return undefined;
+    return policy === LAZY_HYDRATION_CONTENT_VISIBILITY
+      ? LAZY_HYDRATION_CONTENT_VISIBILITY
+      : LAZY_HYDRATION_VIEWPORT;
+  }
+
+  [LAZY_HYDRATION_ACTIVATE](
+    state: Record<string, unknown> | undefined,
+  ): void {
+    // Call virtually so an authored override that instruments or extends the
+    // protected activation hook retains its existing behavior.
+    this.$activateDeferredSSR(state);
+  }
+
+  override disconnectedCallback(): void {
+    if (this.$lazyHydrationMode !== undefined) {
+      disconnectLazyHydration(this);
+    }
+    super.disconnectedCallback();
+  }
+
   protected override $observableNames(): Set<string> {
     return getObservableNames(this.constructor as Function);
   }

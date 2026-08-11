@@ -40,6 +40,9 @@ pub struct WebUIProtocol {
     pub css_strategy: CssStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Deterministic document-level CSS for build-authored component rendering
+    /// policies. Empty when no component uses `w-render="lazy"`.
+    pub component_render_css: String,
     /// Ordered component style resources for each CSS-tree entry point.
     pub style_closures: HashMap<String, ComponentStyleClosure>,
     /// Bundled stylesheet chunks, empty unless the build enabled `css_bundle`.
@@ -1968,6 +1971,7 @@ update hot paths still call the function directly.
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
 | `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
+| `wp`  | `1 \| 2`                          | Component work policy: `1` = lazy hydration only, `2` = lazy rendering plus lazy hydration |
 
 All arrays are optional and omitted from the output when empty to minimize payload.
 
@@ -2113,8 +2117,61 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `<for each="v in coll"><x key="{{v.id}}">body</x></for>` | `r[]` + `b[]` | block removed; first-child key path stored |
 | `@event="{handler(item.id, e)}"`     | `eg[]`                 | element kept marker-free          |
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
+| `<template w-hydrate="lazy">`     | `wp: 1`                | policy wrapper/attributes stripped |
+| `<template w-render="lazy" w-reserve-block-size="72px">` | `wp: 2` | policy wrapper/attributes stripped |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
+
+Component policies are visible to the Rust build because they live on the root
+component `<template>`, not on a TypeScript class. A component that authors
+`<template shadowrootmode="open">` keeps that wrapper as its declarative
+shadow-root template after its build-only policy attributes are removed. Every
+other component is Light, so the policy wrapper is unwrapped and the policy
+reaches the host through `WebUIProtocol.component_render_css`.
+`w-render="lazy"` requires one non-negative CSS
+length in `w-reserve-block-size`; the parser accepts absolute,
+font-relative, viewport, and container-query length units, and rejects
+percentages, negative values, CSS functions, keywords, duplicates, missing
+values, misplaced policy attributes, and reservations without the rendering
+policy. Invalid input returns the stable diagnostics
+`invalid-component-render-policy`, `missing-render-reservation`, or
+`invalid-render-reservation`.
+
+For every entry- or component-asset-reachable `wp: 2` component, the registry
+emits one deterministic tag rule into `WebUIProtocol.component_render_css`:
+
+```css
+activity-row:not([w-render="eager"]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 72px;
+}
+```
+
+Rules are sorted by component tag and concatenated once at build time. The
+handler writes them verbatim in one nonce-aware
+`<style data-webui-render-policy>` at the structural `</head>` boundary, before
+component CSS links. This guarantees that containment can affect first layout
+without runtime style injection or per-request rule construction.
+
+The build also appends the same declarations to each lazy-rendered component's
+stylesheet with a shadow-scoped selector:
+
+```css
+:host(activity-row:not([w-render="eager"])),
+activity-row:not([w-render="eager"]) {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto 72px;
+}
+```
+
+The document rule covers document and Light DOM instances. In a component
+stylesheet, the qualified `:host(...)` selector covers a Shadow DOM component
+without matching an unrelated enclosing host. The tag selector also covers a
+Light DOM instance nested in an authored shadow root: the precomputed style
+closure delivers that stylesheet into the containing root under every CSS
+strategy, so the containment rule follows the component across the boundary.
+Both generated rules are build-time output, and `w-render="eager"`
+disables both.
 
 Repeat identity is positional by default. At runtime, the existing block at
 index `i` receives the current collection item at index `i`; only tail growth
@@ -4194,7 +4251,7 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 ### Runtime contract
 
-`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
+`@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup or explicitly opt into visibility-driven activation, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
 
 - SSR hydration performs one pre-order walk per component that pairs each template element with the server-rendered element it hydrates and collects `<!--wc-->` / `<!--wr-->` markers in document order. Because the compiler emits `c` / `r` in source order and the server renders in source order, the two line up by index, so each block's anchor is unambiguous. Bindings then resolve by lookup rather than by rescanning, keeping hydration linear in subtree size instead of proportional to bindings times sibling count. The walk skips whole `<!--wc-->` / `<!--wr-->` ranges — that content belongs to the block's own metadata — and stops at child components, which contribute no children to the parent's `h`. `<!--wi-->` item markers and SSR-only closing markers are removed afterwards.
 - Authored browser entries execute only after every SSR instance they may
@@ -4203,11 +4260,150 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   must appear after all such instances. Under this loading contract,
   `TemplateElement.connectedCallback()` hydrates synchronously, so
   `super.connectedCallback()` returns only after that component's bindings,
-  events, and references are wired.
+  events, and references are wired, unless compiler metadata selects a
+  visibility policy and no eager instance override applies.
+- **Component-level work policy.** The absence of `wp` metadata is the universal
+  eager default. `wp: 1`, compiled from
+  `<template w-hydrate="lazy">`, defers only SSR hydration. `wp: 2`, compiled
+  from `<template w-render="lazy"
+  w-reserve-block-size="<length>">`, combines that hydration policy with
+  browser-managed `content-visibility: auto` and an intrinsic block-size
+  reservation emitted before first layout. Client-created instances always
+  mount eagerly.
+  - Both policies require the optional
+    `@microsoft/webui-framework/lazy-hydration.js` entry before component
+    definitions in the same module graph. Without it, or without
+    `IntersectionObserver`, hydration falls back to eager and the component is
+    never left inert. A missing optional entry logs one development-only
+    warning per session. A missing `IntersectionObserver` never warns because
+    the eager fallback is expected on older browsers. A `wp: 2` rendering rule
+    remains browser-managed independently of the hydration fallback.
+  - **Instance escape hatches.** `w-hydrate="eager"` makes either policy hydrate
+    synchronously. On `wp: 2`, rendering deferral remains active.
+    `w-render="eager"` excludes a `wp: 2` instance from the generated CSS selector
+    and also hydrates it synchronously, disabling the complete policy. Only the
+    exact, case-sensitive string `"eager"` is recognized. Other values are
+    ignored. Ordinary eager components short-circuit on absent `wp` metadata
+    before reading either attribute. The framework does not strip instance
+    overrides, so they survive hydration and reconnect.
+- **Optional lazy-hydration entry.** The shared viewport/interaction
+  coordinator lives in `lazy-hydration-coordinator.ts`, reachable only
+  through the optional `@microsoft/webui-framework/lazy-hydration.js` entry
+  (`lazy-hydration-entry.ts`), mirroring the streaming coordinator's split
+  (`streaming.js`). `element.ts` imports only a tiny, dependency-free contract
+  module (`lazy-hydration-contract.ts`: an activation symbol, types, and a
+  coordinator registry `element.ts` consults through an optional-chained
+  reference), so an application that never imports the optional entry never
+  bundles the coordinator. The optional entry installs it synchronously as an
+  import side effect, before any authored `.define()` body in the same module
+  graph, exactly like the streaming entry.
+- Deferred SSR DOM remains present and structurally untouched. The complete
+  policy does not defer HTML parsing, DOM construction, declarative shadow-root
+  construction, custom-element definition/upgrade, or resource discovery.
+  `content-visibility: auto` preserves find-in-page and accessibility semantics
+  while allowing the browser to skip offscreen style, layout, paint, and raster.
+  WebUI does not add explicit `contain: layout paint`; the platform's
+  `content-visibility: auto` containment is sufficient and avoids expanding the
+  behavior change.
+- One lazily created `IntersectionObserver` is shared across the realm with
+  `root: null` and `threshold: 0`. Browsers exposing
+  `IntersectionObserver.scrollMargin` receive `scrollMargin: "200px"` and
+  `rootMargin: "0px"` so the document scrollport is expanded exactly once.
+  Older implementations receive `rootMargin: "200px"`; nested scroll containers
+  then activate at their own clip boundary instead of receiving an additional
+  lead.
+  - Every target enters this observer once for initial classification. This
+    closes the race where a `contentvisibilityautostatechange` transition occurs
+    before the component listener is installed and is not replayed.
+  - A `wp: 2` target retains the observer fallback until a native event proves
+    that its direct listener has observed the current state. A received
+    `skipped === true` event classifies the target as dormant and retires its
+    observer registration; `skipped === false` activates it. This prevents a
+    late component definition from missing an earlier relevant-state event and
+    then becoming stranded between the browser's relevance margin and WebUI's
+    200px observer margin. The event bubbles but is not composed across shadow
+    roots, so delegation cannot replace direct listeners.
+  - Unsupported browsers and `wp: 1` targets remain under the shared observer.
+- The observer keeps a strong `Set` only for currently connected targets so it
+  can unobserve and remove global listeners, while weak state retains reconnect
+  eligibility without retaining detached elements. Observation generations
+  reject queued or delivered records from an earlier connection. A successful
+  mount latch survives delayed disconnect teardown. Reconnect therefore skips
+  fresh-SSR bootstrap replay and visibility deferral, rewires marker-safe DOM in
+  place, and reconciles available current client state while retaining unknown
+  trusted values. Templates containing conditionals or repeats remount from the
+  instance's current state instead of attempting to reclaim SSR ranges whose
+  closing markers were already removed. Client-created policy-bearing instances
+  follow the same eager reconnect path.
+- Lazy intersection batches enqueue each composed ancestor as an individual
+  parent-first work item and run synchronously until they consume an 8ms budget.
+  Remaining targets continue through
+  `scheduler.postTask(..., { priority: "user-visible" })`, with one shared
+  `MessageChannel` fallback. A rejected scheduler task reports the error and
+  drains the retained queue through `MessageChannel`. Small batches incur no
+  scheduling hop. Shared capture listeners for `pointerover`, `pointerdown`,
+  `focus`, `keydown`, and `click` activate pending ancestors before target
+  handling and are installed only while connected lazy targets exist.
+  `pointerover` lets the first hover sequence install a direct `mouseenter`
+  handler without also subscribing to `mouseover`. Composed ancestry follows
+  assigned slots and shadow hosts. One failed activation is reported without
+  abandoning other visible work.
+- State writes after an instance enters lazy deferral are stored in its normal
+  authored or hidden template state. A lazily allocated root-name `Set`
+  prevents older ordinary or boundary-local bootstrap values from overwriting
+  those roots, including an explicit same-value assignment. Ordinary bootstrap
+  values are copied into component-local state when deferral begins, so a
+  router can release the page-wide bootstrap object before activation. After
+  normal SSR wiring succeeds, one synchronous path-indexed pass replays the
+  newest values. A binding that also depends on an unavailable template-only
+  root keeps its complete trusted SSR value on replay and every later reactive
+  or structural binding pass until that root is supplied; WebUI never
+  substitutes an unknown dependency with an empty string. An explicitly
+  supplied `undefined` is known state: scope availability comes from the repeat
+  frame's knownness, so explicit and sparse `undefined` items clear text and
+  attributes while genuinely unknown SSR item scopes remain untouched. A root
+  repeat supplied as `undefined` reconciles as empty. This covers `setState`,
+  compiled parent-to-child writes, attributes, and repeat reconciliation
+  without a separate initial mount implementation. It does not alter
+  pre-`super` hydration mismatch behavior.
+- Native image fetching and `loading="lazy"` use browser-owned scheduling that
+  is independent of the hydration observer. Direct `@load` / `@error` listeners
+  begin at hydration; the runtime does not replay an earlier one-shot resource
+  event because a native event racing listener installation could then dispatch
+  twice. Components that derive state from image completion reconcile
+  `HTMLImageElement.complete` and `naturalWidth` in `hydratedCallback()`. Native
+  events after hydration retain their normal repeated listener semantics.
+- A streamed lazy root reports a successful boundary activation without walking
+  its DOM. It retains the boundary state by reference, joins the coordinator's
+  root set when its boundary is updatable, accepts later shallow patches through
+  `setState`, and releases the retained state when visibility or interaction
+  invokes the same `$activateDeferredSSR` path. The coordinator still removes
+  `data-ws` and all boundary scaffolding at commit. `hydratedCallback()` runs
+  only at the eventual successful hydration.
+- Parser-startup lazy roots hold `webui:hydration-complete` only until
+  `DOMContentLoaded` and their first intersection result. Roots intersecting
+  at that point join the active hydration batch; non-intersecting roots are
+  classified as dormant and no longer hold the gate. Later visibility
+  activation does not redispatch the one-shot event. Component-specific
+  readiness belongs in `hydratedCallback()`.
 - Before a containing WebUI component hydrates, descendants must not
   structurally mutate its SSR subtree. Hydration numbers the server DOM in the
   same pre-order the compiler numbered the template and does not recover from
-  pre-hydration node insertion, removal, or reordering.
+  pre-hydration node insertion, removal, or reordering. `TemplateElement`
+  therefore applies a parent-first barrier to nested SSR components. A child
+  that upgrades before an already-deferred parent registers with that parent. A
+  child that upgrades before a compiled parent tag has upgraded registers in a
+  weak pending map keyed by the ancestor element; the parent adopts those
+  children in `connectedCallback()`. Compiler-owned `th: 1` hosts are
+  pass-through because they may intentionally remain dormant indefinitely and a
+  child owns the DOM inside its own host. An ancestor-barrier child copies
+  ordinary bootstrap state into component-local storage before the page-wide
+  handoff can be released. After the parent hydrates it releases descendants
+  through one reusable iterative queue. Each child then applies its own policy
+  or eager override; one child failure is retained while later queue entries
+  continue, then the collected error is rethrown. This supports arbitrarily deep
+  definition order without recursion, per-depth promise allocation, lost state,
+  or child mutation of authored-parent markers.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
   upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
   embedded in `c` / `r`, and event target indices directly, then applies the first binding pass before
@@ -4425,9 +4621,9 @@ both decoded protocol data and reusable indices on dispose.
 
 Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
-`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish` runs `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
+`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-Release workflows attach staged NuGet artifacts to GitHub Releases, and the Azure CD pipeline copies both `.nupkg` and `.snupkg` artifacts into `publish_artifacts_nuget` for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process.
+Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. Pushes to `main` trigger the Microsoft-hosted `Web UI - CD Build` pipeline immediately; the pipeline may also be queued manually. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Its `PrepareRelease` stage selects an untagged stable workspace version. `BuildArtifacts` runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. The assembly job merges those six outputs, restores its Cargo and pnpm caches, and uses `cargo xtask publish-stage --pack-only` for WASM, npm, crate, NuGet, and standalone artifacts. The packer validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Its `SignArtifacts` stage restores the build outputs with Azure artifact tasks and runs ESRP signing. For production runs, `TagRelease` creates or verifies the annotated Git tag, then `PublishRelease` runs independent parallel jobs for the GitHub Release, npm packages, and Rust crates so one publication destination does not block another. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all four folders for 54 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
 
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`

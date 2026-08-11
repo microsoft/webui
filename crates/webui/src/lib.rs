@@ -608,6 +608,13 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     let synthetic_asset_fragments =
         parse_component_asset_roots(&mut parser, &options.component_asset_roots)?;
 
+    let component_render_css = parser.component_registry().render_policy_css(
+        parser
+            .component_registry()
+            .get_all()
+            .filter(|component| parser.has_fragment(&component.tag_name))
+            .map(|component| component.tag_name.as_str()),
+    );
     let css_snapshot: Vec<(String, String)> = parser
         .component_registry()
         .get_all()
@@ -716,6 +723,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .or_default()
             .uses_shadow_dom = uses_shadow_dom;
     }
+    protocol.component_render_css = component_render_css;
 
     // Process component CSS in a single pass: retain compiled Style/Module CSS,
     // set Link-strategy css_href, and collect external CSS files.
@@ -3569,6 +3577,25 @@ mod tests {
 
         assert_eq!(result.css_files.len(), 1);
         assert_eq!(result.css_files[0].0, "card-a.css");
+    }
+
+    #[test]
+    fn test_build_unused_component_render_policy_not_emitted() {
+        let app = create_app_dir(&[
+            ("index.html", "<card-a>A</card-a>"),
+            (
+                "card-a.html",
+                r#"<template w-render="lazy" w-reserve-block-size="10px"><div>a</div></template>"#,
+            ),
+            (
+                "card-b.html",
+                r#"<template w-render="lazy" w-reserve-block-size="20px"><div>b</div></template>"#,
+            ),
+        ]);
+        let result = build(default_options(app.path())).unwrap();
+
+        assert!(result.protocol.component_render_css.contains("card-a"));
+        assert!(!result.protocol.component_render_css.contains("card-b"));
     }
 
     #[test]

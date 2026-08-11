@@ -81,6 +81,9 @@ function renderOne(
   if (fixtureConfig.css === 'link' || fixtureConfig.css === 'style' || fixtureConfig.css === 'module') {
     buildOptions.css = fixtureConfig.css;
   }
+  if (fixtureConfig.dom === 'light' || fixtureConfig.dom === 'shadow') {
+    buildOptions.dom = fixtureConfig.dom;
+  }
   if (projectionManifest) {
     buildOptions.projectionManifests = [projectionManifest];
   }

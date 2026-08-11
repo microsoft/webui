@@ -544,6 +544,7 @@ impl WebUiProtocol {
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
+            component_render_css: String::new(),
             style_closures: HashMap::new(),
             style_chunks: Vec::new(),
         }
@@ -559,6 +560,7 @@ impl WebUiProtocol {
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
+            component_render_css: String::new(),
             style_closures: HashMap::new(),
             style_chunks: Vec::new(),
         }

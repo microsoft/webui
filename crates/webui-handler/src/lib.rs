@@ -1977,6 +1977,24 @@ impl WebUIHandler {
                 context.writer.write("\">")?;
             }
 
+            // Render-policy CSS is emitted before component styles so an
+            // authored declaration still wins on a tie.
+            if !context.protocol.component_render_css.is_empty() {
+                context.writer.write("<style data-webui-render-policy")?;
+                if let Some(nonce) = context.nonce {
+                    context.writer.write(" nonce=\"")?;
+                    context
+                        .writer
+                        .write(&crate::html_encode::encode_safe(nonce))?;
+                    context.writer.write("\"")?;
+                }
+                context.writer.write(">")?;
+                context
+                    .writer
+                    .write(&context.protocol.component_render_css)?;
+                context.writer.write("</style>")?;
+            }
+
             if !context.protocol.style_closures.is_empty() {
                 let entry_id = context.entry_id;
                 self.emit_component_style_closure(entry_id, StyleClosureInstall::Static, context)?;
@@ -9655,6 +9673,31 @@ mod tests {
         );
         // No duplicate.
         assert_eq!(html.matches("<link rel=preload>").count(), 1);
+    }
+
+    #[test]
+    fn component_render_policy_css_emits_once_in_head_with_nonce() {
+        let mut protocol = build_head_body_protocol();
+        protocol.component_render_css = concat!(
+            r#"lazy-card:not([w-render="eager"]){content-visibility:auto;"#,
+            "contain-intrinsic-block-size:auto 18rem;}"
+        )
+        .to_string();
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        let opts = RenderOptions::new("index.html", "/").with_nonce("test-nonce");
+        handle(&protocol, &state, &opts, &mut writer).unwrap();
+        let html = writer.get_content();
+
+        let style = concat!(
+            r#"<style data-webui-render-policy nonce="test-nonce">"#,
+            r#"lazy-card:not([w-render="eager"]){content-visibility:auto;"#,
+            "contain-intrinsic-block-size:auto 18rem;}</style>"
+        );
+        let style_index = html.find(style).expect("render policy style missing");
+        let head_close = html.find("</head>").expect("</head> missing");
+        assert!(style_index < head_close);
+        assert_eq!(html.matches("data-webui-render-policy").count(), 1);
     }
 
     #[test]

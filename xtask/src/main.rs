@@ -81,6 +81,10 @@ fn main() -> ExitCode {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_stage(&extra)
         }
+        Some("publish-build") => {
+            let extra: Vec<String> = args.iter().skip(2).cloned().collect();
+            publish::run_build(&extra)
+        }
         Some("build-windows-local") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             windows_local::run(&extra)
@@ -138,6 +142,7 @@ fn usage() -> ExitCode {
            e2e [--update-snapshots]  Run Playwright E2E tests for all example apps\n  \
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
+           publish-build --target <triple> [--profile release|debug] [--output <dir>]  Build, stage, and optionally export one target's native release artifacts\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]  Stage release artifacts into publish/\n  \
            build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \
            license-headers [--fix]  Check (or fix) license headers in source files\n  \

@@ -6,6 +6,7 @@
 //! This module handles parsing WebUI-specific directives like <for>, <if>, etc.
 mod asset_filename;
 mod comment_policy;
+mod component_policy;
 mod component_registry;
 mod condition_parser;
 mod css_boundary;
@@ -34,6 +35,11 @@ pub use error::{ParserError, Result};
 pub use handlebars_parser::HandlebarsParser;
 pub use webui_tokens::CssFallbackChain;
 
+use crate::component_policy::{
+    parse_component_render_policy, HYDRATE_ATTR as COMPONENT_HYDRATE_ATTR,
+    RENDER_ATTR as COMPONENT_RENDER_ATTR,
+    RESERVE_BLOCK_SIZE_ATTR as COMPONENT_RESERVE_BLOCK_SIZE_ATTR,
+};
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
 use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use std::collections::{HashMap, HashSet};
@@ -570,6 +576,12 @@ enum OwnedComponentStyle {
 struct ComponentStyleInjection<'a> {
     css_snippet: Option<&'a str>,
     adopted_specifier: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+struct ComponentTemplateMode {
+    preserve_runtime_attrs: bool,
+    policy_wrapper: bool,
 }
 
 impl BuiltComponentTemplate {
@@ -3588,13 +3600,23 @@ impl HtmlParser {
         };
         let artifact_differs =
             artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
-        let ssr =
-            self.process_component_template_for_dom(html, None, adopted_specifier, dom_analysis)?;
+        // A `w-render`/`w-hydrate` component authors its policy on a plain
+        // `<template>` wrapper. The policy lands on the host element as
+        // generated CSS, so the wrapper itself must not survive into a Light
+        // template, where its contents would never render.
+        let policy_wrapper = parse_component_render_policy(tag_name, html)?.is_authored();
+        let ssr = self.process_component_policy_template_for_dom(
+            html,
+            adopted_specifier,
+            dom_analysis,
+            policy_wrapper,
+        )?;
         let artifact = if artifact_differs {
             Some(self.process_component_artifact_template_for_dom(
                 html,
                 adopted_specifier,
                 dom_analysis,
+                policy_wrapper,
             )?)
         } else {
             None
@@ -3665,17 +3687,7 @@ impl HtmlParser {
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
     ) -> Result<String> {
-        let analysis = analyze_component_dom("component", html)?;
-        self.process_component_template_for_dom(html, css_snippet, adopted_specifier, analysis)
-    }
-
-    fn process_component_template_for_dom(
-        &mut self,
-        html: &str,
-        css_snippet: Option<&str>,
-        adopted_specifier: Option<&str>,
-        dom_analysis: ComponentDomAnalysis,
-    ) -> Result<String> {
+        let dom_analysis = analyze_component_dom("component", html)?;
         self.process_component_template_with_mode(
             html,
             ComponentStyleInjection {
@@ -3683,15 +3695,21 @@ impl HtmlParser {
                 adopted_specifier,
             },
             dom_analysis,
-            false,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: false,
+                policy_wrapper: false,
+            },
         )
     }
 
-    fn process_component_artifact_template_for_dom(
+    /// Serializes the SSR template for a component that may author a
+    /// `w-render`/`w-hydrate` policy on its `<template>` wrapper.
+    fn process_component_policy_template_for_dom(
         &mut self,
         html: &str,
         adopted_specifier: Option<&str>,
         dom_analysis: ComponentDomAnalysis,
+        policy_wrapper: bool,
     ) -> Result<String> {
         self.process_component_template_with_mode(
             html,
@@ -3700,7 +3718,31 @@ impl HtmlParser {
                 adopted_specifier,
             },
             dom_analysis,
-            true,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: false,
+                policy_wrapper,
+            },
+        )
+    }
+
+    fn process_component_artifact_template_for_dom(
+        &mut self,
+        html: &str,
+        adopted_specifier: Option<&str>,
+        dom_analysis: ComponentDomAnalysis,
+        policy_wrapper: bool,
+    ) -> Result<String> {
+        self.process_component_template_with_mode(
+            html,
+            ComponentStyleInjection {
+                css_snippet: None,
+                adopted_specifier,
+            },
+            dom_analysis,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: true,
+                policy_wrapper,
+            },
         )
     }
 
@@ -3709,7 +3751,7 @@ impl HtmlParser {
         html: &str,
         style: ComponentStyleInjection<'_>,
         dom_analysis: ComponentDomAnalysis,
-        preserve_runtime_attrs: bool,
+        mode: ComponentTemplateMode,
     ) -> Result<String> {
         let trimmed = html.trim();
         let snippet = style.css_snippet.unwrap_or_default();
@@ -3723,11 +3765,9 @@ impl HtmlParser {
                 ));
             }
             let root = &html[root_start..root_end];
-            let base = if preserve_runtime_attrs {
-                root.to_string()
-            } else {
-                self.strip_runtime_attrs_from_template(root)
-            };
+            // Compiler-owned policy attributes are stripped from both views;
+            // runtime attributes survive only in the captured client template.
+            let base = self.strip_template_build_attrs(root, mode.preserve_runtime_attrs);
             let with_adopted = Self::append_adopted_attr_if_missing(base, style.adopted_specifier);
             let root = Self::inject_css_snippet_into_template(with_adopted, snippet);
             let mut result =
@@ -3736,13 +3776,24 @@ impl HtmlParser {
             result.push_str(&root);
             result.push_str(&html[root_end..trim_end]);
             result
-        } else if snippet.is_empty() {
-            trimmed.to_string()
         } else {
-            let mut result = String::with_capacity(snippet.len() + trimmed.len());
-            result.push_str(snippet);
-            result.push_str(trimmed);
-            result
+            // A policy component authors its `w-render`/`w-hydrate` on a plain
+            // `<template>` wrapper. The policy is applied to the host element
+            // through generated CSS, so a Light template must drop the wrapper
+            // or its contents would never render.
+            let base = if mode.policy_wrapper {
+                Self::unwrap_component_policy_template(trimmed)
+            } else {
+                trimmed.to_string()
+            };
+            if snippet.is_empty() {
+                base
+            } else {
+                let mut result = String::with_capacity(snippet.len() + base.len());
+                result.push_str(snippet);
+                result.push_str(&base);
+                result
+            }
         };
 
         self.strip_template_comments(processed)
@@ -3789,6 +3840,18 @@ impl HtmlParser {
         Self::push_adopted_attr(&mut result, adopted);
         result.push_str(&html[tag.close..]);
         result
+    }
+
+    fn unwrap_component_policy_template(html: &str) -> String {
+        let Some(tag) = html::parse_tag(html) else {
+            return html.to_string();
+        };
+        let inner_start = tag.close + 1;
+        let inner_end = html.rfind("</template>").unwrap_or(html.len());
+        if inner_start >= inner_end {
+            return String::new();
+        }
+        html[inner_start..inner_end].to_string()
     }
 
     fn push_adopted_attr(out: &mut String, adopted: &str) {
@@ -3894,21 +3957,26 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Strip attributes starting with `@`, `:`, or `?` from the opening
+    /// Strip compiler-owned component policy attributes and, for the SSR view,
+    /// runtime attributes starting with `@`, `:`, or `?` from the opening
     /// `<template>` tag.
     ///
     /// Uses the same quote-aware tag scanner as the main HTML pipeline.
-    fn strip_runtime_attrs_from_template(&mut self, html: &str) -> String {
+    fn strip_template_build_attrs(&mut self, html: &str, preserve_runtime_attrs: bool) -> String {
         let Some(tag) = html::parse_tag(html) else {
             return html.to_string();
         };
 
         let mut removals: Vec<(usize, usize)> = Vec::new();
         for attr in tag.attrs() {
-            if attr.name.starts_with('@')
+            let runtime_attr = attr.name.starts_with('@')
                 || attr.name.starts_with(':')
-                || attr.name.starts_with('?')
-            {
+                || attr.name.starts_with('?');
+            let policy_attr = matches!(
+                attr.name,
+                COMPONENT_RENDER_ATTR | COMPONENT_HYDRATE_ATTR | COMPONENT_RESERVE_BLOCK_SIZE_ATTR
+            );
+            if policy_attr || (!preserve_runtime_attrs && runtime_attr) {
                 let mut start = attr.raw_range.start;
                 while start > 0 && html.as_bytes()[start - 1].is_ascii_whitespace() {
                     start -= 1;
@@ -7012,6 +7080,34 @@ mod tests {
             processed.contains("<div>hi</div>"),
             "Light content must survive processing, got: {processed}"
         );
+    }
+
+    #[test]
+    fn component_policy_wrapper_is_build_only_and_unwrapped_for_light() {
+        // A policy wrapper is authored on a plain `<template>`; the policy is
+        // applied to the host through generated CSS, so the wrapper must not
+        // survive into a Light template.
+        let html = r#"<template w-hydrate="lazy"><div>hi</div></template>"#;
+        let mut light = HtmlParser::new();
+        let light_built = light
+            .build_component_templates("my-comp", html, None, true)
+            .expect("light policy wrapper should compile");
+        assert_eq!(light_built.ssr, "<div>hi</div>");
+        assert_eq!(light_built.artifact(), "<div>hi</div>");
+
+        // An authored Shadow component keeps its wrapper; only the
+        // compiler-owned policy attributes are stripped.
+        let shadow_html =
+            r#"<template shadowrootmode="open" w-hydrate="lazy"><div>hi</div></template>"#;
+        let mut shadow = HtmlParser::new();
+        let shadow_built = shadow
+            .build_component_templates("my-comp", shadow_html, None, true)
+            .expect("shadow policy wrapper should compile");
+        assert_eq!(
+            shadow_built.ssr,
+            r#"<template shadowrootmode="open"><div>hi</div></template>"#
+        );
+        assert!(!shadow_built.artifact().contains("w-hydrate"));
     }
 
     // ── CSS-module adoption on dev-authored <template> wrappers ────────

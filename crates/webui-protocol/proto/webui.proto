@@ -107,14 +107,17 @@ message WebUIProtocol {
   // declaration order. Hosts resolve a name once to its zero-based BoundaryId;
   // names never reach the rendered HTML response.
   map<string, StreamingBoundaryList> streaming_boundaries = 8;
+  // Build-generated document-level rules for component rendering policies.
+  // Empty when no component opts into lazy rendering.
+  string component_render_css = 9;
   // Ordered, deduplicated component style resource tags for each Document or
   // component-root CSS tree entry point.
-  map<string, ComponentStyleClosure> style_closures = 9;
+  map<string, ComponentStyleClosure> style_closures = 10;
   // Bundled stylesheets in global cascade order. Empty unless the build
   // enabled CSS bundling, in which case every component that owns a style
   // resource belongs to exactly one chunk and handlers deliver chunks instead
   // of individual component resources.
-  repeated StyleChunk style_chunks = 10;
+  repeated StyleChunk style_chunks = 11;
 }
 
 // Compile-time component style resources for one CSS tree.

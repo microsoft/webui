@@ -30,8 +30,8 @@ For .NET server-side bindings:
 dotnet add package Microsoft.WebUI
 ```
 
-The NuGet package restores platform-specific `Microsoft.WebUI.Runtime.*` native assets transitively. Release builds stage `.nupkg` and `.snupkg` artifacts with repository metadata and Source Link; the Azure CD pipeline copies them into the NuGet artifact set for downstream signing and publishing.
-NuGet metadata uses `Authors=Microsoft`, the `Microsoft` package owner, a stable project URL, a package license URL with license acceptance required, release notes links, discoverability tags, and the required `© Microsoft Corporation. All rights reserved.` copyright notice. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
+The NuGet package restores platform-specific `Microsoft.WebUI.Runtime.*` native assets transitively. Azure release validation retains unsigned npm tarballs, unsigned crate archives, signed NuGet packages, and a standalone asset folder containing direct-download native binaries and WASM files as pipeline artifacts. Production runs also attach all four artifact sets to the GitHub Release. Signed `.nupkg` and `.snupkg` files are used for manual NuGet.org publishing.
+NuGet metadata uses `Authors=Microsoft`, the `Microsoft` package owner, a stable project URL, a package license URL with license acceptance required, release notes links, discoverability tags, and the required `© Microsoft Corporation. All rights reserved.` copyright notice. NuGet.org publishing is not automatic. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
 
 ## Learn
 

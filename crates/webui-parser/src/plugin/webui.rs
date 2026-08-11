@@ -64,6 +64,7 @@ use super::{
     ParserPluginArtifacts, StateSurface,
 };
 use crate::comment_policy;
+use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{find_matching_end, find_tag_close, parse_tag, style_element_bounds};
@@ -82,11 +83,13 @@ struct TrackedComponent {
     root_event_source: String,
     client_module: ClientModule,
     uses_shadow_dom: bool,
+    render_policy: ComponentRenderPolicy,
 }
 
 struct TrackedClientContext {
     client_module: ClientModule,
     uses_shadow_dom: bool,
+    render_policy: ComponentRenderPolicy,
 }
 
 /// Authored client-module ownership.
@@ -165,13 +168,14 @@ impl WebUIParserPlugin {
         let mut out = Vec::with_capacity(self.components.len());
         for c in &self.components {
             let is_authored = c.client_module.is_authored();
-            let payload = generate_compiled_template_with_root_source(
+            let mut payload = generate_compiled_template_with_root_source(
                 &c.tag_name,
                 &c.template_html,
                 &c.root_event_source,
                 c.uses_shadow_dom,
                 !is_authored,
             )?;
+            append_render_policy(&mut payload.template_json, &c.render_policy);
             // The parser plugin performs no JavaScript/TypeScript analysis: it
             // cannot prove an authored component's exact reactive key set.
             // Scripted components default to `All` (unknown surface, full
@@ -218,6 +222,7 @@ impl WebUIParserPlugin {
             component.root_event_source.push_str(root_event_source);
             component.client_module = client.client_module;
             component.uses_shadow_dom = client.uses_shadow_dom;
+            component.render_policy = client.render_policy;
             return;
         }
         self.components.push(TrackedComponent {
@@ -226,6 +231,7 @@ impl WebUIParserPlugin {
             root_event_source: root_event_source.to_string(),
             client_module: client.client_module,
             uses_shadow_dom: client.uses_shadow_dom,
+            render_policy: client.render_policy,
         });
     }
 
@@ -286,6 +292,7 @@ impl ParserPlugin for WebUIParserPlugin {
             TrackedClientContext {
                 client_module: ClientModule::from_component(component),
                 uses_shadow_dom: context.uses_shadow_dom,
+                render_policy: parse_component_render_policy(tag_name, &component.html_content)?,
             },
         );
         Ok(())
@@ -320,6 +327,19 @@ impl ParserPlugin for WebUIParserPlugin {
             self.take_component_templates()?,
         ))
     }
+}
+
+fn append_render_policy(template_json: &mut String, policy: &ComponentRenderPolicy) {
+    let Some(code) = policy.metadata_code() else {
+        return;
+    };
+    if !template_json.ends_with('}') {
+        return;
+    }
+    template_json.truncate(template_json.len() - 1);
+    template_json.push_str(",\"wp\":");
+    template_json.push(char::from(b'0' + code));
+    template_json.push('}');
 }
 
 // ── Compiled template generation ───────────────────────────────────
@@ -3377,6 +3397,32 @@ mod tests {
             css_fallback_chains: Vec::new(),
             is_client_owned,
         }
+    }
+
+    #[test]
+    fn component_render_policy_is_encoded_in_template_metadata() {
+        let mut plugin = WebUIParserPlugin::new();
+        let component = test_component(
+            "lazy-card",
+            r#"<template w-render="lazy" w-reserve-block-size="18rem"><p>hi</p></template>"#,
+            None,
+            true,
+        );
+        plugin
+            .register_component_template(
+                "lazy-card",
+                &component,
+                r#"<template shadowrootmode="open"><p>hi</p></template>"#,
+            )
+            .expect("component registration");
+
+        let templates = plugin
+            .take_component_templates()
+            .expect("template compilation");
+        assert_eq!(templates.len(), 1);
+        assert!(templates[0].template_json.contains(r#","wp":2"#));
+        assert!(!templates[0].template_json.contains("w-render"));
+        assert!(!templates[0].template_json.contains("w-reserve-block-size"));
     }
 
     fn assert_no_client_markers(result: &str) {

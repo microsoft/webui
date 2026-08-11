@@ -61,6 +61,31 @@ export class MyCounter extends WebUIElement {
 MyCounter.define('my-counter');
 ```
 
+For a component repeated far beyond the initial viewport, put the complete
+offscreen policy on its root template:
+
+```html
+<!-- todo-row.html -->
+<template w-render="lazy" w-reserve-block-size="72px">
+  <!-- Component content -->
+</template>
+```
+
+Import the optional coordinator once before component registration modules:
+
+```typescript
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './todo-row.js';
+```
+
+The complete policy composes visibility-deferred hydration with
+`content-visibility: auto`. Use `<template w-hydrate="lazy">` for the
+advanced hydration-only policy. On an instance, `w-hydrate="eager"` keeps
+rendering deferral but hydrates immediately, while `w-render="eager"` disables
+both. Put setup that needs bindings, events, or `w-ref` in `hydratedCallback()`.
+
+See [Lazy Hydration](/guide/concepts/hydration#lazy-hydration).
+
 The matching template (`my-counter.html`):
 
 ```html

@@ -63,6 +63,117 @@ Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
 
+## Lazy Hydration
+
+For long feeds and grids, the recommended policy reduces all browser work that
+can be deferred without removing the SSR DOM:
+
+```html
+<!-- activity-row.html -->
+<template
+  w-render="lazy"
+  w-reserve-block-size="72px"
+>
+  <button @click="{open()}">{{label}}</button>
+</template>
+```
+
+`w-render="lazy"` does two things:
+
+1. It hydrates SSR instances only when the browser considers them relevant,
+   within the 200px viewport lead, or immediately before interaction.
+2. It emits `content-visibility: auto` and
+   `contain-intrinsic-block-size: auto 72px` for the component tag in a
+   document-level `<style>` before first layout, plus a tag-qualified component
+   rule for Shadow DOM instances. A Light component nested inside an authored
+   shadow root receives the rule through its precomputed style closure, which
+   delivers the stylesheet into that root under every CSS strategy.
+
+The required reservation should approximate one instance's rendered block size.
+It preserves scroll geometry while the browser skips offscreen style, layout,
+paint, and raster work, then lets `auto` remember the measured size after the
+instance renders. Accepted values are single non-negative CSS lengths such as
+`72px`, `18rem`, `40dvh`, or `25cqb`; percentages, `auto`, negative values, and
+functions such as `calc()` are rejected at build time.
+
+The policy wrapper is build-only. WebUI removes its policy attributes. A
+component that authors `<template shadowrootmode="open">` keeps that wrapper as
+its declarative shadow root; every other component is Light, so the wrapper is
+unwrapped.
+
+Import the optional entry once before registering policy-bearing components:
+
+```typescript
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './activity-row.js';
+```
+
+If rendering containment is not safe for a component, defer only hydration:
+
+```html
+<template w-hydrate="lazy">
+  <button @click="{open()}">{{label}}</button>
+</template>
+```
+
+WebUI keeps the SSR content visible and hydrates each instance within 200px of
+the viewport or immediately on interaction. For the complete policy, Chromium's
+`contentvisibilityautostatechange` relevance event becomes the primary signal
+after the target reports a native state. The shared `IntersectionObserver`
+remains a fallback when definition happens after the initial native event; other
+browsers use it throughout. Client-created components remain eager. After a
+successful mount, reconnect also stays eager and preserves current client state
+rather than replaying SSR bootstrap state. Captured pointer hover activates a
+pending component before its first `@mouseenter` handler.
+
+Keep one priority instance's hydration eager while retaining rendering deferral:
+
+```html
+<activity-row w-hydrate="eager"></activity-row>
+```
+
+Disable both parts of the complete policy for one instance:
+
+```html
+<activity-row w-render="eager"></activity-row>
+```
+
+Use `hydratedCallback()` for setup that requires bindings or refs. If the
+optional entry or `IntersectionObserver` is unavailable, WebUI falls back to
+eager hydration. The rendering policy remains browser-managed. Keep the default
+eager mode for small, fully visible groups.
+
+The SSR subtree remains in the DOM and available to find-in-page and
+accessibility tooling. The browser can make skipped content relevant for those
+features and WebUI hydrates when the native relevance event fires. This policy
+does not defer HTML parsing, DOM construction, custom-element definition, or
+resource discovery. Use server streaming, pagination, virtualization, and native
+resource hints when those costs dominate.
+
+### Images in deferred components
+
+Visibility-deferred hydration delays JavaScript bindings, not image fetching. Use
+`loading="lazy"`, `srcset`, `sizes`, and explicit image dimensions.
+
+An `@load` or `@error` event may fire before a deferred component hydrates. If
+component state depends on it, bind the image with `w-ref` and reconcile its
+current status in `hydratedCallback()`:
+
+```typescript
+@observable imageState = 'pending';
+image!: HTMLImageElement;
+
+protected override hydratedCallback(): void {
+  if (this.image.complete) this.updateImageState();
+}
+
+updateImageState(): void {
+  this.imageState = this.image.naturalWidth > 0 ? 'loaded' : 'error';
+}
+```
+
+Call the same idempotent method from `@load` and `@error`.
+
 ## Progressive Streaming Hydration
 
 WebUI can hydrate an explicit, complete entry-page region while the document
@@ -148,10 +259,10 @@ descendants, without waiting for `DOMContentLoaded`.
 Use `hydratedCallback()` for setup that needs bindings, events, or `w-ref`
 references. It runs synchronously exactly once after the first successful
 ordinary hydration, client mount, streamed activation, or dormant static-host
-wake. `connectedCallback()` can run earlier on a deferred streamed host and can
-run again after reconnect, so it is not a universal post-hydration signal.
-Actual timing still depends on module download, server progress, and transport
-delivery.
+wake, including a lazy activation. `connectedCallback()` can run earlier on a
+lazy or deferred streamed host and can run again after reconnect, so it is not a
+universal post-hydration signal. Actual timing still depends on module download,
+visibility, server progress, and transport delivery.
 
 WebUI dispatches these events on `window`:
 
@@ -162,9 +273,12 @@ WebUI dispatches these events on `window`:
   names. Keep this diagnostics flag off in production to avoid one event
   allocation per commit.
 - `webui:hydration-complete` once the empty terminal record has arrived and no
-  component or boundary remains pending. On a streaming page, it means the
+  eager component or boundary remains pending. On a streaming page, it means the
   complete response hydration lifecycle is done, not merely that the first
-  interactive boundary is ready.
+  interactive boundary is ready. On ordinary parser startup, WebUI waits through
+  `DOMContentLoaded` and the first intersection result for each lazy root.
+  Initially visible roots finish before the event; roots classified as dormant
+  do not keep it open and do not redispatch it when they activate later.
 
 ### Measuring commits in production
 
