@@ -72,18 +72,18 @@ runs:
         components: ${{ inputs.rust-components }}
 
     - name: Rust Cache
-      uses: Swatinem/rust-cache@v2
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       with:
         shared-key: ${{ inputs.shared-cache-key }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
 
     - name: Setup pnpm
-      uses: pnpm/action-setup@v4
+      uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
       with:
         run_install: false
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       with:
         node-version: '22'
         cache: 'pnpm'
@@ -94,7 +94,7 @@ runs:
 
     - name: Setup .NET
       if: inputs.dotnet != ''
-      uses: actions/setup-dotnet@v4
+      uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
       with:
         dotnet-version: ${{ inputs.dotnet }}
 
