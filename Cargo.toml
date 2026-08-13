@@ -16,6 +16,7 @@ edition = "2021"
 rust-version = "1.93"
 authors = ["Microsoft Edge"]
 license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/microsoft/webui"
 homepage = "https://microsoft.github.io/webui"
 
