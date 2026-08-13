@@ -150,6 +150,15 @@ my-app/
 
 ## Template syntax
 
+### HTML structure
+
+Write browser-valid HTML nesting. Native void tags are matched
+case-insensitively, and direct `<col>` / `<tr>` runs receive the browser-implied
+`<colgroup>` / `<tbody>` in compiled client metadata. When an `<if>` or `<for>`
+controls table columns or rows, author the corresponding `<colgroup>` or
+`<tbody>` explicitly so both SSR hydration markers stay in the same browser
+parsing context.
+
 ### Text binding
 
 ```html

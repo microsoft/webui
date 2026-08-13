@@ -67,7 +67,9 @@ use crate::comment_policy;
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
-use crate::html_parser::{find_element_end, find_tag_close, parse_tag, style_element_bounds};
+use crate::html_parser::{
+    find_element_end, find_tag_close, is_void_element, parse_tag, style_element_bounds,
+};
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
 use std::fmt::Write;
@@ -1620,7 +1622,7 @@ fn finalize_template_section(meta: &mut TemplateSectionMeta) {
     let raw_html = std::mem::take(&mut meta.html);
     let text_marker_offsets = std::mem::take(&mut meta.text_marker_offsets);
     let mut nodes = parse_fragment_nodes(&raw_html, &text_marker_offsets);
-    insert_implied_tbody(&mut nodes);
+    insert_implied_table_containers(&mut nodes);
     let text_bindings = meta.text_bindings.clone();
     let mut finalized_html = String::with_capacity(raw_html.len());
     let mut text_runs = Vec::new();
@@ -1943,22 +1945,22 @@ fn emit_html_attr_value(value: &str, out: &mut String) {
     }
 }
 
-/// Insert the `<tbody>` the HTML parser implies around bare `<tr>` in a table.
+/// Insert the containers the HTML parser implies around bare table children.
 ///
 /// Compiled locators are pre-order element indices, and the browser resolves
-/// them against its own parse of `h`.  A `<tr>` written directly inside
-/// `<table>` is moved into an implied `<tbody>` there, which inserts an element
-/// the compiler never counted and shifts every index after the table.  Adding
-/// the wrapper here keeps the emitted HTML and the numbering agreeing with what
-/// the browser will build.
+/// them against its own parse of `h`. Bare `<col>` and `<tr>` elements written
+/// directly inside `<table>` gain implied `<colgroup>` and `<tbody>` parents,
+/// which insert elements the compiler must count. Comments and whitespace
+/// after the first item remain in that implied parent in the browser.
 ///
-/// Only element *order* matters to the numbering, so the parser's other
-/// recovery rules — `<p>`/`<li>` auto-closing and friends — are irrelevant:
-/// they change nesting, not sequence.
+/// This pass is intentionally limited to the table containers browsers insert
+/// for otherwise valid table markup. Other HTML recovery rules can also change
+/// hierarchy or element count, so templates must still use browser-valid
+/// nesting.
 ///
 /// Iterative, and addressed by path so the borrow checker can see that only one
 /// child list is held at a time.  This runs once per component at build time.
-fn insert_implied_tbody(nodes: &mut Vec<FragmentNode>) {
+fn insert_implied_table_containers(nodes: &mut Vec<FragmentNode>) {
     let mut stack: Vec<Vec<usize>> = vec![Vec::new()];
 
     while let Some(path) = stack.pop() {
@@ -1969,7 +1971,8 @@ fn insert_implied_tbody(nodes: &mut Vec<FragmentNode>) {
         for index in 0..list.len() {
             if let Some(FragmentNode::Element(element)) = list.get_mut(index) {
                 if element.tag_name.eq_ignore_ascii_case("table") {
-                    wrap_table_rows(element);
+                    wrap_table_run(element, "col", "colgroup", false);
+                    wrap_table_run(element, "tr", "tbody", true);
                 }
             }
         }
@@ -2003,9 +2006,18 @@ fn child_list_at<'a>(
     Some(list)
 }
 
-/// Group each run of direct `<tr>` children of a table into one `<tbody>`.
-fn wrap_table_rows(table: &mut FragmentElement) {
-    if !table.children.iter().any(is_bare_row) {
+/// Group each run of direct table children into its browser-implied parent.
+fn wrap_table_run(
+    table: &mut FragmentElement,
+    item_tag: &str,
+    parent_tag: &str,
+    include_structural_markers: bool,
+) {
+    if !table
+        .children
+        .iter()
+        .any(|node| is_direct_element_named(node, item_tag))
+    {
         return;
     }
 
@@ -2013,45 +2025,44 @@ fn wrap_table_rows(table: &mut FragmentElement) {
     let mut run: Vec<FragmentNode> = Vec::new();
 
     for node in std::mem::take(&mut table.children) {
-        if is_bare_row(&node) {
+        if is_direct_element_named(&node, item_tag) {
             run.push(node);
             continue;
         }
-        // Whitespace between rows stays inside the section the browser builds.
-        if !run.is_empty() {
-            if let FragmentNode::Text(text) = &node {
-                if text.trim().is_empty() {
-                    run.push(node);
-                    continue;
-                }
-            }
+        if !run.is_empty() && is_table_run_trivia(&node, include_structural_markers) {
+            run.push(node);
+            continue;
         }
-        flush_row_run(&mut run, &mut rewritten);
+        flush_table_run(&mut run, &mut rewritten, parent_tag);
         rewritten.push(node);
     }
-    flush_row_run(&mut run, &mut rewritten);
+    flush_table_run(&mut run, &mut rewritten, parent_tag);
 
     table.children = rewritten;
 }
 
-fn flush_row_run(run: &mut Vec<FragmentNode>, out: &mut Vec<FragmentNode>) {
+fn flush_table_run(run: &mut Vec<FragmentNode>, out: &mut Vec<FragmentNode>, parent_tag: &str) {
     if run.is_empty() {
         return;
     }
-    // Trailing whitespace belongs after the section, matching the parser.
-    while matches!(run.last(), Some(FragmentNode::Text(text)) if text.trim().is_empty()) {
-        run.pop();
-    }
     out.push(FragmentNode::Element(FragmentElement {
-        tag_name: "tbody".to_string(),
+        tag_name: parent_tag.to_string(),
         attrs: Vec::new(),
         children: std::mem::take(run),
         self_closing: false,
     }));
 }
 
-fn is_bare_row(node: &FragmentNode) -> bool {
-    matches!(node, FragmentNode::Element(element) if element.tag_name.eq_ignore_ascii_case("tr"))
+fn is_direct_element_named(node: &FragmentNode, tag_name: &str) -> bool {
+    matches!(node, FragmentNode::Element(element) if element.tag_name.eq_ignore_ascii_case(tag_name))
+}
+
+fn is_table_run_trivia(node: &FragmentNode, include_structural_markers: bool) -> bool {
+    matches!(node, FragmentNode::Comment(data) if include_structural_markers
+        || (parse_marker_index(data, "c:").is_none() && parse_marker_index(data, "r:").is_none()))
+        || matches!(node, FragmentNode::Text(text) if text.bytes().all(
+            |byte| matches!(byte, b'\t' | b'\n' | 0x0C | b'\r' | b' ')
+        ))
 }
 
 fn parse_fragment_nodes(input: &str, text_marker_offsets: &[usize]) -> Vec<FragmentNode> {
@@ -2323,26 +2334,6 @@ fn parse_fragment_start_tag(input: &str) -> Option<(FragmentElement, usize)> {
         },
         end + 1,
     ))
-}
-
-fn is_void_element(tag_name: &str) -> bool {
-    matches!(
-        tag_name,
-        "area"
-            | "base"
-            | "br"
-            | "col"
-            | "embed"
-            | "hr"
-            | "img"
-            | "input"
-            | "link"
-            | "meta"
-            | "param"
-            | "source"
-            | "track"
-            | "wbr"
-    )
 }
 
 // ── Parsing helpers ────────────────────────────────────────────────
@@ -3998,6 +3989,20 @@ mod tests {
     }
 
     #[test]
+    fn test_uppercase_void_element_does_not_own_following_slots() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<div><INPUT><if condition="nested"><span>nested</span></if></div><if condition="root"><span>root</span></if>"#,
+        );
+
+        assert!(result.contains(r#""h":"<div><INPUT /></div>""#), "{result}");
+        assert!(
+            result.contains(r#""c":[[[0,["nested"]],0,[1,1]],[[1,["root"]],1,[0,1]]]"#,),
+            "{result}"
+        );
+    }
+
+    #[test]
     fn test_emoji_safe() {
         let result = generate_compiled_template("my-comp", r#"<span>📚 {{title}}</span>"#);
         assert!(result.contains("📚"));
@@ -4360,6 +4365,81 @@ mod tests {
             result.contains(r#""eg":[["click",[["go",[],5]]]]"#),
             "{result}"
         );
+    }
+
+    #[test]
+    fn test_implied_tbody_keeps_structural_slots_and_trailing_whitespace() {
+        let result = generate_compiled_template(
+            "my-comp",
+            "<table><tr><td>a</td></tr><if condition=\"show\"><tr><td>conditional</td></tr></if><tr><td>{{cell}}</td></tr>  </table><button @click=\"{go()}\"></button>",
+        );
+
+        assert!(
+            result.contains(
+                r#""h":"<table><tbody><tr><td>a</td></tr><tr><td></td></tr>  </tbody></table><button></button>""#,
+            ),
+            "{result}"
+        );
+        // table=1, tbody=2, first tr=3, td=4, second tr=5, td=6, button=7
+        assert!(result.contains(r#""tx":[[[6,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""c":[[[0,["show"]],0,[2,1]]]"#),
+            "{result}"
+        );
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],7]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_bare_table_columns_gain_the_implied_colgroup() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><col><col><tr><td>{{cell}}</td></tr></table><button @click="{go()}"></button>"#,
+        );
+
+        assert!(
+            result.contains(
+                r#""h":"<table><colgroup><col /><col /></colgroup><tbody><tr><td></td></tr></tbody></table><button></button>""#,
+            ),
+            "{result}"
+        );
+        // table=1, colgroup=2, cols=3/4, tbody=5, tr=6, td=7, button=8
+        assert!(result.contains(r#""tx":[[[7,0],[["cell"]]]]"#), "{result}");
+        assert!(
+            result.contains(r#""eg":[["click",[["go",[],8]]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_implied_colgroup_does_not_claim_following_row_repeat() {
+        let result = generate_compiled_template(
+            "my-comp",
+            r#"<table><col><for each="row in rows"><tr><td>{{row.value}}</td></tr></for></table>"#,
+        );
+
+        assert!(
+            result.contains(r#""h":"<table><colgroup><col /></colgroup></table>""#),
+            "{result}"
+        );
+        assert!(
+            result.contains(r#""r":[["rows","row",0,[1,1]]]"#),
+            "{result}"
+        );
+    }
+
+    #[test]
+    fn test_table_run_trivia_uses_html_whitespace() {
+        assert!(is_table_run_trivia(
+            &FragmentNode::Text("\t\n\u{000C}\r ".to_string()),
+            false
+        ));
+        assert!(!is_table_run_trivia(
+            &FragmentNode::Text("\u{00A0}".to_string()),
+            true
+        ));
     }
 
     #[test]

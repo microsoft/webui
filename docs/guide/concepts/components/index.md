@@ -59,6 +59,12 @@ Include it explicitly when you need **root host events** - event listeners on th
 
 When you include the `<template>` tag, the framework uses yours instead of auto-injecting one.
 
+Component templates must use browser-valid HTML nesting. WebUI recognizes native
+void tags case-insensitively and accounts for the `<colgroup>` and `<tbody>` that
+browsers imply around direct `<col>` and `<tr>` runs. If an `<if>` or `<for>`
+controls table columns or rows, write the `<colgroup>` or `<tbody>` explicitly
+so its SSR hydration markers share one parser context.
+
 ## How Components Work
 
 When WebUI discovers components:

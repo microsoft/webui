@@ -1782,6 +1782,12 @@ Both outlet spellings compile as one empty directive element. The compiler
 consumes the paired closing tag before assigning later binding slots, preserving
 the authored parent hierarchy for siblings after the outlet.
 
+The finalizer matches native HTML void tags ASCII-case-insensitively and counts
+the browser-implied `<colgroup>` / `<tbody>` parents around direct `<col>` /
+`<tr>` runs. Compiler-owned structural marker comments and trailing HTML
+whitespace remain inside the implied parent, matching the browser tree used for
+SSR hydration and client locator resolution.
+
 Component policies are visible to the Rust build because they live on the root
 component `<template>`, not on a TypeScript class. Under `DomStrategy::Shadow`
 that authored wrapper becomes the declarative shadow-root template after its
