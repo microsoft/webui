@@ -108,15 +108,17 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 }
 
 declare global {
+  interface WebUIRuntimeGlobal {
+    state?: Record<string, unknown>;
+    templates?: Record<string, TemplateMeta>;
+    templateFns?: Record<string, CompiledConditionFn[]>;
+    templateHostExclusions?: Set<string>;
+    [key: string]: unknown;
+  }
+
   interface Window {
     /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
-    __webui?: {
-      state?: Record<string, unknown>;
-      templates?: Record<string, TemplateMeta>;
-      templateFns?: Record<string, CompiledConditionFn[]>;
-      templateHostExclusions?: Set<string>;
-      [key: string]: unknown;
-    };
+    __webui?: WebUIRuntimeGlobal;
   }
 }
 

@@ -60,6 +60,11 @@ const DISABLE_DOCUMENT_VIEW_TRANSITION = '@view-transition { navigation: none; }
 const PARTIAL_FETCH_TIMEOUT_MS = 10_000;
 let webuiDataLoaded = false;
 
+type RouterRuntimeGlobal = WebUIRuntimeGlobal & {
+  templates?: Record<string, unknown>;
+  templateFns?: Record<string, unknown>;
+};
+
 export class WebUIRouter {
   private config: RouterConfig = {};
   private started = false;
@@ -167,7 +172,7 @@ export class WebUIRouter {
     // Normalize window.__webui — ensure it exists with sensible defaults.
     // Serves as the single source of truth for SSR metadata.
     if (!window.__webui) window.__webui = {};
-    const meta = window.__webui!;
+    const meta = window.__webui as RouterRuntimeGlobal;
     // Ensure sub-fields exist
     if (!meta.inventory) meta.inventory = '';
     if (!meta.nonce) meta.nonce = '';
@@ -288,7 +293,7 @@ export class WebUIRouter {
    * Batch-fetches missing templates from `/_webui/templates` in a single request.
    */
   async ensureLoaded(...tags: string[]): Promise<void> {
-    const registry = window.__webui?.templates;
+    const registry = (window.__webui as RouterRuntimeGlobal | undefined)?.templates;
 
     const missing: string[] = [];
     for (const tag of tags) {
@@ -322,13 +327,14 @@ export class WebUIRouter {
 
   /** Garbage-collect all cached templates to free memory. */
   gc(): void {
-    const registry = window.__webui?.templates;
+    const runtime = window.__webui as RouterRuntimeGlobal | undefined;
+    const registry = runtime?.templates;
     if (registry) {
       for (const tag of Object.keys(registry)) {
         delete registry[tag];
       }
     }
-    const functionRegistry = window.__webui?.templateFns;
+    const functionRegistry = runtime?.templateFns;
     if (functionRegistry) {
       for (const tag of Object.keys(functionRegistry)) {
         delete functionRegistry[tag];
@@ -893,7 +899,8 @@ export class WebUIRouter {
 }
 
 function loadWebUIDataBlock(): void {
-  if (webuiDataLoaded || window.__webui?.state !== undefined) return;
+  const runtime = window.__webui as RouterRuntimeGlobal | undefined;
+  if (webuiDataLoaded || runtime?.state !== undefined) return;
   const el = document.getElementById(WEBUI_DATA_ID);
   if (!el) {
     webuiDataLoaded = true;
@@ -902,8 +909,8 @@ function loadWebUIDataBlock(): void {
 
   const text = el.textContent;
   if (text) {
-    const templateFns = window.__webui?.templateFns;
-    const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
+    const templateFns = runtime?.templateFns;
+    const parsed = JSON.parse(text) as RouterRuntimeGlobal;
     if (templateFns) parsed.templateFns = templateFns;
     window.__webui = parsed;
   }
