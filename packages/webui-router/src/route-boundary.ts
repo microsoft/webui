@@ -6,7 +6,7 @@
  * The server-provided chain remains authoritative for route content.
  */
 
-import { ROUTE_SELECTOR } from './route-element.js';
+import { getRouteMeta, ROUTE_SELECTOR } from './route-element.js';
 import type { RouteChainEntry } from './cache.js';
 
 export interface RouteBoundary {
@@ -24,6 +24,7 @@ interface BoundaryRouteMatch {
   route: HTMLElement;
   container: Element | ShadowRoot;
   consumed: number;
+  keepAlive: boolean;
 }
 
 export function findPendingComponent(
@@ -65,13 +66,18 @@ function findRouteBoundary(
     if (!activeEntry?.el || selected.route !== activeEntry.el) {
       const component = selected.route.getAttribute(attribute);
       if (component) {
-        return { component, container: selected.container, keepAlive: false };
+        return {
+          component,
+          container: selected.container,
+          keepAlive: selected.keepAlive,
+        };
       }
       return findInheritedBoundary(
         activeChain,
         parentIndex,
         chainProperty,
         selected.container,
+        selected.keepAlive,
       );
     }
     lastSelected = selected;
@@ -85,7 +91,7 @@ function findRouteBoundary(
     return {
       component,
       container: lastSelected.container,
-      keepAlive: activeChain[parentIndex]?.keepAlive === true,
+      keepAlive: lastSelected.keepAlive,
     };
   }
   return findInheritedBoundary(
@@ -93,6 +99,7 @@ function findRouteBoundary(
     parentIndex,
     chainProperty,
     lastSelected.container,
+    lastSelected.keepAlive,
   );
 }
 
@@ -101,6 +108,7 @@ function findInheritedBoundary(
   startIndex: number,
   chainProperty: 'pendingComponent' | 'errorComponent',
   container: Element | ShadowRoot,
+  keepAlive: boolean,
 ): RouteBoundary | null {
   for (let i = startIndex; i >= 0; i--) {
     const component = activeChain[i][chainProperty];
@@ -108,7 +116,7 @@ function findInheritedBoundary(
       return {
         component,
         container,
-        keepAlive: activeChain[i].keepAlive === true,
+        keepAlive,
       };
     }
   }
@@ -153,6 +161,9 @@ function findBestBoundaryRoute(
         route,
         container: route.parentElement ?? root,
         consumed: match.consumed,
+        keepAlive:
+          route.hasAttribute('keep-alive') ||
+          getRouteMeta(route)?.keepAlive === true,
       };
       bestSpecificity = match.specificity;
       ambiguous = false;

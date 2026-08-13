@@ -1146,7 +1146,7 @@ impl WebUIHandler {
                 if matched_child.exact {
                     context.writer.write(" exact")?;
                 }
-                route_renderer::write_route_pending_attrs(context.writer, matched_child)?;
+                route_renderer::write_route_navigation_attrs(context.writer, matched_child)?;
                 // Emit data-ri for O(1) client-side element binding
                 let ri = context.route_chain_index;
                 context.route_chain_index += 1;
@@ -1196,7 +1196,7 @@ impl WebUIHandler {
                 if child.exact {
                     context.writer.write(" exact")?;
                 }
-                route_renderer::write_route_pending_attrs(context.writer, child)?;
+                route_renderer::write_route_navigation_attrs(context.writer, child)?;
                 context
                     .writer
                     .write(" style=\"display:none\"></webui-route>")?;
@@ -1289,7 +1289,7 @@ impl WebUIHandler {
         if route_frag.exact {
             context.writer.write(" exact")?;
         }
-        route_renderer::write_route_pending_attrs(context.writer, route_frag)?;
+        route_renderer::write_route_navigation_attrs(context.writer, route_frag)?;
 
         if is_matched {
             // Emit data-ri for O(1) client-side element binding
@@ -6330,7 +6330,7 @@ mod tests {
                         path: "/contacts/:id".into(),
                         fragment_id: "detail-page".into(),
                         exact: true,
-                        keep_alive: false,
+                        keep_alive: true,
                         ..Default::default()
                     }),
                 ],
@@ -6594,6 +6594,10 @@ mod tests {
         assert!(
             html.contains("component=\"detail-page\""),
             "component attr should be on webui-route: {html}"
+        );
+        assert!(
+            html.contains(r#"component="detail-page" exact keep-alive style="display:none">"#),
+            "keep-alive should be emitted on an unmatched destination placeholder: {html}"
         );
     }
 

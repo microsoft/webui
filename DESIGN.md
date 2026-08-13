@@ -295,7 +295,7 @@ optional parameters. Exact matches (most literal segments) take precedence over 
 
 **Server-side rendering:** When the handler encounters `Fragment::Route`:
 1. Pre-scan siblings, pick the best match by specificity.
-2. Matched route: emit `<webui-route path="..." component="..." active data-ri="N">` (where N is the route chain index), render component, recurse into children. Attributes emitted on matched routes: `path`, `component`, `active`, `exact`, `pending`, `error`, `data-ri`. Routing metadata (`query`, `keep-alive`, `cache-tags`, `invalidates`) is **not** emitted as DOM attributes — it is included in the SSR `window.__webui` chain JSON instead.
+2. Matched route: emit `<webui-route path="..." component="..." active data-ri="N">` (where N is the route chain index), render component, recurse into children. Attributes emitted on matched routes: `path`, `component`, `active`, `exact`, `pending`, `error`, `keep-alive`, `data-ri`. Routing metadata (`query`, `cache-tags`, `invalidates`) is **not** emitted as DOM attributes — it is included in the SSR `window.__webui` chain JSON instead. `keep-alive` remains on unmatched placeholders so pending UI can be skipped before the destination partial resolves.
 3. Non-matched routes: emit `<webui-route ... style="display:none">`.
 
 For the WebUI framework path, matched route components do **not** receive route

@@ -558,6 +558,21 @@ test.describe('pending UI', () => {
     await expect(page.locator('error-display')).toHaveCount(0);
   });
 
+  test('skips pending for an unvisited keep-alive destination', async ({ page }) => {
+    await page.route('**/keepalive', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      await route.continue();
+    });
+
+    await page.click('a[href="/keepalive"]');
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('loading-skeleton')).toHaveCount(0);
+    await expect(page.locator('page-keepalive')).toBeVisible({ timeout: 5000 });
+  });
+
   test('skips pending for fast navigations', async ({ page }) => {
     // No fetch delay — navigation should be fast enough to skip pending
     let skeletonSeen = false;
