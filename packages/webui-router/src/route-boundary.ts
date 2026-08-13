@@ -63,16 +63,19 @@ function findRouteBoundary(
     if (!selected) break;
     const activeEntry = activeChain[level];
     if (!activeEntry?.el || selected.route !== activeEntry.el) {
+      const keepAlive = selected.route.hasAttribute('keep-alive');
       const component = selected.route.getAttribute(attribute);
       if (component) {
-        return { component, container: selected.container, keepAlive: false };
+        return { component, container: selected.container, keepAlive };
       }
-      return findInheritedBoundary(
+      const inherited = findInheritedBoundary(
         activeChain,
         parentIndex,
         chainProperty,
         selected.container,
       );
+      if (inherited) inherited.keepAlive = keepAlive;
+      return inherited;
     }
     lastSelected = selected;
     base = selected.consumed;
