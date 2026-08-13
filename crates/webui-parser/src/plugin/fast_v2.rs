@@ -13,7 +13,7 @@ use super::{
     ParserPlugin, ParserPluginArtifacts,
 };
 use crate::component_registry::Component;
-use crate::html_parser::{find_tag_close, opening_tag_name};
+use crate::html_parser::{find_element_end, find_tag_close, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
@@ -326,11 +326,9 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
 
     // <outlet /> is kept as a marker element in f-templates.
     // The client router finds it and replaces it with <webui-route> stubs.
-    if starts_with_tag_name(remaining, "outlet") {
-        if let Some(close) = find_tag_close(remaining) {
-            result.push_str("<outlet></outlet>");
-            return Some(close + 1);
-        }
+    if let Some(consumed) = find_element_end(remaining, "outlet") {
+        result.push_str("<outlet></outlet>");
+        return Some(consumed);
     }
 
     // Check for <if condition="...">
@@ -1146,9 +1144,13 @@ mod tests {
 
     #[test]
     fn outlet_kept_as_marker_in_f_template() {
-        let input = r#"<div><outlet /></div>"#;
-        let output = convert_btr_to_fast(input);
-        assert_eq!(output, r#"<div><outlet></outlet></div>"#);
+        for input in [
+            r#"<div><outlet /></div>"#,
+            r#"<div><outlet></outlet></div>"#,
+        ] {
+            let output = convert_btr_to_fast(input);
+            assert_eq!(output, r#"<div><outlet></outlet></div>"#);
+        }
     }
 
     #[test]

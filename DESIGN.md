@@ -281,7 +281,7 @@ via `WebUIFragmentRoute` nesting.
 
 #### Outlet Fragment
 Outlet fragments mark where matched child route content renders inside a parent route component.
-The parser emits these from `<outlet />` elements.
+The parser emits these from `<outlet />` or paired `<outlet></outlet>` directives.
 ```rust
 pub struct WebUIFragmentOutlet {}
 ```
@@ -2120,7 +2120,17 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `<template w-hydrate="lazy">`     | `wp: 1`                | policy wrapper/attributes stripped |
 | `<template w-render="lazy" w-reserve-block-size="72px">` | `wp: 2` | policy wrapper/attributes stripped |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
-| `<outlet />`                         | *(stays)*              | `<outlet></outlet>`               |
+| `<outlet />`, `<outlet></outlet>`   | *(stays)*              | `<outlet></outlet>`               |
+
+Both outlet spellings compile as one empty directive element. The compiler
+consumes the paired closing tag before assigning later binding slots, preserving
+the authored parent hierarchy for siblings after the outlet.
+
+The finalizer matches native HTML void tags ASCII-case-insensitively and counts
+the browser-implied `<colgroup>` / `<tbody>` parents around direct `<col>` /
+`<tr>` runs. Compiler-owned structural marker comments and trailing HTML
+whitespace remain inside the implied parent, matching the browser tree used for
+SSR hydration and client locator resolution.
 
 Component policies are visible to the Rust build because they live on the root
 component `<template>`, not on a TypeScript class. A component that authors

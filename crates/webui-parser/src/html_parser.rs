@@ -382,6 +382,25 @@ pub(crate) fn find_matching_end(
     None
 }
 
+/// Return the end byte after a named element, accepting self-closing and paired forms.
+///
+/// The opening tag name is matched case-sensitively for WebUI directives. Paired
+/// elements include their matching closing tag in the consumed range.
+#[inline]
+pub(crate) fn find_element_end(input: &str, tag_name: &str) -> Option<usize> {
+    let tag = parse_tag(input)?;
+    if tag.closing || tag.name != tag_name {
+        return None;
+    }
+
+    let content_start = tag.close + 1;
+    if tag.self_closing {
+        return Some(content_start);
+    }
+
+    find_matching_end(input, tag_name, content_start).map(|(_, close_end)| close_end)
+}
+
 /// Return the end byte after an HTML comment starting at the beginning of
 /// `input`.
 #[inline]
@@ -608,6 +627,19 @@ mod tests {
     fn find_matching_end_handles_nested_same_tag() {
         let html = "<div><div>x</div></div><p></p>";
         assert_eq!(find_matching_end(html, "div", 5), Some((17, 23)));
+    }
+
+    #[test]
+    fn find_element_end_accepts_self_closing_and_paired_directives() {
+        assert_eq!(find_element_end("<outlet /></main>", "outlet"), Some(10));
+        assert_eq!(
+            find_element_end("<outlet></outlet></main>", "outlet"),
+            Some(17)
+        );
+        assert_eq!(
+            find_element_end("<outlet-card></outlet-card>", "outlet"),
+            None
+        );
     }
 
     #[test]

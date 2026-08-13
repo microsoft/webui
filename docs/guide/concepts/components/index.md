@@ -63,6 +63,12 @@ The wrapper must contain the complete component. Closed roots, invalid values
 or placement, additional top-level content, and `<slot>` in an unwrapped
 component fail the build. The compiler never generates this wrapper.
 
+Component templates must use browser-valid HTML nesting. WebUI recognizes native
+void tags case-insensitively and accounts for the `<colgroup>` and `<tbody>` that
+browsers imply around direct `<col>` and `<tr>` runs. If an `<if>` or `<for>`
+controls table columns or rows, write the `<colgroup>` or `<tbody>` explicitly
+so its SSR hydration markers share one parser context.
+
 ## How Components Work
 
 When WebUI discovers components:

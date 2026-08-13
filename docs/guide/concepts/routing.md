@@ -53,6 +53,9 @@ All WebUI apps with routes **must** include `<base href="/">`. Without it, relat
 <main><outlet /></main>
 ```
 
+The paired form `<outlet></outlet>` is also supported. Outlet directives are
+empty; prefer the shorter self-closing form.
+
 **3. Start the router:**
 
 ```typescript
