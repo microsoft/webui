@@ -16,13 +16,13 @@ categories = ["web-programming", "parser-implementations"]
 name = "webui_expressions"
 
 [dependencies]
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.23" }
-microsoft-webui-state = { path = "../webui-state", version = "0.0.23" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.24" }
+microsoft-webui-state = { path = "../webui-state", version = "0.0.24" }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.23" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.24" }
 criterion = { workspace = true }
 
 [[bench]]

@@ -19,7 +19,7 @@ name = "webui_state"
 serde_json = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.23" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.24" }
 criterion = { workspace = true }
 
 [[bench]]
