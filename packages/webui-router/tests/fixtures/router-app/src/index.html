@@ -14,10 +14,11 @@
   <route path="/" component="route-shell">
     <route path="alpha" component="page-alpha" exact />
     <route path="beta" component="page-beta" exact />
-    <route path="items/:itemId" component="page-detail" exact />
+    <route path="items/:itemId" component="page-detail" exact pending="error-display" />
+    <route path="items/settings" component="page-beta" exact pending="loading-skeleton" />
     <route path="compose" component="page-compose" query="action,to,subject" exact />
     <route path="dialog" component="test-dialog" exact />
-    <route path="keepalive" component="page-keepalive" exact keep-alive />
+    <route path="keepalive" component="page-keepalive" exact keep-alive pending="loading-skeleton" />
     <route path="loader" component="page-loader" exact />
     <route path="slow" component="page-slow" exact pending="loading-skeleton" />
     <route path="failing" component="page-failing" exact error="error-display" />

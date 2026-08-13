@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme = "README.md"
@@ -18,7 +19,7 @@ name = "webui_state"
 serde_json = { workspace = true }
 
 [dev-dependencies]
-microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.22" }
+microsoft-webui-test-utils = { path = "../webui-test-utils", version = "0.0.23" }
 criterion = { workspace = true }
 
 [[bench]]

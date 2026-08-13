@@ -13,20 +13,25 @@ export class TestCondChild extends WebUIElement {
 }
 
 export class TestItemHost extends WebUIElement {
-  @observable items: Array<{ name: string }> = [
+  @observable sourceItems: Array<{ name: string }> = [
     { name: 'Alpha' },
     { name: 'Beta' },
     { name: 'Gamma' },
   ];
 
   @observable condData = { showHeader: true, label: 'Hello' };
+  @observable delayedItems: Array<{ name: string }> = [
+    { name: 'Alpha' },
+    { name: 'Beta' },
+    { name: 'Gamma' },
+  ];
 
   replaceItems(): void {
-    this.items = [{ name: 'One' }, { name: 'Two' }];
+    this.sourceItems = [{ name: 'One' }, { name: 'Two' }];
   }
 
   clearItems(): void {
-    this.items = [];
+    this.sourceItems = [];
   }
 
   hideCondHeader(): void {
@@ -34,6 +39,43 @@ export class TestItemHost extends WebUIElement {
   }
 }
 
-TestItemList.define('test-item-list');
-TestCondChild.define('test-cond-child');
-TestItemHost.define('test-item-host');
+class TestDelayedPropChild extends WebUIElement {
+  @observable items: Array<{ name: string }> = [];
+}
+
+const defineTestItemHost = (): void => TestItemHost.define('test-item-host');
+const defineTestItemList = (): void => TestItemList.define('test-item-list');
+const defineTestCondChild = (): void => TestCondChild.define('test-cond-child');
+
+const hydratedHost = document.querySelector('#host') as TestItemHost | null;
+if (!hydratedHost) {
+  throw new Error('Complex-property test host is unavailable.');
+}
+
+const definitionOrder = new URL(window.location.href).searchParams.get(
+  'definitionOrder',
+);
+if (definitionOrder === 'parent-first') {
+  defineTestItemHost();
+  defineTestItemList();
+  defineTestCondChild();
+} else if (definitionOrder === 'detached-defined-child') {
+  hydratedHost.remove();
+  defineTestItemList();
+  defineTestCondChild();
+  defineTestItemHost();
+  document.body.append(hydratedHost);
+} else {
+  defineTestItemList();
+  defineTestCondChild();
+  defineTestItemHost();
+}
+
+hydratedHost.delayedItems = [
+  { name: 'Late Alpha' },
+  { name: 'Late Beta' },
+];
+
+queueMicrotask(() => {
+  TestDelayedPropChild.define('test-delayed-prop-child');
+});

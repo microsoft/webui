@@ -637,13 +637,18 @@ describe('WebUIRouter', () => {
   });
 
   describe('navigation abort signal', () => {
-    test('fetchPartial passes signal to fetch', async () => {
-      // Shim fetch to capture the options passed to it
+    test('fetchPartial propagates the navigation abort to fetch', async () => {
       const origFetch = (globalThis as any).fetch;
       let capturedSignal: AbortSignal | undefined;
-      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+      (globalThis as any).fetch = (_url: string, opts?: RequestInit) => {
         capturedSignal = opts?.signal as AbortSignal | undefined;
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }) };
+        return new Promise((_resolve, reject) => {
+          capturedSignal?.addEventListener(
+            'abort',
+            () => reject(capturedSignal?.reason),
+            { once: true },
+          );
+        });
       };
 
       try {
@@ -654,10 +659,13 @@ describe('WebUIRouter', () => {
         ) => Promise<unknown>;
 
         const controller = new AbortController();
-        await fetchPartial('/test', controller.signal);
-
+        const request = fetchPartial('/test', controller.signal);
         assert.ok(capturedSignal, 'signal should be passed to fetch');
-        assert.equal(capturedSignal, controller.signal, 'should be the same signal instance');
+        const reason = new DOMException('Navigation superseded', 'AbortError');
+        controller.abort(reason);
+        await assert.rejects(request, error => error === reason);
+        assert.equal(capturedSignal.aborted, true, 'fetch signal should follow navigation aborts');
+        assert.equal(capturedSignal.reason, reason, 'fetch signal should preserve the abort reason');
       } finally {
         (globalThis as any).fetch = origFetch;
       }
@@ -665,8 +673,10 @@ describe('WebUIRouter', () => {
 
     test('fetchPartial skips side effects when signal is aborted after response', async () => {
       const origFetch = (globalThis as any).fetch;
+      let capturedSignal: AbortSignal | undefined;
 
-      (globalThis as any).fetch = async (_url: string, _opts?: RequestInit) => {
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        capturedSignal = opts?.signal as AbortSignal | undefined;
         return {
           ok: true,
           headers: { get: () => 'application/json' },
@@ -675,6 +685,7 @@ describe('WebUIRouter', () => {
             templates: {
               'abort-test': { h: '<div></div>' },
             },
+            componentStyles: emptyComponentStyles(),
             path: '/',
             chain: [],
             inventory: 'ff',
@@ -696,6 +707,7 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test', controller.signal);
 
         assert.equal(result, null, 'should return null for aborted navigation');
+        assert.equal(capturedSignal?.aborted, true, 'an already-aborted signal should abort the request');
         assert.equal(globals().__webui?.templates?.['abort-test'], undefined, 'should not register templates after abort');
       } finally {
         (globalThis as any).fetch = origFetch;
@@ -705,7 +717,8 @@ describe('WebUIRouter', () => {
     test('fetchPartial works normally without signal', async () => {
       const origFetch = (globalThis as any).fetch;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
-        assert.equal(opts?.signal, undefined, 'signal should be undefined');
+        assert.ok(opts?.signal, 'bounded fetch should always receive a timeout signal');
+        assert.equal(opts.signal.aborted, false);
         return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }) };
       };
 
@@ -718,6 +731,131 @@ describe('WebUIRouter', () => {
 
         const result = await fetchPartial('/test');
         assert.ok(result, 'should return data when no signal is provided');
+      } finally {
+        (globalThis as any).fetch = origFetch;
+      }
+    });
+
+    test('fetchPartial returns null when its bounded timeout aborts before headers', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origSetTimeout = globalThis.setTimeout;
+      (globalThis as any).setTimeout = (callback: () => void) => {
+        queueMicrotask(callback);
+        return 1;
+      };
+      (globalThis as any).fetch = (_url: string, opts?: RequestInit) => new Promise(
+        (_resolve, reject) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('Timed out', 'AbortError')),
+            { once: true },
+          );
+        },
+      );
+
+      try {
+        const router = new WebUIRouter();
+        const result = await (router as any).fetchPartial.call(router, '/test');
+        assert.equal(result, null);
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        globalThis.setTimeout = origSetTimeout;
+      }
+    });
+
+    test('fetchPartial timeout covers reading the initial response body', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const origSetTimeout = globalThis.setTimeout;
+      let timeoutRequest: (() => void) | undefined;
+      (globalThis as any).setTimeout = (callback: () => void) => {
+        timeoutRequest = callback;
+        return 1;
+      };
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => ({
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () => reject(opts.signal?.reason),
+            { once: true },
+          );
+          queueMicrotask(() => timeoutRequest?.());
+        }),
+      });
+
+      try {
+        const router = new WebUIRouter();
+        const result = await (router as any).fetchPartial.call(router, '/test');
+        assert.equal(result, null);
+      } finally {
+        (globalThis as any).fetch = origFetch;
+        globalThis.setTimeout = origSetTimeout;
+      }
+    });
+
+    test('a new partial request aborts a stalled deferred stream', async () => {
+      const origFetch = (globalThis as any).fetch;
+      const encoder = new TextEncoder();
+      let fetchCount = 0;
+      let firstSignal: AbortSignal | undefined;
+      (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
+        fetchCount++;
+        if (fetchCount === 1) {
+          firstSignal = opts?.signal as AbortSignal | undefined;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(
+                '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/first"}\n',
+              ));
+              firstSignal?.addEventListener(
+                'abort',
+                () => controller.error(firstSignal?.reason),
+                { once: true },
+              );
+            },
+          });
+          return new Response(body, {
+            headers: { 'content-type': 'application/x-ndjson' },
+          });
+        }
+        return new Response(
+          '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/second"}',
+          { headers: { 'content-type': 'application/json' } },
+        );
+      };
+
+      try {
+        const router = new WebUIRouter();
+        const cache = new NavigationCache({
+          staleTime: 30_000,
+          gcTime: 30_000,
+          maxEntries: 10,
+        });
+        (router as any).navCache = cache;
+        const fetchPartial = (router as any).fetchPartial.bind(router) as (
+          path: string,
+          signal?: AbortSignal,
+          speculative?: boolean,
+        ) => Promise<unknown>;
+
+        const preloadController = new AbortController();
+        const first = await fetchPartial('/first', preloadController.signal, true);
+        assert.ok(first);
+        cache.store('/first', first as any, true, true);
+        const deferred = (router as any).deferredReader as Promise<void> | null;
+        assert.ok(deferred, 'the deferred reader should remain active after chunk one');
+
+        const second = await fetchPartial('/second');
+        assert.ok(second);
+        assert.equal(firstSignal?.aborted, true, 'the next request should abort the old stream');
+        await deferred;
+        assert.equal((router as any).deferredReader, null);
+        assert.equal(
+          cache.getEntry('/first')?.complete,
+          false,
+          'an aborted stream must remain incomplete',
+        );
       } finally {
         (globalThis as any).fetch = origFetch;
       }

@@ -11,13 +11,13 @@ use crate::route_matcher::CompiledRouteIndex;
 use crate::{ResponseWriter, Result};
 use webui_protocol::{web_ui_fragment::Fragment, WebUIFragment, WebUiFragmentRoute};
 
-/// Write pending/error attributes for a route fragment.
+/// Write attributes needed by the client before a route partial resolves.
 ///
-/// Cache-related attributes (cache-tags, invalidates) and query/keep-alive
-/// are omitted from the DOM — they're delivered via the inline SSR chain JSON.
-/// Only pending/error are kept as DOM attributes because the client needs them
-/// for descendant fallback scanning on first navigation into unvisited subtrees.
-pub(crate) fn write_route_pending_attrs(
+/// Cache-related attributes (cache-tags, invalidates) and query are omitted
+/// from the DOM because they're delivered via the inline SSR chain JSON.
+/// Pending/error/keep-alive remain available on unmatched placeholders so the
+/// client can select destination boundary UI before the partial arrives.
+pub(crate) fn write_route_navigation_attrs(
     writer: &mut dyn ResponseWriter,
     route: &WebUiFragmentRoute,
 ) -> Result<()> {
@@ -30,6 +30,9 @@ pub(crate) fn write_route_pending_attrs(
         writer.write(" error=\"")?;
         writer.write(&route.error_component)?;
         writer.write("\"")?;
+    }
+    if route.keep_alive {
+        writer.write(" keep-alive")?;
     }
     Ok(())
 }

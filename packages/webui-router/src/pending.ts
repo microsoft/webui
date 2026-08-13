@@ -7,13 +7,12 @@
  */
 
 import { isStateful } from './types.js';
-import { ROUTE_SELECTOR } from './route-element.js';
-import type { RouteChainEntry } from './cache.js';
 
 /** State holder for pending/error elements — tracks mounted elements for O(1) cleanup. */
 export class PendingState {
   pendingElement: HTMLElement | null = null;
   errorElement: HTMLElement | null = null;
+  private hiddenRouteDisplays: Map<HTMLElement, string> | null = null;
 
   /** Remove any pending/error elements left over from a previous navigation. */
   clearElements(): void {
@@ -25,6 +24,12 @@ export class PendingState {
       this.errorElement.remove();
       this.errorElement = null;
     }
+    if (this.hiddenRouteDisplays) {
+      for (const [route, display] of this.hiddenRouteDisplays) {
+        route.style.display = display;
+      }
+      this.hiddenRouteDisplays = null;
+    }
   }
 
   /**
@@ -32,28 +37,15 @@ export class PendingState {
    * Finds the target route's parent (deepest active leaf) and appends
    * the pending component in its outlet container.
    */
-  mountPending(componentTag: string, activeChain: RouteChainEntry[]): void {
-    const leaf = activeChain[activeChain.length - 1];
-    if (!leaf?.el) return;
-
+  mountPending(
+    componentTag: string,
+    container: Element | ShadowRoot,
+    keepAlive: boolean,
+  ): void {
     // Don't show pending for keep-alive routes (they activate instantly)
-    if (leaf.keepAlive) return;
+    if (keepAlive) return;
 
-    const existing = leaf.el.querySelector(componentTag);
-    if (existing) return; // Already showing
-
-    // Mount inside the leaf's component's outlet area (where child routes go)
-    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
-    if (!compEl) return;
-
-    const root = (compEl as HTMLElement).shadowRoot ?? compEl;
-
-    // Find existing sibling route elements or an outlet marker
-    const siblingRoutes = root.querySelectorAll(ROUTE_SELECTOR);
-    const container = siblingRoutes.length > 0
-      ? siblingRoutes[siblingRoutes.length - 1].parentElement
-      : (root.querySelector('outlet')?.parentElement ?? root);
-    if (!container) return;
+    if (this.pendingElement?.isConnected) return;
 
     const pending = document.createElement(componentTag);
     pending.setAttribute('data-webui-pending', '');
@@ -68,27 +60,19 @@ export class PendingState {
   mountError(
     componentTag: string,
     errorState: { error: string; status: number; path: string },
-    activeChain: RouteChainEntry[],
+    container: Element | ShadowRoot,
   ): void {
-    const leaf = activeChain[activeChain.length - 1];
-    if (!leaf?.el) return;
-
-    const compEl = leaf.compEl ?? leaf.el.querySelector(leaf.component);
-    if (!compEl) return;
-
-    const root = (compEl as HTMLElement).shadowRoot ?? compEl;
-
-    // Find existing sibling route elements or an outlet marker
-    const siblingRoutes = root.querySelectorAll(ROUTE_SELECTOR);
-    const container = siblingRoutes.length > 0
-      ? siblingRoutes[siblingRoutes.length - 1].parentElement
-      : (root.querySelector('outlet')?.parentElement ?? root);
-    if (!container) return;
-
     // Hide all existing route children
-    for (const child of container.querySelectorAll(ROUTE_SELECTOR)) {
-      (child as HTMLElement).style.display = 'none';
+    const hiddenRouteDisplays = new Map<HTMLElement, string>();
+    const children = container.children;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      if (child.tagName !== 'WEBUI-ROUTE') continue;
+      const route = child as HTMLElement;
+      hiddenRouteDisplays.set(route, route.style.display);
+      route.style.display = 'none';
     }
+    this.hiddenRouteDisplays = hiddenRouteDisplays;
 
     const errorEl = document.createElement(componentTag);
     errorEl.setAttribute('data-webui-error', '');
@@ -101,8 +85,6 @@ export class PendingState {
 
   /** Clean up all pending state. */
   destroy(): void {
-    this.pendingElement = null;
-    this.errorElement = null;
+    this.clearElements();
   }
 }
-

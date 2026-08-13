@@ -11,11 +11,12 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.0.22"
+version = "0.0.23"
 edition = "2021"
 rust-version = "1.93"
 authors = ["Microsoft Edge"]
 license = "MIT"
+license-file = "LICENSE"
 repository = "https://github.com/microsoft/webui"
 homepage = "https://microsoft.github.io/webui"
 

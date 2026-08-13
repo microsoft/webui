@@ -4,6 +4,7 @@
   <button class="clear" @click="{clearItems()}">Clear</button>
   <button class="hide-cond" @click="{hideCondHeader()}">Hide Header</button>
 </div>
-<test-item-list :items="{{items}}"></test-item-list>
+<test-item-list :items="{{sourceItems}}"></test-item-list>
 <test-cond-child :data="{{condData}}"></test-cond-child>
+<test-delayed-prop-child :items="{{delayedItems}}"></test-delayed-prop-child>
 </template>

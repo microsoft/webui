@@ -131,6 +131,7 @@ async function continueDeferredRead(
   signal?: AbortSignal,
 ): Promise<void> {
   let buffer = initialBuffer;
+  let completed = false;
   try {
     while (true) {
       if (signal?.aborted || generation !== ctx.navGeneration) {
@@ -138,6 +139,10 @@ async function continueDeferredRead(
         return;
       }
       const { done, value } = await reader.read();
+      if (signal?.aborted || generation !== ctx.navGeneration) {
+        reader.cancel().catch(() => {});
+        return;
+      }
       if (done) {
         // Flush remaining bytes from the decoder
         buffer += decoder.decode();
@@ -181,12 +186,12 @@ async function continueDeferredRead(
         }
       } catch { /* ignore */ }
     }
+    completed = true;
   } finally {
     // Release the stream lock and clear the deferred reference
     reader.releaseLock();
     ctx.setDeferredReader(null);
-    // Mark cache entry as complete
-    ctx.markCacheComplete(requestPath);
+    if (completed) ctx.markCacheComplete(requestPath);
   }
 }
 
