@@ -500,6 +500,62 @@ test.describe('pending UI', () => {
     // After the fetch completes (~500ms), real content should replace the skeleton
     await expect(page.locator('[data-testid="page-slow"]')).toBeVisible({ timeout: 5000 });
     await expect(page.locator('h2')).toContainText('Slow Page');
+    await expect(page.locator('loading-skeleton')).toHaveCount(0);
+  });
+
+  test('shows the destination pending boundary after a prior route is active', async ({ page }) => {
+    await page.goto('/alpha');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+    await page.evaluate(() => {
+      const shell = document.querySelector('route-shell');
+      const beta = shell?.shadowRoot?.querySelector('webui-route[component="page-beta"]');
+      beta?.setAttribute('pending', 'error-display');
+    });
+    await page.route('**/slow', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      await route.continue();
+    });
+
+    await page.click('a[href="/slow"]');
+
+    const pending = page.locator('loading-skeleton');
+    await expect(pending).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('error-display')).toHaveCount(0);
+    const host = await pending.evaluate((element) => {
+      const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.host.tagName : null;
+    });
+    expect(host).toBe('ROUTE-SHELL');
+  });
+
+  test('prefers a literal destination boundary over the active parameter route', async ({ page }) => {
+    await page.goto('/items/1');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+    await page.route('**/items/settings', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 500));
+      }
+      await route.continue();
+    });
+    await page.evaluate(() => {
+      const link = document.createElement('a');
+      link.href = '/items/settings';
+      link.textContent = 'Settings';
+      document.body.appendChild(link);
+    });
+
+    await page.click('a[href="/items/settings"]');
+
+    await expect(page.locator('loading-skeleton')).toBeVisible({ timeout: 3000 });
+    await expect(page.locator('error-display')).toHaveCount(0);
   });
 
   test('skips pending for fast navigations', async ({ page }) => {
@@ -567,6 +623,51 @@ test.describe('error boundaries', () => {
 
     // The error display element should be mounted
     await expect(page.locator('error-display')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('shows the destination error boundary after a prior route is active', async ({ page }) => {
+    await page.goto('/alpha');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+    await page.evaluate(() => {
+      const shell = document.querySelector('route-shell');
+      const beta = shell?.shadowRoot?.querySelector('webui-route[component="page-beta"]');
+      beta?.setAttribute('error', 'loading-skeleton');
+      const failing = shell?.shadowRoot?.querySelector('webui-route[component="page-failing"]');
+      failing?.setAttribute('pending', 'loading-skeleton');
+    });
+    await page.route('**/failing', async (route) => {
+      if (route.request().headers()['accept']?.includes('application/json')) {
+        await new Promise(r => setTimeout(r, 300));
+        await route.fulfill({
+          status: 500,
+          contentType: 'text/plain',
+          body: 'Internal Server Error',
+        });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.click('a[href="/failing"]');
+
+    const error = page.locator('error-display');
+    await expect(error).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('loading-skeleton')).toHaveCount(0);
+    const host = await error.evaluate((element) => {
+      const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.host.tagName : null;
+    });
+    expect(host).toBe('ROUTE-SHELL');
+
+    await page.unroute('**/failing');
+    await page.evaluate(() => {
+      (window as any).navigation.navigate('/alpha?retry=1');
+    });
+    await expect(page.locator('page-alpha')).toBeVisible({ timeout: 5000 });
+    await expect(error).toHaveCount(0);
   });
 
   test('error component does not appear for successful navigations', async ({ page }) => {
