@@ -41,7 +41,7 @@ Compile metadata        Inject SSR markers         existing DOM,
 3. **JavaScript loads.** The component class registers via `customElements.define`. The browser upgrades pre-existing tags and fires `connectedCallback`.
 4. **`$mount` decides client-or-SSR.** If a shadow root exists or the element already has children, the framework treats the DOM as SSR. Otherwise it parses the static template HTML (`meta.h`) into a detached staging root, upgrades custom elements, wires bindings, applies the first binding pass, and only then appends the nodes. Child `connectedCallback` methods see initial parent `:` property bindings.
 5. **`$applySSRState` seeds observables.** Backing fields (`_count`, `_title`, ...) are written directly from `window.__webui.state` so reactive bindings observe values that match the painted DOM.
-6. **`$hydrate` walks the DOM once.** One marker-aware pre-order pass numbers the subtree; text, attribute, conditional, repeat, and event bindings then resolve by index.
+6. **`$hydrate` walks the DOM once.** One marker-aware pre-order pass numbers the subtree; text, attribute, conditional, repeat, and event bindings then resolve by index. The attribute pass also transfers known complex `:` values. An unupgraded compiled WebUI child holds those values behind a weak key and consumes them after bootstrap but before its own binding walk, without a promise or strong retained element reference.
 7. **Stale markers are removed.** Item markers (`<!--wi-->`) and closing markers (`<!--/wc-->`, `<!--/wr-->`) are deleted; start markers (`<!--wc-->`, `<!--wr-->`) stay as anchors for runtime updates.
 8. **Path index is built lazily on the first reactive change.** Subsequent updates are O(affected bindings).
 

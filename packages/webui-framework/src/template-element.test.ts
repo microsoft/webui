@@ -66,6 +66,15 @@ Object.defineProperty(globalThis, 'window', {
   configurable: true,
 });
 
+Object.defineProperty(globalThis, 'customElements', {
+  value: {
+    get() {
+      return undefined;
+    },
+  },
+  configurable: true,
+});
+
 const { TemplateElement } = await import('./template-element.js');
 const { resetStreamingModeForTests } = await import('./streaming-mode.js');
 const {
@@ -86,6 +95,76 @@ function registerTemplate(tag: string): void {
     h: '<div></div>',
   };
 }
+
+interface ComplexPropertyWriter {
+  $writeComplexProperty(
+    element: Element,
+    name: string,
+    value: unknown,
+    replayAfterHydration: boolean,
+  ): void;
+}
+
+interface PendingParentStateConsumer {
+  $applyPendingParentState(replayAfterHydration: boolean): void;
+}
+
+describe('TemplateElement complex-property delivery', () => {
+  test('queues an unresolved WebUI child without creating an own property', () => {
+    const tag = 'test-pending-property';
+    registerTemplate(tag);
+    class PendingChild extends TemplateElement {
+      protected override $observableNames(): Set<string> {
+        return new Set(['payload']);
+      }
+    }
+    Object.defineProperty(PendingChild.prototype, 'payload', {
+      get(this: { _payload?: unknown }) {
+        return this._payload;
+      },
+      set(this: { _payload?: unknown }, value: unknown) {
+        this._payload = value;
+      },
+      configurable: true,
+    });
+
+    const parent = new TemplateElement();
+    const child = new PendingChild() as PendingChild & {
+      localName: string;
+      _payload?: unknown;
+    };
+    child.localName = tag;
+
+    (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+      child,
+      'payload',
+      { label: 'from parent' },
+      false,
+    );
+
+    assert.equal(Object.hasOwn(child, 'payload'), false);
+    (child as unknown as PendingParentStateConsumer)
+      .$applyPendingParentState(false);
+    assert.deepEqual(child._payload, { label: 'from parent' });
+    assert.equal(Object.hasOwn(child, 'payload'), false);
+  });
+
+  test('preserves direct assignment for an unresolved third-party element', () => {
+    const parent = new TemplateElement();
+    const child = { localName: 'external-property-target' } as unknown as
+      Element & { payload?: unknown };
+
+    (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+      child,
+      'payload',
+      { label: 'direct' },
+      false,
+    );
+
+    assert.deepEqual(child.payload, { label: 'direct' });
+    assert.equal(Object.hasOwn(child, 'payload'), true);
+  });
+});
 
 describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral', () => {
   test('defers a data-ws-marked streamed host without warning, even when metadata is missing', () => {

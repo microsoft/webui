@@ -4053,6 +4053,18 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   continue, then the collected error is rethrown. This supports arbitrarily deep
   definition order without recursion, per-depth promise allocation, lost state,
   or child mutation of authored-parent markers.
+- A complex `:` property has no durable HTML representation. During SSR
+  hydration, the parent resolves every known complex property in the existing
+  attribute-binding pass. An upgraded child receives the value through the
+  branded single-key state hook. An unupgraded compiled WebUI child retains its
+  instance-local values in a module-local weak map, then consumes them after its
+  own bootstrap state and before its first binding walk. Parent values therefore
+  override page-wide keys even when parent and child property names differ.
+  Parent updates that arrive after SSR rendering retain only a lazily allocated
+  root-name set and replay once after wiring. The common upgraded-child path
+  allocates nothing; the unresolved path creates no promise, strong element
+  registry, or cross-runtime state bridge. Undefined third-party custom elements
+  keep native direct-property assignment semantics.
 - Client-created DOM never reparses template syntax; it clones marker-free `h`,
   upgrades the detached custom-element subtree, resolves `tx`, `ag`, the slots
   embedded in `c` / `r`, and event target indices directly, then applies the first binding pass before

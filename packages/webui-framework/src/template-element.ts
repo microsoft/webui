@@ -187,6 +187,40 @@ const ACTIVATION_MISSING_TEMPLATE = 3;
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
 
+interface PendingParentState {
+  readonly values: Record<string, unknown>;
+  replay?: Set<string>;
+}
+
+const pendingParentStateByElement = new WeakMap<Element, PendingParentState>();
+
+function queuePendingParentState(
+  element: Element,
+  name: string,
+  value: unknown,
+  replayAfterHydration: boolean,
+): void {
+  let pending = pendingParentStateByElement.get(element);
+  if (!pending) {
+    pending = {
+      values: Object.create(null) as Record<string, unknown>,
+    };
+    pendingParentStateByElement.set(element, pending);
+  }
+  pending.values[name] = value;
+  if (replayAfterHydration) {
+    (pending.replay ??= new Set()).add(name);
+  }
+}
+
+function isUnupgradedWebUITarget(element: Element): boolean {
+  const tagName = element.localName;
+  if (tagName.indexOf('-') === -1) return false;
+  const ctor = customElements.get(tagName);
+  if (ctor) return ctor.prototype instanceof TemplateElement;
+  return getTemplate(tagName) !== undefined;
+}
+
 type TemplateObservedConstructor = CustomElementConstructor & {
   readonly observedAttributes?: readonly string[];
 };
@@ -609,17 +643,24 @@ export class TemplateElement extends HTMLElement {
       // Inject CSS module stylesheet after root is determined
       if (meta.sa) injectModuleStyle(meta.sa, this.shadowRoot);
 
-      if (isSSR) {
-        // Seed explicit authored state. A streamed activation (forceSSR) supplies
-        // its boundary-local state directly; ordinary hydration defaults to the
-        // global `window.__webui.state` handoff. Passing a boundary's state as-is
-        // (even when undefined) keeps a stateless streamed boundary from falling
-        // back to a later boundary's global state.
-        if (!reconnecting && this.$shouldApplySSRBootstrapState()) {
-          this.$applySSRState(
-            hasBoundaryState ? ssrState : window.__webui?.state,
-          );
+      if (!reconnecting) {
+        if (isSSR) {
+          // Seed explicit authored state. A streamed activation (forceSSR)
+          // supplies its boundary-local state directly; ordinary hydration
+          // defaults to the global `window.__webui.state` handoff. Passing a
+          // boundary's state as-is (even when undefined) keeps a stateless
+          // streamed boundary from falling back to a later boundary's global
+          // state.
+          if (this.$shouldApplySSRBootstrapState()) {
+            this.$applySSRState(
+              hasBoundaryState ? ssrState : window.__webui?.state,
+            );
+          }
         }
+        this.$applyPendingParentState(isSSR);
+      }
+
+      if (isSSR) {
         this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
 
       } else {
@@ -999,6 +1040,7 @@ export class TemplateElement extends HTMLElement {
     if (this.$shouldApplySSRBootstrapState()) {
       this.$applySSRState(window.__webui?.state);
     }
+    this.$applyPendingParentState(true);
   }
 
   /**
@@ -1210,6 +1252,39 @@ export class TemplateElement extends HTMLElement {
         (this as Record<string, unknown>)[`_${key}`] = state[key];
       } else if (this.$usesTemplateState(key) && this.$shouldApplyTemplateStateFromSSR(key)) {
         this.$writeTemplateState(key, state[key]);
+      }
+    }
+  }
+
+  /**
+   * Apply instance-local state supplied by an SSR parent before this child
+   * walks its own bindings. Parent values override page-wide bootstrap keys.
+   */
+  private $applyPendingParentState(replayAfterHydration: boolean): void {
+    const pending = pendingParentStateByElement.get(this);
+    if (!pending) return;
+    pendingParentStateByElement.delete(this);
+
+    const state = pending.values;
+    const observableNames = this.$observableNames();
+    const keys = Object.keys(state);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (observableNames.has(key)) {
+        (this as Record<string, unknown>)[`_${key}`] = state[key];
+      } else if (this.$usesTemplateState(key)) {
+        this.$writeTemplateState(key, state[key]);
+      } else {
+        (this as Record<string, unknown>)[key] = state[key];
+      }
+    }
+    const replay = pending.replay;
+    if (replayAfterHydration && replay) {
+      const deferredWrites = this.$deferredWrites;
+      if (deferredWrites) {
+        for (const key of replay) deferredWrites.add(key);
+      } else {
+        this.$deferredWrites = replay;
       }
     }
   }
@@ -1665,7 +1740,13 @@ export class TemplateElement extends HTMLElement {
     }
 
     // Attribute bindings
-    this.$wireAttrs(instance, meta, scope, (i) => ssrElements[i] as Element);
+    this.$wireAttrs(
+      instance,
+      meta,
+      scope,
+      (i) => ssrElements[i] as Element,
+      true,
+    );
 
     // Conditional bindings — use <!--wc--> markers as anchors
     if (meta.c) {
@@ -2019,6 +2100,7 @@ export class TemplateElement extends HTMLElement {
     meta: TemplateBlockMeta,
     scope: ScopeFrame | undefined,
     resolve: (index: TemplateNodeIndex) => Node | null,
+    primeSSRComplexProperties = false,
   ): void {
     if (!meta.a || !meta.ag) return;
     for (let g = 0; g < meta.ag.length; g++) {
@@ -2027,9 +2109,65 @@ export class TemplateElement extends HTMLElement {
       if (!el || el.nodeType !== 1) continue;
       for (let j = 0; j < count; j++) {
         const entry = meta.a[start + j];
-        if (entry) instance.attrs.push(this.$makeAttr(el as Element, entry, scope));
+        if (!entry) continue;
+        const binding = this.$makeAttr(el as Element, entry, scope);
+        instance.attrs.push(binding);
+        if (
+          primeSSRComplexProperties &&
+          binding.kind === ATTR_KIND_COMPLEX &&
+          this.$attrStateIsKnown(binding)
+        ) {
+          this.$primeSSRComplexProperty(binding);
+        }
       }
     }
+  }
+
+  /**
+   * Complex properties have no HTML representation. Transfer known values
+   * during SSR hydration while keeping unupgraded compiled hosts accessor-safe.
+   */
+  private $primeSSRComplexProperty(binding: AttrBinding): void {
+    const element = binding.element;
+    const value = this.$resolveValue(binding.path!, binding.scope);
+    this.$writeComplexProperty(element, binding.name, value, false);
+  }
+
+  private $writeComplexProperty(
+    element: Element,
+    name: string,
+    value: unknown,
+    replayAfterHydration: boolean,
+  ): void {
+    const target = element as unknown as Record<string | symbol, unknown>;
+    const setStateKey = target[WEBUI_SET_STATE_KEY];
+    if (typeof setStateKey === 'function') {
+      if (
+        (setStateKey as (key: string, value: unknown) => boolean).call(
+          element,
+          name,
+          value,
+        )
+      ) {
+        const flush = target['$flushUpdates'];
+        if (typeof flush === 'function') (flush as () => void).call(element);
+        return;
+      }
+      target[name] = value;
+      return;
+    }
+
+    if (isUnupgradedWebUITarget(element)) {
+      queuePendingParentState(
+        element,
+        name,
+        value,
+        replayAfterHydration,
+      );
+      return;
+    }
+
+    target[name] = value;
   }
 
   /**
@@ -2262,16 +2400,7 @@ export class TemplateElement extends HTMLElement {
     switch (b.kind) {
       case ATTR_KIND_COMPLEX: {
         const v = this.$resolveValue(b.path!, b.scope);
-        const target = el as unknown as Record<string | symbol, unknown>;
-        const setStateKey = target[WEBUI_SET_STATE_KEY];
-        if (typeof setStateKey === 'function') {
-          if ((setStateKey as (key: string, value: unknown) => boolean).call(el, b.name, v)) {
-            const flush = target['$flushUpdates'];
-            if (typeof flush === 'function') (flush as () => void).call(el);
-            break;
-          }
-        }
-        target[b.name] = v;
+        this.$writeComplexProperty(el, b.name, v, true);
         break;
       }
       case ATTR_KIND_BOOLEAN: {

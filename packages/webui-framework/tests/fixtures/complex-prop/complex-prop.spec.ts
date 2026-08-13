@@ -6,7 +6,7 @@
  * observable changes to child <for> loops.
  *
  * When a parent's @observable array is replaced (e.g. via setState
- * during SPA navigation), the complex binding `:items="{{items}}"` must
+ * during SPA navigation), the complex binding `:items="{{sourceItems}}"` must
  * push the new array to the child, causing the child's <for> loop to
  * re-render with the updated data.
  */
@@ -31,6 +31,59 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     });
 
     expect(items).toEqual(['Alpha', 'Beta', 'Gamma']);
+  });
+
+  test('child-first hydration receives the renamed parent property', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const list = host?.shadowRoot?.querySelector('test-item-list') as any;
+      return {
+        items: list?.items,
+        shadowsAccessor: Object.hasOwn(list, 'items'),
+      };
+    });
+
+    expect(result.items).toEqual([
+      { name: 'Alpha' },
+      { name: 'Beta' },
+      { name: 'Gamma' },
+    ]);
+    expect(result.shadowsAccessor).toBe(false);
+  });
+
+  test('waits for a delayed custom-element accessor before assigning a property', async ({
+    page,
+  }) => {
+    await page.waitForFunction(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector(
+        'test-delayed-prop-child',
+      ) as any;
+      return (
+        customElements.get('test-delayed-prop-child') !== undefined &&
+        child?.$ready === true
+      );
+    });
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector(
+        'test-delayed-prop-child',
+      ) as any;
+      return {
+        items: child?.items,
+        rendered: Array.from(
+          child?.shadowRoot?.querySelectorAll('.delayed-item') ?? [],
+        ).map((item: any) => item.textContent),
+        shadowsAccessor: Object.hasOwn(child, 'items'),
+      };
+    });
+
+    expect(result.items).toEqual([
+      { name: 'Late Alpha' },
+      { name: 'Late Beta' },
+    ]);
+    expect(result.rendered).toEqual(['Late Alpha', 'Late Beta']);
+    expect(result.shadowsAccessor).toBe(false);
   });
 
   test('replacing parent items updates child for-loop', async ({ page }) => {
@@ -83,7 +136,7 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     // Simulate what the router does during SPA navigation
     await page.evaluate(() => {
       const host = document.querySelector('#host') as any;
-      host.setState({ items: [{ name: 'X' }, { name: 'Y' }] });
+      host.setState({ sourceItems: [{ name: 'X' }, { name: 'Y' }] });
     });
 
     await page.waitForFunction(() => {
@@ -109,7 +162,9 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     // transitions which snapshot the DOM right after the sync callback.
     const result = await page.evaluate(() => {
       const host = document.querySelector('#host') as any;
-      host.setState({ items: [{ name: 'Sync1' }, { name: 'Sync2' }, { name: 'Sync3' }] });
+      host.setState({
+        sourceItems: [{ name: 'Sync1' }, { name: 'Sync2' }, { name: 'Sync3' }],
+      });
 
       // Check IMMEDIATELY — no await, no microtask, no setTimeout
       const list = host?.shadowRoot?.querySelector('test-item-list');
@@ -122,6 +177,69 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
 
     expect(result.count).toBe(3);
     expect(result.items).toEqual(['Sync1', 'Sync2', 'Sync3']);
+  });
+});
+
+test.describe('complex-prop: parent-first SSR hydration', () => {
+  test('queues renamed parent state until the child upgrades', async ({ page }) => {
+    await page.goto('/complex-prop/fixture.html?definitionOrder=parent-first');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('#host') as any;
+      return el && el.$ready === true;
+    });
+
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const list = host?.shadowRoot?.querySelector('test-item-list') as any;
+      return {
+        items: list?.items,
+        rendered: Array.from(
+          list?.shadowRoot?.querySelectorAll('.item') ?? [],
+        ).map((item: any) => item.textContent),
+        shadowsAccessor: Object.hasOwn(list, 'items'),
+      };
+    });
+
+    expect(result.items).toEqual([
+      { name: 'Alpha' },
+      { name: 'Beta' },
+      { name: 'Gamma' },
+    ]);
+    expect(result.rendered).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expect(result.shadowsAccessor).toBe(false);
+  });
+
+  test('queues state for a defined but detached unupgraded child', async ({
+    page,
+  }) => {
+    await page.goto(
+      '/complex-prop/fixture.html?definitionOrder=detached-defined-child',
+    );
+    await page.waitForFunction(() => {
+      const host = document.querySelector('#host') as any;
+      const list = host?.shadowRoot?.querySelector('test-item-list') as any;
+      return host?.$ready === true && list?.$ready === true;
+    });
+
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const list = host?.shadowRoot?.querySelector('test-item-list') as any;
+      return {
+        items: list?.items,
+        rendered: Array.from(
+          list?.shadowRoot?.querySelectorAll('.item') ?? [],
+        ).map((item: any) => item.textContent),
+        shadowsAccessor: Object.hasOwn(list, 'items'),
+      };
+    });
+
+    expect(result.items).toEqual([
+      { name: 'Alpha' },
+      { name: 'Beta' },
+      { name: 'Gamma' },
+    ]);
+    expect(result.rendered).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expect(result.shadowsAccessor).toBe(false);
   });
 });
 
