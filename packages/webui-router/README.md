@@ -67,6 +67,8 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 ```
 
 `<outlet />` marks where child route content renders. The nav and footer persist across navigations.
+The paired form `<outlet></outlet>` is also supported, but outlets are empty and
+the self-closing form is preferred.
 
 **3. Start the router after hydration:**
 

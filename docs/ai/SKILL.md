@@ -338,6 +338,9 @@ find the element that was hit.
 <main><outlet /></main>
 ```
 
+`<outlet></outlet>` is also valid, but outlets are empty directives and the
+self-closing form is preferred.
+
 ### Entry template
 
 ```html

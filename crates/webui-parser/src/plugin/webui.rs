@@ -67,7 +67,7 @@ use crate::comment_policy;
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
-use crate::html_parser::{find_tag_close, parse_tag, style_element_bounds};
+use crate::html_parser::{find_element_end, find_tag_close, parse_tag, style_element_bounds};
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
 use std::fmt::Write;
@@ -554,7 +554,7 @@ impl ConditionFunctionEmitter {
 /// | module adopted stylesheet specifier   | `sa`                       | stored from `<template>` wrapper  |
 /// | `@event="{handler(e)}"`               | `eg[]`                     | element kept marker-free          |
 /// | `w-ref="name"` / `w-ref={name}`       | *(stays in HTML)*          | *(unchanged)*                     |
-/// | `<outlet />` / `<outlet>`             | *(stays in HTML)*          | `<outlet></outlet>`               |
+/// | `<outlet />` / `<outlet></outlet>`    | *(stays in HTML)*          | `<outlet></outlet>`               |
 ///
 /// # Errors
 ///
@@ -1442,11 +1442,12 @@ fn compile_section(
                 continue;
             }
 
-            // <outlet ... /> → keep as <outlet></outlet>
+            // Normalize the complete outlet element so a paired closing tag
+            // cannot be mistaken for an ancestor close during finalization.
             if remaining.starts_with("<outlet") {
-                if let Some(close) = find_tag_close(remaining) {
+                if let Some(consumed) = find_element_end(remaining, "outlet") {
                     meta.html.push_str("<outlet></outlet>");
-                    i += close + 1;
+                    i += consumed;
                     continue;
                 }
             }
@@ -3979,9 +3980,21 @@ mod tests {
     }
 
     #[test]
-    fn test_outlet_converted() {
-        let result = generate_compiled_template("my-comp", r#"<main><outlet /></main>"#);
-        assert!(result.contains("<outlet></outlet>"));
+    fn test_outlet_forms_compile_identically_without_lifting_following_blocks() {
+        let self_closing = generate_compiled_template(
+            "my-comp",
+            r#"<div class="shell-content"><main><outlet /></main><if condition="showNestedAfter"><span>nested</span></if></div><if condition="showRootAfter"><span>root</span></if>"#,
+        );
+        let paired = generate_compiled_template(
+            "my-comp",
+            r#"<div class="shell-content"><main><outlet></outlet></main><if condition="showNestedAfter"><span>nested</span></if></div><if condition="showRootAfter"><span>root</span></if>"#,
+        );
+
+        assert_eq!(paired, self_closing);
+        assert!(paired.contains(r#"<main><outlet></outlet></main></div>"#));
+        assert!(paired.contains(
+            r#""c":[[[0,["showNestedAfter"]],0,[1,1]],[[1,["showRootAfter"]],1,[0,1]]]"#,
+        ));
     }
 
     #[test]
