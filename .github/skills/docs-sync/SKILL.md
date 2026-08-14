@@ -48,6 +48,12 @@ Update `docs/` in the same commit when the change is user-visible:
 - Integration behavior that external developers depend on
 - New features or removed features
 
+Do not update user-facing docs for internal implementation details, regression
+tests, refactors, or bug fixes that only restore already-documented behavior.
+Every addition must help developers author, configure, debug, or integrate a
+WebUI application. Do not add release-note-style implementation observations
+to reference docs.
+
 Keep protocol internals out of general user docs. The `docs/ai/SKILL.md` file is the single-page AI reference and should be kept in sync with all other docs.
 
 `docs/ai/SKILL.md` is authoring-first by design. Keep deep reference material (full CLI flag tables, error-code lists, per-language integration snippets) in its canonical page and link to it from `docs/ai/SKILL.md` rather than duplicating it there.

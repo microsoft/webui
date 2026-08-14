@@ -3753,11 +3753,12 @@ impl HtmlParser {
         dom_analysis: ComponentDomAnalysis,
         mode: ComponentTemplateMode,
     ) -> Result<String> {
-        let trimmed = html.trim();
+        let trimmed_end = html.trim_end();
+        let (trimmed, content_start) = html::leading_content(trimmed_end);
         let snippet = style.css_snippet.unwrap_or_default();
 
         let processed = if let Some((root_start, root_end)) = dom_analysis.authored_shadow_root {
-            let trim_start = html.len() - html.trim_start().len();
+            let trim_start = content_start;
             let trim_end = html.trim_end().len();
             if root_start < trim_start || root_end > trim_end || root_start >= root_end {
                 return Err(ParserError::Html(
@@ -3867,7 +3868,7 @@ impl HtmlParser {
     }
 
     fn template_has_stripped_runtime_attrs(html: &str) -> bool {
-        let trimmed = html.trim_start();
+        let (trimmed, _) = html::leading_content(html);
         let Some(tag) = html::parse_tag(trimmed) else {
             return false;
         };
@@ -7080,6 +7081,29 @@ mod tests {
             processed.contains("<div>hi</div>"),
             "Light content must survive processing, got: {processed}"
         );
+    }
+
+    #[test]
+    fn leading_comments_do_not_change_root_template_detection() {
+        const COMMENT: &str = "<!-- Copyright (C) Corporation. All rights reserved. -->";
+        let fixtures = [
+            (
+                format!(
+                    "{COMMENT}\n<template shadowrootmode=\"open\">\n  <h1>Hello</h1>\n</template>"
+                ),
+                "<template shadowrootmode=\"open\">\n  <h1>Hello</h1>\n</template>",
+            ),
+            (format!("{COMMENT}\n<h1>Hello</h1>"), "<h1>Hello</h1>"),
+            (format!("{COMMENT}\nHello"), "Hello"),
+        ];
+
+        for (input, expected) in fixtures {
+            let mut parser = HtmlParser::new();
+            let processed = parser
+                .process_component_template(&input, None, None)
+                .expect("leading-comment fixture should process");
+            assert_eq!(processed, expected);
+        }
     }
 
     #[test]

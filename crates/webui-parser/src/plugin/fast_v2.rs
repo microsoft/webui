@@ -13,7 +13,7 @@ use super::{
     ParserPlugin, ParserPluginArtifacts,
 };
 use crate::component_registry::Component;
-use crate::html_parser::{find_element_end, find_tag_close, opening_tag_name};
+use crate::html_parser::{find_element_end, find_tag_close, leading_content, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
@@ -207,9 +207,10 @@ fn build_f_template(
 
     let converted = convert_btr_to_fast(html_content);
     let trimmed = minify_inter_tag_whitespace(converted.trim());
+    let (trimmed, _) = leading_content(&trimmed);
 
     if trimmed.starts_with("<template") {
-        if let Some(close_pos) = find_tag_close(&trimmed) {
+        if let Some(close_pos) = find_tag_close(trimmed) {
             // Dev owns the wrapper — preserve attributes verbatim.
             // For `CssStrategy::Module` the parser pass enforces
             // `shadowrootadoptedstylesheets`, so by the time we get here
@@ -221,7 +222,7 @@ fn build_f_template(
             }
             output.push_str(&trimmed[close_pos + 1..]);
         } else {
-            output.push_str(&trimmed);
+            output.push_str(trimmed);
         }
     } else {
         output.push_str("<template");
@@ -234,7 +235,7 @@ fn build_f_template(
         if let Some(injection) = css_injection {
             output.push_str(injection);
         }
-        output.push_str(&trimmed);
+        output.push_str(trimmed);
         output.push_str("</template>");
     }
 
@@ -844,6 +845,23 @@ mod tests {
         assert!(html.contains("<f-template name=\"no-css\">"));
         assert!(!html.contains("<link rel=\"stylesheet\""));
         assert!(html.contains("<span>text</span>"));
+    }
+
+    #[test]
+    fn direct_template_generation_skips_leading_comments() {
+        let html = generate_f_template(
+            "my-comp",
+            concat!(
+                "<!-- Copyright (C) Corporation. All rights reserved. -->\n",
+                "<template shadowrootmode=\"open\"><h1>Hello</h1></template>",
+            ),
+            None,
+            CssStrategy::Link,
+        );
+
+        assert_eq!(html.matches("<template>").count(), 1);
+        assert!(!html.contains("<!--"));
+        assert!(html.contains("<template><h1>Hello</h1></template>"));
     }
 
     #[test]
