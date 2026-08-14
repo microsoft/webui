@@ -12,6 +12,7 @@ import { PageFailing } from './page-failing/page-failing';
 import { PageKeepAlive } from './page-keepalive/page-keepalive';
 import { PageLoader } from './page-loader/page-loader';
 import { PageSlow } from './page-slow/page-slow';
+import { RouteDashboard } from './route-dashboard/route-dashboard';
 import { RouteShell } from './route-shell/route-shell';
 
 // ── Shell component ──────────────────────────────────────────────
@@ -23,6 +24,8 @@ RouteShell.define('route-shell');
 PageAlpha.define('page-alpha');
 
 PageBeta.define('page-beta');
+
+RouteDashboard.define('route-dashboard');
 
 PageDetail.define('page-detail');
 
@@ -56,6 +59,7 @@ window.addEventListener('webui:hydration-complete', () => {
     loaders: {
       'page-alpha': () => Promise.resolve(),
       'page-beta': () => Promise.resolve(),
+      'route-dashboard': () => Promise.resolve(),
       'page-detail': () => Promise.resolve(),
       'page-compose': () => Promise.resolve(),
       'page-keepalive': () => Promise.resolve(),
@@ -74,6 +78,7 @@ if (performance.getEntriesByName('webui:hydrate:total', 'measure').length > 0) {
     loaders: {
       'page-alpha': () => Promise.resolve(),
       'page-beta': () => Promise.resolve(),
+      'route-dashboard': () => Promise.resolve(),
       'page-detail': () => Promise.resolve(),
       'page-compose': () => Promise.resolve(),
       'page-keepalive': () => Promise.resolve(),

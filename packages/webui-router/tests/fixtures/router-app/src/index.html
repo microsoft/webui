@@ -12,6 +12,15 @@
 </head>
 <body>
   <route path="/" component="route-shell">
+    <route path="" component="route-dashboard" exact
+           pending="loading-skeleton"
+           cache-tags="catalog-route"
+           invalidates="catalog-route" />
+    <route path="projects" component="route-dashboard" exact keep-alive
+           pending="error-display"
+           error="error-display"
+           cache-tags="projects-route"
+           invalidates="projects-route" />
     <route path="alpha" component="page-alpha" exact />
     <route path="beta" component="page-beta" exact />
     <route path="items/:itemId" component="page-detail" exact pending="error-display" />

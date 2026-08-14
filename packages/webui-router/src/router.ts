@@ -49,7 +49,12 @@ import {
 } from './templates.js';
 import type { StreamingContext } from './streaming.js';
 import { ensureComponentLoaded, resolveLoaders, LOADER_FAILED } from './loaders.js';
-import { buildChainFromSSR, findChangeLevel, findOrCreateRouteElement } from './chain.js';
+import {
+  buildChainFromSSR,
+  findChangeLevel,
+  findOrCreateRouteElement,
+  sameRouteDeclaration,
+} from './chain.js';
 import { findErrorComponent, findPendingComponent } from './route-boundary.js';
 
 export { parseQuery, filterQuery, WebUIRouteElement };
@@ -840,7 +845,7 @@ export class WebUIRouter {
         const entry = newChain[i];
         const oldEntry = i < this.activeChain.length ? this.activeChain[i] : null;
         const parent = i > 0 ? newChain[i - 1] : null;
-        if (oldEntry?.component === entry.component && oldEntry?.el) {
+        if (oldEntry?.el && sameRouteDeclaration(oldEntry, entry)) {
           entry.el = oldEntry.el;
           entry.compEl = oldEntry.compEl;
           setRouteMeta(entry.el, {

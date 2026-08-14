@@ -83,7 +83,7 @@ export function findChangeLevel(
   const len = Math.min(oldChain.length, newChain.length);
   for (let i = 0; i < len; i++) {
     if (
-      oldChain[i].component !== newChain[i].component ||
+      !sameRouteDeclaration(oldChain[i], newChain[i]) ||
       !paramsEqual(oldChain[i].params, newChain[i].params)
     ) {
       return i;
@@ -91,6 +91,50 @@ export function findChangeLevel(
   }
   // If chains differ in length, change starts at the shorter length
   return len;
+}
+
+/**
+ * Whether two chain entries represent the same authored route declaration.
+ * Bound params are intentionally excluded because one declaration owns all of
+ * its parameterized instances.
+ */
+export function sameRouteDeclaration(
+  a: Pick<RouteChainEntry, 'component' | 'path'>,
+  b: Pick<RouteChainEntry, 'component' | 'path'>,
+): boolean {
+  return a.component === b.component && a.path === b.path;
+}
+
+function findRouteElement(
+  elements: ArrayLike<Element>,
+  entry: RouteChainEntry,
+): HTMLElement | null {
+  let unpathedMatch: HTMLElement | null = null;
+  let componentMatchCount = 0;
+  let unpathedMatchCount = 0;
+
+  for (let i = 0; i < elements.length; i++) {
+    const child = elements[i];
+    if (
+      child.tagName !== 'WEBUI-ROUTE' ||
+      child.getAttribute('component') !== entry.component
+    ) {
+      continue;
+    }
+    componentMatchCount++;
+    const path = child.getAttribute('path') ?? '';
+    if (path === entry.path) return child as HTMLElement;
+    if (!child.hasAttribute('path')) {
+      unpathedMatch = child as HTMLElement;
+      unpathedMatchCount++;
+    }
+  }
+
+  // Older compiler output could omit a normalized non-empty path. Preserve
+  // that compatibility only when the component has one unambiguous placeholder.
+  return componentMatchCount === 1 && unpathedMatchCount === 1
+    ? unpathedMatch
+    : null;
 }
 
 /**
@@ -105,12 +149,8 @@ export function findOrCreateRouteElement(
 ): HTMLElement {
   // For top-level routes, search direct children of body
   if (!parent) {
-    for (const child of document.body.children) {
-      if (child.tagName === 'WEBUI-ROUTE' &&
-          child.getAttribute('component') === entry.component) {
-        return child as HTMLElement;
-      }
-    }
+    const routeEl = findRouteElement(document.body.children, entry);
+    if (routeEl) return routeEl;
     const el = createRouteStub(entry);
     document.body.appendChild(el);
     return el;
@@ -123,20 +163,8 @@ export function findOrCreateRouteElement(
       const root = renderRoot(compEl);
       const allRoutes = root.querySelectorAll(ROUTE_SELECTOR);
 
-      // Match by component + path for stronger identity
-      for (const child of allRoutes) {
-        if (child.getAttribute('component') === entry.component &&
-            child.getAttribute('path') === (entry.path || null)) {
-          return child as HTMLElement;
-        }
-      }
-      // Reuse the compiler-emitted route placeholder for this nested
-      // component when hydration has already normalized the route container.
-      for (const child of allRoutes) {
-        if (child.getAttribute('component') === entry.component) {
-          return child as HTMLElement;
-        }
-      }
+      const routeEl = findRouteElement(allRoutes, entry);
+      if (routeEl) return routeEl;
       // Not found — create stub and place in the correct container
       const stub = createRouteStub(entry);
 

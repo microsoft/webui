@@ -15,18 +15,232 @@
  */
 
 import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+
+interface DashboardPartial {
+  state?: Record<string, unknown>;
+  chain?: Array<{
+    component?: string;
+    path?: string;
+    keepAlive?: boolean;
+    pendingComponent?: string;
+    errorComponent?: string;
+    invalidates?: string[];
+  }>;
+  cacheTags?: string[];
+}
+
+async function waitForDashboardRoute(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const dashboard = document.querySelector('route-shell')?.shadowRoot
+      ?.querySelector('route-dashboard');
+    const router = (window as unknown as {
+      __testRouter?: { activeComponent?: string };
+    }).__testRouter;
+    return dashboard &&
+      (dashboard as unknown as { $ready?: boolean }).$ready === true &&
+      router?.activeComponent === 'route-dashboard';
+  });
+}
+
+async function interceptDashboardPartial(
+  page: Page,
+  pathname: string,
+  dashboardTitle?: string,
+  delayMs = 0,
+): Promise<{ response?: DashboardPartial }> {
+  const capture: { response?: DashboardPartial } = {};
+  await page.route('**/*', async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      url.pathname !== pathname ||
+      !request.headers()['accept']?.includes('application/json')
+    ) {
+      await route.continue();
+      return;
+    }
+
+    if (delayMs > 0) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+    const response = await route.fetch();
+    const partial = await response.json() as DashboardPartial;
+    capture.response = partial;
+    const state = { ...partial.state };
+    if (dashboardTitle === undefined) {
+      delete state.dashboardTitle;
+    } else {
+      state.dashboardTitle = dashboardTitle;
+    }
+    await route.fulfill({
+      response,
+      json: {
+        ...partial,
+        state,
+      },
+    });
+  });
+  return capture;
+}
+
+async function dashboardRouteState(page: Page): Promise<{
+  path: string | null;
+  pending: string | null;
+  error: string | null;
+  keepAlive: boolean;
+  marker: string | null;
+}> {
+  return page.evaluate(() => {
+    const routes = document.querySelector('route-shell')?.shadowRoot
+      ?.querySelectorAll<HTMLElement>('webui-route');
+    const active = routes
+      ? Array.from(routes).find(route => route.hasAttribute('active'))
+      : undefined;
+    const dashboard = active?.querySelector('route-dashboard') as
+      | (HTMLElement & { __identityMarker?: string })
+      | null;
+    return {
+      path: active ? active.getAttribute('path') ?? '' : null,
+      pending: active?.getAttribute('pending') ?? null,
+      error: active?.getAttribute('error') ?? null,
+      keepAlive: active?.hasAttribute('keep-alive') ?? false,
+      marker: dashboard?.__identityMarker ?? null,
+    };
+  });
+}
 
 test.describe('SSR deep links', () => {
   test('root page renders shell with nav links', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('h1')).toContainText('Router Test');
-    await expect(page.locator('nav a')).toHaveCount(10);
+    await expect(page.locator('nav a')).toHaveCount(11);
   });
 
   test('alpha page renders via SSR', async ({ page }) => {
     await page.goto('/alpha');
     await expect(page.locator('h2')).toContainText('Alpha Page');
     await expect(page.locator('.content')).toContainText('Welcome to the Alpha page');
+  });
+
+  test.describe('route declaration identity', () => {
+    test('direct /projects SSR switches to the distinct root declaration', async ({ page }) => {
+      await page.goto('/projects');
+      await waitForDashboardRoute(page);
+      await expect(page.getByTestId('dashboard-title')).toHaveText('SSR Dashboard');
+
+      await page.evaluate(() => {
+        const dashboard = document.querySelector('route-shell')?.shadowRoot
+          ?.querySelector<HTMLElement>('webui-route[active] route-dashboard');
+        if (dashboard) {
+          (dashboard as HTMLElement & { __identityMarker?: string }).__identityMarker =
+            'projects-ssr';
+        }
+      });
+
+      expect(await dashboardRouteState(page)).toEqual({
+        path: 'projects',
+        pending: 'error-display',
+        error: 'error-display',
+        keepAlive: true,
+        marker: 'projects-ssr',
+      });
+
+      const rootPartial = await interceptDashboardPartial(page, '/', 'Catalog', 350);
+      await page.evaluate(() => {
+        window.navigation.navigate('/');
+      });
+
+      await expect(page.locator('loading-skeleton[data-webui-pending]')).toBeVisible();
+      await expect(
+        page.locator(
+          'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
+        ),
+      ).toHaveText('Catalog');
+
+      expect(rootPartial.response?.chain?.at(-1)).toMatchObject({
+        component: 'route-dashboard',
+        path: '',
+        pendingComponent: 'loading-skeleton',
+        invalidates: ['catalog-route'],
+      });
+      expect(rootPartial.response?.chain?.at(-1)?.keepAlive).toBeUndefined();
+      expect(rootPartial.response?.cacheTags).toContain('catalog-route');
+      expect(await dashboardRouteState(page)).toEqual({
+        path: '',
+        pending: 'loading-skeleton',
+        error: null,
+        keepAlive: false,
+        marker: null,
+      });
+
+      await page.unroute('**/*');
+      await interceptDashboardPartial(page, '/projects');
+      await page.evaluate(() => {
+        window.navigation.navigate('/projects');
+      });
+      await expect(
+        page.locator(
+          'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
+        ),
+      ).toHaveText('SSR Dashboard');
+      expect(await dashboardRouteState(page)).toEqual({
+        path: 'projects',
+        pending: 'error-display',
+        error: 'error-display',
+        keepAlive: true,
+        marker: 'projects-ssr',
+      });
+    });
+
+    test('direct root SSR switches to the distinct /projects declaration', async ({ page }) => {
+      await page.goto('/');
+      await waitForDashboardRoute(page);
+      await expect(page.getByTestId('dashboard-title')).toHaveText('SSR Dashboard');
+
+      expect(await dashboardRouteState(page)).toEqual({
+        path: '',
+        pending: 'loading-skeleton',
+        error: null,
+        keepAlive: false,
+        marker: null,
+      });
+
+      const projectsPartial = await interceptDashboardPartial(
+        page,
+        '/projects',
+        'Projects',
+        350,
+      );
+      await page.evaluate(() => {
+        window.navigation.navigate('/projects');
+      });
+
+      await page.waitForTimeout(250);
+      await expect(page.locator('[data-webui-pending]')).toHaveCount(0);
+      await expect(
+        page.locator(
+          'route-shell webui-route[active] route-dashboard [data-testid="dashboard-title"]',
+        ),
+      ).toHaveText('Projects');
+
+      expect(projectsPartial.response?.chain?.at(-1)).toMatchObject({
+        component: 'route-dashboard',
+        path: 'projects',
+        keepAlive: true,
+        pendingComponent: 'error-display',
+        errorComponent: 'error-display',
+        invalidates: ['projects-route'],
+      });
+      expect(projectsPartial.response?.cacheTags).toContain('projects-route');
+      expect(await dashboardRouteState(page)).toEqual({
+        path: 'projects',
+        pending: 'error-display',
+        error: 'error-display',
+        keepAlive: true,
+        marker: null,
+      });
+    });
   });
 
   test('beta page renders via SSR', async ({ page }) => {
