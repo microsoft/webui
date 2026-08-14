@@ -4,7 +4,9 @@
 //! Build-time component rendering and hydration policy.
 
 use crate::diagnostic::{codes, Diagnostic};
-use crate::html_parser::{find_comment_close, find_declaration_close, parse_tag, Attr, Tag};
+use crate::html_parser::{
+    find_comment_close, find_declaration_close, leading_content, parse_tag, Attr, Tag,
+};
 use crate::{ParserError, Result};
 
 pub(crate) const RENDER_ATTR: &str = "w-render";
@@ -96,8 +98,7 @@ pub(crate) fn parse_component_render_policy(
     component: &str,
     html: &str,
 ) -> Result<ComponentRenderPolicy> {
-    let trimmed = html.trim_start();
-    let source_offset = html.len() - trimmed.len();
+    let (trimmed, source_offset) = leading_content(html);
     let Some(tag) = parse_tag(trimmed) else {
         return Ok(ComponentRenderPolicy::Eager);
     };
@@ -665,6 +666,18 @@ mod tests {
             "<template><!-- <div w-render=\"lazy\"> --><p>row</p></template>",
         );
         assert!(matches!(result, Ok(ComponentRenderPolicy::Eager)));
+    }
+
+    #[test]
+    fn parses_root_policy_after_leading_comment() {
+        let result = parse_component_render_policy(
+            "lazy-row",
+            concat!(
+                "<!-- Copyright (C) Corporation. All rights reserved. -->\n",
+                "<template w-hydrate=\"lazy\"><p>row</p></template>",
+            ),
+        );
+        assert!(matches!(result, Ok(ComponentRenderPolicy::LazyHydration)));
     }
 
     #[test]

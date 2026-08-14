@@ -239,6 +239,27 @@ impl<'a> Iterator for Walker<'a> {
     }
 }
 
+/// Returns the first non-comment content after leading whitespace and HTML
+/// comments, together with its byte offset in the source.
+#[inline]
+pub(crate) fn leading_content(source: &str) -> (&str, usize) {
+    let mut offset = 0usize;
+    loop {
+        let remaining = &source[offset..];
+        let trimmed = remaining.trim_start();
+        offset += remaining.len() - trimmed.len();
+
+        if !trimmed.starts_with("<!--") {
+            return (trimmed, offset);
+        }
+
+        let Some(comment_end) = find_comment_close(trimmed) else {
+            return (trimmed, offset);
+        };
+        offset += comment_end;
+    }
+}
+
 /// Return the byte index of the `>` that closes an HTML tag, ignoring quoted
 /// attribute values. Returns `None` if the tag is unterminated.
 #[inline]

@@ -3296,7 +3296,8 @@ impl HtmlParser {
         adopted_specifier: Option<&str>,
         mode: ComponentTemplateMode,
     ) -> Result<String> {
-        let trimmed = html.trim();
+        let trimmed_end = html.trim_end();
+        let (trimmed, _) = html::leading_content(trimmed_end);
         let snippet = css_snippet.unwrap_or_default();
 
         let processed = if trimmed.starts_with("<template") {
@@ -3435,7 +3436,7 @@ impl HtmlParser {
     }
 
     fn template_has_stripped_runtime_attrs(html: &str) -> bool {
-        let trimmed = html.trim_start();
+        let (trimmed, _) = html::leading_content(html);
         let Some(tag) = html::parse_tag(trimmed) else {
             return false;
         };
@@ -5938,6 +5939,35 @@ mod tests {
             processed.contains("</template>"),
             "[--dom=shadow] framework-added wrapper must be closed, got: {processed}"
         );
+    }
+
+    #[test]
+    fn leading_comments_do_not_change_root_template_detection() {
+        const COMMENT: &str = "<!-- Copyright (C) Corporation. All rights reserved. -->";
+        let fixtures = [
+            (
+                format!(
+                    "{COMMENT}\n<template shadowrootmode=\"open\">\n  <h1>Hello</h1>\n</template>"
+                ),
+                "<template shadowrootmode=\"open\">\n  <h1>Hello</h1>\n</template>",
+            ),
+            (
+                format!("{COMMENT}\n<h1>Hello</h1>"),
+                "<template shadowrootmode=\"open\"><h1>Hello</h1></template>",
+            ),
+            (
+                format!("{COMMENT}\nHello"),
+                "<template shadowrootmode=\"open\">Hello</template>",
+            ),
+        ];
+
+        for (input, expected) in fixtures {
+            let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
+            let processed = parser
+                .process_component_template(&input, None, None)
+                .expect("leading-comment fixture should process");
+            assert_eq!(processed, expected);
+        }
     }
 
     #[test]

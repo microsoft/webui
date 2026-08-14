@@ -68,7 +68,8 @@ use crate::component_policy::{parse_component_render_policy, ComponentRenderPoli
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{
-    find_element_end, find_tag_close, is_void_element, parse_tag, style_element_bounds,
+    find_element_end, find_tag_close, is_void_element, leading_content, parse_tag,
+    style_element_bounds,
 };
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::cell::Cell;
@@ -3286,6 +3287,7 @@ fn parse_attr_parts(value: &str) -> Option<Vec<CompiledAttrPart>> {
 /// These become "root events" (`re` array) attached to the host element
 /// rather than to an element inside the shadow DOM.
 fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>> {
+    let (html, _) = leading_content(html);
     if !html.starts_with("<template") {
         return Ok(Vec::new());
     }
@@ -4207,7 +4209,10 @@ mod tests {
 
         let comp = test_component(
             "test-el",
-            r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#,
+            concat!(
+                "<!-- Copyright (C) Corporation. All rights reserved. -->\n",
+                r#"<template shadowrootmode="open" @click="{onClick(e)}"><p>hi</p></template>"#,
+            ),
             Some(".root { color: red; }"),
             true,
         );
