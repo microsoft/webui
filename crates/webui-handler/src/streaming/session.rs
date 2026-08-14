@@ -106,6 +106,7 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     body_end_emitted: bool,
     route_chain_index: usize,
     route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
+    route_document_style_targets: Vec<bool>,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
     streaming: StreamingRenderState<'a>,
     json_scratch: Vec<u8>,
@@ -152,6 +153,7 @@ pub(super) struct ParkedResponse {
     body_end_emitted: bool,
     route_chain_index: usize,
     route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
+    route_document_style_targets: Vec<bool>,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
     streaming: StreamingProgress,
     json_scratch: Vec<u8>,
@@ -183,6 +185,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             body_end_emitted: self.body_end_emitted,
             route_chain_index: self.route_chain_index,
             route_chain: self.route_chain,
+            route_document_style_targets: self.route_document_style_targets,
             entry_route: self.entry_route,
             streaming: self.streaming.into_progress(),
             json_scratch: self.json_scratch,
@@ -241,6 +244,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             body_end_emitted: parked.body_end_emitted,
             route_chain_index: parked.route_chain_index,
             route_chain: parked.route_chain,
+            route_document_style_targets: parked.route_document_style_targets,
             entry_route: parked.entry_route,
             streaming: StreamingRenderState::from_progress(
                 parked.streaming,
@@ -419,6 +423,7 @@ impl WebUIHandler {
             body_end_emitted: false,
             route_chain_index: 0,
             route_chain: None,
+            route_document_style_targets: Vec::new(),
             entry_route,
             streaming: StreamingRenderState::from_progress(
                 StreamingProgress::new(component_count, style_resource_count),
@@ -943,6 +948,7 @@ mod tests {
             route_index: self.protocol.route_index(),
             route_chain_index: self.route_chain_index,
             route_chain: std::mem::take(&mut self.route_chain),
+            route_document_style_targets: std::mem::take(&mut self.route_document_style_targets),
             streaming: Some(&mut self.streaming),
             json_scratch: std::mem::take(&mut self.json_scratch),
             scope_pool: std::mem::take(&mut self.scope_pool),
@@ -962,6 +968,8 @@ mod tests {
         self.body_end_emitted = context.body_end_emitted;
         self.route_chain_index = context.route_chain_index;
         self.route_chain = std::mem::take(&mut context.route_chain);
+        self.route_document_style_targets =
+            std::mem::take(&mut context.route_document_style_targets);
         self.json_scratch = std::mem::take(&mut context.json_scratch);
         self.scope_pool = std::mem::take(&mut context.scope_pool);
         if !context.shadow_style_roots.is_empty() {

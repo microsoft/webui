@@ -2818,6 +2818,11 @@ pub struct RouteChainEntry {
     pub error_component: String,
 }
 
+pub(crate) struct RouteChainPlan {
+    pub(crate) entries: Vec<RouteChainEntry>,
+    pub(crate) document_style_targets: Vec<bool>,
+}
+
 impl RouteChainEntry {
     /// Serialize this entry to a JSON value ready for inclusion in a partial response.
     #[must_use]
@@ -2876,22 +2881,41 @@ impl RouteChainEntry {
 ///
 /// Walks the fragment graph from `entry_id`, follows the matched route at
 /// each nesting level, and returns a chain entry per matched level.
+#[cfg(test)]
 pub(crate) fn collect_route_chain(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     route_index: &CompiledRouteIndex,
 ) -> Vec<RouteChainEntry> {
+    collect_route_chain_plan(protocol, entry_id, request_path, route_index).entries
+}
+
+struct RouteChainWork {
+    id: String,
+    route_base: String,
+    targets_document: bool,
+}
+
+pub(crate) fn collect_route_chain_plan(
+    protocol: &WebUIProtocol,
+    entry_id: &str,
+    request_path: &str,
+    route_index: &CompiledRouteIndex,
+) -> RouteChainPlan {
     let mut chain = Vec::new();
+    let mut document_style_targets = Vec::new();
     let mut visited_fragments = HashSet::new();
-    let mut stack = vec![QueuedFragment {
+    let mut stack = vec![RouteChainWork {
         id: entry_id.to_string(),
-        inventoryable: false,
         route_base: "/".to_string(),
+        targets_document: !protocol.component_uses_shadow_dom(entry_id),
     }];
 
     while let Some(queued) = stack.pop() {
-        if queued.id.is_empty() || !mark_fragment_visited(&mut visited_fragments, &queued, true) {
+        if queued.id.is_empty()
+            || !visited_fragments.insert((queued.id.clone(), queued.route_base.clone()))
+        {
             continue;
         }
 
@@ -2909,10 +2933,11 @@ pub(crate) fn collect_route_chain(
         for frag in &frag_list.fragments {
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
-                    stack.push(QueuedFragment {
+                    stack.push(RouteChainWork {
                         id: component.fragment_id.clone(),
-                        inventoryable: false,
                         route_base: queued.route_base.clone(),
+                        targets_document: queued.targets_document
+                            && !protocol.component_uses_shadow_dom(&component.fragment_id),
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
@@ -2936,6 +2961,8 @@ pub(crate) fn collect_route_chain(
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
+                            let targets_document = queued.targets_document
+                                && !protocol.component_uses_shadow_dom(&route_frag.fragment_id);
                             chain.push(RouteChainEntry {
                                 component: route_frag.fragment_id.clone(),
                                 path: route_frag.path.clone(),
@@ -2948,23 +2975,29 @@ pub(crate) fn collect_route_chain(
                                 pending_component: route_frag.pending_component.clone(),
                                 error_component: route_frag.error_component.clone(),
                             });
+                            document_style_targets.push(targets_document);
 
                             let child_route_base = route_matcher::compute_route_base(
                                 request_path,
                                 rm.consumed_segments,
                             );
 
-                            stack.push(QueuedFragment {
+                            stack.push(RouteChainWork {
                                 id: route_frag.fragment_id.clone(),
-                                inventoryable: false,
                                 route_base: child_route_base.clone(),
+                                targets_document,
                             });
 
                             // Walk nested children iteratively
+                            let mut output = RouteChainOutput {
+                                entries: &mut chain,
+                                document_style_targets: &mut document_style_targets,
+                            };
                             collect_chain_from_children(
                                 &route_frag.children,
                                 &child_route_base,
-                                &mut chain,
+                                targets_document,
+                                &mut output,
                                 &mut ChildWalkCtx {
                                     request_path,
                                     protocol,
@@ -2979,25 +3012,36 @@ pub(crate) fn collect_route_chain(
         }
     }
 
-    chain
+    RouteChainPlan {
+        entries: chain,
+        document_style_targets,
+    }
+}
+
+struct RouteChainOutput<'a> {
+    entries: &'a mut Vec<RouteChainEntry>,
+    document_style_targets: &'a mut Vec<bool>,
 }
 
 /// Iteratively collect chain entries from nested route children.
 fn collect_chain_from_children(
     children: &[WebUIFragmentRoute],
     route_base: &str,
-    chain: &mut Vec<RouteChainEntry>,
+    targets_document: bool,
+    output: &mut RouteChainOutput<'_>,
     ctx: &mut ChildWalkCtx<'_>,
 ) {
-    let mut pending: Vec<(&[WebUIFragmentRoute], String)> =
-        vec![(children, route_base.to_string())];
+    let mut pending: Vec<(&[WebUIFragmentRoute], String, bool)> =
+        vec![(children, route_base.to_string(), targets_document)];
 
-    while let Some((current, base)) = pending.pop() {
+    while let Some((current, base, current_targets_document)) = pending.pop() {
         if let Some((idx, rm)) =
             select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
         {
             let matched = &current[idx];
-            chain.push(RouteChainEntry {
+            let matched_targets_document = current_targets_document
+                && !ctx.protocol.component_uses_shadow_dom(&matched.fragment_id);
+            output.entries.push(RouteChainEntry {
                 component: matched.fragment_id.clone(),
                 path: matched.path.clone(),
                 params: rm.params,
@@ -3009,10 +3053,11 @@ fn collect_chain_from_children(
                 pending_component: matched.pending_component.clone(),
                 error_component: matched.error_component.clone(),
             });
+            output.document_style_targets.push(matched_targets_document);
             if !matched.children.is_empty() {
                 let child_base =
                     route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
-                pending.push((&matched.children, child_base));
+                pending.push((&matched.children, child_base, matched_targets_document));
             }
         }
     }
