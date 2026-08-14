@@ -2,19 +2,19 @@
 // Licensed under the MIT license.
 
 declare global {
+  interface WebUIRuntimeGlobal {
+    chain?: unknown[];
+    inventory?: string;
+    nonce?: string;
+    css?: string[];
+    styles?: string[];
+    state?: Record<string, unknown>;
+    templateHostExclusions?: Set<string>;
+    componentStyles?: ComponentStyles;
+  }
+
   interface Window {
-    __webui?: {
-      chain?: unknown[];
-      inventory?: string;
-      nonce?: string;
-      css?: string[];
-      styles?: string[];
-      state?: Record<string, unknown>;
-      templates?: Record<string, unknown>;
-      templateFns?: Record<string, unknown>;
-      templateHostExclusions?: Set<string>;
-      componentStyles?: ComponentStyles;
-    };
+    __webui?: WebUIRuntimeGlobal;
     __webuiRegisterComponentStyles?: (value: unknown) => void;
   }
 }

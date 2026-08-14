@@ -352,6 +352,12 @@ lazily parse and remove `#webui-data` into `window.__webui` when metadata is nee
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones.
 
+The TypeScript entry points model this object through the mergeable global
+`WebUIRuntimeGlobal` interface. Each client package augments the fields it owns
+and declares the identical `Window.__webui?: WebUIRuntimeGlobal` property, so
+applications can import the router and framework entry points together without
+conflicting ambient declarations.
+
 `initial_state_strategy` controls the `state` field. Default and non-WebUI
 plugin builds use `Full` and serialize the complete state object. WebUI builds
 use `Components`: the handler walks components reachable from the active entry

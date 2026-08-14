@@ -92,7 +92,7 @@ function hasBit(hex: string, name: string): boolean {
 }
 
 describe('WebUIRouter', () => {
-  let savedWebui: typeof window.__webui;
+  let savedWebui: TemplateRegistry['__webui'];
 
   beforeEach(() => {
     savedWebui = globals().__webui;
