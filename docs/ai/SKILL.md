@@ -872,7 +872,9 @@ routed components.
 - Use `exact` on leaf routes; omit it on parents that have `<outlet />`.
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all).
 - Initial SSR delivers CSS only for the matched route chain; inactive route
-  styles remain deferred until navigation.
+  styles remain deferred until navigation. Matched route CSS targeting the
+  Document is applied before `</head>`. ShadowRoot-targeted Link CSS is preloaded
+  from the head and applied inside its owning root.
 
 | Attribute | Example | Description |
 |---|---|---|

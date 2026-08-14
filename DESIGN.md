@@ -1388,10 +1388,13 @@ host and the child's own closure describes its `ShadowRoot`. `if`, `for`,
 and attribute-template dependencies are followed conservatively. Routes are
 activation edges, not static closure edges: route bodies, pending/error
 components, and outlet children do not enter the declaring fragment's closure.
-Each matched Light route root installs its own stored closure as compiler-owned
-children of the active `<webui-route>`, immediately before the generated host,
-in the inherited Document or ShadowRoot CSS tree. A matched Shadow route root
-installs its closure at the compiler hook inside its declarative root.
+Each matched Light route root whose inherited CSS tree is the Document has its
+stored closure hoisted with the entry closure before `</head>`. The later route
+host observes those resources as already delivered and emits no duplicates. A
+matched Light route inside an inherited ShadowRoot installs its closure as
+compiler-owned children of the active `<webui-route>`, immediately before the
+generated host. A matched Shadow route root installs its closure at the compiler
+hook inside its declarative root.
 Visited-fragment and first-style sets make malformed or cyclic protocols finite
 without changing first-discovery order.
 
@@ -1407,17 +1410,19 @@ The handler keeps Document delivered-resource state directly and uses a lazily
 allocated stack of component indexes only while rendering Shadow
 roots. Each closure is installed in stored order and each resource is emitted at
 most once in that tree for the lifetime of the render. Full-document SSR installs
-the Document closure before `</head>`. When the document omits an explicit head,
-the closure precedes document content while remaining immediately after any
-leading doctype. The browser therefore places resources in the document head and
-the doctype remains the first token.
+the entry closure plus every active route closure targeting the Document before
+`</head>`. This makes Link resources render-blocking and makes Style/Module
+fallbacks available before route content can paint. When the document omits an
+explicit head, those closures precede document content while remaining immediately
+after any leading doctype. The browser therefore places resources in the document
+head and the doctype remains the first token.
 Document fragment renders install their closure before fragment content. A
-matched Light route installs only its active closure before its generated host;
-inactive route closures are not emitted or installed during hydration. Link
-builds emit ordered preload hints for the matched route closures before module
-preloads, so styles owned by a later ShadowRoot begin fetching without waiting
-for body discovery; the actual stylesheet still installs only in its owning CSS
-tree. Before any component closure installs, the framework scans that complete
+matched route installs only its active closure; inactive route closures are not
+emitted or installed during hydration. Link builds emit ordered preload hints
+only for matched route closures targeting a ShadowRoot, before module preloads,
+so those tree-local styles begin fetching without waiting for body discovery;
+the actual stylesheet still installs only in its owning ShadowRoot. Before any
+component closure installs, the framework scans that complete
 Document or ShadowRoot for compiler-owned SSR markers and claims them in place.
 It rescans an activating route's direct children for later streaming markers.
 Loaded Link elements are never reparented, avoiding a second request for

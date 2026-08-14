@@ -160,6 +160,22 @@ fn invalid_fragment_range_error(
     ))
 }
 
+#[cold]
+#[inline(never)]
+fn route_style_plan_missing_error() -> HandlerError {
+    HandlerError::Invariant(
+        "matched route style targets were computed without a route chain".to_string(),
+    )
+}
+
+#[cold]
+#[inline(never)]
+fn route_style_plan_length_error(routes: usize, targets: usize) -> HandlerError {
+    HandlerError::Invariant(format!(
+        "matched route style target count {targets} does not match route count {routes}"
+    ))
+}
+
 /// Interface for writing rendered output
 pub trait ResponseWriter {
     /// Write content to the output
@@ -389,7 +405,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// CSS strategy declared by the compiled protocol.
     pub(crate) css_strategy: webui_protocol::CssStrategy,
     /// HTML emitted at the structural `head_end` boundary (before
-    /// `</head>`), after the built-in nonce/CSS-preload emissions.
+    /// `</head>`), after the built-in nonce/CSS emissions.
     /// Zero-copy borrow of the caller's `RenderOptions<'a>::head_inject`
     /// (no per-render clone — saves an allocation when the host passes
     /// a `&'static str` such as a dev livereload script).
@@ -407,7 +423,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// render. Defends against malformed protocols that emit the
     /// signal more than once (e.g., a template with multiple `<head>`
     /// tags) — without this, host-supplied `head_inject` HTML, CSS
-    /// preload `<link>` tags, and the CSP `<meta>` nonce would be
+    /// resources, and the CSP `<meta>` nonce would be
     /// duplicated, which can be a CSP-bypass / cache-bloat vector.
     pub(crate) head_end_emitted: bool,
     /// Tracks whether the `body_start` hook has already fired in this
@@ -426,9 +442,13 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Incremented each time a matched route is rendered, allowing O(1) element
     /// binding on the client side instead of DOM-walking.
     pub(crate) route_chain_index: usize,
-    /// Matched route metadata computed at most once when head preloads or body
+    /// Matched route metadata computed at most once when head styles or body
     /// bootstrap first need it, then shared by streaming checkpoints.
     pub(crate) route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
+    /// Whether each matched route closure installs into the Document CSS tree.
+    ///
+    /// Kept parallel to `route_chain`; the route graph computes both in one walk.
+    pub(crate) route_document_style_targets: Vec<bool>,
     /// Present only for the opt-in progressive streaming render path.
     pub(crate) streaming: Option<&'output mut StreamingRenderState<'protocol>>,
     /// Reusable JSON serialization scratch buffer, owned by the render context.
@@ -1477,67 +1497,87 @@ impl WebUIHandler {
 
     pub(crate) fn ensure_request_route_chain(context: &mut WebUIProcessContext) {
         if context.route_chain.is_none() {
-            context.route_chain = Some(crate::route_handler::collect_route_chain(
+            let plan = crate::route_handler::collect_route_chain_plan(
                 context.protocol,
                 context.entry_id,
                 context.request_path,
                 context.route_index,
-            ));
+            );
+            context.route_document_style_targets = plan.document_style_targets;
+            context.route_chain = Some(plan.entries);
         }
     }
 
-    fn emit_route_style_preloads(&self, context: &mut WebUIProcessContext) -> Result<()> {
-        if context.css_strategy != webui_protocol::CssStrategy::Link {
-            return Ok(());
-        }
+    fn emit_active_route_styles(&self, context: &mut WebUIProcessContext) -> Result<()> {
         Self::ensure_request_route_chain(context);
+        let Some(chain) = context.route_chain.take() else {
+            return Err(route_style_plan_missing_error());
+        };
+        let document_targets = std::mem::take(&mut context.route_document_style_targets);
+        if chain.len() != document_targets.len() {
+            let error = route_style_plan_length_error(chain.len(), document_targets.len());
+            context.route_document_style_targets = document_targets;
+            context.route_chain = Some(chain);
+            return Err(error);
+        }
+
         let mut seen: Vec<&str> = Vec::new();
-        let entry_root = std::iter::once(context.entry_id);
-        let route_roots = context
-            .route_chain
-            .as_deref()
-            .into_iter()
-            .flatten()
-            .map(|entry| entry.component.as_str());
-        for root in entry_root.chain(route_roots) {
-            let Some(closure) = context.protocol.style_closures.get(root) else {
-                continue;
-            };
-            // Under bundling a chunk shared by several routes is the highest
-            // value hint here: one preload covers every route that needs it.
-            let chunks = closure.style_chunks.as_slice();
-            let unit_count = if chunks.is_empty() {
-                closure.component_tags.len()
-            } else {
-                chunks.len()
-            };
-            for position in 0..unit_count {
-                let (name, href) = if chunks.is_empty() {
-                    let tag = closure.component_tags[position].as_str();
-                    match context.protocol.component_style_resource(tag) {
-                        Some(href) => (tag, href),
-                        None => continue,
-                    }
-                } else {
-                    match context.protocol.style_chunk_resource(chunks[position]) {
-                        Some(unit) => unit,
-                        None => continue,
-                    }
-                };
-                if context.document_style_resources.contains(name) || seen.contains(&name) {
+        let result = (|| {
+            for (entry, targets_document) in chain.iter().zip(&document_targets) {
+                if *targets_document {
+                    self.emit_component_style_closure(
+                        &entry.component,
+                        StyleClosureInstall::Static,
+                        context,
+                    )?;
                     continue;
                 }
-                context
-                    .writer
-                    .write("<link rel=\"preload\" as=\"style\" href=\"")?;
-                context
-                    .writer
-                    .write(&crate::html_encode::encode_safe(href))?;
-                context.writer.write("\">")?;
-                seen.push(name);
+
+                if context.css_strategy != webui_protocol::CssStrategy::Link {
+                    continue;
+                }
+                let Some(closure) = context.protocol.style_closures.get(&entry.component) else {
+                    continue;
+                };
+                // A chunk shared by several tree-local routes needs one preload.
+                let chunks = closure.style_chunks.as_slice();
+                let unit_count = if chunks.is_empty() {
+                    closure.component_tags.len()
+                } else {
+                    chunks.len()
+                };
+                for position in 0..unit_count {
+                    let (name, href) = if chunks.is_empty() {
+                        let tag = closure.component_tags[position].as_str();
+                        match context.protocol.component_style_resource(tag) {
+                            Some(href) => (tag, href),
+                            None => continue,
+                        }
+                    } else {
+                        match context.protocol.style_chunk_resource(chunks[position]) {
+                            Some(unit) => unit,
+                            None => continue,
+                        }
+                    };
+                    if context.document_style_resources.contains(name) || seen.contains(&name) {
+                        continue;
+                    }
+                    context
+                        .writer
+                        .write("<link rel=\"preload\" as=\"style\" href=\"")?;
+                    context
+                        .writer
+                        .write(&crate::html_encode::encode_safe(href))?;
+                    context.writer.write("\">")?;
+                    seen.push(name);
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+
+        context.route_document_style_targets = document_targets;
+        context.route_chain = Some(chain);
+        result
     }
 
     fn process_shadow_style_signal(
@@ -1962,7 +2002,7 @@ impl WebUIHandler {
             return Ok(());
         }
 
-        // Hook: emit nonce meta and CSS <link> tags before </head>.
+        // Hook: emit nonce meta and Document-owned CSS before </head>.
         // Guarded by `head_end_emitted` so a malformed protocol cannot
         // emit nonce/preloads/inject more than once per render.
         if structural_value == "head_end" && !context.head_end_emitted {
@@ -1998,7 +2038,7 @@ impl WebUIHandler {
             if !context.protocol.style_closures.is_empty() {
                 let entry_id = context.entry_id;
                 self.emit_component_style_closure(entry_id, StyleClosureInstall::Static, context)?;
-                self.emit_route_style_preloads(context)?;
+                self.emit_active_route_styles(context)?;
             }
 
             // Compiler-resolved `modulepreload` hints for the shared chunks
@@ -2507,6 +2547,7 @@ impl WebUIHandler {
             route_index: protocol.route_index(),
             route_chain_index: 0,
             route_chain: None,
+            route_document_style_targets: Vec::new(),
             streaming: None,
             json_scratch: Vec::new(),
             scope_pool: Vec::new(),
@@ -2525,6 +2566,7 @@ impl WebUIHandler {
                 StyleClosureInstall::Static,
                 &mut context,
             )?;
+            self.emit_active_route_styles(&mut context)?;
             context.writer.write(&first_raw[split..])?;
             self.process_fragment_from(&entry.fragments, 1, &mut context)
         } else {
@@ -2537,6 +2579,7 @@ impl WebUIHandler {
                     StyleClosureInstall::Static,
                     &mut context,
                 )?;
+                self.emit_active_route_styles(&mut context)?;
             }
             self.process_fragment_id(options.entry_id, &mut context)
         };
@@ -7678,7 +7721,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_document_styles_include_only_the_active_component() {
+    fn routed_document_styles_are_hoisted_for_the_active_chain() {
         let route = WebUiFragmentRoute {
             path: "/".to_string(),
             fragment_id: "app-shell".to_string(),
@@ -7774,13 +7817,22 @@ mod tests {
         );
         let head_end = html.find("</head>").expect("head close");
         let head = &html[..head_end];
-        for href in ["/app-shell.css", "/dashboard-page.css"] {
+        for (resource, href) in [
+            ("app-shell", "/app-shell.css"),
+            ("dashboard-page", "/dashboard-page.css"),
+        ] {
             let encoded_href = crate::html_encode::encode_safe(href);
             assert!(
                 head.contains(&format!(
+                    r#"<link rel="stylesheet" href="{encoded_href}" data-webui-resource="{resource}" data-webui-strategy="link">"#
+                )),
+                "Document-targeted route CSS must be render-blocking in head: {html}"
+            );
+            assert!(
+                !head.contains(&format!(
                     r#"<link rel="preload" as="style" href="{encoded_href}">"#
                 )),
-                "matched route CSS must start before module preloads: {html}"
+                "a hoisted stylesheet must not also be preloaded: {html}"
             );
         }
         assert!(
@@ -7798,11 +7850,373 @@ mod tests {
             .find("<dashboard-page data-wl")
             .expect("dashboard route host");
         assert!(
-            head_end < app_style
-                && app_style < app_host
-                && app_host < dashboard_style
-                && dashboard_style < dashboard_host,
-            "matched route closures must precede their generated hosts in render order: {html}"
+            app_style < dashboard_style
+                && dashboard_style < head_end
+                && head_end < app_host
+                && app_host < dashboard_host,
+            "matched Document route closures must be hoisted in chain order: {html}"
+        );
+
+        let protocol = Protocol::new(protocol);
+        let mut streamed = FlushTestWriter::default();
+        WebUIHandler::new()
+            .render_streaming(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut streamed,
+            )
+            .unwrap();
+        let streamed_head_end = streamed
+            .output
+            .find("</head>")
+            .expect("streamed head close");
+        for resource in ["app-shell", "dashboard-page"] {
+            let marker = format!(r#"data-webui-resource="{resource}""#);
+            let position = streamed.output.find(&marker).expect("streamed route style");
+            assert!(
+                position < streamed_head_end,
+                "streaming must hoist {resource} into head: {}",
+                streamed.output
+            );
+            assert_eq!(
+                streamed.output.matches(&marker).count(),
+                1,
+                "streaming must not emit {resource} twice: {}",
+                streamed.output
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_routed_document_stylesheet_is_hoisted_once() {
+        let route = WebUiFragmentRoute {
+            path: "/".to_string(),
+            fragment_id: "dashboard-page".to_string(),
+            exact: true,
+            ..Default::default()
+        };
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_start"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body>"),
+                        WebUIFragment::route_from(route),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                },
+            ),
+            (
+                "dashboard-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Dashboard</main>")],
+                },
+            ),
+        ]));
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for tag in ["dashboard-page", "summary-card", "activity-list"] {
+            protocol
+                .components
+                .entry(tag.to_string())
+                .or_default()
+                .css_href = format!("/{tag}.css");
+        }
+        protocol.style_closures.insert(
+            "index.html".to_string(),
+            webui_protocol::ComponentStyleClosure::default(),
+        );
+        protocol.style_closures.insert(
+            "dashboard-page".to_string(),
+            webui_protocol::ComponentStyleClosure {
+                component_tags: vec![
+                    "dashboard-page".to_string(),
+                    "summary-card".to_string(),
+                    "activity-list".to_string(),
+                ],
+                style_chunks: vec![0],
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-dashboard-page-3".to_string(),
+            css: String::new(),
+            css_href: "/_chunk-dashboard-page-3.css".to_string(),
+            component_tags: vec![
+                "dashboard-page".to_string(),
+                "summary-card".to_string(),
+                "activity-list".to_string(),
+            ],
+        });
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+        let head_end = html.find("</head>").expect("head close");
+        let marker = r#"data-webui-resource="_chunk-dashboard-page-3""#;
+        let style = html.find(marker).expect("bundled route stylesheet");
+
+        assert!(
+            style < head_end,
+            "bundled route CSS must be in head: {html}"
+        );
+        assert_eq!(
+            html.matches(marker).count(),
+            1,
+            "the route host must not emit the hoisted chunk again: {html}"
+        );
+        let bundled_href = crate::html_encode::encode_safe("/_chunk-dashboard-page-3.css");
+        assert!(
+            !html.contains(&format!(
+                r#"<link rel="preload" as="style" href="{bundled_href}">"#
+            )),
+            "the applied bundled stylesheet must not also be preloaded: {html}"
+        );
+    }
+
+    #[test]
+    fn routed_document_inline_styles_are_hoisted() {
+        for strategy in [
+            webui_protocol::CssStrategy::Style,
+            webui_protocol::CssStrategy::Module,
+        ] {
+            let route = WebUiFragmentRoute {
+                path: "/".to_string(),
+                fragment_id: "dashboard-page".to_string(),
+                exact: true,
+                ..Default::default()
+            };
+            let mut protocol = WebUIProtocol::new(HashMap::from([
+                (
+                    "index.html".to_string(),
+                    FragmentList {
+                        fragments: vec![
+                            WebUIFragment::raw("<html><head>"),
+                            structural_fragment("head_start"),
+                            structural_fragment("head_end"),
+                            WebUIFragment::raw("</head><body>"),
+                            WebUIFragment::route_from(route),
+                            structural_fragment("body_end"),
+                            WebUIFragment::raw("</body></html>"),
+                        ],
+                    },
+                ),
+                (
+                    "dashboard-page".to_string(),
+                    FragmentList {
+                        fragments: vec![WebUIFragment::raw("<main>Dashboard</main>")],
+                    },
+                ),
+            ]));
+            protocol.set_css_strategy(strategy);
+            protocol
+                .components
+                .entry("dashboard-page".to_string())
+                .or_default()
+                .css = ".dashboard{display:grid}".to_string();
+            protocol.populate_style_closures(&["index.html"]);
+
+            let mut writer = TestWriter::new();
+            handle(
+                &protocol,
+                &test_json!({}),
+                &RenderOptions::new("index.html", "/").with_nonce("css-nonce"),
+                &mut writer,
+            )
+            .unwrap();
+            let html = writer.get_content();
+            let head_end = html.find("</head>").expect("head close");
+            let marker = r#"data-webui-resource="dashboard-page""#;
+            let style = html.find(marker).expect("route style fallback");
+            let host = html
+                .find("<dashboard-page data-wl")
+                .expect("dashboard route host");
+            let strategy_name = if strategy == webui_protocol::CssStrategy::Module {
+                "module"
+            } else {
+                "style"
+            };
+            let style_marker = format!(
+                r#"data-webui-resource="dashboard-page" data-webui-strategy="{strategy_name}""#
+            );
+
+            assert!(
+                style < head_end && head_end < host,
+                "{strategy:?} route CSS must be applied in head before its host: {html}"
+            );
+            assert_eq!(
+                html.matches(&style_marker).count(),
+                1,
+                "{strategy:?} route CSS must not be emitted twice: {html}"
+            );
+        }
+    }
+
+    #[test]
+    fn light_route_inside_static_shadow_root_is_only_preloaded_in_head() {
+        let route = WebUiFragmentRoute {
+            path: "/".to_string(),
+            fragment_id: "dashboard-page".to_string(),
+            exact: true,
+            ..Default::default()
+        };
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<html><head>"),
+                        structural_fragment("head_start"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body><outer-box>"),
+                        WebUIFragment::component("outer-box"),
+                        WebUIFragment::raw("</outer-box></body></html>"),
+                    ],
+                },
+            ),
+            (
+                "outer-box".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">"),
+                        structural_fragment("shadow_styles:outer-box"),
+                        WebUIFragment::route_from(route),
+                        WebUIFragment::raw("</template>"),
+                    ],
+                },
+            ),
+            (
+                "dashboard-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Dashboard</main>")],
+                },
+            ),
+        ]));
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for tag in ["outer-box", "dashboard-page"] {
+            protocol
+                .components
+                .entry(tag.to_string())
+                .or_default()
+                .css_href = format!("/{tag}.css");
+        }
+        protocol
+            .components
+            .get_mut("outer-box")
+            .expect("outer-box component")
+            .uses_shadow_dom = true;
+        protocol.populate_style_closures(&["index.html"]);
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+        let head_end = html.find("</head>").expect("head close");
+        let head = &html[..head_end];
+        let dashboard_style = html
+            .find(r#"data-webui-resource="dashboard-page""#)
+            .expect("tree-local dashboard stylesheet");
+        let shadow_start = html
+            .find("<template shadowrootmode=\"open\">")
+            .expect("Shadow template");
+        let dashboard_host = html
+            .find("<dashboard-page data-wl")
+            .expect("dashboard route host");
+        let dashboard_href = crate::html_encode::encode_safe("/dashboard-page.css");
+
+        assert!(
+            head.contains(&format!(
+                r#"<link rel="preload" as="style" href="{dashboard_href}">"#
+            )),
+            "Shadow-targeted route CSS must start loading from head: {html}"
+        );
+        assert!(
+            !head.contains(r#"data-webui-resource="dashboard-page""#),
+            "Shadow-targeted route CSS must not be applied to Document: {html}"
+        );
+        assert!(
+            shadow_start < dashboard_style && dashboard_style < dashboard_host,
+            "the applying stylesheet must remain inside the owning ShadowRoot: {html}"
+        );
+    }
+
+    #[test]
+    fn isolated_shadow_entry_does_not_emit_document_preloads() {
+        let route = WebUiFragmentRoute {
+            path: "/".to_string(),
+            fragment_id: "dashboard-page".to_string(),
+            exact: true,
+            ..Default::default()
+        };
+        let mut protocol = WebUIProtocol::new(HashMap::from([
+            (
+                "outer-box".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<template shadowrootmode=\"open\">"),
+                        structural_fragment("shadow_styles:outer-box"),
+                        WebUIFragment::route_from(route),
+                        WebUIFragment::raw("</template>"),
+                    ],
+                },
+            ),
+            (
+                "dashboard-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>Dashboard</main>")],
+                },
+            ),
+        ]));
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for tag in ["outer-box", "dashboard-page"] {
+            protocol
+                .components
+                .entry(tag.to_string())
+                .or_default()
+                .css_href = format!("/{tag}.css");
+        }
+        protocol
+            .components
+            .get_mut("outer-box")
+            .expect("outer-box component")
+            .uses_shadow_dom = true;
+        protocol.populate_style_closures(&["outer-box"]);
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("outer-box", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        assert!(
+            html.starts_with("<template shadowrootmode=\"open\">"),
+            "isolated component output must not be prefixed with document metadata: {html}"
+        );
+        assert!(
+            !html.contains(r#"<link rel="preload""#),
+            "an isolated Shadow entry has no Document head for preloads: {html}"
+        );
+        assert!(
+            html.contains(r#"data-webui-resource="dashboard-page""#),
+            "the route stylesheet must still install inside the ShadowRoot: {html}"
         );
     }
 

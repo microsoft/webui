@@ -70,6 +70,11 @@ Child routes use **relative paths** (no leading `/`). The nesting is the route t
 The paired form `<outlet></outlet>` is also supported, but outlets are empty and
 the self-closing form is preferred.
 
+On initial SSR, styles for the matched route chain that target the Document are
+applied before `</head>`, including Link-mode bundled chunks. Styles targeting a
+ShadowRoot remain tree-local; Link mode preloads them from the head and installs
+the applying stylesheet inside that root. Inactive route styles stay deferred.
+
 **3. Start the router after hydration:**
 
 ```typescript

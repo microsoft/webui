@@ -272,6 +272,13 @@ Initial SSR delivers component CSS only for the matched route chain. Styles for
 inactive routes remain deferred until navigation activates those components,
 including when an `<outlet />` is inside a Shadow component.
 
+Matched route styles that target the Document are emitted with the entry styles
+before `</head>`. Link-mode stylesheets are therefore render-blocking for first
+paint, including bundled chunks. A route rendered inside a ShadowRoot cannot use
+a Document stylesheet, so Link mode preloads that resource from the head and
+installs the applying stylesheet inside the owning ShadowRoot before the route
+host.
+
 ### Tagged Cache
 
 The router caches partial responses and tags them with server-provided cache tags for precise invalidation. Enable caching at startup:
