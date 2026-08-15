@@ -407,6 +407,7 @@ stages:
       displayName: Generate release artifacts
       inputs:
         targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
         script: |
           set -euo pipefail
           sudo apt-get update -q
