@@ -414,6 +414,9 @@ stages:
           rustup toolchain install 1.93 --profile minimal
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
+          # Versioned package archives are outputs, not reusable compilation artifacts.
+          rm -rf target/package
+          trap 'rm -rf target/package' EXIT
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage --pack-only --profile release
       env:
         PNPM_STORE_PATH: $(PNPM_STORE_PATH)
