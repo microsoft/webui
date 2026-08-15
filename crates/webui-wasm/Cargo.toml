@@ -26,9 +26,9 @@ handler = ["dep:microsoft-webui-handler"]
 parser = ["dep:microsoft-webui-parser", "microsoft-webui-protocol/projection-manifest"]
 
 [dependencies]
-microsoft-webui-parser = { path = "../webui-parser", version = "0.0.24", default-features = false, optional = true }
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.24", optional = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.24" }
+microsoft-webui-parser = { path = "../webui-parser", version = "0.0.25", default-features = false, optional = true }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.25", optional = true }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.25" }
 serde_json = { workspace = true }
 wasm-bindgen = { workspace = true }
 js-sys = { workspace = true }
