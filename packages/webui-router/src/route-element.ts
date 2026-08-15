@@ -71,7 +71,7 @@ export function renderRoot(el: Element): Element | ShadowRoot {
 /** Create a hidden `<webui-route>` stub element. */
 export function createRouteStub(entry: { path?: string; component?: string; exact?: boolean }): HTMLElement {
   const el = document.createElement(ROUTE_SELECTOR);
-  if (entry.path) el.setAttribute('path', entry.path);
+  if (entry.path !== undefined) el.setAttribute('path', entry.path);
   if (entry.component) el.setAttribute('component', entry.component);
   if (entry.exact) el.setAttribute('exact', '');
   el.style.display = 'none';

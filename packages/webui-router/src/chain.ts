@@ -109,32 +109,17 @@ function findRouteElement(
   elements: ArrayLike<Element>,
   entry: RouteChainEntry,
 ): HTMLElement | null {
-  let unpathedMatch: HTMLElement | null = null;
-  let componentMatchCount = 0;
-  let unpathedMatchCount = 0;
-
   for (let i = 0; i < elements.length; i++) {
     const child = elements[i];
     if (
-      child.tagName !== 'WEBUI-ROUTE' ||
-      child.getAttribute('component') !== entry.component
+      child.tagName === 'WEBUI-ROUTE' &&
+      child.getAttribute('component') === entry.component &&
+      child.getAttribute('path') === entry.path
     ) {
-      continue;
-    }
-    componentMatchCount++;
-    const path = child.getAttribute('path') ?? '';
-    if (path === entry.path) return child as HTMLElement;
-    if (!child.hasAttribute('path')) {
-      unpathedMatch = child as HTMLElement;
-      unpathedMatchCount++;
+      return child as HTMLElement;
     }
   }
-
-  // Older compiler output could omit a normalized non-empty path. Preserve
-  // that compatibility only when the component has one unambiguous placeholder.
-  return componentMatchCount === 1 && unpathedMatchCount === 1
-    ? unpathedMatch
-    : null;
+  return null;
 }
 
 /**

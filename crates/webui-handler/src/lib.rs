@@ -1135,11 +1135,9 @@ impl WebUIHandler {
 
                 // Emit matched <webui-route>
                 context.writer.write("<webui-route")?;
-                if !matched_child.path.is_empty() {
-                    context.writer.write(" path=\"")?;
-                    context.writer.write(&matched_child.path)?;
-                    context.writer.write("\"")?;
-                }
+                context.writer.write(" path=\"")?;
+                context.writer.write(&matched_child.path)?;
+                context.writer.write("\"")?;
                 context.writer.write(" component=\"")?;
                 context.writer.write(comp)?;
                 context.writer.write("\"")?;
@@ -1185,11 +1183,9 @@ impl WebUIHandler {
             let is_matched = best.as_ref().is_some_and(|(bi, _)| *bi == idx);
             if !is_matched && !child.fragment_id.is_empty() {
                 context.writer.write("<webui-route")?;
-                if !child.path.is_empty() {
-                    context.writer.write(" path=\"")?;
-                    context.writer.write(&child.path)?;
-                    context.writer.write("\"")?;
-                }
+                context.writer.write(" path=\"")?;
+                context.writer.write(&child.path)?;
+                context.writer.write("\"")?;
                 context.writer.write(" component=\"")?;
                 context.writer.write(&child.fragment_id)?;
                 context.writer.write("\"")?;
@@ -1276,11 +1272,9 @@ impl WebUIHandler {
             .is_some_and(|(best_key, _)| *best_key == route_frag.fragment_id);
 
         context.writer.write("<webui-route")?;
-        if !route_frag.path.is_empty() {
-            context.writer.write(" path=\"")?;
-            context.writer.write(&route_frag.path)?;
-            context.writer.write("\"")?;
-        }
+        context.writer.write(" path=\"")?;
+        context.writer.write(&route_frag.path)?;
+        context.writer.write("\"")?;
         if !route_frag.fragment_id.is_empty() {
             context.writer.write(" component=\"")?;
             context.writer.write(&route_frag.fragment_id)?;

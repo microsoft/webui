@@ -6,7 +6,11 @@ import './browser-shim.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { RouteChainEntry } from './cache.js';
-import { findChangeLevel, sameRouteDeclaration } from './chain.js';
+import {
+  findChangeLevel,
+  findOrCreateRouteElement,
+  sameRouteDeclaration,
+} from './chain.js';
 
 function routeEntry(
   path: string,
@@ -17,6 +21,24 @@ function routeEntry(
     path,
     params,
   };
+}
+
+function routeElement(
+  attributes: Record<string, string>,
+): HTMLElement {
+  return {
+    tagName: 'WEBUI-ROUTE',
+    style: {},
+    getAttribute(name: string) {
+      return Object.hasOwn(attributes, name) ? attributes[name] : null;
+    },
+    hasAttribute(name: string) {
+      return Object.hasOwn(attributes, name);
+    },
+    setAttribute(name: string, value: string) {
+      attributes[name] = value;
+    },
+  } as unknown as HTMLElement;
 }
 
 describe('route chain identity', () => {
@@ -40,5 +62,34 @@ describe('route chain identity', () => {
       sameRouteDeclaration(routeEntry('projects'), routeEntry('')),
       false,
     );
+  });
+
+  test('missing path is not treated as the empty-path declaration', () => {
+    const body = document.body as unknown as {
+      children: HTMLElement[];
+      appendChild(el: HTMLElement): void;
+    };
+    const originalChildren = body.children;
+    const originalAppendChild = body.appendChild;
+    const originalCreateElement = document.createElement;
+    const unpathed = routeElement({ component: 'shared-page' });
+    const created = routeElement({});
+
+    body.children = [unpathed];
+    body.appendChild = () => {};
+    document.createElement = () => created;
+
+    try {
+      const result = findOrCreateRouteElement(null, routeEntry(''));
+
+      assert.notEqual(result, unpathed);
+      assert.equal(result, created);
+      assert.equal(result.hasAttribute('path'), true);
+      assert.equal(result.getAttribute('path'), '');
+    } finally {
+      body.children = originalChildren;
+      body.appendChild = originalAppendChild;
+      document.createElement = originalCreateElement;
+    }
   });
 });
