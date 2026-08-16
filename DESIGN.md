@@ -633,7 +633,10 @@ Existing JSON values are returned as `Cow::Borrowed` so handler and expression h
 - Special length property support for arrays and strings (e.g., users.length)
 - Numeric array indexes are not resolved by dotted path lookup; loops bind array items by moniker instead
 - Nullable path handling via `Option`
-- Missing paths return `None`; handler text and attribute bindings render empty, and missing condition values evaluate as false
+- Missing paths return `None`; handler text and attribute bindings render empty.
+  A missing identifier in a condition is a falsy operand, so `path` evaluates
+  false and `!path` evaluates true. A missing comparison operand still makes
+  the complete handler condition false.
 
 ## Expression Evaluation (webui-expressions)
 ### Core Function
@@ -646,6 +649,8 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, Expres
 - **Logical operators:** Support for && (AND) and || (OR) only
 - **Comparison operators:** Support for >, <, ==, !=, >=, <= only
 - **Negation:** Support for ! operator
+- **Missing identifiers:** Treat a missing identifier as a falsy operand before
+  applying negation or logical operators
 - **No mixed operators:**  Cannot mix AND and OR in the same expression level
 - **Operator limit:**  Maximum of 5 logical operators per expression
 - **Error handling:**  Clear, actionable error messages for invalid expressions
@@ -1644,7 +1649,9 @@ All arrays are optional and omitted from the output when empty to minimize paylo
 
 The closure itself has the shape `(resolve, scope) => boolean`; generated source calls
 `resolve(path, scope)` for identifier lookups and preserves the existing WebUI condition
-semantics for truthiness, comparison, negation, and `&&` / `||` compounds.
+semantics for truthiness, comparison, negation, and `&&` / `||` compounds. A resolver
+miss is a falsy identifier operand on both server and client, so `path` is false
+and `!path` is true even when the path is absent from a loop item.
 
 > **Known divergence.** A bare identifier compiles to `!!resolve(path, scope)`, i.e.
 > host JavaScript truthiness, while the server evaluator in `webui-expressions`

@@ -3,9 +3,21 @@
   <button class="switch" @click="{switchItems()}">Switch</button>
   <span class="selected-title">{{selectedTitle}}</span>
 </div>
+<if condition="missingTopLevel">
+  <span class="missing-top-positive">unexpected</span>
+</if>
+<if condition="!missingTopLevel">
+  <span class="missing-top-negated">missing top-level path is falsy</span>
+</if>
 <ul class="items">
   <for each="item in items">
     <li>
+      <if condition="item.searchPresentation">
+        <span class="missing-item-positive">{{item.title}}</span>
+      </if>
+      <if condition="!item.searchPresentation">
+        <span class="missing-item-negated">{{item.title}}</span>
+      </if>
       <if condition="item.activeClass == 'active'">
         <p class="current" data-href="{{item.href}}">{{item.title}}</p>
       </if>

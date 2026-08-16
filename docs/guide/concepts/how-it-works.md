@@ -119,7 +119,11 @@ Understanding the relationship between server and client is critical for buildin
 
 ### The server is the source of truth for the initial render
 
-Every value bound in a template - `{{expression}}`, `<for each="item in items">`, `<if condition="expr">` - must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys in this JSON object. If a key is missing, the binding renders empty or the condition evaluates to false.
+Every value bound in a template - `{{expression}}`, `<for each="item in items">`,
+`<if condition="expr">` - should have a corresponding key in the server state
+JSON. The handler resolves bindings by looking up keys in this object. Missing
+text and attribute bindings render empty. A missing condition identifier is a
+falsy operand, so its positive branch is hidden and its negated branch is shown.
 
 ### Derived state belongs in the server or the template
 

@@ -39,7 +39,10 @@ pub enum ExpressionError {
 
 pub type Result<T> = std::result::Result<T, ExpressionError>;
 
-/// Evaluate a condition expression with the given state
+/// Evaluate a condition expression with the given state.
+///
+/// Missing identifier paths are falsy operands. Missing values used by
+/// comparison predicates remain evaluation errors.
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
     evaluate_with_resolver(condition, |path| find_value_by_dotted_path_ref(path, state))
 }
@@ -136,7 +139,7 @@ where
                     Value::Object(o) => Ok(!o.is_empty()),
                 }
             } else {
-                Err(ExpressionError::MissingValue(id.value.clone()))
+                Ok(false)
             }
         }
         None => Err(ExpressionError::Evaluation(
@@ -638,15 +641,18 @@ mod tests {
     // === Identifier Edge Cases ===
 
     #[test]
-    fn test_missing_field() {
+    fn test_missing_identifier_is_falsy_before_negation() {
         let condition = ConditionExpr::identifier("notExist");
+        let negated = ConditionExpr::negated(condition.clone());
         let state = test_json!({ "flag": true });
 
-        let result = evaluate(&condition, &state);
         assert!(
-            matches!(result, Err(ExpressionError::MissingValue(_))),
-            "Expected Err(MissingValue), got {:?}",
-            result
+            matches!(evaluate(&condition, &state), Ok(false)),
+            "a missing identifier must be a falsy operand"
+        );
+        assert!(
+            matches!(evaluate(&negated, &state), Ok(true)),
+            "negating a missing identifier must evaluate to true"
         );
     }
 

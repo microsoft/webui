@@ -107,9 +107,10 @@ compile to a binary Protocol Buffer at build time. At runtime any backend
 (Rust, Node, Go, C#, Python) supplies JSON state and produces HTML. On the
 client, interactive components hydrate as islands.
 
-1. **Every template binding must exist in the server state JSON.** If the
+1. **Every template binding should exist in the server state JSON.** If the
    template uses `{{title}}`, the server must provide `{ "title": "..." }`.
-   Missing paths render empty and `<if>` evaluates false. No error is raised.
+   Missing text and attribute paths render empty. A missing condition identifier
+   is falsy, so `path` is false and `!path` is true. No error is raised.
 2. **Derived state belongs in the template or the server.** Use expressions like
    `items.length` or `status == 'active'`. Compute complex values server-side.
 3. **The server is the source of truth for the initial render.** The client
@@ -905,7 +906,8 @@ Full detail: [Routing](/guide/concepts/routing).
 
 **Path resolution:** `title`, `user.name`, `items.0.label`, `items.length`
 
-**Missing paths:** text bindings render empty, `<if>` evaluates false. No error.
+**Missing paths:** text bindings render empty. In conditions, a missing
+identifier is falsy, so `path` is false and `!path` is true. No error.
 
 **Route-scoped state.** Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes

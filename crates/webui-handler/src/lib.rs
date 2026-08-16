@@ -1405,7 +1405,8 @@ impl WebUIHandler {
     ///
     /// Uses a resolver closure that checks local variables first, then falls
     /// back to global state — avoiding a full clone of the state tree.
-    /// Returns false if the condition references a missing value.
+    /// Missing identifier operands are falsy before logical operators are applied.
+    /// Missing predicate values make the complete condition false.
     fn evaluate_condition(
         &self,
         condition: &webui_protocol::ConditionExpr,
@@ -2345,6 +2346,36 @@ mod tests {
         );
         assert_eq!(writer_false.get_content(), "Status: End");
         assert!(writer_false.is_ended());
+    }
+
+    #[test]
+    fn missing_identifier_is_falsy_before_negation_in_global_and_loop_scopes() {
+        let source = r#"<if condition="missingTopLevel">top-positive</if><if condition="!missingTopLevel">top-negated</if><for each="item in items"><if condition="item.searchPresentation"><mark>{{item.label}}</mark></if><if condition="!item.searchPresentation"><span>{{item.label}}</span></if></for>"#;
+        let mut parser = HtmlParser::new();
+        parser
+            .parse("index.html", source)
+            .expect("parse missing-path condition fixture");
+        let protocol = WebUIProtocol::new(parser.into_fragment_records());
+        let state = test_json!({
+            "items": [
+                {"label": "Normal"},
+                {"label": "Search", "searchPresentation": true}
+            ]
+        });
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .expect("render missing-path condition fixture");
+
+        assert_eq!(
+            writer.get_content(),
+            "top-negated<span>Normal</span><mark>Search</mark>"
+        );
     }
 
     #[test]
