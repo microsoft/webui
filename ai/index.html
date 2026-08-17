@@ -99,9 +99,10 @@ webui build         + JSON state          hydrate as islands
 </code></pre></code-block><p>WebUI is a <strong>language-agnostic server-side rendering framework</strong>. Templates
 compile to a binary Protocol Buffer at build time. At runtime any backend
 (Rust, Node, Go, C#, Python) supplies JSON state and produces HTML. On the
-client, interactive components hydrate as islands.</p><ol><li><strong>Every template binding must exist in the server state JSON.</strong> If the
+client, interactive components hydrate as islands.</p><ol><li><strong>Every template binding should exist in the server state JSON.</strong> If the
 template uses <code>&#123;&#123;title&#125;&#125;</code>, the server must provide <code>&#123; "title": "..." &#125;</code>.
-Missing paths render empty and <code>&lt;if&gt;</code> evaluates false. No error is raised.</li><li><strong>Derived state belongs in the template or the server.</strong> Use expressions like
+Missing text and attribute paths render empty. A missing condition identifier
+is falsy, so <code>path</code> is false and <code>!path</code> is true. No error is raised.</li><li><strong>Derived state belongs in the template or the server.</strong> Use expressions like
 <code>items.length</code> or <code>status == 'active'</code>. Compute complex values server-side.</li><li><strong>The server is the source of truth for the initial render.</strong> The client
 takes over after hydration for user interactions.</li><li><strong>Scriptless components are dormant, not dead.</strong> Their bindings render on the
 server and contribute no initial bootstrap state. Compiler-owned hosts can
@@ -514,7 +515,8 @@ router navigates the document so the server can render it.</p><p>Full detail: <a
   <span class="hl-string">"</span><span class="hl-string">isAdmin</span><span class="hl-string">"</span>: <span class="hl-property">true</span>,
   <span class="hl-string">"</span><span class="hl-string">showBanner</span><span class="hl-string">"</span>: <span class="hl-property">false</span>
 &#125;
-</code></pre></code-block><p><strong>Path resolution:</strong> <code>title</code>, <code>user.name</code>, <code>items.0.label</code>, <code>items.length</code></p><p><strong>Missing paths:</strong> text bindings render empty, <code>&lt;if&gt;</code> evaluates false. No error.</p><p><strong>Route-scoped state.</strong> Each route handler should return only the keys that
+</code></pre></code-block><p><strong>Path resolution:</strong> <code>title</code>, <code>user.name</code>, <code>items.0.label</code>, <code>items.length</code></p><p><strong>Missing paths:</strong> text bindings render empty. In conditions, a missing
+identifier is falsy, so <code>path</code> is false and <code>!path</code> is true. No error.</p><p><strong>Route-scoped state.</strong> Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes
 bandwidth and render time.</p><h3 id="reserved-webui-state">Reserved <code>$webui</code> state <a class="header-anchor" href="/webui/ai/#reserved-webui-state">#</a></h3><p>The top-level <code>"$webui"</code> object is reserved for trusted host HTML emitted at
 document boundaries:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&#123;
