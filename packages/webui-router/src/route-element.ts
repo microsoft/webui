@@ -184,7 +184,7 @@ export function deactivateRoute(el: HTMLElement): void {
 }
 
 /** Identify a compiler-owned style marker kept directly inside a route host. */
-export function isRouteStyleMarker(node: Node): boolean {
+function isRouteStyleMarker(node: Node): boolean {
   if (node.nodeType !== 1) return false;
   const element = node as Element;
   if (element.getAttribute('data-webui-resource') === null) return false;

@@ -402,6 +402,12 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) component_index: &'protocol HashMap<String, u32>,
     /// Style-resource ID → request-local dedup bit built with [`Protocol`].
     pub(crate) style_resource_index: &'protocol HashMap<String, u32>,
+    /// Component tag → covering bundle chunk, built once per render.
+    ///
+    /// Empty (and allocation-free) for unbundled builds. Every style delivery
+    /// path resolves closure members through this so they all agree on what a
+    /// chunk already ships.
+    pub(crate) style_chunk_index: HashMap<&'protocol str, u32>,
     /// CSS strategy declared by the compiled protocol.
     pub(crate) css_strategy: webui_protocol::CssStrategy,
     /// HTML emitted at the structural `head_end` boundary (before
@@ -1396,35 +1402,26 @@ impl WebUIHandler {
         // delivers its own stylesheet. Both walk the closure in the same order,
         // so the emitted cascade is identical either way. Bundling is a
         // build-wide decision, so the two never mix within one protocol.
-        let chunks = closure.style_chunks.as_slice();
-        let unit_count = if chunks.is_empty() {
-            closure.component_tags.len()
-        } else {
-            chunks.len()
-        };
+        let unit_count = WebUIProtocol::style_closure_unit_count(closure);
 
         for position in 0..unit_count {
-            let (name, resource, chunk) = if chunks.is_empty() {
-                let tag = &closure.component_tags[position];
-                let resource = context
-                    .protocol
-                    .component_style_resource(tag)
-                    .ok_or_else(|| {
-                        HandlerError::Invariant(format!(
-                            "component style closure `{root}` references missing resource `{tag}`"
-                        ))
-                    })?;
-                (tag.as_str(), resource, None)
-            } else {
-                let index = chunks[position];
-                let (name, resource) =
-                    context.protocol.style_chunk_resource(index).ok_or_else(|| {
-                        HandlerError::Invariant(format!(
-                            "component style closure `{root}` references missing style chunk {index}"
-                        ))
-                    })?;
-                (name, resource, Some(index))
-            };
+            let unit = context
+                .protocol
+                .style_closure_unit(closure, &context.style_chunk_index, position)
+                .ok_or_else(|| {
+                    HandlerError::Invariant(format!(
+                        "component style closure `{root}` references out-of-range unit {position}"
+                    ))
+                })?;
+            let (name, chunk) = (unit.name, unit.chunk);
+            let resource = unit.resource.ok_or_else(|| match chunk {
+                Some(index) => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing style chunk {index}"
+                )),
+                None => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing resource `{name}`"
+                )),
+            })?;
             if is_document_tree && !context.document_style_resources.insert(name.to_string()) {
                 continue;
             }
@@ -1565,25 +1562,19 @@ impl WebUIHandler {
             return Ok(());
         };
         // A chunk shared by several tree-local roots needs one preload.
-        let chunks = closure.style_chunks.as_slice();
-        let unit_count = if chunks.is_empty() {
-            closure.component_tags.len()
-        } else {
-            chunks.len()
-        };
+        let unit_count = WebUIProtocol::style_closure_unit_count(closure);
         for position in 0..unit_count {
-            let (name, href) = if chunks.is_empty() {
-                let tag = closure.component_tags[position].as_str();
-                match context.protocol.component_style_resource(tag) {
-                    Some(href) => (tag, href),
-                    None => continue,
-                }
-            } else {
-                match context.protocol.style_chunk_resource(chunks[position]) {
-                    Some(unit) => unit,
-                    None => continue,
-                }
+            let Some(unit) =
+                context
+                    .protocol
+                    .style_closure_unit(closure, &context.style_chunk_index, position)
+            else {
+                continue;
             };
+            let Some(href) = unit.resource else {
+                continue;
+            };
+            let name = unit.name;
             if context.document_style_resources.contains(name) {
                 continue;
             }
@@ -2604,6 +2595,7 @@ impl WebUIHandler {
             body_start_emitted: false,
             component_index: protocol.component_index(),
             style_resource_index: protocol.style_resource_index(),
+            style_chunk_index: protocol.protocol().style_chunk_index(),
             css_strategy: protocol.css_strategy(),
             body_end_emitted: false,
             route_index: protocol.route_index(),

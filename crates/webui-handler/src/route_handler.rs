@@ -446,52 +446,37 @@ fn collect_component_styles_inner<'a>(
         {
             continue;
         }
-        let chunks = closure.style_chunks.as_slice();
-        let unit_count = if chunks.is_empty() {
-            closure.component_tags.len()
-        } else {
-            chunks.len()
-        };
+        let unit_count = WebUIProtocol::style_closure_unit_count(closure);
         let mut ordered = Vec::with_capacity(unit_count);
         emitted.clear();
         for position in 0..unit_count {
             // A bundled build ships one resource per chunk. The client installs
             // resources by name in closure order either way, so only the names
-            // and their grouping change.
-            let chunk = if chunks.is_empty() {
-                // This closure lists members rather than chunks, which only
-                // means the bundler did not treat it as a root. Resolving each
-                // member to its covering chunk keeps the closure self-sufficient
-                // instead of relying on some other closure installing first.
-                chunk_index
-                    .get(closure.component_tags[position].as_str())
-                    .copied()
-            } else {
-                Some(chunks[position])
+            // and their grouping change. A closure that lists members rather
+            // than chunks resolves each member to its covering chunk, so it
+            // stays self-sufficient instead of relying on some other closure
+            // installing first.
+            let Some(unit) = protocol.style_closure_unit(closure, &chunk_index, position) else {
+                continue;
             };
-            let (name, resource, client_has_it, members) = match chunk {
-                Some(index) => {
-                    let (name, resource) = protocol.style_chunk_resource(index).ok_or_else(|| {
-                        HandlerError::Invariant(format!(
-                            "component style closure `{root}` references missing style chunk {index}"
-                        ))
-                    })?;
-                    let members = protocol.style_chunk_members(index).unwrap_or_default();
-                    let has =
-                        client_inventory.is_some_and(|inventory| inventory.contains_chunk(name));
-                    (name, resource, has, Some(members))
-                }
-                None => {
-                    let tag = closure.component_tags[position].as_str();
-                    let resource = protocol.component_style_resource(tag).ok_or_else(|| {
-                        HandlerError::Invariant(format!(
-                            "component style closure `{root}` references missing resource `{tag}`"
-                        ))
-                    })?;
-                    let has =
-                        client_inventory.is_some_and(|inventory| inventory.contains_component(tag));
-                    (tag, resource, has, None)
-                }
+            let name = unit.name;
+            let resource = unit.resource.ok_or_else(|| match unit.chunk {
+                Some(index) => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing style chunk {index}"
+                )),
+                None => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing resource `{name}`"
+                )),
+            })?;
+            let (client_has_it, members) = match unit.chunk {
+                Some(index) => (
+                    client_inventory.is_some_and(|inventory| inventory.contains_chunk(name)),
+                    Some(protocol.style_chunk_members(index).unwrap_or_default()),
+                ),
+                None => (
+                    client_inventory.is_some_and(|inventory| inventory.contains_component(name)),
+                    None,
+                ),
             };
             // Several members of one closure can resolve to the same chunk.
             if !emitted.insert(name) {
@@ -569,11 +554,7 @@ fn component_styles_payload(
     resources: serde_json::Map<String, Value>,
     closures: serde_json::Map<String, Value>,
 ) -> Value {
-    let strategy = match strategy {
-        webui_protocol::CssStrategy::Link => "link",
-        webui_protocol::CssStrategy::Style => "style",
-        webui_protocol::CssStrategy::Module => "module",
-    };
+    let strategy = strategy.wire_name();
     let mut payload = serde_json::Map::new();
     payload.insert("version".into(), Value::from(1));
     payload.insert("strategy".into(), Value::String(strategy.into()));
