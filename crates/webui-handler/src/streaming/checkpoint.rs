@@ -220,7 +220,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(
@@ -319,7 +319,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(context.writer, RECORD_KIND_TERMINAL)?;
@@ -355,7 +355,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(context.writer, RECORD_KIND_STATE_UPDATE)?;

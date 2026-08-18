@@ -32,7 +32,7 @@ before(() => {
       ? 'libwebui_node.dylib'
       : 'libwebui_node.so';
   const workspaceAddon = join(process.cwd(), '..', '..', 'target', 'debug', addonName);
-  if (existsSync(workspaceAddon)) {
+  if (!process.env.WEBUI_ADDON_PATH && existsSync(workspaceAddon)) {
     process.env.WEBUI_ADDON_PATH = workspaceAddon;
   }
 
@@ -106,19 +106,24 @@ describe('build', () => {
     assert.equal(result.stats.cssFileCount, 1);
   });
 
-  test('uses Light DOM unless a component authors a Shadow wrapper', () => {
-    const light = build({ appDir, entry: 'index2.html' });
+  test('defaults to Shadow and supports mixed Light mode', () => {
+    const defaultShadow = build({ appDir, entry: 'index2.html' });
+    assert.ok(inspect(defaultShadow.protocol).includes('shadowrootmode'));
+
+    const light = build({ appDir, entry: 'index2.html', dom: 'light' });
     assert.ok(!inspect(light.protocol).includes('shadowrootmode'));
 
     writeFileSync(join(appDir, 'index-shadow.html'), '<shadow-card>slot</shadow-card>');
-    const shadow = build({ appDir, entry: 'index-shadow.html' });
+    const shadow = build({ appDir, entry: 'index-shadow.html', dom: 'light' });
     assert.ok(inspect(shadow.protocol).includes('shadowrootmode'));
   });
 
-  test('BuildOptions has no DOM strategy option', () => {
-    // @ts-expect-error DOM ownership is authored in each component template.
-    const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'shadow' };
-    assert.equal(options.appDir, appDir);
+  test('BuildOptions exposes the DOM strategy union', () => {
+    const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'light' };
+    assert.equal(options.dom, 'light');
+    // @ts-expect-error only open Shadow or scoped Light strategies are supported.
+    const invalid: import('@microsoft/webui').BuildOptions = { appDir, dom: 'closed' };
+    assert.equal(invalid.appDir, appDir);
   });
 
   test('emits static component asset files and an analyzable metafile', async () => {

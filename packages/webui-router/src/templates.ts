@@ -34,19 +34,7 @@ export function registerTemplatesAndStyles(
 ): void {
   const componentStyles = validateComponentStyles(data.componentStyles);
   validateTemplatePayload(data.templates);
-  const register = window.__webuiRegisterComponentStyles;
-  let stylesRegisteredByFramework = false;
-  if (register) {
-    register(componentStyles);
-    stylesRegisteredByFramework = true;
-  } else {
-    const w = window as Window;
-    if (!w.__webui) w.__webui = {};
-    w.__webui.componentStyles = mergeFallbackComponentStyles(
-      w.__webui.componentStyles,
-      componentStyles,
-    );
-  }
+  const stylesRegisteredByFramework = registerComponentStyleCatalog(componentStyles);
 
   if (data.inventory) {
     updateInventory(data.inventory);
@@ -117,6 +105,35 @@ export function registerTemplatesAndStyles(
     registeredTemplates,
     stylesRegisteredByFramework ? undefined : componentStyles,
   );
+}
+
+/** Register initial bootstrap styles before announcing already-published templates. */
+export function registerInitialTemplatesAndStyles(
+  templates: Record<string, unknown>,
+  componentStyles: ComponentStyles,
+): void {
+  const styles = validateComponentStyles(componentStyles);
+  validateTemplatePayload(templates);
+  const stylesRegisteredByFramework = registerComponentStyleCatalog(styles);
+  notifyTemplatesRegistered(
+    templates,
+    stylesRegisteredByFramework ? undefined : styles,
+  );
+}
+
+function registerComponentStyleCatalog(componentStyles: ComponentStyles): boolean {
+  const register = window.__webuiRegisterComponentStyles;
+  if (register) {
+    register(componentStyles);
+    return true;
+  }
+  const w = window as Window;
+  if (!w.__webui) w.__webui = {};
+  w.__webui.componentStyles = mergeFallbackComponentStyles(
+    w.__webui.componentStyles,
+    componentStyles,
+  );
+  return false;
 }
 
 function mergeFallbackComponentStyles(

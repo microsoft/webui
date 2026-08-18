@@ -41,6 +41,7 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link", "style", or "module"
+  dom: "light",          // Optional: unwrapped Light + authored Shadow islands
   cssBundle: true,       // Merge component stylesheets into shared chunks
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
@@ -59,11 +60,9 @@ const result = build({
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
 
-Every unwrapped component uses Light DOM. A component uses Shadow only with a
-sole top-level `<template shadowrootmode="open">` containing its complete
-template; native `<slot>` is Shadow-only.
-There is no global DOM override. Components that require native slots or native
-encapsulation must author the open wrapper.
+Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
+to render unwrapped components as scoped Light DOM. A sole top-level
+`<template shadowrootmode="open">` remains Shadow in either mode.
 
 Static component assets use a root/chunk graph. Entry-reachable dependencies
 remain external, dependencies used by one root stay inline, and dependencies

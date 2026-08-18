@@ -41,6 +41,7 @@ pub use webui_handler::{
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
+pub use webui_parser::DomStrategy;
 pub use webui_parser::LegalComments;
 pub use webui_parser::ParserError;
 pub use webui_parser::ParserOptions;
@@ -253,6 +254,8 @@ pub struct BuildOptions {
     pub entry: String,
     /// CSS delivery strategy for component stylesheets.
     pub css: CssStrategy,
+    /// Fallback DOM strategy for components without an authored Shadow root.
+    pub dom: DomStrategy,
     /// Whether to merge component stylesheets into bundled chunks.
     ///
     /// Composes with [`BuildOptions::css`] instead of replacing it: bundling
@@ -318,6 +321,7 @@ impl Default for BuildOptions {
             app_dir: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
             css_bundle: false,
             plugin: None,
             components: Vec::new(),
@@ -523,6 +527,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     }
     let parser_options = ParserOptions::try_new(
         options.css,
+        options.dom,
         &options.css_file_name_template,
         options.css_public_base.as_deref(),
         options.legal_comments,
@@ -840,7 +845,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         &options.css_file_name_template,
         options.metafile,
     )?;
-    component_asset_graph.retain_entry_protocol(&mut protocol);
+    component_asset_graph.retain_entry_protocol(&mut protocol)?;
     // Strict projection coverage applies to scripted components retained in the
     // entry protocol. Asset-only roots use their static template payloads and
     // never participate in protocol projection.
@@ -1017,6 +1022,13 @@ mod tests {
         }
     }
 
+    fn light_options(app_dir: &Path) -> BuildOptions {
+        BuildOptions {
+            dom: DomStrategy::Light,
+            ..default_options(app_dir)
+        }
+    }
+
     #[test]
     fn test_build_simple_html() {
         let app = create_app_dir(&[("index.html", "<h1>Hello</h1>")]);
@@ -1033,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn build_uses_light_unless_component_authors_shadow() {
+    fn light_build_uses_light_unless_component_authors_shadow() {
         let app = create_app_dir(&[
             (
                 "index.html",
@@ -1048,6 +1060,7 @@ mod tests {
 
         let result = build(BuildOptions {
             app_dir: app.path().to_path_buf(),
+            dom: DomStrategy::Light,
             ..BuildOptions::default()
         })
         .unwrap();
@@ -1075,6 +1088,26 @@ mod tests {
     }
 
     #[test]
+    fn build_defaults_unwrapped_components_to_shadow() {
+        let app = create_app_dir(&[
+            ("index.html", "<my-card></my-card>"),
+            ("my-card.html", "<p>content</p>"),
+        ]);
+
+        let result = build(default_options(app.path())).unwrap();
+        assert!(result.protocol.component_uses_shadow_dom("my-card"));
+        let html: String = result.protocol.fragments["my-card"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(html.contains(r#"<template shadowrootmode="open">"#));
+    }
+
+    #[test]
     fn build_rejects_slot_in_unwrapped_light_component() {
         let app = create_app_dir(&[
             ("index.html", "<my-card></my-card>"),
@@ -1083,6 +1116,7 @@ mod tests {
 
         let error = build(BuildOptions {
             app_dir: app.path().to_path_buf(),
+            dom: DomStrategy::Light,
             ..BuildOptions::default()
         })
         .expect_err("unwrapped Light DOM slot must fail the build");
@@ -1552,7 +1586,7 @@ mod tests {
                 ("my-card.html", "<p>content</p>"),
                 ("my-card.css", authored),
             ]);
-            let mut options = default_options(app.path());
+            let mut options = light_options(app.path());
             options.css = strategy;
             if strategy == CssStrategy::Link {
                 options.css_file_name_template = "[name]-[hash].[ext]".to_string();
@@ -1643,7 +1677,7 @@ mod tests {
             ("after-card.html", "<span>after</span>"),
             ("after-card.css", ".after{}"),
         ]);
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Style;
         let result = build(options).unwrap();
 
@@ -1711,7 +1745,7 @@ mod tests {
     #[test]
     fn bundling_preserves_the_cascade_of_every_closure() {
         let app = bundling_app();
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Style;
         options.css_bundle = true;
         let result = build(options).unwrap();
@@ -1738,7 +1772,7 @@ mod tests {
     #[test]
     fn bundling_merges_entry_local_styles_and_splits_shared_ones() {
         let app = bundling_app();
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Style;
         options.css_bundle = true;
         let result = build(options).unwrap();
@@ -1788,7 +1822,7 @@ mod tests {
     #[test]
     fn bundling_link_emits_chunks_and_component_fallback_files() {
         let app = bundling_app();
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css_bundle = true;
         let result = build(options).unwrap();
 
@@ -1832,11 +1866,11 @@ mod tests {
             ("b-card.css", ".b{color:green}"),
             ("shared-card.html", "<span>shared</span>"),
             ("shared-card.css", ".shared{color:blue}"),
-            ("lazy-panel.html", "<p>lazy</p>"),
+            ("lazy-panel.html", "<a-card></a-card><p>lazy</p>"),
             ("lazy-panel.css", ".lazy{color:gray}"),
             ("lazy-panel.ts", "export {};"),
         ]);
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.plugin = Some(Plugin::WebUI);
         options.css_bundle = true;
         options.component_asset_roots = vec!["lazy-panel".to_string()];
@@ -1854,6 +1888,13 @@ mod tests {
         assert!(
             names.iter().any(|name| name.starts_with("_chunk-")),
             "bundled chunks are still emitted: {names:?}"
+        );
+        assert!(
+            result.component_asset_files[0]
+                .content
+                .contains(r#""a-card":{"kind":"link","href":new URL("#),
+            "a deferred CSS tree needs the exact external component resource even when the entry Document uses a bundle: {}",
+            result.component_asset_files[0].content
         );
     }
 
@@ -1909,7 +1950,7 @@ mod tests {
     fn bundled_rendering_emits_one_resource_per_chunk() {
         for strategy in [CssStrategy::Link, CssStrategy::Style] {
             let app = bundling_app();
-            let mut options = default_options(app.path());
+            let mut options = light_options(app.path());
             options.css = strategy;
             options.css_bundle = true;
             let result = build(options).unwrap();
@@ -1946,7 +1987,7 @@ mod tests {
             ),
             ("shadow-card.css", ".shadow{color:black}"),
         ]);
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Style;
         options.css_bundle = true;
         let result = build(options).unwrap();
@@ -1978,7 +2019,7 @@ mod tests {
         // told to fetch — document links and declarative Shadow roots alike —
         // must name a file the bundled build actually emitted.
         let app = bundling_app();
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Link;
         options.css_bundle = true;
         let result = build(options).unwrap();
@@ -2006,7 +2047,7 @@ mod tests {
     #[test]
     fn bundling_is_rejected_for_the_module_strategy() {
         let app = bundling_app();
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Module;
         options.css_bundle = true;
 
@@ -2042,7 +2083,7 @@ mod tests {
         let mut plan = Vec::new();
         for bundle in [false, true] {
             let app = bundling_app();
-            let mut options = default_options(app.path());
+            let mut options = light_options(app.path());
             options.css = CssStrategy::Style;
             options.css_bundle = bundle;
             let result = build(options).unwrap();
@@ -2060,7 +2101,7 @@ mod tests {
     #[test]
     fn bundled_rendering_never_repeats_a_chunk_across_css_trees() {
         let app = bundling_app();
-        let mut options = default_options(app.path());
+        let mut options = light_options(app.path());
         options.css = CssStrategy::Style;
         options.css_bundle = true;
         let result = build(options).unwrap();
@@ -2403,33 +2444,29 @@ mod tests {
         );
     }
 
-    /// Light CSS is Document-owned and its host selector cannot resolve from
-    /// inside a FAST-created root, so it must never be inlined into the
-    /// plugin-facing template.
+    /// FAST has no artifact-level Light registration contract and defaults
+    /// client-created elements to Shadow roots, so reject the SSR/client split.
     #[test]
-    fn test_light_fast_template_stays_style_free() {
+    fn test_light_fast_build_is_rejected() {
         let app = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
             ("my-card.html", "<div>card</div>"),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let mut options = default_options(app.path());
+        options.dom = DomStrategy::Light;
         options.plugin = Some(Plugin::FastV3);
         options.css_file_name_template = "[name]-[hash].[ext]".to_string();
         options.css_public_base = Some("https://cdn.example.com/assets".to_string());
-        let result = build(options).unwrap();
-
-        let filename = &result.css_files[0].0;
-        let expected_href = format!("https://cdn.example.com/assets/{filename}");
-        let template = &result.protocol.components["my-card"].template;
-        assert_eq!(
-            result.protocol.component_style_resource("my-card"),
-            Some(expected_href.as_str())
-        );
-        assert!(
-            !template.contains(&expected_href),
-            "Light templates must not duplicate handler-owned CSS links: {template}"
-        );
+        let error = build(options).expect_err("FAST Light build must fail");
+        assert!(matches!(
+            error,
+            WebUIError::Parse {
+                source: webui_parser::ParserError::Template(ref diagnostic),
+                ..
+            } if diagnostic.error_code()
+                == Some(webui_parser::codes::FAST_LIGHT_DOM_UNSUPPORTED)
+        ));
     }
 
     #[test]
@@ -2858,6 +2895,7 @@ mod tests {
             ),
         ]);
         let mut options = default_options(app.path());
+        options.dom = DomStrategy::Light;
         options.plugin = None;
         let result = build(options).unwrap();
 

@@ -56,8 +56,8 @@ pub(crate) fn marker_attribute(tag_name: &str) -> String {
 
 /// Whether an authored attribute name would collide with the marker family.
 pub(crate) fn is_reserved_marker(name: &str) -> bool {
-    name.len() >= SCOPE_MARKER_PREFIX.len()
-        && name[..SCOPE_MARKER_PREFIX.len()].eq_ignore_ascii_case(SCOPE_MARKER_PREFIX)
+    name.get(..SCOPE_MARKER_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(SCOPE_MARKER_PREFIX))
 }
 
 /// Opening delimiter of a raw (unescaped) binding.
@@ -102,9 +102,7 @@ pub(crate) fn stamp_template(source: &str, marker: &str) -> Option<String> {
                 continue;
             };
             let name = element.name();
-            if is_rendered(name) {
-                insertions.push(element.start + 1 + name.len());
-            }
+            insertions.push(element.start + 1 + name.len());
 
             let raw_text = name.eq_ignore_ascii_case("script")
                 || name.eq_ignore_ascii_case("style")
@@ -134,23 +132,6 @@ pub(crate) fn stamp_template(source: &str, marker: &str) -> Option<String> {
     Some(stamped)
 }
 
-/// Whether an element can be matched by a rendered-content selector.
-///
-/// Metadata and inert elements are skipped: they never contribute to layout or
-/// paint, so a marker on them is pure payload. `<template>` content is still
-/// stamped, because WebUI clones it into the live tree for repeats and
-/// conditionals.
-fn is_rendered(name: &str) -> bool {
-    !(name.eq_ignore_ascii_case("template")
-        || name.eq_ignore_ascii_case("script")
-        || name.eq_ignore_ascii_case("style")
-        || name.eq_ignore_ascii_case("link")
-        || name.eq_ignore_ascii_case("meta")
-        || name.eq_ignore_ascii_case("title")
-        || name.eq_ignore_ascii_case("base")
-        || name.eq_ignore_ascii_case("head"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +156,8 @@ mod tests {
         assert!(!is_reserved_marker("data-wl"));
         assert!(!is_reserved_marker("data-wrapper"));
         assert!(!is_reserved_marker("data-w"));
+        assert!(!is_reserved_marker("aaaaaaaé"));
+        assert!(!is_reserved_marker("data-wlé"));
     }
 
     #[test]
@@ -206,10 +189,11 @@ mod tests {
         );
     }
 
-    /// `<template>` content is cloned into the live tree, so it is stamped even
-    /// though the inert `<template>` element itself never is.
+    /// Inert elements still participate in structural selectors such as
+    /// `style + .content`, so both they and cloned `<template>` content are
+    /// stamped.
     #[test]
-    fn stamps_template_content_but_not_inert_elements() {
+    fn stamps_template_content_and_inert_elements() {
         let stamped = stamp_template(
             "<template foo=\"bar\"><div>content</div></template><style>.a{color:red}</style>",
             "data-wl-x",
@@ -217,15 +201,15 @@ mod tests {
         .expect("stamped");
         assert_eq!(
             stamped,
-            "<template foo=\"bar\"><div data-wl-x>content</div></template><style>.a{color:red}</style>"
+            "<template data-wl-x foo=\"bar\"><div data-wl-x>content</div></template><style data-wl-x>.a{color:red}</style>"
         );
     }
 
     #[test]
-    fn leaves_raw_text_and_element_free_templates_alone() {
+    fn stamps_raw_text_elements_and_leaves_element_free_templates_alone() {
         assert_eq!(
             stamp_template("<style>.a{color:red}</style>", "data-wl-x"),
-            None
+            Some("<style data-wl-x>.a{color:red}</style>".to_string())
         );
         assert_eq!(stamp_template("plain text", "data-wl-x"), None);
         assert_eq!(stamp_template("", "data-wl-x"), None);

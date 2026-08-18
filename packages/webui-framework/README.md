@@ -7,7 +7,7 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 - `WebUIElement` for SSR hydration and client-created elements
 - `@observable`, `@attr`, and `@volatile` decorators
 - direct DOM binding updates
-- invariant Light DOM with explicit authored Shadow roots
+- Shadow-default components with opt-in scoped Light and authored Shadow islands
 - SSR state seeding
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
@@ -79,9 +79,9 @@ CounterCard.define('counter-card');
 <button @click="{increment()}">Increment</button>
 ```
 
-Every unwrapped component uses Light DOM. Make a sole top-level
-`<template shadowrootmode="open">` the complete component template to use
-Shadow.
+Unwrapped components default to Shadow. A `dom: "light"` build renders them as
+Light while preserving any sole top-level
+`<template shadowrootmode="open">` component as Shadow.
 
 ### Use it from your page
 
@@ -131,7 +131,7 @@ rendered block size of one instance; WebUI emits it as
 remains present, searchable, and accessible while the browser skips offscreen
 style, layout, and paint work. The generated policy applies to instances in the
 document, Light DOM, and standard Shadow DOM components. A Light component
-inside an authored shadow root receives the rule through its precomputed style
+inside a Shadow root receives the rule through its precomputed style
 closure, which delivers the stylesheet into that root under every CSS strategy.
 
 Import the optional coordinator entry once before component modules:
@@ -256,11 +256,11 @@ compiled paths.
 
 ### Light and Shadow DOM
 
-An unwrapped component renders as direct children of its host. A component uses
-Shadow only when `<template shadowrootmode="open">` is its sole top-level
-element and contains its complete template. Closed roots, invalid values or
-placement, and `<slot>` in an unwrapped component are build errors. The compiler
-never generates a Shadow wrapper. Native slots are Shadow-only.
+An unwrapped component receives a generated open Shadow root by default. In a
+`dom: "light"` build it renders as direct children of its host. A component
+whose sole top-level element is `<template shadowrootmode="open">` remains
+Shadow in either mode. Closed roots and invalid values or placement are build
+errors; `<slot>` is rejected only for effective Light components.
 
 The runtime auto-detects which mode was used at hydration time:
 - If a `shadowRoot` already exists → shadow DOM SSR path
@@ -271,7 +271,8 @@ The compiler scopes ordinary paired CSS for Light components, lowers `:host`,
 and namespaces static keyframes. Shadow components keep native Shadow scoping.
 The Link, Style, and Module delivery strategies all support both modes.
 
-Add open wrappers only to slot or native-encapsulation components.
+In a Light build, add open wrappers to slot, native-encapsulation, or CSS-heavy
+frequently restyled components.
 
 ---
 

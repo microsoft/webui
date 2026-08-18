@@ -17,6 +17,14 @@ test.describe('light-dom pipeline', () => {
       'color',
       'rgb(12, 34, 56)',
     );
+    await expect(page.locator('test-light-dom .greeting')).toHaveCSS(
+      'background-color',
+      'rgba(0, 0, 0, 0)',
+    );
+    await expect(page.locator('test-light-dom .child-boundary')).toHaveCSS(
+      'border-top-width',
+      '0px',
+    );
 
     const result = await page.locator('#light-root').evaluate((host) => {
       const marker = Array.from(
@@ -50,7 +58,7 @@ test.describe('light-dom pipeline', () => {
     ));
 
     expect(await resourceIds()).toEqual(['test-light-dom', 'test-light-child']);
-    await expect(page.locator('#light-root > test-light-child')).toHaveCount(2);
+    await expect(page.locator('#light-root > .child-boundary > test-light-child')).toHaveCount(2);
 
     await page.locator('#light-root').evaluate((host) => {
       const spawnChild = Reflect.get(host, 'spawnChild');

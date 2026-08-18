@@ -335,7 +335,7 @@ state is never copied into `window.__webui.state`. Applications should not query
 or depend on generated scaffolding.
 
 At `body_end`, the handler emits one markerless empty terminal envelope:
-`[1,nextSequence,3,0,{}]`. Its flush also commits any preceding native or static
+`[2,nextSequence,3,0,{}]`. Its flush also commits any preceding native or static
 tail HTML, but terminal records never repeat template metadata or state. A
 truncated or malformed stream, or one exceeding a client work bound such as the
 queued-boundary or marker-scan limit, logs an error, suppresses

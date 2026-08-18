@@ -2,8 +2,9 @@
 ignore = [
     # bincode 1.x (transitive dep of syntect) — unmaintained but no security issue
     "RUSTSEC-2025-0141",
-    # yaml-rust (transitive dep of serde_yaml) — unmaintained, no security issue
-    "RUSTSEC-2024-0320",
+    # h2 0.3 (transitive through actix-http/awc) — low severity; patched h2 0.4
+    # is semver-incompatible until the Actix stack migrates.
+    "RUSTSEC-2026-0258",
 ]
 
 [licenses]

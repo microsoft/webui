@@ -281,7 +281,7 @@ initially false conditions or empty repeats. Unrelated later boundaries remain
 excluded. Template metadata is sent only when first reachable, inventory still
 tracks only rendered SSR roots, and repeated instances receive checkpoint-local
 state without duplicate metadata. The final terminal envelope is always
-`[1,nextSequence,3,0,{}]`; its flush also commits preceding static tail bytes.
+`[2,nextSequence,3,0,{}]`; its flush also commits preceding static tail bytes.
 
 Host-driven sessions are currently Rust-only. Node and WASM `renderStream`
 callbacks are synchronous whole-render APIs without writable backpressure, and
@@ -359,6 +359,7 @@ delivery from a cancelled or stalled stream.
 | `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
+| `dom` | `DomStrategy` | `Shadow` | Fallback for unwrapped components: `Shadow` or scoped `Light` |
 | `plugin` | `Option<Plugin>` | `None` | Parser plugin (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
@@ -368,9 +369,9 @@ delivery from a cancelled or stalled stream.
 | `css_public_base` | `Option<String>` | `None` | Public URL/path prefix for Link-mode CSS hrefs |
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
-Every unwrapped component uses Light DOM. A component uses Shadow only when its
-complete template is a sole top-level `<template shadowrootmode="open">`;
-native `<slot>` is Shadow-only.
+Unwrapped components default to generated open Shadow roots. Set
+`DomStrategy::Light` to make unwrapped components scoped Light DOM; authored
+sole open Shadow roots remain Shadow in either mode.
 
 `BuildResult::component_asset_files` contains root and shared chunk modules.
 Entry-reachable dependencies remain in the protocol and are external

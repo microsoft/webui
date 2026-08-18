@@ -96,8 +96,10 @@ pub struct JsBuildOptions {
     pub app_dir: String,
     /// Entry HTML file name (defaults to "index.html").
     pub entry: Option<String>,
-    /// CSS mode: "link" (default) or "style".
+    /// CSS mode: "link" (default), "style", or "module".
     pub css: Option<String>,
+    /// Fallback DOM strategy: "shadow" (default) or "light".
+    pub dom: Option<String>,
     /// Merge component stylesheets into shared bundled chunks.
     ///
     /// Composes with `css`: bundling decides how stylesheets are grouped, `css`
@@ -134,6 +136,12 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
     let css = options
         .css
         .map(|s| s.parse::<webui::CssStrategy>())
+        .transpose()
+        .map_err(NapiError::from_reason)?
+        .unwrap_or_default();
+    let dom = options
+        .dom
+        .map(|value| value.parse::<webui::DomStrategy>())
         .transpose()
         .map_err(NapiError::from_reason)?
         .unwrap_or_default();
@@ -179,6 +187,7 @@ pub fn build(options: JsBuildOptions) -> napi::Result<JsBuildResult> {
         app_dir,
         entry: options.entry.unwrap_or_else(|| "index.html".to_string()),
         css,
+        dom,
         css_bundle: options.css_bundle.unwrap_or(false),
         plugin,
         components: options.components.unwrap_or_default(),
@@ -910,6 +919,7 @@ mod tests {
             app_dir: app_dir.to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: Some("webui".to_string()),
             components: None,
@@ -967,6 +977,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -996,6 +1007,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: Some("page.html".to_string()),
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1019,6 +1031,7 @@ mod tests {
             app_dir: "/nonexistent/path".to_string(),
             entry: None,
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1045,6 +1058,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("bogus".to_string()),
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1063,6 +1077,32 @@ mod tests {
     }
 
     #[test]
+    fn test_build_invalid_dom_strategy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<h1>Hello</h1>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: Some("closed".to_string()),
+            css_bundle: None,
+            plugin: None,
+            components: None,
+            component_asset_roots: None,
+            metafile: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: None,
+            theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
+        };
+
+        assert!(build(options).is_err());
+    }
+
+    #[test]
     fn test_build_with_components_css() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hello</my-card>").unwrap();
@@ -1073,6 +1113,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1111,6 +1152,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1144,6 +1186,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
+            dom: None,
             css_bundle: None,
             plugin: Some("webui".to_string()),
             components: None,
@@ -1191,6 +1234,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: Some("link".to_string()),
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1217,6 +1261,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1235,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_with_unwrapped_component_omits_shadow_root_template() {
+    fn test_build_with_unwrapped_component_defaults_to_shadow() {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
         std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
@@ -1244,6 +1289,36 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
+            css_bundle: None,
+            plugin: None,
+            components: None,
+            component_asset_roots: None,
+            metafile: None,
+            css_file_name_template: None,
+            css_public_base: None,
+            legal_comments: None,
+            theme: None,
+            projection_manifests: None,
+            projection_manifest_objects: None,
+        };
+
+        let result = build(options).unwrap();
+        let json = inspect(result.protocol).unwrap();
+        assert!(json.contains("shadowrootmode"));
+    }
+
+    #[test]
+    fn test_build_with_light_dom_omits_generated_shadow_root() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<my-card>Hi</my-card>").unwrap();
+        std::fs::write(dir.path().join("my-card.html"), "<div>content</div>").unwrap();
+
+        let options = JsBuildOptions {
+            app_dir: dir.path().to_string_lossy().to_string(),
+            entry: None,
+            css: None,
+            dom: Some("light".to_string()),
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1276,6 +1351,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,
@@ -1311,6 +1387,7 @@ mod tests {
             app_dir: dir.path().to_string_lossy().to_string(),
             entry: None,
             css: None,
+            dom: None,
             css_bundle: None,
             plugin: None,
             components: None,

@@ -5,6 +5,7 @@ use anyhow::{Context, Result};
 use clap::Args;
 use std::path::{Path, PathBuf};
 pub use webui::CssStrategy;
+pub use webui::DomStrategy;
 pub use webui::LegalComments;
 pub use webui::Plugin;
 pub use webui::DEFAULT_ASSET_FILE_NAME_TEMPLATE;
@@ -23,6 +24,10 @@ pub struct AppArgs {
     /// CSS delivery strategy for component stylesheets
     #[arg(long, value_enum, default_value_t = CssStrategy::Link)]
     pub css: CssStrategy,
+
+    /// Fallback DOM strategy for components without an authored Shadow root
+    #[arg(long, value_enum, default_value_t = DomStrategy::Shadow)]
+    pub dom: DomStrategy,
 
     /// Merge component stylesheets into shared bundled chunks
     ///
@@ -66,6 +71,7 @@ impl AppArgs {
             app_dir: app_dir.to_path_buf(),
             entry: self.entry.clone(),
             css: self.css,
+            dom: self.dom,
             css_bundle: self.css_bundle,
             plugin: self.plugin,
             components: self.components.clone(),
@@ -105,11 +111,24 @@ mod tests {
     }
 
     #[test]
-    fn dom_option_is_rejected() {
+    fn dom_option_defaults_to_shadow_and_accepts_light() {
         assert!(TestArgs::try_parse_from(["test"]).is_ok());
-        assert!(TestArgs::try_parse_from(["test", "--dom=light"]).is_err());
-        assert!(TestArgs::try_parse_from(["test", "--dom=shadow"]).is_err());
-        assert!(!TestArgs::command()
+        assert_eq!(
+            TestArgs::try_parse_from(["test"])
+                .expect("default arguments")
+                .app
+                .dom,
+            DomStrategy::Shadow
+        );
+        assert_eq!(
+            TestArgs::try_parse_from(["test", "--dom=light"])
+                .expect("Light DOM arguments")
+                .app
+                .dom,
+            DomStrategy::Light
+        );
+        assert!(TestArgs::try_parse_from(["test", "--dom=invalid"]).is_err());
+        assert!(TestArgs::command()
             .render_long_help()
             .to_string()
             .contains("--dom"));
@@ -121,6 +140,7 @@ mod tests {
             app: std::path::PathBuf::from("."),
             entry: "index.html".to_string(),
             css: CssStrategy::Link,
+            dom: DomStrategy::Shadow,
             css_bundle: false,
             plugin: None,
             components: Vec::new(),
@@ -134,6 +154,7 @@ mod tests {
         };
         let options = args.to_build_options(std::path::Path::new("."));
 
+        assert_eq!(options.dom, DomStrategy::Shadow);
         assert_eq!(options.css_file_name_template, "[name]-[hash].[ext]");
         assert_eq!(
             options.css_public_base.as_deref(),

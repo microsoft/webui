@@ -32,8 +32,9 @@ decorators, or imperative APIs.
 
 ### The `<template>` Tag
 
-Every unwrapped component uses Light DOM. Most components write only their
-content:
+Most components write only their content. Shadow is the default fallback for
+that unwrapped content; build with `--dom light` to render it directly in the
+host:
 
 ```html
 <!-- user-card.html -->
@@ -42,10 +43,9 @@ content:
 <p>{{email}}</p>
 ```
 
-Use a sole top-level `<template shadowrootmode="open">` when a component needs
-native `<slot>`, native Shadow encapsulation, or root events on the host
-element - listeners on the component root that catch events bubbling up from
-children, including events targeted at the host element itself:
+In a Light build, use a sole top-level
+`<template shadowrootmode="open">` when a component must remain Shadow for a
+native `<slot>`, native encapsulation, or root events on the host element:
 
 ```html
 <!-- task-list.html -->
@@ -81,8 +81,8 @@ When WebUI discovers components:
 
 2. **Runtime**:
    - The server-side handler renders components based on state
-   - Unwrapped components output Light DOM; components with a valid sole open
-     wrapper output Declarative Shadow DOM
+   - Unwrapped components follow the build's Shadow/Light fallback
+   - Components with a valid sole open wrapper always output Declarative Shadow DOM
    - Dynamic content is injected according to the protocol
 
 ## Component Organization

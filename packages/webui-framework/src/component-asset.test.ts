@@ -7,7 +7,11 @@ import { describe, test } from 'node:test';
 import { getTemplate, type TemplateMeta } from './template.js';
 import { defineComponentAssets } from './component-asset.js';
 import { validateAsset } from './component-asset/asset.js';
-import { installComponentStyles, setCssModuleLoaderForTests } from './element/styles.js';
+import {
+  installComponentStyles,
+  registerComponentStyles,
+  setCssModuleLoaderForTests,
+} from './element/styles.js';
 
 type GlobalName = 'window' | 'document';
 
@@ -851,6 +855,7 @@ describe('component asset helpers', () => {
         return null;
       },
     });
+
     const chunkUrl = assetObjectModule({
       type: 'webui-component-asset',
       version: 3,
@@ -907,6 +912,80 @@ describe('component asset helpers', () => {
       assert.equal(getTemplate('second-panel')?.h, '<shared-detail></shared-detail>');
     } finally {
       Reflect.deleteProperty(globalThis, '__componentAssetChunkLoads');
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('accepts deferred closures with an exact external resource', async () => {
+    const document = {
+      nodeType: 9,
+      baseURI: 'https://example.test/app/',
+      querySelector() {
+        return null;
+      },
+    } as unknown as Document;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', document);
+
+    try {
+      registerComponentStyles({
+        version: 1,
+        strategy: 'style',
+        resources: {
+          'entry-bundle': {
+            kind: 'style',
+            css: '.entry{}',
+            members: ['entry-card', 'shared-card'],
+          },
+        },
+        closures: {
+          'index.html': ['entry-bundle'],
+        },
+      }, document);
+      const incomplete = {
+        ...componentAsset({ 'incomplete-lazy-card': { h: '<entry-card></entry-card>' } }),
+        componentStyles: {
+          version: 1,
+          strategy: 'style',
+          resources: {
+            'incomplete-lazy-card': { kind: 'style', css: '.lazy{}' },
+          },
+          closures: {
+            'incomplete-lazy-card': ['incomplete-lazy-card', 'entry-card'],
+          },
+        },
+      };
+      const incompleteAssets = defineComponentAssets({
+        'incomplete-lazy-card': { asset: assetObjectModule(incomplete) },
+      });
+      await assert.rejects(
+        incompleteAssets.preload('incomplete-lazy-card').asset,
+        /references missing resource "entry-card"/,
+      );
+
+      const asset = {
+        ...componentAsset({ 'lazy-card': { h: '<entry-card></entry-card>' } }),
+        componentStyles: {
+          version: 1,
+          strategy: 'style',
+          resources: {
+            'lazy-card': { kind: 'style', css: '.lazy{}' },
+            'entry-card': { kind: 'style', css: '.entry{}' },
+          },
+          closures: {
+            'lazy-card': ['lazy-card', 'entry-card'],
+          },
+        },
+      };
+      const assets = defineComponentAssets({
+        'lazy-card': { asset: assetObjectModule(asset) },
+      });
+
+      await assets.preload('lazy-card').asset;
+
+      assert.equal(getTemplate('lazy-card')?.h, '<entry-card></entry-card>');
+    } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);
     }

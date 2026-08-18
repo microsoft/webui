@@ -297,7 +297,8 @@ state that a template binding could express.
 
 ### The `<template>` tag
 
-Every unwrapped component uses Light DOM:
+Unwrapped components default to Shadow. In a `--dom light` build they use scoped
+Light DOM:
 
 ```html
 <!-- my-card.html -->
@@ -305,9 +306,10 @@ Every unwrapped component uses Light DOM:
 <p>{{description}}</p>
 ```
 
-Use a sole top-level `<template shadowrootmode="open">` only when the component
-needs native `<slot>`, a native Shadow boundary, or root host events on the
-component root:
+In a Light build, use a sole top-level
+`<template shadowrootmode="open">` when the component must remain Shadow for a
+native `<slot>`, native isolation, CSS-heavy frequent restyling, or root host
+events:
 
 ```html
 <!-- todo-app.html -->
@@ -323,8 +325,8 @@ component root:
 
 The wrapper must contain the complete component. `closed`, a dynamic or invalid
 value, placement on another element, multiple declarations, or extra top-level
-content fails the build. `<slot>` is a build error in an unwrapped Light
-component.
+content fails the build. `<slot>` is a build error only when the effective mode
+is Light.
 
 Root host events catch custom events bubbling up from child components. To
 cross any Shadow boundary between the child and the listener, an event must
@@ -402,15 +404,18 @@ Shadow CSS scoping. No CSS-in-JS or styles written from script.
   component rules. Shadow DOM creates a native boundary.
 - Light scoping is applied at build time: every element your template declares
   is stamped with a per-component marker attribute, and every selector is
-  qualified against it. **Elements you create imperatively from script (setting
+  qualified against it. Selector relationships inside `:is()`, `:where()`,
+  `:not()`, and `:has()` are qualified too, and named `@layer` values receive a
+  component namespace. **Elements you create imperatively from script (setting
   `innerHTML`, `document.createElement` inside a component) carry no marker and
   are not styled by that component's CSS.** Declare markup in the template, or
   render it through `<if>` / `<for>`, and it is scoped automatically. Creating a
   *component host* from script is fine — its content comes from the compiled
   template. A template that interpolates raw HTML (`{{{expr}}}`) is scoped with a
-  native `@scope` enclosure instead, which covers the interpolated markup, as is
-  a component whose CSS uses a shape the stamper cannot rewrite (for example
-  `:host` nested inside `:is(...)`).
+  native `@scope` enclosure instead, which covers the interpolated markup.
+  Selector functions are not allowed in that enclosed shape because their
+  relationships can inspect outside the scope; simplify the selector or keep
+  that component Shadow.
 - Shadow-only selectors and unsafe Light keyframe references fail the build.
 - `data-wl` and `data-wl-*` are reserved for scoping; authoring either fails the
   build.
@@ -874,7 +879,11 @@ routed components.
 - Initial SSR delivers CSS only for the matched route chain; inactive route
   styles remain deferred until navigation. Matched route CSS targeting the
   Document is applied before `</head>`. ShadowRoot-targeted Link CSS is preloaded
-  from the head and applied inside its owning root.
+  from the head and applied inside its owning root. Static request-reachable
+  Shadow roots are preloaded the same way.
+- FAST 2/3 plugins require effective Shadow components. An unwrapped component
+  under `dom: "light"` fails with `fast-light-dom-unsupported`; use the WebUI
+  plugin for scoped Light DOM.
 
 | Attribute | Example | Description |
 |---|---|---|
@@ -1134,8 +1143,8 @@ Before emitting WebUI code, confirm:
 - [ ] `::view-transition-*` rules are in the entry template, not component CSS.
 - [ ] `prefers-reduced-motion` is honored wherever motion is used.
 - [ ] No conditions mix `&&` with `||`, use parentheses, or use a ternary.
-- [ ] Every native `<slot>` is inside a component whose sole top-level element
-      is `<template shadowrootmode="open">`.
+- [ ] Every native `<slot>` resolves to Shadow DOM; in a `--dom light` build its
+      component authors a sole top-level `<template shadowrootmode="open">`.
 
 ## Build and run
 
@@ -1151,13 +1160,15 @@ webui inspect ./dist/protocol.bin
 ```
 
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
+`--dom <shadow|light>` (default `shadow`),
 `--css-bundle` (merge component stylesheets into shared chunks; not valid with
 `--css module`), `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
-Every unwrapped component is Light. A component uses Shadow only when its
-complete template is a sole top-level `<template shadowrootmode="open">`.
+Unwrapped components default to Shadow. Under `--dom light`, they use scoped
+Light DOM while a sole top-level `<template shadowrootmode="open">` remains a
+Shadow island.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

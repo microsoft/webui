@@ -55,7 +55,8 @@ pub struct ComponentData {
     /// absent, so handlers preserve full state instead of treating it as NONE.
     #[prost(enumeration = "StateProjectionMode", optional, tag = "9")]
     pub navigation_mode: ::core::option::Option<i32>,
-    /// Whether this component authored a sole open declarative Shadow DOM root.
+    /// Whether this component effectively uses Shadow DOM after build-time
+    /// fallback and authored declarative Shadow DOM resolution.
     #[prost(bool, tag = "10")]
     pub uses_shadow_dom: bool,
 }

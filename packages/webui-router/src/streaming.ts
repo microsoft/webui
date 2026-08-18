@@ -7,7 +7,7 @@
  * Chunk 2 contains deferred per-component state applied after mount.
  */
 
-import { hasState } from './route-element.js';
+import { hasState, mountedRouteComponent } from './route-element.js';
 import { isStateful } from './types.js';
 import { registerTemplatesAndStyles, injectCssLinks } from './templates.js';
 import type { PartialResponse, RouteChainEntry } from './cache.js';
@@ -217,7 +217,7 @@ export function applyDeferredStates(
       ((new () => HTMLElement) & { loader?: Function }) | undefined;
     if (ctor && typeof ctor.loader === 'function') continue;
 
-    const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+    const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
     if (!compEl) continue;
     entry.compEl = compEl;
     if (isStateful(compEl)) {

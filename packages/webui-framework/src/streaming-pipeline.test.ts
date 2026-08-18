@@ -460,7 +460,7 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      1,
+      2,
       sequence,
       terminal === 1 ? 3 : 0,
       terminal === 1 ? 0 : sequence,
@@ -478,7 +478,7 @@ function buildMarkerless(sequence: number, terminal: number, bootstrap: object):
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      1,
+      2,
       sequence,
       terminal === 1 ? 3 : 0,
       0,
@@ -503,7 +503,7 @@ function buildUpdatableBoundary(
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      1,
+      2,
       recordSequence,
       1,
       boundaryId,
@@ -523,7 +523,7 @@ function buildStateUpdate(
 ): BuiltBoundary {
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([1, recordSequence, 2, boundaryId, patch]),
+    text: JSON.stringify([2, recordSequence, 2, boundaryId, patch]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -1175,7 +1175,7 @@ describe('streaming coordinator pipeline', () => {
     const previousError = console.error;
     console.error = () => {};
     try {
-      const boundary = buildRawBoundary(0, '[1,0,0,0,{"state":{}}]', []);
+      const boundary = buildRawBoundary(0, '[2,0,0,0,{"state":{}}]', []);
       enqueue(boundary.sentinel);
       await flush();
 
@@ -1345,7 +1345,7 @@ describe('streaming coordinator pipeline', () => {
       hook() {},
       abandon() { abandoned++; },
     });
-    const b = buildRawBoundary(0, '[1,0,0,{', [root0]);
+    const b = buildRawBoundary(0, '[2,0,0,{', [root0]);
 
     enqueue(b.sentinel);
     await flush();
@@ -1375,7 +1375,7 @@ describe('streaming coordinator pipeline', () => {
   test('a missing start marker halts and cleans the end marker + payload', async () => {
     // End marker present but no matching start marker: reject + clean.
     const end = comment('/wb:0');
-    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([1, 0, 0, 0, {}]) });
+    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([2, 0, 0, 0, {}]) });
     const sentinel = element('webui-hydrate');
     const root = body();
     link(root, [end, scriptEl, sentinel]);
@@ -1771,7 +1771,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__getLifecycleStateForTests().pendingLateActivations, 1);
 
     // Halt via a malformed boundary at the next sequence.
-    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    const bad = buildRawBoundary(1, '[2,1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
     assert.equal(__isHaltedForTests(), true);
@@ -1808,7 +1808,7 @@ describe('streaming coordinator pipeline', () => {
     await flush();
     detach(outer);
 
-    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    const bad = buildRawBoundary(1, '[2,1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
 
@@ -1960,7 +1960,7 @@ describe('streaming coordinator pipeline', () => {
 
   test('an illegal record queued behind terminal aborts before hydration-complete', async () => {
     const terminal = buildMarkerless(0, 1, {});
-    const post = buildRawBoundary(1, '[1,1,0,{}]', []);
+    const post = buildRawBoundary(1, '[2,1,0,{}]', []);
 
     // Both records are present before the single pump runs. The terminal must
     // remain tentative until the queue validates the record behind it.
@@ -2202,7 +2202,7 @@ describe('streaming coordinator pipeline', () => {
   test('a rejected (malformed) boundary strips data-ws from its roots, keeping them', async () => {
     const root0 = element('my-ws', { attrs: { 'data-ws': '' }, hook() {} });
     assert.equal(hasWs(root0), true, 'root starts marked as a streamed host');
-    const b = buildRawBoundary(0, '[1,0,0,{', [root0]);
+    const b = buildRawBoundary(0, '[2,0,0,{', [root0]);
 
     enqueue(b.sentinel);
     await flush();
@@ -2233,7 +2233,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(hasWs(late), true, 'a deferred undefined-tag root keeps data-ws until activation');
 
     // Halt via a malformed follow-up boundary.
-    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    const bad = buildRawBoundary(1, '[2,1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
 

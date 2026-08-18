@@ -16,6 +16,8 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
+  /** Fallback DOM strategy for unwrapped components: "shadow" (default) or "light". */
+  dom?: "shadow" | "light";
   /**
    * Merge component stylesheets into shared bundled chunks.
    *
@@ -178,6 +180,7 @@ interface NativeAddon {
     appDir: string;
     entry?: string;
     css?: string;
+    dom?: string;
     cssBundle?: boolean;
     plugin?: string;
     components?: string[];

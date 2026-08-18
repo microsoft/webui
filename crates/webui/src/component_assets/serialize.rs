@@ -3,7 +3,7 @@
 
 use super::graph::AssetGraphPlan;
 use super::json::{push_json_string, push_u64};
-use super::payload::{RenderedComponent, RenderedStyleResource};
+use super::payload::{render_style_resource, RenderedComponent, RenderedStyleResource};
 use super::ComponentAssetFile;
 use crate::{AssetFileNameTemplate, WebUIError};
 use webui_protocol::{CssStrategy, WebUIProtocol};
@@ -48,6 +48,14 @@ pub(super) struct AssetRenderOptions<'a> {
     pub protocol: &'a WebUIProtocol,
 }
 
+struct StyleResourceWriter<'a, 'data> {
+    out: &'a mut String,
+    plan: &'a AssetGraphPlan<'data>,
+    payloads: &'a [Option<RenderedComponent<'data>>],
+    protocol: &'data WebUIProtocol,
+    attribution: &'a mut [usize],
+}
+
 pub(super) fn render_asset(
     pending: &PendingAsset,
     plan: &AssetGraphPlan,
@@ -86,13 +94,22 @@ pub(super) fn render_asset(
     js.push_str("],\"componentStyles\":{\"version\":1,\"strategy\":\"");
     js.push_str(strategy_name(options.protocol.css_strategy()));
     js.push_str("\",\"resources\":{");
-    push_style_resources(
-        &mut js,
-        &pending.components,
-        plan,
-        payloads,
-        &mut attribution,
-    )?;
+    {
+        let mut writer = StyleResourceWriter {
+            out: &mut js,
+            plan,
+            payloads,
+            protocol: options.protocol,
+            attribution: &mut attribution,
+        };
+        let written_resources = push_style_resources(&mut writer, &pending.components, 0, true)?;
+        push_style_resources(
+            &mut writer,
+            &pending.external_components,
+            written_resources,
+            false,
+        )?;
+    }
     js.push_str("},\"closures\":{");
     push_style_closures(&mut js, pending, plan, options.protocol)?;
     js.push_str("}}");
@@ -245,53 +262,60 @@ fn push_imports(
 }
 
 fn push_style_resources(
-    out: &mut String,
+    writer: &mut StyleResourceWriter<'_, '_>,
     components: &[usize],
-    plan: &AssetGraphPlan,
-    payloads: &[Option<RenderedComponent<'_>>],
-    attribution: &mut [usize],
-) -> Result<(), WebUIError> {
-    let mut written = 0usize;
+    mut written: usize,
+    attribute_bytes: bool,
+) -> Result<usize, WebUIError> {
     for (index, component) in components.iter().copied().enumerate() {
-        let payload = payload(payloads, component)?;
-        let Some(resource) = &payload.resource else {
+        let resource = match writer.payloads.get(component).and_then(Option::as_ref) {
+            Some(payload) => payload.resource,
+            None => render_style_resource(
+                writer.protocol,
+                writer.plan.component_names[component],
+                writer.protocol.css_strategy(),
+            )?,
+        };
+        let Some(resource) = resource else {
             continue;
         };
-        let start = out.len();
+        let start = writer.out.len();
         if written > 0 {
-            out.push(',');
+            writer.out.push(',');
         }
-        let tag = plan.component_names[component];
-        push_json_string(out, tag, "component style resource ID")?;
-        match resource {
+        let tag = writer.plan.component_names[component];
+        push_json_string(writer.out, tag, "component style resource ID")?;
+        match &resource {
             RenderedStyleResource::Link(href) => {
-                out.push_str(":{\"kind\":\"link\",\"href\":");
+                writer.out.push_str(":{\"kind\":\"link\",\"href\":");
                 if is_relative_href(href) {
-                    out.push_str("new URL(");
-                    push_json_string(out, href, "component style href")?;
-                    out.push_str(",import.meta.url).href");
+                    writer.out.push_str("new URL(");
+                    push_json_string(writer.out, href, "component style href")?;
+                    writer.out.push_str(",import.meta.url).href");
                 } else {
-                    push_json_string(out, href, "component style href")?;
+                    push_json_string(writer.out, href, "component style href")?;
                 }
-                out.push('}');
+                writer.out.push('}');
             }
             RenderedStyleResource::Style(css) => {
-                out.push_str(":{\"kind\":\"style\",\"css\":");
-                push_json_string(out, css, "component style CSS")?;
-                out.push('}');
+                writer.out.push_str(":{\"kind\":\"style\",\"css\":");
+                push_json_string(writer.out, css, "component style CSS")?;
+                writer.out.push('}');
             }
             RenderedStyleResource::Module(css) => {
-                out.push_str(":{\"kind\":\"module\",\"specifier\":");
-                push_json_string(out, tag, "component style module specifier")?;
-                out.push_str(",\"css\":");
-                push_json_string(out, css, "component style module CSS")?;
-                out.push('}');
+                writer.out.push_str(":{\"kind\":\"module\",\"specifier\":");
+                push_json_string(writer.out, tag, "component style module specifier")?;
+                writer.out.push_str(",\"css\":");
+                push_json_string(writer.out, css, "component style module CSS")?;
+                writer.out.push('}');
             }
         }
-        add_attribution(attribution, index, out.len() - start);
+        if attribute_bytes {
+            add_attribution(writer.attribution, index, writer.out.len() - start);
+        }
         written += 1;
     }
-    Ok(())
+    Ok(written)
 }
 
 fn push_style_closures(

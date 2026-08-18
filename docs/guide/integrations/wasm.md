@@ -106,10 +106,11 @@ const protocolBytes = build_protocol(
   files,
   'index.html',
   [projectionManifest],
+  'light',
 );
 ```
 
-### `build_protocol(files, entry, projectionManifests?)`
+### `build_protocol(files, entry, projectionManifests?, dom?)`
 
 Parse virtual files into a WebUI protocol without rendering.
 
@@ -118,6 +119,7 @@ Parse virtual files into a WebUI protocol without rendering.
 | `files` | `Record<string, string>` | Map of filenames to content |
 | `entry` | `string` | Entry HTML filename |
 | `projectionManifests` | `object[]` | Optional bundler manifest fragments |
+| `dom` | `"shadow" \| "light"` | Optional unwrapped-component fallback; defaults to `"shadow"` |
 
 Returns protobuf-serialized `WebUIProtocol` as a `Uint8Array`. Throws on missing entry files, invalid templates, invalid component authoring, or protocol serialization errors.
 

@@ -44,7 +44,8 @@ message ComponentData {
   // significant: protocols produced before projection metadata leave this
   // absent, so handlers preserve full state instead of treating it as NONE.
   optional StateProjectionMode navigation_mode = 9;
-  // Whether this component authored a sole open declarative Shadow DOM root.
+  // Whether this component effectively uses Shadow DOM after build-time
+  // fallback and authored declarative Shadow DOM resolution.
   bool uses_shadow_dom = 10;
 }
 

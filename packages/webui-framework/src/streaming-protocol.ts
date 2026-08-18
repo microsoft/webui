@@ -4,7 +4,7 @@
 import type { TemplateMeta } from './template.js';
 import type { ComponentStyles } from './element/styles.js';
 
-const SUPPORTED_VERSION = 1;
+const SUPPORTED_VERSION = 2;
 
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {

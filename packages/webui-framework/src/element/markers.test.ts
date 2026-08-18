@@ -268,13 +268,36 @@ describe('findByOrdinal', () => {
     const style = {
       nodeType: ELEMENT,
       nextSibling: null,
-      hasAttribute: (name: string) => name === 'data-webui-resource',
+      localName: 'style',
+      getAttribute: (name: string) =>
+        name === 'data-webui-resource' ? 'card' :
+          name === 'data-webui-strategy' ? 'style' : null,
     } as MockNode;
     const button = el('button');
     const parent = makeParent(style, button);
 
     assert.strictEqual(
       findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      button,
+    );
+  });
+
+  test('does not skip authored data-webui-resource attributes', () => {
+    const authored = {
+      nodeType: ELEMENT,
+      nextSibling: null,
+      localName: 'div',
+      getAttribute: (name: string) => name === 'data-webui-resource' ? 'authored' : null,
+    } as MockNode;
+    const button = el('button');
+    const parent = makeParent(authored, button);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      authored,
+    );
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 1),
       button,
     );
   });
@@ -530,9 +553,12 @@ describe('buildSSRIndex', () => {
     const style = {
       nodeType: ELEMENT,
       tagName: 'STYLE',
+      localName: 'style',
       firstChild: null,
       nextSibling: null,
-      hasAttribute: (name: string) => name === 'data-webui-resource',
+      getAttribute: (name: string) =>
+        name === 'data-webui-resource' ? 'card' :
+          name === 'data-webui-strategy' ? 'style' : null,
     } as unknown as TreeNode;
     const ssrA = el('A');
     const ssrB = el('B');
@@ -542,6 +568,24 @@ describe('buildSSRIndex', () => {
 
     assert.strictEqual(index.elements[1], ssrA);
     assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('indexes authored elements that use data-webui-resource', () => {
+    const tplAuthored = el('DIV');
+    const tplButton = el('BUTTON');
+    const tpl = el('ROOT', tplAuthored, tplButton);
+    const ssrAuthored = {
+      ...el('DIV'),
+      localName: 'div',
+      getAttribute: (name: string) => name === 'data-webui-resource' ? 'authored' : null,
+    } as unknown as TreeNode;
+    const ssrButton = el('BUTTON');
+    const ssr = el('ROOT', ssrAuthored, ssrButton);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrAuthored);
+    assert.strictEqual(index.elements[2], ssrButton);
   });
 
   test('collects block markers in document order across depths', () => {
