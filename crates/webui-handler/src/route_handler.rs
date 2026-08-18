@@ -1627,18 +1627,14 @@ fn partial_response_not_object() -> HandlerError {
     HandlerError::Invariant("partial response must serialize as a JSON object".to_string())
 }
 
-/// Collect all route-reachable inventoryable components for the request path.
-pub(crate) fn collect_reachable_components_for_request(
+/// Collect request-reachable components in deterministic first-discovery order.
+pub(crate) fn collect_reachable_component_order_for_request(
     protocol: &WebUIProtocol,
     entry_id: &str,
     request_path: &str,
     route_index: &CompiledRouteIndex,
-) -> HashSet<String> {
-    // Callers here need set semantics (`.contains`, plugin `&HashSet` API);
-    // discovery order is irrelevant for reachable-template emission.
+) -> Vec<String> {
     collect_inventoryable_components(protocol, entry_id, Some(request_path), false, route_index)
-        .into_iter()
-        .collect()
 }
 
 /// Filter components against the client's inventory bitfield using sequential indices.
@@ -4227,18 +4223,18 @@ mod tests {
         }
 
         // Request the root path: neither "slow" nor "failing" is in the matched chain.
-        let reachable = collect_reachable_components_for_request(
+        let reachable = collect_reachable_component_order_for_request(
             &protocol,
             "index.html",
             "/",
             &CompiledRouteIndex::new(&protocol),
         );
         assert!(
-            reachable.contains("loading-skeleton"),
+            reachable.iter().any(|name| name == "loading-skeleton"),
             "pending component of an unmatched sibling route must be inventoried: {reachable:?}"
         );
         assert!(
-            reachable.contains("error-display"),
+            reachable.iter().any(|name| name == "error-display"),
             "error component of an unmatched sibling route must be inventoried: {reachable:?}"
         );
     }

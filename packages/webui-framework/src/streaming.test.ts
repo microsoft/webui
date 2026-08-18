@@ -20,7 +20,7 @@ const { parseBoundaryEnvelope } = await import('./streaming.js');
 describe('parseBoundaryEnvelope', () => {
   test('accepts a well-formed non-terminal boundary envelope', () => {
     const result = parseBoundaryEnvelope(
-      '[2,0,0,0,{"declarationId":7,"inventory":"01","state":{"count":1},"templates":{"my-counter":{"h":"<button></button>"}}}]',
+      '[2,0,0,0,{"inventory":"01","state":{"count":1},"templates":{"my-counter":{"h":"<button></button>"}}}]',
     );
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -37,7 +37,7 @@ describe('parseBoundaryEnvelope', () => {
   });
 
   test('accepts the empty terminal boundary envelope', () => {
-    const result = parseBoundaryEnvelope('[2,2,4,0,{}]');
+    const result = parseBoundaryEnvelope('[2,2,3,0,{}]');
     assert.equal(result.ok, true);
     if (!result.ok) return;
     const [, sequence, kind, target, bootstrap] = result.envelope;
@@ -112,7 +112,7 @@ describe('parseBoundaryEnvelope', () => {
       '[2,0,9,0,{}]',
       '[2,0,0,-1,{}]',
       '[2,0,0,0,null]',
-      '[2,2,4,0,{"state":{"count":1}}]',
+      '[2,2,3,0,{"state":{"count":1}}]',
     ]) {
       const result = parseBoundaryEnvelope(record);
       assert.equal(result.ok, true, `expected ${record} to parse`);

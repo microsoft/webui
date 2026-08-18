@@ -94,14 +94,17 @@ struct AnimationShorthandState {
 
 enum AtRule {
     Grouping {
+        keyword_end: usize,
         block_start: usize,
         is_scope: bool,
+        is_layer: bool,
     },
     Keyframes(KeyframeRule),
-    /// A statement-form at-rule with no selector list and no block, copied
-    /// through verbatim because there is nothing to scope.
+    /// A statement-form layer declaration with no selector list or block.
     Statement {
+        keyword_end: usize,
         end: usize,
+        is_layer: bool,
     },
 }
 
@@ -139,6 +142,7 @@ struct Stamper {
     /// Output offsets of host anchors written into the current prelude.
     host_anchors: Vec<usize>,
     edits: Vec<Edit>,
+    selector_ranges: Vec<Range<usize>>,
     scratch: String,
 }
 
@@ -156,8 +160,8 @@ impl Stamper {
         let mut qualifier = String::new();
         match scope {
             LightScope::Stamped { marker } => {
-                host.reserve(tag_name.len() + LIGHT_DOM_MARKER_ATTR.len() + 2);
-                host.push_str(tag_name);
+                host.reserve(tag_name.len() + LIGHT_DOM_MARKER_ATTR.len() + 8);
+                push_css_identifier(&mut host, tag_name);
                 host.push('[');
                 host.push_str(LIGHT_DOM_MARKER_ATTR);
                 host.push(']');
@@ -177,6 +181,7 @@ impl Stamper {
             qualifier,
             host_anchors: Vec::new(),
             edits: Vec::new(),
+            selector_ranges: Vec::new(),
             scratch: String::new(),
         }
     }
@@ -205,6 +210,16 @@ impl Stamper {
         if !self.is_stamped() {
             return;
         }
+        let range = self.qualify_compounds(output, range, lower_scope);
+        self.qualify_selector_arguments(output, range, lower_scope);
+    }
+
+    fn qualify_compounds(
+        &mut self,
+        output: &mut String,
+        range: Range<usize>,
+        lower_scope: bool,
+    ) -> Range<usize> {
         let selector = &output[range.clone()];
         self.edits.clear();
         let (host_anchors, edits) = (&self.host_anchors, &mut self.edits);
@@ -226,7 +241,7 @@ impl Stamper {
             }
         });
         if self.edits.is_empty() {
-            return;
+            return range;
         }
 
         self.scratch.clear();
@@ -248,7 +263,93 @@ impl Stamper {
             }
         }
         self.scratch.push_str(&selector[copied..]);
-        output.replace_range(range, &self.scratch);
+        let replacement_end = range.start + self.scratch.len();
+        output.replace_range(range.clone(), &self.scratch);
+        range.start..replacement_end
+    }
+
+    fn qualify_selector_arguments(
+        &mut self,
+        output: &mut String,
+        range: Range<usize>,
+        lower_scope: bool,
+    ) {
+        let mut ranges = std::mem::take(&mut self.selector_ranges);
+        ranges.clear();
+        ranges.push(range);
+        while let Some(mut search) = ranges.pop() {
+            let mut index = search.start;
+            while let Some(argument) = self.next_selector_argument(output, index, search.end) {
+                let old_len = argument.len();
+                let argument = self.qualify_compounds(output, argument, lower_scope);
+                if argument.len() >= old_len {
+                    search.end += argument.len() - old_len;
+                } else {
+                    search.end -= old_len - argument.len();
+                }
+                index = argument.end + 1;
+                ranges.push(argument);
+            }
+        }
+        self.selector_ranges = ranges;
+    }
+
+    fn next_selector_argument(
+        &self,
+        source: &str,
+        mut index: usize,
+        end: usize,
+    ) -> Option<Range<usize>> {
+        let bytes = source.as_bytes();
+        while index < end {
+            match bytes[index] {
+                b'"' | b'\'' => index = quoted_end(source, index).min(end),
+                b'\\' => index = css_escape_end(bytes, index, end),
+                b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                    index = block_comment_end(source, index).min(end);
+                }
+                b'/' if comment_policy::is_css_line_comment_start(source, index) => {
+                    index = line_comment_end(source, index).min(end);
+                }
+                b':' => {
+                    let Some(pseudo) = pseudo_name(source, index) else {
+                        index += 1;
+                        continue;
+                    };
+                    let name = &source[pseudo.name.clone()];
+                    let open = pseudo.name.end;
+                    if !pseudo.is_element
+                        && is_selector_function(name)
+                        && bytes.get(open) == Some(&b'(')
+                    {
+                        let compiler_qualifier = source[index..].starts_with(&self.qualifier);
+                        let generated_host_argument =
+                            css_identifier_eq(name, "is") && source[..index].ends_with(&self.host);
+                        let host_state_argument = !css_identifier_eq(name, "has")
+                            && self.selector_function_is_on_host(source, index);
+                        let close = matching_paren_end(source, open)?;
+                        if close > end {
+                            return None;
+                        }
+                        if !compiler_qualifier && !generated_host_argument && !host_state_argument {
+                            return Some(open + 1..close - 1);
+                        }
+                        index = close;
+                    } else {
+                        index = pseudo.name.end;
+                    }
+                }
+                _ => index = next_char_boundary(source, index),
+            }
+        }
+        None
+    }
+
+    fn selector_function_is_on_host(&self, source: &str, function_start: usize) -> bool {
+        let Some(host_start) = source[..function_start].rfind(&self.host) else {
+            return false;
+        };
+        !has_compound_boundary(source, host_start + self.host.len()..function_start)
     }
 
     /// Qualify the selectors inside an authored `@scope (…) to (…)` prelude.
@@ -259,17 +360,115 @@ impl Stamper {
     fn qualify_scope_prelude(&mut self, output: &mut String, prelude_start: usize) {
         let mut groups: Vec<Range<usize>> = Vec::new();
         let mut index = prelude_start;
-        while let Some(open) = output[index..].find('(').map(|at| index + at) {
-            let Some(close) = matching_paren_end(output, open) else {
-                break;
-            };
-            groups.push(open + 1..close - 1);
-            index = close;
+        while index < output.len() {
+            let bytes = output.as_bytes();
+            match bytes[index] {
+                b'"' | b'\'' => index = quoted_end(output, index),
+                b'\\' => index = css_escape_end(bytes, index, bytes.len()),
+                b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                    index = block_comment_end(output, index);
+                }
+                b'/' if comment_policy::is_css_line_comment_start(output, index) => {
+                    index = line_comment_end(output, index);
+                }
+                b'(' => {
+                    let Some(close) = matching_paren_end(output, index) else {
+                        break;
+                    };
+                    groups.push(index + 1..close - 1);
+                    index = close;
+                }
+                _ => index = next_char_boundary(output, index),
+            }
         }
         for group in groups.into_iter().rev() {
             self.qualify(output, group, false);
         }
     }
+}
+
+fn is_selector_function(name: &str) -> bool {
+    ["is", "where", "not", "has"]
+        .iter()
+        .any(|candidate| css_identifier_eq(name, candidate))
+}
+
+fn has_relationship_combinator(source: &str, range: Range<usize>) -> bool {
+    has_selector_boundary(source, range, false)
+}
+
+fn has_compound_boundary(source: &str, range: Range<usize>) -> bool {
+    has_selector_boundary(source, range, true)
+}
+
+fn has_selector_boundary(source: &str, range: Range<usize>, comma_is_boundary: bool) -> bool {
+    let bytes = source.as_bytes();
+    let mut index = range.start;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut saw_token = false;
+    while index < range.end {
+        match bytes[index] {
+            b'"' | b'\'' => {
+                saw_token = true;
+                index = quoted_end(source, index).min(range.end);
+            }
+            b'\\' => {
+                saw_token = true;
+                index = css_escape_end(bytes, index, range.end);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = block_comment_end(source, index).min(range.end);
+            }
+            b'/' if comment_policy::is_css_line_comment_start(source, index) => {
+                index = line_comment_end(source, index).min(range.end);
+            }
+            b'(' => {
+                paren_depth += 1;
+                saw_token = true;
+                index += 1;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                index += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                saw_token = true;
+                index += 1;
+            }
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                index += 1;
+            }
+            b',' if paren_depth == 0 && bracket_depth == 0 => {
+                if comma_is_boundary {
+                    return true;
+                }
+                saw_token = false;
+                index += 1;
+            }
+            b'>' | b'+' | b'~' if paren_depth == 0 && bracket_depth == 0 => return true,
+            b'|' if paren_depth == 0
+                && bracket_depth == 0
+                && bytes.get(index + 1) == Some(&b'|') =>
+            {
+                return true;
+            }
+            byte if byte.is_ascii_whitespace() && paren_depth == 0 && bracket_depth == 0 => {
+                let next = skip_whitespace_and_comments(source, index).min(range.end);
+                if saw_token && next < range.end && bytes[next] != b',' {
+                    return true;
+                }
+                index = next;
+            }
+            _ => {
+                saw_token = true;
+                index = next_char_boundary(source, index);
+            }
+        }
+    }
+    false
 }
 
 /// Whether `source` can be bounded by attribute stamping.
@@ -279,9 +478,8 @@ impl Stamper {
 /// functional pseudo-class (`:not(:host)`, `:is(:host, .a)`, `.card:has(:host)`)
 /// has no such qualifier: the host carries `data-wl` while its descendants carry
 /// `data-wl-<id>`, so no single zero-specificity token bounds both branches of
-/// the argument. Those components take the `@scope` enclosure instead, where
-/// `:host` lowers to `:scope` and the enclosure bounds the selector at match
-/// time.
+/// the argument. The pre-scan routes that shape to the enclosed compiler path,
+/// which rejects it explicitly rather than emitting a leaking selector.
 ///
 /// Runs once per component at build time, over CSS that has already been read
 /// from disk, so a single extra byte scan is not measurable.
@@ -356,7 +554,7 @@ pub(crate) fn compile(tag_name: &str, scope: LightScope<'_>, source: &str) -> Re
     // a bare tag, tightening the limit, or wrapping it in `:where()` all
     // measured 3-5% slower. Do not "simplify" this prelude without measuring.
     output.push_str("@scope (");
-    output.push_str(tag_name);
+    push_css_identifier(&mut output, tag_name);
     output.push_str("[data-wl]) to (:scope [data-wl] > *) {\n");
     output.push_str(&rewritten);
     output.push_str("\n}");
@@ -375,6 +573,12 @@ fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<Ke
     let mut nested_brace_depth = 0usize;
 
     while index < bytes.len() {
+        if blocks.len() == 1 && segment_start {
+            if let Some(length) = compatibility_token_len(bytes, index) {
+                index += length;
+                continue;
+            }
+        }
         if segment_start && current_block(&blocks) == BlockKind::Style {
             if let Some(declaration) = declaration_at(source, index) {
                 index = declaration.value.end;
@@ -385,6 +589,7 @@ fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<Ke
 
         match bytes[index] {
             b'"' | b'\'' => index = quoted_end(source, index),
+            b'\\' => index = css_escape_end(bytes, index, bytes.len()),
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(source, index);
             }
@@ -412,7 +617,7 @@ fn collect_keyframes_and_validate(tag_name: &str, source: &str) -> Result<Vec<Ke
                         pending_block = Some((block_start, current_block(&blocks)));
                         index += 1;
                     }
-                    AtRule::Statement { end } => {
+                    AtRule::Statement { end, .. } => {
                         index = end + 1;
                         segment_start = true;
                         continue;
@@ -500,6 +705,12 @@ fn rewrite_css(
     let mut nested_brace_depth = 0usize;
 
     while index < bytes.len() {
+        if blocks.len() == 1 && segment_start {
+            if let Some(length) = compatibility_token_len(bytes, index) {
+                index += length;
+                continue;
+            }
+        }
         if segment_start && current_block(&blocks) == BlockKind::Style {
             if let Some(declaration) = declaration_at(source, index) {
                 if is_animation_property(&source[declaration.property.clone()]) {
@@ -563,6 +774,45 @@ fn rewrite_css(
                 let raw_name = &source[pseudo.name.clone()];
                 let decoded_name = raw_name.contains('\\').then(|| identifier_value(raw_name));
                 let name = decoded_name.as_deref().unwrap_or(raw_name);
+                if stamper.is_stamped()
+                    && !pseudo.is_element
+                    && ["is", "where", "not"]
+                        .iter()
+                        .any(|candidate| css_identifier_eq(name, candidate))
+                    && !stamper.host_anchors.is_empty()
+                    && !has_compound_boundary(source, copy_start..index)
+                {
+                    let open = pseudo.name.end;
+                    if source.as_bytes().get(open) == Some(&b'(') {
+                        let Some(close) = matching_paren_end(source, open) else {
+                            return Err(unsupported_light_css_error(
+                                tag_name,
+                                source,
+                                index,
+                                "unterminated selector function on `:host`",
+                                "close the selector function before building",
+                            ));
+                        };
+                        if has_relationship_combinator(source, open + 1..close - 1) {
+                            return Err(unsupported_light_css_error(
+                                tag_name,
+                                source,
+                                index,
+                                "complex selector functions on `:host` cannot preserve Light DOM isolation",
+                                "use only same-element selectors in `:is()`, `:where()`, or `:not()`, or wrap the component in `<template shadowrootmode=\"open\">`",
+                            ));
+                        }
+                    }
+                }
+                if !stamper.is_stamped() && !pseudo.is_element && is_selector_function(name) {
+                    return Err(unsupported_light_css_error(
+                        tag_name,
+                        source,
+                        index,
+                        "selector functions cannot be isolated for opaque Light DOM",
+                        "remove `:is()`, `:where()`, `:not()`, or `:has()`, or wrap the component in `<template shadowrootmode=\"open\">`",
+                    ));
+                }
                 if !pseudo.is_element && name.eq_ignore_ascii_case("host-context") {
                     return Err(unsupported_light_css_error(
                         tag_name,
@@ -631,14 +881,38 @@ fn rewrite_css(
                     index = rule.name_end;
                 }
                 AtRule::Grouping {
+                    keyword_end,
                     block_start,
                     is_scope,
+                    is_layer,
                 } => {
+                    if is_layer {
+                        rewrite_layer_names(
+                            tag_name,
+                            source,
+                            keyword_end..block_start,
+                            &mut output,
+                            &mut copy_start,
+                        );
+                    }
                     pending_block = Some((block_start, current_block(&blocks)));
                     pending_at_prelude = Some((block_start, is_scope));
                     index += 1;
                 }
-                AtRule::Statement { end } => {
+                AtRule::Statement {
+                    keyword_end,
+                    end,
+                    is_layer,
+                } => {
+                    if is_layer {
+                        rewrite_layer_names(
+                            tag_name,
+                            source,
+                            keyword_end..end,
+                            &mut output,
+                            &mut copy_start,
+                        );
+                    }
                     // Nothing to scope: leaving the statement in the pending
                     // copy range emits it verbatim on the next flush.
                     index = end + 1;
@@ -986,12 +1260,18 @@ fn parse_at_rule(tag_name: &str, source: &str, start: usize) -> Result<AtRule> {
     }
     match at_rule_terminator(source, keyword_end) {
         Some((block_start, b'{')) => Ok(AtRule::Grouping {
+            keyword_end,
             block_start,
             is_scope: css_identifier_eq(name, "scope"),
+            is_layer: css_identifier_eq(name, "layer"),
         }),
         // `@layer a, b;` only declares cascade-layer order: no selector list and
         // no block, so copying it through preserves it exactly.
-        Some((end, b';')) if css_identifier_eq(name, "layer") => Ok(AtRule::Statement { end }),
+        Some((end, b';')) if css_identifier_eq(name, "layer") => Ok(AtRule::Statement {
+            keyword_end,
+            end,
+            is_layer: true,
+        }),
         _ => Err(unsupported_light_css_error(
             tag_name,
             source,
@@ -1000,6 +1280,60 @@ fn parse_at_rule(tag_name: &str, source: &str, start: usize) -> Result<AtRule> {
             "use the block form of this grouping rule, or move the statement to the entry stylesheet",
         )),
     }
+}
+
+fn rewrite_layer_names(
+    tag_name: &str,
+    source: &str,
+    range: Range<usize>,
+    output: &mut String,
+    copy_start: &mut usize,
+) {
+    let bytes = source.as_bytes();
+    let mut index = range.start;
+    let mut expects_name = true;
+    while index < range.end {
+        match bytes[index] {
+            byte if byte.is_ascii_whitespace() => {
+                index += 1;
+                continue;
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = block_comment_end(source, index).min(range.end);
+                continue;
+            }
+            b'/' if comment_policy::is_css_line_comment_start(source, index) => {
+                index = line_comment_end(source, index).min(range.end);
+                continue;
+            }
+            b',' => {
+                expects_name = true;
+                index += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if expects_name {
+            output.push_str(&source[*copy_start..index]);
+            push_layer_namespace(output, tag_name);
+            output.push('.');
+            *copy_start = index;
+            expects_name = false;
+        }
+        index = if bytes[index] == b'\\' {
+            css_escape_end(bytes, index, range.end)
+        } else {
+            next_char_boundary(source, index)
+        };
+    }
+}
+
+fn push_layer_namespace(output: &mut String, tag_name: &str) {
+    output.push_str("wui");
+    let _ = write!(output, "{}", tag_name.len());
+    output.push('-');
+    push_css_identifier(output, tag_name);
 }
 
 fn parse_keyframe_rule(tag_name: &str, source: &str, keyword_end: usize) -> Result<KeyframeRule> {
@@ -1109,7 +1443,7 @@ fn compiled_keyframe_name(tag_name: &str, authored: &str) -> String {
     compiled.push_str("wui");
     let _ = write!(compiled, "{}", tag_name.len());
     compiled.push('-');
-    compiled.push_str(tag_name);
+    push_css_identifier(&mut compiled, tag_name);
     compiled.push('-');
     if let Some(quote) = quote {
         compiled.push_str(&authored[1..authored.len() - 1]);
@@ -1118,6 +1452,52 @@ fn compiled_keyframe_name(tag_name: &str, authored: &str) -> String {
         compiled.push_str(authored);
     }
     compiled
+}
+
+/// Append `value` as one CSS identifier without changing its semantic value.
+pub(crate) fn push_css_identifier(output: &mut String, value: &str) {
+    for (index, ch) in value.chars().enumerate() {
+        if ch.is_ascii_alphabetic() || ch == '-' || ch == '_' || (index > 0 && ch.is_ascii_digit())
+        {
+            output.push(ch);
+        } else {
+            push_css_escape(output, ch as u32);
+        }
+    }
+}
+
+fn push_css_escape(output: &mut String, mut value: u32) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut digits = [0u8; 8];
+    let mut index = digits.len();
+    loop {
+        index -= 1;
+        digits[index] = HEX[(value & 0x0f) as usize];
+        value >>= 4;
+        if value == 0 {
+            break;
+        }
+    }
+    output.push('\\');
+    for digit in &digits[index..] {
+        output.push(char::from(*digit));
+    }
+    output.push(' ');
+}
+
+/// Return the byte width of a legacy CSS CDO/CDC compatibility token.
+///
+/// CSS Syntax treats these tokens as whitespace only at the top level. Keeping
+/// them out of selector-prelude detection prevents `<!-- @import ...` from
+/// bypassing the global at-rule validator while preserving the authored bytes.
+fn compatibility_token_len(bytes: &[u8], index: usize) -> Option<usize> {
+    if bytes.get(index..index + 4) == Some(b"<!--") {
+        Some(4)
+    } else if bytes.get(index..index + 3) == Some(b"-->") {
+        Some(3)
+    } else {
+        None
+    }
 }
 
 fn current_block(blocks: &[BlockKind]) -> BlockKind {
@@ -1223,6 +1603,7 @@ fn validate_shadow_only_pseudos(tag_name: &str, source: &str, range: Range<usize
     while index < range.end {
         match bytes[index] {
             b'"' | b'\'' => index = quoted_end(source, index).min(range.end),
+            b'\\' => index = css_escape_end(bytes, index, range.end),
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(source, index).min(range.end);
             }
@@ -1271,6 +1652,11 @@ fn validate_host_compound(tag_name: &str, source: &str, range: Range<usize>) -> 
                 saw_token = true;
                 whitespace_after_token = false;
                 index = quoted_end(source, index).min(range.end);
+            }
+            b'\\' => {
+                saw_token = true;
+                whitespace_after_token = false;
+                index = css_escape_end(bytes, index, range.end);
             }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(source, index).min(range.end);
@@ -1373,6 +1759,7 @@ fn at_rule_terminator(source: &str, start: usize) -> Option<(usize, u8)> {
     while index < bytes.len() {
         match bytes[index] {
             b'"' | b'\'' => index = quoted_end(source, index),
+            b'\\' => index = css_escape_end(bytes, index, bytes.len()),
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(source, index);
             }
@@ -1467,7 +1854,7 @@ mod tests {
         ),
         (
             ".a { @layer overrides { color: blue } }",
-            ".a:where([data-wl-t3stid]) { @layer overrides { color: blue } }",
+            ".a:where([data-wl-t3stid]) { @layer wui7-my-card.overrides { color: blue } }",
         ),
         (
             ".a { @starting-style { opacity: 0 } }",
@@ -1495,7 +1882,7 @@ mod tests {
         ),
         (
             ".a:has(> .b) { color: red }",
-            ".a:has(> .b):where([data-wl-t3stid]) { color: red }",
+            ".a:has(> .b:where([data-wl-t3stid])):where([data-wl-t3stid]) { color: red }",
         ),
         (
             "my-child::part(label) { color: red }",
@@ -1618,19 +2005,9 @@ mod tests {
     const HOST_CORPUS: &[(&str, &str, &str)] = &[
         (":host { color: red }", "my-card[data-wl]", ":scope"),
         (
-            ":host:has(.error) { color: red }",
-            "my-card[data-wl]:has(.error)",
-            ":scope:has(.error)",
-        ),
-        (
             ":host([disabled]):hover { color: red }",
             "my-card[data-wl]:is([disabled]):hover",
             ":scope:is([disabled]):hover",
-        ),
-        (
-            ":host:not([hidden]) { color: red }",
-            "my-card[data-wl]:not([hidden])",
-            ":scope:not([hidden])",
         ),
         (
             ":host::before { content: '' }",
@@ -1711,7 +2088,12 @@ mod tests {
                 ),
                 "guard must raise the documented code: {source}"
             );
-            enclose(source).expect("enclosed shape is the fallback and must compile");
+            let enclosed = enclose(source).expect_err("enclosed selector functions must fail");
+            assert!(matches!(
+                enclosed,
+                ParserError::Template(ref diagnostic)
+                    if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
+            ));
         }
     }
 
@@ -1757,7 +2139,12 @@ mod tests {
     #[test]
     fn stamping_only_inserts_qualifiers() {
         let qualifier = format!(":where([{MARKER}])");
-        for source in invariant_inputs() {
+        for source in invariant_inputs().filter(|source| {
+            !source.contains("@layer")
+                && ![":is(", ":where(", ":not(", ":has("]
+                    .iter()
+                    .any(|function| source.contains(function))
+        }) {
             assert!(
                 !contains_host_selector(source),
                 "host lowering differs between shapes, so this belongs in HOST_CORPUS: {source}"
@@ -1960,15 +2347,16 @@ mod tests {
         );
     }
 
-    /// A qualifier must precede the pseudo-element, and functional
-    /// pseudo-class arguments are matched globally, exactly as they were
-    /// under the previous `@scope` shape.
+    /// A qualifier must precede the pseudo-element, including inside
+    /// selector-bearing functional pseudo-class arguments.
     #[test]
     fn stamps_before_pseudo_elements_and_never_inside_functions() {
         let css =
             compile(".a::before { color:red } .b:is(.c, .d):hover { color:red }").expect("compile");
         assert!(css.contains(".a:where([data-wl-t3stid])::before"));
-        assert!(css.contains(".b:is(.c, .d):hover:where([data-wl-t3stid])"));
+        assert!(css.contains(
+            ".b:is(.c:where([data-wl-t3stid]), .d:where([data-wl-t3stid])):hover:where([data-wl-t3stid])"
+        ));
     }
 
     #[test]
@@ -1996,7 +2384,7 @@ mod tests {
         );
         let css = compile(source).expect("compile");
         assert!(css.contains("my-card[data-wl] { display:block }"));
-        assert!(css.contains("my-card[data-wl]:has(.error) { color:red }"));
+        assert!(css.contains("my-card[data-wl]:has(.error:where([data-wl-t3stid])) { color:red }"));
         assert!(css.contains("my-card[data-wl]:is([disabled]):hover { opacity:.5 }"));
         assert!(css.contains("my-card[data-wl]:not([hidden])::before { content:\"x\" }"));
         assert!(css.contains("my-card[data-wl]:is(.escaped) { color:blue }"));
@@ -2039,6 +2427,48 @@ mod tests {
         assert!(css.contains(":scope { display:block }"));
         assert!(css.contains(":scope:is([disabled]):hover { opacity:.5 }"));
         assert!(!css.contains("my-card[data-wl] {"));
+    }
+
+    #[test]
+    fn stamps_selector_function_arguments() {
+        let css = compile(":is(.outside .inside, .safe):has(> .child:not(.off .deep)){color:red}")
+            .expect("compile");
+        assert!(css.contains(".outside:where([data-wl-t3stid]) .inside:where([data-wl-t3stid])"));
+        assert!(css.contains(".safe:where([data-wl-t3stid])"));
+        assert!(css.contains(
+            "> .child:not(.off:where([data-wl-t3stid]) .deep:where([data-wl-t3stid])):where([data-wl-t3stid])"
+        ));
+        assert!(css.contains(".off:where([data-wl-t3stid]) .deep:where([data-wl-t3stid])"));
+    }
+
+    #[test]
+    fn enclosed_components_reject_selector_functions() {
+        let error = enclose(".card:has(.error){color:red}")
+            .expect_err("opaque Light DOM cannot isolate relational selectors");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
+        ));
+    }
+
+    #[test]
+    fn rejects_complex_same_subject_functions_on_host() {
+        let error = compile(":host:not(.outside .inside){color:red}")
+            .expect_err("complex host state selector must not leak");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
+        ));
+    }
+
+    #[test]
+    fn host_anchor_does_not_cross_selector_list_commas() {
+        let css = compile(":host, .icon:is(.small .glyph){color:red}")
+            .expect("unrelated selector function remains stampable");
+        assert!(css.contains("my-card[data-wl],"));
+        assert!(css.contains(".small:where([data-wl-t3stid]) .glyph:where([data-wl-t3stid])"));
     }
 
     /// Keyframe namespacing is independent of the boundary shape: neither
@@ -2092,6 +2522,15 @@ mod tests {
             "@scope (.root:where([data-wl-t3stid])) to (.limit:where([data-wl-t3stid]))"
         ));
         assert!(css.contains(".x:where([data-wl-t3stid]) { color:red }"));
+    }
+
+    #[test]
+    fn scope_prelude_ignores_parentheses_in_comments() {
+        let css =
+            compile("@scope /* ( */ (.root) to (.limit) { .x { color:red } }").expect("compile");
+        assert!(css.contains(
+            "@scope /* ( */ (.root:where([data-wl-t3stid])) to (.limit:where([data-wl-t3stid]))"
+        ));
     }
 
     /// A bare `:scope` outside an authored `@scope` used to resolve to the
@@ -2225,6 +2664,24 @@ mod tests {
     }
 
     #[test]
+    fn escapes_component_names_in_hosts_scopes_and_keyframes() {
+        let stamped = super::compile(
+            "x-foo.bar",
+            LightScope::Stamped { marker: MARKER },
+            ":host{animation:fade 1s}@keyframes fade{to{opacity:1}}",
+        )
+        .expect("compile stamped CSS");
+        assert!(stamped.contains(r"x-foo\2e bar[data-wl]"));
+        assert!(!stamped.contains(r"x-foo\2e :where([data-wl-t3stid])bar"));
+        assert!(stamped.contains(r"@keyframes wui9-x-foo\2e bar-fade"));
+        assert!(stamped.contains(r"animation:wui9-x-foo\2e bar-fade 1s"));
+
+        let enclosed = super::compile("x-foo.bar", LightScope::Enclosed, ".label{color:red}")
+            .expect("compile enclosed CSS");
+        assert!(enclosed.starts_with(r"@scope (x-foo\2e bar[data-wl])"));
+    }
+
+    #[test]
     fn rejects_dynamic_keyframe_references() {
         for function in ["var(--animation)", "ATTR(data-animation)"] {
             let source = format!("@keyframes fade{{to{{opacity:1}}}}.x{{animation:{function}}}");
@@ -2274,27 +2731,73 @@ mod tests {
         }
     }
 
-    /// Statement-form `@layer` declares cascade-layer order and carries no
-    /// selectors, so it is copied through instead of rejected. Rejecting it
-    /// would force authors to abandon layers entirely just to keep a component
-    /// Light, and the ordering it declares is exactly what a later block-form
-    /// `@layer name { ... }` in the same file depends on.
     #[test]
-    fn preserves_statement_form_layer() {
+    fn compatibility_tokens_cannot_hide_global_at_rules() {
+        for source in [
+            "<!-- @import url(global.css);",
+            "--> @import url(global.css);",
+        ] {
+            let error = compile(source).expect_err("compatibility token must not hide @import");
+            assert!(matches!(
+                error,
+                ParserError::Template(ref diagnostic)
+                    if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
+            ));
+        }
+    }
+
+    #[test]
+    fn escaped_parentheses_do_not_hide_keyframes_or_at_rule_terminators() {
+        let css = compile(
+            r".x\({color:red}@media (width > 1px) and (value: \)){.y{color:blue}}@keyframes fade{to{opacity:1}}.z{animation:fade 1s}",
+        )
+        .expect("compile escaped CSS");
+        assert!(css.contains("@keyframes wui7-my-card-fade"));
+        assert!(css.contains("animation:wui7-my-card-fade 1s"));
+        assert!(css.contains(r"(value: \))"));
+    }
+
+    /// Named layers are document-global even when their rules are scoped, so
+    /// both ordering statements and block names receive a component namespace.
+    #[test]
+    fn namespaces_statement_and_block_layers() {
         let compiled = compile("@layer reset,theme;@layer theme{.a{color:red}}")
             .expect("statement-form @layer compiles");
         assert!(
-            compiled.starts_with("@layer reset,theme;"),
-            "statement copied verbatim: {compiled}"
+            compiled.starts_with(
+                "@layer wui7-my-card.reset,wui7-my-card.theme;@layer wui7-my-card.theme"
+            ),
+            "layer names are namespaced: {compiled}"
         );
         assert!(
-            compiled.contains("@layer theme{"),
+            compiled.contains("@layer wui7-my-card.theme{"),
             "following block at-rule still parsed as an at-rule: {compiled}"
         );
         assert!(
             compiled.contains(&format!(".a:where([{MARKER}])")),
             "rules after the statement are still scoped: {compiled}"
         );
+    }
+
+    #[test]
+    fn layer_names_never_collide_across_components() {
+        let card = super::compile(
+            "my-card",
+            LightScope::Stamped { marker: MARKER },
+            "@layer theme{.a{color:red}}",
+        )
+        .expect("compile card");
+        let panel = super::compile(
+            "my-panel",
+            LightScope::Stamped {
+                marker: "data-wl-panel",
+            },
+            "@layer theme{.a{color:blue}}",
+        )
+        .expect("compile panel");
+
+        assert!(card.contains("@layer wui7-my-card.theme"));
+        assert!(panel.contains("@layer wui8-my-panel.theme"));
     }
 
     /// Everything outside a selector prelude is copied through untouched.

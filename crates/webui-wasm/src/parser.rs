@@ -8,11 +8,14 @@ use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::plugin::{ParserPluginArtifacts, StateSurface};
-use webui_parser::{CssStrategy, HtmlParser};
+use webui_parser::{CssStrategy, DomStrategy, HtmlParser};
 use webui_protocol::projection_manifest::{ProjectionComponent, ProjectionManifest};
 use webui_protocol::{InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
 /// Build protocol protobuf bytes from virtual files without rendering.
+///
+/// `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
+/// authored open Shadow roots remain Shadow in either mode.
 ///
 /// Returns the serialized `WebUIProtocol` as protobuf bytes.
 #[wasm_bindgen]
@@ -20,6 +23,7 @@ pub fn build_protocol(
     files: JsValue,
     entry: &str,
     projection_manifests: Option<JsValue>,
+    dom: Option<String>,
 ) -> Result<Vec<u8>, JsValue> {
     let files_map: HashMap<String, String> =
         serde_wasm_bindgen::from_value(files).map_err(|e| JsValue::from_str(&e.to_string()))?;
@@ -28,17 +32,32 @@ pub fn build_protocol(
         .transpose()
         .map_err(|error| JsValue::from_str(&format!("invalid projection manifests: {error}")))?
         .unwrap_or_default();
+    let dom = dom
+        .map(|value| value.parse::<DomStrategy>())
+        .transpose()
+        .map_err(|error| JsValue::from_str(&error))?
+        .unwrap_or_default();
 
-    build_protocol_inner(&files_map, entry, &manifests)
+    build_protocol_inner_with_dom(&files_map, entry, &manifests, dom)
         .map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
+#[cfg(test)]
 pub(crate) fn build_protocol_inner(
     files: &HashMap<String, String>,
     entry: &str,
     projection_manifests: &[ProjectionManifest],
 ) -> Result<Vec<u8>, WasmError> {
-    let protocol = parse_to_protocol(files, entry, projection_manifests)?;
+    build_protocol_inner_with_dom(files, entry, projection_manifests, DomStrategy::Shadow)
+}
+
+fn build_protocol_inner_with_dom(
+    files: &HashMap<String, String>,
+    entry: &str,
+    projection_manifests: &[ProjectionManifest],
+    dom: DomStrategy,
+) -> Result<Vec<u8>, WasmError> {
+    let protocol = parse_to_protocol_with_dom(files, entry, projection_manifests, dom)?;
     protocol.to_protobuf().map_err(WasmError::Protocol)
 }
 
@@ -124,17 +143,29 @@ fn apply_component_delivery(
 
 /// Parse virtual files into a `WebUIProtocol` using the real `webui-parser`
 /// with the WebUI plugin.
+#[cfg(test)]
 pub(crate) fn parse_to_protocol(
     files: &HashMap<String, String>,
     entry: &str,
     projection_manifests: &[ProjectionManifest],
 ) -> Result<WebUIProtocol, WasmError> {
+    parse_to_protocol_with_dom(files, entry, projection_manifests, DomStrategy::Shadow)
+}
+
+pub(crate) fn parse_to_protocol_with_dom(
+    files: &HashMap<String, String>,
+    entry: &str,
+    projection_manifests: &[ProjectionManifest],
+    dom: DomStrategy,
+) -> Result<WebUIProtocol, WasmError> {
     let entry_html = files
         .get(entry)
         .ok_or_else(|| WasmError::MissingEntry(entry.to_string()))?;
 
-    let mut parser =
-        HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), CssStrategy::Style);
+    let mut parser = HtmlParser::with_plugin_options(
+        Box::new(WebUIParserPlugin::new()),
+        (CssStrategy::Style, dom),
+    );
     register_components(&mut parser, files, entry)?;
     parser.parse(entry, entry_html)?;
     let component_delivery = component_delivery_snapshot(&parser);
@@ -295,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_to_protocol_marks_unwrapped_light_dom() {
+    fn parse_to_protocol_resolves_unwrapped_dom_strategy() {
         let files = HashMap::from([
             (
                 "index.html".to_string(),
@@ -311,7 +342,19 @@ mod tests {
             ),
         ]);
 
-        let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        let shadow = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        assert!(shadow.components["my-card"].uses_shadow_dom);
+        assert_eq!(
+            shadow.components["my-card"].css,
+            ":host { display: block; }"
+        );
+        assert_eq!(
+            shadow.style_closure("my-card").expect("Shadow closure"),
+            ["my-card"]
+        );
+
+        let protocol =
+            parse_to_protocol_with_dom(&files, "index.html", &[], DomStrategy::Light).unwrap();
         assert_eq!(protocol.css_strategy(), webui_protocol::CssStrategy::Style);
         assert!(!protocol.components["my-card"].uses_shadow_dom);
         assert!(protocol.components["my-card"]

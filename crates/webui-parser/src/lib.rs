@@ -229,6 +229,40 @@ impl std::str::FromStr for CssStrategy {
     }
 }
 
+/// Default DOM strategy for components without an authored declarative Shadow root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+pub enum DomStrategy {
+    /// Wrap unwrapped component content in an open declarative Shadow root.
+    #[default]
+    Shadow,
+    /// Render unwrapped component content directly in Light DOM.
+    Light,
+}
+
+impl std::fmt::Display for DomStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Shadow => write!(f, "shadow"),
+            Self::Light => write!(f, "light"),
+        }
+    }
+}
+
+impl std::str::FromStr for DomStrategy {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value {
+            "shadow" => Ok(Self::Shadow),
+            "light" => Ok(Self::Light),
+            other => Err(format!(
+                "Unknown DOM strategy: {other}. Use \"shadow\" or \"light\"."
+            )),
+        }
+    }
+}
+
 /// Strategy for preserving legal comments in generated output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
@@ -268,6 +302,8 @@ impl std::str::FromStr for LegalComments {
 pub struct ParserOptions {
     /// Strategy for how component CSS is delivered.
     pub css_strategy: CssStrategy,
+    /// Fallback DOM strategy for components without an authored Shadow root.
+    pub dom_strategy: DomStrategy,
     /// Link-mode CSS filename/href options.
     pub css_link_options: CssLinkOptions,
     /// Legal comment preservation strategy.
@@ -282,6 +318,7 @@ impl ParserOptions {
     /// Returns [`ParserError::Css`] when Link-mode CSS link options are invalid.
     pub fn try_new(
         css_strategy: CssStrategy,
+        dom_strategy: DomStrategy,
         css_file_name_template: &str,
         css_public_base: Option<&str>,
         legal_comments: LegalComments,
@@ -297,9 +334,19 @@ impl ParserOptions {
 
         Ok(Self {
             css_strategy,
+            dom_strategy,
             css_link_options,
             legal_comments,
         })
+    }
+}
+
+impl From<DomStrategy> for ParserOptions {
+    fn from(dom_strategy: DomStrategy) -> Self {
+        Self {
+            dom_strategy,
+            ..Self::default()
+        }
     }
 }
 
@@ -307,6 +354,16 @@ impl From<CssStrategy> for ParserOptions {
     fn from(css_strategy: CssStrategy) -> Self {
         Self {
             css_strategy,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<(CssStrategy, DomStrategy)> for ParserOptions {
+    fn from((css_strategy, dom_strategy): (CssStrategy, DomStrategy)) -> Self {
+        Self {
+            css_strategy,
+            dom_strategy,
             ..Self::default()
         }
     }
@@ -706,7 +763,11 @@ fn light_scope_collision_error(tag_name: &str, owner: &str, marker: &str) -> Par
         .into()
 }
 
-fn analyze_component_dom(tag_name: &str, source: &str) -> Result<ComponentDomAnalysis> {
+fn analyze_component_dom(
+    tag_name: &str,
+    source: &str,
+    fallback: DomStrategy,
+) -> Result<ComponentDomAnalysis> {
     let mut ranges = Vec::with_capacity(8);
     ranges.push((0..source.len(), true));
     let mut top_level_element_count = 0usize;
@@ -832,7 +893,7 @@ fn analyze_component_dom(tag_name: &str, source: &str) -> Result<ComponentDomAna
         None => None,
     };
 
-    let uses_shadow_dom = authored_shadow_root.is_some();
+    let uses_shadow_dom = authored_shadow_root.is_some() || fallback == DomStrategy::Shadow;
     if !uses_shadow_dom {
         if let Some(offset) = slot_offset {
             return Err(light_dom_slot_error(tag_name, source, offset));
@@ -1825,10 +1886,10 @@ impl HtmlParser {
         &self.module_entry_srcs
     }
 
-    /// Iterate component tags and whether each authored a Shadow DOM root.
+    /// Iterate component tags and whether each effectively uses Shadow DOM.
     ///
     /// This remains available independently of parser plugins so protocol
-    /// builders can persist authored Shadow overrides in plugin-free builds.
+    /// builders can persist effective per-component ownership in plugin-free builds.
     pub fn component_shadow_dom_usage(&self) -> impl Iterator<Item = (&str, bool)> {
         self.component_dom_analyses
             .iter()
@@ -3354,7 +3415,13 @@ impl HtmlParser {
             })?;
             (
                 cached_dom_analysis.map_or_else(
-                    || analyze_component_dom(element.name(), &component.html_content),
+                    || {
+                        analyze_component_dom(
+                            element.name(),
+                            &component.html_content,
+                            self.options.dom_strategy,
+                        )
+                    },
                     Ok,
                 )?,
                 needs_template_build.then(|| {
@@ -3462,7 +3529,7 @@ impl HtmlParser {
         if let Some(analysis) = self.component_dom_analyses.get(tag_name) {
             return Ok(*analysis);
         }
-        let analysis = analyze_component_dom(tag_name, source)?;
+        let analysis = analyze_component_dom(tag_name, source, self.options.dom_strategy)?;
         self.component_dom_analyses
             .insert(tag_name.to_string(), analysis);
         Ok(analysis)
@@ -4387,15 +4454,33 @@ impl HtmlParser {
     ) -> Result<BuiltComponentTemplate> {
         let dom_analysis = self.analyze_component_dom(tag_name, html)?;
         let is_light = !dom_analysis.uses_shadow_dom;
+        let mut inline_style_ranges = Vec::new();
+        if is_light {
+            let mut comment_ranges = Vec::new();
+            Self::collect_html_comment_and_style_ranges(
+                html,
+                &mut comment_ranges,
+                &mut inline_style_ranges,
+            )?;
+        }
+        let inline_styles_are_stampable = inline_style_ranges
+            .iter()
+            .all(|(start, end)| css_boundary::stamping_is_representable(&html[*start..*end]));
+        let has_inline_css = inline_style_ranges
+            .iter()
+            .any(|(start, end)| !html[*start..*end].trim().is_empty());
         // Pick the strongest boundary this component's DOM *and* CSS permit. A
         // template that can interpolate opaque markup keeps the `@scope`
         // enclosure, which scopes at match time and therefore covers elements
-        // no compiled template declares; so does CSS that stamping cannot
-        // express. Everything else takes the stamped fast path.
+        // no compiled template declares. CSS that stamping cannot express also
+        // enters the enclosed compiler path, which rejects relationships that
+        // `@scope` cannot isolate rather than emitting them. Everything else
+        // takes the stamped fast path.
         let stampable = is_light
             && !light_scope::renders_opaque_html(html)
             && !self.light_scope_enclosed.contains(tag_name)
-            && css_content.is_none_or(css_boundary::stamping_is_representable);
+            && css_content.is_none_or(css_boundary::stamping_is_representable)
+            && inline_styles_are_stampable;
         if is_light && !stampable {
             self.light_scope_enclosed.insert(tag_name.to_string());
         }
@@ -4433,7 +4518,7 @@ impl HtmlParser {
         // template would be pure payload.
         let scope_marker = marker
             .as_deref()
-            .filter(|_| css_content.is_some_and(|css| !css.trim().is_empty()));
+            .filter(|_| has_inline_css || css_content.is_some_and(|css| !css.trim().is_empty()));
         let adopted_specifier = match self.options.css_strategy {
             CssStrategy::Module if css_content.is_some() => Some(tag_name),
             _ => None,
@@ -4446,7 +4531,7 @@ impl HtmlParser {
         // The resolved delivery is reported to the plugin as build context; a
         // plugin whose client runtime builds its own roots from the captured
         // template decides for itself what to do with it. Light CSS is never
-        // reported: it is Document-owned, and its markers are stamped into the
+        // reported: it is tree-owned, and its markers are stamped into the
         // compiled template rather than into any runtime-created root.
         let style = if dom_analysis.uses_shadow_dom && self.plugin.is_some() {
             self.component_style_delivery(tag_name, css_content)
@@ -4460,9 +4545,18 @@ impl HtmlParser {
         };
         let artifact_differs =
             artifact_needed && Self::template_has_stripped_runtime_attrs(runtime_attr_source);
-        let ssr =
-            self.process_component_template_for_dom(html, None, adopted_specifier, dom_analysis)?;
-        let artifact = if artifact_differs {
+        // A `w-render`/`w-hydrate` component authors its policy on a plain
+        // `<template>` wrapper. The policy lands on the host element as
+        // generated CSS, so the wrapper itself must not survive into a Light
+        // template, where its contents would never render.
+        let policy_wrapper = parse_component_render_policy(tag_name, html)?.is_authored();
+        let mut ssr = self.process_component_policy_template_for_dom(
+            html,
+            adopted_specifier,
+            dom_analysis,
+            policy_wrapper,
+        )?;
+        let mut artifact = if artifact_differs {
             Some(self.process_component_artifact_template_for_dom(
                 html,
                 adopted_specifier,
@@ -4471,6 +4565,12 @@ impl HtmlParser {
         } else {
             None
         };
+        if let Some(scope) = scope {
+            ssr = Self::compile_inline_component_styles(tag_name, scope, ssr)?;
+            artifact = artifact
+                .map(|html| Self::compile_inline_component_styles(tag_name, scope, html))
+                .transpose()?;
+        }
         // Stamp the compiled templates rather than the authored source: these
         // are the exact strings that reach SSR and `meta.h`, and keeping the
         // authored bytes untouched leaves reserved-marker validation free to
@@ -4489,6 +4589,29 @@ impl HtmlParser {
             uses_shadow_dom: dom_analysis.uses_shadow_dom,
             style,
         })
+    }
+
+    fn compile_inline_component_styles(
+        tag_name: &str,
+        scope: css_boundary::LightScope<'_>,
+        html: String,
+    ) -> Result<String> {
+        let mut comment_ranges = Vec::new();
+        let mut style_ranges = Vec::new();
+        Self::collect_html_comment_and_style_ranges(&html, &mut comment_ranges, &mut style_ranges)?;
+        if style_ranges.is_empty() {
+            return Ok(html);
+        }
+
+        let mut output = String::with_capacity(html.len() + style_ranges.len() * 48);
+        let mut copied = 0usize;
+        for (start, end) in style_ranges {
+            output.push_str(&html[copied..start]);
+            output.push_str(&css_boundary::compile(tag_name, scope, &html[start..end])?);
+            copied = end;
+        }
+        output.push_str(&html[copied..]);
+        Ok(output)
     }
 
     /// Resolve how a component's compiled CSS reaches the browser.
@@ -4537,17 +4660,7 @@ impl HtmlParser {
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
     ) -> Result<String> {
-        let analysis = analyze_component_dom("component", html)?;
-        self.process_component_template_for_dom(html, css_snippet, adopted_specifier, analysis)
-    }
-
-    fn process_component_template_for_dom(
-        &mut self,
-        html: &str,
-        css_snippet: Option<&str>,
-        adopted_specifier: Option<&str>,
-        dom_analysis: ComponentDomAnalysis,
-    ) -> Result<String> {
+        let dom_analysis = analyze_component_dom("component", html, self.options.dom_strategy)?;
         self.process_component_template_with_mode(
             html,
             ComponentStyleInjection {
@@ -4608,8 +4721,32 @@ impl HtmlParser {
             result.push_str(&root);
             result.push_str(&html[root_end..trim_end]);
             result
-        } else if snippet.is_empty() {
-            trimmed.to_string()
+        } else if dom_analysis.uses_shadow_dom {
+            if mode.policy_wrapper {
+                let base = self.strip_template_build_attrs(trimmed, mode.preserve_runtime_attrs);
+                let with_shadow = Self::append_shadow_mode_if_missing(base);
+                let with_adopted =
+                    Self::append_adopted_attr_if_missing(with_shadow, style.adopted_specifier);
+                Self::inject_css_snippet_into_template(with_adopted, snippet)
+            } else {
+                let adopted = style.adopted_specifier.unwrap_or_default();
+                let adopted_extra = if adopted.is_empty() {
+                    0
+                } else {
+                    Self::adopted_attr_len(adopted)
+                };
+                let mut result =
+                    String::with_capacity(45 + adopted_extra + snippet.len() + trimmed.len());
+                result.push_str("<template shadowrootmode=\"open\"");
+                if !adopted.is_empty() {
+                    Self::push_adopted_attr(&mut result, adopted);
+                }
+                result.push('>');
+                result.push_str(snippet);
+                result.push_str(trimmed);
+                result.push_str("</template>");
+                result
+            }
         } else {
             let mut result = String::with_capacity(snippet.len() + trimmed.len());
             result.push_str(snippet);
@@ -4667,21 +4804,25 @@ impl HtmlParser {
         let Some(tag) = html::parse_tag(&html) else {
             return html;
         };
-        if tag.name != "template" || tag.closing || tag.has_attr("shadowrootmode") {
+        if !tag.name.eq_ignore_ascii_case("template")
+            || tag.closing
+            || tag
+                .attrs()
+                .any(|attr| attr.name.eq_ignore_ascii_case("shadowrootmode"))
+        {
             return html;
         }
 
-        const SHADOW_MODE: &str = " shadowrootmode=\"open\"";
-        let mut result = String::with_capacity(html.len() + SHADOW_MODE.len());
+        let mut result = String::with_capacity(html.len() + 22);
         result.push_str(&html[..tag.close]);
-        result.push_str(SHADOW_MODE);
+        result.push_str(" shadowrootmode=\"open\"");
         result.push_str(&html[tag.close..]);
         result
     }
 
-    fn unwrap_component_policy_template(html: String) -> String {
-        let Some(tag) = html::parse_tag(&html) else {
-            return html;
+    fn unwrap_component_policy_template(html: &str) -> String {
+        let Some(tag) = html::parse_tag(html) else {
+            return html.to_string();
         };
         let inner_start = tag.close + 1;
         let inner_end = html.rfind("</template>").unwrap_or(html.len());
@@ -4892,9 +5033,14 @@ mod tests {
     }
 
     #[test]
-    fn unwrapped_component_uses_light_dom() {
+    fn unwrapped_component_uses_configured_dom_strategy() {
         assert!(
-            !analyze_component_dom("x-card", "<div>content</div>")
+            analyze_component_dom("x-card", "<div>content</div>", DomStrategy::Shadow)
+                .expect("valid component")
+                .uses_shadow_dom
+        );
+        assert!(
+            !analyze_component_dom("x-card", "<div>content</div>", DomStrategy::Light)
                 .expect("valid component")
                 .uses_shadow_dom
         );
@@ -4935,7 +5081,7 @@ mod tests {
         let html =
             "<!-- lead --><template shadowrootmode='open'><slot></slot></template><!-- tail -->";
         assert!(
-            analyze_component_dom("x-card", html)
+            analyze_component_dom("x-card", html, DomStrategy::Light)
                 .expect("valid Shadow wrapper")
                 .uses_shadow_dom
         );
@@ -4946,6 +5092,7 @@ mod tests {
         let error = analyze_component_dom(
             "x-card",
             "<template shadowrootmode=\"closed\"><p>content</p></template>",
+            DomStrategy::Shadow,
         )
         .expect_err("closed mode must fail");
         assert!(matches!(
@@ -4961,6 +5108,7 @@ mod tests {
         let error = analyze_component_dom(
             "x-card",
             "<template shadowrootmode=\"open\"><p>content</p></template><span>extra</span>",
+            DomStrategy::Light,
         )
         .expect_err("multiple roots must fail");
         assert!(matches!(
@@ -4980,7 +5128,7 @@ mod tests {
             "<div><template shadowrootmode=\"open\"><p>content</p></template></div>",
             "<div shadowrootmode=\"open\">content</div>",
         ] {
-            let error = analyze_component_dom("x-card", html)
+            let error = analyze_component_dom("x-card", html, DomStrategy::Shadow)
                 .expect_err("invalid shadowrootmode must fail");
             assert!(matches!(
                 error,
@@ -4995,14 +5143,20 @@ mod tests {
 
     #[test]
     fn light_component_slot_is_rejected() {
-        let error = analyze_component_dom("x-card", "<div><slot name=\"label\"></slot></div>")
-            .expect_err("light slot must fail");
+        let source = "<div><slot name=\"label\"></slot></div>";
+        let error = analyze_component_dom("x-card", source, DomStrategy::Light)
+            .expect_err("Light slot must fail");
         assert!(matches!(
             error,
             ParserError::Template(ref diagnostic)
                 if diagnostic.error_code() == Some(codes::LIGHT_DOM_SLOT)
                     && diagnostic.help_text().is_some_and(|help| help.contains("shadowrootmode"))
         ));
+        assert!(
+            analyze_component_dom("x-card", source, DomStrategy::Shadow)
+                .expect("implicit Shadow components support slots")
+                .uses_shadow_dom
+        );
     }
 
     #[test]
@@ -5115,15 +5269,16 @@ mod tests {
         }
     }
 
-    /// The handler installs Light CSS from the stored closure, so the context
-    /// never reports it: the Light host selector cannot match from inside a
-    /// runtime-created shadow root.
+    /// FAST defaults client-created components to Shadow roots and has no
+    /// artifact-level Light registration contract. Rejecting the mismatch is
+    /// safer than letting hydration replace correct Light SSR with a Shadow tree.
     #[test]
-    fn fast_plugin_omits_light_css_from_captured_template() {
+    fn fast_plugin_rejects_effective_light_dom() {
         let mut parser = HtmlParser::with_plugin_options(
             Box::new(crate::plugin::fast_v3::FastV3ParserPlugin::new()),
             ParserOptions {
                 css_strategy: CssStrategy::Style,
+                dom_strategy: DomStrategy::Light,
                 ..ParserOptions::default()
             },
         );
@@ -5136,20 +5291,16 @@ mod tests {
                 true,
             ))
             .expect("register component");
-        parser
+        let error = parser
             .parse("index.html", "<x-light></x-light>")
-            .expect("parse component");
-
-        let ParserPluginArtifacts::ComponentTemplates(templates) =
-            parser.take_plugin_artifacts().expect("plugin artifacts")
-        else {
-            panic!("expected component templates");
-        };
-        assert!(
-            !templates[0].template.contains("<style>"),
-            "light template must stay style-free: {}",
-            templates[0].template
-        );
+            .expect_err("FAST must reject Light DOM");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::FAST_LIGHT_DOM_UNSUPPORTED)
+                    && diagnostic.component_name() == Some("x-light")
+                    && diagnostic.help_text().is_some()
+        ));
     }
 
     /// SSR output is style-free in every build: the handler installs the
@@ -5222,6 +5373,7 @@ mod tests {
 
     fn capture_style_context(
         strategy: CssStrategy,
+        dom_strategy: DomStrategy,
         template: &str,
         css: Option<&str>,
     ) -> (bool, Option<String>, String) {
@@ -5232,6 +5384,7 @@ mod tests {
             }),
             ParserOptions {
                 css_strategy: strategy,
+                dom_strategy,
                 ..ParserOptions::default()
             },
         );
@@ -5258,6 +5411,7 @@ mod tests {
         ] {
             let (uses_shadow_dom, style, template) = capture_style_context(
                 strategy,
+                DomStrategy::Shadow,
                 "<template shadowrootmode=\"open\" shadowrootadoptedstylesheets=\"x-card\"><div class=\"card\"></div></template>",
                 Some(".card{color:red}"),
             );
@@ -5276,6 +5430,7 @@ mod tests {
     fn parser_reports_no_style_delivery_for_light_components() {
         let (uses_shadow_dom, style, _) = capture_style_context(
             CssStrategy::Style,
+            DomStrategy::Light,
             "<div class=\"card\"></div>",
             Some(".card{color:red}"),
         );
@@ -5288,6 +5443,7 @@ mod tests {
     fn parser_reports_no_style_delivery_without_css() {
         let (uses_shadow_dom, style, _) = capture_style_context(
             CssStrategy::Style,
+            DomStrategy::Shadow,
             "<template shadowrootmode=\"open\"><div></div></template>",
             None,
         );
@@ -5488,7 +5644,7 @@ mod tests {
 
     #[test]
     fn test_component_directive() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5599,7 +5755,7 @@ mod tests {
         // component's attribute run and the closing `>`, carrying the tag,
         // so the streaming handler can inject ` data-ws` inside the tag before
         // custom-element upgrade. Ordinary rendering ignores the signal.
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5917,7 +6073,7 @@ mod tests {
         // Developer-authored <template foo="bar"> must be preserved verbatim
         // in Light DOM. The framework only strips runtime-only attrs;
         // every other attribute is the developer's responsibility.
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5955,8 +6111,9 @@ mod tests {
         // the wrapper verbatim. CSS is the default `Link` strategy, which
         // injects only in Shadow DOM, so there is no CSS snippet to splice
         // into this unwrapped component. The template's content carries the
-        // Light scope marker; the inert wrapper itself does not.
-        let mut parser = HtmlParser::new();
+        // Light scope marker, including the wrapper because structural
+        // selectors can use inert elements as combinator anchors.
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -5974,7 +6131,7 @@ mod tests {
             records,
             "custom-element",
             [raw(
-                r#"<template foo="bar"><div data-wl-oo63a3>content</div></template>"#
+                r#"<template data-wl-oo63a3 foo="bar"><div data-wl-oo63a3>content</div></template>"#
             ),]
         );
     }
@@ -6096,7 +6253,7 @@ mod tests {
 
     #[test]
     fn test_component_legacy_no_styles() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -6130,7 +6287,7 @@ mod tests {
 
     #[test]
     fn test_component_self_closing() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -6419,7 +6576,7 @@ mod tests {
 
     /// Helper to parse HTML with a pre-registered component.
     fn parse_with_component(tag: &str, html: &str) -> (Vec<WebUIFragment>, WebUIFragmentRecords) {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(tag, "<div></div>", None, true))
@@ -7191,7 +7348,7 @@ mod tests {
     #[test]
     fn test_component_multiple_nested() {
         // Port of: 'handle multiple nested web components'
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -7536,7 +7693,7 @@ mod tests {
 
     #[test]
     fn test_css_strategy_module_emits_adopted_stylesheets() {
-        let mut parser = HtmlParser::with_options(CssStrategy::Module);
+        let mut parser = HtmlParser::with_options((CssStrategy::Module, DomStrategy::Light));
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -7584,7 +7741,7 @@ mod tests {
 
     #[test]
     fn light_component_css_is_compiled_once() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -7620,6 +7777,62 @@ mod tests {
         assert_eq!(css.matches(":where([data-wl-").count(), 1);
     }
 
+    #[test]
+    fn light_component_inline_styles_are_scoped_and_stamped() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        let built = parser
+            .build_component_templates(
+                "my-card",
+                "<style>.label{color:red}</style><p class=\"label\">content</p>",
+                None,
+                false,
+            )
+            .expect("build Light component");
+
+        let marker = light_scope::marker_attribute("my-card");
+        assert!(built
+            .ssr
+            .contains(&format!("<style {marker}>.label:where([{marker}])")));
+        assert!(built.ssr.contains("<p data-wl-"));
+    }
+
+    #[test]
+    fn light_component_inline_styles_reject_global_at_rules() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        let error = match parser.build_component_templates(
+            "my-card",
+            "<style>@import url(global.css);</style><p>content</p>",
+            None,
+            false,
+        ) {
+            Ok(_) => panic!("global inline CSS must fail"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::UNSUPPORTED_LIGHT_CSS)
+        ));
+    }
+
+    #[test]
+    fn shadow_component_inline_styles_remain_tree_local_and_unchanged() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
+        let built = parser
+            .build_component_templates(
+                "my-card",
+                "<style>.label{color:red}</style><p class=\"label\">content</p>",
+                None,
+                false,
+            )
+            .expect("build Shadow component");
+
+        assert!(built
+            .ssr
+            .contains("<template shadowrootmode=\"open\"><style>.label{color:red}</style>"));
+        assert!(!built.ssr.contains("data-wl-"));
+    }
+
     /// A nested Light host is declared by its parent's template, so it carries
     /// the parent's scope marker and the parent may style its box. The marker is
     /// valueless and `data-`-prefixed, which the component attribute path
@@ -7627,7 +7840,7 @@ mod tests {
     /// bytes so no-JavaScript renders are styled.
     #[test]
     fn nested_light_host_keeps_the_parent_scope_marker_in_ssr() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -7678,7 +7891,7 @@ mod tests {
     /// native `@scope` enclosure and emits no markers at all.
     #[test]
     fn raw_html_binding_falls_back_to_the_scope_enclosure() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -7725,7 +7938,7 @@ mod tests {
     /// The same component without the raw binding takes the stamped fast path.
     #[test]
     fn escaped_binding_keeps_the_stamped_boundary() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -7845,7 +8058,7 @@ mod tests {
 
     #[test]
     fn light_no_template_no_wrapper_added() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template("<div>hi</div>", None, None)
             .expect("process failed");
@@ -7861,7 +8074,7 @@ mod tests {
 
     #[test]
     fn ordinary_template_remains_light_dom_content() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template(
                 r#"<template foo="bar"><div>hi</div></template>"#,
@@ -7898,7 +8111,7 @@ mod tests {
 
     #[test]
     fn ordinary_template_preserves_signal_fragment_attrs() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template(
                 r#"<template foo="{{foo}}"><div>hi</div></template>"#,
@@ -7914,7 +8127,7 @@ mod tests {
 
     #[test]
     fn unwrapped_component_never_gains_shadow_wrapper() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template("<div>hi</div>", None, None)
             .expect("process failed");
@@ -7925,6 +8138,18 @@ mod tests {
         assert!(
             processed.contains("<div>hi</div>"),
             "Light content must survive processing, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn default_unwrapped_component_gains_open_shadow_wrapper() {
+        let mut parser = HtmlParser::new();
+        let processed = parser
+            .process_component_template("<div>hi</div>", None, None)
+            .expect("process failed");
+        assert_eq!(
+            processed,
+            r#"<template shadowrootmode="open"><div>hi</div></template>"#
         );
     }
 
@@ -7949,7 +8174,7 @@ mod tests {
         ];
 
         for (input, expected) in fixtures {
-            let mut parser = HtmlParser::with_options(DomStrategy::Shadow);
+            let mut parser = HtmlParser::with_options(DomStrategy::Light);
             let processed = parser
                 .process_component_template(&input, None, None)
                 .expect("leading-comment fixture should process");
@@ -7960,23 +8185,36 @@ mod tests {
     #[test]
     fn component_policy_wrapper_uses_selected_dom_strategy_and_is_build_only() {
         let html = r#"<template w-hydrate="lazy"><div>hi</div></template>"#;
-
-        let mut shadow = HtmlParser::with_options(DomStrategy::Shadow);
-        let shadow_built = shadow
-            .build_component_templates("my-comp", html, None, true)
-            .expect("shadow policy wrapper should compile");
-        assert_eq!(
-            shadow_built.ssr,
-            r#"<template shadowrootmode="open"><div>hi</div></template>"#
-        );
-        assert!(!shadow_built.artifact().contains("w-hydrate"));
-
         let mut light = HtmlParser::with_options(DomStrategy::Light);
         let light_built = light
             .build_component_templates("my-comp", html, None, true)
             .expect("light policy wrapper should compile");
         assert_eq!(light_built.ssr, "<div>hi</div>");
         assert_eq!(light_built.artifact(), "<div>hi</div>");
+
+        let mut implicit_shadow = HtmlParser::new();
+        let shadow_built = implicit_shadow
+            .build_component_templates("my-comp", html, None, true)
+            .expect("default policy wrapper should compile as Shadow");
+        assert_eq!(
+            shadow_built.ssr,
+            r#"<template shadowrootmode="open"><div>hi</div></template>"#
+        );
+        assert!(!shadow_built.artifact().contains("w-hydrate"));
+
+        // An authored Shadow component keeps its wrapper; only the
+        // compiler-owned policy attributes are stripped.
+        let shadow_html =
+            r#"<template shadowrootmode="open" w-hydrate="lazy"><div>hi</div></template>"#;
+        let mut shadow = HtmlParser::new();
+        let authored_shadow_built = shadow
+            .build_component_templates("my-comp", shadow_html, None, true)
+            .expect("shadow policy wrapper should compile");
+        assert_eq!(
+            authored_shadow_built.ssr,
+            r#"<template shadowrootmode="open"><div>hi</div></template>"#
+        );
+        assert!(!authored_shadow_built.artifact().contains("w-hydrate"));
     }
 
     // ── CSS-module adoption on dev-authored <template> wrappers ────────

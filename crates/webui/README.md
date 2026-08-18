@@ -37,13 +37,14 @@ let result = build(BuildOptions {
 | `build_to_disk(options, out_dir)` | Build and write `protocol.bin`, CSS, and component assets to disk |
 
 ```rust
-use webui::{build_to_disk, BuildOptions, CssStrategy, LegalComments, Plugin};
+use webui::{build_to_disk, BuildOptions, CssStrategy, DomStrategy, LegalComments, Plugin};
 
 build_to_disk(
     BuildOptions {
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
+        dom: DomStrategy::Light,       // opt into scoped Light + authored Shadow islands
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
@@ -53,9 +54,9 @@ build_to_disk(
 )?;
 ```
 
-Every unwrapped component uses Light DOM. A component uses Shadow only with a
-sole top-level `<template shadowrootmode="open">` containing its complete
-template. Native `<slot>` is Shadow-only.
+Unwrapped components default to a generated open Shadow root. Set
+`dom: DomStrategy::Light` to render unwrapped components as scoped Light DOM;
+sole authored `<template shadowrootmode="open">` components remain Shadow.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:

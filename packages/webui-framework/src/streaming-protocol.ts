@@ -4,8 +4,7 @@
 import type { TemplateMeta } from './template.js';
 import type { ComponentStyles } from './element/styles.js';
 
-/** Clean-break component-local streaming protocol version. */
-export const STREAMING_PROTOCOL_VERSION = 2;
+const SUPPORTED_VERSION = 2;
 
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {

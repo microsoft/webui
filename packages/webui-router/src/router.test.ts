@@ -12,7 +12,13 @@ import { resolveLoaders } from './loaders.js';
 import { ensureComponentLoaded } from './loaders.js';
 import { NavigationCache } from './cache.js';
 import { setupPreloadListeners } from './preload.js';
-import { registerTemplatesAndStyles } from './templates.js';
+import {
+  registerInitialTemplatesAndStyles,
+  registerTemplatesAndStyles,
+} from './templates.js';
+import { findChangeLevel, sameRouteDeclaration } from './chain.js';
+import { findActionRouteEntry } from './actions.js';
+import { mountedRouteComponent } from './route-element.js';
 import type { ComponentStyles } from './types.js';
 
 // ── Test-only type access ────────────────────────────────────────
@@ -330,6 +336,7 @@ describe('WebUIRouter', () => {
         nonce: '',
         textContent: '',
       });
+
       (globalThis as any).document.head = {
         appendChild(el: Record<string, unknown>) {
           order.push('closures');
@@ -367,6 +374,29 @@ describe('WebUIRouter', () => {
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.head = origHead;
         delete globals().__webui?.templates?.[tag];
+      }
+    });
+
+    test('registers initial component styles before announcing bootstrap templates', () => {
+      const originalBridge = window.__webuiRegisterComponentStyles;
+      const order: string[] = [];
+      const styles = emptyComponentStyles();
+      const templates = { 'initial-card': { h: '<p>Initial</p>' } };
+      const onRegistered = (): void => {
+        order.push('templates');
+      };
+      window.addEventListener('webui:templates-registered', onRegistered);
+      window.__webuiRegisterComponentStyles = (value: unknown) => {
+        assert.strictEqual(value, styles);
+        order.push('styles');
+      };
+
+      try {
+        registerInitialTemplatesAndStyles(templates, styles);
+        assert.deepEqual(order, ['styles', 'templates']);
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = originalBridge;
       }
     });
 
@@ -1285,12 +1315,13 @@ describe('WebUIRouter', () => {
       };
 
       try {
+        const entry = { component: 'dash-page', path: '/', params: { id: '42' } };
         const results = await resolveLoaders(
-          [{ component: 'dash-page', path: '/', params: { id: '42' } }],
+          [entry],
           { filter: 'active' },
         );
-        assert.ok(results.has('dash-page'), 'should have loader result for dash-page');
-        assert.deepEqual(results.get('dash-page'), { dashId: '42', source: 'loader' });
+        assert.ok(results.has(entry), 'should have loader result for the route entry');
+        assert.deepEqual(results.get(entry), { dashId: '42', source: 'loader' });
       } finally {
         (globalThis as any).customElements.get = origGet;
       }
@@ -1370,6 +1401,32 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('keeps loader state distinct for declarations sharing a component', async () => {
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'shared-page') {
+          return class SharedPage {
+            static async loader(ctx: { params: Record<string, string> }) {
+              return { id: ctx.params.id };
+            }
+          };
+        }
+        return origGet(name);
+      };
+      const first = { component: 'shared-page', path: '/first/:id', params: { id: 'first' } };
+      const second = { component: 'shared-page', path: '/second/:id', params: { id: 'second' } };
+
+      try {
+        const results = await resolveLoaders([first, second], {});
+
+        assert.equal(results.size, 2);
+        assert.deepEqual(results.get(first), { id: 'first' });
+        assert.deepEqual(results.get(second), { id: 'second' });
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
     test('mountComponent calls applyParamsQueryState with state', () => {
       const router = new WebUIRouter();
       const source = (router as any).mountComponent.toString() as string;
@@ -1417,12 +1474,67 @@ describe('WebUIRouter', () => {
         path: '/',
         params: { id: '42' },
         el: mockRouteEl,
+        compEl: mockCompEl,
         keepAlive: true,
         state: null,  // null = skip setState
       };
 
       priv.applyState(entry, {}, new Map());
       assert.ok(!setStateCalled, 'setState must not be called for keep-alive with null state');
+    });
+
+    describe('route declaration identity and teardown', () => {
+      test('treats distinct paths using one component as different declarations', () => {
+        const login = { component: 'auth-page', path: '/login', params: {} };
+        const signup = { component: 'auth-page', path: '/signup', params: {} };
+
+        assert.equal(sameRouteDeclaration(login, signup), false);
+        assert.equal(findChangeLevel([login], [signup]), 0);
+      });
+
+      test('tears down non-keep-alive siblings through marker-preserving cleanup', () => {
+        const router = new WebUIRouter();
+        const source = (router as unknown as {
+          commitWithData: (...args: unknown[]) => Promise<void>;
+        }).commitWithData.toString();
+
+        assert.ok(source.includes('sameRouteDeclaration(oldEntry, newEntry)'));
+        assert.ok(source.includes('$destroy'));
+        assert.ok(source.includes('clearRouteContent(oldEntry.el)'));
+      });
+
+      test('resolves actions by route element when component tags repeat', () => {
+        const firstRoute = {} as HTMLElement;
+        const secondRoute = {} as HTMLElement;
+        const first = {
+          component: 'shared-page',
+          path: '/first',
+          params: {},
+          el: firstRoute,
+          invalidates: ['first'],
+        };
+        const second = {
+          component: 'shared-page',
+          path: '/second',
+          params: {},
+          el: secondRoute,
+          invalidates: ['second'],
+        };
+
+        assert.strictEqual(findActionRouteEntry([first, second], secondRoute), second);
+      });
+
+      test('finds a dotted component tag without CSS selector parsing', () => {
+        const component = {
+          localName: 'x-foo.bar',
+          nextElementSibling: null,
+        } as unknown as HTMLElement;
+        const route = {
+          firstElementChild: component,
+        } as unknown as HTMLElement;
+
+        assert.strictEqual(mountedRouteComponent(route, 'x-foo.bar'), component);
+      });
     });
 
     test('applyState calls setState for keep-alive with loader override', () => {
@@ -1446,11 +1558,12 @@ describe('WebUIRouter', () => {
         path: '/',
         params: {},
         el: mockRouteEl,
+        compEl: mockCompEl,
         keepAlive: true,
         state: null,
       };
       const loaderStates = new Map();
-      loaderStates.set('test-comp', { fresh: 'data' });
+      loaderStates.set(entry, { fresh: 'data' });
 
       priv.applyState(entry, {}, loaderStates);
       assert.deepEqual(setStateArg, { fresh: 'data' }, 'setState should receive loader override');
@@ -1477,6 +1590,7 @@ describe('WebUIRouter', () => {
         path: '/',
         params: {},
         el: mockRouteEl as any,
+        compEl: mockCompEl,
         keepAlive: false,
         state: { from: 'server' },
       };

@@ -1,6 +1,8 @@
 <p><span class="greeting">{{greeting}}</span> <span class="name">{{name}}</span></p>
-<test-light-child></test-light-child>
-<test-light-child></test-light-child>
+<div class="child-boundary">
+  <test-light-child></test-light-child>
+  <test-light-child></test-light-child>
+</div>
 <button class="spawn" @click="{spawnChild()}">Spawn child</button>
 <div class="client-children"></div>
 <test-shadow-opt-in id="shadow-opt-in"><span class="projected">Projected label</span></test-shadow-opt-in>

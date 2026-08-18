@@ -548,7 +548,7 @@ function buildMarkerless(sequence: number, terminal: number, bootstrap: object):
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      1,
+      2,
       sequence,
       terminal === 1 ? 3 : 0,
       0,
@@ -573,7 +573,7 @@ function buildUpdatableBoundary(
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      1,
+      2,
       recordSequence,
       1,
       boundaryId,
@@ -1477,7 +1477,7 @@ describe('streaming coordinator pipeline', () => {
     const previousError = console.error;
     console.error = () => {};
     try {
-      const boundary = buildRawBoundary(0, '[1,0,0,0,{"state":{}}]', []);
+      const boundary = buildRawBoundary(0, '[2,0,0,0,{"state":{}}]', []);
       enqueue(boundary.sentinel);
       await flush();
 
@@ -1681,10 +1681,7 @@ describe('streaming coordinator pipeline', () => {
   test('a missing start marker halts and cleans the end marker + payload', async () => {
     // End marker present but no matching start marker: reject + clean.
     const end = comment('/wb:0');
-    const scriptEl = element('script', {
-      attrs: { 'data-webui-boundary': '' },
-      text: JSON.stringify([2, 0, 0, 0, { declarationId: 0 }]),
-    });
+    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([2, 0, 0, 0, {}]) });
     const sentinel = element('webui-hydrate');
     const root = body();
     link(root, [end, scriptEl, sentinel]);

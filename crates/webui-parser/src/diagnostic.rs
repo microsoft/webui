@@ -97,6 +97,8 @@ pub mod codes {
     pub const LIGHT_SCOPE_COLLISION: &str = "light-scope-collision";
     /// Light component CSS contains a selector or at-rule that cannot be scoped.
     pub const UNSUPPORTED_LIGHT_CSS: &str = "unsupported-light-css";
+    /// A FAST plugin was asked to compile a Light DOM component it cannot mount faithfully.
+    pub const FAST_LIGHT_DOM_UNSUPPORTED: &str = "fast-light-dom-unsupported";
     /// A Light component refers to a component-local keyframe dynamically.
     pub const DYNAMIC_LIGHT_KEYFRAME: &str = "dynamic-light-keyframe";
     /// An HTML comment was opened but never closed with `-->`.

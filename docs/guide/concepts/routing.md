@@ -231,6 +231,8 @@ export class LiveDashboard extends WebUIElement {
 
 How it works:
 - The router checks each route component's constructor for a static `loader()` method
+- Results belong to the concrete route-chain entry, so separate declarations
+  that reuse one component tag keep independent params and state
 - Loaders run **before** the view transition — results are ready for synchronous DOM commit
 - The loader receives route `params`, `query`, and an `AbortSignal` tied to the navigation
 - If a loader fails, the router falls back to server-provided `data.state` with a console warning

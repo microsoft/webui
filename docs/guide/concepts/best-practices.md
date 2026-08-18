@@ -373,36 +373,47 @@ This is roughly 15 KB - the handler renders faster, the network transfer is smal
 
 ## Light DOM vs Shadow DOM
 
-Every unwrapped component uses Light DOM. The compiler scopes its ordinary
-paired CSS, so an unwrapped template does not require global component styles
-or rewriting `:host`.
+Shadow is the default fallback for unwrapped component content. Build with
+`--dom light` to make unwrapped components Light; the compiler scopes their
+ordinary paired CSS and component-local `<style>` blocks, so authors still use
+`:host` and do not need global component styles. Selector relationships inside
+`:is()`, `:where()`, `:not()`, and `:has()` are scoped recursively, and named
+`@layer` values receive a component namespace.
+
+Raw `{{{html}}}` bindings use the general `@scope` enclosure because their
+elements are unknown at build time. Avoid selector functions in those
+components: browser scope limits do not stop relational selectors from
+inspecting external ancestors or nested component internals, so WebUI rejects
+that combination. Use simpler selectors or keep that component Shadow.
 
 ### Performance Comparison
 
-| Metric | Shadow DOM | Light DOM | Improvement |
-|--------|-----------|-----------|-------------|
-| First Contentful Paint | Baseline | 26% faster | Fewer shadow roots to process |
-| Layout Operations | Baseline | 60% fewer | No shadow boundary recalculations |
+Light generally reduces ShadowRoot/stylesheet-object count and improves
+bundling, SSR throughput, and document completion. Shadow supplies a native CSS
+tree boundary and can be faster when large repeated components recalculate
+styles frequently. Choose based on workload rather than assuming either mode is
+always faster.
 | Memory per Component | Baseline | Lower | No shadow root overhead |
 
 ### When to Use Each
 
-**Light DOM** (unwrapped templates):
+**Light DOM** (`--dom light`, unwrapped templates):
 
-- Most application components
-- High-component-count pages such as tables and long lists
+- Mostly static or moderately styled application composition
 - Components that benefit from normal inheritance and a flatter DOM
+- Components that benefit from shared bundled CSS
 
 **Shadow DOM**:
 
 - Components that use native `<slot>` composition
 - Third-party components embedded in unknown host pages
 - Components that specifically require a native Shadow boundary
+- CSS-heavy, highly repeated components with frequent class/attribute changes
 
 ### Authoring Shadow DOM
 
-Every unwrapped component is Light. To use Shadow, wrap the complete component
-in the sole top-level element:
+Shadow is the default. In a `--dom light` build, wrap a component that should
+remain Shadow in the sole top-level element:
 
 ```html
 <template shadowrootmode="open">
@@ -410,9 +421,9 @@ in the sole top-level element:
 </template>
 ```
 
-Only `open` is supported. A closed root, invalid wrapper placement or value, or
-native `<slot>` in an unwrapped component is a build error. Add open wrappers
-only to components that need slots or native Shadow encapsulation.
+Only `open` is supported. A closed root or invalid wrapper placement/value is a
+build error. Native `<slot>` is valid in effective Shadow components and fails
+in effective Light components.
 
 ## Summary
 
@@ -424,5 +435,6 @@ only to components that need slots or native Shadow encapsulation.
 | Check `.length` for empty arrays | Server and client disagree on bare `[]`; `.length` of `0` is falsy on both |
 | Return route-scoped state | Smaller payloads, faster rendering |
 | Prefer declarative bindings over imperative DOM manipulation | Template bindings are reactive and SSR-compatible |
-| Leave a component unwrapped unless it needs Shadow | Scoped CSS with fewer shadow roots |
-| Put native `<slot>` only in a Shadow component | Native slots do not work in Light DOM |
+| Use `--dom light` only when its composition/network wins fit the app | Avoids trading native CSS isolation for the wrong workload |
+| Author an open wrapper for Shadow islands in a Light build | Keeps slots, encapsulation, and CSS-heavy components tree-local |
+| Put native `<slot>` only in an effective Shadow component | Native slots do not work in Light DOM |

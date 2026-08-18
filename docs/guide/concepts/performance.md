@@ -268,33 +268,36 @@ hide behind subtraction. These figures are workload and machine specific; use
 
 ## Light DOM vs Shadow DOM
 
-Shadow DOM provides style encapsulation but has a performance cost. Benchmark
-data from a 2,400-component email client:
-
-| Metric | Shadow DOM | Light DOM | Improvement |
-|--------|-----------|-----------|-------------|
-| First Contentful Paint | baseline | **26% faster** | fewer shadow root constructions |
-| Layout Operations | baseline | **60% fewer** | no shadow boundary recalculations |
+Neither mode is universally faster. Light removes ShadowRoot and per-instance
+stylesheet objects, enables aggressive CSS bundling, and can improve SSR
+throughput and document completion. Correctly scoped Light CSS still shares one
+large CSS tree, so broad or frequent class/attribute invalidations may cost more
+than native Shadow isolation. Shadow pays more parsing and stylesheet-instance
+overhead but can recalculate styles substantially faster in CSS-heavy repeated
+component trees.
 
 ### When to Use Each
 
-**Light DOM** - leave the component unwrapped when:
-- Performance is critical (high-component-count pages)
+**Light DOM** - build with `--dom light` when:
+- Components are mostly static or moderately styled
 - Components benefit from normal CSS inheritance
+- CSS request/stylesheet consolidation matters
 - Native slot composition is not required
 
 **Shadow DOM** - use when:
 - You need native `<slot>` composition
 - Components run in unknown host pages
 - A native Shadow boundary is an explicit requirement
+- Components have large stylesheets, many repeated instances, or frequent host
+  class/attribute changes
 
 ### Authoring Shadow DOM
 
-Every unwrapped component is Light. A component uses Shadow only when its
-complete template is a sole top-level `<template shadowrootmode="open">`. Use
-that only for components that need
-slots or native encapsulation. Invalid or closed wrappers and `<slot>` in an
-unwrapped component fail the build.
+Shadow is the default fallback for unwrapped components. `--dom light` makes
+unwrapped components Light while preserving any component whose complete
+template is a sole top-level `<template shadowrootmode="open">` as Shadow.
+Invalid or closed wrappers fail every build; `<slot>` fails only when the
+effective component mode is Light.
 
 Keep authoring ordinary paired CSS in both modes. The compiler scopes Light CSS,
 lowers `:host`, and namespaces static keyframes. It rejects selectors and
@@ -310,7 +313,8 @@ Each closure and CSS definition is serialized at most once per response, even
 when later boundaries reuse a component or a resource arrived transitively
 through an earlier closure.
 
-Add open wrappers only to slot and encapsulation components.
+In a Light build, add open wrappers to slot, encapsulation, or CSS-heavy
+frequently restyled components.
 
 ## Performance Rules
 

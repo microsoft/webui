@@ -231,6 +231,7 @@ pub(crate) fn matching_paren_end(source: &str, open: usize) -> Option<usize> {
     while index < bytes.len() {
         match bytes[index] {
             b'"' | b'\'' => index = quoted_end(source, index),
+            b'\\' => index = css_escape_end(bytes, index, bytes.len()),
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 index = block_comment_end(source, index);
             }
@@ -266,6 +267,7 @@ mod tests {
         assert_eq!(block_comment_end("/* unterminated", 0), 15);
         assert_eq!(css_escape_end(b"\\26 x", 0, 5), 4);
         assert_eq!(css_escape_end(b"\\@rest", 0, 6), 2);
+        assert_eq!(matching_paren_end(r"(\)) tail", 0), Some(4));
     }
 
     #[test]

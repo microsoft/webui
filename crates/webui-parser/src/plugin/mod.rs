@@ -88,7 +88,7 @@ pub struct ComponentTemplateArtifact {
     /// an entry for scripted components; scriptless ones are always
     /// Rust-derived and never require a manifest entry.
     pub is_scripted: bool,
-    /// Whether this component authored a declarative Shadow DOM root.
+    /// Whether this component effectively uses Shadow DOM.
     pub uses_shadow_dom: bool,
 }
 
@@ -191,15 +191,15 @@ pub enum ComponentStyleDelivery<'a> {
 /// processed template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentTemplateContext<'a> {
-    /// Whether this component authored a declarative Shadow DOM root.
+    /// Whether this component effectively uses Shadow DOM.
     pub uses_shadow_dom: bool,
     /// How this component's CSS is delivered, when it has any.
     ///
     /// A plugin whose client runtime builds roots from the template it captures
     /// here is outside WebUI's style registry, so it can use this to keep those
-    /// roots styled. Light CSS is Document-owned and its host selector cannot
-    /// match from inside a runtime-created root, so it is reported only for
-    /// components that authored a Shadow root.
+    /// roots styled. Light CSS belongs to the containing CSS tree rather than
+    /// the captured component template, so delivery is reported only for
+    /// components that effectively use a Shadow root.
     pub style: Option<ComponentStyleDelivery<'a>>,
 }
 

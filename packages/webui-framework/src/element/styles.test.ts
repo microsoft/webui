@@ -149,6 +149,10 @@ describe('component style resources', () => {
       children.map(child => child.getAttribute('data-webui-resource')),
       ['second', 'first'],
     );
+    assert.deepEqual(
+      children.map(child => child.getAttribute('data-webui-strategy')),
+      ['style', 'style'],
+    );
   });
 
   test('a bundled resource covers its member component closures', async () => {

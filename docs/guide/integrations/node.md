@@ -161,6 +161,7 @@ render immediately and propagate to the caller.
 | `appDir` | `string` | - | Path to app folder |
 | `entry` | `string` | `"index.html"` | Entry file |
 | `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
+| `dom` | `"shadow" \| "light"` | `"shadow"` | Fallback for unwrapped components; Light builds retain authored Shadow islands |
 | `cssBundle` | `boolean` | `false` | Merge component stylesheets into shared chunks. Composes with `css`; rejected with `css: "module"` |
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
@@ -173,9 +174,8 @@ render immediately and propagate to the caller.
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
 | `theme` | `string` | - | Design token theme JSON path or npm package name. Missing required CSS tokens fail the build (literal `var()` fallbacks are exempt) |
 
-Every unwrapped component uses Light DOM. A component uses Shadow only when its
-complete template is a sole top-level `<template shadowrootmode="open">`.
-Native `<slot>` is Shadow-only.
+Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
+to make them scoped Light DOM; authored sole open Shadow roots remain Shadow.
 
 ```js
 const result = build({

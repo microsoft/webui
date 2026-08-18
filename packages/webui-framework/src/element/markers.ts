@@ -19,6 +19,8 @@
  *   <!--/wN-->  raw HTML binding end
  */
 
+import { isComponentStyleMarker } from './styles.js';
+
 // Marker data constants matching the handler plugin output.
 export const MARKER_REPEAT_START = 'wr';
 export const MARKER_REPEAT_END = '/wr';
@@ -266,7 +268,11 @@ export function buildSSRIndex(
           continue;
         }
       } else if (type === 1 /* ELEMENT_NODE */) {
-        break;
+        // A compiler-emitted style fallback is server-only: `meta.h` never
+        // contains it, so counting it would pair every following template
+        // element with its predecessor's node. `findByOrdinal` skips it for
+        // the same reason.
+        if (!isComponentStyleMarker(s as Element)) break;
       }
       s = s.nextSibling;
     }
@@ -345,8 +351,8 @@ export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): 
         continue;
       }
     }
-    const isStyleResource = child.nodeType === 1
-      && (child as Element).hasAttribute?.('data-webui-resource') === true;
+    const isStyleResource = child.nodeType === 1 &&
+      isComponentStyleMarker(child as Element);
     if (child.nodeType === nodeType && !isStyleResource) {
       if (count === ordinal) return child;
       count++;

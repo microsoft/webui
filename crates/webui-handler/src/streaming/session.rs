@@ -107,6 +107,7 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     route_chain_index: usize,
     route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
     route_document_style_targets: Vec<bool>,
+    reachable_components: Option<Vec<String>>,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
     streaming: StreamingRenderState<'a>,
     json_scratch: Vec<u8>,
@@ -154,6 +155,7 @@ pub(super) struct ParkedResponse {
     route_chain_index: usize,
     route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
     route_document_style_targets: Vec<bool>,
+    reachable_components: Option<Vec<String>>,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
     streaming: StreamingProgress,
     json_scratch: Vec<u8>,
@@ -186,6 +188,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             route_chain_index: self.route_chain_index,
             route_chain: self.route_chain,
             route_document_style_targets: self.route_document_style_targets,
+            reachable_components: self.reachable_components,
             entry_route: self.entry_route,
             streaming: self.streaming.into_progress(),
             json_scratch: self.json_scratch,
@@ -245,6 +248,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             route_chain_index: parked.route_chain_index,
             route_chain: parked.route_chain,
             route_document_style_targets: parked.route_document_style_targets,
+            reachable_components: parked.reachable_components,
             entry_route: parked.entry_route,
             streaming: StreamingRenderState::from_progress(
                 parked.streaming,
@@ -424,6 +428,7 @@ impl WebUIHandler {
             route_chain_index: 0,
             route_chain: None,
             route_document_style_targets: Vec::new(),
+            reachable_components: None,
             entry_route,
             streaming: StreamingRenderState::from_progress(
                 StreamingProgress::new(component_count, style_resource_count),
@@ -949,6 +954,7 @@ mod tests {
             route_chain_index: self.route_chain_index,
             route_chain: std::mem::take(&mut self.route_chain),
             route_document_style_targets: std::mem::take(&mut self.route_document_style_targets),
+            reachable_components: std::mem::take(&mut self.reachable_components),
             streaming: Some(&mut self.streaming),
             json_scratch: std::mem::take(&mut self.json_scratch),
             scope_pool: std::mem::take(&mut self.scope_pool),
@@ -970,6 +976,7 @@ mod tests {
         self.route_chain = std::mem::take(&mut context.route_chain);
         self.route_document_style_targets =
             std::mem::take(&mut context.route_document_style_targets);
+        self.reachable_components = std::mem::take(&mut context.reachable_components);
         self.json_scratch = std::mem::take(&mut context.json_scratch);
         self.scope_pool = std::mem::take(&mut context.scope_pool);
         if !context.shadow_style_roots.is_empty() {

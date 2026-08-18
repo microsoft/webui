@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -44,6 +44,7 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--css-bundle] [--
 | `--out <OUT>` | Output folder for protocol and assets, or a `.bin` file path to set the protocol filename (e.g. `./dist/app1.bin`) | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
 | `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
@@ -227,14 +228,20 @@ Use `--legal-comments none` to strip all non-signal comments.
 
 **Component DOM ownership:**
 
-Every unwrapped component renders as direct Light DOM children and receives
-compiler-scoped CSS. A component uses Shadow DOM only when its complete template
-is a sole top-level `<template shadowrootmode="open">`. There is no build-wide
-DOM selector or CLI flag.
+Shadow is the backward-compatible default: unwrapped component content receives
+a compiler-generated open Shadow root. Pass `--dom light` to render unwrapped
+components as direct Light DOM children with compiler-scoped CSS. In either
+build mode, a sole top-level `<template shadowrootmode="open">` is authoritative
+and keeps that component Shadow, so a Light build may contain Shadow islands.
 
-Closed roots, invalid values or placement, and `<slot>` in an unwrapped
-component fail the build. Add the open wrapper only to components that require
-native slots or native Shadow encapsulation.
+Closed roots and invalid values or placement always fail the build. Native
+`<slot>` is allowed in effective Shadow components and rejected in effective
+Light components.
+
+FAST 2/3 plugins currently require effective Shadow components. Combining
+`--plugin fast`, `fast-v2`, or `fast-v3` with an unwrapped component under
+`--dom light` fails with `fast-light-dom-unsupported` instead of allowing the
+FAST client runtime to replace Light SSR with a Shadow root.
 
 See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.
 
@@ -249,6 +256,9 @@ webui build ./my-app --out ./dist
 
 # Use a custom entry file
 webui build ./my-app --out ./dist --entry home.html
+
+# Opt into mixed Light DOM with authored Shadow islands
+webui build ./my-app --out ./dist --dom light
 
 # Build with style CSS (no external CSS files)
 webui build ./my-app --out ./dist --css style
@@ -322,7 +332,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -336,6 +346,7 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
 | `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |

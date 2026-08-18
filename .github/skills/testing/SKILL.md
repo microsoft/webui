@@ -183,12 +183,12 @@ Create `webui.config.json` to override build options:
 
 ### Light and Shadow fixtures
 
-Ordinary unwrapped component templates exercise Light rendering. A fixture
-component requiring Shadow must author a sole top-level
-`<template shadowrootmode="open">` as its complete template. See
-`fixtures/light-dom/` for mixed Light and Shadow coverage built through the real
-pipeline. Reserve manual `registerCompiledTemplate` fixtures for raw
-template-metadata scenarios.
+Ordinary unwrapped fixture components exercise the Shadow default. Set
+`"dom": "light"` in `webui.config.json` to exercise scoped Light rendering; a
+fixture component requiring Shadow inside that build must author a sole
+top-level `<template shadowrootmode="open">`. See `fixtures/dom-default/` and
+`fixtures/light-dom/` for both paths through the real pipeline. Reserve manual
+`registerCompiledTemplate` fixtures for raw template-metadata scenarios.
 
 ### Running framework E2E tests
 

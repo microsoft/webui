@@ -19,14 +19,15 @@
 //!
 //! [`for_each_compound`] is the shared primitive. It is a single iterative pass
 //! that allocates nothing and reports byte offsets into the caller's selector,
-//! so callers splice rather than rebuild. It deliberately reports only
-//! **top-level** compounds: the arguments of `:is()`, `:not()`, and `:has()` are
-//! matched against the whole document, not relative to the enclosing rule, so a
-//! scoping pass must not descend into them.
+//! so callers splice rather than rebuild. It reports one selector range's
+//! top-level compounds; the Light boundary pass invokes it again for
+//! selector-bearing functional pseudo arguments so those relationships cannot
+//! escape the component boundary.
 
 use crate::comment_policy;
 use crate::css_scan::{
-    block_comment_end, css_identifier_eq, next_char_boundary, pseudo_name, quoted_end,
+    block_comment_end, css_escape_end, css_identifier_eq, next_char_boundary, pseudo_name,
+    quoted_end,
 };
 use std::ops::Range;
 
@@ -99,7 +100,7 @@ pub(crate) fn for_each_compound(selector: &str, mut visit: impl FnMut(Compound))
             }
             b'\\' => {
                 open.get_or_insert_with(move || Pending::new(index));
-                index = next_char_boundary(selector, (index + 1).min(bytes.len()));
+                index = css_escape_end(bytes, index, bytes.len());
             }
             b'(' => {
                 paren_depth += 1;

@@ -62,9 +62,10 @@ For each incoming request, the handler:
 
 ### Light DOM and Declarative Shadow DOM
 
-Unwrapped components render as Light DOM, so content is emitted directly into
-the custom-element host. The compiler scopes the component's paired CSS and
-installs styles in cascade order before interactivity starts:
+With `--dom light`, unwrapped components render directly into the custom-element
+host. The compiler scopes paired CSS and component-local `<style>` blocks, then
+installs styles in
+cascade order before interactivity starts:
 
 ```html
 <my-card>
@@ -73,9 +74,11 @@ installs styles in cascade order before interactivity starts:
 </my-card>
 ```
 
-Components whose complete template is a sole open declarative Shadow root use
+Shadow is the default fallback for unwrapped components. Components whose
+complete template is a sole open declarative Shadow root also use
 [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom)
-instead. Both forms display fully styled server content before JavaScript.
+even in a Light build. Both forms display fully styled server content before
+JavaScript.
 
 ## Client Hydration Phase
 

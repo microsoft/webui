@@ -7,7 +7,7 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::fast_v3::style_injection_snippet;
+use super::fast_v3::{require_fast_shadow_dom, strip_shadowrootmode, style_injection_snippet};
 use super::{
     AttributeAction, ComponentStyleDelivery, ComponentTemplateArtifact, ComponentTemplateContext,
     ParserPlugin, ParserPluginArtifacts,
@@ -106,7 +106,7 @@ impl FastV2ParserPlugin {
             component,
             processed_template,
             ComponentTemplateContext {
-                uses_shadow_dom: false,
+                uses_shadow_dom: true,
                 style: None,
             },
         )
@@ -127,6 +127,7 @@ impl ParserPlugin for FastV2ParserPlugin {
         processed_template: &str,
         context: ComponentTemplateContext<'_>,
     ) -> Result<()> {
+        require_fast_shadow_dom(tag_name, context)?;
         self.track_component(tag_name, processed_template, context);
         let _ = component;
         Ok(())
@@ -209,8 +210,8 @@ fn build_f_template(
     let trimmed = minify_inter_tag_whitespace(converted.trim());
     let (trimmed, _) = leading_content(&trimmed);
 
-    if trimmed.starts_with("<template") {
-        if let Some(close_pos) = find_tag_close(&trimmed) {
+    if starts_with_html_tag_name(trimmed, "template") {
+        if let Some(close_pos) = find_tag_close(trimmed) {
             // Dev owns the wrapper — preserve attributes verbatim.
             // For `CssStrategy::Module` the parser pass enforces
             // `shadowrootadoptedstylesheets`, so by the time we get here
@@ -356,7 +357,7 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
     // Check for tags with :attr="{{expr}}" complex attribute values
     if remaining.starts_with("<") {
         // Strip shadowrootmode from <template> tags
-        if starts_with_tag_name(remaining, "template") {
+        if starts_with_html_tag_name(remaining, "template") {
             if let Some(consumed) = strip_shadowrootmode(remaining, result) {
                 return Some(consumed);
             }
@@ -372,6 +373,10 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
 /// Check if `s` starts with `<name` followed by whitespace or `>`.
 fn starts_with_tag_name(s: &str, name: &str) -> bool {
     opening_tag_name(s).is_some_and(|tag_name| tag_name == name)
+}
+
+fn starts_with_html_tag_name(s: &str, name: &str) -> bool {
+    opening_tag_name(s).is_some_and(|tag_name| tag_name.eq_ignore_ascii_case(name))
 }
 
 /// Convert `<if condition="EXPR">` to `<f-when value="{{EXPR}}">`.
@@ -625,82 +630,6 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
     }
 
     result
-}
-
-/// Strip `shadowrootmode` attribute from a `<template ...>` opening tag.
-/// Returns `Some(bytes_consumed)` if a `<template` tag was found and processed.
-fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>' outside of quoted attribute values
-    let close = find_tag_close(tag_str)?;
-    let tag_content = &tag_str[..=close];
-
-    // Only process if this tag contains shadowrootmode
-    if !tag_content.contains("shadowrootmode") {
-        return None;
-    }
-
-    // Rebuild the tag without the shadowrootmode attribute
-    result.push_str("<template");
-    let attr_start = "<template".len();
-    let inner = &tag_content[attr_start..close];
-
-    // Scan through the attributes, skipping shadowrootmode
-    let inner_bytes = inner.as_bytes();
-    let inner_len = inner_bytes.len();
-    let mut j = 0;
-    while j < inner_len {
-        // Skip whitespace
-        if is_whitespace(inner_bytes[j]) {
-            j += 1;
-            continue;
-        }
-
-        // Find the end of this attribute (name="value" or just name)
-        let attr_begin = j;
-        // Find '=' or whitespace or end
-        while j < inner_len && inner_bytes[j] != b'=' && !is_whitespace(inner_bytes[j]) {
-            j += 1;
-        }
-        let attr_name = &inner[attr_begin..j];
-
-        // If there's a '=', consume the value
-        let mut attr_end = j;
-        if j < inner_len && inner_bytes[j] == b'=' {
-            j += 1; // skip '='
-            if j < inner_len && inner_bytes[j] == b'"' {
-                j += 1; // skip opening quote
-                while j < inner_len && inner_bytes[j] != b'"' {
-                    j += 1;
-                }
-                if j < inner_len {
-                    j += 1; // skip closing quote
-                }
-            } else {
-                // Unquoted value
-                while j < inner_len && !is_whitespace(inner_bytes[j]) {
-                    j += 1;
-                }
-            }
-            attr_end = j;
-        }
-
-        // Skip the shadowrootmode attribute entirely
-        if attr_name == "shadowrootmode" {
-            continue;
-        }
-
-        // Keep this attribute
-        result.push(' ');
-        result.push_str(&inner[attr_begin..attr_end]);
-    }
-
-    if tag_content.ends_with("/>") {
-        result.push_str("/>");
-    } else {
-        result.push('>');
-    }
-
-    Some(close + 1)
 }
 
 #[cfg(test)]
@@ -1194,6 +1123,35 @@ mod tests {
         let input = r#"<template shadowrootmode="open"><div>Hello</div></template>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, "<template><div>Hello</div></template>");
+    }
+
+    #[test]
+    fn strips_uppercase_native_shadow_wrapper() {
+        let input = r#"<TEMPLATE SHADOWROOTMODE="open"><div>Hello</div></TEMPLATE>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, "<TEMPLATE><div>Hello</div></TEMPLATE>");
+    }
+
+    #[test]
+    fn rejects_effective_light_dom() {
+        let mut plugin = FastV2ParserPlugin::new();
+        let component = make_component("my-card", "<p>content</p>", None);
+        let error = <FastV2ParserPlugin as ParserPlugin>::register_component_template(
+            &mut plugin,
+            "my-card",
+            &component,
+            component.html_content.as_str(),
+            ComponentTemplateContext {
+                uses_shadow_dom: false,
+                style: None,
+            },
+        )
+        .expect_err("FAST cannot mount Light DOM faithfully");
+        assert!(matches!(
+            error,
+            crate::ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(crate::diagnostic::codes::FAST_LIGHT_DOM_UNSUPPORTED)
+        ));
     }
 
     #[test]

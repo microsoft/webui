@@ -495,6 +495,12 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     ///
     /// Kept parallel to `route_chain`; the route graph computes both in one walk.
     pub(crate) route_document_style_targets: Vec<bool>,
+    /// Request-reachable components in deterministic first-discovery order.
+    ///
+    /// Resolved once at `head_end` for Shadow Link preloads, then consumed at
+    /// `body_end` for hydration metadata so the fragment graph is not walked
+    /// twice per request.
+    pub(crate) reachable_components: Option<Vec<String>>,
     /// Present only for the opt-in progressive streaming render path.
     pub(crate) streaming: Option<&'output mut StreamingRenderState<'protocol>>,
     /// Reusable JSON serialization scratch buffer, owned by the render context.
@@ -1762,7 +1768,11 @@ impl WebUIHandler {
         }
     }
 
-    fn emit_active_route_styles(&self, context: &mut WebUIProcessContext) -> Result<()> {
+    fn emit_active_route_styles(
+        &self,
+        preloaded: &mut Vec<u32>,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
         Self::ensure_request_route_chain(context);
         let Some(chain) = context.route_chain.take() else {
             return Err(route_style_plan_missing_error());
@@ -1775,7 +1785,6 @@ impl WebUIHandler {
             return Err(error);
         }
 
-        let mut seen: Vec<&str> = Vec::new();
         let result = (|| {
             for (entry, targets_document) in chain.iter().zip(&document_targets) {
                 if *targets_document {
@@ -1790,47 +1799,91 @@ impl WebUIHandler {
                 if context.css_strategy != webui_protocol::CssStrategy::Link {
                     continue;
                 }
-                let Some(closure) = context.protocol.style_closures.get(&entry.component) else {
-                    continue;
-                };
-                // A chunk shared by several tree-local routes needs one preload.
-                let chunks = closure.style_chunks.as_slice();
-                let unit_count = if chunks.is_empty() {
-                    closure.component_tags.len()
-                } else {
-                    chunks.len()
-                };
-                for position in 0..unit_count {
-                    let (name, href) = if chunks.is_empty() {
-                        let tag = closure.component_tags[position].as_str();
-                        match context.protocol.component_style_resource(tag) {
-                            Some(href) => (tag, href),
-                            None => continue,
-                        }
-                    } else {
-                        match context.protocol.style_chunk_resource(chunks[position]) {
-                            Some(unit) => unit,
-                            None => continue,
-                        }
-                    };
-                    if context.document_style_resources.contains(name) || seen.contains(&name) {
-                        continue;
-                    }
-                    context
-                        .writer
-                        .write("<link rel=\"preload\" as=\"style\" href=\"")?;
-                    context
-                        .writer
-                        .write(&crate::html_encode::encode_safe(href))?;
-                    context.writer.write("\">")?;
-                    seen.push(name);
-                }
+                self.emit_component_style_preloads(&entry.component, preloaded, context)?;
             }
             Ok(())
         })();
 
         context.route_document_style_targets = document_targets;
         context.route_chain = Some(chain);
+        result
+    }
+
+    fn emit_component_style_preloads(
+        &self,
+        root: &str,
+        preloaded: &mut Vec<u32>,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        let Some(closure) = context.protocol.style_closures.get(root) else {
+            return Ok(());
+        };
+        // A chunk shared by several tree-local roots needs one preload.
+        let chunks = closure.style_chunks.as_slice();
+        let unit_count = if chunks.is_empty() {
+            closure.component_tags.len()
+        } else {
+            chunks.len()
+        };
+        for position in 0..unit_count {
+            let (name, href) = if chunks.is_empty() {
+                let tag = closure.component_tags[position].as_str();
+                match context.protocol.component_style_resource(tag) {
+                    Some(href) => (tag, href),
+                    None => continue,
+                }
+            } else {
+                match context.protocol.style_chunk_resource(chunks[position]) {
+                    Some(unit) => unit,
+                    None => continue,
+                }
+            };
+            if context.document_style_resources.contains(name) {
+                continue;
+            }
+            let Some(&resource_index) = context.style_resource_index.get(name) else {
+                continue;
+            };
+            if preloaded.contains(&resource_index) {
+                continue;
+            }
+            context
+                .writer
+                .write("<link rel=\"preload\" as=\"style\" href=\"")?;
+            context
+                .writer
+                .write(&crate::html_encode::encode_safe(href))?;
+            context.writer.write("\">")?;
+            preloaded.push(resource_index);
+        }
+        Ok(())
+    }
+
+    fn emit_reachable_shadow_preloads(
+        &self,
+        preloaded: &mut Vec<u32>,
+        context: &mut WebUIProcessContext,
+    ) -> Result<()> {
+        if context.css_strategy != webui_protocol::CssStrategy::Link {
+            return Ok(());
+        }
+        let reachable = context.reachable_components.take().unwrap_or_else(|| {
+            crate::route_handler::collect_reachable_component_order_for_request(
+                context.protocol,
+                context.entry_id,
+                context.request_path,
+                context.route_index,
+            )
+        });
+        let result = (|| {
+            for component in &reachable {
+                if context.protocol.component_uses_shadow_dom(component) {
+                    self.emit_component_style_preloads(component, preloaded, context)?;
+                }
+            }
+            Ok(())
+        })();
+        context.reachable_components = Some(reachable);
         result
     }
 
@@ -2286,7 +2339,9 @@ impl WebUIHandler {
             if !context.protocol.style_closures.is_empty() {
                 let entry_id = context.entry_id;
                 self.emit_component_style_closure(entry_id, StyleClosureInstall::Static, context)?;
-                self.emit_active_route_styles(context)?;
+                let mut preloaded = Vec::new();
+                self.emit_active_route_styles(&mut preloaded, context)?;
+                self.emit_reachable_shadow_preloads(&mut preloaded, context)?;
             }
 
             // Compiler-resolved `modulepreload` hints for the shared chunks
@@ -2353,12 +2408,19 @@ impl WebUIHandler {
                 // round-trip. The graph walker follows conditional and loop branches
                 // unconditionally, but only descends into the matched route chain —
                 // components on other routes are delivered via SPA partial navigation.
-                let reachable = crate::route_handler::collect_reachable_components_for_request(
-                    context.protocol,
-                    context.entry_id,
-                    context.request_path,
-                    context.route_index,
-                );
+                let reachable = context
+                    .reachable_components
+                    .take()
+                    .unwrap_or_else(|| {
+                        crate::route_handler::collect_reachable_component_order_for_request(
+                            context.protocol,
+                            context.entry_id,
+                            context.request_path,
+                            context.route_index,
+                        )
+                    })
+                    .into_iter()
+                    .collect::<HashSet<_>>();
                 let state_selection =
                     collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
 
@@ -2822,6 +2884,7 @@ impl WebUIHandler {
             route_chain_index: 0,
             route_chain: None,
             route_document_style_targets: Vec::new(),
+            reachable_components: None,
             streaming: None,
             json_scratch: Vec::new(),
             scope_pool: Vec::new(),
@@ -2840,7 +2903,7 @@ impl WebUIHandler {
                 StyleClosureInstall::Static,
                 &mut context,
             )?;
-            self.emit_active_route_styles(&mut context)?;
+            self.emit_active_route_styles(&mut Vec::new(), &mut context)?;
             context.writer.write(&first_raw[split..])?;
             self.process_fragment_from(&entry.fragments, 1, &mut context)
         } else {
@@ -2853,7 +2916,7 @@ impl WebUIHandler {
                     StyleClosureInstall::Static,
                     &mut context,
                 )?;
-                self.emit_active_route_styles(&mut context)?;
+                self.emit_active_route_styles(&mut Vec::new(), &mut context)?;
             }
             self.process_fragment_id(options.entry_id, &mut context)
         };
@@ -2899,7 +2962,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::sync::Arc;
-    use webui_parser::{ComponentRegistration, HtmlParser};
+    use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
     use webui_protocol::{
         web_ui_fragment, ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator,
         WebUIFragmentAttribute, WebUiFragmentRoute,
@@ -8165,6 +8228,65 @@ mod tests {
     }
 
     #[test]
+    fn link_strategy_preloads_static_shadow_css_in_head() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body><my-card>".to_string()),
+                    WebUIFragment::component("my-card"),
+                    WebUIFragment::raw("</my-card></body></html>".to_string()),
+                ],
+            },
+        );
+        fragments.insert(
+            "my-card".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<template shadowrootmode=\"open\">".to_string()),
+                    structural_fragment("shadow_styles:my-card"),
+                    WebUIFragment::raw("<div>card</div></template>".to_string()),
+                ],
+            },
+        );
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        let component = protocol
+            .components
+            .entry("my-card".to_string())
+            .or_default();
+        component.css_href = "my-card.css".to_string();
+        component.template_json = r#"{"h":"<div>card</div>"}"#.to_string();
+        component.uses_shadow_dom = true;
+        protocol.populate_style_closures(&["index.html"]);
+
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &test_json!({}),
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        let head_end = html.find("</head>").expect("</head> missing");
+        let preload = html
+            .find(r#"<link rel="preload" as="style" href="my-card.css">"#)
+            .expect("Shadow preload missing");
+        let stylesheet = html
+            .find(r#"<link rel="stylesheet" href="my-card.css""#)
+            .expect("Shadow stylesheet missing");
+        assert!(preload < head_end);
+        assert!(stylesheet > head_end);
+        assert_eq!(html.matches(r#"rel="preload" as="style""#).count(), 1);
+    }
+
+    #[test]
     fn tree_local_styles_deduplicate_per_root_and_resume_caller_frame() {
         let fragments = HashMap::from([
             (
@@ -11805,16 +11927,16 @@ mod tests {
         let first_flush = &writer.output[..writer.flushes[0]];
         assert!(first_flush.contains("<!--wb:0-->"));
         assert!(first_flush.contains("<!--/wb:0-->"));
-        assert!(first_flush.contains(r#"[1,0,0,0,{"componentStyles":"#));
+        assert!(first_flush.contains(r#"[2,0,0,0,{"componentStyles":"#));
         assert!(first_flush.contains(r#""inventory":"01","state":{"count":1}"#));
         assert!(first_flush.contains(r#""templates":{"my-counter":"#));
         assert!(!first_flush.contains("slow tail"));
         assert!(!writer.output.contains("id=\"webui-data\""));
         // The terminal flush commits the scriptless tail without manufacturing
         // another state/template projection.
-        assert!(writer.output.contains("[1,1,3,0,{}]"));
-        assert!(!writer.output.contains("[1,1,0,1,"));
-        assert!(!writer.output.contains("[1,2,3,0,{}]"));
+        assert!(writer.output.contains("[2,1,3,0,{}]"));
+        assert!(!writer.output.contains("[2,1,0,1,"));
+        assert!(!writer.output.contains("[2,2,3,0,{}]"));
 
         let marker = writer
             .output
@@ -11853,7 +11975,7 @@ mod tests {
             1,
             "full state belongs only to the interactive boundary"
         );
-        assert!(writer.output.contains("[1,1,3,0,{}]"));
+        assert!(writer.output.contains("[2,1,3,0,{}]"));
     }
 
     /// Streaming must place the reserved-state injects exactly where the
@@ -11978,7 +12100,7 @@ mod tests {
 
         assert_eq!(writer.flushes.len(), 1);
         assert!(writer.output.contains(STREAMING_MARKER));
-        assert!(writer.output.contains("[1,0,3,0,{}]"));
+        assert!(writer.output.contains("[2,0,3,0,{}]"));
         assert!(!writer.output.contains("serverOnly"));
         assert!(!writer.output.contains("id=\"webui-data\""));
         assert!(!writer.output.contains("<!--wb:"));
@@ -12574,15 +12696,15 @@ mod tests {
         response.finish(&test_json!({})).unwrap();
 
         assert_eq!(writer.flushes.len(), 5);
-        assert!(writer.output.contains(r#"[1,0,1,0,{"#));
+        assert!(writer.output.contains(r#"[2,0,1,0,{"#));
         assert!(writer.output.contains(r#""state":{"a_count":1}"#));
-        assert!(writer.output.contains(r#"[1,1,2,0,{"a_count":7}]"#));
-        assert!(writer.output.contains(r#"[1,2,0,1,{"#));
+        assert!(writer.output.contains(r#"[2,1,2,0,{"a_count":7}]"#));
+        assert!(writer.output.contains(r#"[2,2,0,1,{"#));
         assert!(writer.output.contains(r#""state":{"b_count":2}"#));
-        assert!(writer.output.contains("[1,3,3,0,{}]"));
+        assert!(writer.output.contains("[2,3,3,0,{}]"));
         assert_eq!(writer.output.matches("serverOnly").count(), 0);
 
-        let update_start = writer.output.find("[1,1,2,0,").unwrap();
+        let update_start = writer.output.find("[2,1,2,0,").unwrap();
         let update_end = writer.output[update_start..]
             .find("</script>")
             .map(|offset| update_start + offset)
@@ -12856,7 +12978,7 @@ mod tests {
         response.finish(&test_json!({})).unwrap();
         assert_eq!(writer.flushes.len(), 4);
         assert_eq!(writer.output.matches("data-webui-boundary").count(), 3);
-        assert!(writer.output.contains(r#"[1,1,2,0,{"a_count":2}]"#));
+        assert!(writer.output.contains(r#"[2,1,2,0,{"a_count":2}]"#));
     }
 
     #[test]
@@ -13153,7 +13275,7 @@ mod tests {
     }
 
     fn parser_route_protocol(with_boundary: bool) -> Protocol {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry_mut()
             .register_component(ComponentRegistration::new(
@@ -13531,7 +13653,7 @@ mod tests {
         // Boundary 0: only comp-a's template/state; no comp-b artifacts.
         assert!(b0.contains(r#""templates":{"comp-a":"#), "b0: {b0}");
         assert!(b0.contains(r#""a_count":1"#), "b0: {b0}");
-        assert!(b0.contains(r#"[1,0,0,0,{"componentStyles":"#), "b0: {b0}");
+        assert!(b0.contains(r#"[2,0,0,0,{"componentStyles":"#), "b0: {b0}");
         assert!(b0.contains(r#""inventory":"01""#), "b0: {b0}");
         assert!(!b0.contains("comp-b"), "b0 leaked comp-b: {b0}");
         assert!(!b0.contains("b_count"), "b0 leaked b_count: {b0}");
@@ -13539,7 +13661,7 @@ mod tests {
         // Boundary 1: only comp-b's template/state; no duplicate comp-a template.
         assert!(b1.contains(r#""templates":{"comp-b":"#), "b1: {b1}");
         assert!(b1.contains(r#""b_count":2"#), "b1: {b1}");
-        assert!(b1.contains(r#"[1,1,0,1,{"componentStyles":"#), "b1: {b1}");
+        assert!(b1.contains(r#"[2,1,0,1,{"componentStyles":"#), "b1: {b1}");
         assert!(b1.contains(r#""inventory":"02""#), "b1: {b1}");
         assert!(
             !b1.contains(r#""templates":{"comp-a"#),
@@ -13549,7 +13671,7 @@ mod tests {
 
         // Boundary 2: comp-a reused — state present, template absent (empty delta).
         assert!(b2.contains(r#""a_count":1"#), "b2: {b2}");
-        assert!(b2.contains(r#"[1,2,0,2,{"componentStyles":"#), "b2: {b2}");
+        assert!(b2.contains(r#"[2,2,0,2,{"componentStyles":"#), "b2: {b2}");
         assert!(b2.contains(r#""inventory":"""#), "b2: {b2}");
         assert!(
             !b2.contains(r#""templates""#),

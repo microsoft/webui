@@ -15,6 +15,7 @@ pub(super) struct RenderedComponent<'a> {
     pub functions: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum RenderedStyleResource<'a> {
     Link(&'a str),
     Style(&'a str),
@@ -65,15 +66,7 @@ fn render_component<'a>(
             "component asset payload for <{tag}> is missing protocol metadata"
         ))
     })?;
-    let resource_value = match strategy {
-        CssStrategy::Link => component.css_href.as_str(),
-        CssStrategy::Style | CssStrategy::Module => component.css.as_str(),
-    };
-    let resource = (!resource_value.is_empty()).then_some(match strategy {
-        CssStrategy::Link => RenderedStyleResource::Link(resource_value),
-        CssStrategy::Style => RenderedStyleResource::Style(resource_value),
-        CssStrategy::Module => RenderedStyleResource::Module(resource_value),
-    });
+    let resource = render_style_resource(protocol, tag, strategy)?;
     let template = if component.template_json.is_empty() {
         Cow::Owned(encode_json_string(
             &component.template,
@@ -89,4 +82,25 @@ fn render_component<'a>(
         template,
         functions,
     })
+}
+
+pub(super) fn render_style_resource<'a>(
+    protocol: &'a WebUIProtocol,
+    tag: &str,
+    strategy: CssStrategy,
+) -> Result<Option<RenderedStyleResource<'a>>, WebUIError> {
+    let component = protocol.components.get(tag).ok_or_else(|| {
+        WebUIError::InvalidBuildOptions(format!(
+            "component asset style resource for <{tag}> is missing protocol metadata"
+        ))
+    })?;
+    let resource_value = match strategy {
+        CssStrategy::Link => component.css_href.as_str(),
+        CssStrategy::Style | CssStrategy::Module => component.css.as_str(),
+    };
+    Ok((!resource_value.is_empty()).then_some(match strategy {
+        CssStrategy::Link => RenderedStyleResource::Link(resource_value),
+        CssStrategy::Style => RenderedStyleResource::Style(resource_value),
+        CssStrategy::Module => RenderedStyleResource::Module(resource_value),
+    }))
 }

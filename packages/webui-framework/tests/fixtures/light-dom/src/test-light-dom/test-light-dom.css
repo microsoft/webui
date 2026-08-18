@@ -2,6 +2,16 @@
   color: rgb(12, 34, 56);
 }
 
+/* An external ancestor must not satisfy a selector-function argument. */
+:is(.outside .greeting) {
+  background: rgb(255, 0, 0);
+}
+
+/* A relational selector must not inspect a nested Light component's internals. */
+.child-boundary:has(.child-label) {
+  border: 5px solid rgb(255, 0, 0);
+}
+
 /*
  * Isolation contract: this class also exists inside <test-light-child>, whose
  * own template declares it. Only elements this template declares carry this

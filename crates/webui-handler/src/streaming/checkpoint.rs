@@ -241,7 +241,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(
@@ -352,7 +352,19 @@ impl WebUIHandler {
         write_record_header(context.writer, record_sequence, RECORD_KIND_TERMINAL, 0)?;
         context
             .writer
-            .write("{}]</script><webui-hydrate></webui-hydrate>")?;
+            .write("<script type=\"application/json\" data-webui-boundary")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">[2,")?;
+        write_usize(context.writer, record_sequence)?;
+        context.writer.write(",")?;
+        write_usize(context.writer, RECORD_KIND_TERMINAL)?;
+        context
+            .writer
+            .write(",0,{}]</script><webui-hydrate></webui-hydrate>")?;
         flush_streaming_transport(context)
     }
 
@@ -377,8 +389,27 @@ impl WebUIHandler {
             return Err(super::error::boundary_not_updatable_error(boundary_id));
         };
 
-        write_script_open(context)?;
-        write_record_header(
+        context
+            .writer
+            .write("<script type=\"application/json\" data-webui-boundary")?;
+        if let Some(nonce) = context.nonce {
+            context.writer.write(" nonce=\"")?;
+            context.writer.write(nonce)?;
+            context.writer.write("\"")?;
+        }
+        context.writer.write(">[2,")?;
+        write_usize(context.writer, record_sequence)?;
+        context.writer.write(",")?;
+        write_usize(context.writer, RECORD_KIND_STATE_UPDATE)?;
+        context.writer.write(",")?;
+        write_usize(context.writer, boundary_id)?;
+        context.writer.write(",")?;
+        let selection = if plan.requires_full_state {
+            StateSelection::Full
+        } else {
+            StateSelection::Keys(plan.keys.iter().map(Box::as_ref).collect())
+        };
+        write_selected_state(
             context.writer,
             record_sequence,
             RECORD_KIND_STATE_UPDATE,

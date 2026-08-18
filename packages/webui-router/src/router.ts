@@ -36,6 +36,8 @@ import {
   applyParamsQueryState,
   setRouteMeta,
   getRouteMeta,
+  mountedRouteComponent,
+  clearRouteContent,
   WebUIRouteElement,
 } from './route-element.js';
 
@@ -46,7 +48,7 @@ import {
   injectCssLinks,
   fetchComponentTemplates,
   notifyTemplatesRegistered,
-  waitForTemplateReadiness,
+  registerInitialTemplatesAndStyles,
 } from './templates.js';
 import type {
   StreamingContext,
@@ -69,42 +71,10 @@ const DISABLE_DOCUMENT_VIEW_TRANSITION = '@view-transition { navigation: none; }
 const PARTIAL_FETCH_TIMEOUT_MS = 10_000;
 let webuiDataLoaded = false;
 
-/**
- * Identify a route-owned style marker among a route element's direct children.
- *
- * Only the server places style markers directly inside a `<webui-route>`, and
- * it always writes `data-webui-strategy` alongside `data-webui-resource`. The
- * client installer appends into a Document head or a ShadowRoot, never into a
- * route element, and CSS module importmaps are emitted inside the component
- * host rather than beside it. So requiring the strategy attribute here is
- * exact, not merely a heuristic: it keeps route-owned styles pinned across a
- * remount while letting every other child be treated as replaceable content.
- */
-function isRouteStyleMarker(node: Node): node is Element {
-  if (node.nodeType !== 1) return false;
-  const element = node as Element;
-  if (element.getAttribute('data-webui-resource') === null) return false;
-  const strategy = element.getAttribute('data-webui-strategy');
-  return (element.localName === 'link' && strategy === 'link') ||
-    (element.localName === 'style' && (strategy === 'style' || strategy === 'module'));
-}
-
-function mountedRouteComponent(route: HTMLElement): HTMLElement | null {
-  let element = route.firstElementChild;
-  while (element && isRouteStyleMarker(element)) {
-    element = element.nextElementSibling;
-  }
-  return element as HTMLElement | null;
-}
-
-function clearRouteContent(route: HTMLElement): void {
-  let node = route.firstChild;
-  while (node) {
-    const next = node.nextSibling;
-    if (!isRouteStyleMarker(node)) route.removeChild(node);
-    node = next;
-  }
-}
+type RouterRuntimeGlobal = WebUIRuntimeGlobal & {
+  templates?: Record<string, unknown>;
+  templateFns?: Record<string, unknown>;
+};
 
 export class WebUIRouter {
   private config: RouterConfig = {};
@@ -303,7 +273,7 @@ export class WebUIRouter {
       });
     }
 
-    this.startInitialNavigation(meta.templates);
+    this.startInitialNavigation(meta);
   }
 
   /** Navigate to a new path. */
@@ -437,9 +407,9 @@ export class WebUIRouter {
       if (thisGen !== this.navGeneration) return;
 
       for (const entry of this.activeChain) {
-        const state = loaderStates.get(entry.component);
+        const state = loaderStates.get(entry);
         if (state && state !== LOADER_FAILED && entry.el) {
-          const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+          const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
           if (compEl) entry.compEl = compEl;
           if (compEl && isStateful(compEl)) {
             compEl.setState(state);
@@ -695,14 +665,14 @@ export class WebUIRouter {
   private applyState(
     entry: RouteChainEntry,
     query?: Record<string, string>,
-    loaderStates?: Map<string, Record<string, unknown> | typeof LOADER_FAILED>,
+    loaderStates?: Map<RouteChainEntry, Record<string, unknown> | typeof LOADER_FAILED>,
   ): void {
     if (!entry.component || !entry.el) return;
-    const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+    const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
     if (!compEl) return;
     entry.compEl = compEl;
 
-    const override = loaderStates?.get(entry.component);
+    const override = loaderStates?.get(entry);
     const effectiveOverride = override === LOADER_FAILED ? undefined : override;
     const loaderExists = override !== undefined;
     const isKeepAlive = entry.keepAlive || getRouteMeta(entry.el)?.keepAlive || false;
@@ -834,8 +804,12 @@ export class WebUIRouter {
     this.cleanupFns.push(() => style.remove());
   }
 
-  private startInitialNavigation(templates: Record<string, unknown>): void {
-    notifyTemplatesRegistered(templates);
+  private startInitialNavigation(meta: RouterRuntimeGlobal): void {
+    if (meta.componentStyles) {
+      registerInitialTemplatesAndStyles(meta.templates ?? {}, meta.componentStyles);
+    } else {
+      notifyTemplatesRegistered(meta.templates);
+    }
     this.handleNavigation(this.currentTarget());
   }
 
@@ -909,12 +883,8 @@ export class WebUIRouter {
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
     const commitNavigation = (): void => {
-      // Deactivate old chain from leaf up. An entry whose declaration won't
-      // be reused by the incoming chain (a sibling route matched instead —
-      // e.g. two `<route>`s sharing a component but distinguished by path)
-      // has its mounted component destroyed so it doesn't linger, invisible,
-      // in the DOM. Entries kept for in-place reuse (same declaration, or
-      // opted into `keep-alive`) are left mounted.
+      // Deactivate old chain from leaf up. Preserve route-owned style markers,
+      // but tear down component state when the declaration will not be reused.
       for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
         const oldEntry = this.activeChain[i];
         if (oldEntry.el) {
@@ -923,11 +893,11 @@ export class WebUIRouter {
           if (!willReuse) {
             const isKeepAlive = oldEntry.keepAlive || getRouteMeta(oldEntry.el)?.keepAlive || false;
             if (!isKeepAlive) {
-              const existing = oldEntry.compEl ?? oldEntry.el.firstElementChild;
+              const existing = oldEntry.compEl ?? mountedRouteComponent(oldEntry.el);
               if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
                 (existing as unknown as { $destroy: () => void }).$destroy();
               }
-              oldEntry.el.textContent = '';
+              clearRouteContent(oldEntry.el);
             }
           }
           deactivateRoute(oldEntry.el);
@@ -972,12 +942,12 @@ export class WebUIRouter {
           keepAlive: entry.keepAlive ?? false,
         });
         if (entry.component) {
-          const override = loaderStates.get(entry.component);
+          const override = loaderStates.get(entry);
           const effectiveOverride = override === LOADER_FAILED ? undefined : override;
 
           const isKeepAlive = entry.keepAlive || getRouteMeta(routeEl)?.keepAlive || false;
           const existingComp = mountedRouteComponent(routeEl);
-          if (isKeepAlive && existingComp?.matches(entry.component)) {
+          if (isKeepAlive && existingComp?.localName === entry.component.toLowerCase()) {
             entry.compEl = existingComp;
             const stateToApply = effectiveOverride ?? entry.state;
             if (hasState(stateToApply)) {

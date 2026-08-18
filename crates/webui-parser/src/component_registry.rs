@@ -335,7 +335,7 @@ impl ComponentRegistry {
         let css = css_content.get_or_insert_with(|| String::with_capacity(112));
         css.reserve(144);
         let mut tag_name = String::with_capacity(32);
-        Self::push_css_identifier(&mut tag_name, raw_tag_name);
+        crate::css_boundary::push_css_identifier(&mut tag_name, raw_tag_name);
         policy.append_scoped_css(css, &tag_name);
     }
 
@@ -407,7 +407,7 @@ impl ComponentRegistry {
 
         let mut css = String::with_capacity(policies.len() * 112);
         for (tag_name, policy) in policies {
-            Self::push_css_identifier(&mut css, tag_name);
+            crate::css_boundary::push_css_identifier(&mut css, tag_name);
             css.push_str(r#":not([w-render="eager"]){"#);
             policy.append_declarations(&mut css);
             css.push('}');
@@ -421,39 +421,6 @@ impl ComponentRegistry {
     /// tag is encountered during parsing.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.components.keys().map(String::as_str)
-    }
-
-    fn push_css_identifier(output: &mut String, value: &str) {
-        for (index, ch) in value.chars().enumerate() {
-            if ch.is_ascii_alphabetic()
-                || ch == '-'
-                || ch == '_'
-                || (index > 0 && ch.is_ascii_digit())
-            {
-                output.push(ch);
-            } else {
-                Self::push_css_escape(output, ch as u32);
-            }
-        }
-    }
-
-    fn push_css_escape(output: &mut String, mut value: u32) {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut digits = [0u8; 8];
-        let mut index = digits.len();
-        loop {
-            index -= 1;
-            digits[index] = HEX[(value & 0x0f) as usize];
-            value >>= 4;
-            if value == 0 {
-                break;
-            }
-        }
-        output.push('\\');
-        for digit in &digits[index..] {
-            output.push(char::from(*digit));
-        }
-        output.push(' ');
     }
 
     /// Get the number of registered components.

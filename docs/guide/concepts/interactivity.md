@@ -110,10 +110,10 @@ button {
 
 ## The `<template>` Tag
 
-Every unwrapped component uses Light DOM and renders its content directly into
-the component host.
+Unwrapped components default to Shadow DOM. Build with `--dom light` to render
+unwrapped content directly into the component host.
 
-**Light DOM (most components):**
+**Light DOM (`--dom light`):**
 ```html
 <!-- my-counter.html -->
 <button @click="{increment()}">{{label}}: {{count}}</button>
@@ -121,7 +121,7 @@ the component host.
 
 The compiler scopes the paired CSS for this Light component.
 
-**Shadow DOM opt-in:**
+**Authored Shadow island (including inside a Light build):**
 ```html
 <!-- todo-app.html -->
 <template shadowrootmode="open"
@@ -139,10 +139,11 @@ The compiler scopes the paired CSS for this Light component.
 
 The open template must be the sole top-level element and wrap the complete
 component. Use it when the component needs native `<slot>` composition, a
-native Shadow boundary, or root events on the shadow root. `closed`, another
-value, invalid placement, multiple wrappers, or extra top-level content fails
-the build. A native `<slot>` in an unwrapped component is also a build
-error.
+native Shadow boundary, or **root host events** - listeners on the component
+root that catch events bubbling up from child components (`@toggle-item`,
+`@delete-item` above). `closed`, another value, invalid placement, multiple
+wrappers, or extra top-level content fails the build. A native `<slot>` fails
+only when the component's effective mode is Light.
 
 To reach a root binding from a **child component**, an event must **bubble** and be **composed** whenever any Shadow boundary exists between the child and the listener. `this.$emit()` always sets both, including for a Light component nested in another component's Shadow tree. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
 
@@ -563,9 +564,9 @@ is missing.
 
 ## Styling
 
-Keep styles in the ordinary paired `.css` file. For an unwrapped Light
+Keep styles in the ordinary paired `.css` file. For an effective Light
 component, the compiler scopes rules to that component, lowers `:host`, and
-namespaces static keyframes. For authored Shadow roots, the browser provides
+namespaces static keyframes. For effective Shadow roots, the browser provides
 native style scoping.
 
 ### The `:host` Selector
@@ -614,7 +615,7 @@ Understanding the lifecycle helps you write components that work correctly from 
 ### 1. Server renders HTML
 
 The handler renders the component's template using JSON state data. No
-JavaScript runs. For an unwrapped component, content is emitted directly:
+JavaScript runs. In a Light build, unwrapped content is emitted directly:
 
 ```html
 <my-counter>
@@ -622,7 +623,7 @@ JavaScript runs. For an unwrapped component, content is emitted directly:
 </my-counter>
 ```
 
-An opted-in Shadow component instead emits Declarative Shadow DOM with its
+The default build and authored Shadow islands emit Declarative Shadow DOM with
 styles installed inside the shadow root.
 
 ### 2. Browser displays content

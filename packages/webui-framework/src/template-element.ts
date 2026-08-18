@@ -88,7 +88,11 @@ import {
   rawMarker,
   type SSRIndex,
 } from './element/markers.js';
-import { claimSsrComponentStyles, installComponentStyles } from './element/styles.js';
+import {
+  claimSsrComponentStyles,
+  installComponentStyles,
+  isComponentStyleMarker,
+} from './element/styles.js';
 import {
   cancelTemplateLinkStyleMount,
   installTemplateLinkStyles,
@@ -700,7 +704,13 @@ export class TemplateElement extends HTMLElement {
       const renderRoot = wantShadow
         ? this.shadowRoot ?? this.attachShadow({ mode: 'open' })
         : this;
-      renderRoot.replaceChildren();
+      const retainedStyles: Element[] = [];
+      let child = renderRoot.firstElementChild;
+      while (child) {
+        if (isComponentStyleMarker(child)) retainedStyles.push(child);
+        child = child.nextElementSibling;
+      }
+      renderRoot.replaceChildren(...retainedStyles);
       root = renderRoot;
       isSSR = false;
     } else if (hasShadow && !resetClientShadow) {
