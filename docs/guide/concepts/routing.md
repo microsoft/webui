@@ -249,10 +249,11 @@ The router provides four mechanisms for controlling how state flows to your comp
 | **Preserve local state** | `keep-alive` on route | Params/query attrs update while local state is preserved |
 | **Preserve DOM + refresh data** | `keep-alive` + `static loader()` | DOM is preserved and loader data refreshes the component |
 
-FAST route components receive scalar route state as kebab-case HTML
-attributes, so `userName` becomes `user-name`. Arrays and objects are skipped,
-and no `data-state` JSON attribute is emitted. Keep the payload flat when the
-component reads values through `@attr`.
+FAST route components expose scalar route state as kebab-case HTML
+attributes, so `userName` becomes `user-name`. Strings, numbers, and booleans
+are emitted. Complex values should be initialized from the rendered DOM or
+another documented mechanism appropriate to the component. Keep the payload
+flat when the component reads values through `@attr`.
 
 ```typescript
 // Express example - the npm helper returns a complete JSON partial.

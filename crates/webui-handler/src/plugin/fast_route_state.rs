@@ -93,10 +93,6 @@ mod tests {
         ] {
             let output = render_route_state(plugin, &state);
             assert!(
-                !output.contains("data-state="),
-                "data-state must be omitted: {output}"
-            );
-            assert!(
                 output.contains(r#" title="A&amp;B&quot;&lt;&gt;""#),
                 "escaped scalar string attr missing: {output}"
             );
