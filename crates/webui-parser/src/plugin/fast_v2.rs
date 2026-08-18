@@ -7,13 +7,18 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::fast_v3::{require_fast_shadow_dom, strip_shadowrootmode, style_injection_snippet};
+use super::fast_v3::{
+    build_f_template, f_template_style_injection, require_fast_shadow_dom, strip_shadowrootmode,
+    style_injection_snippet,
+};
 use super::{
-    AttributeAction, ComponentStyleDelivery, ComponentTemplateArtifact, ComponentTemplateContext,
-    ParserPlugin, ParserPluginArtifacts,
+    AttributeAction, ComponentTemplateArtifact, ComponentTemplateContext, ParserPlugin,
+    ParserPluginArtifacts,
 };
 use crate::component_registry::Component;
-use crate::html_parser::{find_tag_close, opening_tag_name};
+use crate::html_parser::{
+    find_element_end, find_tag_close, opening_tag_name, starts_with_html_tag_name,
+};
 use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
@@ -63,7 +68,7 @@ impl FastV2ParserPlugin {
             .map(|comp| {
                 let tmpl = build_f_template(
                     &comp.tag_name,
-                    &comp.template_html,
+                    &convert_btr_to_fast(&comp.template_html),
                     comp.style_injection.as_deref(),
                     None,
                 );
@@ -189,61 +194,6 @@ pub fn generate_f_template(
     )
 }
 
-/// Serialize one `<f-template>`, injecting `css_injection` inside the root
-/// `<template>` when present.
-///
-/// `module_specifier` adds `shadowrootadoptedstylesheets` when this function
-/// synthesizes the wrapper; templates that already went through the parser
-/// carry it verbatim and pass `None`.
-fn build_f_template(
-    tag_name: &str,
-    html_content: &str,
-    css_injection: Option<&str>,
-    module_specifier: Option<&str>,
-) -> String {
-    let mut output = String::with_capacity(256);
-    output.push_str("<f-template name=\"");
-    output.push_str(tag_name);
-    output.push_str("\">\n");
-
-    let converted = convert_btr_to_fast(html_content);
-    let trimmed = minify_inter_tag_whitespace(converted.trim());
-    let (trimmed, _) = leading_content(&trimmed);
-
-    if starts_with_html_tag_name(trimmed, "template") {
-        if let Some(close_pos) = find_tag_close(trimmed) {
-            // Dev owns the wrapper — preserve attributes verbatim.
-            // For `CssStrategy::Module` the parser pass enforces
-            // `shadowrootadoptedstylesheets`, so by the time we get here
-            // either the dev wrote it or the build already failed.
-            output.push_str(&trimmed[..close_pos]);
-            output.push('>');
-            if let Some(injection) = css_injection {
-                output.push_str(injection);
-            }
-            output.push_str(&trimmed[close_pos + 1..]);
-        } else {
-            output.push_str(&trimmed);
-        }
-    } else {
-        output.push_str("<template");
-        if let Some(specifier) = module_specifier {
-            output.push_str(" shadowrootadoptedstylesheets=\"");
-            output.push_str(specifier);
-            output.push('"');
-        }
-        output.push('>');
-        if let Some(injection) = css_injection {
-            output.push_str(injection);
-        }
-        output.push_str(&trimmed);
-        output.push_str("</template>");
-    }
-
-    output.push_str("\n</f-template>\n");
-    output
-}
-
 /// Generate a FAST 2 f-template with Link CSS filename/href options.
 pub fn generate_f_template_with_css_options(
     tag_name: &str,
@@ -252,21 +202,12 @@ pub fn generate_f_template_with_css_options(
     css_strategy: CssStrategy,
     css_link_options: &CssLinkOptions,
 ) -> String {
-    let css_injection = css_content.and_then(|css| match css_strategy {
-        CssStrategy::Link => style_injection_snippet(ComponentStyleDelivery::Link {
-            href: &css_link_options.resolve(tag_name, css).href,
-        }),
-        CssStrategy::Style => style_injection_snippet(ComponentStyleDelivery::Inline { css }),
-        CssStrategy::Module => None,
-    });
-    let module_specifier = match css_strategy {
-        CssStrategy::Module if css_content.is_some() => Some(tag_name),
-        _ => None,
-    };
+    let (css_injection, module_specifier) =
+        f_template_style_injection(tag_name, css_content, css_strategy, css_link_options);
 
     build_f_template(
         tag_name,
-        html_content,
+        &convert_btr_to_fast(html_content),
         css_injection.as_deref(),
         module_specifier,
     )
@@ -373,10 +314,6 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
 /// Check if `s` starts with `<name` followed by whitespace or `>`.
 fn starts_with_tag_name(s: &str, name: &str) -> bool {
     opening_tag_name(s).is_some_and(|tag_name| tag_name == name)
-}
-
-fn starts_with_html_tag_name(s: &str, name: &str) -> bool {
-    opening_tag_name(s).is_some_and(|tag_name| tag_name.eq_ignore_ascii_case(name))
 }
 
 /// Convert `<if condition="EXPR">` to `<f-when value="{{EXPR}}">`.
@@ -598,38 +535,6 @@ fn push_char_at(input: &str, pos: usize, out: &mut String) -> usize {
 /// Check if a byte is ASCII whitespace.
 fn is_whitespace(b: u8) -> bool {
     b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
-}
-
-/// Collapse whitespace-only text between `>` and `<` to eliminate extra DOM
-/// text nodes that would shift element indices during hydration.
-/// This ensures the f-template DOM structure matches the minified DSD output.
-fn minify_inter_tag_whitespace(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-        if bytes[i] == b'>' && i + 1 < len {
-            result.push('>');
-            i += 1;
-            // Skip whitespace-only content between > and <
-            let ws_start = i;
-            while i < len && is_whitespace(bytes[i]) {
-                i += 1;
-            }
-            // If we hit '<', the whitespace was inter-tag — drop it
-            // If we hit non-'<', it's meaningful text — keep it
-            if i >= len || bytes[i] != b'<' {
-                // Keep the whitespace (it's before text content)
-                result.push_str(&input[ws_start..i]);
-            }
-        } else {
-            i = push_char_at(input, i, &mut result);
-        }
-    }
-
-    result
 }
 
 #[cfg(test)]
@@ -1382,20 +1287,6 @@ mod tests {
         let input = r#"<if condition="x"><span>✓</span></if>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, r#"<f-when value="{{x}}"><span>✓</span></f-when>"#);
-    }
-
-    #[test]
-    fn minify_preserves_utf8_text_content() {
-        let input = "<span>✓</span><span>✗</span>";
-        let output = minify_inter_tag_whitespace(input);
-        assert_eq!(output, "<span>✓</span><span>✗</span>");
-    }
-
-    #[test]
-    fn minify_preserves_utf8_between_elements() {
-        let input = "<div> ✓ </div>";
-        let output = minify_inter_tag_whitespace(input);
-        assert_eq!(output, "<div> ✓ </div>");
     }
 
     #[test]

@@ -177,6 +177,15 @@ function sameComponentStyleResource(
   current: ComponentStyleResource,
   next: ComponentStyleResource,
 ): boolean {
+  if (current === next) return true;
+  const currentMembers = current.members;
+  const nextMembers = next.members;
+  if (
+    currentMembers?.length !== nextMembers?.length ||
+    currentMembers?.some((member, index) => member !== nextMembers?.[index])
+  ) {
+    return false;
+  }
   switch (current.kind) {
     case 'link':
       return next.kind === 'link' && current.href === next.href;

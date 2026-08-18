@@ -943,6 +943,7 @@ mod tests {
             nonce: self.nonce,
             component_index: self.protocol.component_index(),
             style_resource_index: self.protocol.style_resource_index(),
+            style_chunk_index: self.protocol.protocol().style_chunk_index(),
             css_strategy: self.protocol.css_strategy(),
             head_inject: self.head_inject,
             body_inject: self.body_inject,

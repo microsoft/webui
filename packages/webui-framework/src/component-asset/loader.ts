@@ -17,6 +17,7 @@ import {
 import {
   hasRegisteredComponentStyleResource,
   registerPreparedComponentStyles,
+  sameComponentStyleClosure,
   sameComponentStyleResource,
   validateComponentStylesRegistration,
   type ComponentStyleResource,
@@ -164,10 +165,7 @@ function validatePreparedGraph(graph: readonly PreparedComponentAsset[]): void {
     for (const root of Object.keys(styles.closures)) {
       const closure = styles.closures[root];
       const current = closures.get(root);
-      if (current && (
-        current.length !== closure.length ||
-        current.some((id, index) => id !== closure[index])
-      )) {
+      if (current && !sameComponentStyleClosure(current, closure)) {
         throw new Error(`[WebUI] Conflicting component style closure "${root}".`);
       }
       closures.set(root, closure);

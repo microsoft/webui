@@ -123,7 +123,7 @@ function styleGlobal(owner: Document): WebUIStyleGlobal | undefined {
 }
 
 /** Read the owning document's configured CSP nonce for dynamic resources. */
-export function readNonce(target: StyleTarget = document): string {
+function readNonce(target: StyleTarget = document): string {
   const owner = owningDocument(target);
   const nonce = styleGlobal(owner)?.nonce;
   if (nonce) return nonce;
@@ -155,6 +155,15 @@ export function sameComponentStyleResource(
         current.specifier === next.specifier &&
         current.css === next.css;
   }
+}
+
+/** Compare closures without allocating serialized copies. */
+export function sameComponentStyleClosure(
+  current: readonly string[],
+  next: readonly string[],
+): boolean {
+  return current === next ||
+    (current.length === next.length && current.every((id, index) => id === next[index]));
 }
 
 /** Validate and detach a componentStyles payload before any registry mutation. */
@@ -251,10 +260,7 @@ export function validateComponentStylesRegistration(
   for (const root of Object.keys(styles.closures)) {
     const current = catalog.closures.get(root);
     const next = styles.closures[root];
-    if (current && (
-      current.length !== next.length ||
-      current.some((id, index) => id !== next[index])
-    )) {
+    if (current && !sameComponentStyleClosure(current, next)) {
       throw new Error(`[WebUI] Conflicting component style closure "${root}".`);
     }
   }
@@ -298,14 +304,6 @@ export function hasRegisteredComponentStyleResource(
   document: Document = globalThis.document,
 ): boolean {
   return catalogFor(document).resources.has(id);
-}
-
-/** Return whether one owning Document knows an ordered closure for a root. */
-export function hasRegisteredComponentStyleClosure(
-  rootId: string,
-  document: Document = globalThis.document,
-): boolean {
-  return catalogFor(document).closures.has(rootId);
 }
 
 function targetInstalledResources(target: StyleTarget): Set<string> {
@@ -847,21 +845,24 @@ export function installComponentStyles(
   let moduleIds: string[] | undefined;
   let moduleLoads: Promise<CSSStyleSheet>[] | undefined;
   let queuedModules: Set<string> | undefined;
+  const queueModule = (id: string, resource: { specifier: string; css: string }): void => {
+    if (!moduleIds || !moduleLoads || !queuedModules) {
+      moduleIds = [];
+      moduleLoads = [];
+      queuedModules = new Set();
+    }
+    reserveModuleSlot(target, id);
+    moduleIds.push(id);
+    moduleLoads.push(loadModule(target, id, resource));
+    queuedModules.add(id);
+  };
   if (ssrModuleIds) {
     for (let i = 0; i < ssrModuleIds.length; i++) {
       const id = ssrModuleIds[i];
       if (targetInstalled.has(id)) continue;
       const resource = catalog.resources.get(id);
       if (!resource || resource.kind !== 'module') continue;
-      if (!moduleIds || !moduleLoads || !queuedModules) {
-        moduleIds = [];
-        moduleLoads = [];
-        queuedModules = new Set();
-      }
-      reserveModuleSlot(target, id);
-      moduleIds.push(id);
-      moduleLoads.push(loadModule(target, id, resource));
-      queuedModules.add(id);
+      queueModule(id, resource);
     }
   }
   for (let i = 0; i < closure.length; i++) {
@@ -872,15 +873,7 @@ export function installComponentStyles(
       throw new Error(`[WebUI] Missing component style resource "${id}" for closure "${rootId}".`);
     }
     if (resource.kind === 'module') {
-      if (!moduleIds || !moduleLoads || !queuedModules) {
-        moduleIds = [];
-        moduleLoads = [];
-        queuedModules = new Set();
-      }
-      reserveModuleSlot(target, id);
-      moduleIds.push(id);
-      moduleLoads.push(loadModule(target, id, resource));
-      queuedModules.add(id);
+      queueModule(id, resource);
     }
   }
   if (!moduleLoads || !moduleIds) {

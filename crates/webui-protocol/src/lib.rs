@@ -393,6 +393,37 @@ enum StyleClosureOp<'a> {
     Component(&'a str),
 }
 
+/// One delivery unit of a style closure, resolved in cascade order.
+///
+/// A bundled build delivers merged chunks; otherwise every component delivers
+/// its own stylesheet. Both walk the closure in the same order, so the emitted
+/// cascade is identical either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StyleClosureUnit<'a> {
+    /// Name the client installs this resource under: a chunk name, or a tag.
+    pub name: &'a str,
+    /// The delivered resource, or `None` when the protocol holds none.
+    pub resource: Option<&'a str>,
+    /// Covering chunk index, or `None` for a standalone component stylesheet.
+    pub chunk: Option<u32>,
+}
+
+impl CssStrategy {
+    /// Return the lowercase wire name the client runtime expects.
+    ///
+    /// prost's generated `as_str_name` yields the uppercase proto identifier
+    /// (`"LINK"`), so it cannot serve the JSON payloads. Every host that writes
+    /// a strategy onto the wire routes through this so the spellings agree.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            CssStrategy::Link => "link",
+            CssStrategy::Style => "style",
+            CssStrategy::Module => "module",
+        }
+    }
+}
+
 impl WebUiProtocol {
     /// Return whether a component authored a declarative Shadow DOM root.
     #[must_use]
@@ -597,6 +628,59 @@ impl WebUiProtocol {
         self.style_closures
             .get(root)
             .map(|closure| closure.style_chunks.as_slice())
+    }
+
+    /// Number of delivery units `closure` walks, in cascade order.
+    ///
+    /// A closure the bundler treated as a root ships one unit per chunk;
+    /// every other closure ships one unit per member.
+    #[must_use]
+    pub fn style_closure_unit_count(closure: &ComponentStyleClosure) -> usize {
+        if closure.style_chunks.is_empty() {
+            closure.component_tags.len()
+        } else {
+            closure.style_chunks.len()
+        }
+    }
+
+    /// Resolve one position of `closure` to the resource that delivers it.
+    ///
+    /// This is the single walk shared by every delivery path, so all of them
+    /// agree on [`Self::style_chunk_index`]'s definition of "already covered by
+    /// a chunk". `chunk_index` must come from that accessor; pass an empty map
+    /// for an unbundled protocol.
+    ///
+    /// Returns `None` only when `position` is out of range. A unit whose
+    /// `resource` is `None` names a resource the protocol does not hold, which
+    /// callers report or skip according to their own delivery contract.
+    #[must_use]
+    pub fn style_closure_unit<'a>(
+        &'a self,
+        closure: &'a ComponentStyleClosure,
+        chunk_index: &HashMap<&str, u32>,
+        position: usize,
+    ) -> Option<StyleClosureUnit<'a>> {
+        let chunk = if closure.style_chunks.is_empty() {
+            let tag = closure.component_tags.get(position)?.as_str();
+            let Some(index) = chunk_index.get(tag).copied() else {
+                return Some(StyleClosureUnit {
+                    name: tag,
+                    resource: self.component_style_resource(tag),
+                    chunk: None,
+                });
+            };
+            index
+        } else {
+            *closure.style_chunks.get(position)?
+        };
+        let record = self.style_chunks.get(chunk as usize)?;
+        Some(StyleClosureUnit {
+            name: record.name.as_str(),
+            resource: self
+                .style_chunk_resource(chunk)
+                .map(|(_, resource)| resource),
+            chunk: Some(chunk),
+        })
     }
 
     /// Create a protocol from fragment records with no CSS tokens.

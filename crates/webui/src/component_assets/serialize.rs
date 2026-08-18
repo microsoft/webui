@@ -6,7 +6,7 @@ use super::json::{push_json_string, push_u64};
 use super::payload::{render_style_resource, RenderedComponent, RenderedStyleResource};
 use super::ComponentAssetFile;
 use crate::{AssetFileNameTemplate, WebUIError};
-use webui_protocol::{CssStrategy, WebUIProtocol};
+use webui_protocol::WebUIProtocol;
 
 const ASSET_TYPE: &str = "webui-component-asset";
 const ASSET_VERSION: u64 = 3;
@@ -92,7 +92,7 @@ pub(super) fn render_asset(
     js.push_str("],\"imports\":[");
     push_imports(&mut js, &pending.imports, plan)?;
     js.push_str("],\"componentStyles\":{\"version\":1,\"strategy\":\"");
-    js.push_str(strategy_name(options.protocol.css_strategy()));
+    js.push_str(options.protocol.css_strategy().wire_name());
     js.push_str("\",\"resources\":{");
     {
         let mut writer = StyleResourceWriter {
@@ -270,11 +270,7 @@ fn push_style_resources(
     for (index, component) in components.iter().copied().enumerate() {
         let resource = match writer.payloads.get(component).and_then(Option::as_ref) {
             Some(payload) => payload.resource,
-            None => render_style_resource(
-                writer.protocol,
-                writer.plan.component_names[component],
-                writer.protocol.css_strategy(),
-            )?,
+            None => render_style_resource(writer.protocol, writer.plan.component_names[component])?,
         };
         let Some(resource) = resource else {
             continue;
@@ -345,14 +341,6 @@ fn push_style_closures(
         out.push(']');
     }
     Ok(())
-}
-
-fn strategy_name(strategy: CssStrategy) -> &'static str {
-    match strategy {
-        CssStrategy::Link => "link",
-        CssStrategy::Style => "style",
-        CssStrategy::Module => "module",
-    }
 }
 
 fn is_relative_href(href: &str) -> bool {

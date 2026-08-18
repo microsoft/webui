@@ -15,6 +15,7 @@ use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{
     find_element_end, find_tag_close, leading_content, opening_tag_name, parse_tag,
+    starts_with_html_tag_name,
 };
 use crate::{CssLinkOptions, CssStrategy, ParserError, Result};
 use webui_protocol::FastElementData;
@@ -65,7 +66,7 @@ impl FastV3ParserPlugin {
             .map(|comp| {
                 let tmpl = build_f_template(
                     &comp.tag_name,
-                    &comp.template_html,
+                    &convert_btr_to_fast(&comp.template_html),
                     comp.style_injection.as_deref(),
                     None,
                 );
@@ -245,12 +246,15 @@ fn push_style_text(output: &mut String, css: &str) {
 /// Serialize one `<f-template>`, injecting `css_injection` inside the root
 /// `<template>` when present.
 ///
+/// `converted_html` is already in the caller's FAST dialect, which is what lets
+/// both FAST versions share this serializer.
+///
 /// `module_specifier` adds `shadowrootadoptedstylesheets` when this function
 /// synthesizes the wrapper; templates that already went through the parser
 /// carry it verbatim and pass `None`.
-fn build_f_template(
+pub(super) fn build_f_template(
     tag_name: &str,
-    html_content: &str,
+    converted_html: &str,
     css_injection: Option<&str>,
     module_specifier: Option<&str>,
 ) -> String {
@@ -259,8 +263,7 @@ fn build_f_template(
     output.push_str(tag_name);
     output.push_str("\">\n");
 
-    let converted = convert_btr_to_fast(html_content);
-    let trimmed = minify_inter_tag_whitespace(converted.trim());
+    let trimmed = minify_inter_tag_whitespace(converted_html.trim());
     let (trimmed, _) = leading_content(&trimmed);
 
     if starts_with_html_tag_name(trimmed, "template") {
@@ -297,14 +300,14 @@ fn build_f_template(
     output
 }
 
-/// Generate a FAST 3 f-template with Link CSS filename/href options.
-pub fn generate_f_template_with_css_options(
-    tag_name: &str,
-    html_content: &str,
+/// Resolve the root-`<template>` style injection and adopted-stylesheet
+/// specifier a compiled component needs, shared by both FAST versions.
+pub(super) fn f_template_style_injection<'a>(
+    tag_name: &'a str,
     css_content: Option<&str>,
     css_strategy: CssStrategy,
     css_link_options: &CssLinkOptions,
-) -> String {
+) -> (Option<String>, Option<&'a str>) {
     let css_injection = css_content.and_then(|css| match css_strategy {
         CssStrategy::Link => style_injection_snippet(ComponentStyleDelivery::Link {
             href: &css_link_options.resolve(tag_name, css).href,
@@ -316,10 +319,23 @@ pub fn generate_f_template_with_css_options(
         CssStrategy::Module if css_content.is_some() => Some(tag_name),
         _ => None,
     };
+    (css_injection, module_specifier)
+}
+
+/// Generate a FAST 3 f-template with Link CSS filename/href options.
+pub fn generate_f_template_with_css_options(
+    tag_name: &str,
+    html_content: &str,
+    css_content: Option<&str>,
+    css_strategy: CssStrategy,
+    css_link_options: &CssLinkOptions,
+) -> String {
+    let (css_injection, module_specifier) =
+        f_template_style_injection(tag_name, css_content, css_strategy, css_link_options);
 
     build_f_template(
         tag_name,
-        html_content,
+        &convert_btr_to_fast(html_content),
         css_injection.as_deref(),
         module_specifier,
     )
@@ -426,10 +442,6 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
 /// Check if `s` starts with `<name` followed by whitespace or `>`.
 fn starts_with_tag_name(s: &str, name: &str) -> bool {
     opening_tag_name(s).is_some_and(|tag_name| tag_name == name)
-}
-
-fn starts_with_html_tag_name(s: &str, name: &str) -> bool {
-    opening_tag_name(s).is_some_and(|tag_name| tag_name.eq_ignore_ascii_case(name))
 }
 
 /// Convert `<if condition="EXPR">` to `<f-when value="{{EXPR}}">`.
