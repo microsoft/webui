@@ -4,8 +4,7 @@ ignore = [
     "RUSTSEC-2025-0141",
     # yaml-rust (transitive dep of serde_yaml) — unmaintained, no security issue
     "RUSTSEC-2024-0320",
-    # Actix pins h2 0.3.27, and no patched h2 0.3 release is available.
-    # Remove when actix-http and awc migrate to h2 0.4.16 or newer.
+    # actix-http/awc still pin h2 0.3; the low-severity fix is available only in h2 0.4.
     "RUSTSEC-2026-0258",
 ]
 
