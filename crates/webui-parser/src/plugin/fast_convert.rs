@@ -58,8 +58,8 @@ pub(super) fn convert_template(
             f_template_start,
         ));
     }
-    let (f_template_close, _) = find_matching_end(source, f_template.name, f_template_end)
-        .ok_or_else(|| {
+    let (f_template_close, f_template_close_end) =
+        find_matching_end(source, f_template.name, f_template_end).ok_or_else(|| {
             ConvertError::new(
                 ConvertErrorKind::UnclosedElement {
                     tag: f_template.name,
@@ -67,6 +67,19 @@ pub(super) fn convert_template(
                 f_template_start,
             )
         })?;
+    if first_non_whitespace_non_comment(source, 0..f_template_start).is_some()
+        || first_non_whitespace_non_comment(source, f_template_close_end..source.len()).is_some()
+    {
+        let offset = first_non_whitespace_non_comment(source, 0..f_template_start)
+            .or_else(|| {
+                first_non_whitespace_non_comment(source, f_template_close_end..source.len())
+            })
+            .unwrap_or(f_template_start);
+        return Err(ConvertError::new(
+            ConvertErrorKind::ContentOutsideTemplate,
+            offset,
+        ));
+    }
     let artifact = f_template_end..f_template_close;
     let inner_templates = scan_named_open_tags(source, artifact.clone(), INNER_TEMPLATE_NAME);
     let Some(inner_start) = inner_templates.first else {
@@ -130,6 +143,28 @@ pub(super) fn convert_template(
         artifact,
         parser_content,
     }))
+}
+
+fn first_non_whitespace_non_comment(source: &str, range: Range<usize>) -> Option<usize> {
+    let mut cursor = range.start;
+    let bytes = source.as_bytes();
+    while cursor < range.end {
+        while cursor < range.end && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= range.end {
+            return None;
+        }
+        let remaining = &source[cursor..range.end];
+        if remaining.starts_with("<!--") {
+            if let Some(length) = find_comment_close(remaining) {
+                cursor += length;
+                continue;
+            }
+        }
+        return Some(cursor);
+    }
+    None
 }
 
 /// Iterative conversion state for nested FAST directives.
