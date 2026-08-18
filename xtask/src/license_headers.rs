@@ -1,13 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! License policy enforcement for source files and packaged crates.
+//! License header enforcement for source files.
 //!
 //! Uses `git ls-files` to enumerate tracked source files, automatically
 //! respecting `.gitignore` rules. Only files with checked extensions that
 //! are not in the skip list are inspected for the required copyright header.
-//! Every crate also carries a byte-identical copy of the workspace license so
-//! published archives include the license text without Cargo manifest warnings.
 
 use std::fs;
 use std::io::ErrorKind;
@@ -18,8 +16,6 @@ use std::process::Command;
 /// file.
 const HEADER_LINE_1: &str = "// Copyright (c) Microsoft Corporation.";
 const HEADER_LINE_2: &str = "// Licensed under the MIT license.";
-const LICENSE_FILE: &str = "LICENSE";
-const CRATES_DIR: &str = "crates";
 
 /// Extensions that require the `//`-style license header.
 const CHECKED_EXTENSIONS: &[&str] = &["rs", "ts", "js", "mjs", "cs", "h", "proto"];
@@ -30,84 +26,55 @@ const SKIP_FILES: &[&str] = &["crates/webui-ffi/include/webui_ffi.h"];
 
 // ── Public API ──────────────────────────────────────────────────────────
 
-/// Check source headers and packaged crate license copies.
+/// Check all source files for the license header.
 ///
-/// Returns `Ok(())` if every file passes, or `Err` with a summary.
+/// Returns `Ok(())` if every file passes, or `Err` with a summary of
+/// missing-header files.
 pub fn check() -> Result<(), String> {
-    let root = workspace_root();
-    let missing = collect_missing(&root)?;
-    let stale_licenses = collect_stale_crate_licenses(&root)?;
+    let missing = collect_missing()?;
 
-    if missing.is_empty() && stale_licenses.is_empty() {
+    if missing.is_empty() {
         return Ok(());
     }
 
-    let mut msg = String::new();
-    if !missing.is_empty() {
-        msg.push_str(&format!(
-            "{} file(s) missing the license header:\n",
-            missing.len()
-        ));
-        for path in &missing {
-            msg.push_str(&format!("  {}\n", path.display()));
-        }
+    let mut msg = format!("{} file(s) missing the license header:\n", missing.len());
+    for path in &missing {
+        msg.push_str(&format!("  {}\n", path.display()));
     }
-    if !stale_licenses.is_empty() {
-        msg.push_str(&format!(
-            "{} crate license file(s) missing or stale:\n",
-            stale_licenses.len()
-        ));
-        for path in &stale_licenses {
-            msg.push_str(&format!("  {}\n", path.display()));
-        }
-    }
-    msg.push_str(
-        "\nRun `cargo xtask license-headers --fix` to synchronize the required license files.",
-    );
+    msg.push_str("\nRun `cargo xtask license-headers --fix` to add the header automatically.");
     Err(msg)
 }
 
-/// Add missing source headers and synchronize packaged crate license copies.
+/// Add the license header to every source file that is missing it.
 pub fn fix() -> Result<(), String> {
-    let root = workspace_root();
-    let missing = collect_missing(&root)?;
-    let stale_licenses = collect_stale_crate_licenses(&root)?;
+    let missing = collect_missing()?;
 
-    if missing.is_empty() && stale_licenses.is_empty() {
-        eprintln!("  All source headers and crate license files are current.");
+    if missing.is_empty() {
+        eprintln!("  All source files already have the license header.");
         return Ok(());
     }
 
     for path in &missing {
-        prepend_header(&root.join(path))?;
+        prepend_header(path)?;
     }
-    sync_crate_licenses(&root, &stale_licenses)?;
 
-    if !missing.is_empty() {
-        eprintln!("  Added license header to {} file(s).", missing.len());
-    }
-    if !stale_licenses.is_empty() {
-        eprintln!(
-            "  Synchronized LICENSE into {} crate(s).",
-            stale_licenses.len()
-        );
-    }
+    eprintln!("  Added license header to {} file(s).", missing.len());
     Ok(())
 }
 
 // ── Internals ───────────────────────────────────────────────────────────
 
 /// Collect every source file that is missing the required header.
-fn collect_missing(root: &Path) -> Result<Vec<PathBuf>, String> {
+fn collect_missing() -> Result<Vec<PathBuf>, String> {
     let mut missing = Vec::new();
-    for path in git_tracked_files(root)? {
+    for path in git_tracked_files()? {
         if !is_checked_file(&path) {
             continue;
         }
         if is_skipped_file(&path) {
             continue;
         }
-        if !has_header(&root.join(&path))? {
+        if !has_header(&path)? {
             missing.push(path);
         }
     }
@@ -115,64 +82,11 @@ fn collect_missing(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(missing)
 }
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
-fn collect_stale_crate_licenses(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let expected_path = root.join(LICENSE_FILE);
-    let expected = fs::read(&expected_path)
-        .map_err(|error| format!("cannot read {}: {error}", expected_path.display()))?;
-    let mut stale = Vec::new();
-    for path in crate_license_paths(root)? {
-        match fs::read(&path) {
-            Ok(actual) if actual == expected => {}
-            Ok(_) => stale.push(path),
-            Err(error) if error.kind() == ErrorKind::NotFound => stale.push(path),
-            Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
-        }
-    }
-    Ok(stale)
-}
-
-fn crate_license_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let crates_dir = root.join(CRATES_DIR);
-    let entries = fs::read_dir(&crates_dir)
-        .map_err(|error| format!("cannot read {}: {error}", crates_dir.display()))?;
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            format!(
-                "cannot inspect a directory entry in {}: {error}",
-                crates_dir.display()
-            )
-        })?;
-        let crate_dir = entry.path();
-        if crate_dir.is_dir() && crate_dir.join("Cargo.toml").is_file() {
-            paths.push(crate_dir.join(LICENSE_FILE));
-        }
-    }
-    paths.sort();
-    Ok(paths)
-}
-
-fn sync_crate_licenses(root: &Path, paths: &[PathBuf]) -> Result<(), String> {
-    let source_path = root.join(LICENSE_FILE);
-    let content = fs::read(&source_path)
-        .map_err(|error| format!("cannot read {}: {error}", source_path.display()))?;
-    for path in paths {
-        fs::write(path, &content)
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-    }
-    Ok(())
-}
-
 /// List all tracked files via `git ls-files`, which inherently respects
 /// `.gitignore` and excludes untracked / ignored paths.
-fn git_tracked_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+fn git_tracked_files() -> Result<Vec<PathBuf>, String> {
     let output = Command::new("git")
         .args(["ls-files", "--cached", "--exclude-standard"])
-        .current_dir(root)
         .output()
         .map_err(|e| format!("failed to run `git ls-files`: {e}"))?;
 
@@ -348,34 +262,8 @@ mod tests {
     }
 
     #[test]
-    fn synchronizes_crate_license_files() {
-        let dir = temp_dir();
-        fs::write(dir.join(LICENSE_FILE), "license text\n").expect("write root license");
-        for name in ["alpha", "beta"] {
-            let crate_dir = dir.join(CRATES_DIR).join(name);
-            fs::create_dir_all(&crate_dir).expect("create crate directory");
-            fs::write(crate_dir.join("Cargo.toml"), "[package]\nname = \"test\"\n")
-                .expect("write manifest");
-        }
-        let stale_path = dir.join(CRATES_DIR).join("alpha").join(LICENSE_FILE);
-        fs::write(&stale_path, "stale\n").expect("write stale license");
-
-        let stale = collect_stale_crate_licenses(&dir).expect("collect stale licenses");
-        assert_eq!(stale.len(), 2);
-        sync_crate_licenses(&dir, &stale).expect("sync licenses");
-
-        assert!(collect_stale_crate_licenses(&dir)
-            .expect("recheck licenses")
-            .is_empty());
-        assert_eq!(
-            fs::read(stale_path).expect("read synchronized license"),
-            b"license text\n"
-        );
-    }
-
-    #[test]
     fn git_tracked_files_returns_files() {
-        let files = git_tracked_files(&workspace_root()).expect("git ls-files should work in repo");
+        let files = git_tracked_files().expect("git ls-files should work in repo");
         assert!(!files.is_empty(), "should find tracked files");
         // Cargo.toml is always tracked at the workspace root.
         assert!(
