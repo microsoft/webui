@@ -2835,6 +2835,8 @@ Internal source organization:
 packages/webui/src/projection/
   index.ts          — public subpath barrel
   compiler.ts       — TypeScript AST analysis and symbol graph
+  typescript-api.ts — TypeScript 6/7 parser API compatibility layer
+  typescript-version.ts — centralized supported-version policy
   graph.ts          — normalized module graph types and adapter SPI
   manifest.ts       — manifest schema types and serialization
   loader.ts         — manifest loading and filesystem validation
@@ -2858,7 +2860,7 @@ dependencies of `@microsoft/webui`. The supported bundler is esbuild:
 {
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": { "optional": true },
@@ -2875,6 +2877,19 @@ peer produces an actionable diagnostic (`PROJ-P001`/`PROJ-P002`; see
 
 Both peers are optional so users importing only the root build/render API do
 not receive dependency warnings for compiler tooling they do not use.
+The TypeScript range is intentionally split at the major boundary: WebUI
+supports TypeScript 6 from 6.0.3 onward and the tested TypeScript 7.0.2
+release, while excluding earlier and untested versions. TypeScript 7 is
+pinned because its compiler integration uses unstable subpaths; later
+TypeScript 7 releases are added only after compatibility testing.
+The projection compiler uses the legacy in-process parser exposed by
+TypeScript 6. TypeScript 7 builds use its native synchronous API with an
+in-memory virtual filesystem, preserving the adapter contract that source is
+analyzed from the resolved module graph rather than reread from application
+files. The TypeScript 6 parser is isolated behind `LegacyProjectionParser`,
+its single traversal shim, and a pinned `typescript-6` test-only dependency;
+removing TypeScript 6 support deletes those three surfaces plus the version
+policy branch.
 
 Bundler adapters use local structural interfaces and do **not** statically
 import their bundler packages at module load time. Every supported adapter

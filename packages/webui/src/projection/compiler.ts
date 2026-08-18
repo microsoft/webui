@@ -20,7 +20,7 @@
 
 import * as path from "node:path";
 import { createRequire } from "node:module";
-import * as ts from "typescript";
+import * as ts from "./typescript-api.js";
 import type { AdapterContext, ModuleNode } from "./graph.js";
 import type { ComponentEntry, ProjectionManifest } from "./manifest.js";
 import {
@@ -129,74 +129,45 @@ export function compileProjection(ctx: AdapterContext): ProjectionManifest {
   const profile = process.env["WEBUI_PROJECTION_PROFILE"] === "1";
   const started = profile ? performance.now() : 0;
   const diagnostics: ProjectionDiagnostic[] = [];
-  validateTypeScriptVersion(diagnostics);
   validateAdapterContext(ctx, diagnostics);
   if (diagnostics.length > 0) throw new ProjectionError(diagnostics);
 
-  const analyses = buildAnalyses(ctx, diagnostics);
-  const parsed = profile ? performance.now() : 0;
-  const candidates = compileDefinedComponents(
-    ctx,
-    analyses,
-    diagnostics
-  );
-  const analyzed = profile ? performance.now() : 0;
-
-  if (diagnostics.length > 0) {
-    throw new ProjectionError(diagnostics);
+  let parser: ts.ProjectionParser;
+  try {
+    parser = ts.createProjectionParser(ctx.graph.modules);
+  } catch (error: unknown) {
+    if (error instanceof ts.TypeScriptApiUnavailableError) {
+      throw new ProjectionError([
+        createDiagnostic("PROJ-P001", { help: error.message }),
+      ]);
+    }
+    throw error;
   }
-
-  const manifest = buildManifest(ctx, candidates);
-  if (profile) {
-    const finished = performance.now();
-    console.error(
-      `[webui-projection-compiler] parse=${(parsed - started).toFixed(1)}ms semantics=${(analyzed - parsed).toFixed(1)}ms manifest=${(finished - analyzed).toFixed(1)}ms graphModules=${ctx.graph.modules.size} parsedModules=${analyses.size} components=${Object.keys(manifest.components).length}`
+  try {
+    const analyses = buildAnalyses(ctx, diagnostics, parser);
+    const parsed = profile ? performance.now() : 0;
+    const candidates = compileDefinedComponents(
+      ctx,
+      analyses,
+      diagnostics
     );
-  }
-  return manifest;
-}
+    const analyzed = profile ? performance.now() : 0;
 
-function validateTypeScriptVersion(
-  diagnostics: ProjectionDiagnostic[]
-): void {
-  const parts = parseVersion(ts.version);
-  const supported =
-    parts !== undefined &&
-    parts.major === 6 &&
-    (parts.minor > 0 ||
-      (parts.minor === 0 && parts.patch >= 3));
-  if (!supported) {
-    diagnostics.push(
-      createDiagnostic("PROJ-P001", {
-        help: `Install a supported TypeScript peer (^6.0.3); found ${ts.version}.`,
-      })
-    );
-  }
-}
+    if (diagnostics.length > 0) {
+      throw new ProjectionError(diagnostics);
+    }
 
-function parseVersion(
-  value: string
-): { major: number; minor: number; patch: number } | undefined {
-  const parts = value.split(".");
-  if (parts.length < 3) return undefined;
-  const major = Number(parts[0]);
-  const minor = Number(parts[1]);
-  let patchEnd = 0;
-  const patchText = parts[2]!;
-  while (
-    patchEnd < patchText.length &&
-    patchText.charCodeAt(patchEnd) >= 48 &&
-    patchText.charCodeAt(patchEnd) <= 57
-  ) {
-    patchEnd++;
+    const manifest = buildManifest(ctx, candidates);
+    if (profile) {
+      const finished = performance.now();
+      console.error(
+        `[webui-projection-compiler] parse=${(parsed - started).toFixed(1)}ms semantics=${(analyzed - parsed).toFixed(1)}ms manifest=${(finished - analyzed).toFixed(1)}ms graphModules=${ctx.graph.modules.size} parsedModules=${analyses.size} components=${Object.keys(manifest.components).length}`
+      );
+    }
+    return manifest;
+  } finally {
+    parser.close();
   }
-  if (patchEnd === 0) return undefined;
-  const patch = Number(patchText.slice(0, patchEnd));
-  return Number.isInteger(major) &&
-    Number.isInteger(minor) &&
-    Number.isInteger(patch)
-    ? { major, minor, patch }
-    : undefined;
 }
 
 function validateAdapterContext(
@@ -288,9 +259,10 @@ function validateAdapterContext(
 
 function buildAnalyses(
   ctx: AdapterContext,
-  diagnostics: ProjectionDiagnostic[]
+  diagnostics: ProjectionDiagnostic[],
+  parser: ts.ProjectionParser
 ): AnalysisRegistry {
-  const analyses = new AnalysisRegistry(ctx, diagnostics);
+  const analyses = new AnalysisRegistry(ctx, diagnostics, parser);
   for (const [moduleId, node] of ctx.graph.modules) {
     if (
       node.source !== undefined &&
@@ -309,7 +281,8 @@ class AnalysisRegistry {
 
   constructor(
     private readonly ctx: AdapterContext,
-    private readonly diagnostics: ProjectionDiagnostic[]
+    private readonly diagnostics: ProjectionDiagnostic[],
+    private readonly parser: ts.ProjectionParser
   ) {}
 
   get size(): number {
@@ -332,8 +305,17 @@ class AnalysisRegistry {
     ) {
       return undefined;
     }
-    const sourceFile = parseModule(moduleId, node);
-    if (getParseDiagnostics(sourceFile).length > 0) {
+    const parsed = this.parser.parse(moduleId);
+    if (parsed === undefined) {
+      this.diagnostics.push(
+        createDiagnostic("PROJ-C013", {
+          location: moduleId,
+          help: "The TypeScript parser did not return the adapter-provided module.",
+        })
+      );
+      return undefined;
+    }
+    if (parsed.hasDiagnostics) {
       this.diagnostics.push(
         createDiagnostic("PROJ-C001", {
           location: moduleId,
@@ -342,7 +324,7 @@ class AnalysisRegistry {
       );
       return undefined;
     }
-    const analysis = analyzeModule(moduleId, sourceFile);
+    const analysis = analyzeModule(moduleId, parsed.sourceFile);
     this.analyses.set(moduleId, analysis);
     if (process.env["WEBUI_PROJECTION_PROFILE_DETAIL"] === "1") {
       console.error(`[webui-projection-module] ${moduleId}`);
@@ -381,44 +363,10 @@ function isAsciiIdentifierContinue(code: number): boolean {
   );
 }
 
-function parseModule(moduleId: string, node: ModuleNode): ts.SourceFile {
-  return ts.createSourceFile(
-    moduleId,
-    node.source ?? "",
-    ts.ScriptTarget.Latest,
-    /* setParentNodes */ false,
-    scriptKindForExtension(getExtension(moduleId))
-  );
-}
-
-function getParseDiagnostics(sourceFile: ts.SourceFile): readonly ts.Diagnostic[] {
-  // The TS parser is error-tolerant; syntax errors are recorded on the
-  // source file rather than thrown. `parseDiagnostics` is an established
-  // (if internal) property of the parser result used by tooling that only
-  // needs a syntax check without building a full `ts.Program`.
-  const withDiagnostics = sourceFile as unknown as { parseDiagnostics?: ts.Diagnostic[] };
-  return withDiagnostics.parseDiagnostics ?? [];
-}
-
 function getExtension(moduleId: string): string {
   const base = moduleId.slice(moduleId.lastIndexOf("/") + 1);
   const dot = base.lastIndexOf(".");
   return dot === -1 ? "" : base.slice(dot);
-}
-
-function scriptKindForExtension(ext: string): ts.ScriptKind {
-  switch (ext) {
-    case ".tsx":
-      return ts.ScriptKind.TSX;
-    case ".jsx":
-      return ts.ScriptKind.JSX;
-    case ".js":
-    case ".mjs":
-    case ".cjs":
-      return ts.ScriptKind.JS;
-    default:
-      return ts.ScriptKind.TS;
-  }
 }
 
 /** Builds the scope/export tables and collects `define()` call sites for one module. */
@@ -448,13 +396,22 @@ function analyzeModule(moduleId: string, sourceFile: ts.SourceFile): ModuleAnaly
 }
 
 function isExported(node: ts.Node): boolean {
-  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
-  return (modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+  return nodeModifiers(node).some(
+    (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword
+  );
 }
 
 function isDefaultExport(node: ts.Node): boolean {
-  const modifiers = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
-  return (modifiers ?? []).some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
+  return nodeModifiers(node).some(
+    (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword
+  );
+}
+
+function nodeModifiers(node: ts.Node): readonly ts.Node[] {
+  const withModifiers = node as ts.Node & {
+    readonly modifiers?: readonly ts.Node[];
+  };
+  return withModifiers.modifiers ?? [];
 }
 
 function analyzeImportDeclaration(decl: ts.ImportDeclaration, scope: Map<string, ScopeBinding>): void {
@@ -850,9 +807,10 @@ function isPotentialWebUIClass(
 
     for (const member of current.node.members) {
       if (!ts.isPropertyDeclaration(member)) continue;
-      const decorators = ts.canHaveDecorators(member)
-        ? ts.getDecorators(member) ?? []
-        : [];
+      const decorators = nodeModifiers(member).filter(
+        (modifier): modifier is ts.Decorator =>
+          modifier.kind === ts.SyntaxKind.Decorator
+      );
       for (const decorator of decorators) {
         const parsed = parseDecoratorExpression(decorator.expression);
         if (parsed.kind === "unsupported") continue;
@@ -1167,7 +1125,10 @@ function collectOwnKeys(
   let ok = true;
   for (const member of node.members) {
     if (!ts.isPropertyDeclaration(member)) continue;
-    const decorators = ts.canHaveDecorators(member) ? (ts.getDecorators(member) ?? []) : [];
+    const decorators = nodeModifiers(member).filter(
+      (modifier): modifier is ts.Decorator =>
+        modifier.kind === ts.SyntaxKind.Decorator
+    );
     for (const decorator of decorators) {
       ok =
         applyDecorator(
