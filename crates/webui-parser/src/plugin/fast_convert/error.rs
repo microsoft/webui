@@ -43,6 +43,10 @@ impl fmt::Display for ConvertError<'_> {
                 f,
                 "template validation error: '<f-template>' must contain exactly one inner '<template>' element, found {count}"
             ),
+            ConvertErrorKind::ContentOutsideTemplate => write!(
+                f,
+                "template validation error: '<f-template>' must be the only top-level authored content in the file"
+            ),
             ConvertErrorKind::UnclosedElement { tag } => write!(
                 f,
                 "unclosed element '<{tag}>': no matching '</{tag}>' closing tag was found"
@@ -79,6 +83,7 @@ pub(crate) enum ConvertErrorKind<'a> {
     MultipleFTemplates { count: usize },
     MissingInnerTemplate,
     MultipleInnerTemplates { count: usize },
+    ContentOutsideTemplate,
     UnclosedElement { tag: &'a str },
     UnclosedTag,
     MissingValueAttribute { tag: &'static str },

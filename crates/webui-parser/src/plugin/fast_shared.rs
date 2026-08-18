@@ -97,6 +97,9 @@ fn converter_error(source: &str, error: &ConvertError<'_>) -> ParserError {
         | ConvertErrorKind::MultipleInnerTemplates { .. } => {
             "keep exactly one inner <template> element inside <f-template>"
         }
+        ConvertErrorKind::ContentOutsideTemplate => {
+            "keep <f-template> as the only top-level authored content (outside content may only be whitespace or comments)"
+        }
         ConvertErrorKind::MissingValueAttribute { .. }
         | ConvertErrorKind::InvalidDirectiveValue { .. } => {
             "add the required value=\"{{expression}}\" attribute to the FAST directive"
@@ -139,7 +142,8 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
     match error {
         ConvertErrorKind::MultipleFTemplates { .. }
         | ConvertErrorKind::MissingInnerTemplate
-        | ConvertErrorKind::MultipleInnerTemplates { .. } => "<f-template>".to_string(),
+        | ConvertErrorKind::MultipleInnerTemplates { .. }
+        | ConvertErrorKind::ContentOutsideTemplate => "<f-template>".to_string(),
         ConvertErrorKind::UnclosedElement { tag }
         | ConvertErrorKind::MissingValueAttribute { tag }
         | ConvertErrorKind::InvalidDirectiveValue { tag, .. }
@@ -246,6 +250,37 @@ mod tests {
             result.artifact_content.as_deref(),
             Some("before<template><span>{{label}}</span></template>after")
         );
+    }
+
+    #[test]
+    fn content_outside_f_template_is_a_diagnostic() {
+        let err = transform(
+            "invalid-card",
+            r#"<div>before</div><f-template name="invalid-card"><template><span>{{label}}</span></template></f-template>"#,
+        )
+        .expect_err("outside top-level content should error");
+
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(
+            diag.help_text(),
+            Some(
+                "keep <f-template> as the only top-level authored content (outside content may only be whitespace or comments)"
+            )
+        );
+    }
+
+    #[test]
+    fn whitespace_and_comments_outside_f_template_are_allowed() {
+        let html = " \n<!-- lead -->\n<f-template name=\"named-card\"><template><span>{{label}}</span></template></f-template>\n<!-- tail -->\n ";
+        let ComponentSourceResult::Transformed(result) =
+            transform("file-card", html).expect("transform")
+        else {
+            panic!("expected a transformed FAST source");
+        };
+        assert_eq!(result.tag_name, "named-card");
     }
 
     #[test]
