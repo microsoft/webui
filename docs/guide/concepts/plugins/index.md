@@ -33,6 +33,20 @@ webui serve ./my-app --state ./data/state.json --plugin=<name>
 When a plugin is selected, both its parser-side and (for `serve`) handler-side
 implementations are loaded.
 
+### Built-in plugin identifiers
+
+| Name | Behavior |
+|------|----------|
+| `fast` | Deprecated alias for `fast-v2` |
+| `fast-v2` | Deprecated FAST 2 compatibility name |
+| `fast-v3` | FAST 3 hydration plugin |
+| `webui` | WebUI framework hydration plugin |
+
+FAST plugins write only scalar route state as kebab-case HTML attributes on
+matched route components. Strings, numbers, and booleans are emitted. Arrays
+and objects are skipped, and no `data-state` JSON attribute is emitted. Keep
+route payloads flat if the component reads them through `@attr`.
+
 ## Using Plugins with Handlers
 
 <webui-press-tabs>

@@ -911,7 +911,9 @@ identifier is falsy, so `path` is false and `!path` is true. No error.
 
 **Route-scoped state.** Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes
-bandwidth and render time.
+bandwidth and render time. FAST route components receive scalar values as
+kebab-case HTML attributes, so keep `@attr` inputs flat. Arrays and objects are
+skipped, and no `data-state` JSON attribute is emitted.
 
 ### Reserved `$webui` state
 
