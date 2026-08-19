@@ -2232,6 +2232,24 @@ mod tests {
     }
 
     #[test]
+    fn nuget_packages_use_modern_license_expression_metadata() {
+        let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask should be inside the workspace");
+        let props = fs::read_to_string(workspace_root.join("dotnet/Directory.Build.props"))
+            .expect("shared .NET package properties should be readable");
+
+        assert!(
+            props.contains("<PackageLicenseExpression>MIT</PackageLicenseExpression>"),
+            "NuGet packages should generate <license type=\"expression\">MIT</license>"
+        );
+        assert!(
+            !props.contains("<PackageLicenseUrl>"),
+            "NuGet packages must not generate the deprecated <licenseUrl> element"
+        );
+    }
+
+    #[test]
     fn test_count_files_with_suffix() {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(dir.path().join("microsoft_webui-1.0.0.tar.gz"), "").unwrap();

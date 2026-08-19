@@ -4,7 +4,7 @@
     <Authors>Microsoft</Authors>
     <Company>Microsoft</Company>
     <PackageOwners>Microsoft</PackageOwners>
-    <PackageLicenseUrl>https://github.com/microsoft/webui/blob/main/LICENSE</PackageLicenseUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
     <PackageProjectUrl>https://github.com/microsoft/webui</PackageProjectUrl>
     <RepositoryUrl>https://github.com/microsoft/webui</RepositoryUrl>
