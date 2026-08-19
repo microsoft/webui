@@ -7,8 +7,11 @@ name: Publish to PyPI
 # created by the Azure DevOps CD pipeline
 # (.ado/pipelines/azure-pipelines-cd.yml). By the time that release exists:
 #   1. The exact 6 wheels + 1 sdist (per the release contract enforced by
-#      cargo xtask publish-stage in xtask/src/publish.rs) were already built
-#      and smoke-tested on real hardware/pools.
+#      cargo xtask publish-stage in xtask/src/publish.rs) were already built,
+#      and each x64 wheel was smoke-tested on its native hosted pool. ARM64
+#      wheels are cross-compiled like every other ARM64 artifact in the
+#      release; supplying the optional ARM64 pool parameters adds native
+#      execution for them too.
 #   2. npm and Rust crates were already published (PublishGitHub depends on
 #      PublishNpm and PublishCrates), keeping every ecosystem in lockstep.
 #   3. Azure uploaded every asset plus the Python provenance manifest to a
