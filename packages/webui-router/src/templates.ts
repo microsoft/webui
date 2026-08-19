@@ -12,6 +12,8 @@
 
 /** Shared event name understood by optional framework runtimes. */
 const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
+const READINESS_COMPLETE = (): true => true;
+const IGNORE_READINESS_RESULTS = (): void => {};
 
 /**
  * Register templates + inject CSS from a server response.
@@ -165,7 +167,7 @@ export function waitForTemplateReadiness(
   ready: Promise<void>,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  if (!signal) return ready.then(() => true);
+  if (!signal) return ready.then(READINESS_COMPLETE);
   if (signal.aborted) return Promise.resolve(false);
   return new Promise<boolean>((resolve, reject) => {
     const onAbort = (): void => {
@@ -224,7 +226,7 @@ export function notifyTemplatesRegistered(
     return undefined;
   }
 
-  const pending: Promise<void>[] = [];
+  let pending: PromiseLike<unknown>[] | undefined;
   let accepting = true;
   const waitUntil = (promise: PromiseLike<unknown>): void => {
     if (!accepting) {
@@ -232,7 +234,7 @@ export function notifyTemplatesRegistered(
         '[Router] webui:templates-registered waitUntil() must be called during event dispatch.',
       );
     }
-    pending.push(Promise.resolve(promise).then(() => {}));
+    (pending ??= []).push(promise);
   };
   try {
     window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
@@ -241,7 +243,7 @@ export function notifyTemplatesRegistered(
   } finally {
     accepting = false;
   }
-  return pending.length > 0
-    ? Promise.all(pending).then(() => {})
+  return pending
+    ? Promise.all(pending).then(IGNORE_READINESS_RESULTS)
     : undefined;
 }

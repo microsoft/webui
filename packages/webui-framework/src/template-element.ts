@@ -85,6 +85,7 @@ import {
   cancelTemplateLinkStyleMount,
   installTemplateLinkStyles,
   prepareTemplateLinkStyles,
+  templateMayContainLinkStyles,
 } from './element/link-styles.js';
 import {
   ATTR_KIND_BOOLEAN,
@@ -716,45 +717,53 @@ export class TemplateElement extends HTMLElement {
       // on the first reactive change instead.
       if (!isSSR && clientRoot) {
         this.$updateInstance(this.$root);
-        this.$root.nodes = childNodesArray(clientRoot);
-        const mountedInstance = this.$root;
-        const deferredStyles = installTemplateLinkStyles(
-          this,
-          meta,
-          this.shadowRoot,
-          clientRoot,
-          this.$root.attrs,
-          {
-            hasAuthorHydrationLifecycle:
-              this.hydratedCallback !==
-              TemplateElement.prototype.hydratedCallback,
-            beforeAppend: () => {
-              if (this.$root !== mountedInstance || !this.$hydrated) return;
-              this.$updateInstance(mountedInstance);
+        const hasStructuralBindings =
+          this.$root.repeats.length !== 0 || this.$root.conds.length !== 0;
+        if (hasStructuralBindings) {
+          this.$root.nodes = childNodesArray(clientRoot);
+        }
+        let deferredStyles = false;
+        if (templateMayContainLinkStyles(meta)) {
+          const stagingRoot = clientRoot;
+          const mountedInstance = this.$root;
+          deferredStyles = installTemplateLinkStyles(
+            this,
+            meta,
+            this.shadowRoot,
+            clientRoot,
+            this.$root.attrs,
+            {
+              hasAuthorHydrationLifecycle:
+                this.hydratedCallback !==
+                TemplateElement.prototype.hydratedCallback,
+              beforeAppend: () => {
+                if (this.$root !== mountedInstance || !this.$hydrated) return;
+                this.$updateInstance(mountedInstance);
+                if (hasStructuralBindings) {
+                  mountedInstance.nodes = childNodesArray(stagingRoot);
+                }
+              },
+              afterAppend: () => {
+                if (this.$root !== mountedInstance || !this.$hydrated) return;
+                this.$replaceInstanceContainer(
+                  mountedInstance,
+                  clientRoot,
+                  root as ParentNode & Node,
+                );
+                mountedInstance.container = root as ParentNode & Node;
+                this.$deferredClientMount = false;
+                this.$ready = true;
+                this.$finishHydration();
+              },
             },
-            afterAppend: () => {
-              if (this.$root !== mountedInstance || !this.$hydrated) return;
-              this.$replaceInstanceContainer(
-                mountedInstance,
-                clientRoot,
-                root as ParentNode & Node,
-              );
-              mountedInstance.container = root as ParentNode & Node;
-              this.$deferredClientMount = false;
-              this.$ready = true;
-              this.$finishHydration();
-            },
-          },
-        );
+          );
+        }
         if (deferredStyles) {
           this.$deferredClientMount = true;
           this.$ready = false;
           deferredHydrationFinish = true;
         }
-        if (
-          !deferredStyles &&
-          (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0)
-        ) {
+        if (!deferredStyles && hasStructuralBindings) {
           this.$replaceInstanceContainer(
             this.$root,
             clientRoot,

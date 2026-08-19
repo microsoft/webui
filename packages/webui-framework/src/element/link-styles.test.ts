@@ -5,28 +5,20 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
 import {
-  hasTopLevelImport,
   rewriteCssUrls,
+  templateMayContainLinkStyles,
 } from './link-styles.js';
 
 describe('Link stylesheet scanning', () => {
-  test('detects case-insensitive top-level imports', () => {
-    assert.equal(hasTopLevelImport('@import "./base.css"; .card { color: red; }'), true);
-    assert.equal(hasTopLevelImport('@IMPORT url("./theme.css") layer(theme);'), true);
-    assert.equal(hasTopLevelImport('@\\69 mport "./escaped.css";'), true);
-  });
-
-  test('ignores imports in comments, strings, and nested rules', () => {
-    assert.equal(hasTopLevelImport('/* @import "./old.css"; */ .card { color: red; }'), false);
-    assert.equal(hasTopLevelImport('.card::before { content: "@import"; }'), false);
+  test('skips Link-mode mount work for templates without link elements', () => {
     assert.equal(
-      hasTopLevelImport('@supports (display: grid) { @import "./invalid.css"; }'),
+      templateMayContainLinkStyles({ h: '<p class="card">Ready</p>' }),
       false,
     );
-  });
-
-  test('does not mistake a longer at-keyword for import', () => {
-    assert.equal(hasTopLevelImport('@important-rule { color: red; }'), false);
+    assert.equal(
+      templateMayContainLinkStyles({ h: '<link-card></link-card>' }),
+      false,
+    );
   });
 
   test('resolves quoted and unquoted URLs against the stylesheet', () => {

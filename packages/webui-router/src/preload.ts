@@ -75,19 +75,13 @@ export function setupPreloadListeners(ctx: PreloadContext): () => void {
         // Only cache if this is still the latest preload request
         if (data && gen === preloadGeneration && !controller.signal.aborted) {
           ctx.storeCache(requestPath, data, true);
-          if (data._deferredStream) {
-            const streaming = await import('./streaming.js');
-            if (
-              gen === preloadGeneration &&
-              !controller.signal.aborted
-            ) {
-              streaming.startDeferredStream(data);
-            } else {
-              await streaming.cancelDeferredStream(data);
-            }
-          }
-        } else if (data?._deferredStream) {
-          const streaming = await import('./streaming.js');
+        }
+        if (!data?._deferredStream) return;
+
+        const streaming = await import('./streaming.js');
+        if (gen === preloadGeneration && !controller.signal.aborted) {
+          streaming.startDeferredStream(data);
+        } else {
           await streaming.cancelDeferredStream(data);
         }
       })

@@ -38,10 +38,9 @@ export function dispatchTemplatesRegistered(
 }
 
 /** Read a template registration event payload without trusting arbitrary detail. */
-export function templateRegistrationDetail(event: Event): {
-  templates?: Record<string, TemplateMeta>;
-  waitUntil?: (promise: PromiseLike<unknown>) => void;
-} | undefined {
+export function templateRegistrationDetail(
+  event: Event,
+): TemplateRegistrationDetail | undefined {
   const detail = (event as CustomEvent<{
     templates?: unknown;
     waitUntil?: unknown;

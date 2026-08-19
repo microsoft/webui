@@ -2,21 +2,22 @@
 // Licensed under the MIT license.
 
 import {
+  templateHtmlMayContainLink,
   getTemplateStylesheets,
   type TemplateStylesheetDescriptor,
 } from '../template-content.js';
 import type { TemplateBlockMeta, TemplateMeta } from '../template-types.js';
 
-interface PreparedLinkStyle {
+interface LinkStyleFailure {
   readonly href: string;
-  readonly reason?: string;
+  readonly reason: string;
 }
 
 interface TemplateLinkStyleState {
   readonly descriptors: readonly TemplateStylesheetDescriptor[];
   ready: Promise<void>;
-  results?: readonly PreparedLinkStyle[];
-  sheets?: readonly CSSStyleSheet[];
+  results?: readonly (LinkStyleFailure | undefined)[];
+  sheets?: CSSStyleSheet[];
 }
 
 interface ElementBinding {
@@ -37,6 +38,11 @@ interface DeferredContentCallbacks {
 
 const READY = Promise.resolve();
 const NO_DESCRIPTORS: readonly TemplateStylesheetDescriptor[] = Object.freeze([]);
+const NO_LINK_STYLE_STATE: TemplateLinkStyleState = {
+  descriptors: NO_DESCRIPTORS,
+  ready: READY,
+};
+const CSS_IMPORT_RULE = 3;
 const STYLESHEET_PREPARATION_TIMEOUT_MS = 3_000;
 const GUARD_CSS =
   '@layer{:host{transition:none!important;visibility:hidden!important}}';
@@ -56,17 +62,18 @@ export function prepareRegisteredLinkStyles(
   templates: Record<string, TemplateMeta>,
 ): Promise<void> | undefined {
   const names = Object.keys(templates);
-  const pending = new Array<Promise<void>>(names.length);
-  let count = 0;
+  let pending: Promise<void>[] | undefined;
   for (let i = 0; i < names.length; i++) {
     const ready = prepareTemplateLinkStyles(templates[names[i]]);
     if (!ready) continue;
-    pending[count] = ready;
-    count += 1;
+    (pending ??= []).push(ready);
   }
-  if (count === 0) return undefined;
-  pending.length = count;
-  return Promise.all(pending).then(() => {});
+  return pending ? Promise.all(pending).then(ignorePromiseResults) : undefined;
+}
+
+/** Return whether a template can create a stylesheet link after bindings run. */
+export function templateMayContainLinkStyles(meta: TemplateBlockMeta): boolean {
+  return getTemplateLinkStyleState(meta) !== NO_LINK_STYLE_STATE;
 }
 
 /**
@@ -156,7 +163,10 @@ export function installTemplateLinkStyles(
     if (cancelled || failed) return;
     failed = true;
     removeAllLinkListeners();
-    const result = state.results?.[index];
+    const result =
+      state.descriptors.length === links.length
+        ? state.results?.[index]
+        : undefined;
     const href = result?.href || links[index].href;
     let reason = '';
     if (result?.reason) {
@@ -300,50 +310,6 @@ export function cancelTemplateLinkStyleMount(root: ShadowRoot): boolean {
   return true;
 }
 
-/** Return whether CSS text contains a top-level `@import` rule. */
-export function hasTopLevelImport(cssText: string): boolean {
-  let braceDepth = 0;
-  let quote = 0;
-  for (let i = 0; i < cssText.length; i++) {
-    const code = cssText.charCodeAt(i);
-    if (quote !== 0) {
-      if (code === 92) {
-        i += 1;
-      } else if (code === quote) {
-        quote = 0;
-      }
-      continue;
-    }
-    if (code === 34 || code === 39) {
-      quote = code;
-      continue;
-    }
-    if (code === 47 && cssText.charCodeAt(i + 1) === 42) {
-      i = skipComment(cssText, i + 2);
-      continue;
-    }
-    if (code === 123) {
-      braceDepth += 1;
-      continue;
-    }
-    if (code === 125) {
-      if (braceDepth > 0) braceDepth -= 1;
-      continue;
-    }
-    if (
-      code === 64 &&
-      braceDepth === 0 &&
-      (
-        matchesImportKeyword(cssText, i + 1) ||
-        atKeywordContainsEscape(cssText, i + 1)
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /**
  * Resolve CSS `url()` values against the external stylesheet location.
  *
@@ -409,62 +375,39 @@ export function rewriteCssUrls(
 }
 
 function getTemplateLinkStyleState(meta: TemplateBlockMeta): TemplateLinkStyleState {
-  let state = templateLinkStyles.get(meta);
-  if (state) return state;
+  const cached = templateLinkStyles.get(meta);
+  if (cached) return cached;
 
-  if (!mayContainLink(meta.h)) {
-    state = {
-      descriptors: NO_DESCRIPTORS,
-      ready: READY,
-      results: [],
-    };
-    templateLinkStyles.set(meta, state);
-    return state;
+  if (!templateHtmlMayContainLink(meta.h)) {
+    templateLinkStyles.set(meta, NO_LINK_STYLE_STATE);
+    return NO_LINK_STYLE_STATE;
   }
 
   const descriptors = getTemplateStylesheets(meta);
-  state = {
+  if (!descriptors) {
+    templateLinkStyles.set(meta, NO_LINK_STYLE_STATE);
+    return NO_LINK_STYLE_STATE;
+  }
+  const state: TemplateLinkStyleState = {
     descriptors,
     ready: READY,
   };
   templateLinkStyles.set(meta, state);
-  if (descriptors.length === 0) {
-    state.results = [];
-    return state;
-  }
+  if (descriptors.length === 0) return state;
 
   if (!supportsConstructableStylesheets()) {
     state.results = fallbackResults(descriptors, 'Constructable stylesheets are unavailable');
     return state;
   }
 
-  const pending = new Array<Promise<PreparedLinkStyle>>(descriptors.length);
+  const pending = new Array<Promise<LinkStyleFailure | undefined>>(descriptors.length);
   for (let i = 0; i < descriptors.length; i++) {
     pending[i] = warmStylesheet(descriptors[i]);
   }
   state.ready = Promise.all(pending).then(results => {
-    state!.results = results;
+    state.results = results;
   });
   return state;
-}
-
-function mayContainLink(html: string): boolean {
-  for (let i = 0; i <= html.length - 5; i++) {
-    if (html.charCodeAt(i) !== 60) continue;
-    if (
-      asciiLower(html.charCodeAt(i + 1)) === 108 &&
-      asciiLower(html.charCodeAt(i + 2)) === 105 &&
-      asciiLower(html.charCodeAt(i + 3)) === 110 &&
-      asciiLower(html.charCodeAt(i + 4)) === 107
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function asciiLower(code: number): number {
-  return code >= 65 && code <= 90 ? code + 32 : code;
 }
 
 function supportsConstructableStylesheets(): boolean {
@@ -480,7 +423,7 @@ function supportsConstructableStylesheets(): boolean {
 
 async function warmStylesheet(
   descriptor: TemplateStylesheetDescriptor,
-): Promise<PreparedLinkStyle> {
+): Promise<LinkStyleFailure | undefined> {
   const href = resolveHref(descriptor.href);
   const fallbackReason = unsupportedLinkReason(descriptor);
   if (fallbackReason) return { href, reason: fallbackReason };
@@ -515,19 +458,11 @@ async function warmStylesheet(
         reason: 'response Content-Type is not text/css',
       };
     }
-    const responseHref = response.url || href;
-    const cssText = await response.text();
-    if (hasTopLevelImport(cssText)) {
-      return { href, reason: 'top-level @import requires native link loading' };
+    if (response.body) {
+      // Complete the cache warm without retaining the stylesheet text in JS.
+      await response.body.pipeTo(new WritableStream());
     }
-    const preparedCss = rewriteCssUrls(cssText, responseHref);
-    if (preparedCss === undefined) {
-      return {
-        href,
-        reason: 'relative CSS assets could not be safely resolved',
-      };
-    }
-    return { href: responseHref };
+    return undefined;
   } catch (error) {
     return {
       href,
@@ -543,8 +478,8 @@ async function warmStylesheet(
 function fallbackResults(
   descriptors: readonly TemplateStylesheetDescriptor[],
   reason: string,
-): readonly PreparedLinkStyle[] {
-  const results = new Array<PreparedLinkStyle>(descriptors.length);
+): readonly LinkStyleFailure[] {
+  const results = new Array<LinkStyleFailure>(descriptors.length);
   for (let i = 0; i < descriptors.length; i++) {
     results[i] = {
       href: resolveHref(descriptors[i].href),
@@ -673,7 +608,7 @@ function constructNativeStylesheets(
   links: readonly HTMLLinkElement[],
   descriptors: readonly TemplateStylesheetDescriptor[],
   mountStartedAt: number,
-): readonly CSSStyleSheet[] | undefined {
+): CSSStyleSheet[] | undefined {
   const sheets = new Array<CSSStyleSheet>(links.length);
   for (let i = 0; i < links.length; i++) {
     if (unsupportedLinkReason(descriptors[i])) return undefined;
@@ -708,13 +643,15 @@ function readNativeStylesheet(
     return undefined;
   }
 
-  let cssText = '';
+  const rewritten = new Array<string>(rules.length);
   for (let i = 0; i < rules.length; i++) {
-    if (i !== 0) cssText += '\n';
-    cssText += rules[i].cssText;
+    const rule = rules[i];
+    if (rule.type === CSS_IMPORT_RULE) return undefined;
+    const cssText = rewriteCssUrls(rule.cssText, link.href);
+    if (cssText === undefined) return undefined;
+    rewritten[i] = cssText;
   }
-  if (hasTopLevelImport(cssText)) return undefined;
-  return rewriteCssUrls(cssText, link.href);
+  return rewritten.join('\n');
 }
 
 function hasUnredirectedNativeTiming(
@@ -756,10 +693,18 @@ function hasUnredirectedNativeTiming(
 
 function adoptPreparedSheets(
   root: ShadowRoot,
-  sheets: readonly CSSStyleSheet[],
+  sheets: CSSStyleSheet[],
 ): boolean {
   if (!('adoptedStyleSheets' in root)) return false;
   const current = root.adoptedStyleSheets;
+  if (current.length === 0) {
+    try {
+      root.adoptedStyleSheets = sheets;
+      return true;
+    } catch {
+      return false;
+    }
+  }
   let retained = 0;
   for (let i = 0; i < current.length; i++) {
     let prepared = false;
@@ -869,18 +814,6 @@ function skipComment(cssText: string, start: number): number {
   return cssText.length;
 }
 
-function matchesImportKeyword(cssText: string, start: number): boolean {
-  const keyword = 'import';
-  if (start + keyword.length > cssText.length) return false;
-  for (let i = 0; i < keyword.length; i++) {
-    let code = cssText.charCodeAt(start + i);
-    if (code >= 65 && code <= 90) code += 32;
-    if (code !== keyword.charCodeAt(i)) return false;
-  }
-  const next = cssText.charCodeAt(start + keyword.length);
-  return !isCssNameCode(next);
-}
-
 interface UrlToken {
   readonly closeIndex: number;
   readonly quote: number;
@@ -963,15 +896,6 @@ function matchesCssFunction(
   return cssText.charCodeAt(start + name.length) === 40;
 }
 
-function atKeywordContainsEscape(cssText: string, start: number): boolean {
-  for (let i = start; i < cssText.length; i++) {
-    const code = cssText.charCodeAt(i);
-    if (code === 92) return true;
-    if (!isCssNameCode(code)) return false;
-  }
-  return false;
-}
-
 function isCssWhitespace(code: number): boolean {
   return code === 9 || code === 10 || code === 12 || code === 13 || code === 32;
 }
@@ -1024,6 +948,8 @@ function isCssResponse(response: Response): boolean {
     .toLowerCase();
   return mime === 'text/css';
 }
+
+function ignorePromiseResults(): void {}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

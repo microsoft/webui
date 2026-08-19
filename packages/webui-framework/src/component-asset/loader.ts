@@ -60,22 +60,14 @@ async function registerRootAsset(
     registerComponentPayload(chunks[i]);
   }
   registerComponentPayload(root);
-  const pendingStyles = new Array<Promise<void>>(chunks.length + 1);
-  let pendingStyleCount = 0;
+  let pendingStyles: Promise<void>[] | undefined;
   for (let i = 0; i < chunks.length; i++) {
     const ready = chunks[i].linkStyles;
     if (!ready) continue;
-    pendingStyles[pendingStyleCount] = ready;
-    pendingStyleCount += 1;
+    (pendingStyles ??= []).push(ready);
   }
-  if (root.linkStyles) {
-    pendingStyles[pendingStyleCount] = root.linkStyles;
-    pendingStyleCount += 1;
-  }
-  if (pendingStyleCount > 0) {
-    pendingStyles.length = pendingStyleCount;
-    await Promise.all(pendingStyles);
-  }
+  if (root.linkStyles) (pendingStyles ??= []).push(root.linkStyles);
+  if (pendingStyles) await Promise.all(pendingStyles);
 }
 
 function loadAssetModule(

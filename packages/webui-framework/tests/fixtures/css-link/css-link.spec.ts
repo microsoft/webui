@@ -689,6 +689,33 @@ test.describe('css link fixture', () => {
     });
   });
 
+  test('keeps stylesheets with imports on the native link path', async ({ page }) => {
+    await openFixture(page);
+
+    const result = await page.evaluate(async () => {
+      const child = document.createElement('test-link-import-child');
+      document.body.appendChild(child);
+      const link = child.shadowRoot?.querySelector('link');
+      if (link && !link.sheet) {
+        await new Promise<void>(resolve => {
+          link.addEventListener('load', () => resolve(), { once: true });
+        });
+      }
+      const label = child.shadowRoot?.querySelector('.import-label');
+      return {
+        adopted: child.shadowRoot?.adoptedStyleSheets.length ?? 0,
+        color: label ? getComputedStyle(label).color : null,
+        links: child.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
+      };
+    });
+
+    expect(result).toEqual({
+      adopted: 0,
+      color: 'rgb(0, 128, 0)',
+      links: 1,
+    });
+  });
+
   test('keeps stylesheet links with compiled events native on warm mounts', async ({ page }) => {
     await openFixture(page);
 
