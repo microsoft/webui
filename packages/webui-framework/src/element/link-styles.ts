@@ -574,7 +574,7 @@ function releaseStylesheetPreload(preload: HTMLLinkElement): void {
     if (speculative.cleanupTimer !== undefined) {
       clearTimeout(speculative.cleanupTimer);
     }
-    speculativeStylesheetPreloads?.set(preload.href, undefined);
+    speculativeStylesheetPreloads?.delete(preload.href);
   }
   preload.remove();
 }

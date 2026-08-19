@@ -5,9 +5,30 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
 import {
+  preloadComponentAssetStyles,
   rewriteCssUrls,
   templateMayContainLinkStyles,
 } from './link-styles.js';
+
+type GlobalName = 'CSSStyleSheet' | 'ShadowRoot' | 'document';
+
+function setGlobal(name: GlobalName, value: unknown): PropertyDescriptor | undefined {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, name);
+  Object.defineProperty(globalThis, name, {
+    value,
+    configurable: true,
+    writable: true,
+  });
+  return previous;
+}
+
+function restoreGlobal(name: GlobalName, previous: PropertyDescriptor | undefined): void {
+  if (previous) {
+    Object.defineProperty(globalThis, name, previous);
+  } else {
+    Reflect.deleteProperty(globalThis, name);
+  }
+}
 
 describe('Link stylesheet scanning', () => {
   test('skips Link-mode mount work for templates without link elements', () => {
@@ -69,5 +90,61 @@ describe('Link stylesheet scanning', () => {
       ),
       undefined,
     );
+  });
+
+  test('allows a speculative href to preload again after TTL cleanup', async (context) => {
+    class MockCssStyleSheet {
+      replaceSync(): void {}
+    }
+    class MockShadowRoot {}
+    Object.defineProperty(MockShadowRoot.prototype, 'adoptedStyleSheets', {
+      value: [],
+      configurable: true,
+      writable: true,
+    });
+
+    const appended: Array<{ onload: (() => void) | null }> = [];
+    const previousCssStyleSheet = setGlobal('CSSStyleSheet', MockCssStyleSheet);
+    const previousShadowRoot = setGlobal('ShadowRoot', MockShadowRoot);
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      createElement() {
+        return {
+          as: '',
+          crossOrigin: '',
+          href: '',
+          integrity: '',
+          onerror: null,
+          onload: null,
+          referrerPolicy: '',
+          rel: '',
+          remove() {},
+        };
+      },
+      head: {
+        appendChild(link: { onload: (() => void) | null }) {
+          appended.push(link);
+          link.onload?.();
+          return link;
+        },
+      },
+    });
+
+    try {
+      const href = '/retry.css';
+      preloadComponentAssetStyles([href]);
+      await Promise.resolve();
+      context.mock.timers.tick(3_000);
+
+      preloadComponentAssetStyles([href]);
+      assert.equal(appended.length, 2);
+      await Promise.resolve();
+      context.mock.timers.tick(3_000);
+    } finally {
+      restoreGlobal('CSSStyleSheet', previousCssStyleSheet);
+      restoreGlobal('ShadowRoot', previousShadowRoot);
+      restoreGlobal('document', previousDocument);
+    }
   });
 });
