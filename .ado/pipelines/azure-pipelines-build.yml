@@ -397,9 +397,6 @@ stages:
     - BuildLinuxAssets
     - BuildMacOSAssets
     - BuildWindowsAssets
-    - TestLinuxArm64PythonWheel
-    - TestWindowsArm64PythonWheel
-    - TestMacosArm64PythonWheel
     pool:
       vmImage: ubuntu-latest
     steps:

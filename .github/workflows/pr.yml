@@ -142,6 +142,56 @@ jobs:
       - name: Build docs
         run: pnpm --filter @webui/docs... build
 
+  # ── Phase 3: FFI bindings (after Linux build) ──────────────────────
+  # Exercises the C ABI from Python, Go, and C#. Depends on build-linux and
+  # shares its cache key: these are the same debug workspace crates that job
+  # already compiled, so the cargo steps below are a cache hit rather than a
+  # second full build.
+  ffi:
+    name: FFI Integration Tests
+    runs-on: ubuntu-latest
+    needs: build-linux
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+          shared-cache-key: ubuntu-build
+          dotnet: '8.0.x'
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.21'
+
+      - name: Build FFI library and protocol fixture
+        run: |
+          cargo build -p microsoft-webui-ffi
+          cargo run -p microsoft-webui-cli -- build \
+            crates/webui-ffi/tests/fixtures/app \
+            --out crates/webui-ffi/tests/fixtures/protocol.bin
+
+      - name: Run Python FFI tests
+        run: python crates/webui-ffi/tests/python/test_webui_ffi.py -v
+        env:
+          LD_LIBRARY_PATH: target/debug
+
+      - name: Run Go FFI tests
+        working-directory: crates/webui-ffi/tests/go
+        run: go test -v
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          CGO_LDFLAGS: -L${{ github.workspace }}/target/debug -lwebui_ffi -lm -ldl -lpthread
+
+      - name: Run C# FFI tests
+        working-directory: crates/webui-ffi/tests/csharp
+        run: dotnet test -v normal
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+
   # ── Phase 2: Python wheels ─────────────────────────────────────────
   # Build every wheel in the release contract. The x64 wheels feed python-test
   # below; the ARM64 wheels are cross-compiled exactly as the release pipeline
