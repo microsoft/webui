@@ -51,8 +51,12 @@ python3.11 -m pip install --upgrade "maturin==${maturin_version}"
 
 # Wheel build policy lives in xtask, exactly like every other release artifact.
 # This script only provides the old-glibc environment that policy runs inside.
+#
+# The cross image pre-sets CARGO_BUILD_TARGET so cargo cross-compiles by
+# default. xtask is a host build tool, so clear it here: leaving it set makes
+# cargo build xtask for the target and then fail trying to execute it.
 build_args=(--target "$target" --python-only)
 if [[ -n "$output" ]]; then
   build_args+=(--output "$output")
 fi
-WEBUI_PYTHON=python3.11 cargo xtask publish-build "${build_args[@]}"
+WEBUI_PYTHON=python3.11 env -u CARGO_BUILD_TARGET cargo xtask publish-build "${build_args[@]}"

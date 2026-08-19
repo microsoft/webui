@@ -618,11 +618,13 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
     })
 }
 
-/// Locate a CPython >= 3.11 to build the stable-ABI wheel against.
+/// Locate a CPython to run `maturin` with.
 ///
-/// abi3 only needs headers from any supported interpreter, so prefer an
-/// explicit `python3.11` (what the `manylinux` images expose) before falling
-/// back to whatever the host calls Python.
+/// This selects the interpreter that *executes* maturin, not the interpreter
+/// the wheel is built for: `abi3-py311` fixes the ABI, so maturin needs no
+/// target interpreter and must not be told to look for one when cross
+/// compiling. Prefer an explicit `python3.11` (what the `manylinux` images
+/// expose) before falling back to whatever the host calls Python.
 fn python_interpreter() -> String {
     if let Ok(interpreter) = std::env::var("WEBUI_PYTHON") {
         if !interpreter.is_empty() {
@@ -635,6 +637,34 @@ fn python_interpreter() -> String {
         }
     }
     "python".to_string()
+}
+
+/// Assemble the `maturin build` arguments for one target.
+///
+/// Deliberately omits `--interpreter`. The crate is abi3, so maturin derives
+/// the ABI tag from the feature and the platform tag from `--target`. Naming an
+/// interpreter makes maturin match the host interpreter against the target
+/// architecture and skip it, which breaks every cross build.
+fn maturin_build_args<'a>(manifest: &'a str, triple: &'a str, out: &'a str) -> Vec<&'a str> {
+    let mut args = vec![
+        "-m",
+        "maturin",
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        manifest,
+        "--target",
+        triple,
+        "--out",
+        out,
+    ];
+    // Linux wheels must declare the manylinux baseline they were built against;
+    // every other target derives its platform tag from the triple alone.
+    if triple.ends_with("-linux-gnu") {
+        args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
+    }
+    args
 }
 
 fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<String, String> {
@@ -657,26 +687,7 @@ fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<Strin
     let interpreter = python_interpreter();
     let manifest_arg = manifest_path.to_string_lossy().into_owned();
     let out_arg = out_dir.to_string_lossy().into_owned();
-    let mut maturin_args = vec![
-        "-m",
-        "maturin",
-        "build",
-        "--release",
-        "--locked",
-        "--manifest-path",
-        &manifest_arg,
-        "--target",
-        triple,
-        "--interpreter",
-        &interpreter,
-        "--out",
-        &out_arg,
-    ];
-    // Linux wheels must declare the manylinux baseline they were built against;
-    // every other target derives its platform tag from the triple alone.
-    if triple.ends_with("-linux-gnu") {
-        maturin_args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
-    }
+    let maturin_args = maturin_build_args(&manifest_arg, triple, &out_arg);
 
     run_command_quiet(&interpreter, &maturin_args, Some(root))
         .map_err(|e| format!("maturin build failed: {e}"))?;
@@ -1943,6 +1954,29 @@ mod tests {
         assert_eq!(python.mode, BuildMode::PythonOnly);
         assert!(!python.mode.includes_native());
         assert!(python.mode.includes_python());
+    }
+
+    #[test]
+    fn maturin_build_args_never_name_an_interpreter() {
+        for platform in PLATFORMS {
+            let args = maturin_build_args("Cargo.toml", platform.triple, "out");
+
+            assert!(
+                !args.contains(&"--interpreter"),
+                "abi3 cross builds must not pin an interpreter for {}",
+                platform.triple
+            );
+            assert!(args.contains(&"--locked"));
+            assert!(args.contains(&platform.triple));
+
+            let manylinux = args.contains(&"manylinux_2_17");
+            assert_eq!(
+                manylinux,
+                platform.triple.ends_with("-linux-gnu"),
+                "only Linux wheels declare a manylinux baseline ({})",
+                platform.triple
+            );
+        }
     }
 
     #[test]
