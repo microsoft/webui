@@ -525,25 +525,30 @@ wait briefly for state before mounting. Use a manifest helper when you want the
 fastest path: it lets the shell start the template asset, JS chunk, and data
 fetch in parallel.
 
-For a custom lazy loader whose Link-mode stylesheet hrefs are available before
-the template asset executes, start CSS beside the JavaScript import:
+Content-hashed stylesheet names are build output, not values application
+authors can derive. A custom bundler integration can read the Link-mode hrefs
+from the compiled component asset and emit them into its eager loader stub:
 
 ```typescript
+// Generated file - do not edit.
 import { preloadStylesheets } from '@microsoft/webui-framework';
 
-const styles = ['/assets/settings-dialog.8d31f4a2.css'];
+const styles = [__webpack_public_path__ + 'settings-dialog.8d31f4a2.css'];
 
-export function preloadSettings(): void {
+export function preload(): void {
   preloadStylesheets(styles);
   void import('./settings-dialog.webui.js');
 }
 ```
 
-Use this bare-href API only when the eventual template links have no
-`crossorigin`, `integrity`, or `referrerpolicy` attributes. Registration reuses
-the resolved-href preload, and repeated calls are deduplicated. A preload whose
-intent never converts is removed after three seconds, but the browser may still
-report its standard unused-preload warning.
+Application code calls the generated module's stable `preload()` export and
+never references the hashed filename. The generator must include the root
+asset's styles and styles from its imported shared chunks, using the bundler's
+runtime public path. Use this bare-href API only when the eventual template
+links have no `crossorigin`, `integrity`, or `referrerpolicy` attributes.
+Registration reuses the resolved-href preload, and repeated calls are
+deduplicated. A preload whose intent never converts is removed after three
+seconds, but the browser may still report its standard unused-preload warning.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the

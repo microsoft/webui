@@ -865,18 +865,21 @@ the pending mount, while a synchronous reconnect preserves it. A link error
 leaves the component guarded instead of exposing unstyled content. SSR
 hydration, Inline, Module, and Light DOM behavior are unchanged.
 
-### Intent-time Link preloading
+### Intent-time Link preloading for build tools
 
-Client-only Link components can start loading plain same-origin styles before
-their template bundle has registered its metadata:
+`preloadStylesheets()` is a low-level integration API for generated loaders.
+Application authors cannot know a content-hashed stylesheet filename before the
+build and must not hardcode or reconstruct it. The build produces the CSS name
+and embeds it in the eager loader stub:
 
 ```ts
+// Generated file - do not edit.
 import {
   preloadStylesheets,
   registerTemplateData,
 } from '@microsoft/webui-framework';
 
-const styles = ['/assets/settings-dialog.8d31f4a2.css'];
+const styles = [__webpack_public_path__ + 'settings-dialog.8d31f4a2.css'];
 
 export function preload(): void {
   preloadStylesheets(styles);
@@ -884,11 +887,24 @@ export function preload(): void {
 }
 ```
 
-`preloadStylesheets(hrefs)` resolves and deduplicates each href for the page,
-then adds a temporary `<link rel="preload" as="style">`. Registration claims
-the same node when the eventual template link uses default request attributes,
-so its native stylesheet link reuses the request. Call it immediately before a
-lazy JavaScript import to start the CSS and script in parallel.
+Authored code imports only that stable export:
+
+```ts
+import { preload as preloadSettingsDialog } from './settings-dialog.component.js';
+
+function onSettingsIntent(): void {
+  preloadSettingsDialog();
+}
+```
+
+The generator reads the emitted stylesheet names from the compiled component
+asset metadata, includes styles required by its shared chunks, and combines
+each name with the bundler's runtime public path. When CSS changes, the build
+regenerates both the hash and loader. `preloadStylesheets(hrefs)` then resolves
+and deduplicates each generated href and adds a temporary
+`<link rel="preload" as="style">`. Registration claims the same node when the
+eventual template link uses default request attributes, so its native
+stylesheet link reuses the request.
 
 This bare-href API does not represent `crossorigin`, `integrity`, or
 `referrerpolicy`. Templates using any of those attributes discard the

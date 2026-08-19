@@ -86,12 +86,14 @@ export function prepareRegisteredLinkStyles(
 }
 
 /**
- * Start default-attribute Link-mode stylesheet preloads before template registration.
+ * Let generated loaders start Link-mode styles before template registration.
  *
- * Resolved hrefs are deduplicated for the page lifetime. Links with `crossorigin`,
- * `integrity`, or `referrerpolicy` must use registration-time preparation so the
- * request attributes match. An unconsumed speculative preload may produce the
- * browser's standard unused-preload warning.
+ * This is a build-tool integration API. Application authors should call the
+ * generated loader's stable `preload()` export instead of deriving content-hashed
+ * stylesheet hrefs. Resolved hrefs are deduplicated for the page lifetime. Links
+ * with `crossorigin`, `integrity`, or `referrerpolicy` must use registration-time
+ * preparation so the request attributes match. An unconsumed speculative preload
+ * may produce the browser's standard unused-preload warning.
  */
 export function preloadStylesheets(hrefs: readonly string[]): void {
   if (hrefs.length === 0 || !supportsConstructableStylesheets()) return;

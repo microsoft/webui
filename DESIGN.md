@@ -502,16 +502,20 @@ instances can adopt that authorized sheet synchronously.
 The framework root exports
 `preloadStylesheets(hrefs: readonly string[]): void` for intent-driven
 client-only Link components whose stylesheet URLs are known before their
-template asset executes. The call resolves hrefs against `document.baseURI`,
-deduplicates them for the page, and creates temporary style-destination
-preloads so CSS can start in parallel with the lazy JavaScript import.
-Registration claims a speculative node only when its eventual native link has
-default CORS, integrity, and referrer-policy attributes. Otherwise it removes
-the bare node and starts the normal exact-attribute preload. Claimed nodes
-transfer to metadata-owned cleanup; unclaimed nodes are removed after a bounded
-three-second speculation window. Repeated calls, SSR, and browsers without the
-constructable promotion capability are no-ops. Speculation that never converts
-may produce the browser's standard unused-preload warning.
+template asset executes. This is a build-tool-facing API: component authors
+never derive or hardcode content-hashed stylesheet names. A bundler integration
+collects the emitted hrefs from the root component asset and its imported shared
+chunks, combines them with its runtime public path, and writes them into an
+eager generated loader. The call resolves those hrefs against
+`document.baseURI`, deduplicates them for the page, and creates temporary
+style-destination preloads so CSS can start in parallel with the lazy JavaScript
+import. Registration claims a speculative node only when its eventual native
+link has default CORS, integrity, and referrer-policy attributes. Otherwise it
+removes the bare node and starts the normal exact-attribute preload. Claimed
+nodes transfer to metadata-owned cleanup; unclaimed nodes are removed after a
+bounded three-second speculation window. Repeated calls, SSR, and browsers
+without the constructable promotion capability are no-ops. Speculation that
+never converts may produce the browser's standard unused-preload warning.
 
 `defineComponentAssets()` manifest entries provide the stable root asset URL
 plus optional component class and data loaders. Shared chunk filenames do not
