@@ -148,7 +148,7 @@ jobs:
   # already compiled, so the cargo steps below are a cache hit rather than a
   # second full build.
   ffi:
-    name: FFI Integration Tests
+    name: FFI
     runs-on: ubuntu-latest
     needs: build-linux
     steps:
@@ -382,3 +382,39 @@ jobs:
             "$output/committed.json" "$output/generated.json"
           cmp crates/webui-python/tests/fixtures/greeting-card.css \
             "$output/greeting-card.css"
+
+  # ── Gate: one stable required check ────────────────────────────────
+  # Branch protection can only require per-job contexts, so requiring the jobs
+  # individually means editing that list every time one is added, renamed, or
+  # removed. Require this job instead: it is the only context that has to be
+  # protected, and it stays correct as the matrix above evolves.
+  pr-checks:
+    name: PR Checks
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - lint
+      - test
+      - build-linux
+      - build-macos
+      - build-windows
+      - e2e
+      - wasm
+      - docs
+      - ffi
+      - python-wheel
+      - python-test
+      - python-fixture
+    steps:
+      # `needs` collapses each matrix to a single result, so this covers every
+      # wheel and interpreter leg too. Skipped counts as failure: nothing here
+      # is conditionally skipped, so a skip only happens when a dependency
+      # failed and took its dependents with it.
+      - name: Verify every job succeeded
+        if: >-
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled') ||
+          contains(needs.*.result, 'skipped')
+        run: |
+          echo "::error::One or more PR checks did not succeed."
+          exit 1
