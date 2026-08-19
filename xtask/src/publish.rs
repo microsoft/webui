@@ -563,6 +563,190 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
     })
 }
 
+/// Build the `microsoft-webui` wheel for one target into `publish/python/`.
+///
+/// Usage: `cargo xtask publish-python --target <triple> [--out <dir>]`
+///
+/// This keeps wheel build policy (maturin flags, `manylinux` compatibility,
+/// interpreter selection, and the expected output tag) in one place, exactly
+/// like `publish-build` owns native artifacts. CI only decides *where* to run
+/// it: Windows and macOS legs invoke it directly, while Linux legs invoke it
+/// inside a pinned `manylinux` container so the wheel links an old glibc.
+pub fn run_python_build(args: &[String]) -> ExitCode {
+    let root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!(
+                "  {} Failed to read current directory: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = match parse_python_build_options(args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("  {} {error}", console::style("✘").red().bold());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    eprintln!(
+        "\n{} Building Python wheel for {}",
+        console::style("▸").cyan().bold(),
+        console::style(&options.target_triple).bold(),
+    );
+    match build_python_wheel(&root, &options) {
+        Ok(wheel) => {
+            eprintln!(
+                "  {} Built {}\n",
+                console::style("✔").green(),
+                console::style(wheel).bold(),
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!(
+                "  {} Failed to build the Python wheel for {}: {error}",
+                console::style("✘").red().bold(),
+                options.target_triple,
+            );
+            ExitCode::FAILURE
+        }
+    }
+}
+
+struct PythonBuildOptions {
+    target_triple: String,
+    out_dir: Option<PathBuf>,
+}
+
+fn parse_python_build_options(args: &[String]) -> Result<PythonBuildOptions, String> {
+    let mut target_triple = None;
+    let mut out_dir = None;
+    let mut i = 0;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--target" => {
+                i += 1;
+                let Some(triple) = args.get(i) else {
+                    return Err("missing value for --target".to_string());
+                };
+                if !PLATFORMS.iter().any(|platform| platform.triple == triple) {
+                    return Err(format!("unknown target triple: {triple}"));
+                }
+                if target_triple.is_some() {
+                    return Err(
+                        "publish-python accepts exactly one --target; use separate jobs for each target"
+                            .to_string(),
+                    );
+                }
+                target_triple = Some(triple.clone());
+            }
+            "--out" => {
+                i += 1;
+                let Some(value) = args.get(i) else {
+                    return Err("missing value for --out".to_string());
+                };
+                out_dir = Some(PathBuf::from(value));
+            }
+            argument => return Err(format!("unknown publish-python argument: {argument}")),
+        }
+        i += 1;
+    }
+
+    let target_triple =
+        target_triple.ok_or_else(|| "publish-python requires one --target".to_string())?;
+
+    Ok(PythonBuildOptions {
+        target_triple,
+        out_dir,
+    })
+}
+
+/// Locate a CPython >= 3.11 to build the stable-ABI wheel against.
+///
+/// abi3 only needs headers from any supported interpreter, so prefer an
+/// explicit `python3.11` (what the `manylinux` images expose) before falling
+/// back to whatever the host calls Python.
+fn python_interpreter() -> String {
+    if let Ok(interpreter) = std::env::var("WEBUI_PYTHON") {
+        if !interpreter.is_empty() {
+            return interpreter;
+        }
+    }
+    for candidate in ["python3.11", "python3", "python"] {
+        if run_command_quiet(candidate, &["--version"], None).is_ok() {
+            return candidate.to_string();
+        }
+    }
+    "python".to_string()
+}
+
+fn build_python_wheel(root: &Path, options: &PythonBuildOptions) -> Result<String, String> {
+    let platform = PLATFORMS
+        .iter()
+        .find(|platform| platform.triple == options.target_triple)
+        .ok_or_else(|| format!("unknown target triple: {}", options.target_triple))?;
+
+    let out_dir = options
+        .out_dir
+        .clone()
+        .unwrap_or_else(|| root.join("publish").join("python"));
+    fs::create_dir_all(&out_dir)
+        .map_err(|e| format!("failed to create {}: {e}", out_dir.display()))?;
+
+    let manifest_path = root.join("crates").join("webui-python").join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "Python package manifest not found at {} (crates/webui-python must exist before packaging)",
+            manifest_path.display()
+        ));
+    }
+
+    let interpreter = python_interpreter();
+    let manifest_arg = manifest_path.to_string_lossy().into_owned();
+    let out_arg = out_dir.to_string_lossy().into_owned();
+    let mut maturin_args = vec![
+        "-m",
+        "maturin",
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        &manifest_arg,
+        "--target",
+        &options.target_triple,
+        "--interpreter",
+        &interpreter,
+        "--out",
+        &out_arg,
+    ];
+    // Linux wheels must declare the manylinux baseline they were built against;
+    // every other target derives its platform tag from the triple alone.
+    if options.target_triple.ends_with("-linux-gnu") {
+        maturin_args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
+    }
+
+    run_command_quiet(&interpreter, &maturin_args, Some(root))
+        .map_err(|e| format!("maturin build failed: {e}"))?;
+
+    let expected = format!(
+        "{PYTHON_DISTRIBUTION_NAME}-{}-{}.whl",
+        crate::version::read_version()
+            .map_err(|e| format!("failed to read the workspace version: {e}"))?,
+        expected_python_wheel_tag(platform)
+    );
+    if !out_dir.join(&expected).is_file() {
+        return Err(format!(
+            "maturin did not produce {expected} in {}",
+            out_dir.display()
+        ));
+    }
+    Ok(expected)
+}
+
 fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
     let mut target_triple = None;
     let mut profile = String::from("release");

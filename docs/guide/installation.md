@@ -112,8 +112,12 @@ Keep it alive for the server lifetime and dispose it during shutdown.
 The `microsoft-webui` PyPI package is a native PyO3 binding, not a `ctypes`
 wrapper:
 
+> The `microsoft-webui` package is **not published to PyPI yet**. Wheels and a
+> source distribution are built and attached to each GitHub Release; install one
+> directly, or build from a checkout with `maturin`.
+
 ```bash
-pip install microsoft-webui
+pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 ```
 
 It ships prebuilt wheels for CPython 3.11+ (Windows, macOS, and manylinux, on

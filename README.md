@@ -36,7 +36,7 @@ NuGet metadata uses `Authors=Microsoft`, the `Microsoft` package owner, a stable
 For Python server-side bindings:
 
 ```bash
-pip install microsoft-webui
+pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 ```
 
 `microsoft-webui` is a native PyO3 binding (not `ctypes`) for CPython 3.11+, distributed as prebuilt wheels for Windows, macOS, and manylinux on x86_64 and ARM64, plus one sdist. It is runtime-only: render `webui build` output, but don't compile templates from Python.

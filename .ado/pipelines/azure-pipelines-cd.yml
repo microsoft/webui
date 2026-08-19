@@ -251,13 +251,6 @@ extends:
         jobs:
         - job: PublishGitHub
           displayName: Publish GitHub Release
-          # PyPI publication is triggered by the GitHub Release "published"
-          # event (see .github/workflows/publish-pypi.yml). Publish npm and the
-          # Rust crates first so every package ecosystem exposes the release in
-          # lockstep; the Python sdist bundles its WebUI Rust source closure.
-          dependsOn:
-          - PublishNpm
-          - PublishCrates
           steps:
           - checkout: self
             clean: true
@@ -297,123 +290,8 @@ extends:
               artifactName: standalone_release_assets
               targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
 
-          - task: Bash@3
-            displayName: Create trusted Python release provenance
-            inputs:
-              targetType: inline
-              script: |
-                set -euo pipefail
-                python3 - <<'PY'
-                import hashlib
-                import json
-                import os
-                import re
-                from pathlib import Path
-
-                repository = "microsoft/webui"
-                release_actor = "azure-pipelines[bot]"
-                release_tag = os.environ["RELEASE_TAG"]
-                release_commit = os.environ["RELEASE_COMMIT"]
-                version = release_tag[1:]
-                artifact_dir = Path(os.environ["PYTHON_ARTIFACT_DIR"])
-
-                def sha256_file(path):
-                    digest = hashlib.sha256()
-                    with path.open("rb") as stream:
-                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                            digest.update(chunk)
-                    return f"sha256:{digest.hexdigest()}"
-
-                if os.environ["CD_PIPELINE_NAME"] != "Web UI - CD":
-                    raise SystemExit("CD must run from the 'Web UI - CD' pipeline definition")
-                if os.environ["RELEASE_BUILD_PIPELINE_NAME"] != "Web UI - CD Build":
-                    raise SystemExit("release artifacts must come from 'Web UI - CD Build'")
-                if os.environ["RELEASE_BUILD_SOURCE_BRANCH"] != "refs/heads/main":
-                    raise SystemExit("release artifacts must come from refs/heads/main")
-                if os.environ["RELEASE_BUILD_SOURCE_COMMIT"] != release_commit:
-                    raise SystemExit("release artifact source commit does not match release metadata")
-                if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?", release_tag):
-                    raise SystemExit(f"invalid release tag: {release_tag}")
-                if not re.fullmatch(r"[0-9a-f]{40}", release_commit):
-                    raise SystemExit(f"invalid release commit: {release_commit}")
-
-                build_id = os.environ["CD_BUILD_ID"]
-                source_run_id = os.environ["RELEASE_BUILD_RUN_ID"]
-                if not build_id.isdecimal() or not source_run_id.isdecimal():
-                    raise SystemExit("Azure Pipeline run identifiers must be decimal integers")
-
-                wheel_tags = (
-                    "cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64",
-                    "cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64",
-                    "cp311-abi3-win_amd64",
-                    "cp311-abi3-win_arm64",
-                    "cp311-abi3-macosx_10_12_x86_64",
-                    "cp311-abi3-macosx_11_0_arm64",
-                )
-                expected_names = {
-                    *(f"microsoft_webui-{version}-{tag}.whl" for tag in wheel_tags),
-                    f"microsoft_webui-{version}.tar.gz",
-                }
-                artifact_paths = sorted(
-                    (*artifact_dir.glob("microsoft_webui-*.whl"),
-                     *artifact_dir.glob("microsoft_webui-*.tar.gz")),
-                    key=lambda path: path.name,
-                )
-                actual_names = {path.name for path in artifact_paths}
-                if len(artifact_paths) != 7 or actual_names != expected_names:
-                    missing = sorted(expected_names - actual_names)
-                    unexpected = sorted(actual_names - expected_names)
-                    raise SystemExit(
-                        "expected exactly the six release wheels and one sdist; "
-                        f"missing={missing}, unexpected={unexpected}"
-                    )
-
-                artifacts = []
-                for path in artifact_paths:
-                    size = path.stat().st_size
-                    if size <= 0:
-                        raise SystemExit(f"release artifact is empty: {path.name}")
-                    artifacts.append({
-                        "name": path.name,
-                        "sha256": sha256_file(path),
-                        "size": size,
-                    })
-
-                provenance = {
-                    "schema": "microsoft.webui.python-release/v1",
-                    "repository": repository,
-                    "tag": release_tag,
-                    "commit": release_commit,
-                    "producer": {
-                        "identity": release_actor,
-                        "pipeline": os.environ["CD_PIPELINE_NAME"],
-                        "build_id": build_id,
-                        "source_pipeline": os.environ["RELEASE_BUILD_PIPELINE_NAME"],
-                        "source_run_id": source_run_id,
-                        "source_branch": os.environ["RELEASE_BUILD_SOURCE_BRANCH"],
-                    },
-                    "artifacts": artifacts,
-                }
-                manifest = artifact_dir / "webui-python-release-provenance.json"
-                manifest.write_text(
-                    json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n",
-                    encoding="utf-8",
-                )
-                print(f"Wrote trusted provenance for {len(artifacts)} Python release artifacts.")
-                PY
-            env:
-              RELEASE_TAG: $(releaseTag)
-              RELEASE_COMMIT: $(releaseCommit)
-              PYTHON_ARTIFACT_DIR: $(Build.SourcesDirectory)/publish_artifacts_python
-              CD_PIPELINE_NAME: $(Build.DefinitionName)
-              CD_BUILD_ID: $(Build.BuildId)
-              RELEASE_BUILD_PIPELINE_NAME: $(resources.pipeline.releaseBuild.pipelineName)
-              RELEASE_BUILD_RUN_ID: $(resources.pipeline.releaseBuild.runID)
-              RELEASE_BUILD_SOURCE_BRANCH: $(resources.pipeline.releaseBuild.sourceBranch)
-              RELEASE_BUILD_SOURCE_COMMIT: $(resources.pipeline.releaseBuild.sourceCommit)
-
           - task: GitHubRelease@1
-            displayName: Create draft GitHub Release and upload assets
+            displayName: Create GitHub Release
             inputs:
               gitHubConnection: fast
               repositoryName: microsoft/webui
@@ -433,44 +311,6 @@ extends:
                 $(Build.SourcesDirectory)/publish_artifacts_crates/*
                 $(Build.SourcesDirectory)/publish_artifacts_python/*
                 $(Build.SourcesDirectory)/publish_artifacts_standalone/*
-              assetUploadMode: replace
-              # GitHub creates a release before GitHubRelease@1 uploads its
-              # assets. Keep it draft so release.published cannot race uploads.
-              isDraft: true
-              isPreRelease: false
-              makeLatest: legacy
-
-          - task: Bash@3
-            displayName: Prepare asset-free release finalization
-            inputs:
-              targetType: inline
-              script: |
-                set -euo pipefail
-                if [[ -e "$NO_ASSET_PATH" || -L "$NO_ASSET_PATH" ]]; then
-                  echo "##vso[task.logissue type=error]Reserved finalization path unexpectedly exists: $NO_ASSET_PATH"
-                  exit 1
-                fi
-            env:
-              NO_ASSET_PATH: $(Build.SourcesDirectory)/.release-finalize-without-assets
-
-          - task: GitHubRelease@1
-            displayName: Publish complete GitHub Release
-            inputs:
-              gitHubConnection: fast
-              repositoryName: microsoft/webui
-              action: edit
-              target: $(releaseCommit)
-              tag: $(releaseTag)
-              title: $(releaseTag)
-              releaseNotesSource: inline
-              releaseNotesInline: ''
-              addChangeLog: true
-              changeLogCompareToRelease: lastFullRelease
-              changeLogType: issueBased
-              # `replace` is required: edit mode's default `delete` removes all
-              # existing assets. This guaranteed-missing path makes the edit
-              # publish the already-complete draft without another upload.
-              assets: $(Build.SourcesDirectory)/.release-finalize-without-assets
               assetUploadMode: replace
               isDraft: false
               isPreRelease: false

@@ -1,6 +1,6 @@
 # Python
 
-The `microsoft-webui` PyPI package provides high-performance server-side
+The `microsoft-webui` package provides high-performance server-side
 rendering for Python. It is a direct **PyO3** native extension — not a
 `ctypes` wrapper around the [C API](./ffi) — imported as `microsoft_webui`.
 Rendering calls release the GIL, so a `Renderer` shared across threads keeps
@@ -8,8 +8,17 @@ rendering while the rest of your application runs Python code.
 
 ## Installation
 
+> The `microsoft-webui` package is **not published to PyPI yet**. Wheels and a
+> source distribution are built and attached to each GitHub Release; install one
+> directly, or build from a checkout with `maturin`.
+
 ```bash
-pip install microsoft-webui
+# From a GitHub Release asset
+pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
+
+# Or from a checkout
+pip install maturin
+maturin build --release --manifest-path crates/webui-python/Cargo.toml
 ```
 
 The package ships prebuilt wheels for CPython 3.11+ on Windows, macOS, and

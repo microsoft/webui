@@ -6,7 +6,7 @@ interop, Go, Ruby, PHP, Lua, and more, can render compiled WebUI applications
 without a JavaScript runtime. .NET applications should prefer the managed
 `Microsoft.WebUI` NuGet package, which restores native runtime packages
 transitively, and Python applications should prefer the native
-`microsoft-webui` PyPI package (see [Python](./python)). .NET wraps this C ABI;
+`microsoft-webui` package (see [Python](./python)). .NET wraps this C ABI;
 Python binds the Rust handler directly through PyO3. Only languages without a
 first-class binding need to call the C ABI directly.
 
@@ -321,7 +321,7 @@ Pass `NULL` for no plugin (equivalent to `webui_handler_create`). See [Plugins](
 
 ## Python
 
-Most Python applications should install the `microsoft-webui` PyPI package
+Most Python applications should use the `microsoft-webui` package
 instead of using this FFI directly — it is a native PyO3 binding (not a
 `ctypes` wrapper) with a `Renderer` facade, typed `bytes`/`str` returns, and a
 host-driven `StreamingSession`. See [Python](./python) for installation and

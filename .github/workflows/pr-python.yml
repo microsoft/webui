@@ -7,7 +7,6 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - '.ado/pipelines/azure-pipelines-build.yml'
       - '.github/workflows/pr-python.yml'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -24,9 +23,16 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  PACKAGE_DISTRIBUTION_NAME: microsoft_webui
+  # Pinned by digest so a rebuilt upstream tag cannot silently change the
+  # toolchain or sysroot the Linux wheels are built against.
+  MANYLINUX_X64: messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d
+  MANYLINUX_ARM64: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
 
 jobs:
+  # Build every wheel in the release contract. The x64 wheels are handed to
+  # `test-wheel` below; the ARM64 wheels are cross-compiled exactly as the
+  # release pipeline cross-compiles them, so a build break surfaces here rather
+  # than at release time. They are not installed - that needs ARM64 hardware.
   build-wheel:
     name: Build wheel / ${{ matrix.platform.label }}
     runs-on: ${{ matrix.platform.os }}
@@ -36,335 +42,34 @@ jobs:
         platform:
           - label: Linux x64
             os: ubuntu-latest
-            artifact: python-wheel-linux-x64
             target: x86_64-unknown-linux-gnu
             platform_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
+            artifact: python-wheel-linux-x64
           - label: macOS x64
             os: macos-15-intel
-            artifact: python-wheel-macos-x64
             target: x86_64-apple-darwin
             platform_tag: macosx_10_12_x86_64
+            artifact: python-wheel-macos-x64
           - label: Windows x64
             os: windows-latest
-            artifact: python-wheel-windows-x64
             target: x86_64-pc-windows-msvc
             platform_tag: win_amd64
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: crates/webui-python/pyproject.toml
-
-      - name: Validate release-target contract is restated consistently
-        if: runner.os == 'Linux'
-        run: python crates/webui-python/tests/validate_release_targets.py
-
-      - name: Validate pinned manylinux build inputs
-        if: runner.os == 'Linux'
-        shell: python
-        run: |
-          from collections import Counter
-          from pathlib import Path
-          import re
-
-          expected_x64 = "messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d"
-          expected_aarch64 = "messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8"
-          expected_rustup_url = (
-              "https://static.rust-lang.org/rustup/archive/1.29.0/"
-              "x86_64-unknown-linux-gnu/rustup-init"
-          )
-          expected_rustup_sha256 = (
-              "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
-          )
-
-          azure = Path(
-              ".ado/pipelines/azure-pipelines-build.yml"
-          ).read_text(encoding="utf-8")
-          github = Path(
-              ".github/workflows/pr-python.yml"
-          ).read_text(encoding="utf-8")
-
-          azure_images = re.findall(
-              r"^\s*manylinuxCrossImage:\s*(\S+)\s*$",
-              azure,
-              flags=re.MULTILINE,
-          )
-          github_images = [
-              line.strip().removesuffix("\\").rstrip()
-              for line in github.splitlines()
-              if line.strip().startswith("messense/manylinux2014-cross:")
-          ]
-          expected_images = Counter(
-              {expected_x64: 2, expected_aarch64: 2}
-          )
-          actual_images = Counter(azure_images + github_images)
-          if actual_images != expected_images:
-              raise SystemExit(
-                  f"Expected pinned image references {expected_images}, "
-                  f"found {actual_images}"
-              )
-
-          def assignments(source: str, name: str) -> list[str]:
-              return re.findall(
-                  rf'^\s*{name}="([^"]+)"\s*$',
-                  source,
-                  flags=re.MULTILINE,
-              )
-
-          urls = assignments(azure, "rustup_init_url")
-          urls.extend(assignments(github, "rustup_init_url"))
-          if Counter(urls) != Counter({expected_rustup_url: 3}):
-              raise SystemExit(f"Unexpected rustup-init URLs: {urls}")
-
-          checksums = assignments(azure, "rustup_init_sha256")
-          checksums.extend(assignments(github, "rustup_init_sha256"))
-          if Counter(checksums) != Counter({expected_rustup_sha256: 3}):
-              raise SystemExit(
-                  f"Unexpected rustup-init SHA-256 values: {checksums}"
-              )
-
-          checksum_commands = sum(
-              line.strip() == "sha256sum --check --strict -"
-              for source in (azure, github)
-              for line in source.splitlines()
-          )
-          if checksum_commands != 3:
-              raise SystemExit(
-                  "Every rustup-init download must use strict SHA-256 validation"
-              )
-
-          insecure_url = "https://sh." + "rustup.rs"
-          if insecure_url in azure or insecure_url in github:
-              raise SystemExit("The mutable rustup bootstrap URL is forbidden")
-
-          def validate_image(reference: str) -> None:
-              if reference not in {expected_x64, expected_aarch64}:
-                  raise ValueError("unapproved image digest")
-
-          def validate_checksum(checksum: str) -> None:
-              if checksum != expected_rustup_sha256:
-                  raise ValueError("unapproved rustup-init checksum")
-
-          tampered_image = expected_x64[:-1] + (
-              "0" if expected_x64[-1] != "0" else "1"
-          )
-          for validator, tampered in (
-              (validate_image, tampered_image),
-              (validate_checksum, "0" * 64),
-          ):
-              try:
-                  validator(tampered)
-              except ValueError:
-                  pass
-              else:
-                  raise SystemExit(
-                      f"Tamper test unexpectedly accepted {tampered}"
-                  )
-
-      - name: Setup Rust
-        if: runner.os != 'Linux'
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
-        with:
-          toolchain: '1.93'
-
-      - name: Cache Rust build
-        if: runner.os != 'Linux'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          shared-key: ${{ matrix.platform.artifact }}
-          cache-on-failure: true
-
-      - name: Prepare wheel output
-        shell: python
-        run: |
-          from pathlib import Path
-          import shutil
-
-          output = Path("target/python-wheel")
-          shutil.rmtree(output, ignore_errors=True)
-          output.mkdir(parents=True)
-
-      - name: Install wheel build tool
-        if: runner.os != 'Linux'
-        run: python -m pip install --upgrade "maturin==1.14.1"
-
-      - name: Build native stable-ABI wheel
-        if: runner.os != 'Linux'
-        run: >-
-          python -m maturin build
-          --release
-          --locked
-          --manifest-path crates/webui-python/Cargo.toml
-          --target "${{ matrix.platform.target }}"
-          --interpreter python
-          --out target/python-wheel
-
-      - name: Build manylinux stable-ABI wheel
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            --platform linux/amd64 \
-            -v "$GITHUB_WORKSPACE:/io" \
-            -w /io \
-            messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d \
-            bash -euo pipefail -c '
-              if [[ "$(uname -m)" != x86_64 ]]; then
-                echo "Expected x86_64 manylinux build host, found $(uname -m)" >&2
-                exit 1
-              fi
-              rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init"
-              rustup_init_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
-              rustup_init="target/rustup-init-1.29.0-x86_64-unknown-linux-gnu"
-              mkdir -p target
-              cleanup_rustup_init() {
-                rm -f "$rustup_init"
-              }
-              trap cleanup_rustup_init EXIT
-              curl --proto "=https" --tlsv1.2 --fail --silent --show-error \
-                --output "$rustup_init" \
-                "$rustup_init_url"
-              printf "%s  %s\n" "$rustup_init_sha256" "$rustup_init" |
-                sha256sum --check --strict -
-              chmod +x "$rustup_init"
-              "$rustup_init" -y \
-                --profile minimal \
-                --default-toolchain 1.93 \
-                --no-modify-path
-              rm -f "$rustup_init"
-              trap - EXIT
-              export PATH="$HOME/.cargo/bin:$PATH"
-              export RUSTUP_TOOLCHAIN=1.93
-              rustup --version | grep -E "^rustup 1\.29\.0 "
-              rustc --version | grep -E "^rustc 1\.93\."
-              cargo --version | grep -E "^cargo 1\.93\."
-              python3.11 -m pip install --upgrade "maturin==1.14.1"
-              python3.11 -m maturin build \
-                --release \
-                --locked \
-                --manifest-path crates/webui-python/Cargo.toml \
-                --target x86_64-unknown-linux-gnu \
-                --interpreter python3.11 \
-                --compatibility manylinux_2_17 \
-                --out target/python-wheel
-            '
-
-      - name: Validate exact wheel filename and tags
-        env:
-          EXPECTED_PLATFORM_TAG: ${{ matrix.platform.platform_tag }}
-        shell: python
-        run: |
-          from hashlib import file_digest
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          import tomllib
-          from zipfile import ZipFile
-
-          version = tomllib.loads(
-              Path("Cargo.toml").read_text(encoding="utf-8")
-          )["workspace"]["package"]["version"]
-          platform_tag = os.environ["EXPECTED_PLATFORM_TAG"]
-          expected_filename_tag = f"cp311-abi3-{platform_tag}"
-          expected_metadata_tags = {
-              f"cp311-abi3-{component}" for component in platform_tag.split(".")
-          }
-          expected_name = (
-              f"{os.environ['PACKAGE_DISTRIBUTION_NAME']}-"
-              f"{version}-{expected_filename_tag}.whl"
-          )
-          output = Path("target/python-wheel")
-          wheels = sorted(output.glob("*.whl"))
-          if [wheel.name for wheel in wheels] != [expected_name]:
-              raise SystemExit(
-                  f"Expected exactly {expected_name}, found "
-                  f"{[wheel.name for wheel in wheels]}"
-              )
-
-          wheel = wheels[0]
-          with ZipFile(wheel) as archive:
-              metadata_files = [
-                  name
-                  for name in archive.namelist()
-                  if name.endswith(".dist-info/WHEEL")
-              ]
-              if len(metadata_files) != 1:
-                  raise SystemExit(
-                      "Expected one .dist-info/WHEEL metadata file, found "
-                      f"{metadata_files}"
-                  )
-              metadata = archive.read(metadata_files[0]).decode("utf-8")
-          tags = {
-              line.removeprefix("Tag: ").strip()
-              for line in metadata.splitlines()
-              if line.startswith("Tag: ")
-          }
-          if tags != expected_metadata_tags:
-              raise SystemExit(
-                  f"Expected wheel metadata tags {sorted(expected_metadata_tags)}, "
-                  f"found {sorted(tags)}"
-              )
-
-          subprocess.run(
-              [
-                  sys.executable,
-                  "crates/webui-python/tests/validate_artifacts.py",
-                  str(wheel),
-              ],
-              check=True,
-          )
-
-          with wheel.open("rb") as stream:
-              digest = file_digest(stream, "sha256").hexdigest()
-          wheel.with_name(f"{wheel.name}.sha256").write_text(
-              f"{digest}\n", encoding="utf-8"
-          )
-          print(f"Validated {wheel.name} ({digest})")
-
-      - name: Upload exact wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ${{ matrix.platform.artifact }}
-          path: |
-            target/python-wheel/*.whl
-            target/python-wheel/*.sha256
-          if-no-files-found: error
-          retention-days: 1
-
-  # The release contract ships six wheels, but GitHub's hosted x64 runners
-  # cannot execute the three ARM64 ones. Azure owns running them on real ARM64
-  # hardware before a release. These jobs cross-compile the same three targets
-  # the release pipeline cross-compiles, so an ARM64 build break is caught on
-  # the PR that introduces it instead of at release time. Build and tag
-  # validation only - never install or import, which needs ARM64 hardware.
-  cross-build-arm64:
-    name: Cross-build wheel / ${{ matrix.platform.label }}
-    runs-on: ${{ matrix.platform.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
+            artifact: python-wheel-windows-x64
           - label: Linux ARM64
             os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             platform_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
+            artifact: ''
           - label: macOS ARM64
             os: macos-15-intel
             target: aarch64-apple-darwin
             platform_tag: macosx_11_0_arm64
+            artifact: ''
           - label: Windows ARM64
             os: windows-latest
             target: aarch64-pc-windows-msvc
             platform_tag: win_arm64
+            artifact: ''
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -375,8 +80,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: crates/webui-python/pyproject.toml
 
       - name: Setup Rust
         if: runner.os != 'Linux'
@@ -389,155 +92,53 @@ jobs:
         if: runner.os != 'Linux'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: python-cross-${{ matrix.platform.target }}
+          shared-key: python-${{ matrix.platform.target }}
           cache-on-failure: true
 
-      - name: Prepare wheel output
-        shell: python
-        run: |
-          from pathlib import Path
-          import shutil
-
-          output = Path("target/python-wheel")
-          shutil.rmtree(output, ignore_errors=True)
-          output.mkdir(parents=True)
-
-      - name: Install wheel build tool
+      # abi3 needs no target interpreter and `generate-import-lib` synthesizes
+      # the Windows ARM64 import library, so every target cross-compiles here.
+      # Wheel build policy lives in xtask, like every other release artifact.
+      - name: Build stable-ABI wheel
         if: runner.os != 'Linux'
-        run: python -m pip install --upgrade "maturin==1.14.1"
-
-      # abi3 needs no target interpreter, and `generate-import-lib` synthesizes
-      # the Windows ARM64 import library, so both cross-compile on an x64 host.
-      - name: Cross-build stable-ABI wheel
-        if: runner.os != 'Linux'
-        run: >-
-          python -m maturin build
-          --release
-          --locked
-          --manifest-path crates/webui-python/Cargo.toml
-          --target "${{ matrix.platform.target }}"
-          --interpreter python
-          --out target/python-wheel
-
-      - name: Cross-build manylinux aarch64 stable-ABI wheel
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          docker run --rm \
-            --platform linux/amd64 \
-            -v "$GITHUB_WORKSPACE:/io" \
-            -w /io \
-            messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8 \
-            bash -euo pipefail -c '
-              if [[ "$(uname -m)" != x86_64 ]]; then
-                echo "Expected x86_64 manylinux build host, found $(uname -m)" >&2
-                exit 1
-              fi
-              rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init"
-              rustup_init_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
-              rustup_init="target/rustup-init-1.29.0-x86_64-unknown-linux-gnu"
-              mkdir -p target
-              cleanup_rustup_init() {
-                rm -f "$rustup_init"
-              }
-              trap cleanup_rustup_init EXIT
-              curl --proto "=https" --tlsv1.2 --fail --silent --show-error \
-                --output "$rustup_init" \
-                "$rustup_init_url"
-              printf "%s  %s\n" "$rustup_init_sha256" "$rustup_init" |
-                sha256sum --check --strict -
-              chmod +x "$rustup_init"
-              "$rustup_init" -y \
-                --profile minimal \
-                --default-toolchain none \
-                --no-modify-path
-              rm -f "$rustup_init"
-              trap - EXIT
-              export PATH="$HOME/.cargo/bin:$PATH"
-              export RUSTUP_TOOLCHAIN=1.93
-              rustup --version | grep -E "^rustup 1\.29\.0 "
-              rustup toolchain install 1.93 \
-                --profile minimal \
-                --target aarch64-unknown-linux-gnu
-              rustc --version | grep -E "^rustc 1\.93\."
-              cargo --version | grep -E "^cargo 1\.93\."
-              python3.11 -m pip install --upgrade "maturin==1.14.1"
-              python3.11 -m maturin build \
-                --release \
-                --locked \
-                --manifest-path crates/webui-python/Cargo.toml \
-                --target aarch64-unknown-linux-gnu \
-                --interpreter python3.11 \
-                --compatibility manylinux_2_17 \
-                --out target/python-wheel
-            '
+          python -m pip install --upgrade "maturin==1.14.1"
+          cargo xtask publish-python \
+            --target "${{ matrix.platform.target }}" --out target/python-wheel
 
-      - name: Validate exact wheel filename and tags
+      - name: Build manylinux stable-ABI wheel
+        if: runner.os == 'Linux'
+        shell: bash
         env:
-          EXPECTED_PLATFORM_TAG: ${{ matrix.platform.platform_tag }}
-        shell: python
+          IMAGE: ${{ matrix.platform.target == 'aarch64-unknown-linux-gnu' && env.MANYLINUX_ARM64 || env.MANYLINUX_X64 }}
         run: |
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          import tomllib
-          from zipfile import ZipFile
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/io" -w /io "$IMAGE" \
+            bash crates/webui-python/scripts/build-manylinux-wheel.sh \
+              "${{ matrix.platform.target }}" target/python-wheel
 
-          version = tomllib.loads(
-              Path("Cargo.toml").read_text(encoding="utf-8")
-          )["workspace"]["package"]["version"]
-          platform_tag = os.environ["EXPECTED_PLATFORM_TAG"]
-          expected_metadata_tags = {
-              f"cp311-abi3-{component}" for component in platform_tag.split(".")
-          }
-          expected_name = (
-              f"{os.environ['PACKAGE_DISTRIBUTION_NAME']}-"
-              f"{version}-cp311-abi3-{platform_tag}.whl"
-          )
-          output = Path("target/python-wheel")
-          wheels = sorted(output.glob("*.whl"))
-          if [wheel.name for wheel in wheels] != [expected_name]:
-              raise SystemExit(
-                  f"Expected exactly {expected_name}, found "
-                  f"{[wheel.name for wheel in wheels]}"
-              )
+      - name: Validate wheel name, tags, and license metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          python crates/webui-python/tests/validate_wheel.py \
+            target/python-wheel "${{ matrix.platform.platform_tag }}"
+          python crates/webui-python/tests/validate_artifacts.py \
+            target/python-wheel/*.whl
 
-          wheel = wheels[0]
-          with ZipFile(wheel) as archive:
-              metadata_files = [
-                  name
-                  for name in archive.namelist()
-                  if name.endswith(".dist-info/WHEEL")
-              ]
-              if len(metadata_files) != 1:
-                  raise SystemExit(
-                      "Expected one .dist-info/WHEEL metadata file, found "
-                      f"{metadata_files}"
-                  )
-              metadata = archive.read(metadata_files[0]).decode("utf-8")
-          tags = {
-              line.removeprefix("Tag: ").strip()
-              for line in metadata.splitlines()
-              if line.startswith("Tag: ")
-          }
-          if tags != expected_metadata_tags:
-              raise SystemExit(
-                  f"Expected wheel metadata tags {sorted(expected_metadata_tags)}, "
-                  f"found {sorted(tags)}"
-              )
+      - name: Upload wheel
+        if: matrix.platform.artifact != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.platform.artifact }}
+          path: target/python-wheel/*.whl
+          if-no-files-found: error
+          retention-days: 1
 
-          subprocess.run(
-              [
-                  sys.executable,
-                  "crates/webui-python/tests/validate_artifacts.py",
-                  str(wheel),
-              ],
-              check=True,
-          )
-          print(f"Validated cross-built {wheel.name}")
-
+  # One abi3 wheel must serve every supported interpreter, so install the exact
+  # wheel built on Python 3.11 and run the suite on each newer CPython.
   test-wheel:
     name: Test wheel / ${{ matrix.platform.label }} / CPython ${{ matrix.python }}
     needs: build-wheel
@@ -549,17 +150,14 @@ jobs:
           - label: Linux x64
             os: ubuntu-latest
             artifact: python-wheel-linux-x64
-            platform_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
             quality: true
           - label: macOS x64
             os: macos-15-intel
             artifact: python-wheel-macos-x64
-            platform_tag: macosx_10_12_x86_64
             quality: false
           - label: Windows x64
             os: windows-latest
             artifact: python-wheel-windows-x64
-            platform_tag: win_amd64
             quality: false
         python: ['3.11', '3.12', '3.13', '3.14']
 
@@ -572,115 +170,22 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
-          cache: pip
-          cache-dependency-path: crates/webui-python/pyproject.toml
 
-      - name: Download ${{ matrix.platform.artifact }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.platform.artifact }}
           path: target/python-wheel
 
-      - name: Verify downloaded wheel identity and tags
-        env:
-          EXPECTED_PLATFORM_TAG: ${{ matrix.platform.platform_tag }}
-        shell: python
+      - name: Install the built wheel and test it
+        shell: bash
         run: |
-          from hashlib import file_digest
-          import os
-          from pathlib import Path
-          import tomllib
-          from zipfile import ZipFile
+          set -euo pipefail
+          python -m pip install --upgrade "pytest>=8.3,<10"
+          python -m pip install --force-reinstall --no-deps --no-index \
+            target/python-wheel/*.whl
+          python -m pytest crates/webui-python/tests -q
 
-          version = tomllib.loads(
-              Path("Cargo.toml").read_text(encoding="utf-8")
-          )["workspace"]["package"]["version"]
-          platform_tag = os.environ["EXPECTED_PLATFORM_TAG"]
-          expected_filename_tag = f"cp311-abi3-{platform_tag}"
-          expected_metadata_tags = {
-              f"cp311-abi3-{component}" for component in platform_tag.split(".")
-          }
-          expected_name = (
-              f"{os.environ['PACKAGE_DISTRIBUTION_NAME']}-"
-              f"{version}-{expected_filename_tag}.whl"
-          )
-          output = Path("target/python-wheel")
-          expected_files = sorted([expected_name, f"{expected_name}.sha256"])
-          actual_files = sorted(
-              path.name for path in output.iterdir() if path.is_file()
-          )
-          if actual_files != expected_files:
-              raise SystemExit(
-                  f"Expected artifact files {expected_files}, found {actual_files}"
-              )
-
-          wheel = output / expected_name
-          expected_digest = wheel.with_name(
-              f"{wheel.name}.sha256"
-          ).read_text(encoding="utf-8").strip()
-          with wheel.open("rb") as stream:
-              actual_digest = file_digest(stream, "sha256").hexdigest()
-          if actual_digest != expected_digest:
-              raise SystemExit(
-                  f"Wheel digest mismatch: expected {expected_digest}, "
-                  f"found {actual_digest}"
-              )
-
-          with ZipFile(wheel) as archive:
-              metadata_files = [
-                  name
-                  for name in archive.namelist()
-                  if name.endswith(".dist-info/WHEEL")
-              ]
-              if len(metadata_files) != 1:
-                  raise SystemExit(
-                      "Expected one .dist-info/WHEEL metadata file, found "
-                      f"{metadata_files}"
-                  )
-              metadata = archive.read(metadata_files[0]).decode("utf-8")
-          tags = {
-              line.removeprefix("Tag: ").strip()
-              for line in metadata.splitlines()
-              if line.startswith("Tag: ")
-          }
-          if tags != expected_metadata_tags:
-              raise SystemExit(
-                  f"Expected wheel metadata tags {sorted(expected_metadata_tags)}, "
-                  f"found {sorted(tags)}"
-              )
-
-          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as env:
-              env.write(f"WHEEL_PATH={wheel.resolve()}\n")
-          print(f"Verified {wheel.name} ({actual_digest})")
-
-      - name: Install package test tools
-        run: python -m pip install --upgrade "pytest>=8.3,<10"
-
-      - name: Install exact downloaded wheel
-        shell: python
-        run: |
-          import os
-          import subprocess
-          import sys
-
-          subprocess.run(
-              [
-                  sys.executable,
-                  "-m",
-                  "pip",
-                  "install",
-                  "--force-reinstall",
-                  "--no-deps",
-                  "--no-index",
-                  os.environ["WHEEL_PATH"],
-              ],
-              check=True,
-          )
-
-      - name: Run all package tests
-        run: python -m pytest crates/webui-python/tests -q
-
-      - name: Validate lint and strict typing
+      - name: Validate lint, strict typing, and stubs
         if: matrix.platform.quality && matrix.python == '3.11'
         working-directory: crates/webui-python
         run: |
@@ -689,49 +194,45 @@ jobs:
           python -m mypy
           python -m mypy.stubtest microsoft_webui
 
-      - name: Setup Rust
-        if: matrix.platform.quality && matrix.python == '3.11'
-        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+  # The committed protocol fixture is a build output. Rebuild it from source and
+  # fail if it drifted, so the Python tests never assert against a stale binary.
+  fixture:
+    name: Validate protocol fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           toolchain: '1.93'
 
-      - name: Cache Rust build
-        if: matrix.platform.quality && matrix.python == '3.11'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          shared-key: python-quality
+          shared-key: python-fixture
           cache-on-failure: true
 
-      - name: Regenerate and validate protocol fixture
-        if: matrix.platform.quality && matrix.python == '3.11'
+      - name: Verify the release-target contract is restated consistently
+        run: python crates/webui-python/tests/validate_release_targets.py
+
+      - name: Rebuild and compare the protocol fixture
         shell: bash
         run: |
           set -euo pipefail
           output=target/python-fixture-check
           rm -rf "$output"
           cargo run --quiet -p microsoft-webui-cli -- build \
-            crates/webui-python/tests/fixtures/app \
-            --plugin webui \
-            --out "$output"
+            crates/webui-python/tests/fixtures/app --plugin webui --out "$output"
           cargo run --quiet -p microsoft-webui-cli -- inspect \
-            crates/webui-python/tests/fixtures/protocol.bin \
-            > "$output/committed.json"
+            crates/webui-python/tests/fixtures/protocol.bin > "$output/committed.json"
           cargo run --quiet -p microsoft-webui-cli -- inspect \
-            "$output/protocol.bin" \
-            > "$output/generated.json"
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          output = Path("target/python-fixture-check")
-          committed = json.loads(output.joinpath("committed.json").read_text())
-          generated = json.loads(output.joinpath("generated.json").read_text())
-          if committed != generated:
-              raise SystemExit(
-                  "Python protocol fixture is stale; regenerate "
-                  "crates/webui-python/tests/fixtures/protocol.bin"
-              )
-          PY
-          cmp \
-            crates/webui-python/tests/fixtures/greeting-card.css \
+            "$output/protocol.bin" > "$output/generated.json"
+          python crates/webui-python/tests/compare_fixture.py \
+            "$output/committed.json" "$output/generated.json"
+          cmp crates/webui-python/tests/fixtures/greeting-card.css \
             "$output/greeting-card.css"

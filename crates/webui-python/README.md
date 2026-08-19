@@ -4,8 +4,12 @@
 CPython. It ships prebuilt native wheels, so supported platforms do not need a
 Rust toolchain or a separately installed WebUI shared library.
 
+> The `microsoft-webui` package is **not published to PyPI yet**. Wheels and a
+> source distribution are built and attached to each GitHub Release; install one
+> directly, or build from a checkout with `maturin`.
+
 ```bash
-python -m pip install microsoft-webui
+python -m pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 ```
 
 ```python
