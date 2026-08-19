@@ -6,12 +6,15 @@
 # but no Rust, so this installs a pinned toolchain from a checksum-verified
 # rustup-init rather than the mutable https://sh.rustup.rs bootstrap.
 #
-# Usage: build-manylinux-wheel.sh <target-triple> <output-dir>
+# Usage: build-manylinux-wheel.sh <target-triple> [export-root]
+#
+# The wheel is always written to publish/python/ in the repository. Passing an
+# export root additionally copies it to <export-root>/publish/python/.
 
 set -euo pipefail
 
 target="${1:?target triple is required}"
-output="${2:?output directory is required}"
+output="${2:-}"
 
 rustup_version=1.29.0
 rustup_sha256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
@@ -46,7 +49,10 @@ cargo --version
 
 python3.11 -m pip install --upgrade "maturin==${maturin_version}"
 
-# Wheel build policy (maturin flags, manylinux baseline, expected output name)
-# lives in xtask, exactly like every other release artifact. This script only
-# provides the old-glibc environment that policy has to run inside.
-WEBUI_PYTHON=python3.11 cargo xtask publish-python --target "$target" --out "$output"
+# Wheel build policy lives in xtask, exactly like every other release artifact.
+# This script only provides the old-glibc environment that policy runs inside.
+build_args=(--target "$target" --python-only)
+if [[ -n "$output" ]]; then
+  build_args+=(--output "$output")
+fi
+WEBUI_PYTHON=python3.11 cargo xtask publish-build "${build_args[@]}"

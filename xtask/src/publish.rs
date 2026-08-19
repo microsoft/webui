@@ -180,11 +180,29 @@ struct StageOptions {
     mode: StageMode,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildMode {
+    Full,
+    NativeOnly,
+    PythonOnly,
+}
+
+impl BuildMode {
+    fn includes_native(self) -> bool {
+        self != Self::PythonOnly
+    }
+
+    fn includes_python(self) -> bool {
+        self != Self::NativeOnly
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct BuildOptions {
     target_triple: String,
     profile: String,
     output_root: Option<PathBuf>,
+    mode: BuildMode,
 }
 
 // ── Public entry point ──────────────────────────────────────────────────
@@ -192,6 +210,16 @@ struct BuildOptions {
 /// Build and stage native release artifacts for one target triple.
 ///
 /// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>]`
+/// Build and stage one target's release artifacts.
+///
+/// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only]`
+///
+/// Produces the native binaries (CLI, FFI library, Node addon) *and* the
+/// `microsoft-webui` wheel for that target, so one command covers a release
+/// leg. The two mode flags exist for a single reason: Linux wheels must be
+/// linked against an old glibc inside a `manylinux` container, while the native
+/// binaries build on the host. Those legs run `--native-only` on the host and
+/// `--python-only` in the container; every other target uses one full run.
 pub fn run_build(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(path) => path,
@@ -211,36 +239,63 @@ pub fn run_build(args: &[String]) -> ExitCode {
         }
     };
 
-    eprintln!(
-        "\n{} Building native release artifacts for {}",
-        console::style("▸").cyan().bold(),
-        console::style(&options.target_triple).bold(),
-    );
-    if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
+    if options.mode.includes_native() {
         eprintln!(
-            "  {} Failed to build {}: {error}",
-            console::style("✘").red().bold(),
-            options.target_triple,
+            "\n{} Building native release artifacts for {}",
+            console::style("▸").cyan().bold(),
+            console::style(&options.target_triple).bold(),
         );
-        return ExitCode::FAILURE;
+        if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
+            eprintln!(
+                "  {} Failed to build {}: {error}",
+                console::style("✘").red().bold(),
+                options.target_triple,
+            );
+            return ExitCode::FAILURE;
+        }
+
+        if let Err(error) = stage_native_targets(
+            &root,
+            std::iter::once(options.target_triple.as_str()),
+            &options.profile,
+        ) {
+            eprintln!(
+                "  {} Failed to stage native release artifacts: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
-    if let Err(error) = stage_native_targets(
-        &root,
-        std::iter::once(options.target_triple.as_str()),
-        &options.profile,
-    ) {
+    if options.mode.includes_python() {
         eprintln!(
-            "  {} Failed to stage native release artifacts: {error}",
-            console::style("✘").red().bold(),
+            "\n{} Building Python wheel for {}",
+            console::style("▸").cyan().bold(),
+            console::style(&options.target_triple).bold(),
         );
-        return ExitCode::FAILURE;
+        let python_out = root.join("publish").join("python");
+        match build_python_wheel(&root, &options.target_triple, &python_out) {
+            Ok(wheel) => eprintln!(
+                "  {} Built {}",
+                console::style("✔").green(),
+                console::style(wheel).bold(),
+            ),
+            Err(error) => {
+                eprintln!(
+                    "  {} Failed to build the Python wheel for {}: {error}",
+                    console::style("✘").red().bold(),
+                    options.target_triple,
+                );
+                return ExitCode::FAILURE;
+            }
+        }
     }
 
     if let Some(output_root) = &options.output_root {
-        if let Err(error) = export_native_target(&root, output_root, &options.target_triple) {
+        if let Err(error) = export_target(&root, output_root, &options.target_triple, options.mode)
+        {
             eprintln!(
-                "  {} Failed to export native release artifacts: {error}",
+                "  {} Failed to export release artifacts: {error}",
                 console::style("✘").red().bold(),
             );
             return ExitCode::FAILURE;
@@ -248,7 +303,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
     }
 
     eprintln!(
-        "\n{} Native release artifacts built and staged\n",
+        "\n{} Release artifacts built and staged\n",
         console::style("✨").green(),
     );
     ExitCode::SUCCESS
@@ -563,108 +618,6 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
     })
 }
 
-/// Build the `microsoft-webui` wheel for one target into `publish/python/`.
-///
-/// Usage: `cargo xtask publish-python --target <triple> [--out <dir>]`
-///
-/// This keeps wheel build policy (maturin flags, `manylinux` compatibility,
-/// interpreter selection, and the expected output tag) in one place, exactly
-/// like `publish-build` owns native artifacts. CI only decides *where* to run
-/// it: Windows and macOS legs invoke it directly, while Linux legs invoke it
-/// inside a pinned `manylinux` container so the wheel links an old glibc.
-pub fn run_python_build(args: &[String]) -> ExitCode {
-    let root = match std::env::current_dir() {
-        Ok(path) => path,
-        Err(error) => {
-            eprintln!(
-                "  {} Failed to read current directory: {error}",
-                console::style("✘").red().bold(),
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    let options = match parse_python_build_options(args) {
-        Ok(options) => options,
-        Err(error) => {
-            eprintln!("  {} {error}", console::style("✘").red().bold());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    eprintln!(
-        "\n{} Building Python wheel for {}",
-        console::style("▸").cyan().bold(),
-        console::style(&options.target_triple).bold(),
-    );
-    match build_python_wheel(&root, &options) {
-        Ok(wheel) => {
-            eprintln!(
-                "  {} Built {}\n",
-                console::style("✔").green(),
-                console::style(wheel).bold(),
-            );
-            ExitCode::SUCCESS
-        }
-        Err(error) => {
-            eprintln!(
-                "  {} Failed to build the Python wheel for {}: {error}",
-                console::style("✘").red().bold(),
-                options.target_triple,
-            );
-            ExitCode::FAILURE
-        }
-    }
-}
-
-struct PythonBuildOptions {
-    target_triple: String,
-    out_dir: Option<PathBuf>,
-}
-
-fn parse_python_build_options(args: &[String]) -> Result<PythonBuildOptions, String> {
-    let mut target_triple = None;
-    let mut out_dir = None;
-    let mut i = 0;
-
-    while i < args.len() {
-        match args[i].as_str() {
-            "--target" => {
-                i += 1;
-                let Some(triple) = args.get(i) else {
-                    return Err("missing value for --target".to_string());
-                };
-                if !PLATFORMS.iter().any(|platform| platform.triple == triple) {
-                    return Err(format!("unknown target triple: {triple}"));
-                }
-                if target_triple.is_some() {
-                    return Err(
-                        "publish-python accepts exactly one --target; use separate jobs for each target"
-                            .to_string(),
-                    );
-                }
-                target_triple = Some(triple.clone());
-            }
-            "--out" => {
-                i += 1;
-                let Some(value) = args.get(i) else {
-                    return Err("missing value for --out".to_string());
-                };
-                out_dir = Some(PathBuf::from(value));
-            }
-            argument => return Err(format!("unknown publish-python argument: {argument}")),
-        }
-        i += 1;
-    }
-
-    let target_triple =
-        target_triple.ok_or_else(|| "publish-python requires one --target".to_string())?;
-
-    Ok(PythonBuildOptions {
-        target_triple,
-        out_dir,
-    })
-}
-
 /// Locate a CPython >= 3.11 to build the stable-ABI wheel against.
 ///
 /// abi3 only needs headers from any supported interpreter, so prefer an
@@ -684,17 +637,13 @@ fn python_interpreter() -> String {
     "python".to_string()
 }
 
-fn build_python_wheel(root: &Path, options: &PythonBuildOptions) -> Result<String, String> {
+fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<String, String> {
     let platform = PLATFORMS
         .iter()
-        .find(|platform| platform.triple == options.target_triple)
-        .ok_or_else(|| format!("unknown target triple: {}", options.target_triple))?;
+        .find(|platform| platform.triple == triple)
+        .ok_or_else(|| format!("unknown target triple: {triple}"))?;
 
-    let out_dir = options
-        .out_dir
-        .clone()
-        .unwrap_or_else(|| root.join("publish").join("python"));
-    fs::create_dir_all(&out_dir)
+    fs::create_dir_all(out_dir)
         .map_err(|e| format!("failed to create {}: {e}", out_dir.display()))?;
 
     let manifest_path = root.join("crates").join("webui-python").join("Cargo.toml");
@@ -717,7 +666,7 @@ fn build_python_wheel(root: &Path, options: &PythonBuildOptions) -> Result<Strin
         "--manifest-path",
         &manifest_arg,
         "--target",
-        &options.target_triple,
+        triple,
         "--interpreter",
         &interpreter,
         "--out",
@@ -725,7 +674,7 @@ fn build_python_wheel(root: &Path, options: &PythonBuildOptions) -> Result<Strin
     ];
     // Linux wheels must declare the manylinux baseline they were built against;
     // every other target derives its platform tag from the triple alone.
-    if options.target_triple.ends_with("-linux-gnu") {
+    if triple.ends_with("-linux-gnu") {
         maturin_args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
     }
 
@@ -751,6 +700,7 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
     let mut target_triple = None;
     let mut profile = String::from("release");
     let mut output_root = None;
+    let mut mode = BuildMode::Full;
     let mut i = 0;
 
     while i < args.len() {
@@ -796,6 +746,8 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
                 };
                 output_root = Some(PathBuf::from(value));
             }
+            "--native-only" => mode = set_build_mode(mode, BuildMode::NativeOnly)?,
+            "--python-only" => mode = set_build_mode(mode, BuildMode::PythonOnly)?,
             argument => return Err(format!("unknown publish-build argument: {argument}")),
         }
         i += 1;
@@ -808,7 +760,16 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
         target_triple,
         profile,
         output_root,
+        mode,
     })
+}
+
+fn set_build_mode(current: BuildMode, requested: BuildMode) -> Result<BuildMode, String> {
+    if current != BuildMode::Full && current != requested {
+        return Err("cannot combine --native-only and --python-only".to_string());
+    }
+
+    Ok(requested)
 }
 
 fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
@@ -837,35 +798,62 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
     Ok(args)
 }
 
-fn export_native_target(root: &Path, output_root: &Path, triple: &str) -> Result<(), String> {
+/// Copy this target's freshly built artifacts into an external output root.
+///
+/// Each mode cleans and rewrites only the subtrees it owns, so a Linux leg can
+/// export natives from the host and then export the wheel from the container
+/// without the second run erasing the first.
+fn export_target(
+    root: &Path,
+    output_root: &Path,
+    triple: &str,
+    mode: BuildMode,
+) -> Result<(), String> {
     let safe_output_root = validate_export_output_root(root, output_root)?;
-    if safe_output_root.exists() {
-        fs::remove_dir_all(&safe_output_root)
-            .map_err(|error| format!("failed to clean {}: {error}", safe_output_root.display()))?;
-    }
-
-    copy_directory_contents(
-        &root.join("publish").join("native"),
-        &safe_output_root.join("publish").join("native"),
-    )?;
     let platform = PLATFORMS
         .iter()
         .find(|platform| platform.triple == triple)
         .ok_or_else(|| format!("unknown target triple: {triple}"))?;
-    copy_directory_contents(
-        &root.join("packages").join(platform.npm_package),
-        &safe_output_root.join("packages").join(platform.npm_package),
-    )?;
-    copy_directory_contents(
-        &root
-            .join("dotnet")
-            .join("runtimes")
-            .join(platform.nuget_rid),
-        &safe_output_root
-            .join("dotnet")
-            .join("runtimes")
-            .join(platform.nuget_rid),
-    )?;
+
+    if mode.includes_native() {
+        for (source, destination) in [
+            (
+                root.join("publish").join("native"),
+                safe_output_root.join("publish").join("native"),
+            ),
+            (
+                root.join("packages").join(platform.npm_package),
+                safe_output_root.join("packages").join(platform.npm_package),
+            ),
+            (
+                root.join("dotnet")
+                    .join("runtimes")
+                    .join(platform.nuget_rid),
+                safe_output_root
+                    .join("dotnet")
+                    .join("runtimes")
+                    .join(platform.nuget_rid),
+            ),
+        ] {
+            clean_directory(&destination)?;
+            copy_directory_contents(&source, &destination)?;
+        }
+    }
+
+    if mode.includes_python() {
+        let destination = safe_output_root.join("publish").join("python");
+        clean_directory(&destination)?;
+        copy_directory_contents(&root.join("publish").join("python"), &destination)?;
+    }
+
+    Ok(())
+}
+
+fn clean_directory(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("failed to clean {}: {error}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -1938,6 +1926,36 @@ mod tests {
         assert_eq!(options.target_triple, "aarch64-unknown-linux-gnu");
         assert_eq!(options.profile, "debug");
         assert_eq!(options.output_root, None);
+        // A plain run covers a whole release leg: natives plus the wheel.
+        assert_eq!(options.mode, BuildMode::Full);
+    }
+
+    #[test]
+    fn parse_build_options_supports_split_environment_modes() {
+        let native = parse_build(&["--target", "x86_64-unknown-linux-gnu", "--native-only"])
+            .expect("native-only should parse");
+        assert_eq!(native.mode, BuildMode::NativeOnly);
+        assert!(native.mode.includes_native());
+        assert!(!native.mode.includes_python());
+
+        let python = parse_build(&["--target", "x86_64-unknown-linux-gnu", "--python-only"])
+            .expect("python-only should parse");
+        assert_eq!(python.mode, BuildMode::PythonOnly);
+        assert!(!python.mode.includes_native());
+        assert!(python.mode.includes_python());
+    }
+
+    #[test]
+    fn parse_build_options_rejects_conflicting_modes() {
+        let error = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--native-only",
+            "--python-only",
+        ])
+        .expect_err("conflicting modes should fail");
+
+        assert!(error.contains("cannot combine --native-only and --python-only"));
     }
 
     #[test]
@@ -2523,8 +2541,13 @@ mod tests {
         )
         .expect("runtime fixture should be written");
 
-        export_native_target(root.path(), output.path(), "x86_64-unknown-linux-gnu")
-            .expect("native artifacts should be exported");
+        export_target(
+            root.path(),
+            output.path(),
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect("native artifacts should be exported");
 
         assert!(output
             .path()
@@ -2543,8 +2566,13 @@ mod tests {
     #[test]
     fn export_native_target_rejects_workspace_root() {
         let root = tempfile::TempDir::new().expect("root should be created");
-        let error = export_native_target(root.path(), root.path(), "x86_64-unknown-linux-gnu")
-            .expect_err("workspace root should be rejected");
+        let error = export_target(
+            root.path(),
+            root.path(),
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect_err("workspace root should be rejected");
 
         assert!(error.contains("unsafe export output directory"));
         assert!(root.path().exists());
@@ -2558,8 +2586,13 @@ mod tests {
             .ancestors()
             .last()
             .expect("filesystem root should exist");
-        let error = export_native_target(root.path(), filesystem_root, "x86_64-unknown-linux-gnu")
-            .expect_err("filesystem root should be rejected");
+        let error = export_target(
+            root.path(),
+            filesystem_root,
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect_err("filesystem root should be rejected");
 
         assert!(error.contains("unsafe export output directory"));
         assert!(root.path().exists());
@@ -2574,9 +2607,13 @@ mod tests {
         fs::create_dir_all(&sibling).expect("sibling should be created");
         fs::write(sibling.join("keep.txt"), "keep").expect("fixture should be written");
 
-        let error =
-            export_native_target(&root, Path::new("../sibling"), "x86_64-unknown-linux-gnu")
-                .expect_err("relative workspace escape should be rejected");
+        let error = export_target(
+            &root,
+            Path::new("../sibling"),
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect_err("relative workspace escape should be rejected");
 
         assert!(error.contains("must remain within the workspace"));
         assert!(sibling.join("keep.txt").is_file());
@@ -2595,10 +2632,11 @@ mod tests {
         fs::write(external.join("keep.txt"), "keep").expect("fixture should be written");
         symlink(&external, root.join("artifacts")).expect("symlink should be created");
 
-        let error = export_native_target(
+        let error = export_target(
             &root,
             Path::new("artifacts/stage"),
             "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
         )
         .expect_err("symlinked ancestor should be rejected");
 

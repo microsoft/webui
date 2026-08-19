@@ -177,9 +177,12 @@ stages:
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
+          # Natives build on the host, but the wheel must link an old glibc, so
+          # the container step below runs the same command with --python-only.
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
+            --native-only \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
       env:
         ARTIFACT_NAME: $(artifactName)
@@ -204,7 +207,7 @@ stages:
         MANYLINUX_CROSS_IMAGE: $(manylinuxCrossImage)
         SOURCE_DATE_EPOCH: $(sourceDateEpoch)
         TARGET_TRIPLE: $(targetTriple)
-        WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)/publish/python
+        WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -276,20 +279,6 @@ stages:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
-    - task: Bash@3
-      displayName: Build Python wheel ($(targetTriple))
-      inputs:
-        targetType: inline
-        workingDirectory: '$(Build.SourcesDirectory)'
-        script: |
-          set -euo pipefail
-          python3.11 -m pip install --upgrade "maturin==1.14.1"
-          cargo +1.93 xtask publish-python --target "$TARGET_TRIPLE" --out "$WHEEL_OUT"
-      env:
-        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
-        TARGET_TRIPLE: $(targetTriple)
-        WEBUI_PYTHON: python3.11
-        WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)/publish/python
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -384,24 +373,6 @@ stages:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
-    - task: PowerShell@2
-      displayName: Build Python wheel ($(targetTriple))
-      inputs:
-        targetType: inline
-        pwsh: true
-        workingDirectory: '$(Build.SourcesDirectory)'
-        script: |
-          $ErrorActionPreference = 'Stop'
-          # `generate-import-lib` on the pyo3 workspace dependency lets maturin
-          # synthesize the ARM64 import library on this x64 agent.
-          python -m pip install --upgrade "maturin==1.14.1"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo +1.93 xtask publish-python --target "$env:TARGET_TRIPLE" --out "$env:WHEEL_OUT"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      env:
-        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
-        TARGET_TRIPLE: $(targetTriple)
-        WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)/publish/python
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:

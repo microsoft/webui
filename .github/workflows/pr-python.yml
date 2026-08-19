@@ -104,8 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade "maturin==1.14.1"
-          cargo xtask publish-python \
-            --target "${{ matrix.platform.target }}" --out target/python-wheel
+          cargo xtask publish-build --target "${{ matrix.platform.target }}" --python-only
 
       - name: Build manylinux stable-ABI wheel
         if: runner.os == 'Linux'
@@ -117,23 +116,22 @@ jobs:
           docker run --rm --platform linux/amd64 \
             -v "$GITHUB_WORKSPACE:/io" -w /io "$IMAGE" \
             bash crates/webui-python/scripts/build-manylinux-wheel.sh \
-              "${{ matrix.platform.target }}" target/python-wheel
+              "${{ matrix.platform.target }}"
 
       - name: Validate wheel name, tags, and license metadata
         shell: bash
         run: |
           set -euo pipefail
           python crates/webui-python/tests/validate_wheel.py \
-            target/python-wheel "${{ matrix.platform.platform_tag }}"
-          python crates/webui-python/tests/validate_artifacts.py \
-            target/python-wheel/*.whl
+            publish/python "${{ matrix.platform.platform_tag }}"
+          python crates/webui-python/tests/validate_artifacts.py publish/python/*.whl
 
       - name: Upload wheel
         if: matrix.platform.artifact != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.platform.artifact }}
-          path: target/python-wheel/*.whl
+          path: publish/python/*.whl
           if-no-files-found: error
           retention-days: 1
 
@@ -174,15 +172,14 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ matrix.platform.artifact }}
-          path: target/python-wheel
+          path: publish/python
 
       - name: Install the built wheel and test it
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade "pytest>=8.3,<10"
-          python -m pip install --force-reinstall --no-deps --no-index \
-            target/python-wheel/*.whl
+          python -m pip install --force-reinstall --no-deps --no-index publish/python/*.whl
           python -m pytest crates/webui-python/tests -q
 
       - name: Validate lint, strict typing, and stubs
