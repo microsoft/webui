@@ -42,6 +42,44 @@ async function loadedTemplateNames(page: Page): Promise<string[]> {
 }
 
 test.describe('static component assets', () => {
+  test('starts generated Link styles before the root asset settles', async ({ page }) => {
+    let cssRequests = 0;
+    let releaseAsset!: () => void;
+    let assetRequested!: () => void;
+    let cssRequested!: () => void;
+    const assetGate = new Promise<void>(resolve => {
+      releaseAsset = resolve;
+    });
+    const assetSeen = new Promise<void>(resolve => {
+      assetRequested = resolve;
+    });
+    const cssSeen = new Promise<void>(resolve => {
+      cssRequested = resolve;
+    });
+    await page.route('**/lazy-panel.webui.js', async route => {
+      assetRequested();
+      await assetGate;
+      await route.continue();
+    });
+    await page.route('**/lazy-panel.css', async route => {
+      cssRequests += 1;
+      cssRequested();
+      await route.continue();
+    });
+
+    await page.goto('/');
+    const button = page.getByRole('button', { name: 'Load lazy panel' });
+    await expect(button).toBeVisible();
+    await button.hover();
+    await Promise.all([assetSeen, cssSeen]);
+    await expect(page.locator('lazy-panel')).toHaveCount(0);
+
+    await button.click();
+    releaseAsset();
+    await expect(page.locator('lazy-panel')).toHaveCount(1);
+    expect(cssRequests).toBe(1);
+  });
+
   test('waits for Link stylesheet cache warmup before inserting a lazy component', async ({ page }) => {
     let releaseCss!: () => void;
     let cssRequested!: () => void;

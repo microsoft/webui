@@ -661,8 +661,7 @@ image from `hydratedCallback()` when component state depends on `@load` or
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Lazy component asset graphs with `preload(tag)` / `create(tag)` |
-| `preloadStylesheets(hrefs)` | Build-tool hook for generated loaders to start emitted Link-mode CSS before template registration |
+| `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
 
 ### Custom events
 
@@ -838,13 +837,11 @@ async onOpenSettings(): Promise<void> {
 }
 ```
 
-Only generated loader code should call root-exported `preloadStylesheets()`.
-Never invent or hardcode a content-hashed CSS filename in authored code. The
-build integration reads emitted hrefs from the compiled component asset,
-combines them with the runtime public path, and regenerates the loader whenever
-CSS changes. Calls are resolved-href deduplicated. Unconverted speculative
-preloads are removed after three seconds and may trigger the browser's
-unused-preload warning.
+The compiler stores final Link stylesheet hrefs in the protocol. Shadow builds
+publish them as inert head JSON that `preload(tag)` consumes automatically;
+Light builds emit them as document stylesheets. Authored code therefore keeps
+only the stable root asset URL and never invents or hardcodes a content-hashed
+stylesheet filename.
 
 Assets keep entry-owned templates external, inline dependencies used by one
 asset root, and split dependencies shared by multiple roots into deduplicated

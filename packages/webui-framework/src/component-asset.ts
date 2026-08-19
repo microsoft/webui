@@ -9,11 +9,14 @@
  */
 
 import { loadComponentAsset } from './component-asset/loader.js';
+import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
+import { preloadComponentAssetStyles } from './element/link-styles.js';
 import type {
   ComponentAssetCreateOptions,
   ComponentAssetManifest,
   ComponentAssetPreload,
   ComponentAssetRegistry,
+  ComponentAssetSource,
   ComponentAssetState,
 } from './component-asset/manifest.js';
 
@@ -27,6 +30,7 @@ export type {
   ComponentAssetManifestEntry,
   ComponentAssetPreload,
   ComponentAssetRegistry,
+  ComponentAssetSource,
   ComponentAssetState,
 } from './component-asset/manifest.js';
 
@@ -41,6 +45,10 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     const entry = manifest[tag];
     if (!entry) {
       throw new Error(`[WebUI] No component asset manifest entry for <${tag}>.`);
+    }
+    const styles = takeGeneratedComponentAssetStyles(tag);
+    if (styles) {
+      preloadComponentAssetStyles(styles);
     }
 
     const next: ComponentAssetPreload<Data> = {

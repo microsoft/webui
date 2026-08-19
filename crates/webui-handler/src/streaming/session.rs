@@ -98,6 +98,7 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     head_end_emitted: bool,
     body_start_emitted: bool,
+    component_asset_styles_emitted: bool,
     body_end_emitted: bool,
     route_chain_index: usize,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
@@ -141,6 +142,7 @@ pub(super) struct ParkedResponse {
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     head_end_emitted: bool,
     body_start_emitted: bool,
+    component_asset_styles_emitted: bool,
     body_end_emitted: bool,
     route_chain_index: usize,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
@@ -169,6 +171,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             route_children: self.route_children,
             head_end_emitted: self.head_end_emitted,
             body_start_emitted: self.body_start_emitted,
+            component_asset_styles_emitted: self.component_asset_styles_emitted,
             body_end_emitted: self.body_end_emitted,
             route_chain_index: self.route_chain_index,
             entry_route: self.entry_route,
@@ -224,6 +227,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             route_children: parked.route_children,
             head_end_emitted: parked.head_end_emitted,
             body_start_emitted: parked.body_start_emitted,
+            component_asset_styles_emitted: parked.component_asset_styles_emitted,
             body_end_emitted: parked.body_end_emitted,
             route_chain_index: parked.route_chain_index,
             entry_route: parked.entry_route,
@@ -295,6 +299,7 @@ impl WebUIHandler {
             route_children: Vec::new(),
             head_end_emitted: false,
             body_start_emitted: false,
+            component_asset_styles_emitted: false,
             body_end_emitted: false,
             route_chain_index: 0,
             entry_route,
@@ -541,8 +546,11 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             &mut WebUIProcessContext<'a, 'state, 'output>,
         ) -> Result<T>,
     ) -> Result<T> {
+        let component_asset_style_manifest = self.protocol.component_asset_style_manifest()?;
         let mut context = WebUIProcessContext {
             protocol: self.protocol.protocol(),
+            component_asset_style_manifest,
+            component_asset_style_links: self.protocol.component_asset_style_links(),
             state,
             writer: &mut self.sink,
             local_vars: std::mem::take(&mut self.local_vars),
@@ -560,6 +568,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             state_inject: crate::StateInject::resolve(state),
             head_end_emitted: self.head_end_emitted,
             body_start_emitted: self.body_start_emitted,
+            component_asset_styles_emitted: self.component_asset_styles_emitted,
             body_end_emitted: self.body_end_emitted,
             route_index: self.protocol.route_index(),
             route_chain_index: self.route_chain_index,
@@ -577,6 +586,7 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
         self.route_children = std::mem::take(&mut context.route_children);
         self.head_end_emitted = context.head_end_emitted;
         self.body_start_emitted = context.body_start_emitted;
+        self.component_asset_styles_emitted = context.component_asset_styles_emitted;
         self.body_end_emitted = context.body_end_emitted;
         self.route_chain_index = context.route_chain_index;
         self.json_scratch = std::mem::take(&mut context.json_scratch);

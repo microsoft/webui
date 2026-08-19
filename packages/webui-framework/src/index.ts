@@ -36,5 +36,4 @@ export { WebUIElement } from './element.js';
 export { observable, attr } from './decorators.js';
 export { getTemplate, registerTemplateData } from './template.js';
 export type { TemplateMeta } from './template.js';
-export { preloadStylesheets } from './element/link-styles.js';
 export { hydrationStart, hydrationEnd } from './lifecycle.js';

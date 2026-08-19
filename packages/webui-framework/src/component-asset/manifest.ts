@@ -4,10 +4,13 @@
 /** State payload returned by a lazy component data loader. */
 export type ComponentAssetState = Record<string, unknown>;
 
+/** Static asset URL or bundler-owned importer for one compiled component graph. */
+export type ComponentAssetSource = string | URL | (() => Promise<unknown>);
+
 /** Manifest entry for one lazy component root. */
 export interface ComponentAssetManifestEntry<Data extends ComponentAssetState = ComponentAssetState> {
-  /** Static component asset module emitted by `webui build --emit-component-assets`. */
-  asset: string | URL;
+  /** Component asset emitted by `webui build --emit-component-assets`. */
+  asset: ComponentAssetSource;
   /** JavaScript module that defines/registers the custom element class. */
   module?: () => Promise<unknown>;
   /** Optional data request kicked off in parallel with asset/module loading. */
@@ -37,7 +40,7 @@ export interface ComponentAssetCreateOptions {
 
 /** Loader returned by `defineComponentAssets`. */
 export interface ComponentAssetRegistry {
-  /** Start asset, module, and optional data work for a component. */
+  /** Start compiler-owned Link styles, asset, module, and optional data work. */
   preload<Data extends ComponentAssetState = ComponentAssetState>(tag: string): ComponentAssetPreload<Data>;
   /** Create a component element and apply loaded data via setState(), if present. */
   create(tag: string, options?: ComponentAssetCreateOptions): Promise<HTMLElement>;

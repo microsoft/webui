@@ -20,6 +20,7 @@ import {
   type PreparedAssetStyles,
 } from './resources.js';
 import { prepareRegisteredLinkStyles } from '../element/link-styles.js';
+import type { ComponentAssetSource } from './manifest.js';
 
 const assetModulePromises = new Map<string, Promise<unknown>>();
 
@@ -32,9 +33,18 @@ interface PreparedComponentAsset {
 /** Import, validate, and atomically register one component asset graph. */
 export function loadComponentAsset(
   tag: string,
-  url: string | URL,
+  source: ComponentAssetSource,
 ): Promise<void> {
-  const assetUrl = new URL(url, document.baseURI);
+  if (typeof source === 'function') {
+    return Promise.resolve()
+      .then(source)
+      .then(imported => registerRootAsset(
+        tag,
+        `component asset loader for <${tag}>`,
+        imported,
+      ));
+  }
+  const assetUrl = new URL(source, document.baseURI);
   const href = assetUrl.href;
   return loadAssetModule(href, () => import(assetUrl.href))
     .then(imported => registerRootAsset(tag, href, imported));

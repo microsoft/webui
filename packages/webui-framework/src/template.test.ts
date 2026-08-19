@@ -100,7 +100,7 @@ describe('template registry helpers', () => {
     }
   });
 
-  test('getTemplate lazily loads webui-data and preserves templateFns', () => {
+  test('getTemplate lazily loads webui-data and preserves eager runtime metadata', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
     const fn = (): boolean => true;
@@ -108,7 +108,12 @@ describe('template registry helpers', () => {
 
     try {
       Object.defineProperty(globalThis, 'window', {
-        value: { __webui: { templateFns: { greeting: [fn] } } },
+        value: {
+          __webui: {
+            componentAssetStyles: { 'lazy-panel': ['/lazy-panel.css'] },
+            templateFns: { greeting: [fn] },
+          },
+        },
         configurable: true,
         writable: true,
       });
@@ -130,6 +135,10 @@ describe('template registry helpers', () => {
       assert.equal((registered.c![0][0][0] as unknown), fn);
       assert.equal(window.__webui!.inventory, '0c');
       assert.deepEqual(window.__webui!.state, { title: 'Hello' });
+      assert.deepEqual(
+        window.__webui!.componentAssetStyles,
+        { 'lazy-panel': ['/lazy-panel.css'] },
+      );
       assert.equal(removed, true);
     } finally {
       if (previousWindow) {

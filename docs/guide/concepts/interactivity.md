@@ -511,44 +511,31 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. Keep only
-stable root inputs in the manifest; generated chunk filenames can change as the
-dependency graph changes, and each root asset already carries its dynamic
-imports. `preload(tag)` starts the component's template graph, styles,
-JavaScript module, and optional data together. Components can then fetch their
-own data in their class code and expose it through `@observable` fields when
-JavaScript needs to read or mutate it. Concurrent roots deduplicate shared chunk
-imports by resolved URL.
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. The compiler
+stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
+handler publishes that finite manifest as inert JSON in the document head, or
+at the rendered body start for body-only host protocols. Light builds emit the
+same hrefs as deduplicated document stylesheets because their CSS is globally
+scoped.
+Generated root, shared chunk, and content-hashed stylesheet filenames never
+belong in authored code. In Shadow builds, `preload(tag)` starts the component's
+Link styles, template graph, JavaScript module, and optional data together.
+Components can
+then fetch their own data in their class code and expose it through
+`@observable` fields when JavaScript needs to read or mutate it. Concurrent
+roots deduplicate shared chunk and stylesheet work by resolved URL.
 `create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
-fastest path: it lets the shell start the template asset, JS chunk, and data
-fetch in parallel.
-
-Content-hashed stylesheet names are build output, not values application
-authors can derive. A custom bundler integration can read the Link-mode hrefs
-from the compiled component asset and emit them into its eager loader stub:
-
-```typescript
-// Generated file - do not edit.
-import { preloadStylesheets } from '@microsoft/webui-framework';
-
-const styles = [__webpack_public_path__ + 'settings-dialog.8d31f4a2.css'];
-
-export function preload(): void {
-  preloadStylesheets(styles);
-  void import('./settings-dialog.webui.js');
-}
-```
-
-Application code calls the generated module's stable `preload()` export and
-never references the hashed filename. The generator must include the root
-asset's styles and styles from its imported shared chunks, using the bundler's
-runtime public path. Use this bare-href API only when the eventual template
-links have no `crossorigin`, `integrity`, or `referrerpolicy` attributes.
-Registration reuses the resolved-href preload, and repeated calls are
-deduplicated. A preload whose intent never converts is removed after three
-seconds, but the browser may still report its standard unused-preload warning.
+fastest path: it lets the shell start Link CSS, the authored root asset, the JS
+chunk, and data in parallel. Application code keeps only the stable root asset
+URL; shared chunk and content-hashed stylesheet names remain compiler-owned. A
+preload whose intent never mounts the component is removed after three seconds,
+but the browser may still report its standard unused-preload warning.
+Generated bundler integrations can supply
+`asset: () => import('./settings-dialog.webui.js')` instead of a URL so chunk
+loading and public-path rewriting stay bundler-owned without bypassing
+`defineComponentAssets()`.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the

@@ -4,6 +4,7 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
+import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
 import { getTemplate, type TemplateMeta } from './template.js';
 import { defineComponentAssets } from './component-asset.js';
 
@@ -58,6 +59,94 @@ function componentAsset(templates: Record<string, TemplateMeta>): Record<string,
 }
 
 describe('component asset helpers', () => {
+  test('generated style metadata is a no-op without browser globals', () => {
+    const previousWindow = setGlobal('window', undefined);
+    const previousDocument = setGlobal('document', undefined);
+
+    try {
+      assert.equal(takeGeneratedComponentAssetStyles('server-card'), undefined);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('loads compiler-generated style metadata beside the authored asset', async () => {
+    const template: TemplateMeta = { h: '<p>Generated</p>' };
+    const asset = assetObjectModule(componentAsset({ 'generated-card': template }));
+    let removed = false;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      getElementById(id: string) {
+        if (id === 'webui-data') return null;
+        assert.equal(id, 'webui-component-assets');
+        return {
+          textContent: JSON.stringify({
+            'generated-card': ['/generated-card.css'],
+          }),
+          remove() {
+            removed = true;
+          },
+        };
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'generated-card': { asset },
+      });
+      await assets.preload('generated-card').asset;
+
+      assert.equal(removed, true);
+      assert.deepEqual(window.__webui?.componentAssetStyles, {});
+      assert.deepEqual(getTemplate('generated-card'), template);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('accepts a bundler-owned asset importer and invokes it once', async () => {
+    const template: TemplateMeta = { h: '<p>Bundled</p>' };
+    let imports = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'bundled-card': {
+          asset: async () => {
+            imports += 1;
+            return {
+              default: componentAsset({ 'bundled-card': template }),
+            };
+          },
+        },
+      });
+      const first = assets.preload('bundled-card');
+      const second = assets.preload('bundled-card');
+      await Promise.all([first.asset, second.asset]);
+
+      assert.equal(first, second);
+      assert.equal(imports, 1);
+      assert.deepEqual(getTemplate('bundled-card'), template);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
   test('manifest preload registers templates and injects nonce importmaps', async () => {
     const appended: ScriptMock[] = [];
     const template: TemplateMeta = { h: '<p>Lazy</p>' };

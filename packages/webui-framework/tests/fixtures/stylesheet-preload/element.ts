@@ -2,21 +2,23 @@
 // Licensed under the MIT license.
 
 import {
-  preloadStylesheets,
   registerTemplateData,
   WebUIElement,
 } from '../../../src/index.js';
+import {
+  preloadComponentAssetStyles,
+} from '../../../src/element/link-styles.js';
 
 const TAG_NAME = 'test-preloaded-stylesheet';
 const STYLESHEET_HREF = '/stylesheet-preload/early.css';
 const ATTRIBUTE_TAG_NAME = 'test-attribute-stylesheet';
 const ATTRIBUTE_STYLESHEET_HREF = '/stylesheet-preload/attributes.css';
 
-preloadStylesheets([
+preloadComponentAssetStyles([
   STYLESHEET_HREF,
   new URL(STYLESHEET_HREF, document.baseURI).href,
 ]);
-preloadStylesheets([STYLESHEET_HREF]);
+preloadComponentAssetStyles([STYLESHEET_HREF]);
 
 class TestPreloadedStylesheet extends WebUIElement {}
 class TestAttributeStylesheet extends WebUIElement {}
@@ -44,11 +46,11 @@ window.__registerPreloadedStylesheetFixture = (): void => {
 };
 
 window.__preloadAttributeStylesheetFixture = (): void => {
-  preloadStylesheets([ATTRIBUTE_STYLESHEET_HREF]);
+  preloadComponentAssetStyles([ATTRIBUTE_STYLESHEET_HREF]);
 };
 
 window.__preloadUnsupportedStylesheetFixture = (): void => {
-  preloadStylesheets(['/stylesheet-preload/unsupported.css']);
+  preloadComponentAssetStyles(['/stylesheet-preload/unsupported.css']);
 };
 
 window.__registerAttributeStylesheetFixture = (): void => {

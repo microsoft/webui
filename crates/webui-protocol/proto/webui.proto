@@ -51,6 +51,18 @@ message ComponentData {
   optional StateProjectionMode navigation_mode = 9;
 }
 
+// Link stylesheet metadata for one static component asset root.
+//
+// Shadow builds publish this finite manifest so the framework can begin CSS
+// beside the root module on interaction. Light builds emit the hrefs as
+// deduplicated document stylesheets because their CSS is globally scoped.
+message ComponentAssetStylePreload {
+  // Root component tag used by defineComponentAssets().
+  string root = 1;
+  // Final Link-mode stylesheet hrefs required by this asset graph.
+  repeated string style_hrefs = 2;
+}
+
 // Build-wide initial-state behavior.
 enum InitialStateStrategy {
   // Emit the complete state object. Used by default and non-WebUI plugins.
@@ -120,6 +132,11 @@ message WebUIProtocol {
   // Build-generated document-level rules for component rendering policies.
   // Empty when no component opts into lazy rendering.
   string component_render_css = 9;
+  // Build-generated eager metadata for static component asset roots.
+  //
+  // Entries are sorted by root tag. Builds without component assets omit the
+  // field from the wire.
+  repeated ComponentAssetStylePreload component_asset_style_preloads = 10;
 }
 
 // Ordered compile-time boundary names for one entry fragment.

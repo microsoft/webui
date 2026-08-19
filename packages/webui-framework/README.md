@@ -324,14 +324,28 @@ dependencies inline, and emits dependencies shared by multiple roots once as
 flat dynamic chunks. Component assets cannot be combined with `<route>`. Load
 the normal entry bundle first so external prerequisites are registered.
 
-Shared chunk filenames are generated and must not be copied into the manifest.
-Each root asset carries its own dynamic imports; `--metafile` is available for
-analysis and build tooling. `preload(tag)` starts template, module, and optional
-data work. Concurrent roots share in-flight chunk imports by resolved URL and
-CSS module styles are deduped. `create(tag)` creates the element after
-template/module work is ready and does not block on optional data by default. Use
-`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
-wait briefly for state before mounting.
+The compiler records final Link stylesheet filenames in the protocol. For
+Shadow builds, the handler emits that finite manifest as inert JSON in the
+document head; body-only host protocols emit it at the start of their rendered
+body fragment. Light builds emit the same hrefs as deduplicated document
+stylesheets because their CSS must apply globally.
+Shared chunk and content-hashed stylesheet filenames are generated and must not
+be copied into authored code. Each root asset carries its own dynamic imports;
+`--metafile` remains available for analysis and build tooling.
+
+In Shadow builds, `preload(tag)` reads the compiler-owned style metadata and
+starts Link styles beside the authored root asset, component module, and
+optional data request. Only the stable root asset URL remains in application
+code; shared chunks and content-hashed CSS stay compiler-owned.
+
+Bundler-generated loaders can use `asset: () => import('./settings-dialog.webui.js')`
+instead of a URL. This keeps chunk naming and public-path rewriting inside the
+bundler while preserving the same `preload(tag)` and `create(tag)` lifecycle.
+Concurrent roots share in-flight chunk and stylesheet work. `create(tag)`
+creates the element after template/module work is ready and does not block on
+optional data by default. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
+must wait briefly for state before mounting.
 
 ### `@observable`
 
@@ -865,54 +879,16 @@ the pending mount, while a synchronous reconnect preserves it. A link error
 leaves the component guarded instead of exposing unstyled content. SSR
 hydration, Inline, Module, and Light DOM behavior are unchanged.
 
-### Intent-time Link preloading for build tools
+### Intent-time Link preloading for component assets
 
-`preloadStylesheets()` is a low-level integration API for generated loaders.
-Application authors cannot know a content-hashed stylesheet filename before the
-build and must not hardcode or reconstruct it. The build produces the CSS name
-and embeds it in the eager loader stub:
-
-```ts
-// Generated file - do not edit.
-import {
-  preloadStylesheets,
-  registerTemplateData,
-} from '@microsoft/webui-framework';
-
-const styles = [__webpack_public_path__ + 'settings-dialog.8d31f4a2.css'];
-
-export function preload(): void {
-  preloadStylesheets(styles);
-  void loadComponentBundle();
-}
-```
-
-Authored code imports only that stable export:
-
-```ts
-import { preload as preloadSettingsDialog } from './settings-dialog.component.js';
-
-function onSettingsIntent(): void {
-  preloadSettingsDialog();
-}
-```
-
-The generator reads the emitted stylesheet names from the compiled component
-asset metadata, includes styles required by its shared chunks, and combines
-each name with the bundler's runtime public path. When CSS changes, the build
-regenerates both the hash and loader. `preloadStylesheets(hrefs)` then resolves
-and deduplicates each generated href and adds a temporary
-`<link rel="preload" as="style">`. Registration claims the same node when the
-eventual template link uses default request attributes, so its native
-stylesheet link reuses the request.
-
-This bare-href API does not represent `crossorigin`, `integrity`, or
-`referrerpolicy`. Templates using any of those attributes discard the
-speculative node and use registration's exact-attribute preload instead.
-Unclaimed nodes are removed after three seconds; a speculative preload that is
-never consumed may still produce the browser's standard unused-preload warning.
-Repeated calls, server rendering, and browsers without constructable stylesheet
-support are safe no-ops.
+In a Shadow build, call `assets.preload(tag)` from pointer, focus, or other
+intent handling. The framework reads the compiler-owned head manifest, so
+application code never derives or hardcodes content-hashed CSS names. Link
+styles begin before the root asset executes, and later template registration
+reuses the same style-destination request. Repeated intent is deduplicated. An
+intent that never mounts the component may still produce the browser's standard
+unused-preload warning. Light builds load component-asset CSS as document
+stylesheets at the structural head boundary instead.
 
 CSS module stylesheets are cached so each component instance adopts the same
 parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the

@@ -6,7 +6,7 @@ import { expect, test } from '@playwright/test';
 const STYLESHEET_PATH = '/stylesheet-preload/early.css';
 const ATTRIBUTE_STYLESHEET_PATH = '/stylesheet-preload/attributes.css';
 
-test.describe('pre-registration stylesheet preload', () => {
+test.describe('component asset stylesheet preload', () => {
   test('reuses one resolved-href preload during registration', async ({ page }) => {
     let requests = 0;
     let releaseStylesheet!: () => void;

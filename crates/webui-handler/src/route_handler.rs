@@ -19,7 +19,9 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{OnceLock, RwLock};
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
+use webui_protocol::{
+    web_ui_fragment::Fragment, CssStrategy, DomStrategy, WebUIFragmentRoute, WebUIProtocol,
+};
 
 // ── Protocol Index ──────────────────────────────────────────────────────
 
@@ -34,6 +36,8 @@ use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtoco
 /// individual metadata lookups.
 pub struct Protocol {
     protocol: WebUIProtocol,
+    component_asset_style_manifest: std::result::Result<String, String>,
+    component_asset_style_links: String,
     component_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     streaming_plans: HashMap<String, crate::streaming::PreparedStreamingEntryPlan>,
@@ -53,7 +57,25 @@ impl Protocol {
 
     /// Create a reusable runtime protocol from an already decoded document.
     #[must_use]
-    pub fn new(protocol: WebUIProtocol) -> Self {
+    pub fn new(mut protocol: WebUIProtocol) -> Self {
+        let component_asset_style_preloads =
+            std::mem::take(&mut protocol.component_asset_style_preloads);
+        let link_styles = protocol.css_strategy() == CssStrategy::Link;
+        let light_link_styles = link_styles && protocol.dom_strategy() == DomStrategy::Light;
+        let component_asset_style_links = if light_link_styles {
+            crate::serialize_component_asset_style_links(&component_asset_style_preloads)
+        } else {
+            String::new()
+        };
+        let component_asset_style_manifest =
+            if link_styles && protocol.dom_strategy() == DomStrategy::Shadow {
+                crate::serialize_component_asset_style_manifest(&component_asset_style_preloads)
+                    .map_err(|error| {
+                        format!("failed to serialize component asset style metadata: {error}")
+                    })
+            } else {
+                Ok(String::new())
+            };
         let component_index = build_component_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
         let streaming_plans = protocol
@@ -74,6 +96,8 @@ impl Protocol {
             .collect();
         Self {
             protocol,
+            component_asset_style_manifest,
+            component_asset_style_links,
             component_index,
             component_reachability: OnceLock::new(),
             streaming_plans,
@@ -84,6 +108,17 @@ impl Protocol {
 
     pub(crate) fn protocol(&self) -> &WebUIProtocol {
         &self.protocol
+    }
+
+    pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
+        match &self.component_asset_style_manifest {
+            Ok(manifest) => Ok(manifest),
+            Err(message) => Err(HandlerError::Rendering(message.clone())),
+        }
+    }
+
+    pub(crate) fn component_asset_style_links(&self) -> &str {
+        &self.component_asset_style_links
     }
 
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
@@ -2361,6 +2396,69 @@ mod tests {
 
         assert!(prepared.protocol().fragments.contains_key("index.html"));
         assert_eq!(prepared.tokens(), ["colorBrand"]);
+    }
+
+    #[test]
+    fn protocol_retains_only_serialized_component_asset_styles() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.component_asset_style_preloads =
+            vec![webui_protocol::ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec!["/lazy-panel.css".to_string()],
+            }];
+
+        let prepared = Protocol::new(protocol);
+
+        assert!(prepared
+            .protocol()
+            .component_asset_style_preloads
+            .is_empty());
+        assert_eq!(
+            prepared.component_asset_style_manifest().unwrap(),
+            r#"{"lazy-panel":["/lazy-panel.css"]}"#
+        );
+        assert!(prepared.component_asset_style_links().is_empty());
+    }
+
+    #[test]
+    fn protocol_precomputes_deduplicated_light_component_asset_styles() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.dom_strategy = DomStrategy::Light as i32;
+        protocol.component_asset_style_preloads = vec![
+            webui_protocol::ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec![
+                    "/lazy-panel.css".to_string(),
+                    "/shared.css?theme=a&mode=\"dark\"".to_string(),
+                ],
+            },
+            webui_protocol::ComponentAssetStylePreload {
+                root: "secondary-panel".to_string(),
+                style_hrefs: vec![
+                    "/secondary-panel.css".to_string(),
+                    "/shared.css?theme=a&mode=\"dark\"".to_string(),
+                ],
+            },
+        ];
+
+        let prepared = Protocol::new(protocol);
+
+        assert!(prepared
+            .protocol()
+            .component_asset_style_preloads
+            .is_empty());
+        assert!(prepared
+            .component_asset_style_manifest()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            prepared.component_asset_style_links(),
+            concat!(
+                r#"<link rel="stylesheet" href="/lazy-panel.css">"#,
+                r#"<link rel="stylesheet" href="/shared.css?theme=a&amp;mode=&quot;dark&quot;">"#,
+                r#"<link rel="stylesheet" href="/secondary-panel.css">"#,
+            )
+        );
     }
 
     #[test]

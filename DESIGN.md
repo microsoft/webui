@@ -42,9 +42,22 @@ pub struct WebUIProtocol {
     pub dom_strategy: DomStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Ordered modulepreload hrefs for critical shared JavaScript chunks.
+    pub module_preloads: Vec<String>,
+    /// Entry fragment boundary names in declaration order.
+    pub streaming_boundaries: HashMap<String, StreamingBoundaryList>,
     /// Deterministic document-level CSS for build-authored component rendering
     /// policies. Empty when no component uses `w-render="lazy"`.
     pub component_render_css: String,
+    /// Deterministic Link stylesheet metadata for component asset roots.
+    /// Empty when the build does not emit component assets.
+    pub component_asset_style_preloads: Vec<ComponentAssetStylePreload>,
+}
+
+/// Link stylesheet metadata for one static component asset root.
+pub struct ComponentAssetStylePreload {
+    pub root: String,
+    pub style_hrefs: Vec<String>,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -499,30 +512,50 @@ browser and releases its paint guard as soon as that native CSS is active. It
 then promotes the native CSSOM into a shared constructable sheet; later
 instances can adopt that authorized sheet synchronously.
 
-The framework root exports
-`preloadStylesheets(hrefs: readonly string[]): void` for intent-driven
-client-only Link components whose stylesheet URLs are known before their
-template asset executes. This is a build-tool-facing API: component authors
-never derive or hardcode content-hashed stylesheet names. A bundler integration
-collects the emitted hrefs from the root component asset and its imported shared
-chunks, combines them with its runtime public path, and writes them into an
-eager generated loader. The call resolves those hrefs against
-`document.baseURI`, deduplicates them for the page, and creates temporary
-style-destination preloads so CSS can start in parallel with the lazy JavaScript
-import. Registration claims a speculative node only when its eventual native
-link has default CORS, integrity, and referrer-policy attributes. Otherwise it
-removes the bare node and starts the normal exact-attribute preload. Claimed
-nodes transfer to metadata-owned cleanup; unclaimed nodes are removed after a
-bounded three-second speculation window. Repeated calls, SSR, and browsers
-without the constructable promotion capability are no-ops. Speculation that
-never converts may produce the browser's standard unused-preload warning.
+After final CSS filenames are resolved, the compiler stores one root-sorted
+`ComponentAssetStylePreload` per requested root that has Link-mode CSS. Each
+entry contains the compiler-emitted stylesheet hrefs owned by that root and its
+shared chunks in component discovery order, preserving the Light-DOM cascade.
+Entry-owned prerequisites remain excluded because a component asset protocol is
+built for one entry and the runtime rejects an asset until those entry templates
+are registered.
 
-`defineComponentAssets()` manifest entries provide the stable root asset URL
-plus optional component class and data loaders. Shared chunk filenames do not
-belong in authored manifests; each generated root asset carries its own dynamic
-imports. `preload(tag)` starts the root asset, component class module, and
-optional data request. `create(tag)` waits for asset/module work, mounts without
-blocking on data by default, and can opt into bounded data blocking with
+For Shadow builds, the handler publishes this finite manifest at the document
+`head_end` boundary as inert JSON in `#webui-component-assets`. Body-only host
+protocols that omit a head boundary emit it at `body_start` instead. It is
+available before body interaction, including streaming responses, without
+adding a fetch or creating a client-build dependency on later protocol output.
+The component asset runtime parses and removes the node on first use, shares the
+remaining entries through `window.__webui`, and preserves them when the body
+metadata block is loaded. Light builds instead emit the deduplicated hrefs as
+document-level stylesheet links at the same boundary. Light CSS is global, so
+it must be applied rather than warmed speculatively and is loaded with the
+entry's other document styles.
+
+Low-level Rust integrations that call `render_component_assets()` directly can
+read the same records from `ComponentAssetGraph.style_preloads`. A full
+`build()` moves them into `WebUIProtocol.component_asset_style_preloads` before
+returning the retained entry protocol.
+
+`defineComponentAssets()` manifest entries keep either the authored stable root
+asset URL or a build-tool-owned importer callback, plus optional component class
+and data loaders. The callback form lets bundlers preserve their normal chunk
+and public-path semantics without reimplementing component asset registration.
+Shared chunk and stylesheet filenames never belong in authored code. Each
+generated root asset carries its own dynamic imports, while Shadow builds carry
+eager Link styles in the head manifest.
+
+For Shadow builds, `preload(tag)` resolves the compiler-owned style metadata
+synchronously, creates temporary style-destination preloads, and then starts
+the authored root asset, component class module, and optional data request.
+Resolved hrefs are deduplicated for the finite generated manifest. Registration
+claims a speculative node when its eventual native link has the
+compiler-default request attributes, so CSS starts beside the lazy root module
+instead of after it. Unclaimed nodes are removed after three seconds. An intent
+that never mounts the component may produce the browser's standard
+unused-preload warning.
+`create(tag)` waits for asset/module work, mounts without blocking on data by
+default, and can opt into bounded data blocking with
 `{ awaitData: true, dataTimeoutMs }`.
 
 FAST plugin builds can emit the same graph with trusted `<f-template>`
@@ -1217,7 +1250,7 @@ pub enum CssStrategy {
 }
 ```
 
-- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links. Handler-emitted `<head>` links are ordered by **document/traversal order** (the order components are first discovered while walking the fragment graph), not alphabetically by tag name. This keeps the Light-DOM cascade aligned with source order (stable across component renames) and prioritizes Shadow-DOM `<link rel="preload">` hints by appearance. The order is deterministic because the graph walk is deterministic. For a client-created Shadow DOM component, the framework starts a bounded per-metadata `<link rel="preload" as="style">` with matching CORS, integrity, and referrer-policy attributes. This uses the same style request destination as the native link, so a cold mount does not make a second download. A generated lazy loader whose plain stylesheet hrefs are available earlier can call `preloadStylesheets()` at intent time; registration adopts the resolved-href preload and does not start another one. Preload bytes are never applied directly, and preload does not inspect response MIME type. The first client instance keeps its original links behind a visibility guard until every applicable link fires `load`, preserving native CSP, MIME, integrity, CORS, redirect, and service-worker enforcement. The framework releases that guard as soon as the native styles are active, then serializes only browser-authorized native CSSOM rules into shared constructable sheets. The complete set is inserted before existing adopted sheets with one assignment, preserving the cascade. Promoted links remain as disabled structural placeholders so reconnect hydration retains compiler element indexes. Later instances without an authored hydration lifecycle can reuse the authorized set synchronously.
+- **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links. Handler-emitted `<head>` links are ordered by **document/traversal order** (the order components are first discovered while walking the fragment graph), not alphabetically by tag name. This keeps the Light-DOM cascade aligned with source order (stable across component renames) and prioritizes Shadow-DOM `<link rel="preload">` hints by appearance. The order is deterministic because the graph walk is deterministic. For a client-created Shadow DOM component, the framework starts a bounded per-metadata `<link rel="preload" as="style">` with matching CORS, integrity, and referrer-policy attributes. This uses the same style request destination as the native link, so a cold mount does not make a second download. Static component asset builds also store final Link hrefs in compiler-owned metadata. Shadow builds publish the metadata for `assets.preload(tag)`, which starts those styles beside the lazy root module and lets registration adopt the resolved-href preload. Light builds emit the deduplicated asset hrefs as document stylesheets with the entry because their CSS is globally scoped. Preload bytes are never applied directly, and preload does not inspect response MIME type. The first client instance keeps its original links behind a visibility guard until every applicable link fires `load`, preserving native CSP, MIME, integrity, CORS, redirect, and service-worker enforcement. The framework releases that guard as soon as the native styles are active, then serializes only browser-authorized native CSSOM rules into shared constructable sheets. The complete set is inserted before existing adopted sheets with one assignment, preserving the cascade. Promoted links remain as disabled structural placeholders so reconnect hydration retains compiler element indexes. Later instances without an authored hydration lifecycle can reuse the authorized set synchronously.
 - **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
 - **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), the parser preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. Multi-specifier values already authored by the developer (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before installing component template closure arrays). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 

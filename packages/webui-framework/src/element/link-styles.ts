@@ -85,17 +85,8 @@ export function prepareRegisteredLinkStyles(
   return pending ? Promise.all(pending).then(ignorePromiseResults) : undefined;
 }
 
-/**
- * Let generated loaders start Link-mode styles before template registration.
- *
- * This is a build-tool integration API. Application authors should call the
- * generated loader's stable `preload()` export instead of deriving content-hashed
- * stylesheet hrefs. Resolved hrefs are deduplicated for the page lifetime. Links
- * with `crossorigin`, `integrity`, or `referrerpolicy` must use registration-time
- * preparation so the request attributes match. An unconsumed speculative preload
- * may produce the browser's standard unused-preload warning.
- */
-export function preloadStylesheets(hrefs: readonly string[]): void {
+/** Start compiler-owned component asset styles before importing the root module. */
+export function preloadComponentAssetStyles(hrefs: readonly string[]): void {
   if (hrefs.length === 0 || !supportsConstructableStylesheets()) return;
 
   const preloads = (speculativeStylesheetPreloads ??= new Map());

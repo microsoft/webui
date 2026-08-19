@@ -117,6 +117,7 @@ declare global {
     state?: Record<string, unknown>;
     templates?: Record<string, TemplateMeta>;
     templateFns?: Record<string, CompiledConditionFn[]>;
+    componentAssetStyles?: Record<string, readonly string[]>;
     templateHostExclusions?: Set<string>;
     [key: string]: unknown;
   }
@@ -228,8 +229,10 @@ function loadWebUIDataBlock(): void {
   const text = el.textContent;
   if (text) {
     const templateFns = window.__webui?.templateFns;
+    const componentAssetStyles = window.__webui?.componentAssetStyles;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
     if (templateFns) parsed.templateFns = templateFns;
+    if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
     window.__webui = parsed;
   }
   el.remove();

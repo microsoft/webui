@@ -20,6 +20,14 @@ export class AppShell extends WebUIElement {
   panelSlot!: HTMLDivElement;
   secondaryPanelSlot!: HTMLDivElement;
 
+  preloadPanel(): void {
+    assets.preload('lazy-panel');
+  }
+
+  preloadSecondaryPanel(): void {
+    assets.preload('secondary-panel');
+  }
+
   async openPanel(): Promise<void> {
     this.panelSlot.replaceChildren(await assets.create('lazy-panel'));
   }

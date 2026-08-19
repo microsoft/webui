@@ -21,6 +21,7 @@ pub(super) struct RootPlan {
     pub root: String,
     pub components: Vec<usize>,
     pub required_components: Vec<usize>,
+    pub style_components: Vec<usize>,
     pub external_components: Vec<usize>,
     pub chunks: Vec<usize>,
 }
@@ -54,6 +55,7 @@ pub(super) fn plan_component_assets<'a>(
     }
     if canonical_roots.len() == 1 {
         let required_components = std::mem::take(&mut root_closures[0].components);
+        let style_components = std::mem::take(&mut root_closures[0].component_order);
         let mut components = Vec::with_capacity(required_components.len());
         let mut external_components = Vec::new();
         for component in &required_components {
@@ -71,6 +73,7 @@ pub(super) fn plan_component_assets<'a>(
                 root: canonical_roots.swap_remove(0),
                 components,
                 required_components,
+                style_components,
                 external_components,
                 chunks: Vec::new(),
             }],
@@ -136,6 +139,7 @@ pub(super) fn plan_component_assets<'a>(
     let mut root_plans = Vec::with_capacity(canonical_roots.len());
     for (root_id, root) in canonical_roots.into_iter().enumerate() {
         let required_components = root_closures[root_id].components.clone();
+        let style_components = std::mem::take(&mut root_closures[root_id].component_order);
         let external_components = required_components
             .iter()
             .copied()
@@ -145,6 +149,7 @@ pub(super) fn plan_component_assets<'a>(
             root,
             components: std::mem::take(&mut local_components[root_id]),
             required_components,
+            style_components,
             external_components,
             chunks: std::mem::take(&mut root_chunk_ids[root_id]),
         });
