@@ -883,8 +883,10 @@ reactive state is reconciled before append. If that reconciliation changes a
 request-affecting bound link value, the framework waits for the replacement
 native load before append. Disconnecting permanently cancels
 the pending mount, while a synchronous reconnect preserves it. A link error
-leaves the component guarded instead of exposing unstyled content. SSR
-hydration, Inline, Module, and Light DOM behavior are unchanged.
+is reported, leaves the browser's native links in place, releases the temporary
+guard, and completes deferred hydration. The component may be unstyled after a
+definitive stylesheet failure, but it remains visible and usable. SSR hydration,
+Inline, Module, and Light DOM behavior are unchanged.
 
 ### Intent-time Link preloading for component assets
 

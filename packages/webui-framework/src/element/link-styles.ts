@@ -174,32 +174,17 @@ export function installTemplateLinkStyles(
   let releaseGuard: (() => void) | undefined;
 
   const settle = (index: number): void => {
-    if (cancelled || settled[index] !== 0) return;
+    if (cancelled || failed || settled[index] !== 0) return;
     settled[index] = 1;
     remaining -= 1;
     removeLinkListeners(index);
-    if (remaining === 0) {
-      if (deferContent && !contentAppended) {
-        const loadKeys = captureNativeLoadKeys(links);
-        deferredCallbacks?.beforeAppend?.();
-        if (rearmChangedLinks(loadKeys)) return;
-      }
-      const appended = appendDeferredContent();
-      if (appended) {
-        try {
-          deferredCallbacks?.afterAppend?.();
-        } finally {
-          finishLoadedMount();
-        }
-      } else {
-        finishLoadedMount();
-      }
-    }
+    if (remaining === 0) finishMount(true);
   };
 
   const fail = (index: number): void => {
     if (cancelled || failed) return;
     failed = true;
+    nativeOnly = true;
     removeAllLinkListeners();
     removeStylesheetPreloads(state);
     const result =
@@ -213,8 +198,9 @@ export function installTemplateLinkStyles(
     }
     console.error(
       `[WebUI] Stylesheet "${href}" failed to load for <${host.localName}>.${reason} ` +
-      'The component remains hidden to prevent unstyled content.',
+      'The component will continue with its native stylesheet links and may be unstyled.',
     );
+    finishMount(false);
   };
 
   const tryAdoptNativeSheets = (): void => {
@@ -263,7 +249,6 @@ export function installTemplateLinkStyles(
     };
     const onError = (): void => {
       if (cancelled) return;
-      nativeOnly = true;
       fail(index);
     };
     loadHandlers[index] = onLoad;
@@ -304,7 +289,25 @@ export function installTemplateLinkStyles(
     return true;
   }
 
-  function finishLoadedMount(): void {
+  function finishMount(reconcileLinks: boolean): void {
+    if (deferContent && !contentAppended) {
+      const loadKeys = reconcileLinks ? captureNativeLoadKeys(links) : undefined;
+      deferredCallbacks?.beforeAppend?.();
+      if (loadKeys && rearmChangedLinks(loadKeys)) return;
+    }
+    const appended = appendDeferredContent();
+    if (appended) {
+      try {
+        deferredCallbacks?.afterAppend?.();
+      } finally {
+        finishStyleMount();
+      }
+    } else {
+      finishStyleMount();
+    }
+  }
+
+  function finishStyleMount(): void {
     const hasAuthoredStyle =
       !nativeOnly && hasAuthorStyle(root, stagingRoot, guardStyle);
     releaseGuard?.();

@@ -1306,9 +1306,12 @@ state; it then transfers structural containers to the live root and invokes
 mount intact. A disconnect that remains detached through microtask teardown
 cancels and discards it so a later reconnect creates a fresh client instance.
 Disabled and non-CSS-type links are preserved but do not block readiness. A
-final link `error` is reported and the host stays guarded, so stylesheet failure
-cannot reveal unstyled content. Declarative-shadow-root SSR hydration, Style
-mode, Module mode, and Light DOM behavior do not use this client-mount gate.
+final link `error` is reported, leaves every native link in place, releases the
+temporary guard, and completes deferred content and hydration. The component
+may render unstyled after a definitive stylesheet failure, but it remains
+visible and usable instead of becoming permanently hidden. Declarative-shadow-root
+SSR hydration, Style mode, Module mode, and Light DOM behavior do not use this
+client-mount gate.
 
 Set at construction time with
 `HtmlParser::with_options(ParserOptions::try_new(css, dom, css_file_name_template, css_public_base, legal_comments))`.

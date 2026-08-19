@@ -451,7 +451,9 @@ test.describe('css link fixture', () => {
     expect(result.links).toBe(2);
   });
 
-  test('does not adopt CSS rejected by native MIME enforcement', async ({ page }) => {
+  test('falls back visibly when native MIME enforcement rejects CSS', async ({
+    page,
+  }) => {
     await page.route('**/child.css', async route => {
       await route.fulfill({
         body: '.child-label { color: rgb(128, 0, 128); }',
@@ -472,17 +474,85 @@ test.describe('css link fixture', () => {
     await page.locator('test-link-host .spawn').click();
     await failed;
 
-    await expect(page.locator('test-link-host').evaluate((host) => {
+    await expect.poll(async () => page.locator('test-link-host').evaluate((host) => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child');
+      const instance = child as HTMLElement & {
+        $ready?: boolean;
+        hydratedCount?: number;
+        hydratedHadContent?: boolean;
+      } | null;
       return {
         adopted: child?.shadowRoot?.adoptedStyleSheets.length ?? 0,
+        hydratedCount: instance?.hydratedCount ?? 0,
+        hydratedHadContent: instance?.hydratedHadContent ?? false,
         links: child?.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
+        ready: instance?.$ready ?? false,
         visibility: child ? getComputedStyle(child).visibility : null,
       };
-    })).resolves.toEqual({
+    })).toEqual({
       adopted: 0,
+      hydratedCount: 1,
+      hydratedHadContent: true,
       links: 2,
-      visibility: 'hidden',
+      ready: true,
+      visibility: 'visible',
+    });
+  });
+
+  test('completes CSP-deferred hydration after a native CSS failure', async ({
+    page,
+  }) => {
+    await page.route('**/css-link/fixture.html', async route => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: {
+          ...response.headers(),
+          'content-security-policy':
+            "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'",
+        },
+      });
+    });
+    await page.route('**/child.css', async route => {
+      await route.fulfill({
+        body: 'Not found',
+        contentType: 'text/plain',
+        status: 404,
+      });
+    });
+    const failed = page.waitForEvent('console', message => {
+      return message.type() === 'error' &&
+        message.text().includes('[WebUI] Stylesheet') &&
+        message.text().includes('failed to load');
+    });
+    await openFixture(page);
+
+    await page.locator('test-link-host .spawn').click();
+    await failed;
+
+    await expect.poll(async () => page.locator('test-link-host').evaluate((host) => {
+      const child = (host.shadowRoot ?? host).querySelector('test-link-child');
+      const label = child?.shadowRoot?.querySelector('.child-label');
+      const instance = child as HTMLElement & {
+        $ready?: boolean;
+        hydratedCount?: number;
+        hydratedHadContent?: boolean;
+      } | null;
+      return {
+        hasContent: label !== null,
+        hydratedCount: instance?.hydratedCount ?? 0,
+        hydratedHadContent: instance?.hydratedHadContent ?? false,
+        links: child?.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
+        ready: instance?.$ready ?? false,
+        visibility: child ? getComputedStyle(child).visibility : null,
+      };
+    })).toEqual({
+      hasContent: true,
+      hydratedCount: 1,
+      hydratedHadContent: true,
+      links: 2,
+      ready: true,
+      visibility: 'visible',
     });
   });
 

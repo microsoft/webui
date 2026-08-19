@@ -522,6 +522,9 @@ handler or `Protocol`, which emits `#webui-component-assets`. A shell that uses
 the build artifacts without rendering the protocol still mounts safely through
 the native stylesheet guard, but it cannot start the compiler-owned style
 preload before loading the root asset.
+If an authoritative native stylesheet link fails, WebUI reports the error,
+keeps the native link in place, releases the temporary guard, and completes
+hydration. The component may be unstyled, but it remains visible and usable.
 Generated root, shared chunk, and content-hashed stylesheet filenames never
 belong in authored code. In Shadow builds, `preload(tag)` starts the component's
 Link styles, template graph, JavaScript module, and optional data together.

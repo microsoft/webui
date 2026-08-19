@@ -805,6 +805,9 @@ never applied; the first mounted instance remains guarded until the browser
 validates its native link and can seed the shared constructable sheet. Redirect,
 service-worker, authored `<style>`, or inaccessible-CSSOM cases keep the native
 link rather than risking different response-base or cascade semantics.
+If an authoritative native link fails, WebUI reports the error, keeps the link
+native, releases the temporary guard, and completes hydration so the component
+remains visible and usable even if it is unstyled.
 
 ```html
 <if condition="showSettings">
