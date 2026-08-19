@@ -107,6 +107,36 @@ string html = handler.Render(
 `Protocol` is thread-safe and owns the decoded protocol plus reusable indices.
 Keep it alive for the server lifetime and dispose it during shutdown.
 
+## Python
+
+The `microsoft-webui` PyPI package is a native PyO3 binding, not a `ctypes`
+wrapper:
+
+> The `microsoft-webui` package is **not published to PyPI yet**. Wheels and a
+> source distribution are built and attached to each GitHub Release; install one
+> directly, or build from a checkout with `maturin`.
+
+```bash
+pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
+```
+
+It ships prebuilt wheels for CPython 3.11+ (Windows, macOS, and manylinux, on
+x86_64 and ARM64) plus one sdist, and is **runtime-only** — it renders
+compiled protocols but does not build them. Produce `protocol.bin` with
+`webui build` (the npm or Rust CLI above), then render it from Python:
+
+```python
+from microsoft_webui import Renderer
+
+renderer = Renderer.from_file("dist/protocol.bin", plugin="webui")
+
+html = renderer.render({"title": "Home"}, request_path="/")  # -> bytes
+```
+
+`Renderer` decodes and indexes the protocol once, is thread-safe, and releases
+the GIL for the duration of each render. See [Python](/guide/integrations/python)
+for WSGI, ASGI, and progressive-streaming examples.
+
 ---
 
 The packages below are client-side runtime libraries. They are installed from npm regardless of whether your build toolchain is npm or Rust, since they ship as JavaScript that runs in the browser.

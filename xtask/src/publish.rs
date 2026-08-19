@@ -11,6 +11,7 @@
 //! - `publish/crates/`  — `.crate` files from `cargo package`
 //! - `publish/wasm/`    — WASM modules + JS glue
 //! - `publish/standalone/` — legacy direct-download native and WASM assets
+//! - `publish/python/`  — pre-staged wheels plus the generated source distribution
 
 use crate::util::{build_command, run_command, run_command_quiet};
 use crate::version;
@@ -30,6 +31,8 @@ struct PlatformEntry {
     cli_binary: &'static str,
     /// Suffix appended to CLI binary in `publish/native/` (e.g. `"darwin-arm64"`).
     platform_suffix: &'static str,
+    /// Exact platform tag emitted by the pinned maturin build for this target.
+    python_platform_tag: &'static str,
 }
 
 const PLATFORMS: &[PlatformEntry] = &[
@@ -41,6 +44,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         node_addon: "libwebui_node.so",
         cli_binary: "webui",
         platform_suffix: "linux-x64",
+        python_platform_tag: "manylinux_2_17_x86_64.manylinux2014_x86_64",
     },
     PlatformEntry {
         triple: "aarch64-unknown-linux-gnu",
@@ -50,6 +54,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         node_addon: "libwebui_node.so",
         cli_binary: "webui",
         platform_suffix: "linux-arm64",
+        python_platform_tag: "manylinux_2_17_aarch64.manylinux2014_aarch64",
     },
     PlatformEntry {
         triple: "x86_64-pc-windows-msvc",
@@ -59,6 +64,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         node_addon: "webui_node.dll",
         cli_binary: "webui.exe",
         platform_suffix: "win32-x64",
+        python_platform_tag: "win_amd64",
     },
     PlatformEntry {
         triple: "aarch64-pc-windows-msvc",
@@ -68,6 +74,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         node_addon: "webui_node.dll",
         cli_binary: "webui.exe",
         platform_suffix: "win32-arm64",
+        python_platform_tag: "win_arm64",
     },
     PlatformEntry {
         triple: "x86_64-apple-darwin",
@@ -77,6 +84,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         node_addon: "libwebui_node.dylib",
         cli_binary: "webui",
         platform_suffix: "darwin-x64",
+        python_platform_tag: "macosx_10_12_x86_64",
     },
     PlatformEntry {
         triple: "aarch64-apple-darwin",
@@ -86,11 +94,29 @@ const PLATFORMS: &[PlatformEntry] = &[
         node_addon: "libwebui_node.dylib",
         cli_binary: "webui",
         platform_suffix: "darwin-arm64",
+        python_platform_tag: "macosx_11_0_arm64",
     },
 ];
 
 /// Subdirectories created inside `publish/`.
-const PUBLISH_SUBDIRS: &[&str] = &["native", "npm", "nuget", "crates", "wasm", "standalone"];
+const PUBLISH_SUBDIRS: &[&str] = &[
+    "native",
+    "npm",
+    "nuget",
+    "crates",
+    "wasm",
+    "standalone",
+    "python",
+];
+
+/// Distribution name used for `microsoft-webui` Python artifact filenames.
+///
+/// Wheel/sdist filenames normalize the distribution name by replacing runs of
+/// `-`, `_`, and `.` with a single `_` (PEP 427 / PEP 625), so `microsoft-webui`
+/// becomes `microsoft_webui` on disk.
+const PYTHON_DISTRIBUTION_NAME: &str = "microsoft_webui";
+const PYTHON_INTERPRETER_TAG: &str = "cp311";
+const PYTHON_ABI_TAG: &str = "abi3";
 const WASM_VARIANT_DIRS: &[&str] = &["all", "handler", "parser"];
 
 const STANDALONE_RELEASE_FILES: &[(&str, &str)] = &[
@@ -154,11 +180,29 @@ struct StageOptions {
     mode: StageMode,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildMode {
+    Full,
+    NativeOnly,
+    PythonOnly,
+}
+
+impl BuildMode {
+    fn includes_native(self) -> bool {
+        self != Self::PythonOnly
+    }
+
+    fn includes_python(self) -> bool {
+        self != Self::NativeOnly
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct BuildOptions {
     target_triple: String,
     profile: String,
     output_root: Option<PathBuf>,
+    mode: BuildMode,
 }
 
 // ── Public entry point ──────────────────────────────────────────────────
@@ -166,6 +210,16 @@ struct BuildOptions {
 /// Build and stage native release artifacts for one target triple.
 ///
 /// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>]`
+/// Build and stage one target's release artifacts.
+///
+/// Usage: `cargo xtask publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only]`
+///
+/// Produces the native binaries (CLI, FFI library, Node addon) *and* the
+/// `microsoft-webui` wheel for that target, so one command covers a release
+/// leg. The two mode flags exist for a single reason: Linux wheels must be
+/// linked against an old glibc inside a `manylinux` container, while the native
+/// binaries build on the host. Those legs run `--native-only` on the host and
+/// `--python-only` in the container; every other target uses one full run.
 pub fn run_build(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(path) => path,
@@ -185,36 +239,63 @@ pub fn run_build(args: &[String]) -> ExitCode {
         }
     };
 
-    eprintln!(
-        "\n{} Building native release artifacts for {}",
-        console::style("▸").cyan().bold(),
-        console::style(&options.target_triple).bold(),
-    );
-    if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
+    if options.mode.includes_native() {
         eprintln!(
-            "  {} Failed to build {}: {error}",
-            console::style("✘").red().bold(),
-            options.target_triple,
+            "\n{} Building native release artifacts for {}",
+            console::style("▸").cyan().bold(),
+            console::style(&options.target_triple).bold(),
         );
-        return ExitCode::FAILURE;
+        if let Err(error) = build_native_target(&root, &options.target_triple, &options.profile) {
+            eprintln!(
+                "  {} Failed to build {}: {error}",
+                console::style("✘").red().bold(),
+                options.target_triple,
+            );
+            return ExitCode::FAILURE;
+        }
+
+        if let Err(error) = stage_native_targets(
+            &root,
+            std::iter::once(options.target_triple.as_str()),
+            &options.profile,
+        ) {
+            eprintln!(
+                "  {} Failed to stage native release artifacts: {error}",
+                console::style("✘").red().bold(),
+            );
+            return ExitCode::FAILURE;
+        }
     }
 
-    if let Err(error) = stage_native_targets(
-        &root,
-        std::iter::once(options.target_triple.as_str()),
-        &options.profile,
-    ) {
+    if options.mode.includes_python() {
         eprintln!(
-            "  {} Failed to stage native release artifacts: {error}",
-            console::style("✘").red().bold(),
+            "\n{} Building Python wheel for {}",
+            console::style("▸").cyan().bold(),
+            console::style(&options.target_triple).bold(),
         );
-        return ExitCode::FAILURE;
+        let python_out = root.join("publish").join("python");
+        match build_python_wheel(&root, &options.target_triple, &python_out) {
+            Ok(wheel) => eprintln!(
+                "  {} Built {}",
+                console::style("✔").green(),
+                console::style(wheel).bold(),
+            ),
+            Err(error) => {
+                eprintln!(
+                    "  {} Failed to build the Python wheel for {}: {error}",
+                    console::style("✘").red().bold(),
+                    options.target_triple,
+                );
+                return ExitCode::FAILURE;
+            }
+        }
     }
 
     if let Some(output_root) = &options.output_root {
-        if let Err(error) = export_native_target(&root, output_root, &options.target_triple) {
+        if let Err(error) = export_target(&root, output_root, &options.target_triple, options.mode)
+        {
             eprintln!(
-                "  {} Failed to export native release artifacts: {error}",
+                "  {} Failed to export release artifacts: {error}",
                 console::style("✘").red().bold(),
             );
             return ExitCode::FAILURE;
@@ -222,7 +303,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
     }
 
     eprintln!(
-        "\n{} Native release artifacts built and staged\n",
+        "\n{} Release artifacts built and staged\n",
         console::style("✨").green(),
     );
     ExitCode::SUCCESS
@@ -242,6 +323,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
 ///   4. Pack npm tarballs into `publish/npm/`.
 ///   5. Pack NuGet packages into `publish/nuget/`.
 ///   6. Pack publishable Rust crates into `publish/crates/`.
+///   7. Build the Python sdist and validate all pre-staged wheels.
 pub fn run_stage(args: &[String]) -> ExitCode {
     let root = match std::env::current_dir() {
         Ok(p) => p,
@@ -371,7 +453,21 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if let Err(e) = validate_release_artifact_counts(&root) {
+    // Phase 6: Build the Python sdist (wheels are built out-of-band per
+    // platform and pre-staged into `publish/python/` before this runs).
+    eprintln!(
+        "\n{} Packing Python distribution",
+        console::style("▸").cyan().bold(),
+    );
+    if let Err(e) = pack_python_package(&root) {
+        eprintln!(
+            "  {} Python packaging failed: {e}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
+
+    if let Err(e) = validate_release_artifact_counts(&root, &ver) {
         eprintln!(
             "  {} Release artifact validation failed: {e}",
             console::style("✘").red().bold(),
@@ -411,12 +507,33 @@ where
 
 // ── Publish directory setup ─────────────────────────────────────────────
 
-/// Create the `publish/` directory tree, cleaning it first if it exists.
+/// Create the `publish/` directory tree with the preservation rules for `mode`.
 fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
     let publish_dir = root.join("publish");
 
     match mode {
-        StageMode::Full | StageMode::NativeOnly => {
+        StageMode::Full => {
+            // Wheels are built out-of-band even for a full stage. Preserve the
+            // pre-staged Python directory while cleaning every other output.
+            fs::create_dir_all(&publish_dir)
+                .map_err(|e| format!("failed to create publish/: {e}"))?;
+            let python_dir = publish_dir.join("python");
+            let entries =
+                fs::read_dir(&publish_dir).map_err(|e| format!("failed to read publish/: {e}"))?;
+            for entry in entries {
+                let entry = entry.map_err(|e| format!("failed to read publish/ entry: {e}"))?;
+                let path = entry.path();
+                if path != python_dir {
+                    remove_publish_path(&path)?;
+                }
+            }
+
+            for subdir in PUBLISH_SUBDIRS {
+                fs::create_dir_all(publish_dir.join(subdir))
+                    .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
+            }
+        }
+        StageMode::NativeOnly => {
             if publish_dir.exists() {
                 fs::remove_dir_all(&publish_dir)
                     .map_err(|e| format!("failed to clean publish/: {e}"))?;
@@ -428,8 +545,13 @@ fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
             }
         }
         StageMode::PackOnly => {
-            fs::create_dir_all(publish_dir.join("native"))
-                .map_err(|e| format!("failed to create publish/native: {e}"))?;
+            // `native/` and `python/` are populated by a prior stage/build step
+            // (e.g. downloaded matrix-build pipeline artifacts) and must be
+            // preserved, not cleaned, when only packing/validating.
+            for subdir in ["native", "python"] {
+                fs::create_dir_all(publish_dir.join(subdir))
+                    .map_err(|e| format!("failed to create publish/{subdir}: {e}"))?;
+            }
 
             for subdir in ["npm", "nuget", "crates", "wasm", "standalone"] {
                 let path = publish_dir.join(subdir);
@@ -444,6 +566,16 @@ fn prepare_publish_dirs(root: &Path, mode: StageMode) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn remove_publish_path(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|e| format!("failed to inspect {}: {e}", path.display()))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| format!("failed to clean {}: {e}", path.display()))
+    } else {
+        fs::remove_file(path).map_err(|e| format!("failed to clean {}: {e}", path.display()))
+    }
 }
 
 fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
@@ -486,10 +618,100 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
     })
 }
 
+/// Locate a CPython to run `maturin` with.
+///
+/// This selects the interpreter that *executes* maturin, not the interpreter
+/// the wheel is built for: `abi3-py311` fixes the ABI, so maturin needs no
+/// target interpreter and must not be told to look for one when cross
+/// compiling. Prefer an explicit `python3.11` (what the `manylinux` images
+/// expose) before falling back to whatever the host calls Python.
+fn python_interpreter() -> String {
+    if let Ok(interpreter) = std::env::var("WEBUI_PYTHON") {
+        if !interpreter.is_empty() {
+            return interpreter;
+        }
+    }
+    for candidate in ["python3.11", "python3", "python"] {
+        if run_command_quiet(candidate, &["--version"], None).is_ok() {
+            return candidate.to_string();
+        }
+    }
+    "python".to_string()
+}
+
+/// Assemble the `maturin build` arguments for one target.
+///
+/// Deliberately omits `--interpreter`. The crate is abi3, so maturin derives
+/// the ABI tag from the feature and the platform tag from `--target`. Naming an
+/// interpreter makes maturin match the host interpreter against the target
+/// architecture and skip it, which breaks every cross build.
+fn maturin_build_args<'a>(manifest: &'a str, triple: &'a str, out: &'a str) -> Vec<&'a str> {
+    let mut args = vec![
+        "-m",
+        "maturin",
+        "build",
+        "--release",
+        "--locked",
+        "--manifest-path",
+        manifest,
+        "--target",
+        triple,
+        "--out",
+        out,
+    ];
+    // Linux wheels must declare the manylinux baseline they were built against;
+    // every other target derives its platform tag from the triple alone.
+    if triple.ends_with("-linux-gnu") {
+        args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
+    }
+    args
+}
+
+fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<String, String> {
+    let platform = PLATFORMS
+        .iter()
+        .find(|platform| platform.triple == triple)
+        .ok_or_else(|| format!("unknown target triple: {triple}"))?;
+
+    fs::create_dir_all(out_dir)
+        .map_err(|e| format!("failed to create {}: {e}", out_dir.display()))?;
+
+    let manifest_path = root.join("crates").join("webui-python").join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "Python package manifest not found at {} (crates/webui-python must exist before packaging)",
+            manifest_path.display()
+        ));
+    }
+
+    let interpreter = python_interpreter();
+    let manifest_arg = manifest_path.to_string_lossy().into_owned();
+    let out_arg = out_dir.to_string_lossy().into_owned();
+    let maturin_args = maturin_build_args(&manifest_arg, triple, &out_arg);
+
+    run_command_quiet(&interpreter, &maturin_args, Some(root))
+        .map_err(|e| format!("maturin build failed: {e}"))?;
+
+    let expected = format!(
+        "{PYTHON_DISTRIBUTION_NAME}-{}-{}.whl",
+        crate::version::read_version()
+            .map_err(|e| format!("failed to read the workspace version: {e}"))?,
+        expected_python_wheel_tag(platform)
+    );
+    if !out_dir.join(&expected).is_file() {
+        return Err(format!(
+            "maturin did not produce {expected} in {}",
+            out_dir.display()
+        ));
+    }
+    Ok(expected)
+}
+
 fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
     let mut target_triple = None;
     let mut profile = String::from("release");
     let mut output_root = None;
+    let mut mode = BuildMode::Full;
     let mut i = 0;
 
     while i < args.len() {
@@ -535,6 +757,8 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
                 };
                 output_root = Some(PathBuf::from(value));
             }
+            "--native-only" => mode = set_build_mode(mode, BuildMode::NativeOnly)?,
+            "--python-only" => mode = set_build_mode(mode, BuildMode::PythonOnly)?,
             argument => return Err(format!("unknown publish-build argument: {argument}")),
         }
         i += 1;
@@ -547,7 +771,16 @@ fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
         target_triple,
         profile,
         output_root,
+        mode,
     })
+}
+
+fn set_build_mode(current: BuildMode, requested: BuildMode) -> Result<BuildMode, String> {
+    if current != BuildMode::Full && current != requested {
+        return Err("cannot combine --native-only and --python-only".to_string());
+    }
+
+    Ok(requested)
 }
 
 fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
@@ -576,35 +809,62 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
     Ok(args)
 }
 
-fn export_native_target(root: &Path, output_root: &Path, triple: &str) -> Result<(), String> {
+/// Copy this target's freshly built artifacts into an external output root.
+///
+/// Each mode cleans and rewrites only the subtrees it owns, so a Linux leg can
+/// export natives from the host and then export the wheel from the container
+/// without the second run erasing the first.
+fn export_target(
+    root: &Path,
+    output_root: &Path,
+    triple: &str,
+    mode: BuildMode,
+) -> Result<(), String> {
     let safe_output_root = validate_export_output_root(root, output_root)?;
-    if safe_output_root.exists() {
-        fs::remove_dir_all(&safe_output_root)
-            .map_err(|error| format!("failed to clean {}: {error}", safe_output_root.display()))?;
-    }
-
-    copy_directory_contents(
-        &root.join("publish").join("native"),
-        &safe_output_root.join("publish").join("native"),
-    )?;
     let platform = PLATFORMS
         .iter()
         .find(|platform| platform.triple == triple)
         .ok_or_else(|| format!("unknown target triple: {triple}"))?;
-    copy_directory_contents(
-        &root.join("packages").join(platform.npm_package),
-        &safe_output_root.join("packages").join(platform.npm_package),
-    )?;
-    copy_directory_contents(
-        &root
-            .join("dotnet")
-            .join("runtimes")
-            .join(platform.nuget_rid),
-        &safe_output_root
-            .join("dotnet")
-            .join("runtimes")
-            .join(platform.nuget_rid),
-    )?;
+
+    if mode.includes_native() {
+        for (source, destination) in [
+            (
+                root.join("publish").join("native"),
+                safe_output_root.join("publish").join("native"),
+            ),
+            (
+                root.join("packages").join(platform.npm_package),
+                safe_output_root.join("packages").join(platform.npm_package),
+            ),
+            (
+                root.join("dotnet")
+                    .join("runtimes")
+                    .join(platform.nuget_rid),
+                safe_output_root
+                    .join("dotnet")
+                    .join("runtimes")
+                    .join(platform.nuget_rid),
+            ),
+        ] {
+            clean_directory(&destination)?;
+            copy_directory_contents(&source, &destination)?;
+        }
+    }
+
+    if mode.includes_python() {
+        let destination = safe_output_root.join("publish").join("python");
+        clean_directory(&destination)?;
+        copy_directory_contents(&root.join("publish").join("python"), &destination)?;
+    }
+
+    Ok(())
+}
+
+fn clean_directory(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_dir_all(path)
+            .map_err(|error| format!("failed to clean {}: {error}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -1135,6 +1395,218 @@ fn pack_rust_crates(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ── Python distribution ─────────────────────────────────────────────────
+
+/// Build the `microsoft-webui` sdist into `publish/python/`.
+///
+/// Platform wheels are *not* built here: they are produced out-of-band, one
+/// per target triple, by dedicated CI matrix legs using `maturin build`
+/// (each leg's own toolchain and, for `manylinux`, container), then staged
+/// directly into `publish/python/` before `publish-stage` runs. Both full and
+/// `--pack-only` staging preserve those wheels.
+/// This function only builds the single source distribution, which requires
+/// nothing beyond the local `crates/webui-python` manifest.
+fn pack_python_package(root: &Path) -> Result<(), String> {
+    let python_out = root.join("publish").join("python");
+    fs::create_dir_all(&python_out)
+        .map_err(|e| format!("failed to create {}: {e}", python_out.display()))?;
+
+    let manifest_path = root.join("crates").join("webui-python").join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Err(format!(
+            "Python package manifest not found at {} (crates/webui-python must exist before packaging)",
+            manifest_path.display()
+        ));
+    }
+
+    let manifest_arg = manifest_path.to_string_lossy().into_owned();
+    let out_arg = python_out.to_string_lossy().into_owned();
+    run_command_quiet(
+        "maturin",
+        &["sdist", "--manifest-path", &manifest_arg, "--out", &out_arg],
+        None,
+    )
+    .map_err(|e| format!("maturin sdist failed: {e}"))?;
+
+    let sdist_count = count_files_with_suffix(&python_out, ".tar.gz");
+    let wheel_count = count_files_with_extension(&python_out, "whl");
+    eprintln!(
+        "  {} Packed {} Python sdist(s), found {} pre-staged wheel(s)",
+        console::style("✔").green(),
+        console::style(sdist_count).bold(),
+        console::style(wheel_count).bold(),
+    );
+    Ok(())
+}
+
+/// Validate that `publish/python/` contains exactly the expected `microsoft-webui`
+/// release artifacts: one `cp311-abi3` wheel per [`PLATFORMS`] entry (six total)
+/// and exactly one sdist, all matching `version`.
+fn validate_python_release_artifacts(publish: &Path, version: &str) -> Result<(), String> {
+    let python_dir = publish.join("python");
+    let entries = fs::read_dir(&python_dir)
+        .map_err(|e| format!("failed to read {}: {e}", python_dir.display()))?;
+
+    let wheel_prefix = format!("{PYTHON_DISTRIBUTION_NAME}-{version}-");
+    let mut wheel_tags: Vec<String> = Vec::new();
+    let mut sdist_names: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let entry =
+            entry.map_err(|e| format!("failed to read {} entry: {e}", python_dir.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        if let Some(tag) = name
+            .strip_prefix(wheel_prefix.as_str())
+            .and_then(|rest| rest.strip_suffix(".whl"))
+        {
+            wheel_tags.push(tag.to_string());
+        } else if name.ends_with(".whl") {
+            return Err(format!(
+                "unexpected Python wheel filename: {name}; expected \
+                 {wheel_prefix}{PYTHON_INTERPRETER_TAG}-{PYTHON_ABI_TAG}-<platform>.whl. \
+                 Remove stale or differently-versioned wheels from {}",
+                python_dir.display()
+            ));
+        } else if name.ends_with(".tar.gz") {
+            sdist_names.push(name.to_string());
+        }
+    }
+
+    validate_python_wheel_tags(&wheel_tags)?;
+
+    let expected_sdist = format!("{PYTHON_DISTRIBUTION_NAME}-{version}.tar.gz");
+    if sdist_names.len() != 1 {
+        return Err(format!(
+            "expected 1 Python sdist named {expected_sdist}, found {}; \
+             publish-stage builds this sdist, so remove stale .tar.gz files from {} and retry",
+            sdist_names.len(),
+            python_dir.display()
+        ));
+    }
+    if sdist_names[0] != expected_sdist {
+        return Err(format!(
+            "unexpected Python sdist filename: {}; expected {expected_sdist}. \
+             Remove the stale sdist from {} and retry",
+            sdist_names[0],
+            python_dir.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_python_wheel_tags(wheel_tags: &[String]) -> Result<(), String> {
+    let mut seen_platforms = vec![false; PLATFORMS.len()];
+
+    for tag in wheel_tags {
+        let Some((interpreter_tag, remainder)) = tag.split_once('-') else {
+            return Err(malformed_python_wheel_tag_error(tag));
+        };
+        let Some((abi_tag, platform_tag)) = remainder.split_once('-') else {
+            return Err(malformed_python_wheel_tag_error(tag));
+        };
+        if interpreter_tag != PYTHON_INTERPRETER_TAG {
+            return Err(format!(
+                "unsupported Python wheel interpreter tag `{interpreter_tag}` in `{tag}`; \
+                 expected `{PYTHON_INTERPRETER_TAG}` for the CPython 3.11+ stable-ABI release"
+            ));
+        }
+        if abi_tag != PYTHON_ABI_TAG {
+            return Err(format!(
+                "unsupported Python wheel ABI tag `{abi_tag}` in `{tag}`; \
+                 expected `{PYTHON_ABI_TAG}` for the CPython 3.11+ stable-ABI release"
+            ));
+        }
+        let Some(platform_index) = PLATFORMS
+            .iter()
+            .position(|platform| platform.python_platform_tag == platform_tag)
+        else {
+            return Err(format!(
+                "unsupported Python wheel platform tag `{platform_tag}` in `{tag}`; \
+                 expected one of: {}",
+                expected_python_platform_tags()
+            ));
+        };
+        if seen_platforms[platform_index] {
+            return Err(format!(
+                "duplicate Python wheel for platform `{platform_tag}`; \
+                 keep exactly one {PYTHON_INTERPRETER_TAG}-{PYTHON_ABI_TAG} wheel per platform"
+            ));
+        }
+        seen_platforms[platform_index] = true;
+    }
+
+    if wheel_tags.len() != PLATFORMS.len() {
+        let missing_tags = PLATFORMS
+            .iter()
+            .zip(&seen_platforms)
+            .filter(|(_, seen)| !**seen)
+            .map(|(platform, _)| expected_python_wheel_tag(platform))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "expected {} Python wheels, found {}; pre-stage one wheel per supported target in \
+             publish/python/ before running publish-stage (default and --pack-only preserve \
+             pre-staged wheels). Missing platform/ABI tags: {missing_tags}",
+            PLATFORMS.len(),
+            wheel_tags.len()
+        ));
+    }
+
+    Ok(())
+}
+
+fn malformed_python_wheel_tag_error(tag: &str) -> String {
+    format!(
+        "malformed Python wheel tag `{tag}`; expected \
+         `{PYTHON_INTERPRETER_TAG}-{PYTHON_ABI_TAG}-<platform>`"
+    )
+}
+
+fn expected_python_wheel_tag(platform: &PlatformEntry) -> String {
+    format!(
+        "{PYTHON_INTERPRETER_TAG}-{PYTHON_ABI_TAG}-{}",
+        platform.python_platform_tag
+    )
+}
+
+fn expected_python_platform_tags() -> String {
+    PLATFORMS
+        .iter()
+        .map(|platform| platform.python_platform_tag)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Count files in a directory whose name ends with a given suffix.
+///
+/// Unlike [`count_files_with_extension`], this matches on the full filename
+/// suffix rather than [`Path::extension`], which only returns the final
+/// dot-segment (`"gz"` for `foo.tar.gz`, not `"tar.gz"`).
+fn count_files_with_suffix(dir: &Path, suffix: &str) -> u32 {
+    let mut count = 0;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if entry
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| name.ends_with(suffix))
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 // ── Phase 5: WASM artifacts ─────────────────────────────────────────────
 
 /// Build WASM variants and stage them for npm packaging and direct inspection.
@@ -1297,7 +1769,7 @@ fn count_files_with_extension(dir: &Path, ext: &str) -> u32 {
     count
 }
 
-fn validate_release_artifact_counts(root: &Path) -> Result<(), String> {
+fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), String> {
     let publish = root.join("publish");
     validate_artifact_count(
         count_files_with_extension(&publish.join("npm"), "tgz"),
@@ -1323,7 +1795,8 @@ fn validate_release_artifact_counts(root: &Path) -> Result<(), String> {
         count_regular_files(&publish.join("standalone")),
         20,
         "standalone release assets",
-    )
+    )?;
+    validate_python_release_artifacts(&publish, version)
 }
 
 fn validate_artifact_count(actual: u32, expected: u32, kind: &str) -> Result<(), String> {
@@ -1464,6 +1937,59 @@ mod tests {
         assert_eq!(options.target_triple, "aarch64-unknown-linux-gnu");
         assert_eq!(options.profile, "debug");
         assert_eq!(options.output_root, None);
+        // A plain run covers a whole release leg: natives plus the wheel.
+        assert_eq!(options.mode, BuildMode::Full);
+    }
+
+    #[test]
+    fn parse_build_options_supports_split_environment_modes() {
+        let native = parse_build(&["--target", "x86_64-unknown-linux-gnu", "--native-only"])
+            .expect("native-only should parse");
+        assert_eq!(native.mode, BuildMode::NativeOnly);
+        assert!(native.mode.includes_native());
+        assert!(!native.mode.includes_python());
+
+        let python = parse_build(&["--target", "x86_64-unknown-linux-gnu", "--python-only"])
+            .expect("python-only should parse");
+        assert_eq!(python.mode, BuildMode::PythonOnly);
+        assert!(!python.mode.includes_native());
+        assert!(python.mode.includes_python());
+    }
+
+    #[test]
+    fn maturin_build_args_never_name_an_interpreter() {
+        for platform in PLATFORMS {
+            let args = maturin_build_args("Cargo.toml", platform.triple, "out");
+
+            assert!(
+                !args.contains(&"--interpreter"),
+                "abi3 cross builds must not pin an interpreter for {}",
+                platform.triple
+            );
+            assert!(args.contains(&"--locked"));
+            assert!(args.contains(&platform.triple));
+
+            let manylinux = args.contains(&"manylinux_2_17");
+            assert_eq!(
+                manylinux,
+                platform.triple.ends_with("-linux-gnu"),
+                "only Linux wheels declare a manylinux baseline ({})",
+                platform.triple
+            );
+        }
+    }
+
+    #[test]
+    fn parse_build_options_rejects_conflicting_modes() {
+        let error = parse_build(&[
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--native-only",
+            "--python-only",
+        ])
+        .expect_err("conflicting modes should fail");
+
+        assert!(error.contains("cannot combine --native-only and --python-only"));
     }
 
     #[test]
@@ -1554,6 +2080,7 @@ mod tests {
             node_addon: "libwebui_node.dylib",
             cli_binary: "webui",
             platform_suffix: "darwin-arm64",
+            python_platform_tag: "macosx_11_0_arm64",
         };
         assert_eq!(native_binary_name(&p), "webui-darwin-arm64");
     }
@@ -1568,6 +2095,7 @@ mod tests {
             node_addon: "webui_node.dll",
             cli_binary: "webui.exe",
             platform_suffix: "win32-x64",
+            python_platform_tag: "win_amd64",
         };
         assert_eq!(native_binary_name(&p), "webui-win32-x64.exe");
     }
@@ -1584,7 +2112,6 @@ mod tests {
             );
         }
     }
-
     #[test]
     fn test_create_publish_dirs_cleans_existing() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -1598,6 +2125,31 @@ mod tests {
         for subdir in PUBLISH_SUBDIRS {
             assert!(publish.join(subdir).is_dir());
         }
+    }
+
+    #[test]
+    fn test_full_stage_preserves_python_wheels_while_cleaning_other_outputs() {
+        let dir = tempfile::TempDir::new().expect("root should be created");
+        let publish = dir.path().join("publish");
+        let python = publish.join("python");
+        fs::create_dir_all(&python).expect("publish/python should be created");
+        fs::create_dir_all(publish.join("stale")).expect("stale output should be created");
+        let wheel = python.join(concat!(
+            "microsoft_webui-1.0.0-cp311-abi3-",
+            "manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+        ));
+        fs::write(&wheel, "wheel").expect("wheel fixture should be written");
+        fs::write(publish.join("stale").join("old.txt"), "old")
+            .expect("stale fixture should be written");
+
+        prepare_publish_dirs(dir.path(), StageMode::Full)
+            .expect("full stage directories should be prepared");
+
+        assert!(wheel.is_file(), "full mode must preserve pre-staged wheels");
+        assert!(
+            !publish.join("stale").exists(),
+            "full mode must clean non-Python outputs"
+        );
     }
 
     #[test]
@@ -1623,6 +2175,50 @@ mod tests {
     }
 
     #[test]
+    fn test_pack_only_preserves_python_wheels() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let publish = dir.path().join("publish");
+        let python = publish.join("python");
+
+        fs::create_dir_all(&python).unwrap();
+        fs::write(
+            python.join("microsoft_webui-1.0.0-cp311-abi3-win_amd64.whl"),
+            "wheel",
+        )
+        .unwrap();
+
+        prepare_publish_dirs(dir.path(), StageMode::PackOnly).unwrap();
+
+        assert!(python
+            .join("microsoft_webui-1.0.0-cp311-abi3-win_amd64.whl")
+            .exists());
+    }
+
+    #[test]
+    fn test_native_only_cleans_python_wheels() {
+        let dir = tempfile::TempDir::new().expect("root should be created");
+        let publish = dir.path().join("publish");
+        let python = publish.join("python");
+        fs::create_dir_all(&python).expect("publish/python should be created");
+        fs::write(
+            python.join("microsoft_webui-1.0.0-cp311-abi3-win_amd64.whl"),
+            "wheel",
+        )
+        .expect("wheel fixture should be written");
+
+        prepare_publish_dirs(dir.path(), StageMode::NativeOnly)
+            .expect("native-only directories should be prepared");
+
+        assert_eq!(
+            fs::read_dir(python)
+                .expect("publish/python should exist")
+                .count(),
+            0,
+            "native-only mode starts a fresh per-target artifact stage"
+        );
+    }
+
+    #[test]
     fn test_count_files_with_extension() {
         let dir = tempfile::TempDir::new().unwrap();
         fs::write(dir.path().join("a.crate"), "").unwrap();
@@ -1636,9 +2232,218 @@ mod tests {
     }
 
     #[test]
+    fn test_count_files_with_suffix() {
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("microsoft_webui-1.0.0.tar.gz"), "").unwrap();
+        fs::write(dir.path().join("other-1.0.0.tar.gz"), "").unwrap();
+        fs::write(dir.path().join("microsoft_webui-1.0.0-cp311.whl"), "").unwrap();
+        assert_eq!(count_files_with_suffix(dir.path(), ".tar.gz"), 2);
+        assert_eq!(count_files_with_suffix(dir.path(), ".whl"), 1);
+        assert_eq!(count_files_with_suffix(dir.path(), ".zip"), 0);
+    }
+
+    #[test]
+    fn pack_python_package_errors_when_manifest_missing() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+
+        let error = pack_python_package(root.path())
+            .expect_err("packaging should fail without crates/webui-python");
+
+        assert!(error.contains("crates/webui-python"));
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_accepts_maturin_compressed_manylinux_tags() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let publish = root.path().join("publish");
+        let python_dir = publish.join("python");
+        fs::create_dir_all(&python_dir).expect("publish/python should be created");
+        for tag in [
+            "cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64",
+            "cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64",
+            "cp311-abi3-win_amd64",
+            "cp311-abi3-win_arm64",
+            "cp311-abi3-macosx_10_12_x86_64",
+            "cp311-abi3-macosx_11_0_arm64",
+        ] {
+            fs::write(
+                python_dir.join(format!("{PYTHON_DISTRIBUTION_NAME}-1.2.3-{tag}.whl")),
+                "wheel",
+            )
+            .expect("wheel fixture should be written");
+        }
+        fs::write(
+            python_dir.join(format!("{PYTHON_DISTRIBUTION_NAME}-1.2.3.tar.gz")),
+            "sdist",
+        )
+        .expect("sdist fixture should be written");
+
+        assert!(validate_python_release_artifacts(&publish, "1.2.3").is_ok());
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_accepts_expected_wheels_and_sdist() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let publish = root.path().join("publish");
+        write_python_release_fixtures(&publish.join("python"), "1.2.3");
+
+        assert!(validate_python_release_artifacts(&publish, "1.2.3").is_ok());
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_rejects_wrong_wheel_count() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let python_dir = root.path().join("publish").join("python");
+        fs::create_dir_all(&python_dir).expect("publish/python should be created");
+        // Only stage 5 of the 6 expected wheels, plus a matching sdist.
+        for platform in &PLATFORMS[..5] {
+            fs::write(
+                python_dir.join(format!(
+                    "{PYTHON_DISTRIBUTION_NAME}-1.2.3-{}.whl",
+                    expected_python_wheel_tag(platform)
+                )),
+                "wheel",
+            )
+            .expect("wheel fixture should be written");
+        }
+        fs::write(
+            python_dir.join(format!("{PYTHON_DISTRIBUTION_NAME}-1.2.3.tar.gz")),
+            "sdist",
+        )
+        .expect("sdist fixture should be written");
+
+        let error = validate_python_release_artifacts(&root.path().join("publish"), "1.2.3")
+            .expect_err("missing wheel should fail validation");
+
+        assert!(error.contains("expected 6 Python wheels, found 5"));
+        assert!(error.contains("pre-stage one wheel per supported target"));
+        assert!(error.contains("macosx_11_0_arm64"));
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_rejects_unknown_tag() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let python_dir = root.path().join("publish").join("python");
+        fs::create_dir_all(&python_dir).expect("publish/python should be created");
+        for platform in &PLATFORMS[1..] {
+            fs::write(
+                python_dir.join(format!(
+                    "{PYTHON_DISTRIBUTION_NAME}-1.2.3-{}.whl",
+                    expected_python_wheel_tag(platform)
+                )),
+                "wheel",
+            )
+            .expect("wheel fixture should be written");
+        }
+        // Replace the first platform's wheel with one bearing an unexpected tag.
+        fs::write(
+            python_dir.join(format!(
+                "{PYTHON_DISTRIBUTION_NAME}-1.2.3-cp311-abi3-linux_x86_64.whl"
+            )),
+            "wheel",
+        )
+        .expect("wheel fixture should be written");
+        fs::write(
+            python_dir.join(format!("{PYTHON_DISTRIBUTION_NAME}-1.2.3.tar.gz")),
+            "sdist",
+        )
+        .expect("sdist fixture should be written");
+
+        let error = validate_python_release_artifacts(&root.path().join("publish"), "1.2.3")
+            .expect_err("unexpected tag should fail validation");
+
+        assert!(error.contains("unsupported Python wheel platform tag"));
+        assert!(error.contains("expected one of"));
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_rejects_wrong_abi() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let publish = root.path().join("publish");
+        let python_dir = publish.join("python");
+        write_python_release_fixtures(&python_dir, "1.2.3");
+        let windows_x64 = PLATFORMS
+            .iter()
+            .find(|platform| platform.python_platform_tag == "win_amd64")
+            .expect("Windows x64 platform should exist");
+        fs::remove_file(python_dir.join(format!(
+            "{PYTHON_DISTRIBUTION_NAME}-1.2.3-{}.whl",
+            expected_python_wheel_tag(windows_x64)
+        )))
+        .expect("expected wheel should be removed");
+        fs::write(
+            python_dir.join(format!(
+                "{PYTHON_DISTRIBUTION_NAME}-1.2.3-cp311-cp311-win_amd64.whl"
+            )),
+            "wheel",
+        )
+        .expect("wrong-ABI wheel fixture should be written");
+
+        let error = validate_python_release_artifacts(&publish, "1.2.3")
+            .expect_err("wrong ABI should fail validation");
+
+        assert!(error.contains("unsupported Python wheel ABI tag `cp311`"));
+        assert!(error.contains("expected `abi3`"));
+    }
+
+    #[test]
+    fn validate_python_wheel_tags_rejects_duplicate_platforms() {
+        let mut tags = PLATFORMS
+            .iter()
+            .map(expected_python_wheel_tag)
+            .collect::<Vec<_>>();
+        let duplicate = tags[0].clone();
+        tags.push(duplicate);
+
+        let error = validate_python_wheel_tags(&tags).expect_err("duplicate platform should fail");
+
+        assert!(error.contains("duplicate Python wheel for platform"));
+        assert!(error.contains("keep exactly one"));
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_rejects_version_mismatch() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        write_python_release_fixtures(&root.path().join("publish").join("python"), "1.2.3");
+
+        let error = validate_python_release_artifacts(&root.path().join("publish"), "9.9.9")
+            .expect_err("mismatched version should fail validation");
+
+        assert!(error.contains("unexpected Python wheel filename"));
+    }
+
+    #[test]
+    fn validate_python_release_artifacts_rejects_wrong_sdist_name() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let python_dir = root.path().join("publish").join("python");
+        fs::create_dir_all(&python_dir).expect("publish/python should be created");
+        for platform in PLATFORMS {
+            fs::write(
+                python_dir.join(format!(
+                    "{PYTHON_DISTRIBUTION_NAME}-1.2.3-{}.whl",
+                    expected_python_wheel_tag(platform)
+                )),
+                "wheel",
+            )
+            .expect("wheel fixture should be written");
+        }
+        // Wrong sdist filename (stale version) alongside correctly-versioned wheels.
+        fs::write(
+            python_dir.join(format!("{PYTHON_DISTRIBUTION_NAME}-1.2.2.tar.gz")),
+            "sdist",
+        )
+        .expect("sdist fixture should be written");
+
+        let error = validate_python_release_artifacts(&root.path().join("publish"), "1.2.3")
+            .expect_err("stale sdist version should fail validation");
+
+        assert!(error.contains("unexpected Python sdist filename"));
+    }
+
+    #[test]
     fn validate_release_artifact_counts_accepts_expected_layout() {
         let root = tempfile::TempDir::new().expect("root should be created");
-        for directory in ["npm", "crates", "nuget", "standalone"] {
+        for directory in ["npm", "crates", "nuget", "standalone", "python"] {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
@@ -1647,8 +2452,9 @@ mod tests {
         write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+        write_python_release_fixtures(&root.path().join("publish/python"), "1.2.3");
 
-        assert!(validate_release_artifact_counts(root.path()).is_ok());
+        assert!(validate_release_artifact_counts(root.path(), "1.2.3").is_ok());
     }
 
     #[test]
@@ -1664,7 +2470,7 @@ mod tests {
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
         write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
 
-        let error = validate_release_artifact_counts(root.path())
+        let error = validate_release_artifact_counts(root.path(), "1.2.3")
             .expect_err("missing npm package should fail validation");
 
         assert!(error.contains("expected 9 npm packages, found 8"));
@@ -1675,6 +2481,28 @@ mod tests {
             fs::write(directory.join(format!("{index}.{extension}")), "")
                 .expect("artifact fixture should be written");
         }
+    }
+
+    /// Write six correctly-tagged wheel fixtures plus one matching sdist into
+    /// `python_dir`, mirroring what a real `AssembleRelease` job would have
+    /// pre-staged before `publish-stage --pack-only` runs.
+    fn write_python_release_fixtures(python_dir: &Path, version: &str) {
+        fs::create_dir_all(python_dir).expect("publish/python should be created");
+        for platform in PLATFORMS {
+            fs::write(
+                python_dir.join(format!(
+                    "{PYTHON_DISTRIBUTION_NAME}-{version}-{}.whl",
+                    expected_python_wheel_tag(platform)
+                )),
+                "wheel",
+            )
+            .expect("wheel fixture should be written");
+        }
+        fs::write(
+            python_dir.join(format!("{PYTHON_DISTRIBUTION_NAME}-{version}.tar.gz")),
+            "sdist",
+        )
+        .expect("sdist fixture should be written");
     }
 
     #[test]
@@ -1747,8 +2575,13 @@ mod tests {
         )
         .expect("runtime fixture should be written");
 
-        export_native_target(root.path(), output.path(), "x86_64-unknown-linux-gnu")
-            .expect("native artifacts should be exported");
+        export_target(
+            root.path(),
+            output.path(),
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect("native artifacts should be exported");
 
         assert!(output
             .path()
@@ -1767,8 +2600,13 @@ mod tests {
     #[test]
     fn export_native_target_rejects_workspace_root() {
         let root = tempfile::TempDir::new().expect("root should be created");
-        let error = export_native_target(root.path(), root.path(), "x86_64-unknown-linux-gnu")
-            .expect_err("workspace root should be rejected");
+        let error = export_target(
+            root.path(),
+            root.path(),
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect_err("workspace root should be rejected");
 
         assert!(error.contains("unsafe export output directory"));
         assert!(root.path().exists());
@@ -1782,8 +2620,13 @@ mod tests {
             .ancestors()
             .last()
             .expect("filesystem root should exist");
-        let error = export_native_target(root.path(), filesystem_root, "x86_64-unknown-linux-gnu")
-            .expect_err("filesystem root should be rejected");
+        let error = export_target(
+            root.path(),
+            filesystem_root,
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect_err("filesystem root should be rejected");
 
         assert!(error.contains("unsafe export output directory"));
         assert!(root.path().exists());
@@ -1798,9 +2641,13 @@ mod tests {
         fs::create_dir_all(&sibling).expect("sibling should be created");
         fs::write(sibling.join("keep.txt"), "keep").expect("fixture should be written");
 
-        let error =
-            export_native_target(&root, Path::new("../sibling"), "x86_64-unknown-linux-gnu")
-                .expect_err("relative workspace escape should be rejected");
+        let error = export_target(
+            &root,
+            Path::new("../sibling"),
+            "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
+        )
+        .expect_err("relative workspace escape should be rejected");
 
         assert!(error.contains("must remain within the workspace"));
         assert!(sibling.join("keep.txt").is_file());
@@ -1819,10 +2666,11 @@ mod tests {
         fs::write(external.join("keep.txt"), "keep").expect("fixture should be written");
         symlink(&external, root.join("artifacts")).expect("symlink should be created");
 
-        let error = export_native_target(
+        let error = export_target(
             &root,
             Path::new("artifacts/stage"),
             "x86_64-unknown-linux-gnu",
+            BuildMode::NativeOnly,
         )
         .expect_err("symlinked ancestor should be rejected");
 

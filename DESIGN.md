@@ -731,7 +731,7 @@ pub enum ExpressionError {
 ### Core API
 ```rust
 pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
 /// Options controlling how the handler renders a protocol.
@@ -1032,7 +1032,7 @@ callbacks during rendering and write marker formats for their framework, while s
 completion work such as rendered-component template emission stays in handler core.
 
 ```rust
-pub trait HandlerPlugin {
+pub trait HandlerPlugin: Send {
     fn push_scope(&mut self);
     fn pop_scope(&mut self);
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -1047,6 +1047,21 @@ pub trait HandlerPlugin {
     ) -> Result<()>;
 }
 ```
+
+`HandlerPlugin` deliberately requires `Send`, but not `Sync`. The same erased
+factory type backs buffered rendering and owned host-driven streaming. An owned
+`StreamingSession` parks its live per-render plugin between calls and may move
+to another host thread; Rust cannot safely add `Send` after a factory result has
+been erased to `Box<dyn HandlerPlugin>`. Establishing the guarantee at the
+plugin implementation boundary therefore keeps the unified handler API
+statically sound, even though an ordinary buffered render does not itself move
+threads.
+
+Each render creates a fresh plugin instance from the stored factory, and plugin
+instances are never shared or called concurrently. Sendable single-owner
+interior mutability such as `Cell` and `RefCell` remains valid. Plugins cannot
+retain thread-affine state such as `Rc`; use owned state, `Arc`, or another
+sendable handle instead.
 
 **Hook invocation points:**
 - **Signal**: `on_binding_start` before, `on_binding_end` after (same scope)
@@ -2730,7 +2745,10 @@ terminal record, flushes, and ends the writer.
 The session never awaits and never retains a borrowed state value between calls.
 Rust async hosts await data between calls and serialize commands onto the one
 worker that owns the response and transport. Concurrent calls to one session are
-not allowed.
+not allowed. `StreamingSession` is `Send`, so ownership may move between worker
+threads. It is not required to be `Sync`; a binding that exposes one session
+through a shared host object synchronizes it (for example,
+`Mutex<StreamingSession>`), which is `Send + Sync`.
 
 ### Host-owned streaming sessions
 
@@ -2750,6 +2768,7 @@ Non-Rust hosts therefore drive `StreamingSession`, which owns its state and
 | WASM | `StreamingSession` from `@microsoft/webui-wasm` | `Uint8Array` |
 | C | `webui_streaming_session_*` | `uint8_t *` + length |
 | C# | `Microsoft.WebUI.StreamingSession` | `byte[]` |
+| Python | `StreamingSession` from `microsoft_webui` | `bytes` |
 
 Every host has the same six operations — `boundary`, `writeShell`,
 `writeBoundary`, `update`, `finish`, plus the `boundaryCount` / `isFinished`
@@ -2934,6 +2953,8 @@ Internal source organization:
 packages/webui/src/projection/
   index.ts          — public subpath barrel
   compiler.ts       — TypeScript AST analysis and symbol graph
+  typescript-api.ts — TypeScript 6/7 parser API compatibility layer
+  typescript-version.ts — centralized supported-version policy
   graph.ts          — normalized module graph types and adapter SPI
   manifest.ts       — manifest schema types and serialization
   loader.ts         — manifest loading and filesystem validation
@@ -2957,7 +2978,7 @@ dependencies of `@microsoft/webui`. The supported bundler is esbuild:
 {
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": { "optional": true },
@@ -2974,6 +2995,19 @@ peer produces an actionable diagnostic (`PROJ-P001`/`PROJ-P002`; see
 
 Both peers are optional so users importing only the root build/render API do
 not receive dependency warnings for compiler tooling they do not use.
+The TypeScript range is intentionally split at the major boundary: WebUI
+supports TypeScript 6 from 6.0.3 onward and the tested TypeScript 7.0.2
+release, while excluding earlier and untested versions. TypeScript 7 is
+pinned because its compiler integration uses unstable subpaths; later
+TypeScript 7 releases are added only after compatibility testing.
+The projection compiler uses the legacy in-process parser exposed by
+TypeScript 6. TypeScript 7 builds use its native synchronous API with an
+in-memory virtual filesystem, preserving the adapter contract that source is
+analyzed from the resolved module graph rather than reread from application
+files. The TypeScript 6 parser is isolated behind `LegacyProjectionParser`,
+its single traversal shim, and a pinned `typescript-6` test-only dependency;
+removing TypeScript 6 support deletes those three surfaces plus the version
+policy branch.
 
 Bundler adapters use local structural interfaces and do **not** statically
 import their bundler packages at module load time. Every supported adapter
@@ -4300,6 +4334,7 @@ webui/
 │   ├── webui-parser/         # HTML/CSS/template parser
 │   ├── webui-press/          # Markdown-driven docs site generator + dev server
 │   ├── webui-protocol/       # Protocol definition
+│   ├── webui-python/         # Python native extension (PyO3 + maturin)
 │   ├── webui-state/          # State management
 │   ├── webui-test-utils/     # Testing utilities
 │   └── webui-wasm/           # WebAssembly bindings
@@ -4338,6 +4373,9 @@ webui-cli ──────► webui (library) ◄────── webui-node
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
      └──────────► webui-protocol   ┌──── webui-wasm (parser feature)
                                    └──── webui-wasm (all/default feature)
+
+webui-python ───► webui-handler
+             └──► webui-protocol
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
@@ -4404,7 +4442,121 @@ Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each s
 
 `dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. Pushes to `main` trigger the Microsoft-hosted `Web UI - CD Build` pipeline immediately; the pipeline may also be queued manually. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Its `PrepareRelease` stage selects an untagged stable workspace version. Production build and CD runs require the release build source to be `refs/heads/main`; other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. `BuildArtifacts` runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. The assembly job merges those six outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only`, because that directory contains versioned release archives rather than incremental build inputs. The packer generates WASM, npm, crate, NuGet, and standalone artifacts and validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Its `SignArtifacts` stage restores the build outputs with Azure artifact tasks and runs ESRP signing. For production runs, `TagRelease` creates or verifies the annotated Git tag, then `PublishRelease` runs independent parallel jobs for the GitHub Release, npm packages, and Rust crates so one publication destination does not block another. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all four folders for 54 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and can also be queued manually. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. Export is mode-aware, so the second run adds `publish/python/` without disturbing the natives the first run staged. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Its `PrepareRelease` stage selects an untagged stable workspace version. Production build and CD runs require the release build source to be `refs/heads/main`; other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. `BuildArtifacts` runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. The assembly job merges those six outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only`, because that directory contains versioned release archives rather than incremental build inputs. The packer generates WASM, npm, crate, NuGet, Python, and standalone artifacts and validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Its `SignArtifacts` stage restores the build outputs with Azure artifact tasks and runs ESRP signing. For production runs, `TagRelease` creates or verifies the annotated Git tag. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 61 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+
+### Python Distribution
+
+The `microsoft-webui` package is a first-class runtime binding for
+`webui-handler` and `webui-protocol`, built with `maturin` from a
+`webui-python` crate as a direct **PyO3** native extension — not a `ctypes`
+wrapper around `webui-ffi`. It imports as `microsoft_webui`.
+
+**Runtime-only scope.** Like `webui-ffi`, the Python binding renders compiled
+protocols; it does not expose a build/compile API. Producing `protocol.bin`
+stays the job of `webui build` (the npm or Rust CLI); Python consumes the
+compiled artifact exactly like every other host.
+
+**Ownership.** `Renderer` decodes and indexes protocol bytes once at
+construction and binds an optional named plugin, mirroring the `Protocol` /
+handler pairing every other host owns for the process lifetime:
+
+```python
+from microsoft_webui import Renderer
+
+renderer = Renderer(protocol_bytes, plugin="webui")
+# or:
+renderer = Renderer.from_file("dist/protocol.bin", plugin="webui")
+```
+
+**Concurrency and the GIL.** `Renderer` is thread-safe: the underlying
+`Arc<Protocol>` and bound handler satisfy the same `Send + Sync` contract as
+every other host binding. Every rendering call releases the GIL for the
+duration of the Rust work via `Python::detach`, so concurrent Python
+threads render through one `Renderer` without serializing on CPython's
+interpreter lock. `StreamingSession` is synchronized for memory safety but is
+logically **single-driver** — drive one session from one Python thread at a
+time, exactly like the Node and C# session types (see
+[Host-owned streaming sessions](#host-owned-streaming-sessions)); independent
+sessions on the same `Renderer` may run concurrently. Every session method,
+including the `boundary_count` and `finished` observers, acquires the session
+lock with the GIL already released, so a misuse that contends on one session
+can never stall unrelated Python threads.
+
+**API surface.**
+
+| Python | Description |
+|--------|-------------|
+| `Renderer(protocol_bytes, *, plugin=None)` | Decode and index protocol bytes once, binding an optional named plugin |
+| `Renderer.from_file(path, *, plugin=None)` | Read `path` and construct a `Renderer` from its bytes |
+| `renderer.render(state, *, entry="index.html", request_path="/")` | Render into `bytes`, the canonical fast path |
+| `renderer.render_text(...)` | Render and decode to `str` |
+| `renderer.render_partial(state, *, entry="index.html", request_path="/", inventory="")` | Complete JSON partial-navigation response as `bytes` |
+| `renderer.render_component_templates(tags, *, inventory="")` | On-demand component template payloads as `bytes` |
+| `renderer.tokens` | `tuple[str, ...]` of CSS token names in build order |
+| `renderer.stream_response(*, entry="index.html", request_path="/", nonce=None, head_inject=None, body_inject=None)` | Open a host-driven `StreamingSession` |
+
+`StreamingSession` exposes `boundary(name) -> int`, `boundary_count`,
+`finished`, `write_shell(state) -> bytes`,
+`write_boundary(id, state, mode=BoundaryMode.FINAL) -> bytes`,
+`update(id, state) -> bytes`, and `finish(state) -> bytes`. Every method
+returns `bytes`; WebUI never touches a Python socket or ASGI/WSGI transport,
+so ordering (shell, then boundaries in declaration order, then updates to
+already-committed `updatable` boundaries, then `finish()` last) and
+backpressure are the caller's responsibility, exactly as documented in
+[Host-owned streaming sessions](#host-owned-streaming-sessions).
+
+**State encoding.** `state` accepts a Python `Mapping`, which the facade
+serializes with the standard library `json` module before crossing into
+Rust. Callers that already hold serialized JSON pass `str`, `bytes`,
+`bytearray`, or a `memoryview` directly, bypassing Python-side `json.dumps`.
+Immutable `str` and `bytes` stay backed by their Python objects during detached
+Rust work; mutable/general buffers are copied before the GIL is released.
+
+**Exceptions.** Every failure raises a native subclass of `WebUIError`:
+`ProtocolError` (undecodable protocol bytes), `StateError` (bad caller state
+JSON), `RenderError` (render failure), and `StreamingError` (session ordering
+or lifecycle violation). Type errors and unknown plugin names raise the builtin
+`TypeError` / `ValueError`, and a missing protocol file raises the builtin
+`OSError` subclass, so ordinary Python idioms keep working. The classes are
+defined on `microsoft_webui._native`, which makes them picklable and safe to
+propagate out of `ProcessPoolExecutor` workers.
+
+Bindings must be able to tell a caller input error from a render failure
+**without inspecting message text**. `HandlerError::InvalidState` exists for
+exactly this: `webui-handler` returns it for any host-supplied state JSON it
+cannot parse or validate, and each binding maps that one variant to its own
+state-error type (`StateError` in Python). Reclassifying by matching on error
+prose is not permitted.
+
+**`Plugin` and `BoundaryMode`.** Both are `enum.StrEnum` — available since
+CPython 3.11, the package's minimum interpreter version — so plugin
+identifiers and boundary modes compare equal to their plain string form while
+staying self-documenting and typo-checked by static analysis.
+
+**Head/body injection.** `head_inject`, `body_inject`, and the reserved
+`$webui` state channel's `headEnd` / `bodyStart` / `bodyEnd` members are
+written **verbatim**, exactly like every other host binding. They are
+trusted HTML, not escaped input — never let untrusted request data reach
+these fields. See [Per-Render HTML Injection](#per-render-html-injection) and
+[Reserved State Inject Channel](#reserved-state-inject-channel).
+
+### Python Wheel Matrix
+
+`webui-python` builds against PyO3's `abi3-py311` stable ABI, so one wheel per
+platform serves every CPython 3.11+ interpreter without a per-minor-version
+build matrix. v1 ships six wheels plus one `sdist`:
+
+| Platform | Architectures |
+|----------|---------------|
+| Windows | x86_64, ARM64 |
+| macOS | x86_64, ARM64 (separate wheels, not a `universal2` fat binary) |
+| manylinux | x86_64, ARM64 |
+
+Explicitly out of scope for v1: PyPy, GraalPy, free-threaded (`t`-suffixed)
+CPython builds, `musllinux`, and 32-bit architectures — each would need its
+own ABI-specific build and CI leg. The self-contained `sdist` bundles the
+matching WebUI Rust source closure and lets a Rust toolchain build any of those
+targets, but doing so is unsupported and untested.
 
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
@@ -4444,7 +4596,7 @@ host, and lets the host apply its own backpressure policy.
 
 | Function | Description |
 |----------|-------------|
-| `webui_streaming_session_create(handler, protocol, entry_id, request_path, nonce, head_inject, body_inject)` | Open a session. The session clones its own references to the handler and protocol, so destruction order between the three is irrelevant. Optional arguments accept `NULL`. |
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Open a session. It inherits the handler's already-configured nonce (see `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json` (see [Reserved State Inject Channel](#reserved-state-inject-channel)), not a create-time argument. The session clones its own references to the handler and protocol, so destruction order between the three is irrelevant. |
 | `webui_streaming_session_destroy(session)` | Destroy a session. `NULL` is a safe no-op. Destroying an unfinished session discards its pending output. |
 | `webui_streaming_session_boundary(session, name, out_id)` | Resolve an authored boundary name to its integer handle once, outside the write loop. Returns `false` and sets an error listing the valid names on an unknown name. |
 | `webui_streaming_session_boundary_count(session)` | Number of boundaries declared by the entry template. |

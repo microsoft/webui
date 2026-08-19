@@ -4,6 +4,10 @@
 import type { AdapterContext } from "./graph.js";
 import type { ProjectionManifest } from "./manifest.js";
 import { ProjectionError, createDiagnostic } from "./diagnostics.js";
+import {
+  TYPESCRIPT_PEER_RANGE,
+  supportedTypeScriptMajor,
+} from "./typescript-version.js";
 
 type CompilerModule = typeof import("./compiler.js");
 let compilerModule: Promise<CompilerModule> | undefined;
@@ -31,16 +35,29 @@ function loadCompiler(): Promise<CompilerModule> {
 
 async function importCompiler(): Promise<CompilerModule> {
   try {
+    const typescript = await import("typescript");
+    validateTypeScriptVersion(typescript.version);
     return await import("./compiler.js");
   } catch (error: unknown) {
     if (isMissingTypeScriptPeer(error)) {
       throw new ProjectionError([
         createDiagnostic("PROJ-P001", {
-          help: "Install a compatible application-owned TypeScript peer (^6.0.3) before using @microsoft/webui/projection.js.",
+          help: `Install a compatible application-owned TypeScript peer (${TYPESCRIPT_PEER_RANGE}) before using @microsoft/webui/projection.js.`,
         }),
       ]);
     }
+
     throw error;
+  }
+}
+
+function validateTypeScriptVersion(version: string): void {
+  if (supportedTypeScriptMajor(version) === undefined) {
+    throw new ProjectionError([
+      createDiagnostic("PROJ-P001", {
+        help: `Install a supported TypeScript peer (${TYPESCRIPT_PEER_RANGE}); found ${version}.`,
+      }),
+    ]);
   }
 }
 

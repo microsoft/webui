@@ -57,6 +57,15 @@ stages:
 
           release_tag="v${release_version}"
           release_commit="${BUILD_SOURCEVERSION:?BUILD_SOURCEVERSION is required}"
+          if ! source_date_epoch=$(git show -s --format=%ct "$release_commit"); then
+            echo "##vso[task.logissue type=error]Unable to read the commit timestamp for release commit ${release_commit}."
+            exit 1
+          fi
+          if [[ ! "$source_date_epoch" =~ ^[1-9][0-9]*$ ]]; then
+            echo "##vso[task.logissue type=error]Release commit ${release_commit} has an invalid commit timestamp."
+            exit 1
+          fi
+
           set +e
           git ls-remote --exit-code origin \
             "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}" >/dev/null
@@ -83,6 +92,7 @@ stages:
           echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${release_version}"
           echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${release_tag}"
           echo "##vso[task.setvariable variable=releaseCommit;isOutput=true]${release_commit}"
+          echo "##vso[task.setvariable variable=sourceDateEpoch;isOutput=true]${source_date_epoch}"
           echo "##vso[task.setvariable variable=shouldBuild;isOutput=true]${should_build}"
       env:
         ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
@@ -99,6 +109,7 @@ stages:
     releaseTag: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseTag'] ]
     releaseCommit: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseCommit'] ]
     releaseVersion: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseVersion'] ]
+    sourceDateEpoch: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.sourceDateEpoch'] ]
     CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
   jobs:
@@ -110,15 +121,23 @@ stages:
           targetTriple: x86_64-unknown-linux-gnu
           artifactName: stage-linux-x64
           installArm64Linker: 'false'
+          manylinuxCrossImage: messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d
+          pythonNativeTest: 'true'
         LinuxArm64:
           targetTriple: aarch64-unknown-linux-gnu
           artifactName: stage-linux-arm64
           installArm64Linker: 'true'
+          manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
+          pythonNativeTest: 'false'
     pool:
       vmImage: ubuntu-latest
     steps:
     - checkout: self
       clean: true
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -158,15 +177,37 @@ stages:
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
+          # Natives build on the host, but the wheel must link an old glibc, so
+          # the container step below runs the same command with --python-only.
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
+            --native-only \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         INSTALL_ARM64_LINKER: $(installArm64Linker)
         TARGET_TRIPLE: $(targetTriple)
+    - task: Bash@3
+      displayName: Build Python wheel ($(targetTriple))
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          set -euo pipefail
+          # Wheel build policy lives in xtask (publish-python); this only
+          # supplies the pinned old-glibc environment it must run inside.
+          docker run --rm --platform linux/amd64 \
+            -e SOURCE_DATE_EPOCH \
+            -v "$(pwd)":/io -w /io "$MANYLINUX_CROSS_IMAGE" \
+            bash crates/webui-python/scripts/build-manylinux-wheel.sh \
+              "$TARGET_TRIPLE" "$WHEEL_OUT"
+      env:
+        MANYLINUX_CROSS_IMAGE: $(manylinuxCrossImage)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
+        TARGET_TRIPLE: $(targetTriple)
+        WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -180,14 +221,20 @@ stages:
         MacOSArm64:
           targetTriple: aarch64-apple-darwin
           artifactName: stage-macos-arm64
+          pythonNativeTest: 'false'
         MacOSX64:
           targetTriple: x86_64-apple-darwin
           artifactName: stage-macos-x64
+          pythonNativeTest: 'true'
     pool:
       vmImage: macOS-latest
     steps:
     - checkout: self
       clean: true
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -245,14 +292,20 @@ stages:
         WindowsX64:
           targetTriple: x86_64-pc-windows-msvc
           artifactName: stage-windows-x64
+          pythonNativeTest: 'true'
         WindowsArm64:
           targetTriple: aarch64-pc-windows-msvc
           artifactName: stage-windows-arm64
+          pythonNativeTest: 'false'
     pool:
       vmImage: windows-latest
     steps:
     - checkout: self
       clean: true
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -326,6 +379,18 @@ stages:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
         artifactName: $(artifactName)
 
+  # Microsoft-hosted pools have no ARM64 Linux or Windows vmImage, and
+  # macOS-latest is Intel x64, so the ARM64 wheels built above can only be
+  # cross-compiled on those hosted pools, never genuinely executed there.
+  # Each of the following three jobs is a compile-time template conditional:
+  # if the matching pool parameter is set, it downloads the pre-built wheel
+  # and smoke-tests it on real matching hardware; otherwise it hard-fails
+  # with actionable guidance instead of silently skipping the test or
+  # claiming the wheel was validated when it was not.
+  # The configured self-hosted pool's agent must already have a Python 3.11
+  # interpreter on PATH (as `python3.11` on Linux/macOS, `python` on
+  # Windows) - UsePythonVersion@0 is not used here because its tool cache
+  # is not guaranteed to be provisioned on arbitrary self-hosted agents.
   - job: AssembleRelease
     displayName: Assemble release packages
     dependsOn:
@@ -403,6 +468,10 @@ stages:
       inputs:
         packageType: sdk
         version: 9.x
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Bash@3
       displayName: Generate release artifacts
       inputs:
@@ -410,17 +479,32 @@ stages:
         workingDirectory: '$(Build.SourcesDirectory)'
         script: |
           set -euo pipefail
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+          : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
           rustup toolchain install 1.93 --profile minimal
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
+          # Needed for the `cargo xtask publish-stage --pack-only` sdist step
+          # below; the six pre-built wheels were already downloaded above.
+          python3.11 -m pip install --upgrade "maturin==1.14.1"
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
           trap 'rm -rf target/package' EXIT
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage --pack-only --profile release
+          python crates/webui-python/tests/validate_artifacts.py \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_amd64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_arm64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_10_12_x86_64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_11_0_arm64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}.tar.gz"
       env:
         PNPM_STORE_PATH: $(PNPM_STORE_PATH)
+        RELEASE_VERSION: $(releaseVersion)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
     - task: Bash@3
       displayName: Write release metadata
       inputs:
@@ -448,6 +532,11 @@ stages:
       inputs:
         targetPath: '$(Build.SourcesDirectory)/publish/crates'
         artifactName: unsigned_crate_packages
+    - task: PublishPipelineArtifact@1
+      displayName: Upload unsigned Python packages
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/publish/python'
+        artifactName: unsigned_python_packages
     - task: PublishPipelineArtifact@1
       displayName: Upload NuGet signing input
       inputs:

@@ -2,10 +2,13 @@
 
 The WebUI FFI (Foreign Function Interface) handler exposes the loaded-protocol
 rendering pipeline as a C-compatible shared library. Any language with C
-interop, Go, Python, Ruby, PHP, Lua, and more, can render compiled WebUI
-applications without a JavaScript runtime. .NET applications should prefer the
-managed `Microsoft.WebUI` NuGet package, which restores native runtime packages
-transitively.
+interop, Go, Ruby, PHP, Lua, and more, can render compiled WebUI applications
+without a JavaScript runtime. .NET applications should prefer the managed
+`Microsoft.WebUI` NuGet package, which restores native runtime packages
+transitively, and Python applications should prefer the native
+`microsoft-webui` package (see [Python](./python)). .NET wraps this C ABI;
+Python binds the Rust handler directly through PyO3. Only languages without a
+first-class binding need to call the C ABI directly.
 
 ## Building the Shared Library
 
@@ -208,7 +211,7 @@ never touches your socket, so backpressure and cancellation stay yours.
 
 ```c
 webui_streaming_session_t *session = webui_streaming_session_create(
-    handler, protocol, "index.html", "/", NULL, NULL, NULL);
+    handler, protocol, "index.html", "/");
 
 uint32_t rows = 0;
 if (!webui_streaming_session_boundary(session, "rows", &rows)) {
@@ -232,7 +235,7 @@ webui_streaming_session_destroy(session);
 
 | Function | Result |
 |----------|--------|
-| `webui_streaming_session_create(handler, protocol, entry_id, request_path, nonce, head_inject, body_inject)` | Session handle, or `NULL`. The last three arguments accept `NULL`. |
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Session handle, or `NULL`. Inherits the handler's nonce (set with `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json`, not through this call. |
 | `webui_streaming_session_destroy(session)` | Releases the session. `NULL` is a safe no-op. |
 | `webui_streaming_session_boundary(session, name, out_id)` | `true` plus the integer handle, or `false` and an error listing the valid names |
 | `webui_streaming_session_boundary_count(session)` | Boundaries declared by the entry |
@@ -318,7 +321,19 @@ Pass `NULL` for no plugin (equivalent to `webui_handler_create`). See [Plugins](
 
 ## Python
 
-Python's built-in `ctypes` module can load the shared library directly. No pip packages needed.
+Most Python applications should use the `microsoft-webui` package
+instead of using this FFI directly — it is a native PyO3 binding (not a
+`ctypes` wrapper) with a `Renderer` facade, typed `bytes`/`str` returns, and a
+host-driven `StreamingSession`. See [Python](./python) for installation and
+examples.
+
+### Advanced fallback: `ctypes`
+
+Platforms the `microsoft-webui` wheel matrix doesn't cover (musllinux, 32-bit,
+PyPy, GraalPy, free-threaded builds) can still reach WebUI by loading the
+shared library directly with Python's built-in `ctypes` module. No pip
+packages are needed, but you own memory management, argument marshalling, and
+thread-safety yourself.
 
 ```python
 import ctypes

@@ -133,7 +133,7 @@ pub trait ParserPlugin {
 ### HandlerPlugin Trait
 
 ```rust
-pub trait HandlerPlugin {
+pub trait HandlerPlugin: Send {
     /// Enter a new scope (component or loop item).
     fn push_scope(&mut self);
     /// Leave the current scope.
@@ -164,6 +164,20 @@ pub trait HandlerPlugin {
     ) -> Result<()>;
 }
 ```
+
+### Threading Contract
+
+`HandlerPlugin` requires `Send`, but not `Sync`. WebUI creates a fresh plugin
+instance for every render and never calls one instance concurrently, so
+single-owner interior mutability such as `Cell` or `RefCell` is supported.
+
+The `Send` bound also applies when your application only uses buffered
+rendering. The same handler factory can open an owned `StreamingSession`, which
+parks the live plugin between calls and may move between host threads. Rust
+cannot safely recover `Send` after a factory result has been erased to a trait
+object, so the guarantee must be part of the plugin implementation. Do not keep
+thread-affine values such as `Rc` in a handler plugin; use owned values, `Arc`,
+or another sendable handle.
 
 ## Next Steps
 

@@ -153,6 +153,10 @@
             "link": "/guide/integrations/node"
           },
           {
+            "text": "Python",
+            "link": "/guide/integrations/python"
+          },
+          {
             "text": "Electron",
             "link": "/guide/integrations/electron"
           },

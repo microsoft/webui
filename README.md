@@ -33,6 +33,14 @@ dotnet add package Microsoft.WebUI
 The NuGet package restores platform-specific `Microsoft.WebUI.Runtime.*` native assets transitively. Azure release validation retains unsigned npm tarballs, unsigned crate archives, signed NuGet packages, and a standalone asset folder containing direct-download native binaries and WASM files as pipeline artifacts. Production runs also attach all four artifact sets to the GitHub Release. Signed `.nupkg` and `.snupkg` files are used for manual NuGet.org publishing.
 NuGet metadata uses `Authors=Microsoft`, the `Microsoft` package owner, a stable project URL, a package license URL with license acceptance required, release notes links, discoverability tags, and the required `© Microsoft Corporation. All rights reserved.` copyright notice. NuGet.org publishing is not automatic. Before publishing, staged packages and Authenticode-signable contents must be signed with a Microsoft certificate through the approved signing process.
 
+For Python server-side bindings:
+
+```bash
+pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
+```
+
+`microsoft-webui` is a native PyO3 binding (not `ctypes`) for CPython 3.11+, distributed as prebuilt wheels for Windows, macOS, and manylinux on x86_64 and ARM64, plus one sdist. It is runtime-only: render `webui build` output, but don't compile templates from Python.
+
 ## Learn
 
 | Resource | Link |
@@ -119,7 +127,7 @@ For contribution policy, issue guidelines, and the current pull request policy, 
 ## Project layout
 
 ```text
-crates/      Rust crates for the CLI, parser, handler, protocol, FFI, and integrations
+crates/      Rust crates for the CLI, parser, handler, protocol, FFI, Python bindings, and integrations
 packages/    npm packages for the CLI, WebUI Framework, router, and platform binaries
 dotnet/      .NET bindings, runtime packages, and global tool packaging
 docs/        VitePress documentation site

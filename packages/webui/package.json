@@ -58,7 +58,7 @@
   },
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": {
@@ -71,6 +71,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "typescript-6": "catalog:"
   }
 }
