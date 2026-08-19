@@ -2,6 +2,8 @@
 ignore = [
     # bincode 1.x (transitive dep of syntect) — unmaintained but no security issue
     "RUSTSEC-2025-0141",
+    # yaml-rust (transitive dep of serde_yaml) — unmaintained, no security issue
+    "RUSTSEC-2024-0320",
     # actix-http/awc still pin h2 0.3; the low-severity fix is available only in h2 0.4.
     "RUSTSEC-2026-0258",
 ]
@@ -10,7 +12,9 @@ ignore = [
 allow = [
     "MIT",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "ISC",
+    "MPL-2.0",
     "Unicode-3.0",
     "CC0-1.0",
     "Unicode-DFS-2016",
@@ -26,8 +30,10 @@ ignore = true
 [bans]
 multiple-versions = "deny"
 skip = [
+    { name = "bitflags" },
     { name = "convert_case" },
     { name = "getrandom" },
+    { name = "hashbrown" },
     { name = "http" },
     # actix-web 4.14 depends on impl-more 0.3 directly while actix-tls 3.5 still pins impl-more 0.1.
     { name = "impl-more" },
@@ -36,6 +42,11 @@ skip = [
     { name = "rand" },
     { name = "rand_core" },
     { name = "socket2" },
+    { name = "serde_spanned" },
+    { name = "toml" },
+    { name = "toml_datetime" },
+    # toml 0.9 currently depends on both winnow 0.7 and toml_parser's winnow 1.x.
+    { name = "winnow" },
     { name = "windows-sys" },
     { name = "windows-targets" },
     { name = "windows_aarch64_gnullvm" },
@@ -46,4 +57,6 @@ skip = [
     { name = "windows_x86_64_gnu" },
     { name = "windows_x86_64_gnullvm" },
     { name = "windows_x86_64_msvc" },
+    # getrandom's wasi-preview targets currently pull both wasip2 and wasip3 stacks.
+    { name = "wit-bindgen" },
 ]

@@ -6,8 +6,6 @@
 //! Handler plugins write framework-specific hydration markers while shared
 //! completion work, such as component template emission, stays in handler core.
 
-mod fast_route_state;
-
 pub mod fast;
 pub mod fast_v2;
 pub mod fast_v3;

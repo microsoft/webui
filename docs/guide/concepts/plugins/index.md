@@ -42,12 +42,6 @@ implementations are loaded.
 | `fast-v3` | FAST 3 hydration plugin |
 | `webui` | WebUI framework hydration plugin |
 
-FAST plugins expose scalar route state as kebab-case HTML attributes on
-matched route components. Strings, numbers, and booleans are emitted.
-Complex values should be initialized from the rendered DOM or another
-documented mechanism appropriate to the component. Keep route payloads flat
-when the component reads them through `@attr`.
-
 ## Using Plugins with Handlers
 
 <webui-press-tabs>

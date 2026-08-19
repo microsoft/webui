@@ -195,7 +195,7 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        super::fast_route_state::write_fast_route_component_state(state, writer)
+        super::fast::write_route_component_state(state, writer)
     }
 }
 
