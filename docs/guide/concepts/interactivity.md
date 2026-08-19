@@ -525,6 +525,26 @@ wait briefly for state before mounting. Use a manifest helper when you want the
 fastest path: it lets the shell start the template asset, JS chunk, and data
 fetch in parallel.
 
+For a custom lazy loader whose Link-mode stylesheet hrefs are available before
+the template asset executes, start CSS beside the JavaScript import:
+
+```typescript
+import { preloadStylesheets } from '@microsoft/webui-framework';
+
+const styles = ['/assets/settings-dialog.8d31f4a2.css'];
+
+export function preloadSettings(): void {
+  preloadStylesheets(styles);
+  void import('./settings-dialog.webui.js');
+}
+```
+
+Use this bare-href API only when the eventual template links have no
+`crossorigin`, `integrity`, or `referrerpolicy` attributes. Registration reuses
+the resolved-href preload, and repeated calls are deduplicated. A preload whose
+intent never converts is removed after three seconds, but the browser may still
+report its standard unused-preload warning.
+
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the
 initial SSR graph instead of being loaded only from the static asset. Always

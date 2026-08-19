@@ -22,6 +22,14 @@ interface TemplateLinkStyleState {
   sheets?: CSSStyleSheet[];
 }
 
+interface SpeculativeStylesheetPreload {
+  claimed: boolean;
+  cleanupTimer?: ReturnType<typeof setTimeout>;
+  readonly link: HTMLLinkElement;
+  readonly ready: Promise<LinkStyleFailure | undefined>;
+  readonly startedAt: number;
+}
+
 interface ElementBinding {
   readonly element: Element;
 }
@@ -46,10 +54,14 @@ const NO_LINK_STYLE_STATE: TemplateLinkStyleState = {
 };
 const CSS_IMPORT_RULE = 3;
 const STYLESHEET_PREPARATION_TIMEOUT_MS = 3_000;
+const SPECULATIVE_PRELOAD_TTL_MS = 3_000;
 const GUARD_CSS =
   '@layer{:host{transition:none!important;visibility:hidden!important}}';
 const templateLinkStyles = new WeakMap<TemplateBlockMeta, TemplateLinkStyleState>();
 const activeStyleMounts = new WeakMap<ShadowRoot, (discardRoot?: boolean) => void>();
+let speculativeStylesheetPreloads:
+  | Map<string, SpeculativeStylesheetPreload | undefined>
+  | undefined;
 
 /** Begin preparing Link-mode stylesheets for one compiled template. */
 export function prepareTemplateLinkStyles(
@@ -71,6 +83,38 @@ export function prepareRegisteredLinkStyles(
     (pending ??= []).push(ready);
   }
   return pending ? Promise.all(pending).then(ignorePromiseResults) : undefined;
+}
+
+/**
+ * Start default-attribute Link-mode stylesheet preloads before template registration.
+ *
+ * Resolved hrefs are deduplicated for the page lifetime. Links with `crossorigin`,
+ * `integrity`, or `referrerpolicy` must use registration-time preparation so the
+ * request attributes match. An unconsumed speculative preload may produce the
+ * browser's standard unused-preload warning.
+ */
+export function preloadStylesheets(hrefs: readonly string[]): void {
+  if (hrefs.length === 0 || !supportsConstructableStylesheets()) return;
+
+  const preloads = (speculativeStylesheetPreloads ??= new Map());
+  for (let i = 0; i < hrefs.length; i++) {
+    if (hrefs[i].length === 0) continue;
+    const href = resolveHref(hrefs[i]);
+    if (preloads.has(href)) continue;
+
+    const link = createStylesheetPreload(href);
+    const startedAt = performanceNow();
+    const preload: SpeculativeStylesheetPreload = {
+      claimed: false,
+      link,
+      ready: waitForStylesheetPreload(link, href),
+      startedAt,
+    };
+    preloads.set(href, preload);
+    preload.cleanupTimer = setTimeout(() => {
+      releaseStylesheetPreload(link);
+    }, SPECULATIVE_PRELOAD_TTL_MS);
+  }
 }
 
 /** Return whether a template can create a stylesheet link after bindings run. */
@@ -440,7 +484,9 @@ function removeStylesheetPreloads(state: TemplateLinkStyleState): void {
   if (!preloads) return;
   state.preloads = undefined;
   void state.ready.then(() => {
-    for (let i = 0; i < preloads.length; i++) preloads[i].remove();
+    for (let i = 0; i < preloads.length; i++) {
+      releaseStylesheetPreload(preloads[i]);
+    }
   });
 }
 
@@ -450,22 +496,51 @@ function warmStylesheet(
 ): Promise<LinkStyleFailure | undefined> {
   const href = resolveHref(descriptor.href);
   const fallbackReason = unsupportedLinkReason(descriptor);
-  if (fallbackReason) return Promise.resolve({ href, reason: fallbackReason });
+  const speculative = speculativeStylesheetPreloads?.get(href);
+  if (fallbackReason) {
+    if (speculative && !speculative.claimed) {
+      releaseStylesheetPreload(speculative.link);
+    }
+    return Promise.resolve({ href, reason: fallbackReason });
+  }
 
+  if (speculative && hasDefaultPreloadAttributes(descriptor)) {
+    speculative.claimed = true;
+    trackStylesheetPreload(state, speculative.link, speculative.startedAt);
+    return speculative.ready;
+  }
+  if (speculative && !speculative.claimed) {
+    releaseStylesheetPreload(speculative.link);
+  }
+
+  const preload = createStylesheetPreload(href, descriptor);
+  const startedAt = performanceNow();
+  trackStylesheetPreload(state, preload, startedAt);
+  return waitForStylesheetPreload(preload, href);
+}
+
+function createStylesheetPreload(
+  href: string,
+  descriptor?: TemplateStylesheetDescriptor,
+): HTMLLinkElement {
   const preload = document.createElement('link');
   preload.rel = 'preload';
   preload.as = 'style';
   preload.href = href;
-  if (descriptor.crossOrigin !== null) {
+  if (descriptor?.crossOrigin !== null && descriptor?.crossOrigin !== undefined) {
     preload.crossOrigin = descriptor.crossOrigin;
   }
-  if (descriptor.integrity) preload.integrity = descriptor.integrity;
-  if (descriptor.referrerPolicy) {
+  if (descriptor?.integrity) preload.integrity = descriptor.integrity;
+  if (descriptor?.referrerPolicy) {
     preload.referrerPolicy = descriptor.referrerPolicy;
   }
-  (state.preloads ??= []).push(preload);
-  state.preloadStartedAt ??= performanceNow();
+  return preload;
+}
 
+function waitForStylesheetPreload(
+  preload: HTMLLinkElement,
+  href: string,
+): Promise<LinkStyleFailure | undefined> {
   return new Promise(resolve => {
     let settled = false;
     const finish = (reason?: string): void => {
@@ -487,6 +562,38 @@ function warmStylesheet(
       finish(errorMessage(error));
     }
   });
+}
+
+function trackStylesheetPreload(
+  state: TemplateLinkStyleState,
+  preload: HTMLLinkElement,
+  startedAt: number,
+): void {
+  (state.preloads ??= []).push(preload);
+  state.preloadStartedAt = state.preloadStartedAt === undefined
+    ? startedAt
+    : Math.min(state.preloadStartedAt, startedAt);
+}
+
+function releaseStylesheetPreload(preload: HTMLLinkElement): void {
+  const speculative = speculativeStylesheetPreloads?.get(preload.href);
+  if (speculative?.link === preload) {
+    if (speculative.cleanupTimer !== undefined) {
+      clearTimeout(speculative.cleanupTimer);
+    }
+    speculativeStylesheetPreloads?.set(preload.href, undefined);
+  }
+  preload.remove();
+}
+
+function hasDefaultPreloadAttributes(
+  descriptor: TemplateStylesheetDescriptor,
+): boolean {
+  return (
+    descriptor.crossOrigin === null &&
+    descriptor.integrity.length === 0 &&
+    descriptor.referrerPolicy.length === 0
+  );
 }
 
 function fallbackResults(

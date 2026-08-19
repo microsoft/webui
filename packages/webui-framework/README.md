@@ -865,6 +865,39 @@ the pending mount, while a synchronous reconnect preserves it. A link error
 leaves the component guarded instead of exposing unstyled content. SSR
 hydration, Inline, Module, and Light DOM behavior are unchanged.
 
+### Intent-time Link preloading
+
+Client-only Link components can start loading plain same-origin styles before
+their template bundle has registered its metadata:
+
+```ts
+import {
+  preloadStylesheets,
+  registerTemplateData,
+} from '@microsoft/webui-framework';
+
+const styles = ['/assets/settings-dialog.8d31f4a2.css'];
+
+export function preload(): void {
+  preloadStylesheets(styles);
+  void loadComponentBundle();
+}
+```
+
+`preloadStylesheets(hrefs)` resolves and deduplicates each href for the page,
+then adds a temporary `<link rel="preload" as="style">`. Registration claims
+the same node when the eventual template link uses default request attributes,
+so its native stylesheet link reuses the request. Call it immediately before a
+lazy JavaScript import to start the CSS and script in parallel.
+
+This bare-href API does not represent `crossorigin`, `integrity`, or
+`referrerpolicy`. Templates using any of those attributes discard the
+speculative node and use registration's exact-attribute preload instead.
+Unclaimed nodes are removed after three seconds; a speculative preload that is
+never consumed may still produce the browser's standard unused-preload warning.
+Repeated calls, server rendering, and browsers without constructable stylesheet
+support are safe no-ops.
+
 CSS module stylesheets are cached so each component instance adopts the same
 parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the
 stylesheet specifier for a component.

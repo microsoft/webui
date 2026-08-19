@@ -5,11 +5,21 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
 import {
+  preloadStylesheets,
   rewriteCssUrls,
   templateMayContainLinkStyles,
 } from './link-styles.js';
 
 describe('Link stylesheet scanning', () => {
+  test('preloadStylesheets is safe without browser globals', () => {
+    assert.doesNotThrow(() => {
+      preloadStylesheets([
+        'https://cdn.example.test/components/card.css',
+        'https://cdn.example.test/components/card.css',
+      ]);
+    });
+  });
+
   test('skips Link-mode mount work for templates without link elements', () => {
     assert.equal(
       templateMayContainLinkStyles({ h: '<p class="card">Ready</p>' }),
