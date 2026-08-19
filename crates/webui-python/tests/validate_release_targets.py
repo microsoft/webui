@@ -22,7 +22,7 @@ CONTRACT_SOURCE = Path("xtask/src/publish.rs")
 # Restatements of the contract. Each entry maps a file to the extractor that
 # recovers the platform tags it pins.
 WHEEL_TAG_SOURCES = (Path(".ado/pipelines/azure-pipelines-build.yml"),)
-MATRIX_TAG_SOURCE = Path(".github/workflows/pr-python.yml")
+MATRIX_TAG_SOURCE = Path(".github/workflows/pr.yml")
 
 CONTRACT_TAG = re.compile(r'python_platform_tag:\s*"([^"]+)"')
 CONTRACT_CONST = re.compile(r'const PYTHON_(\w+):\s*&str\s*=\s*"([^"]+)"')
