@@ -59,6 +59,70 @@ test.describe('css link fixture', () => {
     })).toBe('Child after reconnect');
   });
 
+  test('reuses an attribute-matched preload and removes it after native load', async ({
+    page,
+  }) => {
+    let requests = 0;
+    await page.route('**/attributes.css', async route => {
+      requests += 1;
+      await route.fulfill({
+        body: '.attribute-label { color: rgb(12, 34, 56); }\n',
+        contentType: 'text/css',
+        status: 200,
+      });
+    });
+    await openFixture(page);
+
+    await expect(page.evaluate(() => {
+      const preload = Array.from(
+        document.head.querySelectorAll<HTMLLinkElement>(
+          'link[rel="preload"][as="style"]',
+        ),
+      ).find(link => new URL(link.href).pathname === '/css-link/attributes.css');
+      return preload
+        ? {
+          as: preload.as,
+          crossOrigin: preload.getAttribute('crossorigin'),
+          integrity: preload.integrity,
+          referrerPolicy: preload.referrerPolicy,
+        }
+        : null;
+    })).resolves.toEqual({
+      as: 'style',
+      crossOrigin: 'anonymous',
+      integrity: 'sha256-vADsiNbfyGjSNTts/BjSlWmFqX43h0n5YRSt1uYYo6U=',
+      referrerPolicy: 'no-referrer',
+    });
+
+    await page.evaluate(() => {
+      document.body.appendChild(
+        document.createElement('test-link-attributes-child'),
+      );
+    });
+    await expect.poll(async () => page.evaluate(() => {
+      const child = document.querySelector('test-link-attributes-child');
+      const label = child?.shadowRoot?.querySelector('.attribute-label');
+      const preloads = Array.from(
+        document.head.querySelectorAll<HTMLLinkElement>(
+          'link[rel="preload"][as="style"]',
+        ),
+      ).filter(link => {
+        return new URL(link.href).pathname === '/css-link/attributes.css';
+      }).length;
+      return {
+        adopted: child?.shadowRoot?.adoptedStyleSheets.length ?? 0,
+        color:
+          label instanceof HTMLElement ? getComputedStyle(label).color : null,
+        preloads,
+      };
+    })).toEqual({
+      adopted: 1,
+      color: 'rgb(12, 34, 56)',
+      preloads: 0,
+    });
+    expect(requests).toBe(1);
+  });
+
   test('preserves cascade order for authored and lifecycle style elements', async ({
     page,
   }) => {
@@ -113,17 +177,17 @@ test.describe('css link fixture', () => {
     ]);
   });
 
-  test('constructs only from CSS authenticated by the native link', async ({ page }) => {
-    await page.route('**/child.css', async route => {
-      if (route.request().resourceType() === 'fetch') {
-        await route.fulfill({
-          body: '.child-label { color: rgb(255, 0, 0); }',
-          contentType: 'text/css',
-          status: 200,
-        });
-        return;
+  test('constructs from native CSSOM without a generic fetch warmup', async ({
+    page,
+  }) => {
+    let genericFetches = 0;
+    page.on('request', request => {
+      if (
+        new URL(request.url()).pathname === '/css-link/child.css' &&
+        request.resourceType() === 'fetch'
+      ) {
+        genericFetches += 1;
       }
-      await route.continue();
     });
     await openFixture(page);
 
@@ -136,6 +200,7 @@ test.describe('css link fixture', () => {
         color: label instanceof HTMLElement ? getComputedStyle(label).color : null,
       };
     })).toEqual({ adopted: 2, color: 'rgb(128, 0, 128)' });
+    expect(genericFetches).toBe(0);
   });
 
   test('keeps service-worker-backed stylesheets native', async ({ page }) => {
@@ -168,12 +233,29 @@ test.describe('css link fixture', () => {
   });
 
   test('never exposes an unstyled frame while construction is pending', async ({ page }) => {
-    let releaseCss!: () => void;
+    await page.addInitScript(() => {
+      const original = CSSStyleSheet.prototype.replaceSync;
+      const visibilityDuringPromotion: string[] = [];
+      Object.defineProperty(window, '__webuiPromotionVisibility', {
+        configurable: true,
+        value: visibilityDuringPromotion,
+      });
+      Object.defineProperty(CSSStyleSheet.prototype, 'replaceSync', {
+        configurable: true,
+        value(this: CSSStyleSheet, cssText: string): void {
+          const host = document.querySelector('test-link-host');
+          const child = (host?.shadowRoot ?? host)?.querySelector('test-link-child');
+          if (child instanceof HTMLElement) {
+            visibilityDuringPromotion.push(
+              child.style.getPropertyValue('visibility'),
+            );
+          }
+          original.call(this, cssText);
+        },
+      });
+    });
     let releaseLinks!: () => void;
     let cssRequested!: () => void;
-    const cssGate = new Promise<void>(resolve => {
-      releaseCss = resolve;
-    });
     const linkGate = new Promise<void>(resolve => {
       releaseLinks = resolve;
     });
@@ -181,16 +263,12 @@ test.describe('css link fixture', () => {
       cssRequested = resolve;
     });
     await page.route('**/child.css', async route => {
-      if (route.request().resourceType() === 'fetch') {
-        cssRequested();
-        await cssGate;
-      } else {
-        await linkGate;
-      }
+      cssRequested();
+      await linkGate;
       await route.continue();
     });
     await page.route('**/styles/relative.css', async route => {
-      if (route.request().resourceType() === 'stylesheet') await linkGate;
+      await linkGate;
       await route.continue();
     });
     await openFixture(page);
@@ -207,22 +285,19 @@ test.describe('css link fixture', () => {
     expect(hidden).toBe('hidden');
 
     await installFrameObserver(page);
-    releaseCss();
-    await page.locator('test-link-host').evaluate(async (host) => {
-      await new Promise<void>(resolve =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-      );
-      const child = (host.shadowRoot ?? host).querySelector('test-link-child');
-      if (child && getComputedStyle(child).visibility !== 'hidden') {
-        throw new Error('Component became visible before native stylesheet validation');
-      }
-    });
     releaseLinks();
     const result = await readFrameObserver(page);
     expect(result.exposed).toBe(false);
     expect(result.timedOut).toBe(false);
     expect(result.adopted).toBe(2);
     expect(result.links).toBe(2);
+    const visibilityDuringPromotion = await page.evaluate(() => {
+      return (
+        window as typeof window & { __webuiPromotionVisibility?: string[] }
+      ).__webuiPromotionVisibility;
+    });
+    expect(visibilityDuringPromotion?.length).toBeGreaterThan(0);
+    expect(visibilityDuringPromotion?.every(value => value === '')).toBe(true);
   });
 
   test('keeps the guard isolated from authored cascade layers', async ({ page }) => {
@@ -350,10 +425,6 @@ test.describe('css link fixture', () => {
       linkRequested = resolve;
     });
     await page.route('**/child.css', async route => {
-      if (route.request().resourceType() === 'fetch') {
-        await route.abort('failed');
-        return;
-      }
       linkRequested();
       await linkGate;
       await route.continue();
@@ -436,10 +507,6 @@ test.describe('css link fixture', () => {
       linkRequested = resolve;
     });
     await page.route('**/child.css', async route => {
-      if (route.request().resourceType() === 'fetch') {
-        await route.abort('failed');
-        return;
-      }
       linkRequested();
       await linkGate;
       await route.continue();
@@ -605,10 +672,6 @@ test.describe('css link fixture', () => {
       linkRequested = resolve;
     });
     await page.route('**/child.css', async route => {
-      if (route.request().resourceType() === 'fetch') {
-        await route.abort('failed');
-        return;
-      }
       linkRequested();
       await linkGate;
       await route.continue();
@@ -664,24 +727,19 @@ test.describe('css link fixture', () => {
   test('keeps dynamically bound stylesheet links native', async ({ page }) => {
     await openFixture(page);
 
-    const result = await page.evaluate(async () => {
+    await page.evaluate(() => {
       const child = document.createElement('test-link-dynamic-child');
       document.body.appendChild(child);
+    });
+    await expect.poll(async () => page.locator('test-link-dynamic-child').evaluate(child => {
       const link = child.shadowRoot?.querySelector('link');
-      if (link && !link.sheet) {
-        await new Promise<void>(resolve => {
-          link.addEventListener('load', () => resolve(), { once: true });
-        });
-      }
       return {
         adopted: child.shadowRoot?.adoptedStyleSheets.length ?? 0,
         links: child.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
         media: link?.media ?? null,
         visibility: getComputedStyle(child).visibility,
       };
-    });
-
-    expect(result).toEqual({
+    })).toEqual({
       adopted: 0,
       links: 3,
       media: 'not all',
@@ -692,24 +750,18 @@ test.describe('css link fixture', () => {
   test('keeps stylesheets with imports on the native link path', async ({ page }) => {
     await openFixture(page);
 
-    const result = await page.evaluate(async () => {
+    await page.evaluate(() => {
       const child = document.createElement('test-link-import-child');
       document.body.appendChild(child);
-      const link = child.shadowRoot?.querySelector('link');
-      if (link && !link.sheet) {
-        await new Promise<void>(resolve => {
-          link.addEventListener('load', () => resolve(), { once: true });
-        });
-      }
+    });
+    await expect.poll(async () => page.locator('test-link-import-child').evaluate(child => {
       const label = child.shadowRoot?.querySelector('.import-label');
       return {
         adopted: child.shadowRoot?.adoptedStyleSheets.length ?? 0,
         color: label ? getComputedStyle(label).color : null,
         links: child.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
       };
-    });
-
-    expect(result).toEqual({
+    })).toEqual({
       adopted: 0,
       color: 'rgb(0, 128, 0)',
       links: 1,

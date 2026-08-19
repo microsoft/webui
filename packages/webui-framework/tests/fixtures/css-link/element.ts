@@ -33,6 +33,7 @@ export class TestLinkDynamicChild extends WebUIElement {
   rel = 'stylesheet';
 }
 export class TestLinkImportChild extends WebUIElement {}
+export class TestLinkAttributesChild extends WebUIElement {}
 export class TestLinkEventChild extends WebUIElement {
   styleLoads = 0;
 
@@ -56,6 +57,7 @@ TestLinkHost.define('test-link-host');
 TestLinkChild.define('test-link-child');
 TestLinkDynamicChild.define('test-link-dynamic-child');
 TestLinkImportChild.define('test-link-import-child');
+TestLinkAttributesChild.define('test-link-attributes-child');
 TestLinkEventChild.define('test-link-event-child');
 TestStyleBlockChild.define('test-style-block-child');
 TestLifecycleStyleChild.define('test-lifecycle-style-child');

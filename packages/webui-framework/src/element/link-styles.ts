@@ -15,6 +15,8 @@ interface LinkStyleFailure {
 
 interface TemplateLinkStyleState {
   readonly descriptors: readonly TemplateStylesheetDescriptor[];
+  preloads?: HTMLLinkElement[];
+  preloadStartedAt?: number;
   ready: Promise<void>;
   results?: readonly (LinkStyleFailure | undefined)[];
   sheets?: CSSStyleSheet[];
@@ -93,7 +95,6 @@ export function installTemplateLinkStyles(
 
   const links = collectStylesheetLinks(stagingRoot);
   if (links.length === 0) return false;
-
   activeStyleMounts.get(root)?.();
   const state = getTemplateLinkStyleState(meta);
   let nativeOnly =
@@ -115,10 +116,10 @@ export function installTemplateLinkStyles(
   const settled = new Uint8Array(links.length);
   const loadHandlers = new Array<() => void>(links.length);
   const errorHandlers = new Array<() => void>(links.length);
-  const mountStartedAt =
-    typeof performance === 'object' && typeof performance.now === 'function'
-      ? performance.now()
-      : Number.POSITIVE_INFINITY;
+  const mountStartedAt = performanceNow();
+  const timingStartedAt = state.preloadStartedAt === undefined
+    ? mountStartedAt
+    : Math.min(state.preloadStartedAt, mountStartedAt);
   let remaining = 0;
   for (let i = 0; i < links.length; i++) {
     if (requiresNativeLoad(links[i])) {
@@ -163,6 +164,7 @@ export function installTemplateLinkStyles(
     if (cancelled || failed) return;
     failed = true;
     removeAllLinkListeners();
+    removeStylesheetPreloads(state);
     const result =
       state.descriptors.length === links.length
         ? state.results?.[index]
@@ -180,10 +182,6 @@ export function installTemplateLinkStyles(
 
   const tryAdoptNativeSheets = (): void => {
     if (cancelled || nativeOnly) return;
-    if (hasAuthorStyle(root, stagingRoot, guardStyle)) {
-      nativeOnly = true;
-      return;
-    }
     if (state.descriptors.length !== links.length) {
       nativeOnly = true;
       return;
@@ -194,7 +192,7 @@ export function installTemplateLinkStyles(
       sheets = constructNativeStylesheets(
         links,
         state.descriptors,
-        mountStartedAt,
+        timingStartedAt,
       );
       if (!sheets) {
         nativeOnly = true;
@@ -270,10 +268,19 @@ export function installTemplateLinkStyles(
   }
 
   function finishLoadedMount(): void {
-    tryAdoptNativeSheets();
+    const hasAuthoredStyle =
+      !nativeOnly && hasAuthorStyle(root, stagingRoot, guardStyle);
     releaseGuard?.();
     releaseGuard = undefined;
+    removeStylesheetPreloads(state);
     clearActiveMount();
+    if (
+      !nativeOnly &&
+      !hasAuthoredStyle &&
+      state.descriptors.length === links.length
+    ) {
+      tryAdoptNativeSheets();
+    }
   }
 
   const cancel = (discardRoot = false): void => {
@@ -282,6 +289,7 @@ export function installTemplateLinkStyles(
     removeAllLinkListeners();
     releaseGuard?.();
     releaseGuard = undefined;
+    removeStylesheetPreloads(state);
     if (discardRoot) root.replaceChildren();
     clearActiveMount();
   };
@@ -402,7 +410,7 @@ function getTemplateLinkStyleState(meta: TemplateBlockMeta): TemplateLinkStyleSt
 
   const pending = new Array<Promise<LinkStyleFailure | undefined>>(descriptors.length);
   for (let i = 0; i < descriptors.length; i++) {
-    pending[i] = warmStylesheet(descriptors[i]);
+    pending[i] = warmStylesheet(descriptors[i], state);
   }
   state.ready = Promise.all(pending).then(results => {
     state.results = results;
@@ -416,63 +424,69 @@ function supportsConstructableStylesheets(): boolean {
     typeof ShadowRoot === 'function' &&
     'adoptedStyleSheets' in ShadowRoot.prototype &&
     typeof CSSStyleSheet.prototype.replaceSync === 'function' &&
-    typeof fetch === 'function' &&
-    typeof AbortController === 'function'
+    typeof document === 'object' &&
+    document.head !== null
   );
 }
 
-async function warmStylesheet(
+function performanceNow(): number {
+  return typeof performance === 'object' && typeof performance.now === 'function'
+    ? performance.now()
+    : Number.POSITIVE_INFINITY;
+}
+
+function removeStylesheetPreloads(state: TemplateLinkStyleState): void {
+  const preloads = state.preloads;
+  if (!preloads) return;
+  state.preloads = undefined;
+  void state.ready.then(() => {
+    for (let i = 0; i < preloads.length; i++) preloads[i].remove();
+  });
+}
+
+function warmStylesheet(
   descriptor: TemplateStylesheetDescriptor,
+  state: TemplateLinkStyleState,
 ): Promise<LinkStyleFailure | undefined> {
   const href = resolveHref(descriptor.href);
   const fallbackReason = unsupportedLinkReason(descriptor);
-  if (fallbackReason) return { href, reason: fallbackReason };
+  if (fallbackReason) return Promise.resolve({ href, reason: fallbackReason });
 
-  const controller = new AbortController();
-  let timedOut = false;
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, STYLESHEET_PREPARATION_TIMEOUT_MS);
-  try {
-    const init: RequestInit = {
-      credentials: descriptor.crossOrigin?.toLowerCase() === 'use-credentials'
-        ? 'include'
-        : 'same-origin',
-      signal: controller.signal,
-    };
-    if (descriptor.integrity) init.integrity = descriptor.integrity;
-    if (
-      descriptor.referrerPolicy &&
-      isReferrerPolicy(descriptor.referrerPolicy)
-    ) {
-      init.referrerPolicy = descriptor.referrerPolicy;
-    }
-    const response = await fetch(href, init);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
-    }
-    if (!isCssResponse(response)) {
-      return {
-        href: response.url || href,
-        reason: 'response Content-Type is not text/css',
-      };
-    }
-    if (response.body) {
-      // Complete the cache warm without retaining the stylesheet text in JS.
-      await response.body.pipeTo(new WritableStream());
-    }
-    return undefined;
-  } catch (error) {
-    return {
-      href,
-      reason: timedOut
-        ? `preparation timed out after ${STYLESHEET_PREPARATION_TIMEOUT_MS}ms`
-        : errorMessage(error),
-    };
-  } finally {
-    clearTimeout(timeout);
+  const preload = document.createElement('link');
+  preload.rel = 'preload';
+  preload.as = 'style';
+  preload.href = href;
+  if (descriptor.crossOrigin !== null) {
+    preload.crossOrigin = descriptor.crossOrigin;
   }
+  if (descriptor.integrity) preload.integrity = descriptor.integrity;
+  if (descriptor.referrerPolicy) {
+    preload.referrerPolicy = descriptor.referrerPolicy;
+  }
+  (state.preloads ??= []).push(preload);
+  state.preloadStartedAt ??= performanceNow();
+
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (reason?: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      preload.onload = null;
+      preload.onerror = null;
+      resolve(reason ? { href, reason } : undefined);
+    };
+    const timeout = setTimeout(() => {
+      finish(`preparation timed out after ${STYLESHEET_PREPARATION_TIMEOUT_MS}ms`);
+    }, STYLESHEET_PREPARATION_TIMEOUT_MS);
+    preload.onload = () => finish();
+    preload.onerror = () => finish('stylesheet preload failed');
+    try {
+      document.head.appendChild(preload);
+    } catch (error) {
+      finish(errorMessage(error));
+    }
+  });
 }
 
 function fallbackResults(
@@ -937,16 +951,6 @@ function isReferrerPolicy(value: string): value is ReferrerPolicy {
     value === 'strict-origin-when-cross-origin' ||
     value === 'unsafe-url'
   );
-}
-
-function isCssResponse(response: Response): boolean {
-  const contentType = response.headers.get('content-type');
-  if (!contentType) return false;
-  const separator = contentType.indexOf(';');
-  const mime = (separator < 0 ? contentType : contentType.slice(0, separator))
-    .trim()
-    .toLowerCase();
-  return mime === 'text/css';
 }
 
 function ignorePromiseResults(): void {}

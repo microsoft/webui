@@ -839,13 +839,16 @@ The framework supports three CSS delivery strategies:
 | **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
 
 Link promotion is progressive enhancement. Registration performs a bounded
-fetch only to warm the HTTP cache; those bytes are never applied. The first
-client instance remains non-painting until its original links load successfully,
-so native CSP, MIME, integrity, CORS, redirect, and service-worker checks remain
-authoritative. The framework constructs the shared ordered set only from that
-native CSSOM, adopts it before existing sheets with one assignment, and shares
-it with later instances. Promoted links remain disabled in place so reconnect
-hydration retains the compiled element indexes. Classes with an authored
+`<link rel="preload" as="style">` using the stylesheet's CORS, integrity, and
+referrer-policy attributes, so the native stylesheet link can reuse the same
+style-destination request. Preload bytes are never applied directly, and a
+preload cannot inspect response MIME type; the first client instance's native
+link remains authoritative for CSP, MIME, integrity, CORS, redirects, and
+service workers. The framework releases the instance's paint guard as soon as
+every original link loads, before constructing the shared ordered set from
+native CSSOM. It then adopts that set before existing sheets with one assignment
+and shares it with later instances. Promoted links remain disabled in place so
+reconnect hydration retains the compiled element indexes. Classes with an authored
 `hydratedCallback()` still take the guarded native path on warm mounts, allowing
 lifecycle-added `<style>` elements to preserve native cascade order. If
 construction is unsupported, native CSSOM or
