@@ -60,8 +60,11 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     if (entry.data) {
       next.data = entry.data() as Promise<Data>;
     }
-    next.asset.catch(() => {});
-    next.module?.catch(() => {});
+    const evictFailedResources = (): void => {
+      if (preloads.get(tag) === next) preloads.delete(tag);
+    };
+    next.asset.catch(evictFailedResources);
+    next.module?.catch(evictFailedResources);
     next.data?.catch(() => {});
     preloads.set(tag, next);
     return next;

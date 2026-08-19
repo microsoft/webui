@@ -517,6 +517,11 @@ handler publishes that finite manifest as inert JSON in the document head, or
 at the rendered body start for body-only host protocols. Light builds emit the
 same hrefs as deduplicated document stylesheets because their CSS is globally
 scoped.
+Automatic Shadow intent preloading requires HTML rendered through the WebUI
+handler or `Protocol`, which emits `#webui-component-assets`. A shell that uses
+the build artifacts without rendering the protocol still mounts safely through
+the native stylesheet guard, but it cannot start the compiler-owned style
+preload before loading the root asset.
 Generated root, shared chunk, and content-hashed stylesheet filenames never
 belong in authored code. In Shadow builds, `preload(tag)` starts the component's
 Link styles, template graph, JavaScript module, and optional data together.
@@ -532,6 +537,8 @@ chunk, and data in parallel. Application code keeps only the stable root asset
 URL; shared chunk and content-hashed stylesheet names remain compiler-owned. A
 preload whose intent never mounts the component is removed after three seconds,
 but the browser may still report its standard unused-preload warning.
+If the root asset or authored module rejects, the registry evicts that failed
+generation so the next `preload(tag)` or `create(tag)` retries it.
 Generated bundler integrations can supply
 `asset: () => import('./settings-dialog.webui.js')` instead of a URL so chunk
 loading and public-path rewriting stay bundler-owned without bypassing

@@ -329,6 +329,11 @@ Shadow builds, the handler emits that finite manifest as inert JSON in the
 document head; body-only host protocols emit it at the start of their rendered
 body fragment. Light builds emit the same hrefs as deduplicated document
 stylesheets because their CSS must apply globally.
+Automatic Shadow intent preloading therefore requires HTML rendered through the
+WebUI handler or `Protocol`, which emits `#webui-component-assets`. A shell that
+uses build artifacts without rendering the protocol still mounts safely through
+the native stylesheet guard, but it does not receive the earlier
+compiler-owned style preload.
 Shared chunk and content-hashed stylesheet filenames are generated and must not
 be copied into authored code. Each root asset carries its own dynamic imports;
 `--metafile` remains available for analysis and build tooling.
@@ -345,7 +350,9 @@ Concurrent roots share in-flight chunk and stylesheet work. `create(tag)`
 creates the element after template/module work is ready and does not block on
 optional data by default. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
-must wait briefly for state before mounting.
+must wait briefly for state before mounting. A rejected root asset or authored
+module is evicted from the registry so a later `preload(tag)` or `create(tag)`
+retries it.
 
 ### `@observable`
 

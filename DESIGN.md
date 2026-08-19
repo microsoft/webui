@@ -531,6 +531,12 @@ metadata block is loaded. Light builds instead emit the deduplicated hrefs as
 document-level stylesheet links at the same boundary. Light CSS is global, so
 it must be applied rather than warmed speculatively and is loaded with the
 entry's other document styles.
+Automatic Shadow intent preloading requires document output rendered through
+the WebUI handler or `Protocol`, which emits `#webui-component-assets`. Consuming
+build artifacts without rendering that protocol does not publish a browser
+manifest. The later native-link mount remains guarded, but it cannot begin the
+compiler-owned style request before the root asset reveals its template
+metadata.
 
 Low-level Rust integrations that call `render_component_assets()` directly can
 read the same records from `ComponentAssetGraph.style_preloads`. A full
@@ -557,6 +563,9 @@ unused-preload warning.
 `create(tag)` waits for asset/module work, mounts without blocking on data by
 default, and can opt into bounded data blocking with
 `{ awaitData: true, dataTimeoutMs }`.
+Rejected root asset or authored module work evicts that registry generation, so
+a later `preload(tag)` or `create(tag)` retries instead of reusing a permanently
+rejected promise.
 
 FAST plugin builds can emit the same graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.

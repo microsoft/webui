@@ -842,14 +842,19 @@ publish them as inert head JSON that `preload(tag)` consumes automatically;
 Light builds emit them as document stylesheets. Authored code therefore keeps
 only the stable root asset URL and never invents or hardcodes a content-hashed
 stylesheet filename.
+Automatic Shadow intent preloading requires HTML rendered through the WebUI
+handler or `Protocol`, which emits `#webui-component-assets`. Using build
+artifacts without rendering the protocol preserves the guarded native mount but
+does not provide early compiler-owned style preloading.
 
 Assets keep entry-owned templates external, inline dependencies used by one
 asset root, and split dependencies shared by multiple roots into deduplicated
 dynamic chunks. Do not copy generated chunk filenames into the manifest; each
 root asset carries its own dynamic imports. `create(tag)` waits for the template
-graph and module, then creates the element. The normal entry bundle must load
-first. Component assets cannot be combined with `<route>`; use the router for
-routed components.
+graph and module, then creates the element. Failed asset or authored module work
+is evicted so a later `preload(tag)` or `create(tag)` retries. The normal entry
+bundle must load first. Component assets cannot be combined with `<route>`; use
+the router for routed components.
 
 ## Routing
 

@@ -147,6 +147,88 @@ describe('component asset helpers', () => {
     }
   });
 
+  test('retries a rejected asset importer on the next preload', async () => {
+    const template: TemplateMeta = { h: '<p>Retry asset</p>' };
+    let imports = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'retry-asset-card': {
+          asset: async () => {
+            imports += 1;
+            if (imports === 1) throw new Error('transient asset failure');
+            return {
+              default: componentAsset({ 'retry-asset-card': template }),
+            };
+          },
+        },
+      });
+      const first = assets.preload('retry-asset-card');
+      await assert.rejects(first.asset, /transient asset failure/);
+
+      const second = assets.preload('retry-asset-card');
+      assert.notEqual(second, first);
+      await second.asset;
+
+      assert.equal(imports, 2);
+      assert.deepEqual(getTemplate('retry-asset-card'), template);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
+  test('retries a rejected authored module on the next preload', async () => {
+    const template: TemplateMeta = { h: '<p>Retry module</p>' };
+    let moduleImports = 0;
+    const previousWindow = setGlobal('window', { __webui: {} });
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      getElementById() {
+        return null;
+      },
+      querySelector() {
+        return null;
+      },
+    });
+
+    try {
+      const assets = defineComponentAssets({
+        'retry-module-card': {
+          asset: assetObjectModule(componentAsset({ 'retry-module-card': template })),
+          module: async () => {
+            moduleImports += 1;
+            if (moduleImports === 1) throw new Error('transient module failure');
+          },
+        },
+      });
+      const first = assets.preload('retry-module-card');
+      await first.asset;
+      assert.ok(first.module);
+      await assert.rejects(first.module, /transient module failure/);
+
+      const second = assets.preload('retry-module-card');
+      assert.notEqual(second, first);
+      await second.asset;
+      assert.ok(second.module);
+      await second.module;
+
+      assert.equal(moduleImports, 2);
+    } finally {
+      restoreGlobal('window', previousWindow);
+      restoreGlobal('document', previousDocument);
+    }
+  });
+
   test('manifest preload registers templates and injects nonce importmaps', async () => {
     const appended: ScriptMock[] = [];
     const template: TemplateMeta = { h: '<p>Lazy</p>' };
