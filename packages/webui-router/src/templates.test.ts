@@ -215,6 +215,7 @@ test('streaming defers chunk-two state until route commit', async () => {
       compEl: newCard,
     });
     startDeferredStream(data);
+    assert.equal(data._deferredStream, undefined);
     assert.ok(deferredReader);
     await deferredReader;
     assert.deepEqual(oldReceived, []);
@@ -372,6 +373,7 @@ test('router cancels an unread deferred stream when commit rejects', async () =>
   };
   const data = await readStreamingPartial(response, '/failed', context);
   assert.ok(data);
+  assert.equal(data._deferredStream, true);
 
   const failure = new Error('loader failed');
   const router = new WebUIRouter() as unknown as {
@@ -396,6 +398,7 @@ test('router cancels an unread deferred stream when commit rejects', async () =>
     failure,
   );
   assert.equal(cancelled, true);
+  assert.equal(data._deferredStream, undefined);
   assert.equal(response.body?.locked, false);
 });
 

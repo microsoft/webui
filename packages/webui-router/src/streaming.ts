@@ -146,12 +146,14 @@ export async function readStreamingPartial(
       if (consumed) return;
       consumed = true;
       deferredStreams.delete(data);
+      Reflect.deleteProperty(data, '_deferredStream');
       await cancelReader(reader);
       ctx.setDeferredReader(null);
     },
     start() {
       if (consumed) return;
       consumed = true;
+      Reflect.deleteProperty(data, '_deferredStream');
       ctx.setDeferredGeneration(gen);
       const pending = continueDeferredRead(
         reader,
