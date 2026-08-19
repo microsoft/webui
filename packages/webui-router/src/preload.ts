@@ -8,6 +8,7 @@
 
 import { stripBaseFromPathname } from './navigation-path.js';
 import type { PartialResponse } from './cache.js';
+import type { StreamingPartialResponse } from './streaming.js';
 
 /** Context needed by preload listeners to interact with router state. */
 export interface PreloadContext {
@@ -17,7 +18,7 @@ export interface PreloadContext {
   readonly inventory: string;
   hasCache(requestPath: string): boolean;
   storeCache(requestPath: string, data: PartialResponse & { inventory?: string }, preload: boolean): void;
-  fetchPartial(requestPath: string, signal: AbortSignal, speculative: boolean): Promise<(PartialResponse & { inventory?: string }) | null>;
+  fetchPartial(requestPath: string, signal: AbortSignal, speculative: boolean): Promise<StreamingPartialResponse | null>;
 }
 
 /**
@@ -70,10 +71,24 @@ export function setupPreloadListeners(ctx: PreloadContext): () => void {
     const gen = ++preloadGeneration;
 
     ctx.fetchPartial(requestPath, controller.signal, true)
-      .then(data => {
+      .then(async data => {
         // Only cache if this is still the latest preload request
         if (data && gen === preloadGeneration && !controller.signal.aborted) {
           ctx.storeCache(requestPath, data, true);
+          if (data._deferredStream) {
+            const streaming = await import('./streaming.js');
+            if (
+              gen === preloadGeneration &&
+              !controller.signal.aborted
+            ) {
+              streaming.startDeferredStream(data);
+            } else {
+              await streaming.cancelDeferredStream(data);
+            }
+          }
+        } else if (data?._deferredStream) {
+          const streaming = await import('./streaming.js');
+          await streaming.cancelDeferredStream(data);
         }
       })
       .catch(() => {}); // Speculative — silently discard errors

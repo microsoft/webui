@@ -799,6 +799,13 @@ await Router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 ```
 
+With the framework loaded, `ensureLoaded()` also waits for bounded Link
+stylesheet cache warming or a native-link fallback decision. Warmup bytes are
+never applied; the first mounted instance remains guarded until the browser
+validates its native link and can seed the shared constructable sheet. Redirect,
+service-worker, authored `<style>`, or inaccessible-CSSOM cases keep the native
+link rather than risking different response-base or cascade semantics.
+
 ```html
 <if condition="showSettings">
   <settings-dialog @close="{onCloseSettings()}"></settings-dialog>

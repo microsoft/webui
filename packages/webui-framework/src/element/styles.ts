@@ -6,8 +6,10 @@
  *
  * Three CSS strategies are supported:
  *
- * - **Link**: `<link rel="stylesheet">` tags in each component's shadow template.
- *   The browser deduplicates fetches by URL. No JS-side style management needed.
+ * - **Link**: The first client shadow mount authorizes external CSS through its
+ *   native links, then promotes their CSSOM into shared constructable sheets.
+ *   Warm mounts adopt those sheets synchronously; guarded native links remain
+ *   the compatibility and failure path.
  *
  * - **Style**: Inline `<style>` tags inside each shadow template.
  *

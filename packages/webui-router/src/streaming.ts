@@ -9,7 +9,11 @@
 
 import { hasState } from './route-element.js';
 import { isStateful } from './types.js';
-import { registerTemplatesAndStyles, injectCssLinks } from './templates.js';
+import {
+  injectCssLinks,
+  registerTemplatesAndStyles,
+  waitForTemplateReadiness,
+} from './templates.js';
 import type { PartialResponse, RouteChainEntry } from './cache.js';
 
 /** Maximum buffered NDJSON line size before aborting the stream (256 KiB). */
@@ -29,6 +33,19 @@ export interface StreamingContext {
   markCacheComplete(requestPath: string): void;
 }
 
+/** Internal partial-response marker for an unread deferred stream tail. */
+export interface StreamingPartialResponse extends PartialResponse {
+  readonly _deferredStream?: true;
+  inventory?: string;
+}
+
+interface DeferredStreamControl {
+  cancel(): Promise<void>;
+  start(): void;
+}
+
+const deferredStreams = new WeakMap<object, DeferredStreamControl>();
+
 /**
  * Read a streaming NDJSON partial response.
  * Returns after Chunk 1 (chain + templates) for immediate navigation commit.
@@ -39,7 +56,7 @@ export async function readStreamingPartial(
   requestPath: string,
   ctx: StreamingContext,
   signal?: AbortSignal,
-): Promise<(PartialResponse & { inventory?: string }) | null> {
+): Promise<StreamingPartialResponse | null> {
   const reader = resp.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -58,7 +75,7 @@ export async function readStreamingPartial(
 
     if (buffer.length > MAX_NDJSON_BUFFER) {
       console.warn('[Router] NDJSON buffer exceeded limit, aborting stream');
-      reader.cancel().catch(() => {});
+      await cancelReader(reader);
       return null;
     }
 
@@ -72,8 +89,9 @@ export async function readStreamingPartial(
         if (parsed.chain) {
           chunk1 = parsed;
         } else if (parsed.states && chunk1) {
-          // Chunk 2 arrived in same read batch — store for post-commit application
-          (chunk1 as any)._deferredStates = parsed.states;
+          // Chunk 2 arrived in the same read batch — fold it into the commit data.
+          const data = chunk1 as StreamingPartialResponse;
+          persistDeferredStates(data, parsed.states);
         }
       } catch {
         // Malformed line — skip
@@ -91,32 +109,107 @@ export async function readStreamingPartial(
   }
 
   if (!chunk1 || signal?.aborted) {
-    reader.cancel().catch(() => {});
+    await cancelReader(reader);
     return null;
   }
 
   // Register templates/styles from Chunk 1
-  registerTemplatesAndStyles(
+  const gen = ctx.navGeneration;
+  const stylesReady = registerTemplatesAndStyles(
     chunk1,
     ctx.nonce,
     ctx.injectedStyles,
     ctx.updateInventory,
   );
   injectCssLinks(chunk1, ctx.injectedCss);
+  try {
+    if (
+      stylesReady &&
+      !await waitForTemplateReadiness(stylesReady, signal)
+    ) {
+      await cancelReader(reader);
+      return null;
+    }
+  } catch (error) {
+    await cancelReader(reader);
+    throw error;
+  }
+  if (signal?.aborted || gen !== ctx.navGeneration) {
+    await cancelReader(reader);
+    return null;
+  }
 
-  // Spawn background reader for remaining chunks (Chunk 2 state)
-  const gen = ctx.navGeneration;
-  ctx.setDeferredGeneration(gen);
-  ctx.setDeferredReader(
-    continueDeferredRead(reader, decoder, buffer, requestPath, gen, ctx, signal)
-      .catch((err) => {
+  const data = chunk1 as StreamingPartialResponse;
+  let consumed = false;
+  const control: DeferredStreamControl = {
+    async cancel() {
+      if (consumed) return;
+      consumed = true;
+      deferredStreams.delete(data);
+      await cancelReader(reader);
+      ctx.setDeferredReader(null);
+    },
+    start() {
+      if (consumed) return;
+      consumed = true;
+      ctx.setDeferredGeneration(gen);
+      const pending = continueDeferredRead(
+        reader,
+        decoder,
+        buffer,
+        data,
+        requestPath,
+        gen,
+        ctx,
+        signal,
+      ).catch((err) => {
         if (!signal?.aborted) {
           console.warn('[Router] Deferred state reader failed:', err);
         }
-      }),
-  );
+      }).finally(() => {
+        deferredStreams.delete(data);
+      });
+      ctx.setDeferredReader(pending);
+    },
+  };
+  deferredStreams.set(data, control);
+  Object.defineProperty(data, '_deferredStream', {
+    configurable: true,
+    value: true,
+  });
 
-  return chunk1;
+  return data;
+}
+
+/** Return whether a streaming partial still owns an unread deferred tail. */
+export function hasDeferredStream(
+  data: PartialResponse,
+): data is StreamingPartialResponse {
+  return deferredStreams.has(data);
+}
+
+/** Begin consuming deferred state after the route has committed. */
+export function startDeferredStream(data: PartialResponse): void {
+  deferredStreams.get(data)?.start();
+}
+
+/** Cancel an unread deferred tail when its route cannot commit. */
+export async function cancelDeferredStream(
+  data: PartialResponse,
+): Promise<void> {
+  await deferredStreams.get(data)?.cancel();
+}
+
+async function cancelReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    // Preserve the readiness result; cancellation is best-effort cleanup.
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 /**
@@ -127,6 +220,7 @@ async function continueDeferredRead(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   decoder: TextDecoder,
   initialBuffer: string,
+  data: StreamingPartialResponse,
   requestPath: string,
   generation: number,
   ctx: StreamingContext,
@@ -167,6 +261,7 @@ async function continueDeferredRead(
         try {
           const parsed = JSON.parse(line);
           if (parsed.states) {
+            persistDeferredStates(data, parsed.states);
             applyDeferredStates(parsed.states, requestPath, ctx);
           } else if (parsed.error) {
             console.warn('[Router] Streaming state error:', parsed.error);
@@ -182,6 +277,7 @@ async function continueDeferredRead(
       try {
         const parsed = JSON.parse(buffer);
         if (parsed.states) {
+          persistDeferredStates(data, parsed.states);
           applyDeferredStates(parsed.states, requestPath, ctx);
         } else if (parsed.error) {
           console.warn('[Router] Streaming state error:', parsed.error);
@@ -194,6 +290,17 @@ async function continueDeferredRead(
     reader.releaseLock();
     ctx.setDeferredReader(null);
     if (completed) ctx.markCacheComplete(requestPath);
+  }
+}
+
+function persistDeferredStates(
+  data: StreamingPartialResponse,
+  states: readonly (Record<string, unknown> | null)[],
+): void {
+  const chain = data.chain;
+  if (!chain) return;
+  for (let i = 0; i < states.length && i < chain.length; i++) {
+    if (states[i] !== null) chain[i].state = states[i];
   }
 }
 

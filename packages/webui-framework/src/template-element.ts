@@ -45,6 +45,9 @@
  */
 
 import { deferTemplateDefinition, getTemplate } from './template.js';
+import {
+  cloneTemplateContent,
+} from './template-content.js';
 import type {
   TemplateMeta,
   TemplateBlockMeta,
@@ -78,6 +81,11 @@ import {
 import {
   injectModuleStyle,
 } from './element/styles.js';
+import {
+  cancelTemplateLinkStyleMount,
+  installTemplateLinkStyles,
+  prepareTemplateLinkStyles,
+} from './element/link-styles.js';
 import {
   ATTR_KIND_BOOLEAN,
   ATTR_KIND_COMPLEX,
@@ -126,14 +134,11 @@ const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 // ── Caches ──────────────────────────────────────────────────────
 
-/** Parsed template cache — cloneNode(true) is faster than re-parsing. */
-const templateCache = new WeakMap<TemplateBlockMeta, DocumentFragment>();
+/** Cached root tag name extracted from meta.h before it's released. */
+const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
 
 /** Parsed template DOM for SSR path mapping, keyed by TemplateBlockMeta. */
 const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
-
-/** Cached root tag name extracted from meta.h before it's released. */
-const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
 
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
  *  Avoids re-counting siblings on every text-slot resolution. */
@@ -301,6 +306,10 @@ function defineTemplateConstructor(
   meta?: TemplateMeta,
 ): void {
   installTemplateObservedAttributes(ctor, tagName, meta);
+  if (meta) {
+    const ready = prepareTemplateLinkStyles(meta);
+    if (ready) void ready;
+  }
   customElements.define(tagName, ctor);
 }
 
@@ -344,6 +353,8 @@ export class TemplateElement extends HTMLElement {
   private $meta?: TemplateMeta;
   private $ready = false;
   private $hydrated = false;
+  private $deferredClientMount = false;
+  private $resetClientShadow = false;
   /** Retained across teardown so reconnect is never mistaken for fresh SSR. */
   private $hasMounted = false;
   private $deferredSSR = false;
@@ -501,6 +512,7 @@ export class TemplateElement extends HTMLElement {
     }
 
     if (this.$hydrated && this.$root) {
+      if (this.$deferredClientMount) return;
       hydrationStart();
       try {
         this.$ready = true;
@@ -575,6 +587,8 @@ export class TemplateElement extends HTMLElement {
     // Auto-detect shadow vs light DOM
     const hasShadow = !!this.shadowRoot;
     const wantShadow = hasShadow || !!meta.sd;
+    const resetClientShadow = this.$resetClientShadow;
+    this.$resetClientShadow = false;
     const remountStructuralTemplate = reconnecting &&
       ((meta.c?.length ?? 0) !== 0 || (meta.r?.length ?? 0) !== 0);
 
@@ -589,7 +603,7 @@ export class TemplateElement extends HTMLElement {
       renderRoot.replaceChildren();
       root = renderRoot;
       isSSR = false;
-    } else if (hasShadow) {
+    } else if (hasShadow && !resetClientShadow) {
       // Shadow DOM SSR — declarative shadow root already has content
       root = this.shadowRoot!;
       isSSR = true;
@@ -604,7 +618,9 @@ export class TemplateElement extends HTMLElement {
       // Shadow DOM client-created (or SPA partial with slot content).
       // Existing children are slot content — they stay in light DOM
       // and project through the template's <slot>.
-      root = this.attachShadow({ mode: 'open' });
+      const renderRoot = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
+      if (resetClientShadow) renderRoot.replaceChildren();
+      root = renderRoot;
       isSSR = false;
     } else {
       // Light DOM client-created — populate from template (no shadow = no link issue)
@@ -638,6 +654,7 @@ export class TemplateElement extends HTMLElement {
       }
     }
 
+    let deferredHydrationFinish = false;
     hydrationStart();
     try {
       // Inject CSS module stylesheet after root is determined
@@ -699,18 +716,55 @@ export class TemplateElement extends HTMLElement {
       // on the first reactive change instead.
       if (!isSSR && clientRoot) {
         this.$updateInstance(this.$root);
-        if (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0) {
-          this.$root.nodes = childNodesArray(clientRoot);
+        this.$root.nodes = childNodesArray(clientRoot);
+        const mountedInstance = this.$root;
+        const deferredStyles = installTemplateLinkStyles(
+          this,
+          meta,
+          this.shadowRoot,
+          clientRoot,
+          this.$root.attrs,
+          {
+            hasAuthorHydrationLifecycle:
+              this.hydratedCallback !==
+              TemplateElement.prototype.hydratedCallback,
+            beforeAppend: () => {
+              if (this.$root !== mountedInstance || !this.$hydrated) return;
+              this.$updateInstance(mountedInstance);
+            },
+            afterAppend: () => {
+              if (this.$root !== mountedInstance || !this.$hydrated) return;
+              this.$replaceInstanceContainer(
+                mountedInstance,
+                clientRoot,
+                root as ParentNode & Node,
+              );
+              mountedInstance.container = root as ParentNode & Node;
+              this.$deferredClientMount = false;
+              this.$ready = true;
+              this.$finishHydration();
+            },
+          },
+        );
+        if (deferredStyles) {
+          this.$deferredClientMount = true;
+          this.$ready = false;
+          deferredHydrationFinish = true;
+        }
+        if (
+          !deferredStyles &&
+          (this.$root.repeats.length !== 0 || this.$root.conds.length !== 0)
+        ) {
           this.$replaceInstanceContainer(
             this.$root,
             clientRoot,
             root as ParentNode & Node,
           );
         }
-        this.$appendStagedChildren(root, clientRoot);
-        this.$root.container = root as ParentNode & Node;
+        if (!deferredStyles) this.$appendStagedChildren(root, clientRoot);
+        if (!deferredStyles) this.$root.container = root as ParentNode & Node;
       }
-      this.$finishHydration();
+      if (!deferredHydrationFinish) this.$finishHydration();
     } finally {
       hydrationEnd();
     }
@@ -733,6 +787,10 @@ export class TemplateElement extends HTMLElement {
    * elements handle theirs via their own `disconnectedCallback`.
    */
   $destroy(): void {
+    const shadowRoot = this.shadowRoot;
+    if (shadowRoot && cancelTemplateLinkStyleMount(shadowRoot)) {
+      this.$resetClientShadow = true;
+    }
     if (!this.$root) {
       this.$detachDeferredAncestor();
       this.$abandonDeferredDescendants();
@@ -753,6 +811,7 @@ export class TemplateElement extends HTMLElement {
     this.$pendingFlush = false;
     this.$preReadyWrites = null;
     this.$hydrated = false;
+    this.$deferredClientMount = false;
     this.$ready = false;
     this.$hasUnknownScopes = false;
   }
@@ -1292,6 +1351,7 @@ export class TemplateElement extends HTMLElement {
   /** Reactive update — called by @observable/@attr setters. */
   $update(path?: string): void {
     if (!this.$ready || !this.$root) {
+      if (this.$deferredClientMount) return;
       if (path && this.$deferredSSR) this.$recordDeferredWrite(path);
       // A reactive write arrived while connected but before hydration
       // completed. `$update` cannot touch the DOM yet, so record the path and
@@ -1457,12 +1517,7 @@ export class TemplateElement extends HTMLElement {
   // ── Template parsing ──────────────────────────────────────────
 
   private $parseTemplate(meta: TemplateBlockMeta): DocumentFragment {
-    let cached = templateCache.get(meta);
-    if (cached) return cached.cloneNode(true) as DocumentFragment;
-    const tpl = document.createElement('template');
-    tpl.innerHTML = meta.h;
-    templateCache.set(meta, tpl.content);
-    return tpl.content.cloneNode(true) as DocumentFragment;
+    return cloneTemplateContent(meta);
   }
 
   private $createStagingRoot(meta: TemplateBlockMeta): HTMLElement {

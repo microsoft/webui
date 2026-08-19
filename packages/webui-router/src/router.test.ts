@@ -695,6 +695,13 @@ describe('WebUIRouter', () => {
         const first = await fetchPartial('/first', preloadController.signal, true);
         assert.ok(first);
         cache.store('/first', first as any, true, true);
+        const streaming = await import('./streaming.js');
+        assert.equal(
+          (router as any).deferredReader,
+          null,
+          'the deferred reader must not start before preload caching',
+        );
+        streaming.startDeferredStream(first as any);
         const deferred = (router as any).deferredReader as Promise<void> | null;
         assert.ok(deferred, 'the deferred reader should remain active after chunk one');
 

@@ -632,6 +632,14 @@ The template is **not** sent during initial SSR or partial navigation. It is
 loaded only when explicitly requested via `ensureLoaded`. If a user navigates
 directly to `/settings`, the component renders normally in the outlet.
 
+With `@microsoft/webui-framework` loaded, the promise also covers Link
+stylesheet cache warming or an explicit native-link fallback decision. Warmup
+bytes are never applied. On first mount, the browser validates the original
+native link before the framework can promote its native CSSOM into a shared
+constructable sheet. JSON and NDJSON navigation await the same bounded warmup
+before committing a newly registered route. Without the framework, template
+registration remains immediate.
+
 Configure a custom template endpoint:
 
 ```typescript
@@ -732,6 +740,17 @@ Rust `Protocol::render_partial()` and every host binding return the complete
 response, including the state needed by active-route components. Raw state
 input is validated in full while unneeded values are skipped without
 constructing a duplicate JSON tree.
+
+After storing new template metadata, the router dispatches
+`webui:templates-registered`. Optional runtimes may synchronously add resource
+promises with the event detail's `waitUntil()` function. The router awaits those
+promises before route commit and abandons the wait if a newer navigation
+supersedes it. This keeps the router framework-independent while preventing a
+new Link-mode shadow component from painting before its stylesheet is ready.
+For NDJSON responses, deferred state consumption starts only after this commit,
+so a Chunk 2 queued during readiness cannot update the previous route.
+Speculative preloads cache Chunk 1 first and merge Chunk 2 state before marking
+the entry complete; failed commits cancel the unread stream.
 
 For repeated Rust requests, load one `Protocol`:
 

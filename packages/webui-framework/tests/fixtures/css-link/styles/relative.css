@@ -1,0 +1,12 @@
+@layer component {
+  :host(:not(.never)) {
+    visibility: visible !important;
+  }
+}
+
+.relative-probe {
+  display: block;
+  width: 1px;
+  height: 1px;
+  background-image: url("../relative-marker.svg");
+}

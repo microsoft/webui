@@ -240,9 +240,14 @@ development-only and is dead-code-eliminated from production bundles via the
 
 Override the protected `hydratedCallback()` hook for work that requires the
 component's bindings, events, and `w-ref` references to be ready. It runs
-synchronously exactly once after the first successful ordinary SSR hydration,
-client-created mount, lazy activation, deferred streamed activation, or dormant
-static-host wake. Its once-latch is set before author code runs, so a thrown
+exactly once with the first successful ordinary SSR hydration, client-created
+mount, lazy activation, deferred streamed activation, or dormant static-host
+wake. If CSP blocks the temporary Link-mode prepaint guard, a client-created
+mount keeps non-style content detached and delays `$ready` and this callback
+until its native links load and the content is appended. Reactive writes made
+while detached are reconciled immediately before append. A synchronous
+disconnect/reconnect preserves the pending mount; a lasting disconnect cancels
+it. The callback's once-latch is set before author code runs, so a thrown
 callback is not retried on reconnect.
 
 `connectedCallback()` remains a native per-connection lifecycle. On ordinary
@@ -829,9 +834,33 @@ The framework supports three CSS delivery strategies:
 
 | Strategy | How it works |
 |----------|-------------|
-| **Link** | `<link>` tag baked into `meta.h` — loaded by the browser naturally |
+| **Link** | `<link>` tag baked into `meta.h`; the first client-created shadow instance authorizes shared constructable sheets through native loading, then warm instances adopt them before paint |
 | **Inline** | `<style>` tag baked into `meta.h` — no external request |
 | **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
+
+Link promotion is progressive enhancement. Registration performs a bounded
+fetch only to warm the HTTP cache; those bytes are never applied. The first
+client instance remains non-painting until its original links load successfully,
+so native CSP, MIME, integrity, CORS, redirect, and service-worker checks remain
+authoritative. The framework constructs the shared ordered set only from that
+native CSSOM, adopts it before existing sheets with one assignment, and shares
+it with later instances. Promoted links remain disabled in place so reconnect
+hydration retains the compiled element indexes. Classes with an authored
+`hydratedCallback()` still take the guarded native path on warm mounts, allowing
+lifecycle-added `<style>` elements to preserve native cascade order. If
+construction is unsupported, native CSSOM or
+unredirected, non-service-worker timing is unavailable, or `@import`, unsafe URL
+syntax, link attributes, bindings, compiled events, or authored DOM `<style>`
+cascade semantics cannot be preserved, the original links remain. An anonymous
+first-layer shadow guard prevents component CSS from overriding the loading
+gate and cancels host transitions before hiding. When CSP blocks that guard,
+non-style content, `$ready`, and `hydratedCallback()` remain deferred; current
+reactive state is reconciled before append. If that reconciliation changes a
+request-affecting bound link value, the framework waits for the replacement
+native load before append. Disconnecting permanently cancels
+the pending mount, while a synchronous reconnect preserves it. A link error
+leaves the component guarded instead of exposing unstyled content. SSR
+hydration, Inline, Module, and Light DOM behavior are unchanged.
 
 CSS module stylesheets are cached so each component instance adopts the same
 parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the

@@ -48,6 +48,7 @@ import {
   templateRegistrationDetail,
   TEMPLATES_REGISTERED_EVENT,
 } from './template-events.js';
+import { prepareRegisteredLinkStyles } from './element/link-styles.js';
 
 import type {
   CompiledCondition,
@@ -102,8 +103,12 @@ function acceptTemplateData(
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener(TEMPLATES_REGISTERED_EVENT, (event: Event) => {
-    const templates = templateRegistrationDetail(event)?.templates;
-    if (templates) acceptTemplateData(templates);
+    const detail = templateRegistrationDetail(event);
+    const templates = detail?.templates;
+    if (!templates) return;
+    acceptTemplateData(templates);
+    const ready = prepareRegisteredLinkStyles(templates);
+    if (ready) detail.waitUntil?.(ready);
   });
 }
 

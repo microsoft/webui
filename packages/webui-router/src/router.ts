@@ -46,8 +46,12 @@ import {
   injectCssLinks,
   fetchComponentTemplates,
   notifyTemplatesRegistered,
+  waitForTemplateReadiness,
 } from './templates.js';
-import type { StreamingContext } from './streaming.js';
+import type {
+  StreamingContext,
+  StreamingPartialResponse,
+} from './streaming.js';
 import { ensureComponentLoaded, resolveLoaders, LOADER_FAILED } from './loaders.js';
 import {
   buildChainFromSSR,
@@ -432,7 +436,7 @@ export class WebUIRouter {
       if (thisGen !== this.navGeneration) return;
       navCache?.gc();
 
-      let partialData: (PartialResponse & { inventory?: string }) | null = null;
+      let partialData: StreamingPartialResponse | null = null;
       const cached = navCache?.lookup(requestPath) ?? null;
       if (cached) {
         partialData = cached;
@@ -495,28 +499,50 @@ export class WebUIRouter {
         }
       }
 
-      if (!partialData || signal?.aborted || thisGen !== this.navGeneration) return;
+      const streaming = partialData?._deferredStream
+        ? await import('./streaming.js')
+        : undefined;
+      if (!partialData || signal?.aborted || thisGen !== this.navGeneration) {
+        if (partialData && streaming) {
+          await streaming.cancelDeferredStream(partialData);
+        }
+        return;
+      }
 
       if (partialData.path) {
         const requestPathname = requestPath.split('?')[0];
         if (partialData.path !== requestPathname && partialData.path !== requestPath) {
           console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
+          await streaming?.cancelDeferredStream(partialData);
           return;
         }
       }
 
       if (!cached) {
-        const isStreaming = this.deferredReader !== null && this.deferredGeneration === thisGen;
+        const isStreaming = streaming?.hasDeferredStream(partialData) ?? false;
         navCache?.store(requestPath, partialData, undefined, isStreaming);
       }
 
-      await this.commitWithData(partialData, requestPath, query, signal, thisGen);
-
-      const deferredStates = (partialData as any)._deferredStates;
-      if (deferredStates) {
-        const { applyDeferredStates } = await import('./streaming.js');
-        applyDeferredStates(deferredStates, requestPath, this.streamingContext());
+      let committed = false;
+      try {
+        committed = await this.commitWithData(
+          partialData,
+          requestPath,
+          query,
+          signal,
+          thisGen,
+        );
+      } catch (error) {
+        await streaming?.cancelDeferredStream(partialData);
+        if (!cached) navCache?.evict(requestPath);
+        throw error;
       }
+      if (!committed || signal?.aborted || thisGen !== this.navGeneration) {
+        await streaming?.cancelDeferredStream(partialData);
+        if (!cached) navCache?.evict(requestPath);
+        return;
+      }
+      streaming?.startDeferredStream(partialData);
     }
 
     const leaf = this.activeChain[this.activeChain.length - 1];
@@ -535,7 +561,7 @@ export class WebUIRouter {
     requestPath: string,
     signal?: AbortSignal,
     speculative?: boolean,
-  ): Promise<(PartialResponse & { inventory?: string }) | null> {
+  ): Promise<StreamingPartialResponse | null> {
     const fullPath = prependBasePath(requestPath, this.basePath);
     const headers: Record<string, string> = { 'Accept': 'application/x-ndjson, application/json' };
     if (window.__webui!.inventory) headers['X-WebUI-Inventory'] = window.__webui!.inventory!;
@@ -565,27 +591,34 @@ export class WebUIRouter {
       }
 
       if (contentType.includes('ndjson') && resp.body) {
-        const { readStreamingPartial } = await import('./streaming.js');
-        const data = await readStreamingPartial(
+        const streaming = await import('./streaming.js');
+        const data = await streaming.readStreamingPartial(
           resp,
           requestPath,
           this.streamingContext(requestController),
           requestSignal,
         );
-        hasDeferredReader = data !== null && this.deferredReader !== null;
+        hasDeferredReader =
+          data !== null && streaming.hasDeferredStream(data);
         return data;
       }
 
-      const data = await resp.json() as PartialResponse & { inventory?: string };
+      const data = await resp.json() as StreamingPartialResponse;
       if (requestSignal.aborted) return null;
-      registerTemplatesAndStyles(
+      const stylesReady = registerTemplatesAndStyles(
         data,
         window.__webui!.nonce!,
         this.stylesSet,
         (inv) => this.updateInventory(inv),
       );
-      if (requestSignal.aborted) return null;
       injectCssLinks(data, this.cssSet);
+      if (
+        stylesReady &&
+        !await waitForTemplateReadiness(stylesReady, requestSignal)
+      ) {
+        return null;
+      }
+      if (requestSignal.aborted) return null;
       return data;
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -770,7 +803,7 @@ export class WebUIRouter {
     query: Record<string, string>,
     signal?: AbortSignal,
     generation?: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const topState = partialData.state ?? null;
     const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
       component: e.component ?? '',
@@ -789,11 +822,13 @@ export class WebUIRouter {
     if (newChain.length === 0) {
       console.warn(`[Router] No route matched for path: ${requestPath}`);
       this.navigateDocument(requestPath);
-      return;
+      return false;
     }
 
     // Pre-load component modules
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) {
+      return false;
+    }
     const preload = Promise.all(
       newChain
         .filter(entry => entry.component)
@@ -804,23 +839,27 @@ export class WebUIRouter {
         signal.addEventListener('abort', () => resolve('aborted'), { once: true });
       });
       const result = await Promise.race([preload.then(() => 'loaded' as const), aborted]);
-      if (result === 'aborted') return;
+      if (result === 'aborted') return false;
     } else {
       await preload;
     }
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) {
+      return false;
+    }
 
     // A component claimed by neither an authored module nor the framework's
     // dormant template-host runtime cannot be mounted safely.
     if (newChain.some(entry => entry.component && !customElements.get(entry.component))) {
       this.navigateDocument(requestPath);
-      return;
+      return false;
     }
 
     // Resolve static loader() methods on component constructors (pre-commit).
     // Loader results replace server state for those components.
     const loaderStates = await resolveLoaders(newChain, query, signal);
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) return;
+    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) {
+      return false;
+    }
 
     const changeLevel = findChangeLevel(this.activeChain, newChain);
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
@@ -919,6 +958,7 @@ export class WebUIRouter {
     } else {
       commitNavigation();
     }
+    return true;
   }
 
 }

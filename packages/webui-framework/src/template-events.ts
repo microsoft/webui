@@ -14,6 +14,12 @@ import type { TemplateMeta } from './template.js';
 /** DOM event emitted when WebUI template data becomes available at runtime. */
 export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 
+/** Validated template registration event detail. */
+export interface TemplateRegistrationDetail {
+  templates?: Record<string, TemplateMeta>;
+  waitUntil?: (promise: PromiseLike<unknown>) => void;
+}
+
 /** Notify optional runtimes that templates have been registered. */
 export function dispatchTemplatesRegistered(
   templates: Record<string, TemplateMeta>,
@@ -34,13 +40,20 @@ export function dispatchTemplatesRegistered(
 /** Read a template registration event payload without trusting arbitrary detail. */
 export function templateRegistrationDetail(event: Event): {
   templates?: Record<string, TemplateMeta>;
+  waitUntil?: (promise: PromiseLike<unknown>) => void;
 } | undefined {
-  const detail = (event as CustomEvent<{ templates?: unknown }>).detail;
+  const detail = (event as CustomEvent<{
+    templates?: unknown;
+    waitUntil?: unknown;
+  }>).detail;
   if (!detail || typeof detail !== 'object') return undefined;
   const templates = detail.templates;
   const payload = {
     templates: typeof templates === 'object' && templates !== null
       ? templates as Record<string, TemplateMeta>
+      : undefined,
+    waitUntil: typeof detail.waitUntil === 'function'
+      ? detail.waitUntil as (promise: PromiseLike<unknown>) => void
       : undefined,
   };
   return payload.templates ? payload : undefined;

@@ -506,6 +506,56 @@ test.describe('query parameter passing', () => {
 });
 
 test.describe('ensureLoaded — non-route components', () => {
+  test('waits for Link stylesheet readiness before resolving', async ({ page }) => {
+    let releaseCss!: () => void;
+    let cssRequested!: () => void;
+    const cssGate = new Promise<void>(resolve => {
+      releaseCss = resolve;
+    });
+    const requestSeen = new Promise<void>(resolve => {
+      cssRequested = resolve;
+    });
+    await page.route('**/test-dialog.css', async route => {
+      cssRequested();
+      await cssGate;
+      await route.continue();
+    });
+    await page.goto('/');
+    await page.waitForFunction(() => {
+      const el = document.querySelector('route-shell');
+      return el && (el as any).$ready === true;
+    });
+
+    await page.evaluate(() => {
+      const target = window as typeof window & { __ensureLoadedResolved?: boolean };
+      target.__ensureLoadedResolved = false;
+      const router = (window as any).__testRouter;
+      void router.ensureLoaded('test-dialog').then(() => {
+        target.__ensureLoadedResolved = true;
+      });
+    });
+    await requestSeen;
+    await page.evaluate(async () => {
+      await new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+    });
+    expect(await page.evaluate(() => {
+      const target = window as typeof window & { __ensureLoadedResolved?: boolean };
+      return {
+        registered: !!window.__webui?.templates?.['test-dialog'],
+        resolved: target.__ensureLoadedResolved,
+      };
+    })).toEqual({ registered: true, resolved: false });
+
+    releaseCss();
+    await page.waitForFunction(() => {
+      return (window as typeof window & {
+        __ensureLoadedResolved?: boolean;
+      }).__ensureLoadedResolved === true;
+    });
+  });
+
   test('ensureLoaded registers a component template from the server', async ({ page }) => {
     await page.goto('/');
     await page.waitForFunction(() => {
