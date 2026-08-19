@@ -299,3 +299,21 @@ fn render_options(options: &SessionOptions) -> RenderOptions<'_> {
         body_inject: options.body_inject.as_deref(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::StreamingSession;
+    use crate::WebUIHandler;
+
+    #[test]
+    fn owned_streaming_session_supports_synchronized_hosts() {
+        fn assert_send<T: Send>() {}
+        fn assert_send_sync<T: Send + Sync>() {}
+
+        assert_send::<StreamingSession>();
+        assert_send_sync::<Mutex<StreamingSession>>();
+        assert_send_sync::<Arc<WebUIHandler>>();
+    }
+}

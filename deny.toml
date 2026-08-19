@@ -4,12 +4,16 @@ ignore = [
     "RUSTSEC-2025-0141",
     # yaml-rust (transitive dep of serde_yaml) — unmaintained, no security issue
     "RUSTSEC-2024-0320",
+    # h2 0.3 (transitive dep of actix-http/awc) — low-severity empty DATA frame DoS;
+    # actix-http 3.13.3 still pins h2 0.3 and that series has no patched release
+    "RUSTSEC-2026-0258",
 ]
 
 [licenses]
 allow = [
     "MIT",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "ISC",
     "MPL-2.0",
     "Unicode-3.0",

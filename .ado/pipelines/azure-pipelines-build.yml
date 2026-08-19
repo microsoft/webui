@@ -1,9 +1,9 @@
 # Register this YAML in Azure DevOps with the exact pipeline definition name
 # "Web UI - CD Build". .ado/pipelines/azure-pipelines-cd.yml references that definition name.
-trigger:
-  branches:
-    include:
-    - main
+# This release pipeline is intentionally manual while native ARM64 Python smoke
+# tests require pool names that have no persistent repository defaults. Do not
+# restore a main CI trigger until all three ARM pool defaults are configured.
+trigger: none
 pr: none
 
 parameters:
@@ -14,6 +14,26 @@ parameters:
   values:
   - 'false'
   - 'true'
+# Microsoft-hosted pools have no ARM64 Linux/Windows vmImage, and macOS-latest
+# is Intel x64, so the cp311-abi3 ARM64 Python wheels built below can only be
+# built (cross-compiled) on hosted pools, not genuinely executed/smoke-tested.
+# Set these to a self-hosted pool name with matching native hardware to enable
+# a real smoke test; leave blank to hard-fail with actionable guidance instead
+# of silently shipping an untested ARM64 wheel. Queue this pipeline manually
+# with all three values; PrepareRelease validates them before any artifacts are
+# built and blocks the downstream release when a value remains blank.
+- name: linuxArm64PythonPool
+  displayName: Self-hosted pool for native linux/arm64 Python wheel smoke test (blank hard-fails)
+  type: string
+  default: ''
+- name: windowsArm64PythonPool
+  displayName: Self-hosted pool for native windows/arm64 Python wheel smoke test (blank hard-fails)
+  type: string
+  default: ''
+- name: macosArm64PythonPool
+  displayName: Self-hosted pool for native macOS/arm64 (Apple Silicon) Python wheel smoke test (blank hard-fails)
+  type: string
+  default: ''
 
 stages:
 - stage: PrepareRelease
@@ -57,6 +77,15 @@ stages:
 
           release_tag="v${release_version}"
           release_commit="${BUILD_SOURCEVERSION:?BUILD_SOURCEVERSION is required}"
+          if ! source_date_epoch=$(git show -s --format=%ct "$release_commit"); then
+            echo "##vso[task.logissue type=error]Unable to read the commit timestamp for release commit ${release_commit}."
+            exit 1
+          fi
+          if [[ ! "$source_date_epoch" =~ ^[1-9][0-9]*$ ]]; then
+            echo "##vso[task.logissue type=error]Release commit ${release_commit} has an invalid commit timestamp."
+            exit 1
+          fi
+
           set +e
           git ls-remote --exit-code origin \
             "refs/tags/${release_tag}" "refs/tags/${release_tag}^{}" >/dev/null
@@ -83,9 +112,53 @@ stages:
           echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${release_version}"
           echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${release_tag}"
           echo "##vso[task.setvariable variable=releaseCommit;isOutput=true]${release_commit}"
+          echo "##vso[task.setvariable variable=sourceDateEpoch;isOutput=true]${source_date_epoch}"
           echo "##vso[task.setvariable variable=shouldBuild;isOutput=true]${should_build}"
       env:
         ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
+
+  - job: ValidateArm64PythonPools
+    displayName: Validate native ARM64 Python test pools
+    dependsOn: SelectRelease
+    condition: |
+      and(
+        succeeded(),
+        eq(dependencies.SelectRelease.outputs['release.shouldBuild'], 'true')
+      )
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - task: Bash@3
+      displayName: Require native ARM64 pools
+      inputs:
+        targetType: inline
+        script: |
+          set -euo pipefail
+
+          missing=()
+          [[ -n "${LINUX_ARM64_POOL//[[:space:]]/}" ]] ||
+            missing+=(linuxArm64PythonPool)
+          [[ -n "${WINDOWS_ARM64_POOL//[[:space:]]/}" ]] ||
+            missing+=(windowsArm64PythonPool)
+          [[ -n "${MACOS_ARM64_POOL//[[:space:]]/}" ]] ||
+            missing+=(macosArm64PythonPool)
+
+          if (( ${#missing[@]} == 0 )); then
+            exit 0
+          fi
+
+          if [[ "$BUILD_REASON" == Manual ]]; then
+            guidance="Supply every missing pool parameter when queueing the release build."
+          else
+            guidance="Automatic invocation is unsupported without persistent pool defaults; queue this commit manually with all three pool parameters."
+          fi
+          echo "##vso[task.logissue type=error]Native ARM64 Python wheel smoke tests are release-blocking. Missing parameters: ${missing[*]}. ${guidance}"
+          exit 1
+      env:
+        BUILD_REASON: $(Build.Reason)
+        LINUX_ARM64_POOL: '${{ parameters.linuxArm64PythonPool }}'
+        MACOS_ARM64_POOL: '${{ parameters.macosArm64PythonPool }}'
+        WINDOWS_ARM64_POOL: '${{ parameters.windowsArm64PythonPool }}'
 
 - stage: BuildArtifacts
   displayName: Build release artifacts
@@ -99,6 +172,7 @@ stages:
     releaseTag: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseTag'] ]
     releaseCommit: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseCommit'] ]
     releaseVersion: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.releaseVersion'] ]
+    sourceDateEpoch: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.sourceDateEpoch'] ]
     CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
   jobs:
@@ -110,15 +184,23 @@ stages:
           targetTriple: x86_64-unknown-linux-gnu
           artifactName: stage-linux-x64
           installArm64Linker: 'false'
+          manylinuxCrossImage: messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d
+          pythonNativeTest: 'true'
         LinuxArm64:
           targetTriple: aarch64-unknown-linux-gnu
           artifactName: stage-linux-arm64
           installArm64Linker: 'true'
+          manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
+          pythonNativeTest: 'false'
     pool:
       vmImage: ubuntu-latest
     steps:
     - checkout: self
       clean: true
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -167,6 +249,133 @@ stages:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         INSTALL_ARM64_LINKER: $(installArm64Linker)
         TARGET_TRIPLE: $(targetTriple)
+    - task: Bash@3
+      displayName: Build Python wheel ($(targetTriple))
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+          : "${MANYLINUX_CROSS_IMAGE:?MANYLINUX_CROSS_IMAGE is required}"
+          : "${RUST_TOOLCHAIN:?RUST_TOOLCHAIN is required}"
+          : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
+          : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
+
+          # Build the single cp311-abi3 wheel for this target inside the
+          # rust-cross manylinux2014 image so the result is a genuinely
+          # audited manylinux2014 wheel (manylinux_2_17 tag), never a wheel
+          # relabeled from a native-glibc ubuntu-latest build. The aarch64
+          # image tag cross-compiles natively on this x86_64 host (no QEMU):
+          # it bundles a matching cross-gcc toolchain plus the aarch64
+          # CPython headers/libs copied from manylinux2014_aarch64, and
+          # pre-sets CARGO_BUILD_TARGET/CARGO_TARGET_*_LINKER accordingly.
+          wheel_out="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/python"
+          rm -rf "$wheel_out" target/python-wheel
+          mkdir -p "$wheel_out"
+
+          docker run --rm \
+            --platform linux/amd64 \
+            -e RUST_TOOLCHAIN \
+            -e SOURCE_DATE_EPOCH \
+            -e TARGET_TRIPLE \
+            -v "$(pwd)":/io \
+            -w /io \
+            "$MANYLINUX_CROSS_IMAGE" \
+            bash -euo pipefail -c '
+              # The cross image provides GCC, target Python, and sysroot assets,
+              # but no Rust installation. Both target images execute as amd64 on
+              # this hosted runner, so verify and run the pinned x86_64 installer.
+              if [[ "$(uname -m)" != x86_64 ]]; then
+                echo "Expected x86_64 manylinux build host, found $(uname -m)" >&2
+                exit 1
+              fi
+              rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init"
+              rustup_init_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+              rustup_init="target/rustup-init-1.29.0-x86_64-unknown-linux-gnu"
+              mkdir -p target
+              cleanup_rustup_init() {
+                rm -f "$rustup_init"
+              }
+              trap cleanup_rustup_init EXIT
+              curl --proto "=https" --tlsv1.2 --fail --silent --show-error \
+                --output "$rustup_init" \
+                "$rustup_init_url"
+              printf "%s  %s\n" "$rustup_init_sha256" "$rustup_init" |
+                sha256sum --check --strict -
+              chmod +x "$rustup_init"
+              "$rustup_init" -y \
+                --profile minimal \
+                --default-toolchain none \
+                --no-modify-path
+              rm -f "$rustup_init"
+              trap - EXIT
+              export PATH="$HOME/.cargo/bin:$PATH"
+              rustup --version | grep -E "^rustup 1\.29\.0 "
+              rustup toolchain install "$RUST_TOOLCHAIN" \
+                --profile minimal \
+                --target "$TARGET_TRIPLE"
+              export RUSTUP_TOOLCHAIN
+              rustc --version | grep -E "^rustc 1\.93\."
+              cargo --version | grep -E "^cargo 1\.93\."
+
+              # Run the host interpreter. /opt/python contains target-architecture
+              # interpreters and cannot execute during the aarch64 cross-build.
+              python="python3.11"
+              "$python" -m pip install --upgrade "maturin==1.14.1"
+              "$python" -m maturin build --release \
+                --locked \
+                --manifest-path crates/webui-python/Cargo.toml \
+                --target "$TARGET_TRIPLE" \
+                --interpreter "$python" \
+                --compatibility manylinux_2_17 \
+                --out target/python-wheel
+            '
+
+          cp target/python-wheel/*.whl "$wheel_out/"
+      env:
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        MANYLINUX_CROSS_IMAGE: $(manylinuxCrossImage)
+        RUST_TOOLCHAIN: '1.93'
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
+        TARGET_TRIPLE: $(targetTriple)
+    - task: Bash@3
+      displayName: Smoke-test Python wheel ($(targetTriple))
+      condition: eq(variables['pythonNativeTest'], 'true')
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${AGENT_TEMP_DIRECTORY:?AGENT_TEMP_DIRECTORY is required}"
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+
+          venv_dir="$AGENT_TEMP_DIRECTORY/webui-python-smoke"
+          rm -rf "$venv_dir"
+          python3.11 -m venv "$venv_dir"
+
+          wheel="$(ls "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"/publish/python/*.whl)"
+          "$venv_dir/bin/pip" install --upgrade pip
+          "$venv_dir/bin/pip" install "pytest>=8.3,<10"
+          "$venv_dir/bin/pip" install "$wheel"
+          "$venv_dir/bin/python" -m pytest crates/webui-python/tests -q
+      env:
+        AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -180,14 +389,20 @@ stages:
         MacOSArm64:
           targetTriple: aarch64-apple-darwin
           artifactName: stage-macos-arm64
+          pythonNativeTest: 'false'
         MacOSX64:
           targetTriple: x86_64-apple-darwin
           artifactName: stage-macos-x64
+          pythonNativeTest: 'true'
     pool:
       vmImage: macOS-latest
     steps:
     - checkout: self
       clean: true
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -232,6 +447,81 @@ stages:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+    - task: Bash@3
+      displayName: Build Python wheel ($(targetTriple))
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+          : "${RUSTUP_TOOLCHAIN:?RUSTUP_TOOLCHAIN is required}"
+          : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
+          : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
+
+          # macOS extension modules resolve Python symbols via
+          # `-undefined dynamic_lookup` (no import library needed), and the
+          # system linker natively supports both target arches from either
+          # host arch, so this cross-compiles the aarch64 wheel on the
+          # Intel (x86_64) macOS-latest hosted pool without extra setup.
+          wheel_out="$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME/publish/python"
+          rm -rf "$wheel_out" target/python-wheel
+          mkdir -p "$wheel_out"
+
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" \
+            --profile minimal \
+            --target "$TARGET_TRIPLE"
+          python3.11 -m pip install --upgrade "maturin==1.14.1"
+          python3.11 -m maturin build --release \
+            --locked \
+            --manifest-path crates/webui-python/Cargo.toml \
+            --target "$TARGET_TRIPLE" \
+            --interpreter python3.11 \
+            --out target/python-wheel
+
+          cp target/python-wheel/*.whl "$wheel_out/"
+      env:
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        RUSTUP_TOOLCHAIN: '1.93'
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
+        TARGET_TRIPLE: $(targetTriple)
+    - task: Bash@3
+      displayName: Smoke-test Python wheel ($(targetTriple))
+      condition: eq(variables['pythonNativeTest'], 'true')
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          #!/usr/bin/env bash
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${AGENT_TEMP_DIRECTORY:?AGENT_TEMP_DIRECTORY is required}"
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+
+          venv_dir="$AGENT_TEMP_DIRECTORY/webui-python-smoke"
+          rm -rf "$venv_dir"
+          python3.11 -m venv "$venv_dir"
+
+          wheel="$(ls "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"/publish/python/*.whl)"
+          "$venv_dir/bin/pip" install --upgrade pip
+          "$venv_dir/bin/pip" install "pytest>=8.3,<10"
+          "$venv_dir/bin/pip" install "$wheel"
+          "$venv_dir/bin/python" -m pytest crates/webui-python/tests -q
+      env:
+        AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -245,14 +535,20 @@ stages:
         WindowsX64:
           targetTriple: x86_64-pc-windows-msvc
           artifactName: stage-windows-x64
+          pythonNativeTest: 'true'
         WindowsArm64:
           targetTriple: aarch64-pc-windows-msvc
           artifactName: stage-windows-arm64
+          pythonNativeTest: 'false'
     pool:
       vmImage: windows-latest
     steps:
     - checkout: self
       clean: true
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
@@ -320,11 +616,429 @@ stages:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         TARGET_TRIPLE: $(targetTriple)
+    - task: PowerShell@2
+      displayName: Build Python wheel ($(targetTriple))
+      inputs:
+        targetType: inline
+        pwsh: true
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          if (-not $env:BUILD_ARTIFACT_STAGING_DIRECTORY) {
+              throw 'BUILD_ARTIFACT_STAGING_DIRECTORY is required.'
+          }
+          if (-not $env:ARTIFACT_NAME) {
+              throw 'ARTIFACT_NAME is required.'
+          }
+          if (-not $env:TARGET_TRIPLE) {
+              throw 'TARGET_TRIPLE is required.'
+          }
+          if (-not $env:SOURCE_DATE_EPOCH) {
+              throw 'SOURCE_DATE_EPOCH is required.'
+          }
+          if (-not $env:RUSTUP_TOOLCHAIN) {
+              throw 'RUSTUP_TOOLCHAIN is required.'
+          }
+
+          # PyO3's `generate-import-lib` feature (default since PyO3 0.16.5,
+          # required in crates/webui-python/Cargo.toml) lets maturin generate
+          # the target python3.lib import library itself, so this cross-
+          # compiles the arm64 wheel on the x64 windows-latest hosted pool
+          # without needing an ARM64 Python install for linking.
+          $wheelOut = Join-Path $env:BUILD_ARTIFACT_STAGING_DIRECTORY "$env:ARTIFACT_NAME\publish\python"
+          if (Test-Path $wheelOut) {
+              Remove-Item -Recurse -Force $wheelOut
+          }
+          New-Item -ItemType Directory -Force -Path $wheelOut | Out-Null
+          $wheelBuildDir = Join-Path $env:BUILD_SOURCESDIRECTORY 'target\python-wheel'
+          if (Test-Path $wheelBuildDir) {
+              Remove-Item -Recurse -Force $wheelBuildDir
+          }
+
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN `
+              --profile minimal `
+              --target $env:TARGET_TRIPLE
+          python -m pip install --upgrade "maturin==1.14.1"
+          python -m maturin build --release `
+              --locked `
+              --manifest-path crates/webui-python/Cargo.toml `
+              --target $env:TARGET_TRIPLE `
+              --interpreter python `
+              --out $wheelBuildDir
+
+          Get-ChildItem -Path $wheelBuildDir -Filter *.whl |
+              Copy-Item -Destination $wheelOut
+      env:
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        BUILD_SOURCESDIRECTORY: $(Build.SourcesDirectory)
+        RUSTUP_TOOLCHAIN: '1.93'
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
+        TARGET_TRIPLE: $(targetTriple)
+    - task: PowerShell@2
+      displayName: Smoke-test Python wheel ($(targetTriple))
+      condition: eq(variables['pythonNativeTest'], 'true')
+      inputs:
+        targetType: inline
+        pwsh: true
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+
+          if (-not $env:AGENT_TEMP_DIRECTORY) {
+              throw 'AGENT_TEMP_DIRECTORY is required.'
+          }
+          if (-not $env:BUILD_ARTIFACT_STAGING_DIRECTORY) {
+              throw 'BUILD_ARTIFACT_STAGING_DIRECTORY is required.'
+          }
+          if (-not $env:ARTIFACT_NAME) {
+              throw 'ARTIFACT_NAME is required.'
+          }
+
+          $venvDir = Join-Path $env:AGENT_TEMP_DIRECTORY 'webui-python-smoke'
+          if (Test-Path $venvDir) {
+              Remove-Item -Recurse -Force $venvDir
+          }
+          python -m venv $venvDir
+
+          $wheelDir = Join-Path $env:BUILD_ARTIFACT_STAGING_DIRECTORY "$env:ARTIFACT_NAME\publish\python"
+          $wheel = Get-ChildItem -Path $wheelDir -Filter *.whl | Select-Object -First 1
+          & "$venvDir\Scripts\python.exe" -m pip install --upgrade pip
+          & "$venvDir\Scripts\python.exe" -m pip install "pytest>=8.3,<10"
+          & "$venvDir\Scripts\python.exe" -m pip install $wheel.FullName
+          & "$venvDir\Scripts\python.exe" -m pytest crates\webui-python\tests -q
+      env:
+        AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
         artifactName: $(artifactName)
+
+  # Microsoft-hosted pools have no ARM64 Linux or Windows vmImage, and
+  # macOS-latest is Intel x64, so the ARM64 wheels built above can only be
+  # cross-compiled on those hosted pools, never genuinely executed there.
+  # Each of the following three jobs is a compile-time template conditional:
+  # if the matching pool parameter is set, it downloads the pre-built wheel
+  # and smoke-tests it on real matching hardware; otherwise it hard-fails
+  # with actionable guidance instead of silently skipping the test or
+  # claiming the wheel was validated when it was not.
+  # The configured self-hosted pool's agent must already have a Python 3.11
+  # interpreter on PATH (as `python3.11` on Linux/macOS, `python` on
+  # Windows) - UsePythonVersion@0 is not used here because its tool cache
+  # is not guaranteed to be provisioned on arbitrary self-hosted agents.
+  - ${{ if ne(parameters.linuxArm64PythonPool, '') }}:
+    - job: TestLinuxArm64PythonWheel
+      displayName: Smoke-test Linux ARM64 Python wheel (native)
+      dependsOn: BuildLinuxAssets
+      pool:
+        name: ${{ parameters.linuxArm64PythonPool }}
+      steps:
+      - checkout: self
+        clean: true
+      - task: Bash@3
+        displayName: Clean Linux arm64 artifact download
+        inputs:
+          targetType: inline
+          script: |
+            set -euo pipefail
+            : "${STAGE_DIR:?STAGE_DIR is required}"
+            rm -rf "$STAGE_DIR"
+        env:
+          STAGE_DIR: $(Pipeline.Workspace)/stage-linux-arm64
+      - task: DownloadPipelineArtifact@2
+        displayName: Download Linux arm64 release asset
+        inputs:
+          buildType: current
+          artifactName: stage-linux-arm64
+          targetPath: $(Pipeline.Workspace)/stage-linux-arm64
+      - task: Bash@3
+        displayName: Smoke-test Python wheel (aarch64-unknown-linux-gnu)
+        inputs:
+          targetType: inline
+          script: |
+            #!/usr/bin/env bash
+            # Copyright (c) Microsoft Corporation.
+            # Licensed under the MIT license.
+
+            set -euo pipefail
+
+            : "${AGENT_TEMP_DIRECTORY:?AGENT_TEMP_DIRECTORY is required}"
+            : "${RELEASE_TAG:?RELEASE_TAG is required}"
+            : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+            : "${STAGE_DIR:?STAGE_DIR is required}"
+
+            venv_dir="$AGENT_TEMP_DIRECTORY/webui-python-smoke"
+            rm -rf "$venv_dir"
+            python3.11 -m venv "$venv_dir"
+            machine="$("$venv_dir/bin/python" -c 'import platform; print(platform.machine().lower())')"
+            if [[ "$machine" != aarch64 && "$machine" != arm64 ]]; then
+              echo "##vso[task.logissue type=error]Expected a native ARM64 Python interpreter, found architecture '$machine'."
+              exit 1
+            fi
+
+            expected_wheel="microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+            if [[ "$RELEASE_TAG" != "v${RELEASE_VERSION}" ]]; then
+              echo "##vso[task.logissue type=error]Release tag ${RELEASE_TAG} does not match current version ${RELEASE_VERSION}."
+              exit 1
+            fi
+            shopt -s nullglob
+            wheels=("$STAGE_DIR"/publish/python/*.whl)
+            if (( ${#wheels[@]} != 1 )); then
+              echo "##vso[task.logissue type=error]Expected exactly ${expected_wheel} from the current build artifact; found ${#wheels[@]} wheel(s)."
+              if (( ${#wheels[@]} > 0 )); then
+                printf 'Found wheel: %s\n' "${wheels[@]##*/}"
+              fi
+              exit 1
+            fi
+            if [[ "${wheels[0]##*/}" != "$expected_wheel" ]]; then
+              echo "##vso[task.logissue type=error]Unexpected wheel ${wheels[0]##*/}; expected ${expected_wheel} from the current build artifact."
+              exit 1
+            fi
+            wheel="${wheels[0]}"
+            "$venv_dir/bin/pip" install --upgrade pip
+            "$venv_dir/bin/pip" install "pytest>=8.3,<10"
+            "$venv_dir/bin/pip" install --no-index --no-deps "$wheel"
+            installed_version="$("$venv_dir/bin/python" -c \
+              'import importlib.metadata; print(importlib.metadata.version("microsoft-webui"))')"
+            if [[ "$installed_version" != "$RELEASE_VERSION" ]]; then
+              echo "##vso[task.logissue type=error]Installed microsoft-webui ${installed_version}; expected ${RELEASE_VERSION}."
+              exit 1
+            fi
+            "$venv_dir/bin/python" -m pytest crates/webui-python/tests -q
+        env:
+          AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+          RELEASE_TAG: $(releaseTag)
+          RELEASE_VERSION: $(releaseVersion)
+          STAGE_DIR: $(Pipeline.Workspace)/stage-linux-arm64
+  - ${{ if eq(parameters.linuxArm64PythonPool, '') }}:
+    - job: TestLinuxArm64PythonWheel
+      displayName: Smoke-test Linux ARM64 Python wheel (native) [blocked - pool required]
+      pool:
+        vmImage: ubuntu-latest
+      steps:
+      - task: Bash@3
+        displayName: Fail - no native linux/arm64 pool configured
+        inputs:
+          targetType: inline
+          script: |
+            echo "##vso[task.logissue type=error]Set the linuxArm64PythonPool pipeline parameter to a self-hosted linux/arm64 agent pool name to genuinely smoke-test the manylinux2014 aarch64 wheel. Microsoft-hosted pools have no ARM64 Linux vmImage, so this release must not claim the ARM64 wheel is tested without running it on real ARM64 hardware."
+            exit 1
+
+  - ${{ if ne(parameters.windowsArm64PythonPool, '') }}:
+    - job: TestWindowsArm64PythonWheel
+      displayName: Smoke-test Windows ARM64 Python wheel (native)
+      dependsOn: BuildWindowsAssets
+      pool:
+        name: ${{ parameters.windowsArm64PythonPool }}
+      steps:
+      - checkout: self
+        clean: true
+      - task: PowerShell@2
+        displayName: Clean Windows arm64 artifact download
+        inputs:
+          targetType: inline
+          pwsh: true
+          script: |
+            $ErrorActionPreference = 'Stop'
+            if (-not $env:STAGE_DIR) {
+                throw 'STAGE_DIR is required.'
+            }
+            if (Test-Path $env:STAGE_DIR) {
+                Remove-Item -Recurse -Force $env:STAGE_DIR
+            }
+        env:
+          STAGE_DIR: $(Pipeline.Workspace)/stage-windows-arm64
+      - task: DownloadPipelineArtifact@2
+        displayName: Download Windows arm64 release asset
+        inputs:
+          buildType: current
+          artifactName: stage-windows-arm64
+          targetPath: $(Pipeline.Workspace)/stage-windows-arm64
+      - task: PowerShell@2
+        displayName: Smoke-test Python wheel (aarch64-pc-windows-msvc)
+        inputs:
+          targetType: inline
+          pwsh: true
+          script: |
+            # Copyright (c) Microsoft Corporation.
+            # Licensed under the MIT license.
+
+            $ErrorActionPreference = 'Stop'
+            $PSNativeCommandUseErrorActionPreference = $true
+
+            if (-not $env:AGENT_TEMP_DIRECTORY) {
+                throw 'AGENT_TEMP_DIRECTORY is required.'
+            }
+            if (-not $env:STAGE_DIR) {
+                throw 'STAGE_DIR is required.'
+            }
+            if (-not $env:RELEASE_TAG) {
+                throw 'RELEASE_TAG is required.'
+            }
+            if (-not $env:RELEASE_VERSION) {
+                throw 'RELEASE_VERSION is required.'
+            }
+
+            $venvDir = Join-Path $env:AGENT_TEMP_DIRECTORY 'webui-python-smoke'
+            if (Test-Path $venvDir) {
+                Remove-Item -Recurse -Force $venvDir
+            }
+            python -m venv $venvDir
+            $machine = (& "$venvDir\Scripts\python.exe" -c `
+                "import platform; print(platform.machine().lower())").Trim()
+            if ($machine -notin @('arm64', 'aarch64')) {
+                throw "Expected a native ARM64 Python interpreter, found architecture '$machine'."
+            }
+
+            $wheelDir = Join-Path $env:STAGE_DIR 'publish\python'
+            $expectedWheel = "microsoft_webui-$env:RELEASE_VERSION-cp311-abi3-win_arm64.whl"
+            if ($env:RELEASE_TAG -cne "v$env:RELEASE_VERSION") {
+                throw "Release tag $env:RELEASE_TAG does not match current version $env:RELEASE_VERSION."
+            }
+            $wheels = @(Get-ChildItem -Path $wheelDir -Filter *.whl -File)
+            if ($wheels.Count -ne 1 -or $wheels[0].Name -cne $expectedWheel) {
+                $found = ($wheels | ForEach-Object Name) -join ', '
+                throw "Expected exactly $expectedWheel from the current build artifact; found: $found"
+            }
+            $wheel = $wheels[0]
+            & "$venvDir\Scripts\python.exe" -m pip install --upgrade pip
+            & "$venvDir\Scripts\python.exe" -m pip install "pytest>=8.3,<10"
+            & "$venvDir\Scripts\python.exe" -m pip install --no-index --no-deps $wheel.FullName
+            $installedVersion = (& "$venvDir\Scripts\python.exe" -c `
+                "import importlib.metadata; print(importlib.metadata.version('microsoft-webui'))").Trim()
+            if ($installedVersion -cne $env:RELEASE_VERSION) {
+                throw "Installed microsoft-webui $installedVersion; expected $env:RELEASE_VERSION."
+            }
+            & "$venvDir\Scripts\python.exe" -m pytest crates\webui-python\tests -q
+        env:
+          AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+          RELEASE_TAG: $(releaseTag)
+          RELEASE_VERSION: $(releaseVersion)
+          STAGE_DIR: $(Pipeline.Workspace)/stage-windows-arm64
+  - ${{ if eq(parameters.windowsArm64PythonPool, '') }}:
+    - job: TestWindowsArm64PythonWheel
+      displayName: Smoke-test Windows ARM64 Python wheel (native) [blocked - pool required]
+      pool:
+        vmImage: windows-latest
+      steps:
+      - task: PowerShell@2
+        displayName: Fail - no native windows/arm64 pool configured
+        inputs:
+          targetType: inline
+          pwsh: true
+          script: |
+            Write-Host "##vso[task.logissue type=error]Set the windowsArm64PythonPool pipeline parameter to a self-hosted windows/arm64 agent pool name to genuinely smoke-test the Windows ARM64 wheel. Microsoft-hosted pools have no ARM64 Windows vmImage, so this release must not claim the ARM64 wheel is tested without running it on real ARM64 hardware."
+            exit 1
+
+  - ${{ if ne(parameters.macosArm64PythonPool, '') }}:
+    - job: TestMacosArm64PythonWheel
+      displayName: Smoke-test macOS ARM64 Python wheel (native)
+      dependsOn: BuildMacOSAssets
+      pool:
+        name: ${{ parameters.macosArm64PythonPool }}
+      steps:
+      - checkout: self
+        clean: true
+      - task: Bash@3
+        displayName: Clean macOS arm64 artifact download
+        inputs:
+          targetType: inline
+          script: |
+            set -euo pipefail
+            : "${STAGE_DIR:?STAGE_DIR is required}"
+            rm -rf "$STAGE_DIR"
+        env:
+          STAGE_DIR: $(Pipeline.Workspace)/stage-macos-arm64
+      - task: DownloadPipelineArtifact@2
+        displayName: Download macOS arm64 release asset
+        inputs:
+          buildType: current
+          artifactName: stage-macos-arm64
+          targetPath: $(Pipeline.Workspace)/stage-macos-arm64
+      - task: Bash@3
+        displayName: Smoke-test Python wheel (aarch64-apple-darwin)
+        inputs:
+          targetType: inline
+          script: |
+            #!/usr/bin/env bash
+            # Copyright (c) Microsoft Corporation.
+            # Licensed under the MIT license.
+
+            set -euo pipefail
+
+            : "${AGENT_TEMP_DIRECTORY:?AGENT_TEMP_DIRECTORY is required}"
+            : "${RELEASE_TAG:?RELEASE_TAG is required}"
+            : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+            : "${STAGE_DIR:?STAGE_DIR is required}"
+
+            venv_dir="$AGENT_TEMP_DIRECTORY/webui-python-smoke"
+            rm -rf "$venv_dir"
+            python3.11 -m venv "$venv_dir"
+            machine="$("$venv_dir/bin/python" -c 'import platform; print(platform.machine().lower())')"
+            if [[ "$machine" != arm64 && "$machine" != aarch64 ]]; then
+              echo "##vso[task.logissue type=error]Expected a native ARM64 Python interpreter, found architecture '$machine'."
+              exit 1
+            fi
+
+            expected_wheel="microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_11_0_arm64.whl"
+            if [[ "$RELEASE_TAG" != "v${RELEASE_VERSION}" ]]; then
+              echo "##vso[task.logissue type=error]Release tag ${RELEASE_TAG} does not match current version ${RELEASE_VERSION}."
+              exit 1
+            fi
+            shopt -s nullglob
+            wheels=("$STAGE_DIR"/publish/python/*.whl)
+            if (( ${#wheels[@]} != 1 )); then
+              echo "##vso[task.logissue type=error]Expected exactly ${expected_wheel} from the current build artifact; found ${#wheels[@]} wheel(s)."
+              if (( ${#wheels[@]} > 0 )); then
+                printf 'Found wheel: %s\n' "${wheels[@]##*/}"
+              fi
+              exit 1
+            fi
+            if [[ "${wheels[0]##*/}" != "$expected_wheel" ]]; then
+              echo "##vso[task.logissue type=error]Unexpected wheel ${wheels[0]##*/}; expected ${expected_wheel} from the current build artifact."
+              exit 1
+            fi
+            wheel="${wheels[0]}"
+            "$venv_dir/bin/pip" install --upgrade pip
+            "$venv_dir/bin/pip" install "pytest>=8.3,<10"
+            "$venv_dir/bin/pip" install --no-index --no-deps "$wheel"
+            installed_version="$("$venv_dir/bin/python" -c \
+              'import importlib.metadata; print(importlib.metadata.version("microsoft-webui"))')"
+            if [[ "$installed_version" != "$RELEASE_VERSION" ]]; then
+              echo "##vso[task.logissue type=error]Installed microsoft-webui ${installed_version}; expected ${RELEASE_VERSION}."
+              exit 1
+            fi
+            "$venv_dir/bin/python" -m pytest crates/webui-python/tests -q
+        env:
+          AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+          RELEASE_TAG: $(releaseTag)
+          RELEASE_VERSION: $(releaseVersion)
+          STAGE_DIR: $(Pipeline.Workspace)/stage-macos-arm64
+  - ${{ if eq(parameters.macosArm64PythonPool, '') }}:
+    - job: TestMacosArm64PythonWheel
+      displayName: Smoke-test macOS ARM64 Python wheel (native) [blocked - pool required]
+      pool:
+        vmImage: macOS-latest
+      steps:
+      - task: Bash@3
+        displayName: Fail - no native macOS/arm64 pool configured
+        inputs:
+          targetType: inline
+          script: |
+            echo "##vso[task.logissue type=error]Set the macosArm64PythonPool pipeline parameter to a self-hosted (or Apple Silicon) macOS/arm64 agent pool name to genuinely smoke-test the Apple Silicon wheel. macOS-latest is an Intel x64 hosted pool, so this release must not claim the ARM64 wheel is tested without running it on real Apple Silicon hardware."
+            exit 1
 
   - job: AssembleRelease
     displayName: Assemble release packages
@@ -332,6 +1046,9 @@ stages:
     - BuildLinuxAssets
     - BuildMacOSAssets
     - BuildWindowsAssets
+    - TestLinuxArm64PythonWheel
+    - TestWindowsArm64PythonWheel
+    - TestMacosArm64PythonWheel
     pool:
       vmImage: ubuntu-latest
     steps:
@@ -403,6 +1120,10 @@ stages:
       inputs:
         packageType: sdk
         version: 9.x
+    - task: UsePythonVersion@0
+      displayName: Use Python 3.11
+      inputs:
+        versionSpec: '3.11'
     - task: Bash@3
       displayName: Generate release artifacts
       inputs:
@@ -410,17 +1131,32 @@ stages:
         workingDirectory: '$(Build.SourcesDirectory)'
         script: |
           set -euo pipefail
+          : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+          : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
           rustup toolchain install 1.93 --profile minimal
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
+          # Needed for the `cargo xtask publish-stage --pack-only` sdist step
+          # below; the six pre-built wheels were already downloaded above.
+          python3.11 -m pip install --upgrade "maturin==1.14.1"
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
           trap 'rm -rf target/package' EXIT
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage --pack-only --profile release
+          python crates/webui-python/tests/validate_artifacts.py \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_amd64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_arm64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_10_12_x86_64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_11_0_arm64.whl" \
+            "publish/python/microsoft_webui-${RELEASE_VERSION}.tar.gz"
       env:
         PNPM_STORE_PATH: $(PNPM_STORE_PATH)
+        RELEASE_VERSION: $(releaseVersion)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
     - task: Bash@3
       displayName: Write release metadata
       inputs:
@@ -448,6 +1184,11 @@ stages:
       inputs:
         targetPath: '$(Build.SourcesDirectory)/publish/crates'
         artifactName: unsigned_crate_packages
+    - task: PublishPipelineArtifact@1
+      displayName: Upload unsigned Python packages
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/publish/python'
+        artifactName: unsigned_python_packages
     - task: PublishPipelineArtifact@1
       displayName: Upload NuGet signing input
       inputs:

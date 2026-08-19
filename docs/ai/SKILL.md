@@ -1210,8 +1210,9 @@ one warning and renders the page from fallback state rather than replacing the
 app with the upstream error body. A failure *after* the stream is live still
 fails the response, because boundaries already flushed cannot be rewound.
 
-Equivalent APIs exist for WebAssembly, Python (FFI), Go (cgo), and C#. For
-`Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2` backed by
+Equivalent APIs exist for WebAssembly, Python (native `microsoft-webui`
+package), Go (cgo), and C#. For `Router.ensureLoaded()`, expose
+`GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.
 
 Full detail: [Integrations](/guide/integrations/).
@@ -1226,6 +1227,6 @@ Full detail: [Integrations](/guide/integrations/).
 | Routing, loaders, actions, caching | [/guide/concepts/routing](/guide/concepts/routing) |
 | Design tokens and theming | [/guide/concepts/css-tokens](/guide/concepts/css-tokens) |
 | CLI flags, diagnostics, exit codes | [/guide/cli/](/guide/cli/) |
-| Rust, Node, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
+| Rust, Node, Python, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
 | Performance characteristics | [/guide/concepts/performance](/guide/concepts/performance) |
 | Build a first app | [/tutorials/hello-world/](/tutorials/hello-world/) |

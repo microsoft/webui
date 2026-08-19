@@ -1,0 +1,85 @@
+[build-system]
+requires = ["maturin>=1.12,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "microsoft-webui"
+dynamic = ["version"]
+description = "High-performance Python renderer for compiled WebUI applications"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Microsoft Edge" }]
+keywords = ["webui", "ssr", "rendering", "templates", "server-side"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://microsoft.github.io/webui"
+Documentation = "https://microsoft.github.io/webui/guide/integrations/python"
+Repository = "https://github.com/microsoft/webui"
+Issues = "https://github.com/microsoft/webui/issues"
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.19,<2",
+    "pytest>=8.3,<10",
+    "pytest-benchmark>=5,<6",
+    "ruff>=0.15,<1",
+]
+
+[tool.maturin]
+bindings = "pyo3"
+compatibility = "pypi"
+features = ["extension-module"]
+module-name = "microsoft_webui._native"
+python-source = "python"
+strip = true
+exclude = [
+    "**/__pycache__",
+    "**/*.py[cod]",
+    ".mypy_cache/**",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+]
+
+[tool.cibuildwheel]
+build = "cp311-*"
+skip = "*-musllinux_* *-manylinux_i686 *-win32"
+test-command = "python -m pytest {project}/tests -q"
+test-requires = ["pytest>=8.3,<10"]
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux2014"
+manylinux-aarch64-image = "manylinux2014"
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["python"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "PERF", "RUF", "UP"]

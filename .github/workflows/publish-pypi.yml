@@ -1,0 +1,708 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+name: Publish to PyPI
+
+# Publishing is driven entirely by the GitHub Release "published" event
+# created by the Azure DevOps CD pipeline
+# (.ado/pipelines/azure-pipelines-cd.yml). By the time that release exists:
+#   1. The exact 6 wheels + 1 sdist (per the release contract enforced by
+#      cargo xtask publish-stage in xtask/src/publish.rs) were already built
+#      and smoke-tested on real hardware/pools.
+#   2. npm and Rust crates were already published (PublishGitHub depends on
+#      PublishNpm and PublishCrates), keeping every ecosystem in lockstep.
+#   3. Azure uploaded every asset plus the Python provenance manifest to a
+#      draft release before publishing it, so this event cannot race uploads.
+#      The sdist itself bundles its WebUI Rust source dependency closure.
+# This workflow never rebuilds the wheels it publishes - it only downloads,
+# revalidates, and republishes the exact tested release assets.
+#
+# Repository setup is also fail-closed. Create the `pypi` environment with
+# required release reviewers, prevent self-review, restrict deployments to the
+# `v*` release-tag policy, and configure PyPI Trusted Publishing for
+# microsoft/webui, this workflow file, and that environment. Only after verifying
+# those settings, set the repository Actions
+# variable PYPI_ENVIRONMENT_PROTECTED=true and set the environment-level variable
+# PYPI_ENVIRONMENT_ATTESTATION=protected-v1 (do not define that second variable at
+# repository or organization scope). GitHub does not expose environment protection
+# to GITHUB_TOKEN, so the checks below require these explicit, repository-controlled
+# attestations instead of assuming an auto-created environment is safe.
+on:
+  release:
+    types: [published]
+
+# Least privilege by default. `id-token: write` is granted only on the
+# `publish` job below, which is the sole job that needs OIDC for PyPI
+# Trusted Publishing.
+permissions:
+  contents: read
+
+concurrency:
+  # A given release tag must never be published twice concurrently; do not
+  # cancel an in-flight publish, since a partially completed PyPI upload
+  # cannot be safely retried from scratch.
+  group: publish-pypi-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_DISTRIBUTION_NAME: microsoft_webui
+  PACKAGE_PYPI_NAME: microsoft-webui
+  EXPECTED_RELEASE_ACTOR: azure-pipelines[bot]
+  PROVENANCE_ASSET_NAME: webui-python-release-provenance.json
+
+jobs:
+  # ── Guard: only continue for a published `v*` release ─────────────────
+  guard:
+    name: Guard release provenance
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository == 'microsoft/webui' &&
+      startsWith(github.event.release.tag_name, 'v') &&
+      github.event.release.draft == false
+    outputs:
+      tag: ${{ github.event.release.tag_name }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - name: Require protected PyPI environment attestation
+        env:
+          PYPI_ENVIRONMENT_PROTECTED: ${{ vars.PYPI_ENVIRONMENT_PROTECTED }}
+        run: |
+          set -euo pipefail
+          if [[ "$PYPI_ENVIRONMENT_PROTECTED" != "true" ]]; then
+            echo "::error::PyPI publication is disabled until repository administrators protect the 'pypi' environment with required reviewers, prevent self-review, restrict deployments to the v* release-tag policy, configure its PyPI Trusted Publisher for this workflow, and set the repository Actions variable PYPI_ENVIRONMENT_PROTECTED=true."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release identity, tag, commit, and main ancestry
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          TAG: ${{ github.event.release.tag_name }}
+          EVENT_TARGET: ${{ github.event.release.target_commitish }}
+          EVENT_RELEASE_AUTHOR: ${{ github.event.release.author.login }}
+          EVENT_SENDER: ${{ github.event.sender.login }}
+          EVENT_PUBLISHED_AT: ${{ github.event.release.published_at }}
+          EVENT_PRERELEASE: ${{ github.event.release.prerelease }}
+          EXPECTED_ACTOR: ${{ env.EXPECTED_RELEASE_ACTOR }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release tag '$TAG' does not resolve to a valid semantic version."
+            exit 1
+          fi
+
+          if [[ "$EVENT_RELEASE_AUTHOR" != "$EXPECTED_ACTOR" || "$EVENT_SENDER" != "$EXPECTED_ACTOR" ]]; then
+            echo "::error::Release must be created and published by $EXPECTED_ACTOR (author=$EVENT_RELEASE_AUTHOR, sender=$EVENT_SENDER)."
+            exit 1
+          fi
+          if [[ "$EVENT_PRERELEASE" != "false" || -z "$EVENT_PUBLISHED_AT" ]]; then
+            echo "::error::PyPI publication requires a published, non-prerelease GitHub Release."
+            exit 1
+          fi
+          if [[ ! "$EVENT_TARGET" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release target_commitish must be an exact 40-character commit SHA."
+            exit 1
+          fi
+
+          release_json="$GITHUB_WORKSPACE/.webui-release-api.json"
+          trap 'rm -f "$release_json"' EXIT
+          gh api "repos/${REPO}/releases/${RELEASE_ID}" > "$release_json"
+          python3 - "$release_json" <<'PY'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              release = json.load(stream)
+
+          expected = {
+              "id": int(os.environ["RELEASE_ID"]),
+              "tag_name": os.environ["TAG"],
+              "target_commitish": os.environ["EVENT_TARGET"],
+              "draft": False,
+              "prerelease": False,
+              "published_at": os.environ["EVENT_PUBLISHED_AT"],
+          }
+          for key, value in expected.items():
+              if release.get(key) != value:
+                  raise SystemExit(
+                      f"live GitHub Release {key!r} mismatch: "
+                      f"expected {value!r}, got {release.get(key)!r}"
+                  )
+          author = release.get("author") or {}
+          if author.get("login") != os.environ["EXPECTED_ACTOR"]:
+              raise SystemExit(
+                  "live GitHub Release author is not the expected Azure automation identity"
+              )
+          PY
+
+          tag_ref="refs/tags/${TAG}"
+          git fetch --quiet --force --no-tags origin "${tag_ref}:${tag_ref}"
+          if [[ "$(git cat-file -t "$tag_ref")" != "tag" ]]; then
+            echo "::error::Release tag '$TAG' must be an annotated Azure release tag."
+            exit 1
+          fi
+          tagger="$(git for-each-ref --format='%(taggername)|%(taggeremail)' "$tag_ref")"
+          if [[ "$tagger" != "Azure Pipelines|<azure-pipelines@microsoft.com>" ]]; then
+            echo "::error::Release tag '$TAG' has unexpected tagger metadata: $tagger"
+            exit 1
+          fi
+
+          commit="$(git rev-parse --verify "${tag_ref}^{commit}")"
+          if [[ "$commit" != "$EVENT_TARGET" ]]; then
+            echo "::error::Release tag '$TAG' resolves to $commit, not target $EVENT_TARGET."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "::error::Release commit $commit is not reachable from current origin/main."
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  # ── Download and validate the exact released Python assets ────────────
+  validate-assets:
+    name: Download and validate release assets
+    needs: guard
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ needs.guard.outputs.tag }}
+      version: ${{ needs.guard.outputs.version }}
+      commit: ${{ needs.guard.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.guard.outputs.commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.release.id }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          REPO: ${{ github.repository }}
+          PROVENANCE_NAME: ${{ env.PROVENANCE_ASSET_NAME }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist provenance
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern 'microsoft_webui-*.whl' \
+            --pattern 'microsoft_webui-*.tar.gz' \
+            --dir dist
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern "$PROVENANCE_NAME" \
+            --dir provenance
+          gh api --paginate --slurp \
+            "repos/${REPO}/releases/${RELEASE_ID}/assets?per_page=100" \
+            > provenance/release-assets-pages.json
+
+      - name: Validate exact asset count, version, and platform/ABI tags
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          DIST_NAME: ${{ env.PACKAGE_DISTRIBUTION_NAME }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          total=$(( ${#wheels[@]} + ${#sdists[@]} ))
+
+          if [[ ${#wheels[@]} -ne 6 ]]; then
+            echo "::error::Expected exactly 6 wheels, found ${#wheels[@]}."
+            exit 1
+          fi
+          if [[ ${#sdists[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly 1 sdist, found ${#sdists[@]}."
+            exit 1
+          fi
+          if [[ $total -ne 7 ]]; then
+            echo "::error::Expected exactly 7 release assets (6 wheels + 1 sdist), found $total."
+            exit 1
+          fi
+
+          expected_sdist="dist/${DIST_NAME}-${VERSION}.tar.gz"
+          if [[ "${sdists[0]}" != "$expected_sdist" ]]; then
+            echo "::error::Unexpected sdist filename: ${sdists[0]} (expected ${expected_sdist})"
+            exit 1
+          fi
+
+          # Must match the platform/ABI tags xtask/src/publish.rs assigns to
+          # PLATFORMS (python_wheel_tag) - one cp311-abi3 wheel per target.
+          expected_tags=(
+            "cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64"
+            "cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64"
+            "cp311-abi3-win_amd64"
+            "cp311-abi3-win_arm64"
+            "cp311-abi3-macosx_10_12_x86_64"
+            "cp311-abi3-macosx_11_0_arm64"
+          )
+          declare -A seen_tags
+          prefix="${DIST_NAME}-${VERSION}-"
+          for wheel in "${wheels[@]}"; do
+            filename="$(basename "$wheel")"
+            if [[ "$filename" != "$prefix"*.whl ]]; then
+              echo "::error::Unexpected wheel filename: $filename (expected prefix $prefix)"
+              exit 1
+            fi
+            tag="${filename#"$prefix"}"
+            tag="${tag%.whl}"
+
+            is_expected=false
+            for expected in "${expected_tags[@]}"; do
+              if [[ "$tag" == "$expected" ]]; then
+                is_expected=true
+                break
+              fi
+            done
+            if [[ "$is_expected" != true ]]; then
+              echo "::error::Unexpected Python wheel platform/ABI tag: $tag"
+              exit 1
+            fi
+            if [[ -n "${seen_tags[$tag]:-}" ]]; then
+              echo "::error::Duplicate Python wheel platform/ABI tag: $tag"
+              exit 1
+            fi
+            seen_tags["$tag"]=1
+          done
+          if [[ ${#seen_tags[@]} -ne 6 ]]; then
+            echo "::error::Expected 6 unique platform/ABI tags, found ${#seen_tags[@]}."
+            exit 1
+          fi
+
+          echo "Validated 6 wheels + 1 sdist for ${DIST_NAME} ${VERSION}."
+
+      - name: Validate trusted checksums and release-asset provenance
+        env:
+          TAG: ${{ needs.guard.outputs.tag }}
+          COMMIT: ${{ needs.guard.outputs.commit }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          EXPECTED_ACTOR: ${{ env.EXPECTED_RELEASE_ACTOR }}
+          PROVENANCE_NAME: ${{ env.PROVENANCE_ASSET_NAME }}
+          PUBLISHED_AT: ${{ github.event.release.published_at }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from datetime import datetime
+          from pathlib import Path
+
+          expected_actor = os.environ["EXPECTED_ACTOR"]
+          provenance_name = os.environ["PROVENANCE_NAME"]
+          version = os.environ["VERSION"]
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return "sha256:" + digest.hexdigest()
+
+          wheel_tags = (
+              "cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64",
+              "cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64",
+              "cp311-abi3-win_amd64",
+              "cp311-abi3-win_arm64",
+              "cp311-abi3-macosx_10_12_x86_64",
+              "cp311-abi3-macosx_11_0_arm64",
+          )
+          expected_distribution_names = {
+              *(f"microsoft_webui-{version}-{tag}.whl" for tag in wheel_tags),
+              f"microsoft_webui-{version}.tar.gz",
+          }
+
+          provenance_path = Path("provenance") / provenance_name
+          metadata_path = Path("provenance/release-assets-pages.json")
+          manifest_text = provenance_path.read_text(encoding="utf-8")
+          provenance = json.loads(manifest_text)
+          canonical_manifest = (
+              json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          if manifest_text != canonical_manifest:
+              raise SystemExit("provenance manifest is not in the canonical Azure format")
+          with metadata_path.open(encoding="utf-8") as stream:
+              pages = json.load(stream)
+
+          if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+              raise SystemExit("GitHub release asset metadata is not a paginated array")
+          assets = [asset for page in pages for asset in page]
+          relevant_assets = [
+              asset
+              for asset in assets
+              if asset.get("name") == provenance_name
+              or (
+                  isinstance(asset.get("name"), str)
+                  and asset["name"].startswith("microsoft_webui-")
+                  and (
+                      asset["name"].endswith(".whl")
+                      or asset["name"].endswith(".tar.gz")
+                  )
+              )
+          ]
+          expected_release_names = expected_distribution_names | {provenance_name}
+          actual_release_names = {asset.get("name") for asset in relevant_assets}
+          if len(relevant_assets) != 8 or actual_release_names != expected_release_names:
+              raise SystemExit(
+                  "release must contain exactly the trusted provenance manifest, "
+                  "six expected wheels, and one expected sdist"
+              )
+          assets_by_name = {asset["name"]: asset for asset in relevant_assets}
+
+          def parse_github_time(value, label):
+              if not isinstance(value, str) or not value:
+                  raise SystemExit(f"release asset {label} timestamp is missing")
+              try:
+                  return datetime.fromisoformat(value.replace("Z", "+00:00"))
+              except ValueError as error:
+                  raise SystemExit(f"release asset {label} timestamp is invalid") from error
+
+          published_at = parse_github_time(os.environ["PUBLISHED_AT"], "published_at")
+          for name, asset in assets_by_name.items():
+              uploader = asset.get("uploader") or {}
+              if uploader.get("login") != expected_actor:
+                  raise SystemExit(f"release asset {name} was not uploaded by {expected_actor}")
+              if asset.get("state") != "uploaded":
+                  raise SystemExit(f"release asset {name} is not in the uploaded state")
+              created_at = parse_github_time(asset.get("created_at"), f"{name} created_at")
+              updated_at = parse_github_time(asset.get("updated_at"), f"{name} updated_at")
+              if created_at > published_at or updated_at > published_at:
+                  raise SystemExit(f"release asset {name} changed after the release was published")
+              if type(asset.get("size")) is not int or asset["size"] <= 0:
+                  raise SystemExit(f"release asset {name} has an invalid size")
+              digest = asset.get("digest")
+              if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                  raise SystemExit(f"release asset {name} lacks a GitHub SHA-256 digest")
+
+          manifest_digest = sha256_file(provenance_path)
+          if manifest_digest != assets_by_name[provenance_name]["digest"]:
+              raise SystemExit("downloaded provenance manifest does not match GitHub's asset digest")
+          if provenance_path.stat().st_size != assets_by_name[provenance_name]["size"]:
+              raise SystemExit("downloaded provenance manifest size does not match GitHub metadata")
+
+          expected_top_level = {
+              "schema",
+              "repository",
+              "tag",
+              "commit",
+              "producer",
+              "artifacts",
+          }
+          if not isinstance(provenance, dict) or set(provenance) != expected_top_level:
+              raise SystemExit("provenance manifest has unexpected or missing top-level fields")
+          expected_values = {
+              "schema": "microsoft.webui.python-release/v1",
+              "repository": "microsoft/webui",
+              "tag": os.environ["TAG"],
+              "commit": os.environ["COMMIT"],
+          }
+          for key, value in expected_values.items():
+              if provenance.get(key) != value:
+                  raise SystemExit(f"provenance {key} mismatch")
+
+          producer = provenance.get("producer")
+          if not isinstance(producer, dict) or set(producer) != {
+              "identity",
+              "pipeline",
+              "build_id",
+              "source_pipeline",
+              "source_run_id",
+              "source_branch",
+          }:
+              raise SystemExit("provenance producer record is malformed")
+          if producer["identity"] != expected_actor:
+              raise SystemExit("provenance producer identity mismatch")
+          if producer["pipeline"] != "Web UI - CD":
+              raise SystemExit("provenance CD pipeline identity mismatch")
+          if producer["source_pipeline"] != "Web UI - CD Build":
+              raise SystemExit("provenance source pipeline identity mismatch")
+          if producer["source_branch"] != "refs/heads/main":
+              raise SystemExit("provenance source branch is not refs/heads/main")
+          for field in ("build_id", "source_run_id"):
+              value = producer[field]
+              if not isinstance(value, str) or not value.isdecimal():
+                  raise SystemExit(f"provenance Azure Pipeline {field} is invalid")
+
+          records = provenance.get("artifacts")
+          if not isinstance(records, list) or len(records) != 7:
+              raise SystemExit("provenance must describe exactly seven Python distributions")
+          records_by_name = {}
+          for record in records:
+              if not isinstance(record, dict) or set(record) != {"name", "sha256", "size"}:
+                  raise SystemExit("provenance artifact record is malformed")
+              name = record["name"]
+              if not isinstance(name, str):
+                  raise SystemExit("provenance artifact name is not a string")
+              if name in records_by_name:
+                  raise SystemExit(f"duplicate provenance artifact: {name}")
+              if type(record["size"]) is not int or record["size"] <= 0:
+                  raise SystemExit(f"invalid provenance size for {name}")
+              if not isinstance(record["sha256"], str) or not re.fullmatch(
+                  r"sha256:[0-9a-f]{64}", record["sha256"]
+              ):
+                  raise SystemExit(f"invalid provenance digest for {name}")
+              records_by_name[name] = record
+          if set(records_by_name) != expected_distribution_names:
+              raise SystemExit("provenance does not describe the exact expected distributions")
+
+          for name, record in records_by_name.items():
+              path = Path("dist") / name
+              if not path.is_file():
+                  raise SystemExit(f"downloaded distribution is missing: {name}")
+              if path.stat().st_size != record["size"]:
+                  raise SystemExit(f"downloaded distribution size mismatch: {name}")
+              digest = sha256_file(path)
+              if digest != record["sha256"]:
+                  raise SystemExit(f"downloaded distribution checksum mismatch: {name}")
+              release_asset = assets_by_name[name]
+              if digest != release_asset["digest"] or record["size"] != release_asset["size"]:
+                  raise SystemExit(f"GitHub release metadata mismatch: {name}")
+
+          print("Validated Azure-authored provenance and GitHub digests for 6 wheels + 1 sdist.")
+          PY
+
+      - name: Validate PEP 639 license metadata and files
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          sdists=(dist/*.tar.gz)
+          if [[ ${#wheels[@]} -ne 6 || ${#sdists[@]} -ne 1 ]]; then
+            echo "::error::PEP 639 validation requires the exact 6 wheels + 1 sdist."
+            exit 1
+          fi
+          python3 crates/webui-python/tests/validate_artifacts.py \
+            "${wheels[@]}" "${sdists[@]}"
+
+      - name: Validate package metadata
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade --quiet "twine>=7,<8"
+          python3 -m twine check --strict dist/*
+
+      - name: Upload validated release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pypi-release-assets
+          path: dist/
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Upload validated release provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pypi-release-provenance
+          path: provenance/webui-python-release-provenance.json
+          retention-days: 1
+          if-no-files-found: error
+
+  # ── Build + smoke-test from the released sdist ─────────────────────────
+  # This proves the self-contained sdist is installable from source. It never
+  # feeds its build output back into the `publish` job below, so the
+  # wheels actually published are always the exact ones tested by the ADO
+  # release pipeline, never a wheel rebuilt here.
+  smoke-test-sdist:
+    name: Build and smoke-test sdist
+    needs: validate-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: v${{ needs.validate-assets.outputs.version }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pypi-release-assets
+          path: dist
+
+      - name: Install protoc
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq protobuf-compiler
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: 1.93
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Build and install from sdist in an isolated venv
+        env:
+          VERSION: ${{ needs.validate-assets.outputs.version }}
+          DIST_NAME: ${{ env.PACKAGE_DISTRIBUTION_NAME }}
+          PYPI_NAME: ${{ env.PACKAGE_PYPI_NAME }}
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv-sdist-smoke
+          # shellcheck disable=SC1091
+          source .venv-sdist-smoke/bin/activate
+          pip install --upgrade pip
+          # --no-binary forces a from-source (maturin) build here, so this
+          # step cannot silently reuse one of the prebuilt release wheels.
+          pip install "pytest>=8.3,<10"
+          pip install --no-binary "$PYPI_NAME" "dist/${DIST_NAME}-${VERSION}.tar.gz"
+          python -m pytest crates/webui-python/tests -q
+          deactivate
+
+  # ── Publish the exact tested wheels + sdist to PyPI ────────────────────
+  publish:
+    name: Publish to PyPI
+    needs: [validate-assets, smoke-test-sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/microsoft-webui/${{ needs.validate-assets.outputs.version }}/
+    # Overrides the workflow-level permissions for this job only: PyPI
+    # Trusted Publishing needs an OIDC id-token and nothing else.
+    permissions:
+      id-token: write
+    steps:
+      - name: Require protected environment binding
+        env:
+          PYPI_ENVIRONMENT_ATTESTATION: ${{ vars.PYPI_ENVIRONMENT_ATTESTATION }}
+        run: |
+          set -euo pipefail
+          if [[ "$PYPI_ENVIRONMENT_ATTESTATION" != "protected-v1" ]]; then
+            echo "::error::The 'pypi' environment must define PYPI_ENVIRONMENT_ATTESTATION=protected-v1 after required reviewers, self-review prevention, the v* release-tag restriction, and PyPI Trusted Publishing are configured. Do not define this variable at repository or organization scope."
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pypi-release-assets
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pypi-release-provenance
+          path: provenance
+
+      - name: Re-validate exact trusted assets immediately before publishing
+        env:
+          TAG: ${{ needs.validate-assets.outputs.tag }}
+          COMMIT: ${{ needs.validate-assets.outputs.commit }}
+          VERSION: ${{ needs.validate-assets.outputs.version }}
+          EXPECTED_ACTOR: ${{ env.EXPECTED_RELEASE_ACTOR }}
+          PROVENANCE_NAME: ${{ env.PROVENANCE_ASSET_NAME }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+
+          def sha256_file(path):
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return "sha256:" + digest.hexdigest()
+
+          wheel_tags = (
+              "cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64",
+              "cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64",
+              "cp311-abi3-win_amd64",
+              "cp311-abi3-win_arm64",
+              "cp311-abi3-macosx_10_12_x86_64",
+              "cp311-abi3-macosx_11_0_arm64",
+          )
+          expected_names = {
+              *(f"microsoft_webui-{version}-{tag}.whl" for tag in wheel_tags),
+              f"microsoft_webui-{version}.tar.gz",
+          }
+          actual_names = {
+              path.name
+              for path in Path("dist").iterdir()
+              if path.is_file()
+          }
+          if actual_names != expected_names:
+              raise SystemExit(
+                  "publish input must contain exactly the six expected wheels and one sdist"
+              )
+
+          manifest_path = Path("provenance") / os.environ["PROVENANCE_NAME"]
+          manifest_text = manifest_path.read_text(encoding="utf-8")
+          provenance = json.loads(manifest_text)
+          if manifest_text != json.dumps(
+              provenance, sort_keys=True, separators=(",", ":")
+          ) + "\n":
+              raise SystemExit("provenance manifest is not canonical")
+          if not isinstance(provenance, dict):
+              raise SystemExit("provenance manifest must be a JSON object")
+          if provenance.get("schema") != "microsoft.webui.python-release/v1":
+              raise SystemExit("unexpected provenance schema")
+          if provenance.get("repository") != "microsoft/webui":
+              raise SystemExit("unexpected provenance repository")
+          if provenance.get("tag") != os.environ["TAG"]:
+              raise SystemExit("provenance tag mismatch")
+          if provenance.get("commit") != os.environ["COMMIT"]:
+              raise SystemExit("provenance commit mismatch")
+          producer = provenance.get("producer")
+          if not isinstance(producer, dict) or producer.get("identity") != os.environ["EXPECTED_ACTOR"]:
+              raise SystemExit("provenance producer identity mismatch")
+          if producer.get("pipeline") != "Web UI - CD" or producer.get("source_pipeline") != "Web UI - CD Build":
+              raise SystemExit("provenance pipeline identity mismatch")
+          if producer.get("source_branch") != "refs/heads/main":
+              raise SystemExit("provenance source branch mismatch")
+
+          records = provenance.get("artifacts")
+          if not isinstance(records, list) or len(records) != 7:
+              raise SystemExit("provenance must contain exactly seven artifact records")
+          records_by_name = {}
+          for record in records:
+              if not isinstance(record, dict) or set(record) != {"name", "sha256", "size"}:
+                  raise SystemExit("malformed provenance artifact record")
+              name = record["name"]
+              if not isinstance(name, str):
+                  raise SystemExit("provenance artifact name is not a string")
+              if name in records_by_name:
+                  raise SystemExit(f"duplicate provenance artifact: {name}")
+              if type(record["size"]) is not int or record["size"] <= 0:
+                  raise SystemExit(f"invalid provenance size for {name}")
+              if not isinstance(record["sha256"], str) or not re.fullmatch(
+                  r"sha256:[0-9a-f]{64}", record["sha256"]
+              ):
+                  raise SystemExit(f"invalid provenance digest for {name}")
+              records_by_name[name] = record
+          if set(records_by_name) != expected_names:
+              raise SystemExit("provenance does not cover the exact publish input")
+
+          for name, record in records_by_name.items():
+              path = Path("dist") / name
+              if path.stat().st_size != record["size"]:
+                  raise SystemExit(f"size mismatch immediately before publish: {name}")
+              digest = sha256_file(path)
+              if digest != record["sha256"]:
+                  raise SystemExit(f"checksum mismatch immediately before publish: {name}")
+
+          print("Re-validated trusted checksums for the exact 6 wheels + 1 sdist.")
+          PY
+
+      - name: Publish to PyPI (Trusted Publishing)
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+          print-hash: true
+          attestations: true
