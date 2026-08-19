@@ -993,7 +993,7 @@ impl<'de> Visitor<'de> for BorrowedStringVisitor {
 #[cold]
 #[inline(never)]
 fn invalid_state_json(message: &str) -> HandlerError {
-    HandlerError::Rendering(format!("invalid state JSON: {message}"))
+    HandlerError::InvalidState(message.to_string())
 }
 
 #[cold]
@@ -2577,6 +2577,10 @@ mod tests {
         let error = prepared
             .render_partial(r#"{"broken":"#, "index.html", "/", "")
             .expect_err("invalid state JSON must fail");
+        assert!(
+            matches!(error, HandlerError::InvalidState(_)),
+            "host bindings classify caller state errors by variant, got {error:?}"
+        );
         assert!(error.to_string().contains("invalid state JSON"));
     }
 
@@ -2597,6 +2601,10 @@ mod tests {
             let error = prepared
                 .render_partial(state, "index.html", "/", "")
                 .expect_err("out-of-range state numbers must fail");
+            assert!(
+                matches!(error, HandlerError::InvalidState(_)),
+                "host bindings classify caller state errors by variant, got {error:?}"
+            );
             assert!(error.to_string().contains("invalid state JSON"));
         }
     }

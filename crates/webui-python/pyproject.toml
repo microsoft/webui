@@ -57,17 +57,6 @@ exclude = [
     ".ruff_cache/**",
 ]
 
-[tool.cibuildwheel]
-build = "cp311-*"
-skip = "*-musllinux_* *-manylinux_i686 *-win32"
-test-command = "python -m pytest {project}/tests -q"
-test-requires = ["pytest>=8.3,<10"]
-build-verbosity = 1
-
-[tool.cibuildwheel.linux]
-manylinux-x86_64-image = "manylinux2014"
-manylinux-aarch64-image = "manylinux2014"
-
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]

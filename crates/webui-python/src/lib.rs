@@ -352,21 +352,29 @@ struct NativeStreamingSession {
 
 #[pymethods]
 impl NativeStreamingSession {
-    fn boundary(&self, name: &str) -> PyResult<u32> {
-        self.session()?
-            .boundary(name)
-            .map(BoundaryId::raw)
-            .map_err(|error| streaming_binding_error(error).into_py_error())
+    fn boundary(&self, py: Python<'_>, name: &str) -> PyResult<u32> {
+        py.detach(|| {
+            self.session_binding()?
+                .boundary(name)
+                .map(BoundaryId::raw)
+                .map_err(streaming_binding_error)
+        })
+        .map_err(BindingError::into_py_error)
     }
 
     #[getter]
-    fn boundary_count(&self) -> PyResult<usize> {
-        Ok(self.session()?.boundary_count())
+    fn boundary_count(&self, py: Python<'_>) -> PyResult<usize> {
+        py.detach(|| {
+            self.session_binding()
+                .map(|session| session.boundary_count())
+        })
+        .map_err(BindingError::into_py_error)
     }
 
     #[getter]
-    fn finished(&self) -> PyResult<bool> {
-        Ok(self.session()?.is_finished())
+    fn finished(&self, py: Python<'_>) -> PyResult<bool> {
+        py.detach(|| self.session_binding().map(|session| session.is_finished()))
+            .map_err(BindingError::into_py_error)
     }
 
     fn write_shell<'py>(
@@ -447,10 +455,6 @@ impl NativeStreamingSession {
 }
 
 impl NativeStreamingSession {
-    fn session(&self) -> PyResult<MutexGuard<'_, HandlerStreamingSession>> {
-        self.session_binding().map_err(BindingError::into_py_error)
-    }
-
     fn session_binding(&self) -> Result<MutexGuard<'_, HandlerStreamingSession>, BindingError> {
         self.inner.lock().map_err(|_| {
             BindingError::streaming(
@@ -487,9 +491,7 @@ fn create_handler(plugin: Option<&str>) -> PyResult<WebUIHandler> {
 #[inline(never)]
 fn partial_binding_error(error: HandlerError) -> BindingError {
     match error {
-        HandlerError::Rendering(message) if message.starts_with("invalid state JSON:") => {
-            BindingError::state(message)
-        }
+        error @ HandlerError::InvalidState(_) => BindingError::state(error.to_string()),
         other => render_binding_error(other),
     }
 }

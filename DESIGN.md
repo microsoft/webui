@@ -4363,7 +4363,10 @@ interpreter lock. `StreamingSession` is synchronized for memory safety but is
 logically **single-driver** — drive one session from one Python thread at a
 time, exactly like the Node and C# session types (see
 [Host-owned streaming sessions](#host-owned-streaming-sessions)); independent
-sessions on the same `Renderer` may run concurrently.
+sessions on the same `Renderer` may run concurrently. Every session method,
+including the `boundary_count` and `finished` observers, acquires the session
+lock with the GIL already released, so a misuse that contends on one session
+can never stall unrelated Python threads.
 
 **API surface.**
 
@@ -4394,6 +4397,22 @@ Rust. Callers that already hold serialized JSON pass `str`, `bytes`,
 `bytearray`, or a `memoryview` directly, bypassing Python-side `json.dumps`.
 Immutable `str` and `bytes` stay backed by their Python objects during detached
 Rust work; mutable/general buffers are copied before the GIL is released.
+
+**Exceptions.** Every failure raises a native subclass of `WebUIError`:
+`ProtocolError` (undecodable protocol bytes), `StateError` (bad caller state
+JSON), `RenderError` (render failure), and `StreamingError` (session ordering
+or lifecycle violation). Type errors and unknown plugin names raise the builtin
+`TypeError` / `ValueError`, and a missing protocol file raises the builtin
+`OSError` subclass, so ordinary Python idioms keep working. The classes are
+defined on `microsoft_webui._native`, which makes them picklable and safe to
+propagate out of `ProcessPoolExecutor` workers.
+
+Bindings must be able to tell a caller input error from a render failure
+**without inspecting message text**. `HandlerError::InvalidState` exists for
+exactly this: `webui-handler` returns it for any host-supplied state JSON it
+cannot parse or validate, and each binding maps that one variant to its own
+state-error type (`StateError` in Python). Reclassifying by matching on error
+prose is not permitted.
 
 **`Plugin` and `BoundaryMode`.** Both are `enum.StrEnum` — available since
 CPython 3.11, the package's minimum interpreter version — so plugin

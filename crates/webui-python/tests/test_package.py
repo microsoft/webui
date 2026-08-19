@@ -14,6 +14,7 @@ from typing import NoReturn
 
 import microsoft_webui
 import pytest
+import validate_release_targets
 from microsoft_webui import (
     BoundaryMode,
     Plugin,
@@ -114,3 +115,24 @@ def test_source_configuration_excludes_python_caches() -> None:
 def test_distribution_has_no_runtime_dependencies() -> None:
     requirements = importlib.metadata.requires("microsoft-webui") or []
     assert all("; extra ==" in requirement for requirement in requirements)
+
+
+def test_release_target_contract_is_restated_consistently() -> None:
+    contract = validate_release_targets._contract_tags()
+
+    assert len(contract) == 6
+    assert validate_release_targets.main() == 0
+
+
+def test_release_target_drift_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    read_source = validate_release_targets._read
+
+    def drop_one_arm64_target(relative: Path) -> str:
+        text = read_source(relative)
+        if relative == validate_release_targets.MATRIX_TAG_SOURCE:
+            return text.replace("platform_tag: win_arm64", "platform_tag: win_arm64_typo")
+        return text
+
+    monkeypatch.setattr(validate_release_targets, "_read", drop_one_arm64_target)
+
+    assert validate_release_targets.main() == 1

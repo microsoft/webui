@@ -17,6 +17,7 @@ on:
       - 'crates/webui-protocol/**'
       - 'crates/webui-python/**'
       - 'crates/webui-state/**'
+      - 'xtask/src/publish.rs'
 
 permissions:
   contents: read
@@ -51,6 +52,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Python 3.11
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -58,6 +61,10 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: crates/webui-python/pyproject.toml
+
+      - name: Validate release-target contract is restated consistently
+        if: runner.os == 'Linux'
+        run: python crates/webui-python/tests/validate_release_targets.py
 
       - name: Validate pinned manylinux build inputs
         if: runner.os == 'Linux'
@@ -95,7 +102,7 @@ jobs:
               if line.strip().startswith("messense/manylinux2014-cross:")
           ]
           expected_images = Counter(
-              {expected_x64: 2, expected_aarch64: 1}
+              {expected_x64: 2, expected_aarch64: 2}
           )
           actual_images = Counter(azure_images + github_images)
           if actual_images != expected_images:
@@ -113,12 +120,12 @@ jobs:
 
           urls = assignments(azure, "rustup_init_url")
           urls.extend(assignments(github, "rustup_init_url"))
-          if Counter(urls) != Counter({expected_rustup_url: 2}):
+          if Counter(urls) != Counter({expected_rustup_url: 3}):
               raise SystemExit(f"Unexpected rustup-init URLs: {urls}")
 
           checksums = assignments(azure, "rustup_init_sha256")
           checksums.extend(assignments(github, "rustup_init_sha256"))
-          if Counter(checksums) != Counter({expected_rustup_sha256: 2}):
+          if Counter(checksums) != Counter({expected_rustup_sha256: 3}):
               raise SystemExit(
                   f"Unexpected rustup-init SHA-256 values: {checksums}"
               )
@@ -128,7 +135,7 @@ jobs:
               for source in (azure, github)
               for line in source.splitlines()
           )
-          if checksum_commands != 2:
+          if checksum_commands != 3:
               raise SystemExit(
                   "Every rustup-init download must use strict SHA-256 validation"
               )
@@ -333,6 +340,204 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # The release contract ships six wheels, but GitHub's hosted x64 runners
+  # cannot execute the three ARM64 ones. Azure owns running them on real ARM64
+  # hardware before a release. These jobs cross-compile the same three targets
+  # the release pipeline cross-compiles, so an ARM64 build break is caught on
+  # the PR that introduces it instead of at release time. Build and tag
+  # validation only - never install or import, which needs ARM64 hardware.
+  cross-build-arm64:
+    name: Cross-build wheel / ${{ matrix.platform.label }}
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - label: Linux ARM64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            platform_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
+          - label: macOS ARM64
+            os: macos-15-intel
+            target: aarch64-apple-darwin
+            platform_tag: macosx_11_0_arm64
+          - label: Windows ARM64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            platform_tag: win_arm64
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: crates/webui-python/pyproject.toml
+
+      - name: Setup Rust
+        if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: '1.93'
+          targets: ${{ matrix.platform.target }}
+
+      - name: Cache Rust build
+        if: runner.os != 'Linux'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: python-cross-${{ matrix.platform.target }}
+          cache-on-failure: true
+
+      - name: Prepare wheel output
+        shell: python
+        run: |
+          from pathlib import Path
+          import shutil
+
+          output = Path("target/python-wheel")
+          shutil.rmtree(output, ignore_errors=True)
+          output.mkdir(parents=True)
+
+      - name: Install wheel build tool
+        if: runner.os != 'Linux'
+        run: python -m pip install --upgrade "maturin==1.14.1"
+
+      # abi3 needs no target interpreter, and `generate-import-lib` synthesizes
+      # the Windows ARM64 import library, so both cross-compile on an x64 host.
+      - name: Cross-build stable-ABI wheel
+        if: runner.os != 'Linux'
+        run: >-
+          python -m maturin build
+          --release
+          --locked
+          --manifest-path crates/webui-python/Cargo.toml
+          --target "${{ matrix.platform.target }}"
+          --interpreter python
+          --out target/python-wheel
+
+      - name: Cross-build manylinux aarch64 stable-ABI wheel
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE:/io" \
+            -w /io \
+            messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8 \
+            bash -euo pipefail -c '
+              if [[ "$(uname -m)" != x86_64 ]]; then
+                echo "Expected x86_64 manylinux build host, found $(uname -m)" >&2
+                exit 1
+              fi
+              rustup_init_url="https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init"
+              rustup_init_sha256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+              rustup_init="target/rustup-init-1.29.0-x86_64-unknown-linux-gnu"
+              mkdir -p target
+              cleanup_rustup_init() {
+                rm -f "$rustup_init"
+              }
+              trap cleanup_rustup_init EXIT
+              curl --proto "=https" --tlsv1.2 --fail --silent --show-error \
+                --output "$rustup_init" \
+                "$rustup_init_url"
+              printf "%s  %s\n" "$rustup_init_sha256" "$rustup_init" |
+                sha256sum --check --strict -
+              chmod +x "$rustup_init"
+              "$rustup_init" -y \
+                --profile minimal \
+                --default-toolchain none \
+                --no-modify-path
+              rm -f "$rustup_init"
+              trap - EXIT
+              export PATH="$HOME/.cargo/bin:$PATH"
+              export RUSTUP_TOOLCHAIN=1.93
+              rustup --version | grep -E "^rustup 1\.29\.0 "
+              rustup toolchain install 1.93 \
+                --profile minimal \
+                --target aarch64-unknown-linux-gnu
+              rustc --version | grep -E "^rustc 1\.93\."
+              cargo --version | grep -E "^cargo 1\.93\."
+              python3.11 -m pip install --upgrade "maturin==1.14.1"
+              python3.11 -m maturin build \
+                --release \
+                --locked \
+                --manifest-path crates/webui-python/Cargo.toml \
+                --target aarch64-unknown-linux-gnu \
+                --interpreter python3.11 \
+                --compatibility manylinux_2_17 \
+                --out target/python-wheel
+            '
+
+      - name: Validate exact wheel filename and tags
+        env:
+          EXPECTED_PLATFORM_TAG: ${{ matrix.platform.platform_tag }}
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tomllib
+          from zipfile import ZipFile
+
+          version = tomllib.loads(
+              Path("Cargo.toml").read_text(encoding="utf-8")
+          )["workspace"]["package"]["version"]
+          platform_tag = os.environ["EXPECTED_PLATFORM_TAG"]
+          expected_metadata_tags = {
+              f"cp311-abi3-{component}" for component in platform_tag.split(".")
+          }
+          expected_name = (
+              f"{os.environ['PACKAGE_DISTRIBUTION_NAME']}-"
+              f"{version}-cp311-abi3-{platform_tag}.whl"
+          )
+          output = Path("target/python-wheel")
+          wheels = sorted(output.glob("*.whl"))
+          if [wheel.name for wheel in wheels] != [expected_name]:
+              raise SystemExit(
+                  f"Expected exactly {expected_name}, found "
+                  f"{[wheel.name for wheel in wheels]}"
+              )
+
+          wheel = wheels[0]
+          with ZipFile(wheel) as archive:
+              metadata_files = [
+                  name
+                  for name in archive.namelist()
+                  if name.endswith(".dist-info/WHEEL")
+              ]
+              if len(metadata_files) != 1:
+                  raise SystemExit(
+                      "Expected one .dist-info/WHEEL metadata file, found "
+                      f"{metadata_files}"
+                  )
+              metadata = archive.read(metadata_files[0]).decode("utf-8")
+          tags = {
+              line.removeprefix("Tag: ").strip()
+              for line in metadata.splitlines()
+              if line.startswith("Tag: ")
+          }
+          if tags != expected_metadata_tags:
+              raise SystemExit(
+                  f"Expected wheel metadata tags {sorted(expected_metadata_tags)}, "
+                  f"found {sorted(tags)}"
+              )
+
+          subprocess.run(
+              [
+                  sys.executable,
+                  "crates/webui-python/tests/validate_artifacts.py",
+                  str(wheel),
+              ],
+              check=True,
+          )
+          print(f"Validated cross-built {wheel.name}")
+
   test-wheel:
     name: Test wheel / ${{ matrix.platform.label }} / CPython ${{ matrix.python }}
     needs: build-wheel
@@ -360,6 +565,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Setup Python ${{ matrix.python }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

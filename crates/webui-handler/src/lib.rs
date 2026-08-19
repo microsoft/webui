@@ -59,6 +59,14 @@ pub enum HandlerError {
     #[error("Rendering error: {0}")]
     Rendering(String),
 
+    /// Host-supplied state JSON could not be parsed or validated.
+    ///
+    /// This is a caller input error, not a render failure. Bindings map it to
+    /// their own state-error type, so it must stay distinguishable from
+    /// [`HandlerError::Rendering`] without inspecting the message text.
+    #[error("invalid state JSON: {0}")]
+    InvalidState(String),
+
     #[error("Rendering invariant error: {0}")]
     Invariant(String),
 

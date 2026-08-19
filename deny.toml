@@ -4,7 +4,9 @@ ignore = [
     "RUSTSEC-2025-0141",
     # yaml-rust (transitive dep of serde_yaml) — unmaintained, no security issue
     "RUSTSEC-2024-0320",
-    # h2 0.3 (transitive dep of actix-http/awc) — low-severity empty DATA frame DoS;
+    # TODO(#455): drop once actix-http ships a release that depends on h2 >= 0.4.
+    # h2 0.3 (transitive dep of actix-http/awc, dev-server only — no published
+    # renderer package depends on it) — low-severity empty DATA frame DoS;
     # actix-http 3.13.3 still pins h2 0.3 and that series has no patched release
     "RUSTSEC-2026-0258",
 ]
