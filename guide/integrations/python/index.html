@@ -1,0 +1,230 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="color-scheme" content="light dark"/><script>
+    /* Apply theme synchronously before first paint to prevent
+       flash-of-wrong-theme on cross-document navigation. */
+    (function () {
+      try {
+        var t = localStorage.getItem('theme');
+        if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script><base href="&#x2F;webui&#x2F;"/><meta name="base" content="&#x2F;webui&#x2F;"/><title>Python | WebUI Framework</title><meta name="description" content="SSR without JavaScript on the server. No virtual DOM. No JSX. Just HTML, streamed from any language."/><meta property="og:title" content="Python | WebUI Framework"/><meta property="og:description" content="SSR without JavaScript on the server. No virtual DOM. No JSX. Just HTML, streamed from any language."/><meta property="og:type" content="website"/><meta name="twitter:card" content="summary"/><link rel="icon" href="&#x2F;webui&#x2F;logo.svg"/><style>
+    :root {
+      
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        
+      }
+    }
+
+    :root[data-theme="dark"] {
+      
+    }
+  </style><link rel="stylesheet" href="/webui/docs.css">
+  <link rel="stylesheet" href="/webui/theme.css">
+  <link href="/webui/favicon.ico" rel="icon">
+  <script type="text/javascript">(function(c,l,a,r,i,t,y){c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);})(window, document, "clarity", "script", "w8ppn3zr79");</script><script>
+    /* Preserve sidebar scroll across cross-document navigations.
+       The page itself is not scrollable; sidebar and main-content own their
+       own scrollbars. Runs BEFORE pagereveal fires (and before first paint)
+       so restored positions are what view transitions animate to,
+       eliminating the end-of-transition jump. */
+    (function () {
+      var SIDEBAR_KEY = 'webui-press:sidebar-scroll';
+      var MAIN_KEY_PREFIX = 'webui-press:main-scroll:';
+      function sidebar() { return document.querySelector('.sidebar'); }
+      function main() { return document.querySelector('.main-content'); }
+      function mainKey() { return MAIN_KEY_PREFIX + location.pathname + location.search; }
+      function save() {
+        var s = sidebar();
+        if (s) sessionStorage.setItem(SIDEBAR_KEY, s.scrollTop);
+        var m = main();
+        if (m) sessionStorage.setItem(mainKey(), m.scrollTop);
+      }
+      function restore() {
+        var s = sidebar();
+        var v = sessionStorage.getItem(SIDEBAR_KEY);
+        if (s && v !== null) s.scrollTop = +v;
+        var m = main();
+        if (!m) return;
+        if (!location.hash) {
+          var mv = sessionStorage.getItem(mainKey());
+          if (mv !== null) m.scrollTop = +mv;
+        }
+        if (document.activeElement === document.body) {
+          m.focus({ preventScroll: true });
+        }
+      }
+      window.addEventListener('pageswap', save);
+      window.addEventListener('pagehide', save);
+      if ('onpagereveal' in window) {
+        window.addEventListener('pagereveal', restore);
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', restore, { once: true });
+      } else {
+        restore();
+      }
+    })();
+  </script><link rel="preload" href="docs-search.css" as="style" data-webui-ssr-preload="style"><link rel="preload" href="docs-theme-toggle.css" as="style" data-webui-ssr-preload="style"><link rel="preload" href="code-block.css" as="style" data-webui-ssr-preload="style"><link rel="preload" href="webui-blockquote.css" as="style" data-webui-ssr-preload="style"><link rel="modulepreload" href="/webui/assets/chunk-GZVVYV3E.js?v=2c0a649f791b5c8c"><link rel="modulepreload" href="/webui/assets/chunk-F6SH3YFS.js?v=30d592a490a9b049"><link rel="modulepreload" href="/webui/assets/chunk-JN7UASDJ.js?v=8d7186308d9d1fa3"><link rel="modulepreload" href="/webui/assets/chunk-VQI4BXSY.js?v=1c48e693a030fcb0"></head><body data-layout="doc"><header class="nav-bar"><a href="&#x2F;webui&#x2F;" class="logo"><img src="&#x2F;webui&#x2F;logo.svg" alt="WebUI Framework"/><span>WebUI Framework</span></a><nav class="nav-links"><!--wr--><!--wi--><a href="&#x2F;webui&#x2F;guide&#x2F;" class="nav-link" active>Guide</a><!--wi--><a href="&#x2F;webui&#x2F;tutorials&#x2F;hello-world&#x2F;" class="nav-link">Tutorials</a><!--wi--><a href="&#x2F;webui&#x2F;playground&#x2F;" class="nav-link">Playground</a><!--wi--><a href="&#x2F;webui&#x2F;ai" class="nav-link">AI</a><!--wi--><a href="https:&#x2F;&#x2F;github.com&#x2F;microsoft&#x2F;webui" class="nav-link">GitHub</a><!--/wr--><docs-search><template shadowrootmode="open"><link rel="stylesheet" href="docs-search.css"><button class="trigger" aria-label="Search">
+  🔍 <span class="label">Search</span> <kbd>⌘K</kbd></button><dialog w-ref={dialog}><div class="box"><div class="input-wrap"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input id="docs-search-input" name="q" w-ref={searchInput} type="text" placeholder="Search documentation..." autocomplete="off"/></div><div class="results"><!--wc--><!--/wc--><!--wc--><!--/wc--></div><div class="hint">↑↓ Navigate · Enter Select · Esc Close</div></div></dialog></template></docs-search><docs-theme-toggle><template shadowrootmode="open"><link rel="stylesheet" href="docs-theme-toggle.css"><button aria-label="Toggle dark mode">🌙</button></template></docs-theme-toggle><button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Toggle menu">☰</button></nav></header><!--wc--><!--/wc--><!--wc--><div class="layout"><aside class="sidebar"><!--wr--><!--wi--><div class="sidebar-group"><h3 class="sidebar-title">Getting Started</h3><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide" class="sidebar-link">What is WebUI?</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;why" class="sidebar-link">Why WebUI?</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;installation" class="sidebar-link">Installation</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;tutorials&#x2F;hello-world" class="sidebar-link">Quick Start</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><h3 class="sidebar-title">Core Concepts</h3><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;how-it-works" class="sidebar-link">How It Works</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;components" class="sidebar-link">Components</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives" class="sidebar-link">Template Syntax</a><!--/wc--><!--/wc--><!--wc--><!--/wc--><ul class="sidebar-children"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;signals" class="sidebar-link">Signals {{}}</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;if" class="sidebar-link">Conditionals &lt;if&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;for" class="sidebar-link">Loops &lt;for&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;attributes" class="sidebar-link">Attributes</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;lazy" class="sidebar-link">Lazy policy</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;route" class="sidebar-link">Routes &lt;route&gt;</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;directives&#x2F;boundary" class="sidebar-link">Streaming &lt;boundary&gt;</a><!--/wc--></li><!--/wr--></ul><!--/wc--><!--wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;interactivity" class="sidebar-link">Interactivity</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;state-management" class="sidebar-link">State Management</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;routing" class="sidebar-link">Routing</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;performance" class="sidebar-link">Performance</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><h3 class="sidebar-title">Language Integrations</h3><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations" class="sidebar-link">Overview</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;rust" class="sidebar-link">Rust</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;node" class="sidebar-link">Node &#x2F; Bun &#x2F; Deno</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;python" class="sidebar-link sidebar-link-active">Python</a><!--/wc--><!--wc--><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;electron" class="sidebar-link">Electron</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;ffi" class="sidebar-link">C &#x2F; C# &#x2F; FFI</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;wasm" class="sidebar-link">WebAssembly</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--wi--><div class="sidebar-group"><h3 class="sidebar-title">Guides</h3><ul class="sidebar-items"><!--wr--><!--wi--><li><!--wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli" class="sidebar-link">CLI Reference</a><!--/wc--><!--/wc--><!--wc--><!--/wc--><ul class="sidebar-children"><!--wr--><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-build" class="sidebar-link">webui build</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-serve" class="sidebar-link">webui serve</a><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;cli&#x2F;#webui-inspect" class="sidebar-link">webui inspect</a><!--/wc--></li><!--/wr--></ul><!--/wc--><!--wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;react-comparison" class="sidebar-link">React vs Web Components</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;best-practices" class="sidebar-link">Best Practices</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;css-tokens" class="sidebar-link">CSS Token Hoisting</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;serverless-architecture" class="sidebar-link">Serverless Architecture</a><!--/wc--><!--/wc--></li><!--wi--><li><!--wc--><!--/wc--><!--wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;concepts&#x2F;plugins" class="sidebar-link">Plugins</a><!--/wc--><!--/wc--></li><!--/wr--></ul></div><!--/wr--></aside><main class="main-content" tabindex="-1"><article class="doc-content"><h1 id="python">Python <a class="header-anchor" href="/webui/guide/integrations/python/#python">#</a></h1><p>The <code>microsoft-webui</code> package provides high-performance server-side
+rendering for Python. It is a direct <strong>PyO3</strong> native extension — not a
+<code>ctypes</code> wrapper around the <a href="/webui/guide/integrations/ffi">C API</a> — imported as <code>microsoft_webui</code>.
+Rendering calls release the GIL, so a <code>Renderer</code> shared across threads keeps
+rendering while the rest of your application runs Python code.</p><h2 id="installation">Installation <a class="header-anchor" href="/webui/guide/integrations/python/#installation">#</a></h2><blockquote><p>The <code>microsoft-webui</code> package is <strong>not published to PyPI yet</strong>. Wheels and a
+source distribution are built and attached to each GitHub Release; install one
+directly, or build from a checkout with <code>maturin</code>.</p></blockquote><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-comment">#</span><span class="hl-comment"> From a GitHub Release asset</span><span class="hl-comment">
+</span>pip install ./microsoft_webui-<span class="hl-keyword">&lt;</span>version<span class="hl-keyword">&gt;</span>-cp311-abi3-<span class="hl-keyword">&lt;</span>platform<span class="hl-keyword">&gt;</span>.whl
+
+<span class="hl-comment">#</span><span class="hl-comment"> Or from a checkout</span><span class="hl-comment">
+</span>pip install maturin
+maturin build --release --manifest-path crates/webui-python/Cargo.toml
+</code></pre></code-block><p>The package ships prebuilt wheels for CPython 3.11+ on Windows, macOS, and
+Linux (manylinux), each for x86_64 and ARM64, plus one source distribution.
+See <a href="/webui/guide/integrations/python/#wheel-matrix-and-scope">Wheel matrix and scope</a> for what isn't covered
+and why.</p><h2 id="buffered-rendering">Buffered rendering <a class="header-anchor" href="/webui/guide/integrations/python/#buffered-rendering">#</a></h2><p>Load <code>protocol.bin</code> once and reuse the <code>Renderer</code> for the process lifetime:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">from</span> microsoft_webui <span class="hl-keyword">import</span> Renderer
+
+renderer <span class="hl-keyword">=</span> Renderer.from_file(<span class="hl-string">"</span><span class="hl-string">dist/protocol.bin</span><span class="hl-string">"</span>, plugin<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">webui</span><span class="hl-string">"</span>)
+
+html <span class="hl-keyword">=</span> renderer.render(
+    &#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;,
+    entry<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">index.html</span><span class="hl-string">"</span>,
+    request_path<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>,
+)  <span class="hl-comment">#</span><span class="hl-comment"> -&gt; bytes
+</span></code></pre></code-block><p><code>render()</code> returns <code>bytes</code>, the canonical fast path for writing directly to a
+socket or WSGI/ASGI response. Use <code>render_text()</code> when you need a <code>str</code>:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>html_str <span class="hl-keyword">=</span> renderer.render_text(&#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;, request_path<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>)
+</code></pre></code-block><h3 id="wsgi">WSGI <a class="header-anchor" href="/webui/guide/integrations/python/#wsgi">#</a></h3><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">from</span> wsgiref.simple_server <span class="hl-keyword">import</span> make_server
+<span class="hl-keyword">from</span> microsoft_webui <span class="hl-keyword">import</span> Renderer
+
+renderer <span class="hl-keyword">=</span> Renderer.from_file(<span class="hl-string">"</span><span class="hl-string">dist/protocol.bin</span><span class="hl-string">"</span>, plugin<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">webui</span><span class="hl-string">"</span>)
+
+<span class="hl-keyword">def</span> app(environ, start_response):
+    html <span class="hl-keyword">=</span> renderer.render(
+        &#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;,
+        request_path<span class="hl-keyword">=</span>environ.get(<span class="hl-string">"</span><span class="hl-string">PATH_INFO</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>),
+    )
+    start_response(<span class="hl-string">"</span><span class="hl-string">200 OK</span><span class="hl-string">"</span>, [
+        (<span class="hl-string">"</span><span class="hl-string">Content-Type</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">text/html; charset=utf-8</span><span class="hl-string">"</span>),
+        (<span class="hl-string">"</span><span class="hl-string">Content-Length</span><span class="hl-string">"</span>, <span class="hl-property">str</span>(len(html))),
+    ])
+    <span class="hl-keyword">return</span> [html]
+
+<span class="hl-keyword">if</span> __name__ <span class="hl-keyword">==</span> <span class="hl-string">"</span><span class="hl-string">__main__</span><span class="hl-string">"</span>:
+    <span class="hl-keyword">with</span> make_server(<span class="hl-string">"</span><span class="hl-string">"</span>, <span class="hl-property">8000</span>, app) <span class="hl-keyword">as</span> httpd:
+        httpd.serve_forever()
+</code></pre></code-block><h3 id="asgi-starlette-fastapi">ASGI (Starlette / FastAPI) <a class="header-anchor" href="/webui/guide/integrations/python/#asgi-starlette-fastapi">#</a></h3><p><code>renderer.render()</code> is synchronous and CPU-bound. It releases the GIL inside
+Rust, but it still blocks the calling Python thread, so an ASGI app should
+offload it rather than call it straight from the event loop:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> anyio  <span class="hl-comment">#</span><span class="hl-comment"> or asyncio.to_thread on stdlib-only setups
+</span><span class="hl-keyword">from</span> starlette.applications <span class="hl-keyword">import</span> Starlette
+<span class="hl-keyword">from</span> starlette.responses <span class="hl-keyword">import</span> Response
+<span class="hl-keyword">from</span> starlette.routing <span class="hl-keyword">import</span> Route
+<span class="hl-keyword">from</span> microsoft_webui <span class="hl-keyword">import</span> Renderer
+
+renderer <span class="hl-keyword">=</span> Renderer.from_file(<span class="hl-string">"</span><span class="hl-string">dist/protocol.bin</span><span class="hl-string">"</span>, plugin<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">webui</span><span class="hl-string">"</span>)
+
+<span class="hl-keyword">async</span> <span class="hl-keyword">def</span> index(request):
+    html <span class="hl-keyword">=</span> <span class="hl-keyword">await</span> anyio.to_thread.run_sync(
+        <span class="hl-keyword">lambda</span>: renderer.render(&#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;, request_path<span class="hl-keyword">=</span>request.url.path),
+    )
+    <span class="hl-keyword">return</span> Response(html, media_type<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">text/html; charset=utf-8</span><span class="hl-string">"</span>)
+
+app <span class="hl-keyword">=</span> Starlette(routes<span class="hl-keyword">=</span>[Route(<span class="hl-string">"</span><span class="hl-string">/&#123;path:path&#125;</span><span class="hl-string">"</span>, index)])
+</code></pre></code-block><p><code>Renderer</code> is thread-safe, so many worker threads can render through the same
+instance concurrently — offloading to a thread pool doesn't introduce a race.</p><h2 id="partial-navigation-and-component-templates">Partial navigation and component templates <a class="header-anchor" href="/webui/guide/integrations/python/#partial-navigation-and-component-templates">#</a></h2><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>partial <span class="hl-keyword">=</span> renderer.render_partial(
+    &#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;,
+    entry<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">index.html</span><span class="hl-string">"</span>,
+    request_path<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">/users/42</span><span class="hl-string">"</span>,
+    inventory<span class="hl-keyword">=</span>client_inventory_hex,
+)  <span class="hl-comment">#</span><span class="hl-comment"> -&gt; bytes, complete JSON partial-navigation response
+</span>
+templates <span class="hl-keyword">=</span> renderer.render_component_templates(
+    [<span class="hl-string">"</span><span class="hl-string">user-card</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">avatar</span><span class="hl-string">"</span>],
+    inventory<span class="hl-keyword">=</span>client_inventory_hex,
+)  <span class="hl-comment">#</span><span class="hl-comment"> -&gt; bytes, requested component template payloads
+</span></code></pre></code-block><p>Both return <code>bytes</code>; write them directly as the response body for
+<code>Router.ensureLoaded()</code> / partial-navigation requests from the client.</p><h2 id="progressive-host-driven-streaming">Progressive (host-driven) streaming <a class="header-anchor" href="/webui/guide/integrations/python/#progressive-host-driven-streaming">#</a></h2><p><code>renderer.stream_response()</code> opens a <code>StreamingSession</code> whose methods return
+the bytes they produced instead of writing anywhere themselves. <strong>WebUI never
+touches your socket, so your server owns the write order and backpressure —
+the same contract as every other host binding</strong> (see
+<a href="/webui/guide/concepts/directives/boundary#3-drive-a-host-controlled-response">Streaming Boundaries</a>
+for the authoring side and full ordering rules).</p><h3 id="wsgi">WSGI <a class="header-anchor" href="/webui/guide/integrations/python/#wsgi">#</a></h3><p>WSGI's response is already an iterable of <code>bytes</code> chunks, so a generator maps
+directly onto the session:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">def</span> app(environ, start_response):
+    session <span class="hl-keyword">=</span> renderer.stream_response(request_path<span class="hl-keyword">=</span>environ.get(<span class="hl-string">"</span><span class="hl-string">PATH_INFO</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>))
+    rows <span class="hl-keyword">=</span> session.boundary(<span class="hl-string">"</span><span class="hl-string">rows</span><span class="hl-string">"</span>)  <span class="hl-comment">#</span><span class="hl-comment"> resolved once, outside the write loop
+</span>
+    <span class="hl-keyword">def</span> body():
+        <span class="hl-keyword">yield</span> session.write_shell(&#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;)
+        <span class="hl-keyword">yield</span> session.write_boundary(rows, &#123;<span class="hl-string">"</span><span class="hl-string">rows</span><span class="hl-string">"</span>: []&#125;, mode<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">updatable</span><span class="hl-string">"</span>)
+        <span class="hl-keyword">yield</span> session.update(rows, &#123;<span class="hl-string">"</span><span class="hl-string">rows</span><span class="hl-string">"</span>: load_rows()&#125;)
+        <span class="hl-keyword">yield</span> session.finish(&#123;&#125;)
+
+    start_response(<span class="hl-string">"</span><span class="hl-string">200 OK</span><span class="hl-string">"</span>, [
+        (<span class="hl-string">"</span><span class="hl-string">Content-Type</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">text/html; charset=utf-8</span><span class="hl-string">"</span>),
+        (<span class="hl-string">"</span><span class="hl-string">X-Accel-Buffering</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">no</span><span class="hl-string">"</span>),
+    ])
+    <span class="hl-keyword">return</span> body()
+</code></pre></code-block><h3 id="asgi-starlette-fastapi">ASGI (Starlette / FastAPI) <a class="header-anchor" href="/webui/guide/integrations/python/#asgi-starlette-fastapi">#</a></h3><p>Each session call is still synchronous and GIL-releasing, not <code>async</code>, so
+offload it the same way as buffered rendering:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> anyio
+<span class="hl-keyword">from</span> starlette.responses <span class="hl-keyword">import</span> StreamingResponse
+
+<span class="hl-keyword">async</span> <span class="hl-keyword">def</span> index(request):
+    session <span class="hl-keyword">=</span> renderer.stream_response(request_path<span class="hl-keyword">=</span>request.url.path)
+    rows <span class="hl-keyword">=</span> session.boundary(<span class="hl-string">"</span><span class="hl-string">rows</span><span class="hl-string">"</span>)
+
+    <span class="hl-keyword">async</span> <span class="hl-keyword">def</span> body():
+        <span class="hl-keyword">yield</span> <span class="hl-keyword">await</span> anyio.to_thread.run_sync(session.write_shell, &#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;)
+        <span class="hl-keyword">yield</span> <span class="hl-keyword">await</span> anyio.to_thread.run_sync(
+            <span class="hl-keyword">lambda</span>: session.write_boundary(rows, &#123;<span class="hl-string">"</span><span class="hl-string">rows</span><span class="hl-string">"</span>: []&#125;, mode<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">updatable</span><span class="hl-string">"</span>),
+        )
+        rows_data <span class="hl-keyword">=</span> <span class="hl-keyword">await</span> load_rows()  <span class="hl-comment">#</span><span class="hl-comment"> your own async backend call
+</span>        <span class="hl-keyword">yield</span> <span class="hl-keyword">await</span> anyio.to_thread.run_sync(session.update, rows, &#123;<span class="hl-string">"</span><span class="hl-string">rows</span><span class="hl-string">"</span>: rows_data&#125;)
+        <span class="hl-keyword">yield</span> <span class="hl-keyword">await</span> anyio.to_thread.run_sync(session.finish, &#123;&#125;)
+
+    <span class="hl-keyword">return</span> StreamingResponse(body(), media_type<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">text/html; charset=utf-8</span><span class="hl-string">"</span>)
+</code></pre></code-block><p>Ordering is enforced by the session itself: the shell first, boundaries in
+declaration order, <code>update()</code> only on boundaries already committed
+<code>"updatable"</code>, and <code>finish()</code> last. A rejected call raises and leaves the
+session usable, so bad state input doesn't cost you the response. Sessions
+are <strong>not</strong> thread-safe — drive one session from one thread at a time;
+independent sessions on the same <code>Renderer</code> may run concurrently.</p><h2 id="api-reference">API reference <a class="header-anchor" href="/webui/guide/integrations/python/#api-reference">#</a></h2><table><thead><tr><th>Python</th><th>Description</th></tr></thead><tbody><tr><td><code>Renderer(protocol_bytes, *, plugin=None)</code></td><td>Decode and index protocol bytes once, binding an optional named plugin</td></tr><tr><td><code>Renderer.from_file(path, *, plugin=None)</code></td><td>Read <code>path</code> and construct a <code>Renderer</code> from its bytes</td></tr><tr><td><code>renderer.render(state, *, entry="index.html", request_path="/")</code></td><td>Render into <code>bytes</code></td></tr><tr><td><code>renderer.render_text(state, *, entry="index.html", request_path="/")</code></td><td>Render and decode into <code>str</code></td></tr><tr><td><code>renderer.render_partial(state, *, entry="index.html", request_path="/", inventory="")</code></td><td>Complete JSON partial-navigation response as <code>bytes</code></td></tr><tr><td><code>renderer.render_component_templates(tags, *, inventory="")</code></td><td>On-demand component template payloads as <code>bytes</code></td></tr><tr><td><code>renderer.tokens</code></td><td><code>tuple[str, ...]</code> of CSS token names in build order</td></tr><tr><td><code>renderer.stream_response(*, entry="index.html", request_path="/", nonce=None, head_inject=None, body_inject=None)</code></td><td>Open a host-driven <code>StreamingSession</code></td></tr></tbody></table><h3 id="streamingsession">StreamingSession <a class="header-anchor" href="/webui/guide/integrations/python/#streamingsession">#</a></h3><table><thead><tr><th>Member</th><th>Description</th></tr></thead><tbody><tr><td><code>boundary(name) -&gt; int</code></td><td>Resolve an authored boundary name to its integer handle. Raises with the valid names and a &quot;did you mean …?&quot; suggestion on a typo</td></tr><tr><td><code>boundary_count</code></td><td>Number of boundaries the entry declares</td></tr><tr><td><code>finished</code></td><td>Whether <code>finish()</code> successfully emitted the terminal record</td></tr><tr><td><code>write_shell(state) -&gt; bytes</code></td><td>Document prefix through the first semantic flush</td></tr><tr><td><code>write_boundary(id, state, mode=BoundaryMode.FINAL) -&gt; bytes</code></td><td>One boundary's markup, metadata delta, and checkpoint</td></tr><tr><td><code>update(id, state) -&gt; bytes</code></td><td>Projected state patch for a boundary already committed <code>updatable</code></td></tr><tr><td><code>finish(state) -&gt; bytes</code></td><td>Tail checkpoint, terminal record, and document suffix</td></tr></tbody></table><h3 id="plugin-and-boundarymode"><code>Plugin</code> and <code>BoundaryMode</code> <a class="header-anchor" href="/webui/guide/integrations/python/#plugin-and-boundarymode">#</a></h3><p>Both are <code>enum.StrEnum</code> (standard in CPython 3.11+, this package's minimum
+interpreter version), so they compare equal to plain strings while staying
+typo-checked by static analysis:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">from</span> microsoft_webui <span class="hl-keyword">import</span> BoundaryMode
+
+session.write_boundary(rows, state, mode<span class="hl-keyword">=</span>BoundaryMode.<span class="hl-property">UPDATABLE</span>)
+session.write_boundary(rows, state, mode<span class="hl-keyword">=</span><span class="hl-string">"</span><span class="hl-string">updatable</span><span class="hl-string">"</span>)  <span class="hl-comment">#</span><span class="hl-comment"> equivalent
+</span></code></pre></code-block><h2 id="fast-path-pre-serialized-state">Fast path: pre-serialized state <a class="header-anchor" href="/webui/guide/integrations/python/#fast-path-pre-serialized-state">#</a></h2><p>Every <code>state</code> parameter accepts a Python <code>Mapping</code>, which the facade
+serializes with the standard library <code>json</code> module before crossing into
+Rust. If you already have JSON — cached, streamed from another service, or
+assembled with a faster serializer — pass <code>str</code>, <code>bytes</code>, <code>bytearray</code>, or a
+<code>memoryview</code> directly. Every pre-serialized form bypasses <code>json.dumps</code>;
+immutable <code>str</code> and <code>bytes</code> remain backed by their Python objects while Rust
+renders with the GIL released, while mutable/general buffers are copied first
+for safety:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">import</span> json
+
+renderer.render(&#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;)               <span class="hl-comment">#</span><span class="hl-comment"> facade calls json.dumps for you
+</span>renderer.render(json.dumps(&#123;<span class="hl-string">"</span><span class="hl-string">title</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">Home</span><span class="hl-string">"</span>&#125;))    <span class="hl-comment">#</span><span class="hl-comment"> str fast path
+</span>renderer.render(<span class="hl-keyword">b</span><span class="hl-string">'</span><span class="hl-string">&#123;"title":"Home"&#125;</span><span class="hl-string">'</span>)              <span class="hl-comment">#</span><span class="hl-comment"> bytes fast path
+</span></code></pre></code-block><h2 id="headbody-injection">Head/body injection <a class="header-anchor" href="/webui/guide/integrations/python/#headbody-injection">#</a></h2><p><code>head_inject</code>, <code>body_inject</code>, and the reserved <code>$webui</code> state channel's
+<code>headEnd</code> / <code>bodyStart</code> / <code>bodyEnd</code> members are written <strong>verbatim</strong> at their
+structural boundary, exactly like every other host binding.</p><webui-blockquote appearance="warning" title="Trusted HTML, not escaped input" icon="⚠️"><template shadowrootmode="open"><link rel="stylesheet" href="webui-blockquote.css"><div class="blockquote warning"><!--wc--><div class="header"><span class="icon">⚠️</span><span class="title">Trusted HTML, not escaped input</span></div><!--/wc--><div class="body"><slot></slot></div></div></template><p>These fields are not escaped. Passing user-controlled content here is a
+direct cross-site scripting (XSS) vector. Only pass fully trusted content
+(build-time-derived markup, a dev livereload script) or content you have
+already escaped yourself.</p></webui-blockquote><h2 id="wheel-matrix-and-scope">Wheel matrix and scope <a class="header-anchor" href="/webui/guide/integrations/python/#wheel-matrix-and-scope">#</a></h2><p><code>microsoft-webui</code> builds against PyO3's <code>abi3-py311</code> stable ABI, so one wheel
+per platform serves every CPython 3.11+ interpreter — no per-minor-version
+build matrix. v1 ships six wheels (Windows, macOS, and manylinux, each for
+x86_64 and ARM64; macOS ships separate x86_64/ARM64 wheels, not a
+<code>universal2</code> fat binary) plus one <code>sdist</code>.</p><p>v1 is <strong>runtime-only</strong>: it renders compiled protocols and does not expose a
+build/compile API. Produce <code>protocol.bin</code> with <code>webui build</code> (the npm or Rust
+CLI) — Python consumes the compiled artifact like every other host.</p><p>Not covered in v1: PyPy, GraalPy, free-threaded CPython builds, musllinux, and
+32-bit architectures. The self-contained <code>sdist</code> bundles the matching WebUI
+Rust source closure and lets a Rust toolchain build any of those targets, but
+doing so is unsupported and untested. If you're on one of those platforms
+today, the <a href="/webui/guide/integrations/ffi#advanced-fallback-ctypes">C API's <code>ctypes</code> fallback</a> can still
+reach WebUI directly.</p><h2 id="next-steps">Next Steps <a class="header-anchor" href="/webui/guide/integrations/python/#next-steps">#</a></h2><ul><li><a href="/webui/guide/integrations/ffi">C / FFI</a>, the underlying C ABI and its <code>ctypes</code> fallback</li><li><a href="/webui/guide/concepts/directives/boundary">Streaming Boundaries</a>, authoring side and ordering rules</li><li><a href="/webui/guide/concepts/plugins/">Plugins</a>, plugin system and built-in plugin reference</li></ul></article><nav class="page-nav"><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;node">← Node &#x2F; Bun &#x2F; Deno</a><!--/wc--><!--wc--><!--/wc--><!--wc--><a href="&#x2F;webui&#x2F;guide&#x2F;integrations&#x2F;electron">Electron →</a><!--/wc--></nav><!--wc--><footer class="site-footer">Released under the <a href="https://opensource.org/licenses/MIT">MIT License</a>. Built with <a href="https://github.com/microsoft/webui/blob/main/crates/webui-press/README.md">WebUI Framework Static Site Generator</a>.</footer><!--/wc--></main></div><!--/wc--><script type="application/json" id="webui-data">{"css":["docs-search.css","docs-theme-toggle.css","code-block.css","webui-blockquote.css"],"inventory":"70000000000002","state":{"icon":"🌙","label":"Copy"},"templates":{"docs-search":{"h":"<link rel=\"stylesheet\" href=\"docs-search.css\" /><button class=\"trigger\" aria-label=\"Search\">\n  🔍 <span class=\"label\">Search<\/span> <kbd>⌘K<\/kbd>\n<\/button>\n\n<dialog w-ref=\"{dialog}\">\n  <div class=\"box\">\n    <div class=\"input-wrap\">\n      <svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"11\" cy=\"11\" r=\"8\" /><path d=\"m21 21-4.35-4.35\" /><\/svg>\n      <input id=\"docs-search-input\" name=\"q\" w-ref=\"{searchInput}\" type=\"text\" placeholder=\"Search documentation...\" autocomplete=\"off\" />\n    <\/div>\n    <div class=\"results\">\n      \n      \n    <\/div>\n    <div class=\"hint\">↑↓ Navigate · Enter Select · Esc Close<\/div>\n  <\/div>\n<\/dialog>","c":[[[0,["emptyMessage"]],0,[12,1]],[[1,["hasResults"]],1,[12,1,1]]],"eg":[["click",[["openSearch",[],2]]],["input",[["onInput",[],11]]]],"sd":1,"tr":["emptyMessage","hasResults","resultItems"],"ta":["empty-message","has-results","result-items"],"b":[{"h":"<div class=\"empty\"><\/div>","tx":[[[1,0],[["emptyMessage"]]]]},{"h":"","r":[["resultItems","result",2,[0,0]]]},{"h":"<a>\n            <div class=\"result-title\">\n              \n            <\/div>\n            <div class=\"result-snippet\">\n              \n            <\/div>\n          <\/a>","a":[["class",0,"result.className"],["href",0,"result.path"]],"ag":[[1,0,2]],"r":[["result.titleSegments","segment",3,[2,1]],["result.snippetSegments","segment",10,[3,1]]]},{"h":"\n                ","c":[[[2,["segment.code"]],4,[0,0]],[[3,["segment.code"]],7,[0,1]]]},{"h":"\n                  ","c":[[[4,["segment.mark"]],5,[0,0]],[[5,["segment.mark"]],6,[0,1]]]},{"h":"<code class=\"result-segment\"><mark><\/mark><\/code>","tx":[[[2,0],[["segment.text"]]]]},{"h":"<code class=\"result-segment\"><\/code>","tx":[[[1,0],[["segment.text"]]]]},{"h":"\n                  ","c":[[[6,["segment.mark"]],8,[0,0]],[[7,["segment.mark"]],9,[0,1]]]},{"h":"<mark><\/mark>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]},{"h":"<span><\/span>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]},{"h":"\n                ","c":[[[8,["segment.mark"]],11,[0,0]],[[9,["segment.mark"]],12,[0,1]]]},{"h":"<mark><\/mark>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]},{"h":"<span><\/span>","tx":[[[1,0],[["segment.text"]]]],"a":[["class",0,"segment.className"]],"ag":[[1,0,1]]}]},"docs-theme-toggle":{"h":"<link rel=\"stylesheet\" href=\"docs-theme-toggle.css\" /><button aria-label=\"Toggle dark mode\"><\/button>","tx":[[[2,0],[["icon"]]]],"eg":[["click",[["toggle",[],2]]]],"sd":1,"tr":["icon"],"ta":["icon"]},"code-block":{"h":"<link rel=\"stylesheet\" href=\"code-block.css\" /><div class=\"wrapper\">\n  <button class=\"copy-btn\" aria-label=\"Copy code\"><\/button>\n  <slot><\/slot>\n<\/div>","tx":[[[3,0],[["label"]]]],"eg":[["click",[["copy",[],3]]]],"sd":1,"tr":["label"],"ta":["label"]},"webui-blockquote":{"h":"<link rel=\"stylesheet\" href=\"webui-blockquote.css\" /><div>\n  \n  <div class=\"body\">\n    <slot><\/slot>\n  <\/div>\n<\/div>","a":[["class",3,["blockquote ",["appearance"]]]],"ag":[[2,0,1]],"c":[[[0,["title"]],0,[2,1]]],"sd":1,"tr":["appearance","title","icon"],"ta":["appearance","title","icon"],"b":[{"h":"<div class=\"header\">\n      <span class=\"icon\"><\/span>\n      <span class=\"title\"><\/span>\n    <\/div>","tx":[[[2,0],[["icon"]]],[[3,0],[["title"]]]]}]}}}</script>
+<script>(function(){var w=window.__webui||(window.__webui={});var f=w.templateFns||(w.templateFns={});f["docs-search"]=[function(v,s){return !!v("emptyMessage",s)},function(v,s){return !!v("hasResults",s)},function(v,s){return !!v("segment.code",s)},function(v,s){return !(!!v("segment.code",s))},function(v,s){return !!v("segment.mark",s)},function(v,s){return !(!!v("segment.mark",s))},function(v,s){return !!v("segment.mark",s)},function(v,s){return !(!!v("segment.mark",s))},function(v,s){return !!v("segment.mark",s)},function(v,s){return !(!!v("segment.mark",s))}];f["webui-blockquote"]=[function(v,s){return !!v("title",s)}];})();</script>
+
+<script type="module" src="/webui/index.js?v=60f3bfe49b961203"></script>
+<script type="module" src="/webui/assets/chunk-VQI4BXSY.js?v=1c48e693a030fcb0"></script>
+<script type="module" src="/webui/assets/chunk-JN7UASDJ.js?v=8d7186308d9d1fa3"></script></body></html>
