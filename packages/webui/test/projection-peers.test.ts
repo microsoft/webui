@@ -61,6 +61,7 @@ async function createProjectionFixture(
     })
   );
   if (typescriptSource !== undefined) {
+    await mkdir(path.join(root, "node_modules"), { recursive: true });
     await cp(
       typescriptSource,
       path.join(root, "node_modules", "typescript"),
