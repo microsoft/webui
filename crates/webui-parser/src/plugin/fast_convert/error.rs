@@ -63,6 +63,10 @@ impl fmt::Display for ConvertError<'_> {
                 "directive '<{tag}>' has invalid value '{}': expected 'value=\"{{{{…}}}}\"'",
                 value
             ),
+            ConvertErrorKind::ConditionQuoteConflict { value } => write!(
+                f,
+                "f-when condition '{value}' mixes single and double quotes, which cannot be represented in a generated '<if condition>' attribute"
+            ),
             ConvertErrorKind::InvalidRepeatExpression { expr } => write!(
                 f,
                 "invalid repeat expression '{{{{{expr}}}}}': expected 'item in items' format"
@@ -88,6 +92,7 @@ pub(crate) enum ConvertErrorKind<'a> {
     UnclosedTag,
     MissingValueAttribute { tag: &'static str },
     InvalidDirectiveValue { tag: &'static str, value: &'a str },
+    ConditionQuoteConflict { value: &'a str },
     InvalidRepeatExpression { expr: &'a str },
     UnsupportedFAttribute { attribute: &'a str },
     UnsupportedFElement { tag: &'a str },

@@ -348,6 +348,67 @@ fn build_fast_component_source(depth: usize) -> String {
     html
 }
 
+/// Authored FAST source with a flat, directive-free body: the transform walks
+/// and converts it, but the directive stack is never touched, isolating the
+/// static conversion path.
+fn build_fast_flat_static_source(width: usize) -> String {
+    let mut html = String::with_capacity(width * 42 + 128);
+    html.push_str("<f-template name=\"x-registration-bench\"><template>");
+    for idx in 0..width {
+        html.push_str("<section class=\"level\"><span>{{title");
+        html.push_str(&idx.to_string());
+        html.push_str("}}</span></section>");
+    }
+    html.push_str("</template></f-template>");
+    html
+}
+
+/// Authored FAST source whose single element carries a long attribute list, so
+/// conversion cost is dominated by the per-tag attribute walk.
+fn build_fast_long_attributes_source(attrs: usize) -> String {
+    let mut html = String::with_capacity(attrs * 30 + 160);
+    html.push_str("<f-template name=\"x-registration-bench\"><template><div");
+    for idx in 0..attrs {
+        html.push_str(" data-attr-");
+        html.push_str(&idx.to_string());
+        html.push_str("=\"value-");
+        html.push_str(&idx.to_string());
+        html.push('"');
+    }
+    html.push_str(">{{title}}</div></template></f-template>");
+    html
+}
+
+/// Authored FAST source dominated by a single large text run, so conversion
+/// cost is dominated by verbatim text copying between tags.
+fn build_fast_large_text_source(bytes: usize) -> String {
+    let mut html = String::with_capacity(bytes + 160);
+    html.push_str("<f-template name=\"x-registration-bench\"><template><p>");
+    while html.len() < bytes {
+        html.push_str("Lorem ipsum dolor sit amet. ");
+    }
+    html.push_str("</p></template></f-template>");
+    html
+}
+
+/// Ordinary source with no `<f-template>` element that nonetheless mentions the
+/// bare `f-template` bytes in a comment and attribute, so the byte precheck
+/// matches and the authoritative conversion scan must run and find nothing.
+fn build_false_positive_ordinary_source(depth: usize) -> String {
+    let mut html = String::with_capacity(depth * 33 + 128);
+    html.push_str("<template><!-- see f-template docs -->");
+    html.push_str("<span data-note=\"f-template\">");
+    for _ in 0..depth {
+        html.push_str("<section class=\"level\">");
+    }
+    html.push_str("<span>{{title}}</span>");
+    for _ in 0..depth {
+        html.push_str("</section>");
+    }
+    html.push_str("</span></template>");
+    html
+}
+
 fn parser_with_bench_components() -> HtmlParser {
     let mut parser = HtmlParser::new();
     register_bench_components(&mut parser);
@@ -644,6 +705,14 @@ fn component_registration_fast_source_transform_bench(c: &mut Criterion) {
         ("ordinary", 64, build_ordinary_component_source(64)),
         ("f_template", 8, build_fast_component_source(8)),
         ("f_template", 64, build_fast_component_source(64)),
+        ("flat_static", 64, build_fast_flat_static_source(64)),
+        ("long_attrs", 64, build_fast_long_attributes_source(64)),
+        ("large_text", 2048, build_fast_large_text_source(2048)),
+        (
+            "false_positive",
+            64,
+            build_false_positive_ordinary_source(64),
+        ),
     ];
 
     for (source_kind, depth, source) in scenarios {

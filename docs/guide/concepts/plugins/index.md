@@ -144,8 +144,12 @@ WebUI uses two views of this source:
 - **SSR parse view:** WebUI internally adapts supported FAST declarative
   constructs into the WebUI parser view. It rewrites supported `f-repeat` and
   `f-when` directives to WebUI `for` and `if` directives and unwraps their
-  `value` expressions. Text interpolation and boolean bindings remain available
-  to the WebUI parser. An absent or empty authored name continues to use the
+  `value` expressions; an `f-when` condition may contain a quoted string
+  literal (such as `status == "ready"`) and is preserved without truncation.
+  Text interpolation and boolean bindings remain available
+  to the WebUI parser. Markup-shaped text inside `<script>` and `<style>`
+  bodies is copied verbatim, never treated as a FAST wrapper or directive. An
+  absent or empty authored name continues to use the
   filename-derived component tag. Unsupported `f-*` constructs fail conversion
   instead of being silently accepted. The FAST plugins' `classify_attribute`
   skips `@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` and counts

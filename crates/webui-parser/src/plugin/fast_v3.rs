@@ -7,6 +7,7 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
+use super::fast_shared::FastComponentTracker;
 use super::{
     AttributeAction, ComponentSourceTransform, ComponentTemplateArtifact, ParserPlugin,
     ParserPluginArtifacts,
@@ -14,13 +15,6 @@ use super::{
 use crate::component_registry::Component;
 use crate::html_parser::{find_element_end, find_tag_close, leading_content, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
-use webui_protocol::FastElementData;
-
-/// Information about a tracked component for `<f-template>` generation.
-struct TrackedComponent {
-    tag_name: String,
-    template_html: String,
-}
 
 /// FAST 3 parser plugin used by `fast-v3`.
 ///
@@ -30,8 +24,9 @@ struct TrackedComponent {
 /// - Returns `<f-template>` artifacts with converted FAST syntax after parsing
 /// - Emits binding attribute counts as `Plugin` protocol fragment data
 pub struct FastV3ParserPlugin {
-    /// Components tracked during parsing, in discovery order.
-    components: Vec<TrackedComponent>,
+    /// Shared component tracking; artifacts render through this version's
+    /// [`generate_f_template_from_processed`].
+    tracker: FastComponentTracker,
 }
 
 impl FastV3ParserPlugin {
@@ -39,7 +34,7 @@ impl FastV3ParserPlugin {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            components: Vec::new(),
+            tracker: FastComponentTracker::new(),
         }
     }
 
@@ -50,13 +45,7 @@ impl FastV3ParserPlugin {
     /// endpoint to send only the templates the client needs.
     #[must_use]
     pub fn take_component_templates(&self) -> Vec<ComponentTemplateArtifact> {
-        self.components
-            .iter()
-            .map(|comp| {
-                let tmpl = generate_f_template_from_processed(&comp.tag_name, &comp.template_html);
-                ComponentTemplateArtifact::template(comp.tag_name.clone(), tmpl)
-            })
-            .collect()
+        self.tracker.artifacts(generate_f_template_from_processed)
     }
 }
 
@@ -73,16 +62,8 @@ impl ParserPlugin for FastV3ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()> {
-        // Only track each component once (avoids duplicate <f-template> blocks
-        // when a component is used in multiple parent templates)
-        if self.components.iter().any(|c| c.tag_name == tag_name) {
-            return Ok(());
-        }
-        self.components.push(TrackedComponent {
-            tag_name: tag_name.to_string(),
-            template_html: processed_template.to_string(),
-        });
         let _ = component;
+        self.tracker.register(tag_name, processed_template);
         Ok(())
     }
 
@@ -91,30 +72,11 @@ impl ParserPlugin for FastV3ParserPlugin {
     }
 
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
-        if attr_name.starts_with('@')
-            || attr_name.starts_with(':')
-            || attr_name == "f-ref"
-            || attr_name == "f-slotted"
-            || attr_name == "f-children"
-        {
-            AttributeAction::SkipAndCountBinding
-        } else {
-            AttributeAction::Keep
-        }
+        super::fast_shared::classify_attribute(attr_name)
     }
 
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
-        if binding_attribute_count > 0 {
-            Some(
-                FastElementData {
-                    binding_count: binding_attribute_count,
-                }
-                .encode()
-                .to_vec(),
-            )
-        } else {
-            None
-        }
+        super::fast_shared::finish_element(binding_attribute_count)
     }
 
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {

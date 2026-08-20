@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use crate::html_parser::{find_comment_close, find_tag_close};
+use crate::html_parser::{
+    find_comment_close, find_raw_text_end, find_tag_close, is_raw_text_element, is_void_element,
+    parse_tag,
+};
 use std::ops::Range;
 
 /// Opening-tag scan result without allocating a collection of offsets.
@@ -11,6 +14,12 @@ pub(super) struct NamedTagMatches {
 }
 
 /// Scan opening tags across a bounded source range, ignoring comments.
+///
+/// Each valid tag is parsed once and its terminator derived from the parsed
+/// [`Tag`](crate::html_parser::Tag). Raw-text element bodies (`<script>`,
+/// `<style>`, …) are skipped verbatim so tag-like text inside them is never
+/// counted as a wrapper. Unterminated opening tags fall back to the name-only
+/// reader so a malformed `<target` is still reported to the caller.
 pub(super) fn scan_named_open_tags(
     source: &str,
     range: Range<usize>,
@@ -31,16 +40,98 @@ pub(super) fn scan_named_open_tags(
             continue;
         }
 
-        if read_opening_tag_name(source, start, range.end)
-            .is_some_and(|name| name.eq_ignore_ascii_case(target))
-        {
-            first.get_or_insert(start);
-            count += 1;
+        let Some(tag) = parse_tag(remaining) else {
+            if read_opening_tag_name(source, start, range.end)
+                .is_some_and(|name| name.eq_ignore_ascii_case(target))
+            {
+                first.get_or_insert(start);
+                count += 1;
+            }
+            cursor = find_tag_end(source, start, range.end).unwrap_or(start + 1);
+            continue;
+        };
+
+        if !tag.closing {
+            if tag.name.eq_ignore_ascii_case(target) {
+                first.get_or_insert(start);
+                count += 1;
+            }
+            if is_raw_text_element(tag.name) {
+                cursor = start + find_raw_text_end(remaining, tag.name, tag.close + 1);
+                continue;
+            }
         }
-        cursor = find_tag_end(source, start, range.end).unwrap_or(start + 1);
+        cursor = start + tag.close + 1;
     }
 
     NamedTagMatches { first, count }
+}
+
+/// Find the matching closing tag for a FAST wrapper/inner-template element
+/// body, treating raw-text element bodies (`<script>`, `<style>`, …) as
+/// opaque. Returns `(close_start, close_end)`.
+///
+/// This mirrors [`find_matching_end`](crate::html_parser::find_matching_end)
+/// depth-tracking exactly, except a raw-text element's body is skipped with
+/// [`find_raw_text_end`] before resuming the scan. Without this, a literal
+/// `</template>`/`</f-template>`-shaped string inside a genuine `<script>` or
+/// `<style>` body nested in the real `<f-template>`/`<template>` wrapper could
+/// be mistaken for the real closing tag (or a fake opening tag could demand
+/// an extra closing tag that does not exist), silently truncating or
+/// corrupting `parser_content`, or spuriously reporting a well-formed
+/// template as unclosed. This stays local to the FAST converter subtree
+/// because the generic [`find_matching_end`](crate::html_parser::find_matching_end)
+/// is shared by callers (e.g. the main HTML walker) that already track
+/// raw-text bodies through other means.
+pub(super) fn find_matching_end_skip_raw_text(
+    input: &str,
+    tag_name: &str,
+    content_start: usize,
+) -> Option<(usize, usize)> {
+    let mut depth = 1usize;
+    let mut index = content_start;
+
+    while index < input.len() {
+        let relative = input[index..].find('<')?;
+        index += relative;
+
+        if input[index..].starts_with("<!--") {
+            index += find_comment_close(&input[index..]).unwrap_or(input.len() - index);
+            continue;
+        }
+
+        let Some(tag) = parse_tag(&input[index..]) else {
+            index += 1;
+            continue;
+        };
+
+        if tag.closing {
+            if tag.name.eq_ignore_ascii_case(tag_name) {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some((index, index + tag.close + 1));
+                }
+            }
+            index += tag.close + 1;
+            continue;
+        }
+
+        if tag.name.eq_ignore_ascii_case(tag_name)
+            && !tag.self_closing
+            && !is_void_element(tag.name)
+        {
+            depth += 1;
+        }
+
+        if is_raw_text_element(tag.name) {
+            index += find_raw_text_end(&input[index..], tag.name, tag.close + 1);
+            continue;
+        }
+
+        index += tag.close + 1;
+    }
+
+    None
 }
 
 /// Find the end after `>` for one tag without scanning beyond `range_end`.

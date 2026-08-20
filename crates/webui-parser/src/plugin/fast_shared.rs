@@ -13,9 +13,105 @@
 //! hook; the parser core never references FAST.
 
 use super::fast_convert::{convert_template, ConvertError, ConvertErrorKind, F_TEMPLATE_NAME};
-use super::{ComponentSource, ComponentSourceResult, TransformedComponentSource};
+use super::{
+    AttributeAction, ComponentSource, ComponentSourceResult, ComponentTemplateArtifact,
+    TransformedComponentSource,
+};
 use crate::diagnostic::{codes, Diagnostic};
 use crate::{ParserError, Result};
+use webui_protocol::FastElementData;
+
+/// Classify a FAST framework-owned attribute (shared by every FAST plugin
+/// version).
+///
+/// Event (`@`) and property (`:`) bindings plus the `f-ref`, `f-slotted`, and
+/// `f-children` reference attributes are dynamic bindings that the parser skips
+/// and counts; everything else is kept for normal processing.
+#[inline]
+pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
+    if attr_name.starts_with('@')
+        || attr_name.starts_with(':')
+        || attr_name == "f-ref"
+        || attr_name == "f-slotted"
+        || attr_name == "f-children"
+    {
+        AttributeAction::SkipAndCountBinding
+    } else {
+        AttributeAction::Keep
+    }
+}
+
+/// Encode per-element FAST binding metadata (shared by every FAST plugin
+/// version).
+///
+/// Returns the encoded [`FastElementData`] bytes when an element carried at
+/// least one dynamic binding, or `None` when it carried none.
+#[inline]
+pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
+    if binding_attribute_count > 0 {
+        Some(
+            FastElementData {
+                binding_count: binding_attribute_count,
+            }
+            .encode()
+            .to_vec(),
+        )
+    } else {
+        None
+    }
+}
+
+/// One component tracked during parsing for later `<f-template>` generation.
+struct TrackedComponent {
+    tag_name: String,
+    template_html: String,
+}
+
+/// Component tracking shared by the FAST parser plugins.
+///
+/// Records each component's processed template once (deduplicated by tag name)
+/// and, on completion, renders artifacts through a version-specific
+/// `<f-template>` generator supplied by the owning plugin. The generator stays
+/// in `fast_v2`/`fast_v3` so FAST 2 and FAST 3 keep independent output.
+pub(crate) struct FastComponentTracker {
+    components: Vec<TrackedComponent>,
+}
+
+impl FastComponentTracker {
+    /// Create an empty tracker.
+    pub(crate) fn new() -> Self {
+        Self {
+            components: Vec::new(),
+        }
+    }
+
+    /// Track a component's processed template, ignoring repeat registrations of
+    /// the same tag (a component may be used by several parent templates).
+    pub(crate) fn register(&mut self, tag_name: &str, processed_template: &str) {
+        if self.components.iter().any(|c| c.tag_name == tag_name) {
+            return;
+        }
+        self.components.push(TrackedComponent {
+            tag_name: tag_name.to_string(),
+            template_html: processed_template.to_string(),
+        });
+    }
+
+    /// Render one [`ComponentTemplateArtifact`] per tracked component using the
+    /// plugin's version-specific `<f-template>` generator.
+    pub(crate) fn artifacts(
+        &self,
+        generate: fn(&str, &str) -> String,
+    ) -> Vec<ComponentTemplateArtifact> {
+        self.components
+            .iter()
+            .map(|comp| {
+                let template = generate(&comp.tag_name, &comp.template_html);
+                ComponentTemplateArtifact::template(comp.tag_name.clone(), template)
+            })
+            .collect()
+    }
+}
 
 /// Component-source transform for FAST authored templates.
 ///
@@ -104,6 +200,9 @@ fn converter_error(source: &str, error: &ConvertError<'_>) -> ParserError {
         | ConvertErrorKind::InvalidDirectiveValue { .. } => {
             "add the required value=\"{{expression}}\" attribute to the FAST directive"
         }
+        ConvertErrorKind::ConditionQuoteConflict { .. } => {
+            "rewrite the f-when condition to use a single quote style (only single or only double quotes)"
+        }
         ConvertErrorKind::InvalidRepeatExpression { .. } => {
             "use an f-repeat expression in \"item in items\" form"
         }
@@ -161,6 +260,7 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
             snippet.push_str("}}");
             snippet
         }
+        ConvertErrorKind::ConditionQuoteConflict { value } => value.to_string(),
         ConvertErrorKind::UnsupportedFAttribute { attribute } => attribute.to_string(),
         ConvertErrorKind::UnclosedTag => "<".to_string(),
     }
@@ -535,6 +635,253 @@ mod tests {
             assert_eq!(
                 transform("plain-card", html).expect("transform"),
                 ComponentSourceResult::Unchanged
+            );
+        }
+    }
+
+    fn transformed(tag: &str, html: &str) -> TransformedComponentSource {
+        match transform(tag, html).expect("transform") {
+            ComponentSourceResult::Transformed(result) => result,
+            ComponentSourceResult::Unchanged => panic!("expected a transformed FAST source"),
+        }
+    }
+
+    #[test]
+    fn when_condition_with_double_quoted_literal_uses_single_quote_delimiter() {
+        let result = transformed(
+            "file-card",
+            r#"<f-template name="status-card"><template><f-when value='{{status == "ready"}}'><span>{{label}}</span></f-when></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><if condition='status == "ready"'><span>{{label}}</span></if></template>"#
+        );
+        // The authored FAST syntax is retained verbatim for the client artifact.
+        assert_eq!(
+            result.artifact_content.as_deref(),
+            Some(
+                r#"<template><f-when value='{{status == "ready"}}'><span>{{label}}</span></f-when></template>"#
+            )
+        );
+    }
+
+    #[test]
+    fn when_condition_with_single_quoted_literal_keeps_double_quote_delimiter() {
+        let result = transformed(
+            "file-card",
+            r#"<f-template name="status-card"><template><f-when value="{{status == 'ready'}}"><span>{{label}}</span></f-when></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><if condition="status == 'ready'"><span>{{label}}</span></if></template>"#
+        );
+    }
+
+    #[test]
+    fn when_condition_without_quotes_is_byte_identical_double_quoted() {
+        let result = transformed(
+            "file-card",
+            r#"<f-template name="status-card"><template><f-when value="{{visible && count > 0}}"><span>{{label}}</span></f-when></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><if condition="visible && count > 0"><span>{{label}}</span></if></template>"#
+        );
+    }
+
+    #[test]
+    fn when_condition_mixing_quote_styles_is_a_diagnostic() {
+        let err = transform(
+            "file-card",
+            r#"<f-template name="status-card"><template><f-when value={{a=="x"&&b=='y'}}><span>{{label}}</span></f-when></template></f-template>"#,
+        )
+        .expect_err("mixed quote condition should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert!(diag.to_string().contains("mixes single and double quotes"));
+        assert!(diag.help_text().is_some());
+    }
+
+    #[test]
+    fn uppercase_f_template_resolves_name_attribute_case_insensitively() {
+        let result = transformed(
+            "file-card",
+            r#"<F-TEMPLATE NAME="named-card"><template><span>{{label}}</span></template></F-TEMPLATE>"#,
+        );
+        assert_eq!(result.tag_name, "named-card");
+        assert_eq!(
+            result.parser_content,
+            "<template><span>{{label}}</span></template>"
+        );
+    }
+
+    #[test]
+    fn fake_fast_wrappers_inside_top_level_raw_text_are_ignored() {
+        // A <script>/<style> whose body mentions FAST markup is not a wrapper;
+        // with no real <f-template> the source is unchanged. Complete and
+        // incomplete fake tags are both covered.
+        for html in [
+            r#"<script>const t = "<f-template name='fake'><template></template></f-template>";</script>"#,
+            r#"<script>const t = "<f-template name=";</script>"#,
+            r#"<style>/* <f-template><template></template></f-template> */ .a{color:red}</style>"#,
+        ] {
+            assert!(contains_f_template_name(html.as_bytes()));
+            assert_eq!(
+                transform("plain-card", html).expect("transform"),
+                ComponentSourceResult::Unchanged
+            );
+        }
+    }
+
+    #[test]
+    fn fake_fast_wrapper_in_script_does_not_trigger_multiple_wrapper_error() {
+        // The top-level wrapper scan must skip the <script> body so the fake
+        // <f-template> inside is not counted alongside the real wrapper.
+        let result = transformed(
+            "file-card",
+            concat!(
+                r#"<f-template name="real-card"><template>"#,
+                r#"<script>var x = "<f-template name='fake'></f-template>";</script>"#,
+                r#"<span>{{label}}</span></template></f-template>"#,
+            ),
+        );
+        assert_eq!(result.tag_name, "real-card");
+    }
+
+    #[test]
+    fn fake_fast_directives_inside_raw_text_are_copied_verbatim() {
+        // <script>/<style> bodies inside the wrapper are opaque: markup-shaped
+        // text is copied verbatim and never converted to WebUI directives.
+        let result = transformed(
+            "file-card",
+            concat!(
+                r#"<f-template name="script-card"><template>"#,
+                r#"<script>if (a) { render("<f-when value='{{x}}'>"); }</script>"#,
+                r#"<style>/* <f-repeat value="{{i in items}}"> */ .a{color:red}</style>"#,
+                r#"<span>{{label}}</span>"#,
+                r#"</template></f-template>"#,
+            ),
+        );
+        assert_eq!(
+            result.parser_content,
+            concat!(
+                r#"<template>"#,
+                r#"<script>if (a) { render("<f-when value='{{x}}'>"); }</script>"#,
+                r#"<style>/* <f-repeat value="{{i in items}}"> */ .a{color:red}</style>"#,
+                r#"<span>{{label}}</span>"#,
+                r#"</template>"#,
+            )
+        );
+        assert!(!result.parser_content.contains("<if condition"));
+        assert!(!result.parser_content.contains("<for each"));
+    }
+
+    #[test]
+    fn incomplete_fake_directive_inside_raw_text_is_copied_verbatim() {
+        // An unterminated FAST-looking tag inside a raw-text body must not
+        // become an unclosed-tag diagnostic; the whole element is opaque.
+        let result = transformed(
+            "file-card",
+            concat!(
+                r#"<f-template name="script-card"><template>"#,
+                r#"<script>const s = "<f-when value=";</script>"#,
+                r#"<span>{{label}}</span>"#,
+                r#"</template></f-template>"#,
+            ),
+        );
+        assert!(result
+            .parser_content
+            .contains(r#"<script>const s = "<f-when value=";</script>"#));
+        assert!(!result.parser_content.contains("<if condition"));
+    }
+
+    #[test]
+    fn literal_opening_template_tokens_inside_raw_text_do_not_perturb_boundaries() {
+        // A raw-text body containing an unbalanced literal opening
+        // `<template>`/`<f-template>`-shaped string (no matching literal
+        // close) must not make the boundary matcher demand an extra real
+        // closing tag that does not exist. Both the outer `<f-template>` and
+        // inner `<template>` boundary searches are exercised because both
+        // tag names appear here.
+        let html = concat!(
+            r#"<f-template name="script-card"><template>"#,
+            r#"<script>const s = "<template>";</script>"#,
+            r#"<style>/* <f-template> */ .a{color:red}</style>"#,
+            r#"<span>{{label}}</span>"#,
+            r#"</template></f-template>"#,
+        );
+        let result = transformed("file-card", html);
+        assert_eq!(result.tag_name, "script-card");
+        let expected = concat!(
+            r#"<template>"#,
+            r#"<script>const s = "<template>";</script>"#,
+            r#"<style>/* <f-template> */ .a{color:red}</style>"#,
+            r#"<span>{{label}}</span>"#,
+            r#"</template>"#,
+        );
+        assert_eq!(result.parser_content, expected);
+        assert_eq!(result.artifact_content.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn literal_closing_template_tokens_inside_raw_text_do_not_truncate() {
+        // A raw-text body containing an unbalanced literal closing
+        // `</template>`/`</f-template>`-shaped string (no matching literal
+        // open) must not be mistaken for the real closing tag and truncate
+        // the match early.
+        let html = concat!(
+            r#"<f-template name="script-card"><template>"#,
+            r#"<script>const s = "</template>";</script>"#,
+            r#"<style>/* </f-template> */ .a{color:red}</style>"#,
+            r#"<span>{{label}}</span>"#,
+            r#"</template></f-template>"#,
+        );
+        let result = transformed("file-card", html);
+        assert_eq!(result.tag_name, "script-card");
+        let expected = concat!(
+            r#"<template>"#,
+            r#"<script>const s = "</template>";</script>"#,
+            r#"<style>/* </f-template> */ .a{color:red}</style>"#,
+            r#"<span>{{label}}</span>"#,
+            r#"</template>"#,
+        );
+        assert_eq!(result.parser_content, expected);
+        assert_eq!(result.artifact_content.as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn unterminated_raw_text_body_with_literal_closing_tags_is_unclosed_element() {
+        // A genuinely unterminated <script>/<style> body (no real closing
+        // tag anywhere in the source) consumes the remainder of the document
+        // as opaque raw text, per `find_raw_text_end`. A literal
+        // `</f-template>`/`</template>`-shaped string inside it must not be
+        // mistaken for the true wrapper close: the correct diagnostic is an
+        // unclosed-element error, not silent truncation or a misleading
+        // "content outside template" report.
+        for html in [
+            concat!(
+                r#"<f-template name="script-card"><template>"#,
+                r#"<script>const s = "</f-template>"; const t = "</template>";"#,
+                r#"<span>{{label}}</span></template></f-template>"#,
+            ),
+            concat!(
+                r#"<f-template name="script-card"><template>"#,
+                r#"<style>/* </f-template> */ const t = "</template>";"#,
+                r#"<span>{{label}}</span></template></f-template>"#,
+            ),
+        ] {
+            let err = transform("file-card", html)
+                .expect_err("unterminated raw-text body should be an unclosed-element error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected template diagnostic");
+            };
+            assert_eq!(diag.error_code(), Some(codes::UNCLOSED_HTML_TAG));
+            assert_eq!(diag.snippet_text(), Some("<f-template>"));
+            assert_eq!(
+                diag.help_text(),
+                Some("close the reported FAST template element or opening tag")
             );
         }
     }

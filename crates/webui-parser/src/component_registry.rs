@@ -6,7 +6,9 @@
 //! This module manages the registry of web components used in the application.
 
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
-use crate::plugin::{ComponentSource, ComponentSourceResult, ComponentSourceTransform};
+use crate::plugin::{
+    ComponentSource, ComponentSourceResult, ComponentSourceTransform, TransformedComponentSource,
+};
 use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
 use std::collections::HashMap;
 #[cfg(feature = "fs")]
@@ -17,16 +19,6 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 type ProcessedCss = (String, Vec<String>, Vec<CssFallbackChain>);
-
-/// Resolved component source produced by [`ComponentRegistry::resolve_component_source`].
-struct ResolvedSource {
-    /// Resolved registry key.
-    tag_name: String,
-    /// Content stored on the component and consumed by the SSR parser.
-    parser_content: String,
-    /// Optional retained authored client artifact source.
-    artifact_content: Option<String>,
-}
 
 /// Represents a web component in the registry.
 ///
@@ -174,35 +166,28 @@ impl ComponentRegistry {
         self.source_transform = transform;
     }
 
-    /// Apply the installed source transform, returning the resolved registry
-    /// key, the parser-facing content, and any retained client artifact source.
+    /// Apply the installed source transform, borrowing the authored source and
+    /// returning owned replacement views only when a transform fires.
     ///
-    /// When no transform is installed, or it returns
-    /// [`ComponentSourceResult::Unchanged`], the filename-derived tag and the
-    /// authored HTML are preserved without transforming their contents.
+    /// Returns `Some(TransformedComponentSource)` when the plugin transformed
+    /// the source, or `None` when no transform is installed or it returned
+    /// [`ComponentSourceResult::Unchanged`]. Borrowing the input means the
+    /// caller allocates an owned copy of the authored HTML only when the source
+    /// is preserved unchanged, never when it is replaced by transformed output.
     fn resolve_component_source(
         &self,
         tag_name: &str,
-        html_content: String,
-    ) -> Result<ResolvedSource> {
+        html_content: &str,
+    ) -> Result<Option<TransformedComponentSource>> {
         if let Some(transform) = self.source_transform {
             if let ComponentSourceResult::Transformed(transformed) = transform(ComponentSource {
                 tag_name,
-                html_content: &html_content,
+                html_content,
             })? {
-                return Ok(ResolvedSource {
-                    tag_name: transformed.tag_name,
-                    parser_content: transformed.parser_content,
-                    artifact_content: transformed.artifact_content,
-                });
+                return Ok(Some(transformed));
             }
         }
-
-        Ok(ResolvedSource {
-            tag_name: tag_name.to_string(),
-            parser_content: html_content,
-            artifact_content: None,
-        })
+        Ok(None)
     }
 
     /// Register multiple components from directories recursively.
@@ -261,7 +246,16 @@ impl ComponentRegistry {
             context: format!("Failed to read HTML file: {}", html_path.display()),
             source,
         })?;
-        let resolved = self.resolve_component_source(tag_name, html_content)?;
+        let resolved = match self.resolve_component_source(tag_name, &html_content)? {
+            Some(transformed) => transformed,
+            // Preserve the filename-derived tag and reuse the already-owned file
+            // contents as the parser view without a second allocation.
+            None => TransformedComponentSource {
+                tag_name: tag_name.to_string(),
+                parser_content: html_content,
+                artifact_content: None,
+            },
+        };
         Self::validate_component_name(&resolved.tag_name)?;
 
         // Check for duplicate component
@@ -330,7 +324,16 @@ impl ComponentRegistry {
             is_client_owned,
         } = registration;
 
-        let resolved = self.resolve_component_source(tag_name, html_content.to_string())?;
+        let resolved = match self.resolve_component_source(tag_name, html_content)? {
+            Some(transformed) => transformed,
+            // No transform fired: allocate the owned parser view only now, not
+            // eagerly before the transform had a chance to replace it.
+            None => TransformedComponentSource {
+                tag_name: tag_name.to_string(),
+                parser_content: html_content.to_string(),
+                artifact_content: None,
+            },
+        };
         Self::validate_component_name(&resolved.tag_name)?;
 
         // Check for duplicate component
