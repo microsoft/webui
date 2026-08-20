@@ -53,7 +53,7 @@ Historically, frameworks existed because the web platform lacked key primitives.
 WebUI builds directly on these platform primitives rather than wrapping them in
 an abstraction layer. Templates use standard HTML and native Web Components.
 The optional client-side router uses the Navigation API. Styling uses ordinary
-paired CSS, build-time scoping in Light DOM, and Shadow scoping when opted in. No
+paired CSS, authored/global in Light DOM and natively isolated in Shadow DOM. No
 proprietary component model or virtual DOM is required.
 
 When you build on the web platform, you inherit its improvements for free. Every browser performance optimization, every new CSS feature, every platform API lands in your app without a framework upgrade.
@@ -69,7 +69,7 @@ With WebUI's Islands Architecture:
 - **Static content** is server-rendered HTML. It arrives fully formed in the initial response. No JavaScript is shipped, no hydration occurs, no client-side processing is needed. It is just HTML and CSS - the fastest thing a browser can render.
 
 - **Interactive components** are Web Components that hydrate on the client.
-  Each island has its own template, scoped styles, and TypeScript behavior.
+  Each island has its own template, authored styles, and TypeScript behavior.
   Unwrapped components default to Shadow. Light builds keep explicit sole open
   wrappers as Shadow islands for slots or native boundaries. Islands hydrate independently - they don't wait for
   each other or for a global framework to initialize.

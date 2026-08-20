@@ -19,6 +19,9 @@ use crate::{ParserError, Result};
 pub(crate) fn validate_global_css(tag_name: &str, source: &str) -> Result<()> {
     let bytes = source.as_bytes();
     let mut index = 0;
+    let mut segment_start = 0;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
     while index < bytes.len() {
         match bytes[index] {
             b'"' | b'\'' => index = quoted_end(source, index),
@@ -29,6 +32,50 @@ pub(crate) fn validate_global_css(tag_name: &str, source: &str) -> Result<()> {
                 index = comment_policy::find_css_line_comment_end(source, index + 2);
             }
             b'\\' => index = css_escape_end(bytes, index, bytes.len()),
+            b'(' => {
+                paren_depth += 1;
+                index += 1;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                index += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                index += 1;
+            }
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                index += 1;
+            }
+            b'{' if paren_depth == 0 && bracket_depth == 0 => {
+                validate_selector_prelude(tag_name, source, segment_start, index)?;
+                segment_start = index + 1;
+                index += 1;
+            }
+            b';' | b'}' if paren_depth == 0 && bracket_depth == 0 => {
+                segment_start = index + 1;
+                index += 1;
+            }
+            _ => index = next_char_boundary(source, index),
+        }
+    }
+    Ok(())
+}
+
+fn validate_selector_prelude(tag_name: &str, source: &str, start: usize, end: usize) -> Result<()> {
+    let bytes = source.as_bytes();
+    let mut index = start;
+    while index < end {
+        match bytes[index] {
+            b'"' | b'\'' => index = quoted_end(source, index).min(end),
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = block_comment_end(source, index).min(end);
+            }
+            b'/' if comment_policy::is_css_line_comment_start(source, index) => {
+                index = comment_policy::find_css_line_comment_end(source, index + 2).min(end);
+            }
+            b'\\' => index = css_escape_end(bytes, index, end),
             b':' => {
                 let Some(pseudo) = pseudo_name(source, index) else {
                     index += 1;
@@ -48,9 +95,9 @@ pub(crate) fn validate_global_css(tag_name: &str, source: &str) -> Result<()> {
                         tag_name, source, index, &selector,
                     ));
                 }
-                index = pseudo.name.end;
+                index = pseudo.name.end.min(end);
             }
-            _ => index = next_char_boundary(source, index),
+            _ => index = next_char_boundary(source, index).min(end),
         }
     }
     Ok(())
@@ -64,7 +111,7 @@ fn shadow_only_selector_error(
     offset: usize,
     selector: &str,
 ) -> ParserError {
-    Diagnostic::error(format!("`:{selector}` is only valid in Shadow DOM CSS"))
+    Diagnostic::error(format!("`{selector}` is only valid in Shadow DOM CSS"))
         .code(codes::UNSUPPORTED_LIGHT_CSS)
         .component(tag_name)
         .at_offset(source, offset)
@@ -138,6 +185,15 @@ mod tests {
             "my-card",
             r#"/* :host */ // :host
 .card::before { content: ":host"; }"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn ignores_shadow_selector_text_in_declaration_values() {
+        assert!(validate_global_css(
+            "my-card",
+            ".card { --state:host; background:url(:host); content:var(--x, :host); }"
         )
         .is_ok());
     }

@@ -297,8 +297,8 @@ state that a template binding could express.
 
 ### The `<template>` tag
 
-Unwrapped components default to Shadow. In a `--dom light` build they use scoped
-Light DOM:
+Unwrapped components default to Shadow. In a `--dom light` build they use
+authored/global Light DOM:
 
 ```html
 <!-- my-card.html -->
@@ -1156,9 +1156,9 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
 
-Unwrapped components default to Shadow. Under `--dom light`, they use scoped
-Light DOM while a sole top-level `<template shadowrootmode="open">` remains a
-Shadow island.
+Unwrapped components default to Shadow. Under `--dom light`, they use
+authored/global Light DOM while a sole top-level
+`<template shadowrootmode="open">` remains a Shadow island.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never
