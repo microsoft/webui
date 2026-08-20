@@ -720,54 +720,58 @@ removal, or reordering shifts compiled element indices.
 
 ### Progressive streaming hydration
 
-Use `<boundary>` only when the Rust server calls
-`WebUIHandler::render_streaming` / `WebUIHandler::stream_response` with a
-`FlushWriter`, or when an API backend returns the versioned
-`application/x-webui-stream` control format to `webui serve --api-port`. The
-directive is removed at compile time and emits no application DOM wrapper.
+`<boundary>` is a compile-time checkpoint directive for progressive sessions.
+It is valid in entries and reusable components, including runtime conditions,
+loops, outlets, and selected route content.
 
 ```html
+<!-- index.html -->
 <head>
   <script type="module" async src="/index.js"></script>
 </head>
 <body>
-  <boundary name="weather-shell">
-    <weather-panel status="loading"></weather-panel>
-  </boundary>
-
-  <boundary name="critical-composer">
-    <message-composer></message-composer>
-  </boundary>
+  <ntp-page></ntp-page>
 </body>
 ```
 
-- `name` is required, non-empty, static, and unique in the entry template. It
+```html
+<!-- ntp-page.html -->
+<main>
+  <boundary name="search-ready">
+    <search-box query="{{query}}"></search-box>
+  </boundary>
+  <section>{{slowFeed}}</section>
+</main>
+```
+
+- `name` is required, non-empty, static, and unique within its entry or
+  component owner. It
   cannot contain a <code v-pre>{{binding}}</code>.
-- Author boundaries only in the outermost entry template. They cannot appear
-  inside reusable components, route-shell components, `<if>`, `<for>`,
-  `<route>`, or another boundary. An entry-level boundary can fully wrap those
-  complete scopes.
-- Every registered WebUI component rendered in streaming mode must be inside
-  an explicit boundary. Native HTML and unregistered static tail markup may
-  remain outside.
+- Boundaries may appear inside reusable components, true `<if>` paths, each
+  `<for>` iteration, and selected route content. Authored boundaries may not
+  contain another authored boundary directly or transitively.
+- A declaration that can repeat requires `key`; it must resolve to a unique live
+  string or finite number.
 - Never author `<webui-hydrate>`. It is reserved generated runtime output.
 - Put the async application module in `<head>` before boundary content and
   import `@microsoft/webui-framework/streaming.js` before component
   registration modules.
-- Boundary HTML commits strictly in document order. For slow backend state,
-  commit a complete component shell as `BoundaryMode::Updatable`, then call
-  `StreamingResponse::update` when data resolves. Updates interleave on the
-  original response and call `setState()` without rerunning hydration or
-  `hydratedCallback()`.
-- Resolve free-form names once with `StreamingResponse::boundary`; hot writes
-  use integer `BoundaryId` handles. Call `write_shell`, ordered
-  `write_boundary`, interleavable `update`, then `finish`.
+- `start(state)` and `resume(instanceId, state, mode)` return the next runtime
+  descriptor `{ instanceId, declarationId, owner, name, key }` plus `done`.
+  The done step already includes terminal and parent tail bytes.
+- `update(instanceId, patch)` accepts only a committed updatable occurrence.
+  It calls `setState()` without inserting markup, rerunning hydration, or
+  rerunning `hydratedCallback()`.
+- State resolution across a suspension is lexical locals, resume state, then
+  the frozen projected parent state.
+- A component-local boundary uses generated parent spans. Its early marked child
+  may hydrate before the opaque parent tail in light or shadow DOM.
 - `webui:boundary-hydrated` is emitted only when
   `window.__WEBUI_STREAMING_DEBUG__ === true`; its `detail.kind` is
-  `checkpoint`, `update`, or `terminal`. Every commit also emits an
+  `checkpoint`, `span`, `update`, or `terminal`. Every commit also emits an
   unconditional `performance.mark()` (`webui:boundary:<id>`,
-  `webui:boundary:<id>:update`, `webui:streaming:terminal`) that tooling can
-  read retroactively without a listener.
+  `webui:boundary:<id>:update`, `webui:span:<id>`,
+  `webui:streaming:terminal`) that tooling can read retroactively.
   `webui:hydration-complete` fires only after the terminal record and eager
   pending hydration work complete. Visibility-deferred lazy roots do not keep
   this one-shot startup event open.
@@ -779,13 +783,10 @@ directive is removed at compile time and emits no application DOM wrapper.
 
 Malformed directives use stable diagnostics:
 `missing-boundary-name`, `invalid-boundary-name`,
-`duplicate-boundary-name`, `nested-boundary`, `boundary-crosses-scope`, and
-`authored-webui-hydrate`.
-
-Dynamic append streams, out-of-order replacement, router-stream reuse, direct
-Node/FFI/WASM response sessions, and declarative partial updates are not part of
-this contract. Node can drive the CLI bridge, but the CLI remains the Rust
-session and transport owner.
+`duplicate-boundary-name`, `missing-boundary-key`,
+`invalid-boundary-key`, `nested-boundary`, `boundary-crosses-scope`, and
+`authored-webui-hydrate`. Malformed browser records fail closed and release
+discoverable deferred state within fixed bounds.
 
 ### Lazy component mounting
 
@@ -1205,31 +1206,36 @@ renders before spawning it, and configure the transport's flush timeout.
 
 ```rust
 let mut page = handler.stream_response(&protocol, &options, &mut writer)?;
-let critical = page.boundary("critical-composer")?;
-page.write_shell(&state)?;
-page.write_boundary(critical, &state, BoundaryMode::Final)?;
-page.finish(&state)?;
+let mut step = page.start(&initial_state)?;
+while !step.done {
+    let boundary = step.boundary.as_ref().ok_or_else(missing_boundary)?;
+    let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+    step = page.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
+}
 ```
 
 With `webui serve --api-port`, a Node or other HTTP backend can return
 newline-delimited control records instead:
 
 ```text
-{"type":"shell","version":1,"state":{...}}
-{"type":"boundary","name":"critical-composer"}
-{"type":"finish"}
+{"type":"start","version":2,"state":{"query":""}}
+{"type":"resume","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":""},"mode":"updatable"}
+{"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
 ```
 
 Honor HTTP write backpressure and cap concurrent streams. The CLI uses a
-capacity-one command channel, resolves boundary names once, and keeps the
-compiled protocol plus browser-facing bytes in Rust. Returning JSON keeps the
-buffered state path.
+capacity-one command channel and matches each nested `boundary` target by
+descriptor `owner`, `name`, and optional `key` (plus optional
+`declarationId`). It keeps response-local instance IDs, the compiled protocol,
+and browser-facing bytes in Rust. The control stream ends after the start or
+resume that completes the response. Returning JSON keeps the buffered state
+path.
 
 If the backend refuses a stream request (non-success status such as a `503`
-from its own concurrency cap), no boundary was ever sent, so `webui serve` logs
+from its own concurrency cap), no response bytes were sent, so `webui serve` logs
 one warning and renders the page from fallback state rather than replacing the
 app with the upstream error body. A failure *after* the stream is live still
-fails the response, because boundaries already flushed cannot be rewound.
+fails the response, because bytes already flushed cannot be rewound.
 
 Equivalent APIs exist for WebAssembly, Python (native `microsoft-webui`
 package), Go (cgo), and C#. For `Router.ensureLoaded()`, expose

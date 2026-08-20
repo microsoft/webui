@@ -41,11 +41,15 @@ interface FakeElement extends FakeNode {
   shadowRoot: FakeNode | null;
   readonly isConnected: boolean;
   hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null;
   setAttribute(name: string, value: string): void;
   removeAttribute(name: string): void;
   readonly textContent: string;
   setState?: (state: Record<string, unknown>) => void;
-  [ACTIVATE]?: (state?: Record<string, unknown>) => number;
+  [ACTIVATE]?: (
+    state?: Record<string, unknown>,
+    bypassSpanInstanceId?: number,
+  ) => number;
   [ABANDON]?: () => void;
   [RESUME_PENDING]?: () => void;
 }
@@ -102,7 +106,10 @@ function comment(data: string): FakeNode & { data: string } {
 interface ElementSpec {
   attrs?: Record<string, string>;
   text?: string;
-  hook?: (state?: Record<string, unknown>) => void;
+  hook?: (
+    state?: Record<string, unknown>,
+    bypassSpanInstanceId?: number,
+  ) => void | number;
   activationOutcome?: number;
   abandon?: () => void;
   children?: Array<FakeNode>;
@@ -124,6 +131,11 @@ function element(tagName: string, spec: ElementSpec = {}): FakeElement {
     hasAttribute(name: string): boolean {
       return Object.prototype.hasOwnProperty.call(attrs, name);
     },
+    getAttribute(name: string): string | null {
+      return Object.prototype.hasOwnProperty.call(attrs, name)
+        ? attrs[name]
+        : null;
+    },
     setAttribute(name: string, value: string): void {
       attrs[name] = value;
     },
@@ -142,9 +154,11 @@ function element(tagName: string, spec: ElementSpec = {}): FakeElement {
   } as unknown as FakeElement & { _children: FakeNode[] };
   addSiblingGetters(node);
   if (spec.hook) {
-    node[ACTIVATE] = (state) => {
-      spec.hook!(state);
-      return spec.activationOutcome ?? 1;
+    node[ACTIVATE] = (state, bypassSpanInstanceId?: number) => {
+      const outcome = spec.hook!(state, bypassSpanInstanceId);
+      return typeof outcome === 'number'
+        ? outcome
+        : spec.activationOutcome ?? 1;
     };
   }
   if (spec.abandon) node[ABANDON] = spec.abandon;
@@ -354,6 +368,11 @@ const {
 } = await import('./streaming.js');
 
 const {
+  openSpanCountForTests: __openSpanCountForTests,
+  pendingBarrierRootCountForTests: __pendingBarrierRootCountForTests,
+} = await import('./streaming-coordinator.js');
+
+const {
   beginStreamingGate,
   __resetLifecycleForTests,
   __getLifecycleStateForTests,
@@ -372,6 +391,12 @@ function hasPending(el: FakeElement): boolean {
 /** Whether a fake element still advertises itself as a streamed SSR host. */
 function hasWs(el: FakeElement): boolean {
   return el.hasAttribute('data-ws');
+}
+
+function hasStreamingAttrs(el: FakeElement): boolean {
+  return hasWs(el) ||
+    el.hasAttribute('data-ws-span') ||
+    el.hasAttribute('data-ws-enclosing');
 }
 
 /** The live `window.__webui` object the coordinator writes its handoff into. */
@@ -447,11 +472,13 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      1,
+      2,
       sequence,
-      terminal === 1 ? 3 : 0,
+      terminal === 1 ? 4 : 0,
       terminal === 1 ? 0 : sequence,
-      bootstrap,
+      terminal === 1
+        ? bootstrap
+        : { declarationId: sequence, ...bootstrap },
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -464,7 +491,15 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
 function buildMarkerless(sequence: number, terminal: number, bootstrap: object): BuiltBoundary {
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([1, sequence, terminal === 1 ? 3 : 0, 0, bootstrap]),
+    text: JSON.stringify([
+      2,
+      sequence,
+      terminal === 1 ? 4 : 0,
+      0,
+      terminal === 1
+        ? bootstrap
+        : { declarationId: 0, ...bootstrap },
+    ]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -483,7 +518,13 @@ function buildUpdatableBoundary(
   const end = comment(`/wb:${boundaryId}`);
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([1, recordSequence, 1, boundaryId, bootstrap]),
+    text: JSON.stringify([
+      2,
+      recordSequence,
+      1,
+      boundaryId,
+      { declarationId: boundaryId, ...bootstrap },
+    ]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -498,12 +539,40 @@ function buildStateUpdate(
 ): BuiltBoundary {
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([1, recordSequence, 2, boundaryId, patch]),
+    text: JSON.stringify([2, recordSequence, 2, boundaryId, patch]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
   link(root, [scriptEl, sentinel]);
   return { root, sentinel, scriptEl, startMarker: null, endMarker: null, roots: [] };
+}
+
+/** Build a generated component span completion with no prior checkpoint. */
+function buildSpanCompletion(
+  recordSequence: number,
+  spanId: number,
+  host: FakeElement,
+  bootstrap: object,
+): BuiltBoundary {
+  host.setAttribute('data-ws', '');
+  host.setAttribute('data-ws-span', String(spanId));
+  const start = comment(`ws:${spanId}`);
+  const end = comment(`/ws:${spanId}`);
+  const scriptEl = element('script', {
+    attrs: { 'data-webui-boundary': '' },
+    text: JSON.stringify([2, recordSequence, 3, spanId, bootstrap]),
+  });
+  const sentinel = element('webui-hydrate');
+  const root = body();
+  link(root, [start, host, end, scriptEl, sentinel]);
+  return {
+    root,
+    sentinel,
+    scriptEl,
+    startMarker: start,
+    endMarker: end,
+    roots: [host],
+  };
 }
 
 /** Build a boundary whose payload script carries arbitrary (possibly
@@ -518,6 +587,115 @@ function buildRawBoundary(sequence: number, rawText: string, roots: FakeElement[
   const root = body();
   link(root, [start, ...roots, end, scriptEl, sentinel]);
   return { root, sentinel, scriptEl, startMarker: start, endMarker: end, roots };
+}
+
+interface BuiltSpanScenario {
+  root: FakeNode;
+  boundaryStart: FakeNode & { data: string };
+  boundaryEnd: FakeNode & { data: string };
+  boundaryScript: FakeElement;
+  boundarySentinel: FakeElement;
+  spanStart: FakeNode & { data: string };
+  spanEnd: FakeNode & { data: string };
+  spanScript: FakeElement;
+  spanSentinel: FakeElement;
+  parent: FakeElement;
+  child: FakeElement;
+}
+
+/** Build one early boundary inside an unfinished component host. */
+function buildSpanScenario(
+  parent: FakeElement,
+  child: FakeElement,
+  options: {
+    updatable?: boolean;
+    spanId?: number;
+    enclosingMarker?: number;
+    boundarySequence?: number;
+    spanSequence?: number;
+    nestedLight?: boolean;
+    includeCompletion?: boolean;
+  } = {},
+): BuiltSpanScenario {
+  const spanId = options.spanId ?? 0;
+  const boundarySequence = options.boundarySequence ?? 0;
+  const spanSequence = options.spanSequence ?? boundarySequence + 1;
+  parent.setAttribute('data-ws', '');
+  parent.setAttribute('data-ws-span', String(spanId));
+  child.setAttribute('data-ws', '');
+  child.setAttribute(
+    'data-ws-enclosing',
+    String(options.enclosingMarker ?? spanId),
+  );
+
+  const boundaryStart = comment('wb:0');
+  const boundaryEnd = comment('/wb:0');
+  const boundaryScript = element('script', {
+    attrs: { 'data-webui-boundary': '' },
+    text: JSON.stringify([
+      2,
+      boundarySequence,
+      options.updatable ? 1 : 0,
+      0,
+      {
+        declarationId: 9,
+        enclosingSpanInstanceId: spanId,
+        state: { scope: 'child' },
+      },
+    ]),
+  });
+  const boundarySentinel = element('webui-hydrate');
+  const boundaryNodes: FakeNode[] = [
+    boundaryStart,
+    child,
+    boundaryEnd,
+    boundaryScript,
+    boundarySentinel,
+  ];
+
+  if (parent.shadowRoot) {
+    link(parent.shadowRoot, boundaryNodes);
+  } else if (options.nestedLight) {
+    const wrapper = element('section');
+    link(wrapper, boundaryNodes);
+    link(parent, [wrapper]);
+  } else {
+    link(parent, boundaryNodes);
+  }
+
+  const spanStart = comment(`ws:${spanId}`);
+  const spanEnd = comment(`/ws:${spanId}`);
+  const spanScript = element('script', {
+    attrs: { 'data-webui-boundary': '' },
+    text: JSON.stringify([
+      2,
+      spanSequence,
+      3,
+      spanId,
+      { state: { scope: 'parent' } },
+    ]),
+  });
+  const spanSentinel = element('webui-hydrate');
+  const root = body();
+  link(
+    root,
+    options.includeCompletion === false
+      ? [spanStart, parent]
+      : [spanStart, parent, spanEnd, spanScript, spanSentinel],
+  );
+  return {
+    root,
+    boundaryStart,
+    boundaryEnd,
+    boundaryScript,
+    boundarySentinel,
+    spanStart,
+    spanEnd,
+    spanScript,
+    spanSentinel,
+    parent,
+    child,
+  };
 }
 
 /** Assert a boundary left no discoverable scaffolding (sentinel, payload
@@ -565,6 +743,63 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(b.endMarker?.parentNode, null, 'end marker removed');
     assert.equal(counter.parentNode, b.root, 'activated root retained');
     assert.equal(documentWalkCalls, 0, 'valid streams never scan the document');
+  });
+
+  test('orders runtime boundary occurrences independently of repeated declaration IDs', async () => {
+    const activated: string[] = [];
+    const firstRoot = element('repeated-boundary-root', {
+      hook() {
+        activated.push('first');
+      },
+    });
+    const secondRoot = element('repeated-boundary-root', {
+      hook() {
+        activated.push('second');
+      },
+    });
+    predefine('repeated-boundary-root');
+
+    enqueue(buildBoundary(
+      0,
+      0,
+      [firstRoot],
+      { declarationId: 17 },
+    ).sentinel);
+    await flush();
+    enqueue(buildBoundary(
+      1,
+      0,
+      [secondRoot],
+      { declarationId: 17 },
+    ).sentinel);
+    await flush();
+
+    assert.deepEqual(activated, ['first', 'second']);
+    assert.equal(__isHaltedForTests(), false);
+  });
+
+  test('rejects a gap in runtime BoundaryInstanceId occurrence order', async () => {
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      const root = element('gap-boundary-root', { hook() {} });
+      predefine('gap-boundary-root');
+      const boundary = buildUpdatableBoundary(
+        0,
+        1,
+        [root],
+        { declarationId: 4 },
+      );
+
+      enqueue(boundary.sentinel);
+      await flush();
+
+      assert.equal(__isHaltedForTests(), true);
+      assertScaffoldCleaned(boundary);
+      assert.equal(hasStreamingAttrs(root), false);
+    } finally {
+      console.error = previousError;
+    }
   });
 
   test('applies state updates without reactivating an updatable boundary', async () => {
@@ -743,6 +978,44 @@ describe('streaming coordinator pipeline', () => {
 
     enqueue(buildMarkerless(3, 1, {}).sentinel);
     await flush();
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('terminal cleanup preserves a queued update until late hydration', async () => {
+    const activations: Array<Record<string, unknown> | undefined> = [];
+    const updates: Array<Record<string, unknown>> = [];
+    const late = element('terminal-late-panel', {
+      hook(state) {
+        activations.push(state);
+      },
+      setState(state) {
+        updates.push(state);
+      },
+    });
+
+    enqueue(buildUpdatableBoundary(
+      0,
+      0,
+      [late],
+      { state: { status: 'loading' } },
+    ).sentinel);
+    await flush();
+    enqueue(buildStateUpdate(1, 0, { status: 'stale' }).sentinel);
+    await flush();
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+
+    assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
+    defineTag('terminal-late-panel');
+    await flush();
+
+    assert.deepEqual(activations, [{ status: 'loading' }]);
+    assert.deepEqual(
+      plainPatches(updates),
+      [{ status: 'stale' }],
+      'the last committed update replays exactly once after terminal',
+    );
+    assert.equal(hasPending(late), false);
     assert.equal(__getLifecycleStateForTests().completed, true);
   });
 
@@ -1153,7 +1426,11 @@ describe('streaming coordinator pipeline', () => {
     const previousError = console.error;
     console.error = () => {};
     try {
-      const boundary = buildBoundary(0, 0, [], null as unknown as object);
+      const boundary = buildRawBoundary(
+        0,
+        JSON.stringify([2, 0, 0, 0, null]),
+        [],
+      );
       enqueue(boundary.sentinel);
       await flush();
 
@@ -1305,7 +1582,7 @@ describe('streaming coordinator pipeline', () => {
       hook() {},
       abandon() { abandoned++; },
     });
-    const b = buildRawBoundary(0, '[1,0,0,{', [root0]);
+    const b = buildRawBoundary(0, '[2,0,0,{', [root0]);
 
     enqueue(b.sentinel);
     await flush();
@@ -1335,7 +1612,10 @@ describe('streaming coordinator pipeline', () => {
   test('a missing start marker halts and cleans the end marker + payload', async () => {
     // End marker present but no matching start marker: reject + clean.
     const end = comment('/wb:0');
-    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([1, 0, 0, 0, {}]) });
+    const scriptEl = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([2, 0, 0, 0, { declarationId: 0 }]),
+    });
     const sentinel = element('webui-hydrate');
     const root = body();
     link(root, [end, scriptEl, sentinel]);
@@ -1397,6 +1677,682 @@ describe('streaming coordinator pipeline', () => {
 
     assert.equal(__isHaltedForTests(), true);
     assertScaffoldCleaned(b);
+  });
+
+  test('registers and completes a component span with no prior boundary', async () => {
+    const states: Array<Record<string, unknown> | undefined> = [];
+    const host = element('zero-span-host', {
+      hook(state) {
+        states.push(state);
+      },
+    });
+    const span = buildSpanCompletion(0, 0, host, {
+      state: { scope: 'zero' },
+    });
+    predefine('zero-span-host');
+
+    enqueue(span.sentinel);
+    await flush();
+
+    assert.deepEqual(states, [{ scope: 'zero' }]);
+    assert.equal(__openSpanCountForTests(), 0);
+    assert.equal(hasStreamingAttrs(host), false);
+    assertScaffoldCleaned(span);
+    assert.equal(documentWalkCalls, 0, 'completion discovery stays range-local');
+
+    enqueue(buildMarkerless(1, 1, {}).sentinel);
+    await flush();
+    assert.equal(__isHaltedForTests(), false);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('registers nested zero-occurrence spans outer-first and completes them inner-first', async () => {
+    const order: string[] = [];
+    let outerActive = false;
+    const inner = element('zero-inner-host', {
+      hook() {
+        if (!outerActive) return 4;
+        order.push('inner');
+        return 1;
+      },
+    });
+    const outer = element('zero-outer-host', {
+      hook() {
+        outerActive = true;
+        order.push('outer');
+      },
+    });
+    inner.setAttribute('data-ws', '');
+    inner.setAttribute('data-ws-span', '1');
+    outer.setAttribute('data-ws', '');
+    outer.setAttribute('data-ws-span', '0');
+
+    const innerStart = comment('ws:1');
+    const innerEnd = comment('/ws:1');
+    const innerScript = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([
+        2,
+        0,
+        3,
+        1,
+        { state: { scope: 'inner' } },
+      ]),
+    });
+    const innerSentinel = element('webui-hydrate');
+    link(outer, [
+      innerStart,
+      inner,
+      innerEnd,
+      innerScript,
+      innerSentinel,
+    ]);
+
+    const outerStart = comment('ws:0');
+    const outerEnd = comment('/ws:0');
+    const outerScript = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([
+        2,
+        1,
+        3,
+        0,
+        { state: { scope: 'outer' } },
+      ]),
+    });
+    const outerSentinel = element('webui-hydrate');
+    const root = body();
+    link(root, [
+      outerStart,
+      outer,
+      outerEnd,
+      outerScript,
+      outerSentinel,
+    ]);
+    predefine('zero-inner-host', 'zero-outer-host');
+
+    enqueue(innerSentinel);
+    await flush();
+    assert.deepEqual(order, [], 'the inner host remains behind the outer barrier');
+    assert.equal(__openSpanCountForTests(), 1);
+
+    enqueue(outerSentinel);
+    await flush();
+    assert.deepEqual(order, ['outer', 'inner']);
+    assert.equal(__openSpanCountForTests(), 0);
+    assert.equal(hasStreamingAttrs(inner), false);
+    assert.equal(hasStreamingAttrs(outer), false);
+    assert.equal(documentWalkCalls, 0, 'nested discovery stays range-local');
+
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+    assert.equal(__isHaltedForTests(), false);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('fails closed when a zero-occurrence span host declares another ID', async () => {
+    let activations = 0;
+    const host = element('malformed-zero-span', {
+      hook() {
+        activations++;
+      },
+    });
+    const span = buildSpanCompletion(0, 0, host, { state: {} });
+    host.setAttribute('data-ws-span', '1');
+    predefine('malformed-zero-span');
+
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      enqueue(span.sentinel);
+      await flush();
+    } finally {
+      console.error = previousError;
+    }
+
+    assert.equal(__isHaltedForTests(), true);
+    assert.equal(activations, 0);
+    assert.equal(__openSpanCountForTests(), 0);
+    assert.equal(hasStreamingAttrs(host), false);
+    assertScaffoldCleaned(span);
+    assert.equal(__getLifecycleStateForTests().completed, false);
+  });
+
+  test('keeps later checkpoint span numbering gapless after a zero-occurrence completion', async () => {
+    const order: string[] = [];
+    const zeroHost = element('first-zero-span', {
+      hook() {
+        order.push('zero');
+      },
+    });
+    const zero = buildSpanCompletion(0, 0, zeroHost, {
+      state: { scope: 'zero' },
+    });
+    predefine('first-zero-span');
+    enqueue(zero.sentinel);
+    await flush();
+
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('later-span-child', {
+      hook(_state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        order.push('child');
+        return 1;
+      },
+    });
+    const parent = element('later-span-parent', {
+      hook() {
+        parentActive = true;
+        order.push('parent');
+      },
+    });
+    const later = buildSpanScenario(parent, child, {
+      spanId: 1,
+      boundarySequence: 1,
+      spanSequence: 2,
+    });
+    predefine('later-span-child', 'later-span-parent');
+
+    enqueue(later.boundarySentinel);
+    await flush();
+    assert.deepEqual(order, ['zero', 'child']);
+    assert.equal(__openSpanCountForTests(), 1);
+    assert.equal(__isHaltedForTests(), false);
+
+    enqueue(later.spanSentinel);
+    await flush();
+    assert.deepEqual(order, ['zero', 'child', 'parent']);
+    assert.equal(__openSpanCountForTests(), 0);
+
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.equal(__isHaltedForTests(), false);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('activates a marked child before its spanning parent closes, then completes the parent exactly once', async () => {
+    const order: string[] = [];
+    const childStates: Array<Record<string, unknown> | undefined> = [];
+    const parentStates: Array<Record<string, unknown> | undefined> = [];
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('early-child', {
+      hook(state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        order.push('child');
+        childStates.push(state);
+        return 1;
+      },
+    });
+    const parent = element('spanning-parent', {
+      hook(state) {
+        parentActive = true;
+        order.push('parent');
+        parentStates.push(state);
+      },
+    });
+    const scenario = buildSpanScenario(parent, child);
+    predefine('early-child', 'spanning-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+
+    assert.deepEqual(order, ['child']);
+    assert.deepEqual(childStates, [{ scope: 'child' }]);
+    assert.equal(__openSpanCountForTests(), 1);
+    assert.equal(__pendingBarrierRootCountForTests(), 0);
+    assert.equal(hasStreamingAttrs(child), false);
+    assert.equal(hasStreamingAttrs(parent), true);
+    assert.equal(webuiGlobal().declarationId, undefined);
+    assert.equal(webuiGlobal().enclosingSpanInstanceId, undefined);
+    assert.equal(documentWalkCalls, 0, 'valid early commits stay root-local');
+
+    enqueue(scenario.spanSentinel);
+    await flush();
+
+    assert.deepEqual(order, ['child', 'parent']);
+    assert.deepEqual(parentStates, [{ scope: 'parent' }]);
+    assert.deepEqual(childStates, [{ scope: 'child' }], 'parent completion does not rehydrate the early child');
+    assert.equal(__openSpanCountForTests(), 0);
+    assert.equal(hasStreamingAttrs(parent), false);
+    assert.equal(scenario.spanStart.parentNode, null);
+    assert.equal(scenario.spanEnd.parentNode, null);
+    assert.equal(scenario.spanScript.parentNode, null);
+    assert.equal(scenario.spanSentinel.parentNode, null);
+
+    enqueue(buildMarkerless(2, 1, {}).sentinel);
+    await flush();
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('keeps an unmarked or mismatched early child behind the ancestor barrier', async () => {
+    const order: string[] = [];
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('mismatch-child', {
+      hook(_state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        order.push('child');
+        return 1;
+      },
+    });
+    const parent = element('mismatch-parent', {
+      hook() {
+        parentActive = true;
+        order.push('parent');
+      },
+    });
+    const scenario = buildSpanScenario(parent, child, {
+      enclosingMarker: 1,
+    });
+    const unmarked = element('unmarked-child', {
+      hook() {
+        if (!parentActive) return 4;
+        order.push('unmarked');
+        return 1;
+      },
+    });
+    unmarked.setAttribute('data-ws', '');
+    link(parent, [
+      scenario.boundaryStart,
+      child,
+      unmarked,
+      scenario.boundaryEnd,
+      scenario.boundaryScript,
+      scenario.boundarySentinel,
+    ]);
+    predefine('mismatch-child', 'unmarked-child', 'mismatch-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+
+    assert.deepEqual(order, []);
+    assert.equal(__pendingBarrierRootCountForTests(), 2);
+    assert.equal(hasStreamingAttrs(child), true);
+    assert.equal(hasStreamingAttrs(unmarked), true);
+
+    enqueue(scenario.spanSentinel);
+    await flush();
+
+    assert.deepEqual(order, ['parent', 'child', 'unmarked']);
+    assert.equal(__pendingBarrierRootCountForTests(), 0);
+    assert.equal(hasStreamingAttrs(child), false);
+    assert.equal(hasStreamingAttrs(unmarked), false);
+    assert.equal(__isHaltedForTests(), false);
+  });
+
+  test('updates a live early child by BoundaryInstanceId before parent completion', async () => {
+    const activations: Array<Record<string, unknown> | undefined> = [];
+    const updates: Array<Record<string, unknown>> = [];
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('updatable-early-child', {
+      hook(state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        activations.push(state);
+        return 1;
+      },
+      setState(state) {
+        updates.push(state);
+      },
+    });
+    const parent = element('updatable-span-parent', {
+      hook() {
+        parentActive = true;
+      },
+    });
+    const scenario = buildSpanScenario(parent, child, {
+      updatable: true,
+      spanSequence: 2,
+    });
+    predefine('updatable-early-child', 'updatable-span-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+
+    assert.deepEqual(activations, [{ scope: 'child' }]);
+    assert.deepEqual(updates, [{ status: 'ready' }]);
+    assert.deepEqual(__streamingRetentionStateForTests(), [1, 1]);
+
+    enqueue(scenario.spanSentinel);
+    await flush();
+    assert.deepEqual(activations, [{ scope: 'child' }], 'span completion does not duplicate activation');
+    assert.deepEqual(updates, [{ status: 'ready' }]);
+
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
+  });
+
+  test('replays an update once when an undefined early child defines before span completion', async () => {
+    const childActivations: Array<Record<string, unknown> | undefined> = [];
+    const childUpdates: Array<Record<string, unknown>> = [];
+    const bypasses: Array<number | undefined> = [];
+    let parentActivations = 0;
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('late-early-child', {
+      hook(state, bypassSpanInstanceId) {
+        bypasses.push(bypassSpanInstanceId);
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        childActivations.push(state);
+        return 1;
+      },
+      setState(state) {
+        childUpdates.push(state);
+      },
+    });
+    const parent = element('late-early-parent', {
+      hook() {
+        parentActive = true;
+        parentActivations++;
+      },
+    });
+    const scenario = buildSpanScenario(parent, child, {
+      updatable: true,
+      spanSequence: 2,
+    });
+    predefine('late-early-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    assert.equal(__pendingUndefinedRootCountForTests(), 1);
+    assert.deepEqual(__streamingRetentionStateForTests(), [1, 1]);
+
+    enqueue(buildStateUpdate(1, 0, { status: 'ready' }).sentinel);
+    await flush();
+    assert.deepEqual(childUpdates, []);
+
+    defineTag('late-early-child');
+    await flush();
+    assert.deepEqual(bypasses, [0], 'the pending root retains its enclosing-span bypass');
+    assert.deepEqual(childActivations, [{ scope: 'child' }]);
+    assert.deepEqual(plainPatches(childUpdates), [{ status: 'ready' }]);
+    assert.equal(parentActivations, 0, 'the child activates while its parent span is unfinished');
+
+    enqueue(scenario.spanSentinel);
+    await flush();
+    assert.equal(parentActivations, 1);
+    assert.deepEqual(
+      childActivations,
+      [{ scope: 'child' }],
+      'span completion must not rehydrate the already-live child',
+    );
+    assert.deepEqual(
+      plainPatches(childUpdates),
+      [{ status: 'ready' }],
+      'span completion must not overwrite or replay the newer update',
+    );
+
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.deepEqual(__streamingRetentionStateForTests(), [0, 0]);
+    assert.equal(__pendingUndefinedRootCountForTests(), 0);
+    assert.equal(hasPending(child), false);
+    assert.equal(__getLifecycleStateForTests().completed, true);
+  });
+
+  test('resolves a nested light-DOM boundary inside its actual component render root', async () => {
+    const order: string[] = [];
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('light-span-child', {
+      hook(_state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        order.push('child');
+        return 1;
+      },
+    });
+    const parent = element('light-span-parent', {
+      hook() {
+        parentActive = true;
+        order.push('parent');
+      },
+    });
+    const scenario = buildSpanScenario(parent, child, {
+      nestedLight: true,
+    });
+    predefine('light-span-child', 'light-span-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    enqueue(scenario.spanSentinel);
+    await flush();
+
+    assert.deepEqual(order, ['child', 'parent']);
+    assert.equal(documentWalkCalls, 0);
+    assert.equal(__isHaltedForTests(), false);
+  });
+
+  test('completes nested light-DOM component spans parent-first with only one barrier bypassed', async () => {
+    const order: string[] = [];
+    let outerActive = false;
+    let innerActive = false;
+    let child!: FakeElement;
+    child = element('nested-span-child', {
+      hook(_state, bypassSpanInstanceId) {
+        const bypassesInner =
+          child.getAttribute('data-ws-enclosing') ===
+            String(bypassSpanInstanceId);
+        if ((!innerActive && !bypassesInner) || !outerActive) return 4;
+        order.push('child');
+        return 1;
+      },
+    });
+    const inner = element('nested-inner-parent', {
+      hook() {
+        if (!outerActive) return 4;
+        innerActive = true;
+        order.push('inner');
+        return 1;
+      },
+    });
+    const outer = element('nested-outer-parent', {
+      hook() {
+        outerActive = true;
+        order.push('outer');
+      },
+    });
+    outer.setAttribute('data-ws', '');
+    outer.setAttribute('data-ws-span', '0');
+    inner.setAttribute('data-ws', '');
+    inner.setAttribute('data-ws-span', '1');
+    child.setAttribute('data-ws', '');
+    child.setAttribute('data-ws-enclosing', '1');
+
+    const boundaryStart = comment('wb:0');
+    const boundaryEnd = comment('/wb:0');
+    const boundaryScript = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([
+        2,
+        0,
+        0,
+        0,
+        {
+          declarationId: 12,
+          enclosingSpanInstanceId: 1,
+          state: { scope: 'child' },
+        },
+      ]),
+    });
+    const boundarySentinel = element('webui-hydrate');
+    link(inner, [
+      boundaryStart,
+      child,
+      boundaryEnd,
+      boundaryScript,
+      boundarySentinel,
+    ]);
+
+    const innerStart = comment('ws:1');
+    const innerEnd = comment('/ws:1');
+    const innerScript = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([
+        2,
+        1,
+        3,
+        1,
+        { state: { scope: 'inner' } },
+      ]),
+    });
+    const innerSentinel = element('webui-hydrate');
+    link(outer, [
+      innerStart,
+      inner,
+      innerEnd,
+      innerScript,
+      innerSentinel,
+    ]);
+
+    const outerStart = comment('ws:0');
+    const outerEnd = comment('/ws:0');
+    const outerScript = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([
+        2,
+        2,
+        3,
+        0,
+        { state: { scope: 'outer' } },
+      ]),
+    });
+    const outerSentinel = element('webui-hydrate');
+    const root = body();
+    link(root, [
+      outerStart,
+      outer,
+      outerEnd,
+      outerScript,
+      outerSentinel,
+    ]);
+    predefine(
+      'nested-span-child',
+      'nested-inner-parent',
+      'nested-outer-parent',
+    );
+
+    enqueue(boundarySentinel);
+    await flush();
+    assert.deepEqual(order, [], 'the marker bypasses inner, not outer');
+    assert.equal(__openSpanCountForTests(), 2);
+
+    enqueue(innerSentinel);
+    await flush();
+    assert.deepEqual(order, [], 'inner completion remains behind outer');
+    assert.equal(__openSpanCountForTests(), 1);
+
+    enqueue(outerSentinel);
+    await flush();
+    assert.deepEqual(order, ['outer', 'inner', 'child']);
+    assert.equal(__pendingBarrierRootCountForTests(), 0);
+    assert.equal(__openSpanCountForTests(), 0);
+    assert.equal(documentWalkCalls, 0);
+  });
+
+  test('resolves an early boundary inside an open declarative shadow root', async () => {
+    const order: string[] = [];
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('shadow-span-child', {
+      hook(_state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        order.push('child');
+        return 1;
+      },
+    });
+    const parent = element('shadow-span-parent', {
+      shadowChildren: [],
+      hook() {
+        parentActive = true;
+        order.push('parent');
+      },
+    });
+    const scenario = buildSpanScenario(parent, child);
+    predefine('shadow-span-child', 'shadow-span-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    enqueue(scenario.spanSentinel);
+    await flush();
+
+    assert.deepEqual(order, ['child', 'parent']);
+    assert.equal(documentWalkCalls, 0);
+    assert.equal(hasStreamingAttrs(child), false);
+    assert.equal(hasStreamingAttrs(parent), false);
+  });
+
+  test('span truncation releases open-span state, markers, and compiler attributes', async () => {
+    __installTruncationGuardForTests();
+    let parentActive = false;
+    let child!: FakeElement;
+    child = element('truncated-span-child', {
+      hook(_state, bypassSpanInstanceId) {
+        if (
+          !parentActive &&
+          child.getAttribute('data-ws-enclosing') !==
+            String(bypassSpanInstanceId)
+        ) return 4;
+        return 1;
+      },
+    });
+    const parent = element('truncated-span-parent', {
+      hook() {
+        parentActive = true;
+      },
+    });
+    const scenario = buildSpanScenario(parent, child, {
+      includeCompletion: false,
+    });
+    predefine('truncated-span-child', 'truncated-span-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    assert.equal(__openSpanCountForTests(), 1);
+    assert.equal(scenario.spanStart.parentNode, scenario.root);
+
+    fireDomContentLoaded();
+    await flush();
+
+    assert.equal(__isHaltedForTests(), true);
+    assert.equal(__openSpanCountForTests(), 0);
+    assert.equal(__pendingBarrierRootCountForTests(), 0);
+    assert.equal(scenario.spanStart.parentNode, null);
+    assert.equal(hasStreamingAttrs(parent), false);
+    assert.equal(hasStreamingAttrs(child), false);
+    assert.equal(__getLifecycleStateForTests().completed, false);
   });
 
   test('a nested island is activated exactly once in a single walk', async () => {
@@ -1731,7 +2687,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__getLifecycleStateForTests().pendingLateActivations, 1);
 
     // Halt via a malformed boundary at the next sequence.
-    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    const bad = buildRawBoundary(1, '[2,1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
     assert.equal(__isHaltedForTests(), true);
@@ -1768,7 +2724,7 @@ describe('streaming coordinator pipeline', () => {
     await flush();
     detach(outer);
 
-    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    const bad = buildRawBoundary(1, '[2,1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
 
@@ -1920,7 +2876,7 @@ describe('streaming coordinator pipeline', () => {
 
   test('an illegal record queued behind terminal aborts before hydration-complete', async () => {
     const terminal = buildMarkerless(0, 1, {});
-    const post = buildRawBoundary(1, '[1,1,0,{}]', []);
+    const post = buildRawBoundary(1, '[2,1,0,{}]', []);
 
     // Both records are present before the single pump runs. The terminal must
     // remain tentative until the queue validates the record behind it.
@@ -2162,7 +3118,7 @@ describe('streaming coordinator pipeline', () => {
   test('a rejected (malformed) boundary strips data-ws from its roots, keeping them', async () => {
     const root0 = element('my-ws', { attrs: { 'data-ws': '' }, hook() {} });
     assert.equal(hasWs(root0), true, 'root starts marked as a streamed host');
-    const b = buildRawBoundary(0, '[1,0,0,{', [root0]);
+    const b = buildRawBoundary(0, '[2,0,0,{', [root0]);
 
     enqueue(b.sentinel);
     await flush();
@@ -2193,7 +3149,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(hasWs(late), true, 'a deferred undefined-tag root keeps data-ws until activation');
 
     // Halt via a malformed follow-up boundary.
-    const bad = buildRawBoundary(1, '[1,1,0,{', []);
+    const bad = buildRawBoundary(1, '[2,1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
 

@@ -8,14 +8,15 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
-use pyo3::types::{PyAny, PyByteArray, PyBytes, PyModule, PyString, PyType};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyModule, PyString, PyType};
 use serde_json::Value;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    BoundaryId, BoundaryMode, HandlerError, Protocol, RenderOptions, ResponseWriter,
-    SessionOptions, StreamingSession as HandlerStreamingSession, WebUIHandler,
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError, Protocol,
+    RenderOptions, ResponseWriter, SessionOptions, StreamStep as HandlerStreamStep,
+    StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 
 // PyO3's exception macro uses `Result::expect` inside its one-time type initializer.
@@ -352,57 +353,32 @@ struct NativeStreamingSession {
 
 #[pymethods]
 impl NativeStreamingSession {
-    fn boundary(&self, py: Python<'_>, name: &str) -> PyResult<u32> {
-        py.detach(|| {
-            self.session_binding()?
-                .boundary(name)
-                .map(BoundaryId::raw)
-                .map_err(streaming_binding_error)
-        })
-        .map_err(BindingError::into_py_error)
-    }
-
-    #[getter]
-    fn boundary_count(&self, py: Python<'_>) -> PyResult<usize> {
-        py.detach(|| {
-            self.session_binding()
-                .map(|session| session.boundary_count())
-        })
-        .map_err(BindingError::into_py_error)
-    }
-
-    #[getter]
-    fn finished(&self, py: Python<'_>) -> PyResult<bool> {
-        py.detach(|| self.session_binding().map(|session| session.is_finished()))
-            .map_err(BindingError::into_py_error)
-    }
-
-    fn write_shell<'py>(
+    fn start<'py>(
         &self,
         py: Python<'py>,
         state_json: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyBytes>> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let input = JsonInput::extract(state_json)?;
-        let result = py
+        let step = py
             .detach(|| {
                 let state = parse_state(&input)?;
                 self.session_binding()?
-                    .write_shell(&state)
+                    .start(&state)
                     .map_err(streaming_binding_error)
             })
             .map_err(BindingError::into_py_error)?;
-        Ok(PyBytes::new(py, &result))
+        stream_step_dict(py, step)
     }
 
-    fn write_boundary<'py>(
+    fn resume<'py>(
         &self,
         py: Python<'py>,
         state_json: &Bound<'py, PyAny>,
-        boundary: u32,
+        instance_id: u32,
         updatable: bool,
-    ) -> PyResult<Bound<'py, PyBytes>> {
+    ) -> PyResult<Bound<'py, PyDict>> {
         let input = JsonInput::extract(state_json)?;
-        let result = py
+        let step = py
             .detach(|| {
                 let state = parse_state(&input)?;
                 let mode = if updatable {
@@ -411,42 +387,25 @@ impl NativeStreamingSession {
                     BoundaryMode::Final
                 };
                 self.session_binding()?
-                    .write_boundary(BoundaryId::from_raw(boundary), &state, mode)
+                    .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
                     .map_err(streaming_binding_error)
             })
             .map_err(BindingError::into_py_error)?;
-        Ok(PyBytes::new(py, &result))
+        stream_step_dict(py, step)
     }
 
     fn update<'py>(
         &self,
         py: Python<'py>,
         state_json: &Bound<'py, PyAny>,
-        boundary: u32,
+        instance_id: u32,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let input = JsonInput::extract(state_json)?;
         let result = py
             .detach(|| {
                 let state = parse_state(&input)?;
                 self.session_binding()?
-                    .update(BoundaryId::from_raw(boundary), &state)
-                    .map_err(streaming_binding_error)
-            })
-            .map_err(BindingError::into_py_error)?;
-        Ok(PyBytes::new(py, &result))
-    }
-
-    fn finish<'py>(
-        &self,
-        py: Python<'py>,
-        state_json: &Bound<'py, PyAny>,
-    ) -> PyResult<Bound<'py, PyBytes>> {
-        let input = JsonInput::extract(state_json)?;
-        let result = py
-            .detach(|| {
-                let state = parse_state(&input)?;
-                self.session_binding()?
-                    .finish(&state)
+                    .update(BoundaryInstanceId::from_raw(instance_id), &state)
                     .map_err(streaming_binding_error)
             })
             .map_err(BindingError::into_py_error)?;
@@ -462,6 +421,62 @@ impl NativeStreamingSession {
             )
         })
     }
+}
+
+fn stream_step_dict(py: Python<'_>, step: HandlerStreamStep) -> PyResult<Bound<'_, PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("bytes", PyBytes::new(py, &step.bytes))?;
+    result.set_item("done", step.done)?;
+    match step.boundary {
+        Some(boundary) => result.set_item("boundary", boundary_descriptor_dict(py, boundary)?)?,
+        None => result.set_item("boundary", py.None())?,
+    }
+    Ok(result)
+}
+
+fn boundary_descriptor_dict(
+    py: Python<'_>,
+    descriptor: BoundaryDescriptor,
+) -> PyResult<Bound<'_, PyDict>> {
+    let result = PyDict::new(py);
+    result.set_item("instance_id", descriptor.instance_id.raw())?;
+    result.set_item("declaration_id", descriptor.declaration_id)?;
+    result.set_item("owner", &*descriptor.owner)?;
+    result.set_item("name", &*descriptor.name)?;
+    match descriptor.key {
+        Some(BoundaryKey::String(key)) => result.set_item("key", key)?,
+        Some(BoundaryKey::Number(key)) if key.is_i64() => {
+            let value = key
+                .as_i64()
+                .ok_or_else(|| impossible_boundary_key_error(&key))?;
+            result.set_item("key", value)?;
+        }
+        Some(BoundaryKey::Number(key)) if key.is_u64() => {
+            let value = key
+                .as_u64()
+                .ok_or_else(|| impossible_boundary_key_error(&key))?;
+            result.set_item("key", value)?;
+        }
+        Some(BoundaryKey::Number(key)) if key.is_f64() => {
+            let value = key
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| impossible_boundary_key_error(&key))?;
+            result.set_item("key", value)?;
+        }
+        Some(BoundaryKey::Number(key)) => return Err(impossible_boundary_key_error(&key)),
+        None => result.set_item("key", py.None())?,
+    }
+    Ok(result)
+}
+
+#[cold]
+#[inline(never)]
+fn impossible_boundary_key_error(key: &serde_json::Number) -> PyErr {
+    BindingError::streaming(format!(
+        "WebUI returned an unsupported boundary key number `{key}`"
+    ))
+    .into_py_error()
 }
 
 fn parse_state(input: &JsonInput) -> Result<Value, BindingError> {

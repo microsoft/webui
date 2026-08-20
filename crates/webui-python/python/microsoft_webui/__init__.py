@@ -3,7 +3,15 @@
 
 """High-performance Python renderer for compiled WebUI applications."""
 
-from ._api import BoundaryMode, Plugin, Renderer, StateInput, StreamingSession
+from ._api import (
+    BoundaryDescriptor,
+    BoundaryMode,
+    Plugin,
+    Renderer,
+    StateInput,
+    StreamingSession,
+    StreamStep,
+)
 from ._native import (
     ProtocolError,
     RenderError,
@@ -14,6 +22,7 @@ from ._native import (
 )
 
 __all__ = [
+    "BoundaryDescriptor",
     "BoundaryMode",
     "Plugin",
     "ProtocolError",
@@ -21,6 +30,7 @@ __all__ = [
     "Renderer",
     "StateError",
     "StateInput",
+    "StreamStep",
     "StreamingError",
     "StreamingSession",
     "WebUIError",

@@ -60,7 +60,9 @@ import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
   isStreamingHydrationMode,
   PENDING_ROOT_CONNECTED,
+  STREAMING_ENCLOSING_SPAN_ATTR,
   STREAMED_HOST_ATTR,
+  STREAMING_SPAN_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
 import {
@@ -189,6 +191,7 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 const ACTIVATION_ACTIVATED = 1;
 const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
 const ACTIVATION_MISSING_TEMPLATE = 3;
+const ACTIVATION_ANCESTOR_BARRIER = 4;
 
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
@@ -424,7 +427,10 @@ export class TemplateElement extends HTMLElement {
    * state, handed straight through to hydration instead of via the global
    * `window.__webui.state` handoff.
    */
-  [STREAMING_BOUNDARY_ACTIVATE](state?: Record<string, unknown>): number {
+  [STREAMING_BOUNDARY_ACTIVATE](
+    state?: Record<string, unknown>,
+    bypassSpanInstanceId?: number,
+  ): number {
     // `customElements.upgrade()` installs this class on detached roots without
     // invoking connectedCallback(). Preserve the same marker-driven dormant
     // state those roots would have entered while connected before activation.
@@ -441,13 +447,19 @@ export class TemplateElement extends HTMLElement {
     }
     this.$meta = meta;
     if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
-    const ancestor = this.$nearestHydrationBarrier();
+    const ancestor = this.$nearestHydrationBarrier(bypassSpanInstanceId);
     if (ancestor) {
       this.$deferredByAncestor = true;
       this.$ancestorBoundaryState = state;
       this.$hasAncestorBoundaryState = true;
       this.$registerWithHydrationBarrier(ancestor);
-      return ACTIVATION_ACTIVATED;
+      return ACTIVATION_ANCESTOR_BARRIER;
+    }
+    if (this.$deferredByAncestor) {
+      this.$detachDeferredAncestor();
+      this.$deferredByAncestor = undefined;
+      this.$ancestorBoundaryState = undefined;
+      this.$hasAncestorBoundaryState = undefined;
     }
     this.$activatingDeferredSSR = true;
     try {
@@ -546,7 +558,14 @@ export class TemplateElement extends HTMLElement {
       this.$deferredSSR = true;
       this.$ready = true;
       const resume = (this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void })[PENDING_ROOT_CONNECTED];
-      if (typeof resume === 'function') resume.call(this);
+      if (typeof resume === 'function') {
+        // The coordinator owns every continuation after a pending definition:
+        // eager activation, span-barrier registration, lazy observation, or
+        // static-host opt-out. Re-entering ordinary deferral here can replay
+        // older page bootstrap state over a queued boundary update.
+        resume.call(this);
+        return;
+      }
       this.$didDeferSSRHydration();
       return;
     }
@@ -934,7 +953,16 @@ export class TemplateElement extends HTMLElement {
     return this.$meta ?? this.$templateMeta();
   }
 
-  private $nearestHydrationBarrier(): Element | undefined {
+  private $nearestHydrationBarrier(
+    bypassSpanInstanceId?: number,
+  ): Element | undefined {
+    const bypassSpan = bypassSpanInstanceId === undefined
+      ? undefined
+      : String(bypassSpanInstanceId);
+    const mayBypass = bypassSpan !== undefined &&
+      this.getAttribute(STREAMING_ENCLOSING_SPAN_ATTR) ===
+        bypassSpan;
+    let bypassed = false;
     let current: Element = this;
     while (true) {
       let parent: Element | null =
@@ -952,6 +980,16 @@ export class TemplateElement extends HTMLElement {
           : null;
       }
       if (!parent) return undefined;
+      if (
+        mayBypass &&
+        !bypassed &&
+        parent.getAttribute(STREAMING_SPAN_HOST_ATTR) ===
+          bypassSpan
+      ) {
+        bypassed = true;
+        current = parent;
+        continue;
+      }
       if (parent instanceof TemplateElement) {
         const parentMeta = parent.$meta ?? parent.$templateMeta();
         if (parentMeta?.th) {
@@ -1072,6 +1110,13 @@ export class TemplateElement extends HTMLElement {
     const boundaryState = this.$ancestorBoundaryState;
     this.$hasAncestorBoundaryState = undefined;
     this.$ancestorBoundaryState = undefined;
+    const resume = (
+      this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void }
+    )[PENDING_ROOT_CONNECTED];
+    if (typeof resume === 'function') {
+      resume.call(this);
+      return;
+    }
     const meta = this.$meta;
     if (meta && this.$shouldDeferSSRHydration(meta)) {
       if (hasBoundaryState) {

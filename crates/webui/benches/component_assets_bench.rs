@@ -51,12 +51,14 @@ fn setup() -> Fixture {
             root.clone(),
             FragmentList {
                 fragments: root_fragments,
+                contains_boundary: false,
             },
         );
         fragments.insert(
             unique,
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>unique</p>")],
+                contains_boundary: false,
             },
         );
         roots.push(root);
@@ -67,6 +69,7 @@ fn setup() -> Fixture {
             component_tag("shared-child", shared_index),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>shared</p>")],
+                contains_boundary: false,
             },
         );
     }
@@ -76,6 +79,7 @@ fn setup() -> Fixture {
         "index.html".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<main></main>")],
+            contains_boundary: false,
         },
     );
     let tags: Vec<String> = protocol.fragments.keys().cloned().collect();

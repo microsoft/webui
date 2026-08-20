@@ -194,30 +194,29 @@ Each layer of the architecture contributes to the overall performance profile:
   build deterministic indices once at startup rather than repeating that work
   per request.
 
-- **Streaming output with explicit checkpoints.** The Rust
-  `webui::streaming::StreamingWriter` coalesces writes into chunks and uses a
-  bounded `tokio::mpsc` channel for backpressure. A shared `ChunkPool` can
-  recycle buffers across requests, and a configurable flush deadline bounds
-  how long a render thread waits on a slow consumer. With
-  `WebUIHandler::render_streaming`, authored `<boundary>` checkpoints
-  request a semantic transport flush and can hydrate in document order before
-  the response completes. Each checkpoint emits state and newly needed metadata
-  only for the local component surface reachable from its rendered roots,
-  including initially hidden descendants; inventory still records only actual
-  SSR roots. The runtime protocol lazily indexes route-free component
-  dependencies once, on its first streaming render; ordinary rendering never
-  allocates this index. Checkpoints reuse an integer DFS stack, and leaf-only
-  boundaries need no graph walk. Request-local buffers retain capacity for
-  reuse. The separately imported streaming coordinator passes this ephemeral
-  state directly to components and removes checkpoint scaffolding after commit.
-  `webui serve --api-port` can translate a capacity-one, versioned backend
-  control stream into the same Rust session, preserving browser-to-backend
-  backpressure without exposing a callback-heavy Node renderer session.
+- **Runtime-discovered streaming.** The continuation VM walks only the selected
+  entry, component, condition, loop, and route path. It is iterative and keeps
+  bounded frames, projected parent keys, lexical locals, occurrence keys, and
+  generated component spans instead of cloning the full state or prebuilding a
+  request plan. Boundary-free fragment records are skipped through a build-time
+  `contains_boundary` bit. Capture and projection scratch buffers retain
+  capacity across checkpoints.
+- **Bounded browser activation.** Each checkpoint or generated span completion
+  walks one root-local marker range, including open shadow roots, and removes
+  its scaffolding after commit. Final occurrences retain no root list.
+  Updatable occurrences retain only successfully activated roots until
+  terminal. The valid path has no `MutationObserver`, polling loop, or
+  document-wide selector; only fatal cleanup may perform one bounded sweep.
+- **Host-owned backpressure.** `StreamingWriter` uses a bounded `tokio::mpsc`
+  channel, reusable `ChunkPool`, and configurable flush deadline. Owned
+  `StreamingSession` calls return one byte chunk for `start`, `resume`, or
+  `update`, so Node, WASM, Python, C, and .NET hosts write through their native
+  backpressure APIs. `webui serve --api-port` uses a capacity-one version-2
+  control channel over the same session.
   Hosts must also bound concurrent blocking renders before calling
   `spawn_blocking`; channel backpressure bounds bytes after a task starts, not
   the runtime's queued blocking-task count. Reject saturation before spawning
-  (for example, with `Semaphore::try_acquire_owned`) so retained request state
-  stays bounded.
+  so retained request state stays bounded.
   Intermediaries can still buffer the response, so production deployments must
   configure and verify their full delivery path.
 

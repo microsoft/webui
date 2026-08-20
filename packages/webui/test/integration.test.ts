@@ -13,7 +13,11 @@ import {
   inspect,
   Protocol,
 } from '@microsoft/webui';
-import type { ComponentTemplatesResponse } from '@microsoft/webui';
+import type {
+  BoundaryDescriptor,
+  ComponentTemplatesResponse,
+  StreamStep,
+} from '@microsoft/webui';
 import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer, get } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -76,6 +80,26 @@ before(() => {
     <stream-item label="{{secondLabel}}"></stream-item>
   </boundary>
 </body>
+</html>
+`);
+  writeFileSync(join(appDir, 'index-stream-repeat.html'), `
+<!DOCTYPE html>
+<html>
+<head><script type="module" async src="./index.js"></script></head>
+<body>
+  <for each="item in items">
+    <boundary name="row" key="{{item.id}}">
+      <stream-item label="{{item.label}}"></stream-item>
+    </boundary>
+  </for>
+</body>
+</html>
+`);
+  writeFileSync(join(appDir, 'index-stream-empty.html'), `
+<!DOCTYPE html>
+<html>
+<head><script type="module" async src="./index.js"></script></head>
+<body><p>boundary-free</p></body>
 </html>
 `);
 });
@@ -250,134 +274,128 @@ describe('renderStream', () => {
 describe('streamResponse', () => {
   const streamOptions = { entry: 'index-stream.html', requestPath: '/' };
 
-  function streamingProtocol(): Protocol {
+  function streamingProtocol(entry = 'index-stream.html'): Protocol {
     return new Protocol(
-      build({ appDir, entry: 'index-stream.html', plugin: 'webui' }).protocol,
+      build({ appDir, entry, plugin: 'webui' }).protocol,
     );
   }
 
-  test('returns one chunk per host call and reassembles a complete document', () => {
+  function boundaryOf(step: StreamStep): BoundaryDescriptor {
+    assert.ok(step.boundary);
+    return step.boundary;
+  }
+
+  test('discovers runtime boundary descriptors from start', () => {
     const session = streamingProtocol().streamResponse(streamOptions);
-    assert.equal(session.boundaryCount, 2);
+    const step = session.start({});
+    const boundary = boundaryOf(step);
 
-    const first = session.boundary('first');
-    const second = session.boundary('second');
-    assert.equal(first, 0);
-    assert.equal(second, 1);
+    assert.ok(Buffer.isBuffer(step.bytes));
+    assert.equal(step.done, false);
+    assert.equal(boundary.instanceId, 0);
+    assert.equal(typeof boundary.declarationId, 'number');
+    assert.equal(boundary.owner, 'index-stream.html');
+    assert.equal(boundary.name, 'first');
+    assert.equal(boundary.key, undefined);
+  });
 
-    const chunks = [
-      session.writeShell({}),
-      session.writeBoundary(first, { firstLabel: 'alpha' }, 'updatable'),
-      session.update(first, { firstLabel: 'alpha-2' }),
-      session.writeBoundary(second, { secondLabel: 'beta' }),
-      session.finish({}),
-    ];
+  test('resume discovers the next boundary and returns a completed final step', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    const start = session.start({});
+    const first = boundaryOf(start);
+    const next = session.resume(first.instanceId, { firstLabel: 'alpha' });
+    const second = boundaryOf(next);
 
-    for (const chunk of chunks) {
-      assert.ok(Buffer.isBuffer(chunk));
-    }
-    assert.equal(session.finished, true);
+    assert.ok(Buffer.isBuffer(next.bytes));
+    assert.equal(next.done, false);
+    assert.equal(second.instanceId, 1);
+    assert.equal(second.name, 'second');
 
-    const html = Buffer.concat(chunks).toString('utf8');
+    const done = session.resume(second.instanceId, { secondLabel: 'beta' });
+    assert.ok(Buffer.isBuffer(done.bytes));
+    assert.equal(done.done, true);
+    assert.equal(done.boundary, undefined);
+
+    const html = Buffer.concat([start.bytes, next.bytes, done.bytes]).toString('utf8');
     assert.ok(html.includes('<!DOCTYPE html>'));
     assert.ok(html.includes('alpha'));
-    assert.ok(html.includes('alpha-2'));
     assert.ok(html.includes('beta'));
-    assert.ok(html.trimEnd().endsWith('</html>'));
+    assert.equal(html.match(/class="item"/g)?.length, 2);
+    assert.ok(html.includes('</html>'));
   });
 
-  test('renders every boundary exactly once into the reassembled document', () => {
-    const protocol = streamingProtocol();
-    const state = { firstLabel: 'alpha', secondLabel: 'beta' };
+  test('preserves string and number repeat keys', () => {
+    const entry = 'index-stream-repeat.html';
+    const session = streamingProtocol(entry).streamResponse({
+      entry,
+      requestPath: '/',
+    });
+    const state = {
+      items: [
+        { id: 'alpha', label: 'first' },
+        { id: 20, label: 'second' },
+      ],
+    };
 
-    const session = protocol.streamResponse(streamOptions);
-    const streamed = Buffer.concat([
-      session.writeShell(state),
-      session.writeBoundary(session.boundary('first'), state),
-      session.writeBoundary(session.boundary('second'), state),
-      session.finish(state),
-    ]).toString('utf8');
+    const start = session.start(state);
+    const first = boundaryOf(start);
+    assert.equal(first.key, 'alpha');
 
-    // Streaming reorders delivery, never content.
-    assert.equal(streamed.match(/class="item"/g)?.length, 2);
+    const next = session.resume(first.instanceId, {});
+    const second = boundaryOf(next);
+    assert.equal(second.instanceId, 1);
+    assert.equal(second.declarationId, first.declarationId);
+    assert.equal(second.key, 20);
+
+    const done = session.resume(second.instanceId, {});
+    assert.equal(done.done, true);
   });
 
-  test('rejects boundaries written out of declaration order', () => {
+  test('updates a committed updatable occurrence', () => {
     const session = streamingProtocol().streamResponse(streamOptions);
-    session.writeShell({});
-    assert.throws(
-      () => session.writeBoundary(session.boundary('second'), { secondLabel: 'beta' }),
-      /order/i,
+    const start = session.start({});
+    const first = boundaryOf(start);
+    const next = session.resume(
+      first.instanceId,
+      { firstLabel: 'alpha' },
+      'updatable',
     );
+    const update = session.update(first.instanceId, {
+      firstLabel: 'alpha-2',
+    });
+
+    assert.ok(Buffer.isBuffer(update));
+    assert.match(update.toString('utf8'), /alpha-2/);
+
+    const second = boundaryOf(next);
+    const done = session.resume(second.instanceId, { secondLabel: 'beta' });
+    assert.equal(done.done, true);
   });
 
-  test('rejects updates to a boundary committed as final', () => {
+  test('start completes a boundary-free document', () => {
+    const entry = 'index-stream-empty.html';
+    const session = streamingProtocol(entry).streamResponse({
+      entry,
+      requestPath: '/',
+    });
+    const done = session.start({});
+
+    assert.ok(Buffer.isBuffer(done.bytes));
+    assert.equal(done.done, true);
+    assert.equal(done.boundary, undefined);
+    assert.match(done.bytes.toString('utf8'), /boundary-free/);
+    assert.ok(done.bytes.toString('utf8').includes('</html>'));
+  });
+
+  test('does not expose legacy wrapper members', () => {
     const session = streamingProtocol().streamResponse(streamOptions);
-    const first = session.boundary('first');
-    session.writeShell({});
-    session.writeBoundary(first, { firstLabel: 'alpha' });
-    assert.throws(() => session.update(first, { firstLabel: 'alpha-2' }), /updatable/i);
-  });
-
-  test('rejects an unknown boundary name with the valid names', () => {
-    const session = streamingProtocol().streamResponse(streamOptions);
-    assert.throws(() => session.boundary('firts'), /first/);
-  });
-
-  test('rejects an unknown boundary mode', () => {
-    const session = streamingProtocol().streamResponse(streamOptions);
-    session.writeShell({});
-    assert.throws(
-      () =>
-        session.writeBoundary(
-          session.boundary('first'),
-          { firstLabel: 'alpha' },
-          'sometimes' as 'final',
-        ),
-      /unknown boundary mode/,
-    );
-  });
-
-  test('rejects every call after finish', () => {
-    const session = streamingProtocol().streamResponse(streamOptions);
-    session.writeShell({});
-    session.writeBoundary(session.boundary('first'), { firstLabel: 'alpha' });
-    session.writeBoundary(session.boundary('second'), { secondLabel: 'beta' });
-    session.finish({});
-
-    assert.equal(session.finished, true);
-    assert.throws(() => session.writeShell({}), /already finished/);
-    assert.throws(() => session.finish({}), /already finished/);
-  });
-
-  test('an out-of-order finish leaves the session usable', () => {
-    const session = streamingProtocol().streamResponse(streamOptions);
-    session.writeShell({});
-    session.writeBoundary(session.boundary('first'), { firstLabel: 'alpha' });
-
-    // Rejected before any byte is written, so the open response survives.
-    assert.throws(() => session.finish({}), /every boundary must be committed/);
-    assert.equal(session.finished, false);
-
-    session.writeBoundary(session.boundary('second'), { secondLabel: 'beta' });
-    assert.ok(session.finish({}).length > 0);
-    assert.equal(session.finished, true);
-  });
-
-  test('keeps concurrent sessions independent', () => {
-    const protocol = streamingProtocol();
-    const a = protocol.streamResponse(streamOptions);
-    const b = protocol.streamResponse(streamOptions);
-
-    a.writeShell({});
-    b.writeShell({});
-    const fromA = a.writeBoundary(a.boundary('first'), { firstLabel: 'from-a' }).toString('utf8');
-    const fromB = b.writeBoundary(b.boundary('first'), { firstLabel: 'from-b' }).toString('utf8');
-
-    assert.ok(fromA.includes('from-a'));
-    assert.ok(!fromA.includes('from-b'));
-    assert.ok(fromB.includes('from-b'));
-    assert.ok(!fromB.includes('from-a'));
+    const members = session as unknown as Record<string, unknown>;
+    assert.equal(members.boundary, undefined);
+    assert.equal(members.boundaryCount, undefined);
+    assert.equal(members.finished, undefined);
+    assert.equal(members.writeShell, undefined);
+    assert.equal(members.writeBoundary, undefined);
+    assert.equal(members.finish, undefined);
   });
 });
 
@@ -409,18 +427,21 @@ describe('streamResponse over node:http', () => {
     const server = createServer((_request, response) => {
       void (async () => {
         const session = protocol.streamResponse(streamOptions);
-        const first = session.boundary('first');
-        const second = session.boundary('second');
 
         response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-        await write(response, session.writeShell({}));
-        await write(response, session.writeBoundary(first, { firstLabel: 'alpha' }));
+        let step = session.start({});
+        await write(response, step.bytes);
+        assert.ok(step.boundary);
+        step = session.resume(step.boundary.instanceId, { firstLabel: 'alpha' });
+        await write(response, step.bytes);
 
         // Only reached if the client already has the bytes above.
         await clientSawFirstBoundary;
 
-        await write(response, session.writeBoundary(second, { secondLabel: 'beta' }));
-        response.end(session.finish({}));
+        assert.ok(step.boundary);
+        step = session.resume(step.boundary.instanceId, { secondLabel: 'beta' });
+        assert.equal(step.done, true);
+        response.end(step.bytes);
       })().catch((error: unknown) => {
         serverError = error;
         response.destroy();
@@ -456,7 +477,7 @@ describe('streamResponse over node:http', () => {
       assert.equal(sawTailBeforeRelease, false);
       assert.ok(received.includes('alpha'));
       assert.ok(received.includes('beta'));
-      assert.ok(received.trimEnd().endsWith('</html>'));
+      assert.ok(received.includes('</html>'));
     } finally {
       server.close();
       await once(server, 'close');

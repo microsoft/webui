@@ -32,11 +32,10 @@
   </Target>
 
   <!--
-    Compile the streaming fixture app the same way. It declares two compile-time
-    boundaries, which is what StreamingSessionTests drives chunk by chunk. As
-    above, no projection manifest is supplied, so every checkpoint falls back to
-    the whole state object; the tests assert chunk framing and ordering, not
-    boundary-local projection.
+    Compile the streaming fixture app the same way. Its keyed declaration
+    produces string and numeric runtime occurrences and can be skipped entirely
+    for boundary-free completion. No projection manifest is supplied, so every
+    checkpoint falls back to the whole state object.
   -->
   <Target Name="BuildStreamingFixtureProtocol"
           BeforeTargets="Build"

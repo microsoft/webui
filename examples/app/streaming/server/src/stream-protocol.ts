@@ -5,7 +5,7 @@ import type { ServerResponse } from 'node:http';
 
 export const WEBUI_STREAM_MEDIA_TYPE = 'application/x-webui-stream';
 
-const WEBUI_STREAM_VERSION = 1;
+const WEBUI_STREAM_VERSION = 2;
 const MAX_RECORD_BYTES = 2_000_000;
 
 export type JsonValue =
@@ -20,17 +20,31 @@ export interface JsonObject {
   readonly [key: string]: JsonValue;
 }
 
+export interface BoundaryTarget {
+  readonly owner: string;
+  readonly name: string;
+  readonly key?: string | number;
+  readonly declarationId?: number;
+}
+
 type StreamRecord =
-  | { type: 'shell'; version: typeof WEBUI_STREAM_VERSION; state: JsonObject }
-  | { type: 'boundary'; name: string; mode?: 'updatable'; state?: JsonObject }
-  | { type: 'update'; name: string; state: JsonObject }
-  | { type: 'finish'; state?: JsonObject };
+  | { type: 'start'; version: typeof WEBUI_STREAM_VERSION; state: JsonObject }
+  | {
+      type: 'resume';
+      boundary: BoundaryTarget;
+      mode?: 'updatable';
+      state: JsonObject;
+    }
+  | { type: 'update'; boundary: BoundaryTarget; state: JsonObject };
 
 export interface StreamSink {
-  shell(state: JsonObject): Promise<void>;
-  boundary(name: string, mode?: 'final' | 'updatable', state?: JsonObject): Promise<void>;
-  update(name: string, state: JsonObject): Promise<void>;
-  finish(state?: JsonObject): Promise<void>;
+  start(state: JsonObject): Promise<void>;
+  resume(
+    boundary: BoundaryTarget,
+    state: JsonObject,
+    mode?: 'final' | 'updatable',
+  ): Promise<void>;
+  update(boundary: BoundaryTarget, state: JsonObject): Promise<void>;
 }
 
 export function acceptsWebUIStream(header: string | undefined): boolean {
@@ -65,36 +79,24 @@ export class WebUIStreamWriter implements StreamSink {
     this.#response = response;
   }
 
-  shell(state: JsonObject): Promise<void> {
-    return this.#write({ type: 'shell', version: WEBUI_STREAM_VERSION, state });
+  start(state: JsonObject): Promise<void> {
+    return this.#write({ type: 'start', version: WEBUI_STREAM_VERSION, state });
   }
 
-  boundary(
-    name: string,
+  resume(
+    boundary: BoundaryTarget,
+    state: JsonObject,
     mode: 'final' | 'updatable' = 'final',
-    state?: JsonObject,
   ): Promise<void> {
-    const record: StreamRecord = { type: 'boundary', name };
+    const record: StreamRecord = { type: 'resume', boundary, state };
     if (mode === 'updatable') {
       record.mode = mode;
-    }
-    if (state !== undefined) {
-      record.state = state;
     }
     return this.#write(record);
   }
 
-  update(name: string, state: JsonObject): Promise<void> {
-    return this.#write({ type: 'update', name, state });
-  }
-
-  async finish(state?: JsonObject): Promise<void> {
-    const record: StreamRecord = { type: 'finish' };
-    if (state !== undefined) {
-      record.state = state;
-    }
-    await this.#write(record);
-    this.#response.end();
+  update(boundary: BoundaryTarget, state: JsonObject): Promise<void> {
+    return this.#write({ type: 'update', boundary, state });
   }
 
   async #write(record: StreamRecord): Promise<void> {

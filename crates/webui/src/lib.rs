@@ -34,8 +34,9 @@ pub use error::WebUIError;
 pub use webui_handler::route_handler::{encode_inventory, get_needed_components, parse_inventory};
 pub use webui_handler::Result as HandlerResult;
 pub use webui_handler::{
-    plugin::HandlerPlugin, BoundaryId, BoundaryMode, FlushWriter, HandlerError, Protocol,
-    RenderOptions, ResponseWriter, StreamingResponse, WebUIHandler,
+    plugin::HandlerPlugin, BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode,
+    FlushWriter, HandlerError, Protocol, RenderOptions, ResponseWriter, SessionOptions,
+    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, WebUIHandler,
 };
 pub use webui_parser::plugin::{ComponentTemplateArtifact, StateSurface};
 pub use webui_parser::CssStrategy;
@@ -588,13 +589,8 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             source,
         })?;
 
-    // Read before anything else parses. Both accessors describe the *entry*
-    // template, and every top-level `parse()` starts a fresh namespace, so a
-    // later synthetic parse (asset roots, below) would silently zero them.
-    // They are also copied out because `token_analysis()` borrows the parser
-    // and the parser is consumed before the projection manifest is known.
-    let boundary_count = parser.boundary_count();
-    let boundary_names = parser.boundary_names().to_vec();
+    // Read before synthetic asset roots parse because module entry sources are
+    // entry-local. Boundary declarations live in the fragment graph itself.
     let module_entry_srcs = parser.module_entry_srcs().to_vec();
 
     let synthetic_asset_fragments =
@@ -655,19 +651,22 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     for fragment_id in synthetic_asset_fragments {
         fragment_records.remove(&fragment_id);
     }
+    let boundary_count = fragment_records
+        .values()
+        .flat_map(|list| list.fragments.iter())
+        .filter(|fragment| {
+            matches!(
+                fragment.fragment.as_ref(),
+                Some(webui_protocol::web_ui_fragment::Fragment::Boundary(boundary))
+                    if boundary.phase() == webui_protocol::BoundaryPhase::Start
+            )
+        })
+        .count();
     // Resolve projection only after template compilation. Ordinary path/inline
     // builds pay the same validation cost, while orchestrators can overlap
     // parser work with an in-flight client bundle through a pending source.
     let merged_manifest = projection::load_and_merge(&options.projection_manifests)?;
     let mut protocol = WebUIProtocol::with_tokens(fragment_records, token_analysis.protocol_tokens);
-    if !boundary_names.is_empty() {
-        protocol.streaming_boundaries.insert(
-            options.entry.clone(),
-            webui_protocol::StreamingBoundaryList {
-                names: boundary_names,
-            },
-        );
-    }
     protocol.initial_state_strategy = if merged_manifest.is_some() {
         webui_protocol::InitialStateStrategy::Components as i32
     } else {
@@ -1007,12 +1006,23 @@ mod tests {
             result.protocol.initial_state_strategy,
             webui_protocol::InitialStateStrategy::Full as i32
         );
-        assert_eq!(
-            result.protocol.streaming_boundaries["index.html"].names,
-            ["a", "b"]
-        );
+        let boundary_names = |protocol: &WebUIProtocol| {
+            protocol.fragments["index.html"]
+                .fragments
+                .iter()
+                .filter_map(|fragment| match fragment.fragment.as_ref() {
+                    Some(webui_protocol::web_ui_fragment::Fragment::Boundary(boundary))
+                        if boundary.phase() == webui_protocol::BoundaryPhase::Start =>
+                    {
+                        Some(boundary.name.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(boundary_names(&result.protocol), ["a", "b"]);
         let decoded = WebUIProtocol::from_protobuf(&result.protocol_bytes).unwrap();
-        assert_eq!(decoded.streaming_boundaries["index.html"].names, ["a", "b"]);
+        assert_eq!(boundary_names(&decoded), ["a", "b"]);
         let warning = result
             .warnings
             .iter()

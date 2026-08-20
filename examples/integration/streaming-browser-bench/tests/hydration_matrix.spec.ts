@@ -95,17 +95,13 @@ const PEAK_HEAP_ABS_FLOOR_BYTES = 512 * 1024;
 const PEAK_HEAP_TOLERANCE_PCT = 15;
 /** Deterministic production coordinator size caps. Raising either requires
  *  explicit review because every streaming application pays these bytes.
- *  Typed checkpoints, retained-root state records, and terminal cleanup add
- *  ~1.9KiB minified / ~650B gzip over the final-only coordinator; trusting our
- *  own serializer instead of re-validating its output gives ~1.2KiB / ~440B
- *  back. Commit `performance.mark`s and the opt-in time-sliced drain add ~650B
- *  minified / ~260B gzip: the marks are unconditional because a consumer that
- *  loads after hydration cannot have subscribed in time, and the drain is the
- *  only way to keep hydration off one long task when an intermediary coalesces
- *  the response. The caps leave under 3% headroom, so further growth still
- *  fails. */
-const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 11_520;
-const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 4_096;
+ *  The v2 coordinator includes checkpoint declaration/span validation, retained
+ *  roots for state updates, span completion, terminal cleanup, commit marks, and
+ *  the opt-in time-sliced drain. The reviewed production bundle is 17,147 bytes
+ *  minified / 5,885 bytes gzip incrementally; these caps leave roughly 4%
+ *  headroom, so further growth still fails. */
+const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 17.5 * 1024;
+const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 6 * 1024;
 /** Marginal elapsed-time cap per added boundary. The relative allowance scales
  *  with slower hosts while the absolute floor absorbs sub-millisecond noise. */
 const COORDINATOR_MARGINAL_ABS_CAP_MS = 0.25;
@@ -260,7 +256,56 @@ function balancedArmOrder(armCount: number, round: number): number[] {
   return order.slice(shift).concat(order.slice(0, shift));
 }
 
+function parseBoundaryRecord(fragment: string): unknown[] {
+  const prefix = '<script type="application/json" data-webui-boundary>';
+  const start = fragment.indexOf(prefix);
+  const end = fragment.indexOf('</script>', start + prefix.length);
+  if (start < 0 || end < 0) {
+    throw new Error('benchmark fragment is missing its boundary record');
+  }
+  const parsed: unknown = JSON.parse(fragment.slice(start + prefix.length, end));
+  if (!Array.isArray(parsed)) {
+    throw new Error('benchmark boundary record is not an array');
+  }
+  return parsed;
+}
+
 test.describe('progressive streaming hydration matrix', () => {
+  test('generates gapless v2 checkpoint, update, and terminal records', () => {
+    const checkpointScenario = buildStreamingScenario(3, 'flat', 'eager', true);
+    const checkpointRecords = [
+      ...checkpointScenario.boundaries,
+      checkpointScenario.terminal,
+    ].map(parseBoundaryRecord);
+
+    expect(checkpointRecords.map((record) => record.length)).toEqual([5, 5, 5, 5, 5]);
+    expect(checkpointRecords.map((record) => record[0])).toEqual([2, 2, 2, 2, 2]);
+    expect(checkpointRecords.map((record) => record[1])).toEqual([0, 1, 2, 3, 4]);
+    expect(checkpointRecords.map((record) => record[2])).toEqual([0, 0, 0, 0, 4]);
+    expect(checkpointRecords.map((record) => record[3])).toEqual([0, 1, 2, 3, 0]);
+    for (const record of checkpointRecords.slice(0, -1)) {
+      const bootstrap = record[4] as Record<string, unknown>;
+      expect(bootstrap.declarationId).toBe(0);
+      expect(
+        Object.prototype.hasOwnProperty.call(bootstrap, 'enclosingSpanInstanceId'),
+        'flat entry checkpoints omit enclosingSpanInstanceId',
+      ).toBe(false);
+    }
+    expect(checkpointRecords[4]).toEqual([2, 4, 4, 0, {}]);
+
+    const updateScenario = buildStateUpdateScenario(3, 100);
+    const updateRecords = [
+      ...updateScenario.boundaries,
+      updateScenario.terminal,
+    ].map(parseBoundaryRecord);
+    expect(updateRecords.map((record) => record[0])).toEqual([2, 2, 2, 2, 2]);
+    expect(updateRecords.map((record) => record[1])).toEqual([0, 1, 2, 3, 4]);
+    expect(updateRecords.map((record) => record[2])).toEqual([1, 2, 2, 2, 4]);
+    expect(updateRecords.map((record) => record[3])).toEqual([0, 0, 0, 0, 0]);
+    expect((updateRecords[0][4] as Record<string, unknown>).declarationId).toBe(0);
+    expect(updateRecords[4]).toEqual([2, 4, 4, 0, {}]);
+  });
+
   test('measures real coordinator + WebUIElement hydration across boundary counts', async ({ browser }) => {
     const compareName = process.env.WEBUI_BENCH_COMPARE;
     const baseline = compareName ? loadSnapshot(compareName, ENFORCE) : null;
@@ -287,11 +332,11 @@ test.describe('progressive streaming hydration matrix', () => {
     expect(coordinatorTokensIn(fixtures.streaming.code).length).toBeGreaterThan(0);
     expect(
       fixtures.streamingIncrementalBytes,
-      'streaming coordinator incremental minified bytes stay within the reviewed 10.625KiB cap',
+      'streaming coordinator incremental minified bytes stay within the reviewed 17.5KiB cap',
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES);
     expect(
       fixtures.streamingIncrementalGzipBytes,
-      'streaming coordinator incremental gzip bytes stay within the reviewed 3.75KiB cap',
+      'streaming coordinator incremental gzip bytes stay within the reviewed 6KiB cap',
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_GZIP_CAP_BYTES);
 
     const bundle: BundleSizes = {

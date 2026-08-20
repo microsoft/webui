@@ -218,6 +218,7 @@ pub(crate) fn build_route_fragment(
         invalidates: attrs.invalidates.clone(),
         pending_component: attrs.pending_component.clone(),
         error_component: attrs.error_component.clone(),
+        content_fragment_id: String::new(),
     }
 }
 

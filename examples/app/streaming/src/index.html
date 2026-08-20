@@ -35,79 +35,16 @@
       line-height: var(--line-height-base);
     }
 
-    header {
-      margin-bottom: var(--spacing-xl);
-    }
-
-    main {
-      display: flex;
-      flex-direction: column;
-      gap: var(--spacing-xl);
-    }
-
-    section[aria-label="Feed"] {
-      display: flex;
-      flex-direction: column;
-      gap: var(--spacing-m);
+    streaming-page {
+      display: block;
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Streaming Home</h1>
-    <!--
-      The shell commits immediately as an updatable boundary, so slow forecast
-      work cannot hold back the composer. When that server work finishes, the
-      same response sends a projected state record to this boundary; no client
-      request or DOM replacement is involved.
-    -->
-    <boundary name="weather-shell">
-      <!--
-        The island's code ships with the island, not with the critical
-        bundle. The browser discovers this script when the weather chunk
-        reaches the parser, so `index.js` never carries the panel's bytes and
-        the composer's time to interactive does not pay for them.
-
-        Loading it late is safe by construction: the boundary commits before
-        the class exists, the coordinator parks the root on
-        `customElements.whenDefined('weather-panel')` with this boundary's
-        initial state stashed on it, merges any server update that won the
-        race, and activates it the moment `.define()` runs.
-        `webui:hydration-complete` waits for that.
-
-        Being *inside* the boundary is also what keeps this module out of the
-        build's `modulepreload` hints. Hinting it would put the island back on
-        the critical path and undo the split.
-      -->
-      <script type="module" async src="./weather-panel.js"></script>
-      <weather-panel status="loading"></weather-panel>
-    </boundary>
-  </header>
-
-  <main>
-    <boundary name="composer-ready">
-      <message-composer draft="" posted=""></message-composer>
-    </boundary>
-
-    <section aria-label="Feed">
-      <boundary name="feed-batch-1">
-        <for each="post in feedBatch1">
-          <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
-        </for>
-      </boundary>
-
-      <boundary name="feed-batch-2">
-        <for each="post in feedBatch2">
-          <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
-        </for>
-      </boundary>
-
-      <boundary name="feed-batch-3">
-        <for each="post in feedBatch3">
-          <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
-        </for>
-      </boundary>
-    </section>
-  </main>
+  <streaming-page
+    :feed-batch-1="{{feedBatch1}}"
+    :feed-batch-2="{{feedBatch2}}"
+    :feed-batch-3="{{feedBatch3}}"
+  ></streaming-page>
 </body>
 </html>

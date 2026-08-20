@@ -13,6 +13,47 @@ typedef void webui_protocol_t;
  */
 typedef void webui_streaming_session_t;
 
+/**
+ * Opaque owned result from one streaming start or resume call.
+ */
+typedef void webui_streaming_step_t;
+
+/**
+ * C-safe boundary mode value accepted by [`webui_streaming_session_resume`].
+ */
+typedef uint32_t webui_boundary_mode_t;
+
+/**
+ * C-safe boundary key discriminator returned by
+ * [`webui_streaming_step_boundary_key_type`].
+ */
+typedef uint32_t webui_boundary_key_type_t;
+
+/**
+ * Commit the boundary once and release its boundary-local roots.
+ */
+#define WEBUI_BOUNDARY_MODE_FINAL 0
+
+/**
+ * Retain live roots until terminal so updates may target the boundary.
+ */
+#define WEBUI_BOUNDARY_MODE_UPDATABLE 1
+
+/**
+ * The boundary declaration has no runtime key.
+ */
+#define WEBUI_BOUNDARY_KEY_NONE 0
+
+/**
+ * The boundary key is a UTF-8 string.
+ */
+#define WEBUI_BOUNDARY_KEY_STRING 1
+
+/**
+ * The boundary key is a finite JSON number.
+ */
+#define WEBUI_BOUNDARY_KEY_NUMBER 2
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -180,13 +221,13 @@ char *webui_protocol_tokens(const webui_protocol_t *protocol_ptr);
  * Open a host-driven progressive response for a streaming entry.
  *
  * Unlike [`webui_handler_render`], which produces the whole document in one
- * call, the returned session hands back one chunk per call so the host owns
- * the socket, the write order, and backpressure. Any nonce previously set
- * with [`webui_handler_set_nonce`] is captured for the life of the session.
+ * call, the returned session advances through [`webui_streaming_session_start`]
+ * and [`webui_streaming_session_resume`] so the host owns the socket, write
+ * order, and backpressure. Any nonce previously set with
+ * [`webui_handler_set_nonce`] is captured for the life of the session.
  *
  * Returns `NULL` on error; call [`webui_last_error`] for details. The handle
- * must be released with [`webui_streaming_session_destroy`] even after
- * [`webui_streaming_session_finish`] succeeds.
+ * must be released with [`webui_streaming_session_destroy`].
  *
  * # Thread Safety
  *
@@ -219,126 +260,215 @@ webui_streaming_session_t *webui_streaming_session_create(void *handler_ptr,
 void webui_streaming_session_destroy(webui_streaming_session_t *session_ptr);
 
 /**
- * Resolve an authored boundary name to a stable integer handle.
+ * Render until the first runtime boundary occurrence or terminal completion.
  *
- * Resolve once outside the write loop and reuse the handle; the write calls
- * never hash a name.
- *
- * Returns `true` on success and writes the handle to `out_boundary`. On
- * failure returns `false` and leaves `out_boundary` untouched; call
- * [`webui_last_error`] for the valid names and a suggestion.
+ * The returned owned step must be released with
+ * [`webui_streaming_step_destroy`]. A `NULL` return indicates an error
+ * available through [`webui_last_error`].
  *
  * # Safety
  *
- * * `session_ptr` must be a live session handle.
- * * `name` must be non-null, null-terminated UTF-8.
- * * `out_boundary` must be non-null and writable.
+ * * `session_ptr` must be a live session handle with no concurrent operation.
+ * * `state_json` must be non-null, null-terminated UTF-8 and remain readable
+ *   for this call.
  */
-bool webui_streaming_session_boundary(const webui_streaming_session_t *session_ptr,
-                                      const char *name,
-                                      uint32_t *out_boundary);
+webui_streaming_step_t *webui_streaming_session_start(webui_streaming_session_t *session_ptr,
+                                                      const char *state_json);
 
 /**
- * Return the number of compile-time boundaries declared by this entry.
+ * Commit the pending occurrence and advance to the next occurrence or terminal.
  *
- * Returns `0` for a `NULL` handle.
+ * `mode` must be [`WEBUI_BOUNDARY_MODE_FINAL`] or
+ * [`WEBUI_BOUNDARY_MODE_UPDATABLE`]. The returned owned step must be released
+ * with [`webui_streaming_step_destroy`]. A `NULL` return indicates an error
+ * available through [`webui_last_error`].
  *
  * # Safety
  *
- * `session_ptr` must be a live session handle, or `NULL`.
+ * * `session_ptr` must be a live session handle with no concurrent operation.
+ * * `state_json` must be non-null, null-terminated UTF-8 and remain readable
+ *   for this call.
  */
-uint32_t webui_streaming_session_boundary_count(const webui_streaming_session_t *session_ptr);
+webui_streaming_step_t *webui_streaming_session_resume(webui_streaming_session_t *session_ptr,
+                                                       uint32_t instance_id,
+                                                       const char *state_json,
+                                                       webui_boundary_mode_t mode);
 
 /**
- * Report whether the terminal record has been written.
+ * Emit a projected state patch for a committed updatable occurrence.
  *
- * Returns `true` for a `NULL` handle, because a session that does not exist
- * can never accept another call.
+ * Returns allocated bytes that must be freed with [`webui_free`]. On success,
+ * `out_len` receives the authoritative byte length excluding the allocation's
+ * trailing NUL. On failure, `NULL` is returned and `out_len` is untouched.
+ * Call [`webui_last_error`] for details.
  *
  * # Safety
  *
- * `session_ptr` must be a live session handle, or `NULL`.
+ * * `session_ptr` must be a live session handle with no concurrent operation.
+ * * `patch_json` must be non-null, null-terminated UTF-8 and remain readable
+ *   for this call.
+ * * `out_len` must be non-null and writable.
  */
-bool webui_streaming_session_is_finished(const webui_streaming_session_t *session_ptr);
+char *webui_streaming_session_update(webui_streaming_session_t *session_ptr,
+                                     uint32_t instance_id,
+                                     const char *patch_json,
+                                     uintptr_t *out_len);
 
 /**
- * Render everything before the first boundary.
+ * Release an owned streaming step.
  *
- * Returns a NUL-terminated UTF-8 chunk that must be freed with
- * [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
- * the byte length excluding the terminator, so hosts writing to a socket do
- * not need `strlen`.
+ * Destroying a step invalidates its byte pointer and all descriptor string
+ * pointers previously returned by step accessors.
  *
  * # Safety
  *
- * * `session_ptr` must be a live session handle.
- * * `state_json` must be non-null, null-terminated UTF-8.
- * * `out_len` must be writable, or `NULL`.
+ * `step_ptr` must be a pointer returned by
+ * [`webui_streaming_session_start`] or [`webui_streaming_session_resume`], or
+ * `NULL` for a no-op. A non-null pointer must not be used after this call.
  */
-char *webui_streaming_session_write_shell(webui_streaming_session_t *session_ptr,
-                                          const char *state_json,
+void webui_streaming_step_destroy(webui_streaming_step_t *step_ptr);
+
+/**
+ * Borrow the bytes produced by this step and write their length to `out_len`.
+ *
+ * The returned pointer is borrowed from `step_ptr`, is not NUL-terminated,
+ * and remains valid only until [`webui_streaming_step_destroy`]. It may be
+ * read for exactly `out_len` bytes. Returns `NULL` on error.
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_len` must be non-null and writable.
+ */
+const uint8_t *webui_streaming_step_bytes(const webui_streaming_step_t *step_ptr,
                                           uintptr_t *out_len);
 
 /**
- * Render and commit the next boundary in declaration order.
+ * Observe whether this step emitted the terminal record.
  *
- * Pass `updatable = true` only for boundaries you intend to patch later with
- * [`webui_streaming_session_update`]; an updatable boundary retains its roots
- * and projection until the terminal record.
- *
- * Returns a NUL-terminated UTF-8 chunk that must be freed with
- * [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
- * the byte length excluding the terminator.
+ * A valid non-terminal step returns `false` with no last error. A null handle
+ * returns `false` and sets [`webui_last_error`].
  *
  * # Safety
  *
- * * `session_ptr` must be a live session handle.
- * * `state_json` must be non-null, null-terminated UTF-8.
- * * `out_len` must be writable, or `NULL`.
+ * `step_ptr` must be a live step handle with no concurrent destroy.
  */
-char *webui_streaming_session_write_boundary(webui_streaming_session_t *session_ptr,
-                                             uint32_t boundary,
-                                             const char *state_json,
-                                             bool updatable,
-                                             uintptr_t *out_len);
+bool webui_streaming_step_done(const webui_streaming_step_t *step_ptr);
 
 /**
- * Push a projected state patch to a committed updatable boundary.
+ * Observe whether this step carries a pending boundary descriptor.
  *
- * Returns a NUL-terminated UTF-8 chunk that must be freed with
- * [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
- * the byte length excluding the terminator.
+ * A valid boundary-free step returns `false` with no last error. A null handle
+ * returns `false` and sets [`webui_last_error`].
  *
  * # Safety
  *
- * * `session_ptr` must be a live session handle.
- * * `state_json` must be non-null, null-terminated UTF-8.
- * * `out_len` must be writable, or `NULL`.
+ * `step_ptr` must be a live step handle with no concurrent destroy.
  */
-char *webui_streaming_session_update(webui_streaming_session_t *session_ptr,
-                                     uint32_t boundary,
-                                     const char *state_json,
-                                     uintptr_t *out_len);
+bool webui_streaming_step_has_boundary(const webui_streaming_step_t *step_ptr);
 
 /**
- * Render the document tail and emit the terminal record.
+ * Read the pending boundary's response-local instance ID.
  *
- * Every later call fails. The handle must still be released with
- * [`webui_streaming_session_destroy`].
- *
- * Returns a NUL-terminated UTF-8 chunk that must be freed with
- * [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
- * the byte length excluding the terminator.
+ * Returns `false` and leaves `out_instance_id` untouched when the step has no
+ * boundary or an argument is invalid.
  *
  * # Safety
  *
- * * `session_ptr` must be a live session handle.
- * * `state_json` must be non-null, null-terminated UTF-8.
- * * `out_len` must be writable, or `NULL`.
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_instance_id` must be non-null and writable.
  */
-char *webui_streaming_session_finish(webui_streaming_session_t *session_ptr,
-                                     const char *state_json,
-                                     uintptr_t *out_len);
+bool webui_streaming_step_boundary_instance_id(const webui_streaming_step_t *step_ptr,
+                                               uint32_t *out_instance_id);
+
+/**
+ * Read the pending boundary's stable compiler declaration ID.
+ *
+ * Returns `false` and leaves `out_declaration_id` untouched when the step has
+ * no boundary or an argument is invalid.
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_declaration_id` must be non-null and writable.
+ */
+bool webui_streaming_step_boundary_declaration_id(const webui_streaming_step_t *step_ptr,
+                                                  uint32_t *out_declaration_id);
+
+/**
+ * Borrow the pending boundary owner's UTF-8 bytes.
+ *
+ * The returned string pointer is not NUL-terminated. It is borrowed from the
+ * step and remains valid only until [`webui_streaming_step_destroy`]. Read it
+ * for exactly the byte length written to `out_len`. Returns `NULL` on error.
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_len` must be non-null and writable.
+ */
+const char *webui_streaming_step_boundary_owner(const webui_streaming_step_t *step_ptr,
+                                                uintptr_t *out_len);
+
+/**
+ * Borrow the pending boundary name's UTF-8 bytes.
+ *
+ * The returned string pointer is not NUL-terminated. It is borrowed from the
+ * step and remains valid only until [`webui_streaming_step_destroy`]. Read it
+ * for exactly the byte length written to `out_len`. Returns `NULL` on error.
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_len` must be non-null and writable.
+ */
+const char *webui_streaming_step_boundary_name(const webui_streaming_step_t *step_ptr,
+                                               uintptr_t *out_len);
+
+/**
+ * Read the pending boundary key discriminator.
+ *
+ * On success, writes exactly one of [`WEBUI_BOUNDARY_KEY_NONE`],
+ * [`WEBUI_BOUNDARY_KEY_STRING`], or [`WEBUI_BOUNDARY_KEY_NUMBER`]. Returns
+ * `false` and leaves `out_key_type` untouched on error.
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_key_type` must be non-null and writable.
+ */
+bool webui_streaming_step_boundary_key_type(const webui_streaming_step_t *step_ptr,
+                                            webui_boundary_key_type_t *out_key_type);
+
+/**
+ * Borrow the pending boundary's string key as UTF-8 bytes.
+ *
+ * The returned string pointer is not NUL-terminated. It is borrowed from the
+ * step and remains valid only until [`webui_streaming_step_destroy`]. Read it
+ * for exactly the byte length written to `out_len`. A non-string key returns
+ * `NULL`, leaves `out_len` untouched, and sets [`webui_last_error`].
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_len` must be non-null and writable.
+ */
+const char *webui_streaming_step_boundary_key_string(const webui_streaming_step_t *step_ptr,
+                                                     uintptr_t *out_len);
+
+/**
+ * Read the pending boundary's numeric key.
+ *
+ * Returns `false`, leaves `out_value` untouched, and sets
+ * [`webui_last_error`] when the key is absent or is a string.
+ *
+ * # Safety
+ *
+ * * `step_ptr` must be a live step handle with no concurrent destroy.
+ * * `out_value` must be non-null and writable.
+ */
+bool webui_streaming_step_boundary_key_number(const webui_streaming_step_t *step_ptr,
+                                              double *out_value);
 
 #ifdef __cplusplus
 }  // extern "C"

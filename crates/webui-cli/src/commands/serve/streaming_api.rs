@@ -12,13 +12,16 @@ use std::time::Duration;
 use actix_web::http::header::{HeaderMap, CONTENT_TYPE};
 use actix_web::HttpResponse;
 use bytes::{Bytes, BytesMut};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{Stream, StreamExt};
 use webui::streaming::{ChunkPool, StreamingWriter};
-use webui::{BoundaryId, BoundaryMode, HandlerError, Protocol, RenderOptions, StreamingResponse};
+use webui::{
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError, Protocol,
+    RenderOptions,
+};
 
 use super::create_handler;
 use crate::commands::common::Plugin;
@@ -26,9 +29,9 @@ use crate::commands::common::Plugin;
 pub(super) const MEDIA_TYPE: &str = "application/x-webui-stream";
 pub(super) const ACCEPT: &str = "application/x-webui-stream, application/json";
 
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
 const MAX_RECORD_BYTES: usize = 2_000_000;
-const MAX_INITIAL_SHELL_BYTES: usize = 4_000_000;
+const MAX_PRECOMMIT_BYTES: usize = 4_000_000;
 const INITIAL_RECORD_CAPACITY: usize = 4 * 1024;
 
 pub(super) struct StateDefaults {
@@ -84,51 +87,99 @@ pub(super) struct RenderConfig {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 enum ApiStreamCommand {
-    Shell {
+    Start {
         version: u8,
         state: Value,
     },
-    Boundary {
-        name: String,
+    Resume {
+        boundary: ApiBoundaryTarget,
         #[serde(default)]
         mode: ApiBoundaryMode,
-        state: Option<Value>,
-    },
-    Update {
-        name: String,
         state: Value,
     },
-    Finish {
-        state: Option<Value>,
+    Update {
+        boundary: ApiBoundaryTarget,
+        state: Value,
     },
 }
 
 impl ApiStreamCommand {
     fn prepare(&mut self, defaults: &StateDefaults, record: usize) -> Result<(), ApiStreamError> {
         match self {
-            Self::Shell { state, .. } => defaults.apply_record(state, record),
-            Self::Boundary {
-                state: Some(state), ..
+            Self::Start { state, .. } | Self::Resume { state, .. } => {
+                defaults.apply_record(state, record)
             }
-            | Self::Finish { state: Some(state) } => defaults.apply_record(state, record),
             Self::Update { state, .. } if !state.is_object() => {
                 Err(ApiStreamError::StateMustBeObject { record })
             }
-            Self::Boundary { state: None, .. }
-            | Self::Finish { state: None }
-            | Self::Update { .. } => Ok(()),
+            Self::Update { .. } => Ok(()),
         }
     }
 
-    fn shell_version(&self) -> Option<u8> {
+    fn start_version(&self) -> Option<u8> {
         match self {
-            Self::Shell { version, .. } => Some(*version),
+            Self::Start { version, .. } => Some(*version),
             _ => None,
         }
     }
 
-    fn is_finish(&self) -> bool {
-        matches!(self, Self::Finish { .. })
+    const fn name(&self) -> &'static str {
+        match self {
+            Self::Start { .. } => "start",
+            Self::Resume { .. } => "resume",
+            Self::Update { .. } => "update",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApiBoundaryTarget {
+    owner: String,
+    name: String,
+    #[serde(default, deserialize_with = "deserialize_boundary_key")]
+    key: Option<ApiBoundaryKey>,
+    #[serde(default)]
+    declaration_id: Option<u32>,
+}
+
+impl ApiBoundaryTarget {
+    fn matches(&self, boundary: &BoundaryDescriptor) -> bool {
+        self.owner.as_str() == boundary.owner.as_ref()
+            && self.name.as_str() == boundary.name.as_ref()
+            && self.key.matches(&boundary.key)
+            && self
+                .declaration_id
+                .is_none_or(|id| id == boundary.declaration_id)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(untagged)]
+enum ApiBoundaryKey {
+    String(String),
+    Number(serde_json::Number),
+}
+
+fn deserialize_boundary_key<'de, D>(deserializer: D) -> Result<Option<ApiBoundaryKey>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ApiBoundaryKey::deserialize(deserializer).map(Some)
+}
+
+trait ApiBoundaryKeyOptionExt {
+    fn matches(&self, key: &Option<BoundaryKey>) -> bool;
+}
+
+impl ApiBoundaryKeyOptionExt for Option<ApiBoundaryKey> {
+    fn matches(&self, key: &Option<BoundaryKey>) -> bool {
+        match (self, key) {
+            (None, None) => true,
+            (Some(ApiBoundaryKey::String(left)), Some(BoundaryKey::String(right))) => left == right,
+            (Some(ApiBoundaryKey::Number(left)), Some(BoundaryKey::Number(right))) => left == right,
+            _ => false,
+        }
     }
 }
 
@@ -163,16 +214,14 @@ enum ApiStreamError {
     },
     #[error("WebUI API stream record {record} must contain an object-valued state")]
     StateMustBeObject { record: usize },
-    #[error("WebUI API stream record {record} must be the initial shell record")]
-    MissingShell { record: usize },
-    #[error("WebUI API stream record {record} repeats the shell record")]
-    DuplicateShell { record: usize },
+    #[error("WebUI API stream record {record} must be the initial start record")]
+    MissingStart { record: usize },
+    #[error("WebUI API stream record {record} repeats the start record")]
+    DuplicateStart { record: usize },
     #[error(
         "WebUI API stream record {record} uses unsupported version {version}; send version {VERSION}"
     )]
     UnsupportedVersion { record: usize, version: u8 },
-    #[error("WebUI API stream ended before a finish record; send {{\"type\":\"finish\"}}")]
-    MissingFinish,
     #[error("WebUI API stream transport failed: {0}")]
     Backend(String),
     #[error("WebUI API stream renderer stopped before accepting record {record}")]
@@ -180,15 +229,60 @@ enum ApiStreamError {
 }
 
 #[derive(Debug, Error)]
-enum ShellInitializationError {
+enum StreamInitializationError {
     #[error("{0}")]
     Render(String),
-    #[error("WebUI streaming renderer stopped during initialization")]
+    #[error("WebUI streaming renderer stopped during start")]
     RendererStopped,
     #[error(
-        "WebUI initial streaming shell exceeds the 4,000,000-byte precommit limit; reduce the initial state or move content behind a boundary"
+        "WebUI initial streaming output exceeds the 4,000,000-byte precommit limit; reduce the initial state or move content behind a boundary"
     )]
     TooLarge,
+}
+
+#[derive(Debug, Error)]
+enum RendererError {
+    #[error(transparent)]
+    Handler(#[from] HandlerError),
+    #[error("WebUI API stream renderer expected the validated initial start record")]
+    ExpectedStart,
+    #[error("WebUI API stream renderer stopped before receiving the initial start record")]
+    MissingStart,
+    #[error("WebUI API stream record {record} repeats the start record")]
+    DuplicateStart { record: usize },
+    #[error(
+        "WebUI API stream record {record} resumes {received}, but the current cursor is {expected}; echo the pending boundary owner, name, and typed key exactly"
+    )]
+    ResumeMismatch {
+        record: usize,
+        received: String,
+        expected: String,
+    },
+    #[error(
+        "WebUI API stream record {record} updates {target}, but no matching occurrence was committed as updatable; target an earlier resume with the same owner, name, and typed key"
+    )]
+    UpdateNotCommitted { record: usize, target: String },
+    #[error(
+        "WebUI API stream record {record} updates {target}, but the matching occurrence was committed as final; resume it with mode \"updatable\" before sending updates"
+    )]
+    UpdateFinal { record: usize, target: String },
+    #[error(
+        "WebUI API stream record {record} updates {target}, which matches multiple updatable occurrences; add a stable <boundary key> and include its typed value"
+    )]
+    AmbiguousUpdate { record: usize, target: String },
+    #[error(
+        "WebUI API stream ended while waiting to resume {pending}; send the matching resume record before closing the response body"
+    )]
+    Truncated { pending: String },
+    #[error(
+        "WebUI API stream record {record} sends {command} after the streaming response completed; close the response body after the resume that returns done"
+    )]
+    CommandAfterDone {
+        record: usize,
+        command: &'static str,
+    },
+    #[error("WebUI streaming session returned an unfinished step without a boundary descriptor")]
+    MissingDescriptor,
 }
 
 struct RecordDecoder {
@@ -253,26 +347,33 @@ fn record_too_large(record: usize) -> ApiStreamError {
 }
 
 struct CommandIngest {
-    sender: mpsc::Sender<ApiStreamCommand>,
+    sender: mpsc::Sender<ApiStreamRecord>,
     state_defaults: StateDefaults,
     record: usize,
-    shell_seen: bool,
+    start_seen: bool,
+}
+
+struct ApiStreamRecord {
+    index: usize,
+    command: ApiStreamCommand,
 }
 
 impl CommandIngest {
-    async fn dispatch(&mut self, bytes: &[u8]) -> Result<bool, ApiStreamError> {
+    async fn dispatch(&mut self, bytes: &[u8]) -> Result<(), ApiStreamError> {
         let record = self.record;
         self.record += 1;
         let mut command = serde_json::from_slice::<ApiStreamCommand>(bytes)
             .map_err(|source| ApiStreamError::InvalidJson { record, source })?;
         self.validate_order(&command, record)?;
         command.prepare(&self.state_defaults, record)?;
-        let finished = command.is_finish();
         self.sender
-            .send(command)
+            .send(ApiStreamRecord {
+                index: record,
+                command,
+            })
             .await
             .map_err(|_| ApiStreamError::RendererStopped { record })?;
-        Ok(finished)
+        Ok(())
     }
 
     fn validate_order(
@@ -280,18 +381,18 @@ impl CommandIngest {
         command: &ApiStreamCommand,
         record: usize,
     ) -> Result<(), ApiStreamError> {
-        if let Some(version) = command.shell_version() {
-            if self.shell_seen {
-                return Err(duplicate_shell(record));
+        if let Some(version) = command.start_version() {
+            if self.start_seen {
+                return Err(duplicate_start(record));
             }
             if version != VERSION {
                 return Err(unsupported_version(record, version));
             }
-            self.shell_seen = true;
+            self.start_seen = true;
             return Ok(());
         }
-        if !self.shell_seen {
-            return Err(missing_shell(record));
+        if !self.start_seen {
+            return Err(missing_start(record));
         }
         Ok(())
     }
@@ -299,14 +400,14 @@ impl CommandIngest {
 
 #[cold]
 #[inline(never)]
-fn duplicate_shell(record: usize) -> ApiStreamError {
-    ApiStreamError::DuplicateShell { record }
+fn duplicate_start(record: usize) -> ApiStreamError {
+    ApiStreamError::DuplicateStart { record }
 }
 
 #[cold]
 #[inline(never)]
-fn missing_shell(record: usize) -> ApiStreamError {
-    ApiStreamError::MissingShell { record }
+fn missing_start(record: usize) -> ApiStreamError {
+    ApiStreamError::MissingStart { record }
 }
 
 #[cold]
@@ -389,7 +490,7 @@ where
         sender: command_tx,
         state_defaults,
         record: 0,
-        shell_seen: false,
+        start_seen: false,
     };
 
     if let Err(error) = ingest_first(&mut backend, &mut decoder, &mut ingest).await {
@@ -411,7 +512,7 @@ where
         }
     });
 
-    let (initial_html, html_rx) = match stage_initial_shell(ready_rx, html_rx).await {
+    let (initial_html, html_rx) = match stage_precommit_output(ready_rx, html_rx).await {
         Ok(output) => output,
         Err(error) => {
             log::error!(
@@ -444,10 +545,10 @@ where
         .streaming(stream)
 }
 
-async fn stage_initial_shell(
+async fn stage_precommit_output(
     mut ready: oneshot::Receiver<Result<(), String>>,
     mut html: mpsc::Receiver<Bytes>,
-) -> Result<(Vec<Bytes>, mpsc::Receiver<Bytes>), ShellInitializationError> {
+) -> Result<(Vec<Bytes>, mpsc::Receiver<Bytes>), StreamInitializationError> {
     let mut initial = Vec::with_capacity(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
     let mut total = 0usize;
     loop {
@@ -472,11 +573,11 @@ async fn stage_initial_shell(
 
 fn validate_renderer_ready(
     result: Result<Result<(), String>, oneshot::error::RecvError>,
-) -> Result<(), ShellInitializationError> {
+) -> Result<(), StreamInitializationError> {
     match result {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(ShellInitializationError::Render(error)),
-        Err(_) => Err(ShellInitializationError::RendererStopped),
+        Ok(Err(error)) => Err(StreamInitializationError::Render(error)),
+        Err(_) => Err(StreamInitializationError::RendererStopped),
     }
 }
 
@@ -484,10 +585,10 @@ fn stage_initial_chunk(
     initial: &mut Vec<Bytes>,
     total: &mut usize,
     chunk: Bytes,
-) -> Result<(), ShellInitializationError> {
+) -> Result<(), StreamInitializationError> {
     let next_total = total.saturating_add(chunk.len());
-    if next_total > MAX_INITIAL_SHELL_BYTES {
-        return Err(ShellInitializationError::TooLarge);
+    if next_total > MAX_PRECOMMIT_BYTES {
+        return Err(StreamInitializationError::TooLarge);
     }
     *total = next_total;
     initial.push(chunk);
@@ -496,10 +597,10 @@ fn stage_initial_chunk(
 
 fn run_renderer(
     config: RenderConfig,
-    mut commands: mpsc::Receiver<ApiStreamCommand>,
+    mut commands: mpsc::Receiver<ApiStreamRecord>,
     writer: &mut StreamingWriter,
     ready: oneshot::Sender<Result<(), String>>,
-) -> Result<(), HandlerError> {
+) -> Result<(), RendererError> {
     let handler = create_handler(config.plugin);
     let options = RenderOptions::new(&config.entry, &config.route_path);
     let options = match config.body_inject.as_deref() {
@@ -510,82 +611,194 @@ fn run_renderer(
         Ok(response) => response,
         Err(error) => {
             let _ = ready.send(Err(error.to_string()));
-            return Err(error);
+            return Err(error.into());
         }
     };
-    let mut boundaries = HashMap::with_capacity(response.boundary_count());
-    let base_state = match commands.blocking_recv() {
-        Some(ApiStreamCommand::Shell { state, .. }) => {
-            if let Err(error) = response.write_shell(&state) {
+    let mut committed = Vec::with_capacity(8);
+    let mut status = match commands.blocking_recv() {
+        Some(ApiStreamRecord {
+            command: ApiStreamCommand::Start { state, .. },
+            ..
+        }) => match response.start(&state) {
+            Ok(status) => status,
+            Err(error) => {
                 let _ = ready.send(Err(error.to_string()));
-                return Err(error);
+                return Err(error.into());
             }
-            Some(state)
-        }
+        },
         Some(_) => {
-            let error = HandlerError::Invariant(
-                "streaming API renderer did not receive the validated shell first".to_owned(),
-            );
+            let error = RendererError::ExpectedStart;
             let _ = ready.send(Err(error.to_string()));
             return Err(error);
         }
         None => {
-            let error = HandlerError::Writer(
-                "streaming API command producer stopped before shell rendering".to_owned(),
-            );
+            let error = RendererError::MissingStart;
             let _ = ready.send(Err(error.to_string()));
             return Err(error);
         }
     };
     let _ = ready.send(Ok(()));
 
-    while let Some(command) = commands.blocking_recv() {
-        match command {
-            ApiStreamCommand::Shell { .. } => {
-                return Err(HandlerError::Invariant(
-                    "streaming API renderer received a duplicate shell".to_owned(),
-                ));
+    loop {
+        let Some(record) = commands.blocking_recv() else {
+            if status.done {
+                return Ok(());
             }
-            ApiStreamCommand::Boundary { name, mode, state } => {
-                let boundary = resolve_boundary(&response, &mut boundaries, name)?;
-                let state = state.as_ref().or(base_state.as_ref()).ok_or_else(|| {
-                    HandlerError::Invariant(
-                        "streaming API boundary has no shell or explicit state".to_owned(),
-                    )
-                })?;
-                response.write_boundary(boundary, state, mode.into())?;
+            return Err(RendererError::Truncated {
+                pending: pending_descriptor(&status)?,
+            });
+        };
+        if status.done {
+            return Err(RendererError::CommandAfterDone {
+                record: record.index,
+                command: record.command.name(),
+            });
+        }
+
+        match record.command {
+            ApiStreamCommand::Start { .. } => {
+                return Err(RendererError::DuplicateStart {
+                    record: record.index,
+                });
             }
-            ApiStreamCommand::Update { name, state } => {
-                let boundary = resolve_boundary(&response, &mut boundaries, name)?;
-                response.update(boundary, &state)?;
+            ApiStreamCommand::Resume {
+                boundary,
+                mode,
+                state,
+            } => {
+                let pending = status
+                    .boundary
+                    .as_ref()
+                    .ok_or(RendererError::MissingDescriptor)?;
+                if !boundary.matches(pending) {
+                    return Err(RendererError::ResumeMismatch {
+                        record: record.index,
+                        received: format_target(&boundary),
+                        expected: format_descriptor(pending),
+                    });
+                }
+                let descriptor = pending.clone();
+                let mode = BoundaryMode::from(mode);
+                status = response.resume(descriptor.instance_id, &state, mode)?;
+                committed.push(CommittedBoundary { descriptor, mode });
             }
-            ApiStreamCommand::Finish { state } => {
-                let state = state.as_ref().or(base_state.as_ref()).ok_or_else(|| {
-                    HandlerError::Invariant(
-                        "streaming API finish has no shell or explicit state".to_owned(),
-                    )
-                })?;
-                return response.finish(state);
+            ApiStreamCommand::Update { boundary, state } => {
+                let instance_id = resolve_update(&committed, &boundary, record.index)?;
+                response.update(instance_id, &state)?;
             }
         }
     }
-
-    Err(HandlerError::Writer(
-        "streaming API command producer stopped before finish".to_owned(),
-    ))
 }
 
-fn resolve_boundary(
-    response: &StreamingResponse<'_, StreamingWriter>,
-    boundaries: &mut HashMap<String, BoundaryId>,
-    name: String,
-) -> Result<BoundaryId, HandlerError> {
-    if let Some(boundary) = boundaries.get(&name) {
-        return Ok(*boundary);
+struct CommittedBoundary {
+    descriptor: BoundaryDescriptor,
+    mode: BoundaryMode,
+}
+
+fn resolve_update(
+    committed: &[CommittedBoundary],
+    target: &ApiBoundaryTarget,
+    record: usize,
+) -> Result<BoundaryInstanceId, RendererError> {
+    let mut updatable = None;
+    let mut final_match = false;
+    for boundary in committed {
+        if !target.matches(&boundary.descriptor) {
+            continue;
+        }
+        if boundary.mode == BoundaryMode::Final {
+            final_match = true;
+            continue;
+        }
+        if updatable.is_some() {
+            return Err(RendererError::AmbiguousUpdate {
+                record,
+                target: format_target(target),
+            });
+        }
+        updatable = Some(boundary.descriptor.instance_id);
     }
-    let boundary = response.boundary(&name)?;
-    boundaries.insert(name, boundary);
-    Ok(boundary)
+    if let Some(instance_id) = updatable {
+        return Ok(instance_id);
+    }
+    let target = format_target(target);
+    if final_match {
+        Err(RendererError::UpdateFinal { record, target })
+    } else {
+        Err(RendererError::UpdateNotCommitted { record, target })
+    }
+}
+
+fn pending_descriptor(status: &webui::StreamStatus) -> Result<String, RendererError> {
+    status
+        .boundary
+        .as_ref()
+        .map(format_descriptor)
+        .ok_or(RendererError::MissingDescriptor)
+}
+
+#[cold]
+#[inline(never)]
+fn format_target(target: &ApiBoundaryTarget) -> String {
+    format_boundary_identity(
+        &target.owner,
+        &target.name,
+        target.key.as_ref().map(ApiBoundaryKeyRef::from),
+        target.declaration_id,
+    )
+}
+
+#[cold]
+#[inline(never)]
+fn format_descriptor(boundary: &BoundaryDescriptor) -> String {
+    format_boundary_identity(
+        &boundary.owner,
+        &boundary.name,
+        boundary.key.as_ref().map(ApiBoundaryKeyRef::from),
+        Some(boundary.declaration_id),
+    )
+}
+
+enum ApiBoundaryKeyRef<'a> {
+    String(&'a str),
+    Number(&'a serde_json::Number),
+}
+
+impl<'a> From<&'a ApiBoundaryKey> for ApiBoundaryKeyRef<'a> {
+    fn from(value: &'a ApiBoundaryKey) -> Self {
+        match value {
+            ApiBoundaryKey::String(value) => Self::String(value),
+            ApiBoundaryKey::Number(value) => Self::Number(value),
+        }
+    }
+}
+
+impl<'a> From<&'a BoundaryKey> for ApiBoundaryKeyRef<'a> {
+    fn from(value: &'a BoundaryKey) -> Self {
+        match value {
+            BoundaryKey::String(value) => Self::String(value),
+            BoundaryKey::Number(value) => Self::Number(value),
+        }
+    }
+}
+
+fn format_boundary_identity(
+    owner: &str,
+    name: &str,
+    key: Option<ApiBoundaryKeyRef<'_>>,
+    declaration_id: Option<u32>,
+) -> String {
+    let key = match key {
+        Some(ApiBoundaryKeyRef::String(value)) => format!("{value:?}"),
+        Some(ApiBoundaryKeyRef::Number(value)) => value.to_string(),
+        None => "<none>".to_owned(),
+    };
+    match declaration_id {
+        Some(id) => {
+            format!("boundary owner={owner:?}, name={name:?}, key={key}, declarationId={id}")
+        }
+        None => format!("boundary owner={owner:?}, name={name:?}, key={key}"),
+    }
 }
 
 async fn ingest_first<S>(
@@ -606,7 +819,7 @@ where
                 ingest.dispatch(&record).await?;
                 return Ok(());
             }
-            return Err(missing_shell(0));
+            return Err(missing_start(0));
         };
         decoder.push(&chunk.map_err(ApiStreamError::Backend)?);
     }
@@ -621,32 +834,26 @@ where
     S: Stream<Item = Result<Bytes, String>> + Unpin,
 {
     while let Some(record) = decoder.next()? {
-        if ingest.dispatch(&record).await? {
-            return Ok(());
-        }
+        ingest.dispatch(&record).await?;
     }
     while let Some(chunk) = backend.next().await {
         let chunk = chunk.map_err(ApiStreamError::Backend)?;
         decoder.push(&chunk);
         while let Some(record) = decoder.next()? {
-            if ingest.dispatch(&record).await? {
-                return Ok(());
-            }
+            ingest.dispatch(&record).await?;
         }
     }
 
     if let Some(record) = decoder.finish()? {
-        if ingest.dispatch(&record).await? {
-            return Ok(());
-        }
+        ingest.dispatch(&record).await?;
     }
-    Err(ApiStreamError::MissingFinish)
+    Ok(())
 }
 
 #[cfg(test)]
 async fn ingest<S>(
     mut backend: S,
-    sender: mpsc::Sender<ApiStreamCommand>,
+    sender: mpsc::Sender<ApiStreamRecord>,
     state_defaults: StateDefaults,
 ) -> Result<(), ApiStreamError>
 where
@@ -657,13 +864,14 @@ where
         sender,
         state_defaults,
         record: 0,
-        shell_seen: false,
+        start_seen: false,
     };
     ingest_first(&mut backend, &mut decoder, &mut ingest).await?;
     ingest_remaining(backend, decoder, ingest).await
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)]
 mod tests {
     use super::*;
     use actix_web::body::to_bytes;
@@ -674,14 +882,14 @@ mod tests {
         StateDefaults::new(None, "/".to_owned(), HashMap::new())
     }
 
-    fn shell_render_failure_config() -> RenderConfig {
-        fn structural(value: &str) -> WebUIFragment {
-            let mut signal = String::with_capacity(value.len() + 9);
-            signal.push_str("}}}webui:");
-            signal.push_str(value);
-            WebUIFragment::signal(signal, true)
-        }
+    fn structural(value: &str) -> WebUIFragment {
+        let mut signal = String::with_capacity(value.len() + 9);
+        signal.push_str("}}}webui:");
+        signal.push_str(value);
+        WebUIFragment::signal(signal, true)
+    }
 
+    fn start_render_failure_config() -> RenderConfig {
         let fragments = vec![
             WebUIFragment::raw("<html><head>"),
             structural("head_start"),
@@ -689,28 +897,28 @@ mod tests {
             WebUIFragment::raw("</head><body>"),
             structural("body_start"),
             structural("streaming_root:outside-boundary"),
-            structural("boundary_start:0"),
+            WebUIFragment::boundary(0, "index.html", "content", None),
             WebUIFragment::raw("<main>ready</main>"),
-            structural("boundary_end:0"),
+            WebUIFragment::boundary_end(0),
             structural("body_end"),
             WebUIFragment::raw("</body></html>"),
         ];
         let document = WebUIProtocol::new(HashMap::from([(
             "index.html".to_owned(),
-            FragmentList { fragments },
+            FragmentList {
+                fragments,
+                contains_boundary: true,
+            },
         )]));
         render_config(document)
     }
 
-    fn valid_streaming_config(shell_fragments: Vec<WebUIFragment>) -> RenderConfig {
-        fn structural(value: &str) -> WebUIFragment {
-            let mut signal = String::with_capacity(value.len() + 9);
-            signal.push_str("}}}webui:");
-            signal.push_str(value);
-            WebUIFragment::signal(signal, true)
-        }
-
-        let mut fragments = Vec::with_capacity(shell_fragments.len() + 11);
+    fn valid_streaming_config(
+        precommit_fragments: Vec<WebUIFragment>,
+        boundary_names: &[&str],
+    ) -> RenderConfig {
+        let mut fragments =
+            Vec::with_capacity(precommit_fragments.len() + boundary_names.len() * 3 + 7);
         fragments.extend([
             WebUIFragment::raw("<html><head>"),
             structural("head_start"),
@@ -718,24 +926,31 @@ mod tests {
             WebUIFragment::raw("</head><body>"),
             structural("body_start"),
         ]);
-        fragments.extend(shell_fragments);
-        fragments.extend([
-            structural("boundary_start:0"),
-            WebUIFragment::raw("<main>ready</main>"),
-            structural("boundary_end:0"),
-            structural("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ]);
-        let mut document = WebUIProtocol::new(HashMap::from([(
+        fragments.extend(precommit_fragments);
+        let mut records = HashMap::with_capacity(1);
+        for (declaration_id, name) in boundary_names.iter().enumerate() {
+            let declaration_id = u32::try_from(declaration_id)
+                .unwrap_or_else(|_| panic!("test boundary ID does not fit u32"));
+            fragments.push(WebUIFragment::boundary(
+                declaration_id,
+                "index.html",
+                *name,
+                None,
+            ));
+            fragments.push(WebUIFragment::raw(format!(
+                "<main data-boundary=\"{name}\">ready</main>"
+            )));
+            fragments.push(WebUIFragment::boundary_end(declaration_id));
+        }
+        fragments.extend([structural("body_end"), WebUIFragment::raw("</body></html>")]);
+        records.insert(
             "index.html".to_owned(),
-            FragmentList { fragments },
-        )]));
-        document.streaming_boundaries.insert(
-            "index.html".to_owned(),
-            webui_protocol::StreamingBoundaryList {
-                names: vec!["content".to_owned()],
+            FragmentList {
+                fragments,
+                contains_boundary: !boundary_names.is_empty(),
             },
         );
+        let document = WebUIProtocol::new(records);
         render_config(document)
     }
 
@@ -754,7 +969,7 @@ mod tests {
     }
 
     struct StalledBackend {
-        shell: Option<Bytes>,
+        start: Option<Bytes>,
         dropped: Option<oneshot::Sender<()>>,
     }
 
@@ -762,8 +977,8 @@ mod tests {
         type Item = Result<Bytes, String>;
 
         fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            match self.shell.take() {
-                Some(shell) => Poll::Ready(Some(Ok(shell))),
+            match self.start.take() {
+                Some(start) => Poll::Ready(Some(Ok(start))),
                 None => Poll::Pending,
             }
         }
@@ -783,38 +998,70 @@ mod tests {
             .unwrap_or_else(|error| panic!("decode failed: {error}"))
     }
 
+    fn target(owner: &str, name: &str) -> ApiBoundaryTarget {
+        ApiBoundaryTarget {
+            owner: owner.to_owned(),
+            name: name.to_owned(),
+            key: None,
+            declaration_id: None,
+        }
+    }
+
+    fn run_commands(
+        config: RenderConfig,
+        commands: Vec<ApiStreamCommand>,
+    ) -> (Result<(), RendererError>, Vec<u8>) {
+        let (command_tx, command_rx) = mpsc::channel(commands.len().max(1));
+        for (index, command) in commands.into_iter().enumerate() {
+            command_tx
+                .try_send(ApiStreamRecord { index, command })
+                .unwrap_or_else(|error| panic!("failed to stage test command: {error}"));
+        }
+        drop(command_tx);
+        let (html_tx, mut html_rx) = mpsc::channel(32);
+        let mut writer = StreamingWriter::new(html_tx);
+        let (ready_tx, _ready_rx) = oneshot::channel();
+        let result = run_renderer(config, command_rx, &mut writer, ready_tx);
+        drop(writer);
+        let mut html = Vec::new();
+        while let Ok(chunk) = html_rx.try_recv() {
+            html.extend_from_slice(&chunk);
+        }
+        (result, html)
+    }
+
     #[test]
     fn decoder_reassembles_split_records() {
         let mut decoder = RecordDecoder::new();
-        decoder.push(br#"{"type":"shell","#);
+        decoder.push(br#"{"type":"start","#);
         assert!(next_record(&mut decoder).is_none());
         decoder.push(
             br#""state":{}}
-{"type":"finish"}
+{"type":"resume","boundary":{"owner":"index.html","name":"ready"},"state":{}}
 "#,
         );
 
         assert_eq!(
-            next_record(&mut decoder).unwrap_or_else(|| panic!("missing shell record")),
-            br#"{"type":"shell","state":{}}"#[..]
+            next_record(&mut decoder).unwrap_or_else(|| panic!("missing start record")),
+            br#"{"type":"start","state":{}}"#[..]
         );
         assert_eq!(
-            next_record(&mut decoder).unwrap_or_else(|| panic!("missing finish record")),
-            br#"{"type":"finish"}"#[..]
+            next_record(&mut decoder).unwrap_or_else(|| panic!("missing resume record")),
+            br#"{"type":"resume","boundary":{"owner":"index.html","name":"ready"},"state":{}}"#[..]
         );
         assert!(next_record(&mut decoder).is_none());
         assert!(decoder
             .finish()
-            .unwrap_or_else(|error| panic!("finish failed: {error}"))
+            .unwrap_or_else(|error| panic!("decoder finalization failed: {error}"))
             .is_none());
     }
 
     #[tokio::test]
-    async fn command_stream_requires_shell_and_finish() {
+    async fn command_stream_accepts_start_resume_and_update() {
         let chunks = tokio_stream::iter([Ok(Bytes::from_static(
-            br#"{"type":"shell","version":1,"state":{}}
-{"type":"boundary","name":"ready"}
-{"type":"finish"}
+            br#"{"type":"start","version":2,"state":{}}
+{"type":"resume","boundary":{"owner":"index.html","name":"ready","declarationId":0},"mode":"updatable","state":{}}
+{"type":"update","boundary":{"owner":"index.html","name":"ready"},"state":{"count":2}}
 "#,
         ))]);
         let (sender, mut receiver) = mpsc::channel(4);
@@ -824,39 +1071,48 @@ mod tests {
 
         assert!(matches!(
             receiver.recv().await,
-            Some(ApiStreamCommand::Shell {
-                version: VERSION,
-                ..
+            Some(ApiStreamRecord {
+                command: ApiStreamCommand::Start {
+                    version: VERSION,
+                    ..
+                },
+                index: 0
             })
         ));
         assert!(matches!(
             receiver.recv().await,
-            Some(ApiStreamCommand::Boundary { .. })
+            Some(ApiStreamRecord {
+                command: ApiStreamCommand::Resume { .. },
+                index: 1
+            })
         ));
         assert!(matches!(
             receiver.recv().await,
-            Some(ApiStreamCommand::Finish { .. })
+            Some(ApiStreamRecord {
+                command: ApiStreamCommand::Update { .. },
+                index: 2
+            })
         ));
     }
 
     #[tokio::test]
-    async fn command_before_shell_is_rejected() {
+    async fn command_before_start_is_rejected() {
         let chunks = tokio_stream::iter([Ok(Bytes::from_static(
-            br#"{"type":"boundary","name":"ready"}
+            br#"{"type":"resume","boundary":{"owner":"index.html","name":"ready"},"state":{}}
 "#,
         ))]);
         let (sender, _receiver) = mpsc::channel(1);
         let error = ingest(chunks, sender, defaults())
             .await
             .err()
-            .unwrap_or_else(|| panic!("command before shell was accepted"));
-        assert!(matches!(error, ApiStreamError::MissingShell { record: 0 }));
+            .unwrap_or_else(|| panic!("command before start was accepted"));
+        assert!(matches!(error, ApiStreamError::MissingStart { record: 0 }));
     }
 
     #[tokio::test]
     async fn unsupported_stream_version_is_rejected() {
         let chunks = tokio_stream::iter([Ok(Bytes::from_static(
-            br#"{"type":"shell","version":2,"state":{}}
+            br#"{"type":"start","version":3,"state":{}}
 "#,
         ))]);
         let (sender, _receiver) = mpsc::channel(1);
@@ -868,7 +1124,7 @@ mod tests {
             error,
             ApiStreamError::UnsupportedVersion {
                 record: 0,
-                version: 2
+                version: 3
             }
         ));
     }
@@ -881,18 +1137,173 @@ mod tests {
             .await
             .err()
             .unwrap_or_else(|| panic!("empty stream was accepted"));
-        assert!(matches!(error, ApiStreamError::MissingShell { record: 0 }));
+        assert!(matches!(error, ApiStreamError::MissingStart { record: 0 }));
+    }
+
+    #[test]
+    fn boundary_target_preserves_typed_keys_and_optionally_checks_declaration() {
+        let descriptor = BoundaryDescriptor {
+            instance_id: BoundaryInstanceId::from_raw(4),
+            declaration_id: 9,
+            owner: Arc::from("feed-list"),
+            name: Arc::from("row"),
+            key: Some(BoundaryKey::Number(7.into())),
+        };
+        let mut matching = target("feed-list", "row");
+        matching.key = Some(ApiBoundaryKey::Number(7.into()));
+        assert!(matching.matches(&descriptor));
+        matching.declaration_id = Some(9);
+        assert!(matching.matches(&descriptor));
+        matching.declaration_id = Some(10);
+        assert!(!matching.matches(&descriptor));
+        matching.declaration_id = None;
+        matching.key = Some(ApiBoundaryKey::String("7".to_owned()));
+        assert!(!matching.matches(&descriptor));
+
+        assert!(serde_json::from_str::<ApiStreamCommand>(
+            r#"{"type":"update","boundary":{"owner":"feed-list","name":"row","key":null},"state":{}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn renderer_uses_start_resume_update_and_completes_without_finish_command() {
+        let commands = vec![
+            ApiStreamCommand::Start {
+                version: VERSION,
+                state: serde_json::json!({}),
+            },
+            ApiStreamCommand::Resume {
+                boundary: target("index.html", "content"),
+                mode: ApiBoundaryMode::Updatable,
+                state: serde_json::json!({}),
+            },
+            ApiStreamCommand::Update {
+                boundary: target("index.html", "content"),
+                state: serde_json::json!({ "count": 2 }),
+            },
+            ApiStreamCommand::Resume {
+                boundary: target("index.html", "tail"),
+                mode: ApiBoundaryMode::Final,
+                state: serde_json::json!({}),
+            },
+        ];
+        let (result, html) = run_commands(
+            valid_streaming_config(Vec::new(), &["content", "tail"]),
+            commands,
+        );
+        result.unwrap_or_else(|error| panic!("renderer failed: {error}"));
+        let html = String::from_utf8(html)
+            .unwrap_or_else(|error| panic!("renderer produced invalid UTF-8: {error}"));
+        assert!(html.contains("data-boundary=\"content\""));
+        assert!(html.contains("data-boundary=\"tail\""));
+        assert!(html.contains("[2,3,4,0,{}]"));
+    }
+
+    #[test]
+    fn renderer_rejects_a_resume_that_does_not_match_the_current_cursor() {
+        let commands = vec![
+            ApiStreamCommand::Start {
+                version: VERSION,
+                state: serde_json::json!({}),
+            },
+            ApiStreamCommand::Resume {
+                boundary: target("wrong-owner", "content"),
+                mode: ApiBoundaryMode::Final,
+                state: serde_json::json!({}),
+            },
+        ];
+        let (result, _) = run_commands(valid_streaming_config(Vec::new(), &["content"]), commands);
+        assert!(matches!(
+            result,
+            Err(RendererError::ResumeMismatch { record: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn renderer_rejects_truncation_while_a_cursor_is_pending() {
+        let commands = vec![ApiStreamCommand::Start {
+            version: VERSION,
+            state: serde_json::json!({}),
+        }];
+        let (result, _) = run_commands(valid_streaming_config(Vec::new(), &["content"]), commands);
+        assert!(matches!(result, Err(RendererError::Truncated { .. })));
+    }
+
+    #[test]
+    fn renderer_rejects_commands_after_automatic_completion() {
+        let commands = vec![
+            ApiStreamCommand::Start {
+                version: VERSION,
+                state: serde_json::json!({}),
+            },
+            ApiStreamCommand::Resume {
+                boundary: target("index.html", "content"),
+                mode: ApiBoundaryMode::Final,
+                state: serde_json::json!({}),
+            },
+            ApiStreamCommand::Update {
+                boundary: target("index.html", "content"),
+                state: serde_json::json!({}),
+            },
+        ];
+        let (result, _) = run_commands(valid_streaming_config(Vec::new(), &["content"]), commands);
+        assert!(matches!(
+            result,
+            Err(RendererError::CommandAfterDone {
+                record: 2,
+                command: "update"
+            })
+        ));
+    }
+
+    #[test]
+    fn boundary_free_start_completes_when_the_backend_body_ends() {
+        let commands = vec![ApiStreamCommand::Start {
+            version: VERSION,
+            state: serde_json::json!({}),
+        }];
+        let (result, html) = run_commands(valid_streaming_config(Vec::new(), &[]), commands);
+        result.unwrap_or_else(|error| panic!("boundary-free render failed: {error}"));
+        assert!(String::from_utf8_lossy(&html).contains("[2,0,4,0,{}]"));
+    }
+
+    #[test]
+    fn update_rejects_ambiguous_unkeyed_occurrences() {
+        let descriptor = BoundaryDescriptor {
+            instance_id: BoundaryInstanceId::from_raw(0),
+            declaration_id: 0,
+            owner: Arc::from("row-list"),
+            name: Arc::from("row"),
+            key: None,
+        };
+        let committed = vec![
+            CommittedBoundary {
+                descriptor: descriptor.clone(),
+                mode: BoundaryMode::Updatable,
+            },
+            CommittedBoundary {
+                descriptor: BoundaryDescriptor {
+                    instance_id: BoundaryInstanceId::from_raw(1),
+                    ..descriptor
+                },
+                mode: BoundaryMode::Updatable,
+            },
+        ];
+        assert!(matches!(
+            resolve_update(&committed, &target("row-list", "row"), 3),
+            Err(RendererError::AmbiguousUpdate { record: 3, .. })
+        ));
     }
 
     #[actix_web::test]
-    async fn shell_render_failure_is_reported_before_http_success() {
+    async fn start_render_failure_is_reported_before_http_success() {
         let chunks = tokio_stream::iter([Ok::<Bytes, String>(Bytes::from_static(
-            br#"{"type":"shell","version":1,"state":{}}
-{"type":"finish"}
+            br#"{"type":"start","version":2,"state":{}}
 "#,
         ))]);
 
-        let response = render(chunks, shell_render_failure_config(), defaults()).await;
+        let response = render(chunks, start_render_failure_config(), defaults()).await;
 
         assert_eq!(
             response.status(),
@@ -901,57 +1312,64 @@ mod tests {
     }
 
     #[actix_web::test]
-    async fn initial_shell_larger_than_the_live_channel_is_staged_without_deadlock() {
-        let shell_bytes =
+    async fn precommit_output_larger_than_the_live_channel_is_staged_without_deadlock() {
+        let precommit_bytes =
             (StreamingWriter::DEFAULT_CHANNEL_CAPACITY + 1) * StreamingWriter::CHUNK_TARGET;
-        let shell_fragments = (0..=StreamingWriter::DEFAULT_CHANNEL_CAPACITY)
+        let precommit_fragments = (0..=StreamingWriter::DEFAULT_CHANNEL_CAPACITY)
             .map(|_| WebUIFragment::raw("~".repeat(StreamingWriter::CHUNK_TARGET)))
             .collect();
         let chunks = tokio_stream::iter([Ok::<Bytes, String>(Bytes::from_static(
-            br#"{"type":"shell","version":1,"state":{}}
-{"type":"boundary","name":"content"}
-{"type":"finish"}
+            br#"{"type":"start","version":2,"state":{}}
+{"type":"resume","boundary":{"owner":"index.html","name":"content"},"state":{}}
 "#,
         ))]);
 
         let response = tokio::time::timeout(
             Duration::from_secs(2),
-            render(chunks, valid_streaming_config(shell_fragments), defaults()),
+            render(
+                chunks,
+                valid_streaming_config(precommit_fragments, &["content"]),
+                defaults(),
+            ),
         )
         .await
-        .unwrap_or_else(|_| panic!("initial shell staging deadlocked"));
+        .unwrap_or_else(|_| panic!("precommit staging deadlocked"));
         assert_eq!(response.status(), actix_web::http::StatusCode::OK);
 
         let body = tokio::time::timeout(Duration::from_secs(2), to_bytes(response.into_body()))
             .await
             .unwrap_or_else(|_| panic!("staged response did not finish"))
             .unwrap_or_else(|error| panic!("failed to read staged response: {error}"));
-        assert_eq!(memchr::memchr_iter(b'~', &body).count(), shell_bytes);
-        let shell_position = body
+        assert_eq!(memchr::memchr_iter(b'~', &body).count(), precommit_bytes);
+        let precommit_position = body
             .iter()
             .position(|byte| *byte == b'~')
-            .unwrap_or_else(|| panic!("staged shell bytes are missing"));
+            .unwrap_or_else(|| panic!("staged precommit bytes are missing"));
         let boundary_position = body
-            .windows(b"<main>ready</main>".len())
-            .position(|window| window == b"<main>ready</main>")
+            .windows(b"data-boundary=\"content\"".len())
+            .position(|window| window == b"data-boundary=\"content\"")
             .unwrap_or_else(|| panic!("boundary output is missing"));
-        assert!(shell_position < boundary_position);
+        assert!(precommit_position < boundary_position);
     }
 
     #[actix_web::test]
-    async fn initial_shell_over_precommit_limit_is_rejected() {
+    async fn initial_output_over_precommit_limit_is_rejected() {
         let chunks = tokio_stream::iter([Ok::<Bytes, String>(Bytes::from_static(
-            br#"{"type":"shell","version":1,"state":{}}
+            br#"{"type":"start","version":2,"state":{}}
 "#,
         ))]);
-        let shell = WebUIFragment::raw("x".repeat(MAX_INITIAL_SHELL_BYTES + 1));
+        let precommit = WebUIFragment::raw("x".repeat(MAX_PRECOMMIT_BYTES + 1));
 
         let response = tokio::time::timeout(
             Duration::from_secs(2),
-            render(chunks, valid_streaming_config(vec![shell]), defaults()),
+            render(
+                chunks,
+                valid_streaming_config(vec![precommit], &["content"]),
+                defaults(),
+            ),
         )
         .await
-        .unwrap_or_else(|_| panic!("oversized initial shell timed out"));
+        .unwrap_or_else(|_| panic!("oversized precommit output timed out"));
         assert_eq!(
             response.status(),
             actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
@@ -966,14 +1384,19 @@ mod tests {
     async fn dropping_browser_response_cancels_stalled_backend() {
         let (dropped_tx, dropped_rx) = oneshot::channel();
         let backend = StalledBackend {
-            shell: Some(Bytes::from_static(
-                br#"{"type":"shell","version":1,"state":{}}
+            start: Some(Bytes::from_static(
+                br#"{"type":"start","version":2,"state":{}}
 "#,
             )),
             dropped: Some(dropped_tx),
         };
 
-        let response = render(backend, valid_streaming_config(Vec::new()), defaults()).await;
+        let response = render(
+            backend,
+            valid_streaming_config(Vec::new(), &["content"]),
+            defaults(),
+        )
+        .await;
         assert_eq!(response.status(), actix_web::http::StatusCode::OK);
 
         drop(response);

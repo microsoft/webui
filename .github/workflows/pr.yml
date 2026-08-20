@@ -347,8 +347,8 @@ jobs:
           python -m mypy.stubtest microsoft_webui
 
   # ── Phase 3: Python fixture drift (after Linux build) ──────────────
-  # The committed protocol fixture is a build output, so rebuild it and fail if
-  # it drifted, keeping the Python tests from asserting against a stale binary.
+  # The committed protocol fixtures are build outputs, so rebuild them and fail
+  # if they drift, keeping the Python tests from asserting against stale binaries.
   python-fixture:
     name: Python fixture
     runs-on: ubuntu-latest
@@ -367,20 +367,36 @@ jobs:
       - name: Verify the release-target contract is restated consistently
         run: python crates/webui-python/tests/validate_release_targets.py
 
-      - name: Rebuild and compare the protocol fixture
+      - name: Rebuild and compare the protocol fixtures
         run: |
           set -euo pipefail
-          output=target/python-fixture-check
-          rm -rf "$output"
+          output="target/python-fixture-check"
+          streaming_output="target/python-streaming-fixture-check"
+          rm -rf "$output" "$streaming_output"
           cargo run --quiet -p microsoft-webui-cli -- build \
-            crates/webui-python/tests/fixtures/app --plugin webui --out "$output"
+            "crates/webui-python/tests/fixtures/app" --plugin webui --out "$output"
+          cargo run --quiet -p microsoft-webui-cli -- build \
+            "crates/webui-python/tests/fixtures/streaming-app" \
+            --plugin webui --out "$streaming_output"
           cargo run --quiet -p microsoft-webui-cli -- inspect \
-            crates/webui-python/tests/fixtures/protocol.bin > "$output/committed.json"
+            "crates/webui-python/tests/fixtures/protocol.bin" \
+            > "$output/committed.json"
           cargo run --quiet -p microsoft-webui-cli -- inspect \
             "$output/protocol.bin" > "$output/generated.json"
-          python crates/webui-python/tests/compare_fixture.py \
-            "$output/committed.json" "$output/generated.json"
-          cmp crates/webui-python/tests/fixtures/greeting-card.css \
+          python "crates/webui-python/tests/compare_fixture.py" \
+            "$output/committed.json" "$output/generated.json" \
+            "crates/webui-python/tests/fixtures/protocol.bin"
+          cargo run --quiet -p microsoft-webui-cli -- inspect \
+            "crates/webui-python/tests/fixtures/streaming_protocol.bin" \
+            > "$streaming_output/committed.json"
+          cargo run --quiet -p microsoft-webui-cli -- inspect \
+            "$streaming_output/protocol.bin" \
+            > "$streaming_output/generated.json"
+          python "crates/webui-python/tests/compare_fixture.py" \
+            "$streaming_output/committed.json" \
+            "$streaming_output/generated.json" \
+            "crates/webui-python/tests/fixtures/streaming_protocol.bin"
+          cmp "crates/webui-python/tests/fixtures/greeting-card.css" \
             "$output/greeting-card.css"
 
   # ── Gate: one stable required check ────────────────────────────────

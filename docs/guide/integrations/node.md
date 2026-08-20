@@ -219,30 +219,35 @@ runs, so a `false` result from `response.write()` cannot pause it. That is fine
 for whole-document rendering, but it cannot express a response your server paces.
 
 `protocol.streamResponse()` inverts that. It opens a **session** whose methods
-return the bytes they produced, so your server owns the socket, the write order,
-and the backpressure contract:
+return bytes, so your server owns the socket and backpressure:
 
 ```js
-import { once } from 'node:events';
-
-const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
-
-// Authored boundary names resolve to integer handles once, outside the loop.
-const status = session.boundary('job-status');
-const rows = session.boundary('rows');
+const session = protocol.streamResponse({
+  entry: 'index.html',
+  requestPath: '/',
+});
 
 res.writeHead(200, {
   'Content-Type': 'text/html; charset=utf-8',
   'X-Accel-Buffering': 'no',
 });
 
-await write(res, session.writeShell(baseState));
-await write(res, session.writeBoundary(status, statusState, 'updatable'));
-await write(res, session.writeBoundary(rows, await loadRows()));
+let step = session.start(initialState);
+await write(res, step.bytes);
 
-// Patches an already-hydrated island on this same response.
-await write(res, session.update(status, { jobState: 'succeeded' }));
-res.end(session.finish({}));
+while (!step.done) {
+  const boundary = step.boundary;
+  if (!boundary) throw new Error('unfinished step has no boundary');
+
+  const state = await loadBoundaryState(
+    boundary.owner,
+    boundary.name,
+    boundary.key,
+  );
+  step = session.resume(boundary.instanceId, state, 'final');
+  await write(res, step.bytes);
+}
+res.end();
 
 async function write(res, chunk) {
   if (res.write(chunk)) return;
@@ -263,29 +268,29 @@ async function write(res, chunk) {
 }
 ```
 
-That `write` helper is the entire transport integration, which is why
-the same session drops into Express, Fastify, Hapi, or a raw socket unchanged.
-
-The page's entry template must declare
-[`<boundary>` directives](/guide/concepts/directives/boundary); `boundaryCount`
-reports how many it has.
+The same shape works behind Express, Fastify, Hapi, or a raw socket. Boundaries
+are discovered at runtime through entries, reusable components, conditions,
+loops, and the selected route.
 
 ### StreamingSession
 
 | Member | Description |
 |--------|-------------|
-| `boundary(name)` | Resolve an authored boundary name to its integer handle. Throws with the valid names and a "did you mean …?" suggestion on a typo. |
-| `boundaryCount` | Number of boundaries the entry declares |
-| `finished` | Whether `finish()` has been called |
-| `writeShell(state)` | Bytes for the document prefix through the first semantic flush |
-| `writeBoundary(id, state, mode?)` | Bytes for one boundary's markup, metadata delta, and checkpoint. `mode` is `"final"` (default) or `"updatable"` |
-| `update(id, state)` | Bytes for a projected state patch to a boundary committed as `"updatable"` |
-| `finish(state)` | Bytes for the tail checkpoint, terminal record, and document suffix |
+| `start(state)` | Return `{ bytes, done, boundary? }` through the first occurrence or terminal |
+| `resume(instanceId, state, mode?)` | Commit the pending occurrence, then return the next step |
+| `update(instanceId, patch)` | Return projected state bytes for a committed updatable occurrence |
 
-Ordering is enforced: the shell first, boundaries in declaration order, updates
-only to updatable boundaries already committed, and `finish()` last. A rejected
-call throws and leaves the session usable, so invalid state does not cost you the
-response. Sessions are independent, so hold one per in-flight request.
+A descriptor contains `instanceId`, `declarationId`, `owner`, `name`, and an
+optional string or numeric `key`. Use those fields to load state, then pass
+`instanceId` back to `resume`. The final step already contains tail and terminal
+bytes. `mode` is `"final"` by default or `"updatable"`.
 
-**Runnable example.** `examples/integration/node/streaming-server.js` is a
-complete `node:http` server built on this API, with no sidecar process.
+An update never inserts markup or reruns hydration:
+
+```js
+const patch = session.update(searchInstanceId, { query: 'webui' });
+await write(res, patch);
+```
+
+Sessions are single-driver and independent. Hold one per in-flight request and
+stop driving it after a rendering or transport failure.

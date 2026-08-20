@@ -88,6 +88,7 @@ const {
 /** The activation hook the streaming coordinator invokes on a committed boundary. */
 const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
 const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
+const PENDING_ROOT_CONNECTED = Symbol.for('microsoft.webui.pendingRootConnected');
 
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
@@ -196,6 +197,53 @@ describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral
     } finally {
       console.warn = previousWarn;
     }
+  });
+
+  test('lets a pending-definition resume own activation without replaying ordinary bootstrap state', () => {
+    const tag = 'test-pending-resume-widget';
+    registerTemplate(tag);
+    let ordinaryDeferrals = 0;
+    let received: Record<string, unknown> | undefined;
+
+    class PendingResumeElement extends TemplateElement {
+      protected override $didDeferSSRHydration(): void {
+        ordinaryDeferrals++;
+      }
+    }
+
+    const el = new PendingResumeElement();
+    const raw = el as unknown as {
+      tagName: string;
+      $deferredSSR: boolean;
+      $hydrated: boolean;
+      setAttribute(name: string, value: string): void;
+      removeAttribute(name: string): void;
+      [PENDING_ROOT_CONNECTED]?: () => void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+      ): number;
+    };
+    raw.tagName = tag;
+    raw.$hydrated = true;
+    raw.setAttribute('data-ws', '');
+    raw[PENDING_ROOT_CONNECTED] = () => {
+      received = { status: 'ready' };
+      assert.equal(
+        raw[STREAMING_BOUNDARY_ACTIVATE](received),
+        1,
+      );
+      raw.removeAttribute('data-ws');
+    };
+
+    el.connectedCallback();
+
+    assert.deepEqual(received, { status: 'ready' });
+    assert.equal(raw.$deferredSSR, false);
+    assert.equal(
+      ordinaryDeferrals,
+      0,
+      'ordinary deferral would replay older page bootstrap state after the queued update',
+    );
   });
 
   test('warns for an UNMARKED client-created element with missing metadata (no silent defer)', () => {
@@ -340,6 +388,92 @@ describe('TemplateElement — streamed-host activation ownership', () => {
 
     assert.equal(wasDeferred, true, 'the marker establishes dormant SSR state without connectedCallback');
     assert.deepEqual(received, { detached: true });
+  });
+
+  test('a matching compiler span marker bypasses exactly the unfinished spanning ancestor', () => {
+    const parentTag = 'test-spanning-parent';
+    const childTag = 'test-early-span-child';
+    registerTemplate(parentTag);
+    registerTemplate(childTag);
+
+    const parent = new TemplateElement();
+    const parentRaw = parent as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+    };
+    parentRaw.tagName = parentTag;
+    parentRaw.parentElement = null;
+    parentRaw.$deferredSSR = true;
+    parentRaw.setAttribute('data-ws-span', '4');
+
+    const child = new TemplateElement();
+    const childRaw = child as unknown as {
+      tagName: string;
+      parentElement: Element;
+      $deferredSSR: boolean;
+      $hydrated: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+        bypassSpanInstanceId?: number,
+      ): number;
+    };
+    childRaw.tagName = childTag;
+    childRaw.parentElement = parent as unknown as Element;
+    childRaw.setAttribute('data-ws', '');
+    childRaw.setAttribute('data-ws-enclosing', '4');
+    child.connectedCallback();
+    childRaw.$hydrated = true;
+
+    assert.equal(
+      childRaw[STREAMING_BOUNDARY_ACTIVATE]({ child: true }, 4),
+      1,
+    );
+    assert.equal(childRaw.$deferredSSR, false);
+  });
+
+  test('a mismatched compiler span marker preserves the parent-first barrier', () => {
+    const parentTag = 'test-mismatch-span-parent';
+    const childTag = 'test-mismatch-span-child';
+    registerTemplate(parentTag);
+    registerTemplate(childTag);
+
+    const parent = new TemplateElement();
+    const parentRaw = parent as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+    };
+    parentRaw.tagName = parentTag;
+    parentRaw.parentElement = null;
+    parentRaw.$deferredSSR = true;
+    parentRaw.setAttribute('data-ws-span', '4');
+
+    const child = new TemplateElement();
+    const childRaw = child as unknown as {
+      tagName: string;
+      parentElement: Element;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+        bypassSpanInstanceId?: number,
+      ): number;
+    };
+    childRaw.tagName = childTag;
+    childRaw.parentElement = parent as unknown as Element;
+    childRaw.setAttribute('data-ws', '');
+    childRaw.setAttribute('data-ws-enclosing', '5');
+    child.connectedCallback();
+
+    assert.equal(
+      childRaw[STREAMING_BOUNDARY_ACTIVATE]({ child: true }, 4),
+      4,
+    );
+    assert.equal(childRaw.$deferredSSR, true);
   });
 
   test('authored components do not globally defer unmarked SSR-shaped light DOM', () => {

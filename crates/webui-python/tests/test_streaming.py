@@ -4,138 +4,174 @@
 from __future__ import annotations
 
 import gc
+from dataclasses import FrozenInstanceError
 
 import pytest
-from conftest import STATE
-from microsoft_webui import BoundaryMode, Plugin, Renderer, StateError, StreamingError
+from conftest import STREAMING_STATE
+from microsoft_webui import (
+    BoundaryDescriptor,
+    BoundaryMode,
+    Renderer,
+    StateError,
+    StreamingError,
+    StreamStep,
+)
 
 
-def test_host_driven_streaming_lifecycle(renderer: Renderer) -> None:
-    session = renderer.stream_response(nonce="stream-nonce")
-    greeting = session.boundary("greeting")
-    status = session.boundary("status")
+def require_boundary(step: StreamStep) -> BoundaryDescriptor:
+    assert not step.done
+    assert step.boundary is not None
+    return step.boundary
 
-    assert session.boundary_count == 2
-    assert greeting == 0
-    assert status == 1
-    assert not session.finished
 
-    chunks = [
-        session.write_shell(STATE),
-        session.write_boundary(greeting, STATE, mode=BoundaryMode.UPDATABLE),
-        session.update(greeting, {**STATE, "name": "Grace"}),
-        session.write_boundary(status, STATE),
-        session.finish(STATE),
-    ]
+def test_legacy_streaming_surface_is_removed(streaming_renderer: Renderer) -> None:
+    session = streaming_renderer.stream_response()
 
-    assert all(isinstance(chunk, bytes) for chunk in chunks)
-    assert all(chunks)
-    assert b"Hello, Ada!" in chunks[1]
-    assert b"Grace" in chunks[2]
-    assert b"ready" in chunks[3]
-    assert b"</html>" in chunks[4]
+    for name in (
+        "boundary",
+        "boundary_count",
+        "finished",
+        "write_shell",
+        "write_boundary",
+        "finish",
+    ):
+        assert not hasattr(session, name)
+
+
+def test_discovers_resumes_updates_and_completes(streaming_renderer: Renderer) -> None:
+    session = streaming_renderer.stream_response(nonce="stream-nonce")
+
+    start = session.start(STREAMING_STATE)
+    greeting = require_boundary(start)
+    assert isinstance(start, StreamStep)
+    assert isinstance(start.bytes, bytes)
+    assert greeting == BoundaryDescriptor(
+        instance_id=0,
+        declaration_id=0,
+        owner="index.html",
+        name="greeting",
+        key=None,
+    )
+
+    greeting_step = session.resume(
+        greeting.instance_id,
+        STREAMING_STATE,
+        mode=BoundaryMode.UPDATABLE,
+    )
+    assert b"Hello, Ada!" in greeting_step.bytes
+    assert require_boundary(greeting_step).name == "status"
+
+    update = session.update(greeting.instance_id, {"name": "Grace"})
+    assert isinstance(update, bytes)
+    assert b"Grace" in update
+
+    chunks = [start.bytes, greeting_step.bytes, update]
+    step = greeting_step
+    while not step.done:
+        boundary = require_boundary(step)
+        step = session.resume(boundary.instance_id, STREAMING_STATE)
+        chunks.append(step.bytes)
+
+    assert step.done
+    assert step.boundary is None
+    assert b"</html>" in step.bytes
     assert b'nonce="stream-nonce"' in b"".join(chunks)
-    assert session.finished
 
 
-def test_unknown_boundary_is_actionable(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    with pytest.raises(StreamingError, match="missing"):
-        session.boundary("missing")
+def test_repeated_boundary_keys_preserve_python_types(streaming_renderer: Renderer) -> None:
+    session = streaming_renderer.stream_response()
+    step = session.start(STREAMING_STATE)
+    keys: list[str | int | float] = []
+
+    while not step.done:
+        boundary = require_boundary(step)
+        if boundary.name == "row":
+            assert boundary.key is not None
+            keys.append(boundary.key)
+        step = session.resume(boundary.instance_id, STREAMING_STATE)
+
+    assert keys == [10, 2.5, "last"]
+    assert type(keys[0]) is int
+    assert type(keys[1]) is float
+    assert type(keys[2]) is str
 
 
-def test_ordering_error_is_recoverable(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    greeting = session.boundary("greeting")
-    status = session.boundary("status")
+def test_boundary_free_start_completes(streaming_renderer: Renderer) -> None:
+    session = streaming_renderer.stream_response()
+    step = session.start({**STREAMING_STATE, "show": False})
 
-    with pytest.raises(StreamingError, match="shell"):
-        session.write_boundary(greeting, STATE)
-
-    assert session.write_shell(STATE)
-    with pytest.raises(StreamingError, match="declaration order"):
-        session.write_boundary(status, STATE)
-
-    assert session.write_boundary(greeting, STATE)
-    assert session.write_boundary(status, STATE)
-    assert session.finish(STATE)
+    assert step.done
+    assert step.boundary is None
+    assert b"</html>" in step.bytes
 
 
-def test_finish_error_preserves_open_session(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    greeting = session.boundary("greeting")
-    status = session.boundary("status")
+def test_stream_values_are_immutable(streaming_renderer: Renderer) -> None:
+    step = streaming_renderer.stream_response().start(STREAMING_STATE)
+    boundary = require_boundary(step)
 
-    session.write_shell(STATE)
-    with pytest.raises(StreamingError, match="every boundary must be committed"):
-        session.finish(STATE)
-
-    session.write_boundary(greeting, STATE)
-    session.write_boundary(status, STATE)
-    assert session.finish(STATE)
+    with pytest.raises(FrozenInstanceError):
+        step.done = True  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        boundary.name = "changed"  # type: ignore[misc]
 
 
-def test_updates_require_committed_updatable_boundary(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    greeting = session.boundary("greeting")
-    status = session.boundary("status")
-    session.write_shell(STATE)
-
-    with pytest.raises(StreamingError, match=r"not.*committed"):
-        session.update(greeting, STATE)
-
-    session.write_boundary(greeting, STATE, mode=BoundaryMode.FINAL)
-    with pytest.raises(StreamingError, match="final"):
-        session.update(greeting, STATE)
-
-    session.write_boundary(status, STATE)
-    session.finish(STATE)
-
-
-def test_invalid_state_does_not_advance_session(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    greeting = session.boundary("greeting")
+def test_invalid_state_does_not_advance_session(streaming_renderer: Renderer) -> None:
+    session = streaming_renderer.stream_response()
 
     with pytest.raises(StateError, match="parse state JSON"):
-        session.write_shell(b"{not-json")
+        session.start(b"{not-json")
 
-    assert session.write_shell(STATE)
-    assert session.write_boundary(greeting, STATE)
+    assert require_boundary(session.start(STREAMING_STATE)).name == "greeting"
 
 
-def test_session_outlives_renderer_reference(protocol_bytes: bytes) -> None:
-    renderer = Renderer(protocol_bytes, plugin=Plugin.WEBUI)
+def test_updates_require_committed_updatable_occurrence(
+    streaming_renderer: Renderer,
+) -> None:
+    session = streaming_renderer.stream_response()
+    greeting = require_boundary(session.start(STREAMING_STATE))
+
+    with pytest.raises(StreamingError, match=r"not.*committed"):
+        session.update(greeting.instance_id, {"name": "Grace"})
+
+    step = session.resume(greeting.instance_id, STREAMING_STATE)
+    with pytest.raises(StreamingError, match="final"):
+        session.update(greeting.instance_id, {"name": "Grace"})
+
+    while not step.done:
+        boundary = require_boundary(step)
+        step = session.resume(boundary.instance_id, STREAMING_STATE)
+
+
+def test_resume_rejects_wrong_instance_without_advancing(
+    streaming_renderer: Renderer,
+) -> None:
+    session = streaming_renderer.stream_response()
+    greeting = require_boundary(session.start(STREAMING_STATE))
+
+    with pytest.raises(StreamingError, match="pending"):
+        session.resume(greeting.instance_id + 1, STREAMING_STATE)
+
+    assert require_boundary(session.resume(greeting.instance_id, STREAMING_STATE)).name == "status"
+
+
+def test_session_outlives_renderer_reference(streaming_renderer: Renderer) -> None:
+    renderer = streaming_renderer
     session = renderer.stream_response()
     del renderer
     gc.collect()
 
-    greeting = session.boundary("greeting")
-    status = session.boundary("status")
-    assert session.write_shell(STATE)
-    assert session.write_boundary(greeting, STATE)
-    assert session.write_boundary(status, STATE)
-    assert session.finish(STATE)
+    step = session.start(STREAMING_STATE)
+    while not step.done:
+        boundary = require_boundary(step)
+        step = session.resume(boundary.instance_id, STREAMING_STATE)
+
+    assert b"</html>" in step.bytes
 
 
-def test_finished_session_rejects_further_work(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    session.write_shell(STATE)
-    session.write_boundary(session.boundary("greeting"), STATE)
-    session.write_boundary(session.boundary("status"), STATE)
-    session.finish(STATE)
+def test_completed_session_rejects_further_work(streaming_renderer: Renderer) -> None:
+    session = streaming_renderer.stream_response()
+    step = session.start({**STREAMING_STATE, "show": False})
+    assert step.done
 
-    with pytest.raises(StreamingError, match="already finished"):
-        session.finish(STATE)
-
-
-def test_finish_requires_final_state(renderer: Renderer) -> None:
-    session = renderer.stream_response()
-    session.write_shell(STATE)
-    session.write_boundary(session.boundary("greeting"), STATE)
-    session.write_boundary(session.boundary("status"), STATE)
-
-    with pytest.raises(TypeError, match=r"required positional argument.*state"):
-        session.finish()  # type: ignore[call-arg]
-
-    assert not session.finished
-    assert session.finish(STATE)
+    with pytest.raises(StreamingError, match="already started"):
+        session.start(STREAMING_STATE)

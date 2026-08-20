@@ -11,8 +11,12 @@ export function streamingErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const BOUNDARY_START_PREFIX = 'wb:';
-const BOUNDARY_END_PREFIX = '/wb:';
+/** Root-local runtime BoundaryInstanceId marker prefixes. */
+export const BOUNDARY_START_PREFIX = 'wb:';
+export const BOUNDARY_END_PREFIX = '/wb:';
+/** Root-local runtime SpanInstanceId marker prefixes. */
+export const SPAN_START_PREFIX = 'ws:';
+export const SPAN_END_PREFIX = '/ws:';
 
 /** The DOM span one committed boundary activates. */
 export interface HydrationRange {
@@ -32,38 +36,79 @@ export type RangeResolution =
 
 const MARKERLESS_RANGE: HydrationRange = { start: null, end: null };
 
-/** Resolve the in-order marker range for one checkpoint. */
+/** Resolve the root-local marker range for one boundary occurrence. */
 export function resolveBoundaryRange(
   scriptEl: Element,
-  sequence: number,
-  terminal: boolean,
+  instanceId: number,
 ): RangeResolution {
-  const end = findEndMarker(scriptEl, sequence);
+  return resolveMarkerRange(
+    scriptEl,
+    instanceId,
+    BOUNDARY_START_PREFIX,
+    BOUNDARY_END_PREFIX,
+    'boundary',
+  );
+}
+
+/** Resolve the root-local marker range for one completed component span. */
+export function resolveSpanRange(
+  scriptEl: Element,
+  instanceId: number,
+): RangeResolution {
+  return resolveMarkerRange(
+    scriptEl,
+    instanceId,
+    SPAN_START_PREFIX,
+    SPAN_END_PREFIX,
+    'span',
+  );
+}
+
+function resolveMarkerRange(
+  scriptEl: Element,
+  instanceId: number,
+  startPrefix: string,
+  endPrefix: string,
+  kind: string,
+): RangeResolution {
+  const end = findEndMarker(scriptEl, instanceId, endPrefix);
   if (end) {
-    if (terminal) {
-      return {
-        ok: false,
-        reason: `terminal boundary ${sequence} must be markerless`,
-        truncated: false,
-      };
-    }
-    const start = findStartMarkerBefore(end, sequence);
+    const start = findStartMarkerBefore(end, instanceId, startPrefix);
     if (!start) {
       return {
         ok: false,
-        reason: `missing start marker for boundary ${sequence}`,
+        reason: `missing start marker for ${kind} ${instanceId}`,
         truncated: false,
       };
     }
     return { ok: true, range: { start, end } };
   }
-  if (terminal) return { ok: true, range: MARKERLESS_RANGE };
   return {
     ok: false,
-    reason: `missing end marker for boundary ${sequence}`,
+    reason: `missing end marker for ${kind} ${instanceId}`,
     truncated: true,
-    start: findStartMarkerBefore(scriptEl, sequence),
+    start: findStartMarkerBefore(scriptEl, instanceId, startPrefix),
   };
+}
+
+/** Require an update or terminal record to carry no range markers. */
+export function resolveMarkerlessRecord(
+  scriptEl: Element,
+  kind: string,
+): RangeResolution {
+  const marker = previousComment(scriptEl);
+  if (
+    marker &&
+    (marker.data.startsWith(BOUNDARY_END_PREFIX) ||
+      marker.data.startsWith(SPAN_END_PREFIX))
+  ) {
+    return {
+      ok: false,
+      reason: `${kind} record must be markerless`,
+      truncated: false,
+    };
+  }
+  return { ok: true, range: MARKERLESS_RANGE };
 }
 
 export function findBoundaryScript(sentinel: Element): Element | null {
@@ -86,40 +131,52 @@ export function findBoundaryScript(sentinel: Element): Element | null {
 
 function findEndMarker(
   scriptEl: Element,
-  sequence: number,
+  instanceId: number,
+  prefix: string,
 ): Comment | null {
   const marker = previousComment(scriptEl);
-  return marker?.data === `${BOUNDARY_END_PREFIX}${sequence}`
+  return marker?.data === `${prefix}${instanceId}`
     ? marker
     : null;
 }
 
 function findStartMarkerBefore(
   nodeBefore: Node,
-  sequence: number,
+  instanceId: number,
+  prefix: string,
 ): Comment | null {
   return findCommentBefore(
     nodeBefore,
-    `${BOUNDARY_START_PREFIX}${sequence}`,
+    `${prefix}${instanceId}`,
   );
 }
 
-/** Find a rejected boundary's end marker without a valid parsed sequence. */
-export function findEndMarkerByPrefix(
+/** Find a rejected record's end marker without a valid parsed target. */
+export function findRangeEndMarkerByPrefix(
   scriptEl: Element,
 ): Comment | null {
   const marker = previousComment(scriptEl);
-  return marker?.data.startsWith(BOUNDARY_END_PREFIX) ? marker : null;
+  return marker &&
+      (marker.data.startsWith(BOUNDARY_END_PREFIX) ||
+        marker.data.startsWith(SPAN_END_PREFIX))
+    ? marker
+    : null;
 }
 
 /** Find the start marker paired with a structurally discovered end marker. */
-export function findStartMarkerByPrefix(
+export function findRangeStartMarkerByPrefix(
   endMarker: Comment,
 ): Comment | null {
+  const endPrefix = endMarker.data.startsWith(BOUNDARY_END_PREFIX)
+    ? BOUNDARY_END_PREFIX
+    : SPAN_END_PREFIX;
+  const startPrefix = endPrefix === BOUNDARY_END_PREFIX
+    ? BOUNDARY_START_PREFIX
+    : SPAN_START_PREFIX;
   return findCommentBefore(
     endMarker,
-    `${BOUNDARY_START_PREFIX}${endMarker.data.slice(
-      BOUNDARY_END_PREFIX.length,
+    `${startPrefix}${endMarker.data.slice(
+      endPrefix.length,
     )}`,
   );
 }

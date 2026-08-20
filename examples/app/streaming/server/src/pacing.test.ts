@@ -6,36 +6,40 @@ import { test } from 'node:test';
 
 import { STREAMING_STATE } from './data.js';
 import { streamPage } from './pacing.js';
-import { acceptsWebUIStream, type StreamSink } from './stream-protocol.js';
+import {
+  acceptsWebUIStream,
+  type BoundaryTarget,
+  type StreamSink,
+} from './stream-protocol.js';
 import { TestControls } from './test-controls.js';
 
 interface RecordedCommand {
-  type: 'shell' | 'boundary' | 'update' | 'finish';
-  name?: string;
+  type: 'start' | 'resume' | 'update';
+  boundary?: BoundaryTarget;
 }
 
 class RecordingSink implements StreamSink {
   readonly commands: RecordedCommand[] = [];
   #changed: (() => void) | undefined;
 
-  shell(): Promise<void> {
-    return this.#record({ type: 'shell' });
+  start(): Promise<void> {
+    return this.#record({ type: 'start' });
   }
 
-  boundary(name: string): Promise<void> {
-    return this.#record({ type: 'boundary', name });
+  resume(boundary: BoundaryTarget): Promise<void> {
+    return this.#record({ type: 'resume', boundary });
   }
 
-  update(name: string): Promise<void> {
-    return this.#record({ type: 'update', name });
-  }
-
-  finish(): Promise<void> {
-    return this.#record({ type: 'finish' });
+  update(boundary: BoundaryTarget): Promise<void> {
+    return this.#record({ type: 'update', boundary });
   }
 
   async waitFor(type: RecordedCommand['type'], name?: string): Promise<void> {
-    while (!this.commands.some((command) => command.type === type && command.name === name)) {
+    while (
+      !this.commands.some(
+        (command) => command.type === type && command.boundary?.name === name,
+      )
+    ) {
       await new Promise<void>((resolve) => {
         this.#changed = resolve;
       });
@@ -61,20 +65,22 @@ test('ready weather can arrive between feed boundaries', async () => {
     testSession: session,
   });
 
-  await sink.waitFor('boundary', 'composer-ready');
+  await sink.waitFor('resume', 'composer-ready');
   session.releaseNextFeedGap();
-  await sink.waitFor('boundary', 'feed-batch-1');
+  await sink.waitFor('resume', 'feed-batch-1');
   session.releaseWeather();
   await sink.waitFor('update', 'weather-shell');
   assert.equal(
-    sink.commands.some((command) => command.name === 'feed-batch-2'),
+    sink.commands.some((command) => command.boundary?.name === 'feed-batch-2'),
     false,
   );
 
   session.releaseAll();
   await streaming;
   assert.deepEqual(
-    sink.commands.filter((command) => command.type === 'boundary').map((command) => command.name),
+    sink.commands
+      .filter((command) => command.type === 'resume')
+      .map((command) => command.boundary?.name),
     [
       'weather-shell',
       'composer-ready',
@@ -83,7 +89,46 @@ test('ready weather can arrive between feed boundaries', async () => {
       'feed-batch-3',
     ],
   );
-  assert.equal(sink.commands.at(-1)?.type, 'finish');
+  assert.equal(sink.commands.at(-1)?.boundary?.name, 'feed-batch-3');
+  assert.equal(
+    sink.commands
+      .filter((command) => command.boundary)
+      .every((command) => command.boundary?.owner === 'streaming-page'),
+    true,
+  );
+});
+
+test('a late weather update is sent before the final resume completes the stream', async () => {
+  const controls = new TestControls();
+  const session = controls.session('late-weather');
+  assert.ok(session);
+  const sink = new RecordingSink();
+  const streaming = streamPage(sink, {
+    feedDelayMinMs: 0,
+    feedDelayMaxMs: 0,
+    testSession: session,
+  });
+
+  await sink.waitFor('resume', 'composer-ready');
+  session.releaseNextFeedGap();
+  await sink.waitFor('resume', 'feed-batch-1');
+  session.releaseNextFeedGap();
+  await sink.waitFor('resume', 'feed-batch-2');
+  session.releaseNextFeedGap();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(
+    sink.commands.some((command) => command.boundary?.name === 'feed-batch-3'),
+    false,
+  );
+
+  session.releaseWeather();
+  await streaming;
+  const update = sink.commands.findIndex((command) => command.type === 'update');
+  const finalResume = sink.commands.findIndex(
+    (command) => command.boundary?.name === 'feed-batch-3',
+  );
+  assert.ok(update >= 0);
+  assert.ok(finalResume > update);
 });
 
 test('every feed post carries the fields bound by feed-item', () => {
@@ -124,11 +169,11 @@ test('disconnect cancellation stops before the next paced boundary', async () =>
     signal: abort.signal,
   });
 
-  await sink.waitFor('boundary', 'composer-ready');
+  await sink.waitFor('resume', 'composer-ready');
   abort.abort();
   await assert.rejects(streaming, { name: 'AbortError' });
   assert.equal(
-    sink.commands.some((command) => command.name === 'feed-batch-1'),
+    sink.commands.some((command) => command.boundary?.name === 'feed-batch-1'),
     false,
   );
   session.releaseAll();

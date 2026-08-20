@@ -2,7 +2,7 @@
 # Licensed under the MIT license.
 
 from os import PathLike
-from typing import Self, TypeAlias, final
+from typing import Self, TypeAlias, TypedDict, final
 
 _JsonInput: TypeAlias = str | bytes | bytearray
 _RenderOptions: TypeAlias = tuple[
@@ -18,6 +18,18 @@ class ProtocolError(WebUIError): ...
 class StateError(WebUIError): ...
 class RenderError(WebUIError): ...
 class StreamingError(WebUIError): ...
+
+class _BoundaryDescriptor(TypedDict):
+    instance_id: int
+    declaration_id: int
+    owner: str
+    name: str
+    key: str | int | float | None
+
+class _StreamStep(TypedDict):
+    bytes: bytes
+    done: bool
+    boundary: _BoundaryDescriptor | None
 
 @final
 class _Renderer:
@@ -49,20 +61,14 @@ class _Renderer:
 
 @final
 class _StreamingSession:
-    def boundary(self, name: str) -> int: ...
-    @property
-    def boundary_count(self) -> int: ...
-    @property
-    def finished(self) -> bool: ...
-    def write_shell(self, state_json: _JsonInput) -> bytes: ...
-    def write_boundary(
+    def start(self, state_json: _JsonInput) -> _StreamStep: ...
+    def resume(
         self,
         state_json: _JsonInput,
-        boundary: int,
+        instance_id: int,
         updatable: bool,
-    ) -> bytes: ...
-    def update(self, state_json: _JsonInput, boundary: int) -> bytes: ...
-    def finish(self, state_json: _JsonInput) -> bytes: ...
+    ) -> _StreamStep: ...
+    def update(self, state_json: _JsonInput, instance_id: int) -> bytes: ...
 
 __version__: str
 __all__ = [

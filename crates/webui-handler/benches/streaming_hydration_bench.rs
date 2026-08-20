@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+#![allow(clippy::disallowed_methods)]
+
 //! Progressive streaming hydration benchmark.
 //!
 //! Compares legacy one-shot [`WebUIHandler::render`] with
@@ -22,7 +24,6 @@ use webui_handler::{
 };
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
-use webui_protocol::StreamingBoundaryList;
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
 const BOUNDARY_COUNTS: &[usize] = &[1, 3, 10, 100];
@@ -136,16 +137,6 @@ fn parser_protocol(boundaries: usize) -> Protocol {
 
     let mut document = WebUIProtocol::new(parser.into_fragment_records());
     document.initial_state_strategy = InitialStateStrategy::Components as i32;
-    if boundaries > 0 {
-        document.streaming_boundaries.insert(
-            ENTRY_ID.to_string(),
-            StreamingBoundaryList {
-                names: (0..boundaries)
-                    .map(|index| format!("boundary-{index}"))
-                    .collect(),
-            },
-        );
-    }
     // Attach the benchmark's known component surface after parsing so the timed
     // protocol carries a deterministic hydration payload without depending on
     // the plugin's artifact pipeline.
@@ -211,10 +202,18 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         legacy.flushes.is_empty(),
         "legacy rendering must not request streaming flushes"
     );
+    // Every boundary commits a checkpoint that flushes, plus the terminal
+    // record. A semantic step that returns without producing bytes since the
+    // checkpoint (adjacent boundaries) collapses into the checkpoint flush, so
+    // only steps that actually emit a prefix add one.
     assert_eq!(
         streaming.flushes.len(),
-        boundaries + 1,
-        "each explicit boundary and the terminal record must flush once"
+        boundaries + 2,
+        "each checkpoint flushes, plus the shell prefix and the terminal"
+    );
+    assert!(
+        streaming.flushes.windows(2).all(|pair| pair[0] < pair[1]),
+        "every flush must release bytes that the previous flush did not"
     );
     assert_eq!(
         occurrences(&streaming.output, "data-webui-boundary"),
@@ -278,31 +277,26 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         assert!(
             streaming
                 .output
-                .contains(&format!("[1,{sequence},0,{sequence},")),
+                .contains(&format!("[2,{sequence},0,{sequence},")),
             "streaming output is missing boundary {sequence} envelope"
         );
     }
 
     assert!(
-        streaming.flushes.windows(2).all(|pair| pair[0] < pair[1]),
-        "flush positions must advance in document order"
-    );
-    assert!(
         streaming
             .output
-            .contains(&format!("[1,{boundaries},3,0,{{}}]")),
+            .contains(&format!("[2,{boundaries},4,0,{{}}]")),
         "streaming output is missing the terminal envelope"
-    );
-    // The empty terminal record is always the last envelope and never carries a
-    // bootstrap, regardless of native or scriptless tail bytes.
-    // Every envelope (each boundary commit plus the terminal) opens with the
-    // boundary sentinel prefix, so the prefix count equals boundaries + 1.
+    ); // The empty terminal record is always the last envelope and never carries a
+       // bootstrap, regardless of native or scriptless tail bytes.
+       // Every envelope (each boundary commit plus the terminal) opens with the
+       // boundary sentinel prefix, so the prefix count equals boundaries + 1.
     assert_eq!(
-        occurrences(&streaming.output, "data-webui-boundary>[1,"),
+        occurrences(&streaming.output, "data-webui-boundary>[2,"),
         boundaries + 1,
         "each envelope opens with the boundary sentinel prefix"
     );
-    if let Some(terminal) = streaming.output.find(&format!("[1,{boundaries},3,0,{{}}]")) {
+    if let Some(terminal) = streaming.output.find(&format!("[2,{boundaries},4,0,{{}}]")) {
         if boundaries > 0 {
             match streaming
                 .output
@@ -393,40 +387,46 @@ fn render_state_updates(
         Ok(response) => response,
         Err(error) => panic!("starting streaming response failed: {error}"),
     };
-    let boundary = match response.boundary("boundary-0") {
-        Ok(boundary) => boundary,
-        Err(error) => panic!("resolving benchmark boundary failed: {error}"),
+    let first = match response.start(state) {
+        Ok(status) => status.boundary,
+        Err(error) => panic!("writing benchmark shell failed: {error}"),
     };
-    if let Err(error) = response.write_shell(state) {
-        panic!("writing benchmark shell failed: {error}");
-    }
-    if let Err(error) = response.write_boundary(boundary, state, BoundaryMode::Updatable) {
-        panic!("writing benchmark boundary failed: {error}");
-    }
+    let Some(first) = first else {
+        panic!("benchmark response did not discover its first boundary");
+    };
+    let second = match response.resume(first.instance_id, state, BoundaryMode::Updatable) {
+        Ok(status) => status.boundary,
+        Err(error) => panic!("writing benchmark boundary failed: {error}"),
+    };
+    let Some(second) = second else {
+        panic!("benchmark response completed before state updates");
+    };
     for _ in 0..updates {
-        if let Err(error) = response.update(boundary, state) {
+        if let Err(error) = response.update(first.instance_id, state) {
             panic!("writing benchmark state update failed: {error}");
         }
     }
-    if let Err(error) = response.finish(state) {
-        panic!("finishing benchmark response failed: {error}");
+    match response.resume(second.instance_id, state, BoundaryMode::Final) {
+        Ok(status) if status.done => {}
+        Ok(_) => panic!("benchmark response did not complete"),
+        Err(error) => panic!("finishing benchmark response failed: {error}"),
     }
 }
 
 fn verify_state_updates(updates: usize) -> (Protocol, usize, usize) {
-    let protocol = parser_protocol(1);
+    let protocol = parser_protocol(2);
     let handler = hydration_handler();
     let state = benchmark_state();
-    let mut writer = BenchWriter::new(updates + 3);
+    let mut writer = BenchWriter::new(updates + 4);
     render_state_updates(&handler, &protocol, &state, updates, &mut writer);
 
     assert_eq!(
         writer.flushes.len(),
-        updates + 3,
-        "shell, checkpoint, updates, and terminal must flush independently",
+        updates + 4,
+        "shell prefix, two checkpoints, every update, and the terminal flush independently",
     );
     assert_eq!(
-        occurrences(&writer.output, ",2,0,"),
+        occurrences(&writer.output, ",2,0,{"),
         updates,
         "each update needs one typed state-update record",
     );

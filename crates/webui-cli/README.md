@@ -70,8 +70,24 @@ Features:
 - HMR polling at `/hmr` when `--watch` is enabled
 - API proxy when `--api-port` is set. Backends may return JSON state or a
   versioned, newline-delimited `application/x-webui-stream` control response;
-  the CLI retains the Rust renderer, caps precommit shell staging at 4,000,000
+  the CLI retains the Rust renderer, caps precommit output staging at 4,000,000
   bytes, and cancels the backend when the browser disconnects.
+
+The control response uses version 2 and exactly three command types:
+
+```json
+{"type":"start","version":2,"state":{"title":"Initial state"}}
+{"type":"resume","boundary":{"owner":"index.html","name":"hero"},"mode":"updatable","state":{}}
+{"type":"update","boundary":{"owner":"index.html","name":"hero"},"state":{"status":"ready"}}
+```
+
+`start` is first and supplies the initial object state. Each `resume` must echo
+the pending runtime descriptor's `owner`, `name`, and optional string-or-number
+`key`; `declarationId` may also be supplied for validation. The CLI retains
+committed descriptors, so `update` uses the same target without a reverse
+acknowledgement channel. Ambiguous unkeyed update targets are rejected. A
+`resume` automatically completes the response when its returned step is done;
+the backend then closes its NDJSON body. There is no terminal control command.
 
 ### `webui inspect`
 

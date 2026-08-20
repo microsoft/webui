@@ -17,12 +17,26 @@ let cached: boolean | undefined;
 export const STREAMING_BOUNDARY_ACTIVATE = Symbol.for(
   'microsoft.webui.boundaryActivate',
 );
-/** Shared reconnect hook retained by a detached undefined streamed root. */
+/** Shared resume hook for definition and ancestor-barrier deferred roots. */
 export const PENDING_ROOT_CONNECTED = Symbol.for(
   'microsoft.webui.pendingRootConnected',
 );
 /** Compiler-owned marker for an uncommitted streamed host. */
 export const STREAMED_HOST_ATTR = 'data-ws';
+/**
+ * Compiler-owned SpanInstanceId on an unfinished component host.
+ *
+ * The value is a canonical base-10 integer. It identifies the root-local
+ * `<!--ws:S-->...<!--/ws:S-->` range that will eventually activate this host.
+ */
+export const STREAMING_SPAN_HOST_ATTR = 'data-ws-span';
+/**
+ * Compiler-owned enclosing SpanInstanceId on an early boundary child root.
+ *
+ * Matching this value to `data-ws-span` lets that root bypass exactly one
+ * unfinished ancestor barrier. Unmarked or mismatched roots stay dormant.
+ */
+export const STREAMING_ENCLOSING_SPAN_ATTR = 'data-ws-enclosing';
 
 /**
  * Whether this document was served in streaming-hydration mode.

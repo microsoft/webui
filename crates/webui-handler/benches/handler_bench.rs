@@ -75,6 +75,7 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::component("card"),
                 WebUIFragment::raw("</section>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -100,6 +101,7 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::plugin((3u32).to_le_bytes().to_vec()),
                 WebUIFragment::raw("</x-card>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -112,6 +114,7 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::raw(" size-"),
                 WebUIFragment::signal("size", false),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -125,6 +128,7 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::signal("item.name", false),
                 WebUIFragment::raw("</li>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -136,6 +140,7 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::signal("footer", false),
                 WebUIFragment::raw("</footer>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -276,6 +281,7 @@ fn build_condition_protocol() -> Protocol {
                 ),
                 WebUIFragment::raw("</div>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -290,6 +296,7 @@ fn build_condition_protocol() -> Protocol {
             id.to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(content)],
+                contains_boundary: false,
             },
         );
     }
@@ -378,6 +385,7 @@ fn build_nested_component_protocol() -> Protocol {
                 WebUIFragment::component("app"),
                 WebUIFragment::raw("</body></html>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -393,6 +401,7 @@ fn build_nested_component_protocol() -> Protocol {
                 WebUIFragment::for_loop("item", "items", "item-component"),
                 WebUIFragment::raw("</ul></div>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -408,6 +417,7 @@ fn build_nested_component_protocol() -> Protocol {
                 WebUIFragment::if_cond(ConditionExpr::identifier("item.enabled"), "enabled-badge"),
                 WebUIFragment::raw("</li>"),
             ],
+            contains_boundary: false,
         },
     );
 
@@ -415,6 +425,7 @@ fn build_nested_component_protocol() -> Protocol {
         "enabled-badge".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<span class=\"badge\">✓</span>")],
+            contains_boundary: false,
         },
     );
 
@@ -466,6 +477,7 @@ fn build_signal_protocol(signal_path: &str) -> Protocol {
                 WebUIFragment::signal(signal_path, false),
                 WebUIFragment::raw("</div>"),
             ],
+            contains_boundary: false,
         },
     );
     Protocol::new(WebUIProtocol::new(fragments))

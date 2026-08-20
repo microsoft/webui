@@ -1,0 +1,74 @@
+
+ú
+
+index.htmlç
+)
+'
+%<!DOCTYPE html><html lang="en"><head>
+"
+}}}webui:head_start
+"
+ 
+<meta charset="UTF-8"/><title>
+	"
+title
+
+
+
+</title>
+"
+}}}webui:head_end
+
+
+</head><body>
+"
+}}}webui:body_start
+*
+"
+showif-1
+"
+}}}webui:body_end
+
+
+</body></html>
+∆
+if-1Ω
+R
+index.htmlgreeting
+
+
+<p class="greeting">Hello, 
+"
+name
+	
+
+!</p>
+R8
+R
+index.htmlstatus
+
+
+<p id="status">
+
+"
+status
+
+
+</p>
+R8
+
+itemitemsfor-1
+h
+for-1_
+$R"
+index.htmlrow"{{item.id}}0
+
+
+<p class="row">
+"
+
+item.label
+
+
+</p>
+R8

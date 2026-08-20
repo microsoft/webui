@@ -41,8 +41,9 @@ use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use webui_protocol::{
-    web_ui_fragment, web_ui_fragment::Fragment, ConditionExpr, FragmentList, WebUIFragment,
-    WebUIFragmentAttribute, WebUIFragmentRecords, WebUiFragmentRoute,
+    web_ui_fragment, web_ui_fragment::Fragment, BoundaryPhase, ConditionExpr, FragmentList,
+    WebUIFragment, WebUIFragmentAttribute, WebUIFragmentRecords, WebUiFragmentBoundary,
+    WebUiFragmentRoute,
 };
 
 /// Maximum template size accepted by the parser.
@@ -412,6 +413,15 @@ struct ParseContext {
     raw_buffer: String,
 }
 
+struct PendingBoundary {
+    declaration_id: u32,
+}
+
+struct BoundaryGraphEdge {
+    target: String,
+    repeats: bool,
+}
+
 #[derive(Default)]
 struct FragmentCssTokens {
     definitions: Vec<String>,
@@ -450,12 +460,12 @@ enum ParseOp<'a> {
         depth: usize,
     },
     EmitClose(&'a str),
+    EndComponent(&'a str),
     EndHead(&'a str),
     EndBody(&'a str),
-    /// Close a `<boundary>` opened with response-local sequence
-    /// number `seq`: emits the `boundary_end:<seq>` raw signal and clears
-    /// [`HtmlParser::in_boundary`].
-    EndBoundary(u32),
+    CompleteBoundary {
+        boundary: PendingBoundary,
+    },
     /// Restore [`HtmlParser::foster_context_depth`] to the saved value when
     /// leaving an element that changed it.
     ///
@@ -471,6 +481,7 @@ enum ParseOp<'a> {
         collection: String,
         fragment_id: String,
         keep_empty: bool,
+        previous_for_depth: usize,
     },
     CompleteIf {
         parent: ParseContext,
@@ -537,32 +548,33 @@ pub struct HtmlParser {
     /// Used to name the owning template in authoring [`Diagnostic`]s.
     current_fragment_id: String,
 
-    /// Next `<boundary>` response-local sequence number
-    /// (`boundary_start:<seq>` / `boundary_end:<seq>`). Reset to `0` at the
-    /// start of each top-level [`HtmlParser::parse`] call.
-    boundary_sequence: u32,
+    /// Next protocol-wide compile-time boundary declaration identity.
+    next_boundary_declaration_id: u32,
 
-    /// `<boundary name>` values already used in the current top-level
-    /// parse, so a duplicate name can be rejected.
-    boundary_names: HashSet<String>,
-
-    /// `<boundary name>` values in declaration order for the current entry.
-    /// The build stores this table in `protocol.bin` for one cold host lookup.
-    boundary_names_in_order: Vec<String>,
+    /// Authored boundary names keyed by their owning entry/component template.
+    boundary_names_by_owner: HashMap<String, HashSet<String>>,
 
     /// `true` while parsing is inside an open `<boundary>`, used to
     /// reject a nested boundary.
     in_boundary: bool,
+
+    /// Number of boundary scopes surrounding the current reusable-template
+    /// callsite. Kept separate from lexical `in_boundary` so component syntax
+    /// is analyzed independently while island-owned module entries stay
+    /// excluded from critical preloads.
+    boundary_ancestor_depth: usize,
 
     /// Number of currently open native `<body>` elements. A depth rather than
     /// a boolean preserves the parent state while recursively parsing a
     /// component template.
     body_depth: usize,
 
-    /// Stack of open `<if>`/`<for>` scope descriptions, used to reject a
-    /// `<boundary>` that would cut through a conditionally-rendered or
-    /// repeated scope instead of independently wrapping it.
-    structural_scopes: Vec<&'static str>,
+    /// Number of lexical `<for>` scopes in the current template. Boundaries in
+    /// such scopes can occur repeatedly and therefore require an authored key.
+    for_depth: usize,
+
+    /// Number of runtime route-content scopes currently being parsed.
+    route_depth: usize,
 
     /// Number of enclosing elements whose HTML insertion mode would
     /// foster-parent an unknown element such as the generated
@@ -902,12 +914,13 @@ impl HtmlParser {
             fragment_css_tokens: HashMap::new(),
             in_progress_fragments: HashSet::new(),
             current_fragment_id: String::new(),
-            boundary_sequence: 0,
-            boundary_names: HashSet::new(),
-            boundary_names_in_order: Vec::new(),
+            next_boundary_declaration_id: 0,
+            boundary_names_by_owner: HashMap::new(),
             in_boundary: false,
+            boundary_ancestor_depth: 0,
             body_depth: 0,
-            structural_scopes: Vec::new(),
+            for_depth: 0,
+            route_depth: 0,
             foster_context_depth: 0,
             boundary_parent_scope: None,
             module_entry_srcs: Vec::new(),
@@ -958,21 +971,343 @@ impl HtmlParser {
         self.fragment_records.contains_key(fragment_id)
     }
 
-    /// Number of `<boundary>` streaming checkpoints compiled by the most
-    /// recent top-level [`HtmlParser::parse`] call.
+    /// Compute transitive boundary presence and conservative declaration
+    /// repeatability for the complete parsed fragment graph.
     ///
-    /// Returns `0` for an ordinary, non-streaming entry. Callers use this to
-    /// decide whether streaming-specific build advisories apply.
-    #[must_use]
-    pub fn boundary_count(&self) -> usize {
-        self.boundary_sequence as usize
+    /// This runs only after a top-level parse succeeds. Both analyses are
+    /// iterative: presence propagates through reverse edges, while occurrence
+    /// counts use a two-value (once/many) fixed point. Cycles therefore converge
+    /// without recursion and are conservatively classified as repeatable.
+    #[cold]
+    #[inline(never)]
+    fn finalize_boundary_metadata(&mut self) -> Result<()> {
+        if self.next_boundary_declaration_id != 0 {
+            let (outgoing, direct_boundary_records) = self.boundary_graph();
+            self.mark_boundary_records(&outgoing, direct_boundary_records);
+            let occurrence_counts = self.boundary_occurrence_counts(&outgoing);
+
+            for (fragment_id, list) in &mut self.fragment_records {
+                let repeated = occurrence_counts
+                    .get(fragment_id)
+                    .is_some_and(|count| *count > 1);
+                if !repeated {
+                    continue;
+                }
+                for fragment in &mut list.fragments {
+                    if let Some(Fragment::Boundary(boundary)) = fragment.fragment.as_mut() {
+                        if boundary.phase() == BoundaryPhase::Start {
+                            boundary.may_repeat = true;
+                        }
+                    }
+                }
+            }
+
+            if let Some((owner, name)) = self.find_transitively_nested_boundary() {
+                return Err(Self::transitively_nested_boundary_error(&owner, &name));
+            }
+        }
+        self.finalize_component_span_signals();
+        Ok(())
     }
 
-    /// Free-form `<boundary name>` values in declaration order from the most
-    /// recent top-level [`HtmlParser::parse`] call.
-    #[must_use]
-    pub fn boundary_names(&self) -> &[String] {
-        &self.boundary_names_in_order
+    fn finalize_component_span_signals(&mut self) {
+        const START: &str = "streaming_span_start:";
+        const END: &str = "streaming_span_end:";
+
+        let spanning: HashSet<String> = self
+            .fragment_records
+            .iter()
+            .filter_map(|(id, list)| list.contains_boundary.then_some(id.clone()))
+            .collect();
+        for list in self.fragment_records.values_mut() {
+            let mut normalized = Vec::with_capacity(list.fragments.len());
+            for fragment in list.fragments.drain(..) {
+                let remove = match fragment.fragment.as_ref() {
+                    Some(Fragment::Signal(signal)) => signal
+                        .value
+                        .strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
+                        .and_then(|value| {
+                            value
+                                .strip_prefix(START)
+                                .or_else(|| value.strip_prefix(END))
+                        })
+                        .is_some_and(|tag| !spanning.contains(tag)),
+                    _ => false,
+                };
+                if remove {
+                    continue;
+                }
+                if let Some(Fragment::Raw(raw)) = fragment.fragment.as_ref() {
+                    if let Some(WebUIFragment {
+                        fragment: Some(Fragment::Raw(previous)),
+                    }) = normalized.last_mut()
+                    {
+                        previous.value.push_str(&raw.value);
+                        continue;
+                    }
+                }
+                normalized.push(fragment);
+            }
+            list.fragments = normalized;
+        }
+    }
+
+    fn boundary_graph(&self) -> (HashMap<String, Vec<BoundaryGraphEdge>>, Vec<String>) {
+        let mut outgoing: HashMap<String, Vec<BoundaryGraphEdge>> =
+            HashMap::with_capacity(self.fragment_records.len());
+        let mut direct_boundary_records = Vec::new();
+
+        for (fragment_id, list) in &self.fragment_records {
+            let edges = outgoing.entry(fragment_id.clone()).or_default();
+            for fragment in &list.fragments {
+                match fragment.fragment.as_ref() {
+                    Some(Fragment::Component(component)) => {
+                        Self::push_boundary_edge(edges, &component.fragment_id, false);
+                    }
+                    Some(Fragment::ForLoop(for_loop)) => {
+                        Self::push_boundary_edge(edges, &for_loop.fragment_id, true);
+                    }
+                    Some(Fragment::IfCond(if_cond)) => {
+                        Self::push_boundary_edge(edges, &if_cond.fragment_id, false);
+                    }
+                    Some(Fragment::Boundary(boundary)) => {
+                        if boundary.phase() == BoundaryPhase::Start {
+                            direct_boundary_records.push(fragment_id.clone());
+                        }
+                    }
+                    Some(Fragment::Route(route)) => {
+                        Self::push_route_boundary_edges(edges, route);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        (outgoing, direct_boundary_records)
+    }
+
+    fn push_boundary_edge(edges: &mut Vec<BoundaryGraphEdge>, target: &str, repeats: bool) {
+        if !target.is_empty() {
+            edges.push(BoundaryGraphEdge {
+                target: target.to_string(),
+                repeats,
+            });
+        }
+    }
+
+    fn push_route_boundary_edges(edges: &mut Vec<BoundaryGraphEdge>, root: &WebUiFragmentRoute) {
+        let mut pending = vec![root];
+        while let Some(route) = pending.pop() {
+            Self::push_boundary_edge(edges, &route.fragment_id, false);
+            Self::push_boundary_edge(edges, &route.content_fragment_id, false);
+            Self::push_boundary_edge(edges, &route.pending_component, false);
+            Self::push_boundary_edge(edges, &route.error_component, false);
+            pending.extend(route.children.iter());
+        }
+    }
+
+    fn mark_boundary_records(
+        &mut self,
+        outgoing: &HashMap<String, Vec<BoundaryGraphEdge>>,
+        direct_boundary_records: Vec<String>,
+    ) {
+        for list in self.fragment_records.values_mut() {
+            list.contains_boundary = false;
+        }
+
+        let mut reverse: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (parent, edges) in outgoing {
+            for edge in edges {
+                reverse
+                    .entry(edge.target.as_str())
+                    .or_default()
+                    .push(parent.as_str());
+            }
+        }
+
+        let mut marked = HashSet::with_capacity(self.fragment_records.len());
+        let mut pending = direct_boundary_records;
+        while let Some(fragment_id) = pending.pop() {
+            if !marked.insert(fragment_id.clone()) {
+                continue;
+            }
+            if let Some(list) = self.fragment_records.get_mut(&fragment_id) {
+                list.contains_boundary = true;
+            }
+            if let Some(parents) = reverse.get(fragment_id.as_str()) {
+                pending.extend(parents.iter().map(|parent| (*parent).to_string()));
+            }
+        }
+    }
+
+    fn boundary_occurrence_counts(
+        &self,
+        outgoing: &HashMap<String, Vec<BoundaryGraphEdge>>,
+    ) -> HashMap<String, u8> {
+        let mut incoming: HashMap<&str, Vec<(&str, bool)>> = HashMap::new();
+        for (parent, edges) in outgoing {
+            for edge in edges {
+                incoming
+                    .entry(edge.target.as_str())
+                    .or_default()
+                    .push((parent.as_str(), edge.repeats));
+            }
+        }
+
+        let mut aggregate = HashMap::with_capacity(self.fragment_records.len());
+        for root in &self.token_roots {
+            if !self.fragment_records.contains_key(root) {
+                continue;
+            }
+            let counts = self.boundary_occurrences_from_root(root.as_str(), outgoing, &incoming);
+            for (fragment_id, count) in counts {
+                let current = aggregate.entry(fragment_id).or_insert(0);
+                *current = (*current).max(count);
+            }
+        }
+        aggregate
+    }
+
+    fn boundary_occurrences_from_root(
+        &self,
+        root: &str,
+        outgoing: &HashMap<String, Vec<BoundaryGraphEdge>>,
+        incoming: &HashMap<&str, Vec<(&str, bool)>>,
+    ) -> HashMap<String, u8> {
+        let mut counts: HashMap<String, u8> = HashMap::with_capacity(self.fragment_records.len());
+        counts.insert(root.to_string(), 1);
+        let mut pending = vec![root.to_string()];
+        while let Some(parent) = pending.pop() {
+            let Some(edges) = outgoing.get(&parent) else {
+                continue;
+            };
+            for edge in edges {
+                let next = Self::recompute_boundary_occurrences(
+                    edge.target.as_str(),
+                    root,
+                    incoming,
+                    &counts,
+                );
+                let current = counts.get(&edge.target).copied().unwrap_or(0);
+                if next > current {
+                    counts.insert(edge.target.clone(), next);
+                    pending.push(edge.target.clone());
+                }
+            }
+        }
+        counts
+    }
+
+    fn recompute_boundary_occurrences(
+        fragment_id: &str,
+        root: &str,
+        incoming: &HashMap<&str, Vec<(&str, bool)>>,
+        counts: &HashMap<String, u8>,
+    ) -> u8 {
+        let mut count = u8::from(fragment_id == root);
+        let Some(parents) = incoming.get(fragment_id) else {
+            return count;
+        };
+        for (parent, repeats) in parents {
+            let parent_count = counts.get(*parent).copied().unwrap_or(0);
+            let contribution = if *repeats && parent_count != 0 {
+                2
+            } else {
+                parent_count
+            };
+            count = count.saturating_add(contribution).min(2);
+            if count == 2 {
+                break;
+            }
+        }
+        count
+    }
+
+    /// Locate the lowest-numbered declaration whose inline body reaches another
+    /// boundary through a component, condition, loop, or route record.
+    ///
+    /// Lexical nesting is already rejected while parsing, so this only has to
+    /// look at the child records referenced between a start and end marker.
+    fn find_transitively_nested_boundary(&self) -> Option<(String, String)> {
+        let mut nested: Option<(u32, &str, &str)> = None;
+        for list in self.fragment_records.values() {
+            let mut active: Option<&WebUiFragmentBoundary> = None;
+            for fragment in &list.fragments {
+                let Some(boundary) = active else {
+                    if let Some(Fragment::Boundary(boundary)) = fragment.fragment.as_ref() {
+                        if boundary.phase() == BoundaryPhase::Start {
+                            active = Some(boundary);
+                        }
+                    }
+                    continue;
+                };
+                if let Some(Fragment::Boundary(marker)) = fragment.fragment.as_ref() {
+                    if marker.phase() == BoundaryPhase::End {
+                        active = None;
+                    }
+                    continue;
+                }
+                if !self.fragment_reaches_boundary(fragment) {
+                    continue;
+                }
+                if nested
+                    .as_ref()
+                    .is_none_or(|(id, _, _)| boundary.declaration_id < *id)
+                {
+                    nested = Some((
+                        boundary.declaration_id,
+                        boundary.owner_fragment_id.as_str(),
+                        boundary.name.as_str(),
+                    ));
+                }
+            }
+        }
+        nested.map(|(_, owner, name)| (owner.to_string(), name.to_string()))
+    }
+
+    /// Whether a fragment inside a boundary body reaches a nested declaration
+    /// through one of its child records.
+    fn fragment_reaches_boundary(&self, fragment: &WebUIFragment) -> bool {
+        let reaches = |id: &str| {
+            !id.is_empty()
+                && self
+                    .fragment_records
+                    .get(id)
+                    .is_some_and(|list| list.contains_boundary)
+        };
+        match fragment.fragment.as_ref() {
+            Some(Fragment::Component(component)) => reaches(&component.fragment_id),
+            Some(Fragment::ForLoop(for_loop)) => reaches(&for_loop.fragment_id),
+            Some(Fragment::IfCond(if_cond)) => reaches(&if_cond.fragment_id),
+            Some(Fragment::Route(route)) => {
+                let mut pending = vec![route];
+                while let Some(current) = pending.pop() {
+                    if reaches(&current.fragment_id)
+                        || reaches(&current.content_fragment_id)
+                        || reaches(&current.pending_component)
+                        || reaches(&current.error_component)
+                    {
+                        return true;
+                    }
+                    pending.extend(current.children.iter());
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn transitively_nested_boundary_error(owner: &str, name: &str) -> ParserError {
+        Diagnostic::error(format!(
+            "boundary \"{name}\" transitively contains another boundary"
+        ))
+        .code(codes::NESTED_BOUNDARY)
+        .component(owner)
+        .element("boundary")
+        .snippet(format!("name=\"{name}\""))
+        .help("remove the inner declaration or move it outside the enclosing boundary, including declarations reached through components and runtime branches")
+        .into()
     }
 
     /// `src` of every authored `<script type="module">` outside any
@@ -1144,6 +1479,11 @@ impl HtmlParser {
         out: &mut UnresolvedTokens,
         ops: &mut Vec<TokenGraphOp<'a>>,
     ) {
+        if !route.content_fragment_id.is_empty() {
+            ops.push(TokenGraphOp::EnterFragment(
+                route.content_fragment_id.as_str(),
+            ));
+        }
         let Some(component) = self.component_registry.get(&route.fragment_id) else {
             return;
         };
@@ -1190,23 +1530,9 @@ impl HtmlParser {
         let fragment_key = fragment_id.to_string();
         let is_token_root = self.in_progress_fragments.is_empty();
         if is_token_root {
-            // A new top-level entry template starts a fresh boundary
-            // namespace: sequence numbers are response-local (spec: "0, 1,
-            // …") and names are only required to be unique per entry. Also
-            // reset `in_boundary`/`structural_scopes`, which should already
-            // be empty/false here but could be left dirty if a *previous*
-            // top-level parse on this same `HtmlParser` errored out midway
-            // through an open boundary or `<if>`/`<for>` scope.
-            self.boundary_sequence = 0;
-            self.boundary_names.clear();
-            self.boundary_names_in_order.clear();
-            self.in_boundary = false;
-            self.body_depth = 0;
-            self.structural_scopes.clear();
-            self.foster_context_depth = 0;
-            self.boundary_parent_scope = None;
             self.module_entry_srcs.clear();
         }
+        self.boundary_names_by_owner.remove(&fragment_key);
         // Save the caller's fragment id and restore it before returning. A
         // component parse recurses through `enter_component_directive`
         // (`self.parse(child, …)`); without restoring, the parent would keep
@@ -1232,7 +1558,34 @@ impl HtmlParser {
             self.token_roots.push(fragment_key.clone());
         }
 
-        let result = self.parse_inner(fragment_id, html_content);
+        // Lexical directive/HTML context belongs to one authored template.
+        // Component parsing may recurse while its callsite is inside a loop or
+        // boundary, but those callsite properties are computed later by the
+        // fragment graph analysis rather than leaking into the component's
+        // authored syntax.
+        let previous_in_boundary = std::mem::replace(&mut self.in_boundary, false);
+        let previous_boundary_ancestor_depth = self.boundary_ancestor_depth;
+        if previous_in_boundary {
+            self.boundary_ancestor_depth += 1;
+        }
+        let previous_body_depth = std::mem::replace(&mut self.body_depth, 0);
+        let previous_for_depth = std::mem::replace(&mut self.for_depth, 0);
+        let previous_route_depth = std::mem::replace(&mut self.route_depth, 0);
+        let previous_foster_depth = std::mem::replace(&mut self.foster_context_depth, 0);
+        let previous_parent_scope = self.boundary_parent_scope.take();
+
+        let mut result = self.parse_inner(fragment_id, html_content);
+        if is_token_root && result.is_ok() {
+            result = self.finalize_boundary_metadata();
+        }
+
+        self.in_boundary = previous_in_boundary;
+        self.boundary_ancestor_depth = previous_boundary_ancestor_depth;
+        self.body_depth = previous_body_depth;
+        self.for_depth = previous_for_depth;
+        self.route_depth = previous_route_depth;
+        self.foster_context_depth = previous_foster_depth;
+        self.boundary_parent_scope = previous_parent_scope;
         self.in_progress_fragments.remove(&fragment_key);
         self.current_fragment_id = previous_fragment_id;
         result
@@ -1261,6 +1614,7 @@ impl HtmlParser {
             fragment_id.to_string(),
             FragmentList {
                 fragments: entry_fragment,
+                contains_boundary: false,
             },
         );
 
@@ -1468,7 +1822,7 @@ impl HtmlParser {
                                     self.enter_if_directive(&element, fragments, depth, &mut ops)?;
                                 }
                                 "route" => {
-                                    self.process_route_directive(&element, fragments)?;
+                                    self.process_route_directive(&element, fragments, depth)?;
                                 }
                                 "outlet" => {
                                     self.flush_raw_buffer(fragments);
@@ -1525,6 +1879,13 @@ impl HtmlParser {
                     self.add_raw_fragment(name);
                     self.add_raw_fragment(">");
                 }
+                ParseOp::EndComponent(name) => {
+                    self.add_raw_fragment("</");
+                    self.add_raw_fragment(name);
+                    self.add_raw_fragment(">");
+                    self.flush_raw_buffer(fragments);
+                    fragments.push(structural_signal(format!("streaming_span_end:{name}")));
+                }
                 ParseOp::EndHead(name) => {
                     self.flush_raw_buffer(fragments);
                     fragments.push(structural_signal("head_end"));
@@ -1540,9 +1901,9 @@ impl HtmlParser {
                     self.add_raw_fragment(">");
                     self.body_depth = self.body_depth.saturating_sub(1);
                 }
-                ParseOp::EndBoundary(sequence) => {
+                ParseOp::CompleteBoundary { boundary } => {
                     self.flush_raw_buffer(fragments);
-                    fragments.push(structural_signal(format!("boundary_end:{sequence}")));
+                    fragments.push(WebUIFragment::boundary_end(boundary.declaration_id));
                     self.in_boundary = false;
                 }
                 ParseOp::RestoreFosterDepth(previous) => {
@@ -1557,8 +1918,9 @@ impl HtmlParser {
                     collection,
                     fragment_id,
                     keep_empty,
+                    previous_for_depth,
                 } => {
-                    self.structural_scopes.pop();
+                    self.for_depth = previous_for_depth;
                     self.flush_raw_buffer(fragments);
                     let for_fragment = std::mem::take(fragments);
                     *fragments = parent.fragments;
@@ -1569,6 +1931,7 @@ impl HtmlParser {
                             fragment_id.clone(),
                             FragmentList {
                                 fragments: for_fragment,
+                                contains_boundary: false,
                             },
                         );
                     } else if !keep_empty {
@@ -1582,7 +1945,6 @@ impl HtmlParser {
                     condition,
                     fragment_id,
                 } => {
-                    self.structural_scopes.pop();
                     self.flush_raw_buffer(fragments);
                     let if_fragment = std::mem::take(fragments);
                     *fragments = parent.fragments;
@@ -1592,6 +1954,7 @@ impl HtmlParser {
                         fragment_id.clone(),
                         FragmentList {
                             fragments: if_fragment,
+                            contains_boundary: false,
                         },
                     );
                     self.add_if_fragment(condition, fragment_id, fragments);
@@ -1609,7 +1972,10 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
-        if !self.in_boundary && element.name().eq_ignore_ascii_case("script") {
+        if !self.in_boundary
+            && self.boundary_ancestor_depth == 0
+            && element.name().eq_ignore_ascii_case("script")
+        {
             self.record_module_entry(element);
         }
         self.add_raw_fragment("<");
@@ -1633,7 +1999,7 @@ impl HtmlParser {
                 ops.push(ParseOp::EmitClose(element.name()));
             }
             self.enter_foster_context(element.name(), ops);
-            self.enter_boundary_parent_scope(element.name(), ops);
+            self.enter_boundary_parent_scope(element, ops);
             ops.push(ParseOp::Parse {
                 range: element.inner(),
                 depth: depth + 1,
@@ -1959,13 +2325,15 @@ impl HtmlParser {
             raw_buffer: std::mem::take(&mut self.raw_buffer),
         };
 
-        self.structural_scopes.push("a <for> loop");
+        let previous_for_depth = self.for_depth;
+        self.for_depth += 1;
         ops.push(ParseOp::CompleteFor {
             parent,
             item: item.to_string(),
             collection: collection.to_string(),
             fragment_id,
             keep_empty,
+            previous_for_depth,
         });
         ops.push(ParseOp::Parse {
             range: element.inner(),
@@ -2034,7 +2402,6 @@ impl HtmlParser {
         };
         let fragment_id = self.id_counter.next_id("if");
 
-        self.structural_scopes.push("an <if> block");
         ops.push(ParseOp::CompleteIf {
             parent,
             condition,
@@ -2072,8 +2439,15 @@ impl HtmlParser {
     }
 
     #[inline]
-    fn enter_boundary_parent_scope<'a>(&mut self, name: &str, ops: &mut Vec<ParseOp<'a>>) {
-        let Some(scope) = boundary_parent_scope(name) else {
+    fn enter_boundary_parent_scope<'a>(
+        &mut self,
+        element: &Element<'a>,
+        ops: &mut Vec<ParseOp<'a>>,
+    ) {
+        if element.name().eq_ignore_ascii_case("template") && element.has_attr("shadowrootmode") {
+            return;
+        }
+        let Some(scope) = boundary_parent_scope(element.name()) else {
             return;
         };
         ops.push(ParseOp::RestoreBoundaryParentScope(
@@ -2093,11 +2467,9 @@ impl HtmlParser {
     /// Enter a `<boundary name="…">` directive.
     ///
     /// `<boundary>` is a reserved, compile-time-only directive (see
-    /// "Progressive Streaming Hydration" in `DESIGN.md`): it emits
-    /// no wrapper element, only `boundary_start:<seq>` /
-    /// `boundary_end:<seq>` raw signal fragments around its children, mirroring
-    /// how [`Self::enter_body_element`] brackets its children with
-    /// `body_start`/`body_end`.
+    /// "Progressive Streaming Hydration" in `DESIGN.md`): it emits no wrapper
+    /// element. Its children stay inline in the owner's record, bracketed by a
+    /// [`BoundaryPhase::Start`]/[`BoundaryPhase::End`] fragment pair.
     ///
     /// # Errors
     ///
@@ -2109,13 +2481,14 @@ impl HtmlParser {
     /// - the boundary sits in an HTML foster-parenting context such as
     ///   `<table>`/`<tbody>`/`<tr>`/`<select>`
     ///   ([`codes::BOUNDARY_IN_FOSTER_CONTEXT`]);
-    /// - the boundary would cut through a reusable component template, an
-    ///   `<if>`, a `<for>`, or a `<route>` scope instead of independently
-    ///   wrapping it ([`codes::BOUNDARY_CROSSES_SCOPE`] — see the "Known
-    ///   limitation" note on [`Self::boundary_scope_error`]);
+    /// - the boundary would cut through component host content or native
+    ///   raw/inert content ([`codes::BOUNDARY_CROSSES_SCOPE`]);
     /// - `name` is missing/empty ([`codes::MISSING_BOUNDARY_NAME`]), dynamic
-    ///   ([`codes::INVALID_BOUNDARY_NAME`]), or a duplicate within the entry
+    ///   ([`codes::INVALID_BOUNDARY_NAME`]), or a duplicate within its owner
     ///   ([`codes::DUPLICATE_BOUNDARY_NAME`]).
+    /// - a boundary lexically inside `<for>` omits `key`
+    ///   ([`codes::MISSING_BOUNDARY_KEY`]), or an authored key is malformed
+    ///   ([`codes::INVALID_BOUNDARY_KEY`]).
     fn enter_boundary_directive<'a>(
         &mut self,
         element: &Element<'a>,
@@ -2123,24 +2496,15 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
-        // `in_progress_fragments.len() > 1` means parsing has recursed into a
-        // reusable template (a component usage or a route-referenced
-        // component) via `self.parse(..)`, as opposed to the outermost entry
-        // template. The design intentionally permits boundaries only in that
-        // outermost entry.
-        if self.in_progress_fragments.len() > 1 {
-            return Err(self.boundary_scope_error(element, "a reusable component template"));
-        }
-        if let Some(scope) = self.structural_scopes.last() {
-            return Err(self.boundary_scope_error(element, scope));
-        }
         if let Some(scope) = self.boundary_parent_scope {
             return Err(self.boundary_scope_error(element, scope));
         }
         if self.in_boundary {
             return Err(self.nested_boundary_error(element));
         }
-        if self.body_depth == 0 {
+        let owner_fragment_id = self.current_fragment_id.clone();
+        let owner_is_component = self.component_registry.contains(&owner_fragment_id);
+        if !owner_is_component && self.body_depth == 0 && self.route_depth == 0 {
             return Err(self.boundary_outside_body_error(element));
         }
         if self.foster_context_depth != 0 {
@@ -2148,19 +2512,38 @@ impl HtmlParser {
         }
 
         let name = self.validate_boundary_name(element)?;
-        if !self.boundary_names.insert(name.clone()) {
+        let inserted = self
+            .boundary_names_by_owner
+            .entry(owner_fragment_id.clone())
+            .or_default()
+            .insert(name.clone());
+        if !inserted {
             return Err(self.duplicate_boundary_name_error(element, &name));
         }
-        self.boundary_names_in_order.push(name);
-
-        let sequence = self.boundary_sequence;
-        self.boundary_sequence += 1;
+        let key = self.validate_boundary_key(element)?;
+        if self.for_depth != 0 && key.is_none() {
+            return Err(self.missing_boundary_key_error(element));
+        }
+        let declaration_id = self.allocate_boundary_declaration_id(element)?;
+        let may_repeat = self.for_depth != 0;
         self.in_boundary = true;
+        self.add_fragment(
+            WebUIFragment {
+                fragment: Some(Fragment::Boundary(WebUiFragmentBoundary {
+                    declaration_id,
+                    owner_fragment_id,
+                    name,
+                    key,
+                    may_repeat,
+                    phase: BoundaryPhase::Start as i32,
+                })),
+            },
+            fragments,
+        );
 
-        self.flush_raw_buffer(fragments);
-        fragments.push(structural_signal(format!("boundary_start:{sequence}")));
-
-        ops.push(ParseOp::EndBoundary(sequence));
+        ops.push(ParseOp::CompleteBoundary {
+            boundary: PendingBoundary { declaration_id },
+        });
         ops.push(ParseOp::Parse {
             range: element.inner(),
             depth: depth + 1,
@@ -2172,13 +2555,46 @@ impl HtmlParser {
     /// `{{binding}}`).
     fn validate_boundary_name(&self, element: &Element<'_>) -> Result<String> {
         let name = element.attr("name").unwrap_or_default();
-        if name.is_empty() {
+        if name.trim().is_empty() {
             return Err(self.missing_boundary_name_error(element));
         }
         if name.contains("{{") {
             return Err(self.invalid_boundary_name_error(element, name));
         }
         Ok(name.to_string())
+    }
+
+    fn validate_boundary_key(&self, element: &Element<'_>) -> Result<Option<String>> {
+        if !element.has_attr("key") {
+            return Ok(None);
+        }
+        let Some(raw) = element.attr("key") else {
+            return Err(self.invalid_boundary_key_error(element, ""));
+        };
+        let trimmed = raw.trim();
+        let braced = trimmed.starts_with("{{") || trimmed.ends_with("}}");
+        let valid = if braced {
+            trimmed
+                .strip_prefix("{{")
+                .and_then(|value| value.strip_suffix("}}"))
+                .filter(|value| !value.starts_with('{') && !value.ends_with('}'))
+                .is_some_and(|value| !value.trim().is_empty())
+        } else {
+            !trimmed.is_empty()
+        };
+        if !valid {
+            return Err(self.invalid_boundary_key_error(element, raw));
+        }
+        Ok(Some(raw.to_string()))
+    }
+
+    fn allocate_boundary_declaration_id(&mut self, element: &Element<'_>) -> Result<u32> {
+        let declaration_id = self.next_boundary_declaration_id;
+        let Some(next) = declaration_id.checked_add(1) else {
+            return Err(self.too_many_boundaries_error(element));
+        };
+        self.next_boundary_declaration_id = next;
+        Ok(declaration_id)
     }
 
     /// Build the error for a `<boundary>` missing its `name` attribute
@@ -2212,8 +2628,7 @@ impl HtmlParser {
         .into()
     }
 
-    /// Build the error for a duplicate `<boundary name>` within the
-    /// same entry template (cold path).
+    /// Build the error for a duplicate `<boundary name>` within one owner.
     #[cold]
     #[inline(never)]
     fn duplicate_boundary_name_error(&self, element: &Element<'_>, name: &str) -> ParserError {
@@ -2223,7 +2638,47 @@ impl HtmlParser {
             element,
         )
         .element("boundary")
-        .help("boundary names must be unique within the page; rename one of the boundaries")
+        .help("boundary names must be unique within their entry or component template; rename one of the declarations")
+        .into()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn missing_boundary_key_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::MISSING_BOUNDARY_KEY,
+            "<boundary> inside <for> requires a key",
+            element,
+        )
+        .element("boundary")
+        .help("add a stable item-relative key, e.g. <boundary name=\"row\" key=\"item.id\">")
+        .into()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn invalid_boundary_key_error(&self, element: &Element<'_>, key: &str) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_BOUNDARY_KEY,
+            "invalid key expression on <boundary>",
+            element,
+        )
+        .element("boundary")
+        .snippet(format!("key=\"{key}\""))
+        .help("use a non-empty expression such as key=\"item.id\" or key=\"{{item.id}}\"")
+        .into()
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn too_many_boundaries_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::TOO_MANY_BOUNDARIES,
+            "too many boundary declarations",
+            element,
+        )
+        .element("boundary")
+        .help("split this build into smaller protocols so each declaration has a unique u32 ID")
         .into()
     }
 
@@ -2242,13 +2697,8 @@ impl HtmlParser {
         .into()
     }
 
-    /// Build the error for a `<boundary>` that would cut through
-    /// `scope` (a reusable component template, an `<if>`/`<for>` block, or a
-    /// `<route>` element) instead of independently wrapping it (cold path).
-    ///
-    /// The parser rejects boundaries in every recursively parsed template,
-    /// including route shells: only the outermost entry passed to
-    /// [`Self::parse`] may contain one.
+    /// Build the error for a `<boundary>` that would cut through a native
+    /// raw/inert scope or component host content.
     #[cold]
     #[inline(never)]
     fn boundary_scope_error(&self, element: &Element<'_>, scope: &str) -> ParserError {
@@ -2258,7 +2708,7 @@ impl HtmlParser {
             element,
         )
         .element("boundary")
-        .help("move the <boundary> so it fully wraps this scope from the entry template, instead of appearing inside it")
+        .help("move the <boundary> outside this raw, inert, or component-host content scope")
         .into()
     }
 
@@ -2298,6 +2748,19 @@ impl HtmlParser {
         .into()
     }
 
+    #[cold]
+    #[inline(never)]
+    fn route_boundary_placement_error(&self, element: &Element<'_>) -> ParserError {
+        self.authoring_error_at(
+            codes::INVALID_ROUTE_BOUNDARY_PLACEMENT,
+            "route boundary must be a direct <route> child",
+            element,
+        )
+        .element("boundary")
+        .help("move the <boundary> directly under <route>, or place it in the route component template")
+        .into()
+    }
+
     /// Build the error for an authored `<webui-hydrate>` (cold path).
     /// `<webui-hydrate>` is reserved for the compiler/handler-generated
     /// runtime hydration sentinel and must never appear in authored markup.
@@ -2321,6 +2784,11 @@ impl HtmlParser {
         depth: usize,
         ops: &mut Vec<ParseOp<'a>>,
     ) -> Result<()> {
+        self.flush_raw_buffer(fragments);
+        fragments.push(structural_signal(format!(
+            "streaming_span_start:{}",
+            element.name()
+        )));
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
 
@@ -2380,8 +2848,13 @@ impl HtmlParser {
 
         fragments.push(WebUIFragment::component(element.name().to_string()));
 
-        if !element.self_closing() {
-            ops.push(ParseOp::EmitClose(element.name()));
+        if element.self_closing() {
+            fragments.push(structural_signal(format!(
+                "streaming_span_end:{}",
+                element.name()
+            )));
+        } else {
+            ops.push(ParseOp::EndComponent(element.name()));
             self.enter_component_content_scope(ops);
             ops.push(ParseOp::Parse {
                 range: element.inner(),
@@ -2542,8 +3015,13 @@ impl HtmlParser {
                     } else if Self::contains_handlebars(val) {
                         let template_id = self.id_counter.next_id("attr");
                         let parsed = self.handlebars_parser.parse(val)?;
-                        self.fragment_records
-                            .insert(template_id.clone(), FragmentList { fragments: parsed });
+                        self.fragment_records.insert(
+                            template_id.clone(),
+                            FragmentList {
+                                fragments: parsed,
+                                contains_boundary: false,
+                            },
+                        );
                         let frag = WebUIFragment {
                             fragment: Some(web_ui_fragment::Fragment::Attribute(
                                 WebUIFragmentAttribute {
@@ -2584,8 +3062,13 @@ impl HtmlParser {
                         } else {
                             let template_id = self.id_counter.next_id("attr");
                             let parsed = self.handlebars_parser.parse(val)?;
-                            self.fragment_records
-                                .insert(template_id.clone(), FragmentList { fragments: parsed });
+                            self.fragment_records.insert(
+                                template_id.clone(),
+                                FragmentList {
+                                    fragments: parsed,
+                                    contains_boundary: false,
+                                },
+                            );
                             let frag = Self::maybe_mark_attr_start(
                                 WebUIFragment::attribute_template(attr_name, template_id),
                                 &mut first_dynamic_emitted,
@@ -2684,8 +3167,13 @@ impl HtmlParser {
             let template_id = self.id_counter.next_id("attr");
             let parsed = self.handlebars_parser.parse(value)?;
 
-            self.fragment_records
-                .insert(template_id.clone(), FragmentList { fragments: parsed });
+            self.fragment_records.insert(
+                template_id.clone(),
+                FragmentList {
+                    fragments: parsed,
+                    contains_boundary: false,
+                },
+            );
 
             self.add_fragment(
                 WebUIFragment::attribute_template(name, template_id),
@@ -2732,6 +3220,7 @@ impl HtmlParser {
         &mut self,
         element: &Element<'_>,
         fragments: &mut Vec<WebUIFragment>,
+        depth: usize,
     ) -> Result<()> {
         let attrs = Self::route_attrs_from_element(element);
         let path = attrs.path.clone();
@@ -2764,6 +3253,8 @@ impl HtmlParser {
             self.ensure_route_component_parsed(&attrs.error_component)?;
         }
         self.ensure_route_component_parsed(&component)?;
+        self.flush_raw_buffer(fragments);
+        let content_fragment_id = self.parse_route_boundary_content(element, depth)?;
 
         let mut all_params = std::collections::HashSet::new();
         all_params.extend(route_params);
@@ -2771,12 +3262,59 @@ impl HtmlParser {
         let children =
             self.parse_child_routes(element.source(), element.inner(), &all_params, 1)?;
 
-        self.flush_raw_buffer(fragments);
-        let route_fragment =
+        let mut route_fragment =
             route_parser::build_route_fragment(&attrs, component.clone(), children);
+        route_fragment.content_fragment_id = content_fragment_id;
         fragments.push(WebUIFragment::route_from(route_fragment));
 
         Ok(())
+    }
+
+    fn parse_route_boundary_content(
+        &mut self,
+        route: &Element<'_>,
+        depth: usize,
+    ) -> Result<String> {
+        let inner = route.inner();
+        if !route.source()[inner.clone()].contains("<boundary") {
+            return Ok(String::new());
+        }
+        let saved_buffer = std::mem::take(&mut self.raw_buffer);
+        let previous_route_depth = self.route_depth;
+        self.route_depth += 1;
+        let mut content = Vec::new();
+        let parse_result: Result<()> = (|| {
+            for event in Walker::new_range(route.source(), inner.start, inner.end) {
+                if let Event::Element(element) = event {
+                    if element.name() == "boundary" {
+                        self.parse_range(
+                            element.source(),
+                            element.start..element.close_end(),
+                            &mut content,
+                            depth + 1,
+                        )?;
+                    }
+                }
+            }
+            self.flush_raw_buffer(&mut content);
+            Ok(())
+        })();
+        self.route_depth = previous_route_depth;
+        self.raw_buffer = saved_buffer;
+        parse_result?;
+
+        if content.is_empty() {
+            return Ok(String::new());
+        }
+        let fragment_id = self.id_counter.next_id("route-content");
+        self.fragment_records.insert(
+            fragment_id.clone(),
+            FragmentList {
+                fragments: content,
+                contains_boundary: false,
+            },
+        );
+        Ok(fragment_id)
     }
 
     /// Parse nested `<route>` children into route fragments.
@@ -2809,7 +3347,7 @@ impl HtmlParser {
             match event {
                 Event::Element(element) => {
                     self.validate_closed_element(&element)?;
-                    self.reject_boundary_or_hydrate_in_route(&element)?;
+                    self.reject_boundary_or_hydrate_in_route(&element, true)?;
                     if element.name() == "route" {
                         children.push(self.parse_route_as_fragment(
                             &element,
@@ -2904,7 +3442,7 @@ impl HtmlParser {
                 match event {
                     Event::Element(element) => {
                         self.validate_closed_element(&element)?;
-                        self.reject_boundary_or_hydrate_in_route(&element)?;
+                        self.reject_boundary_or_hydrate_in_route(&element, false)?;
                         if element.name().eq_ignore_ascii_case("style") {
                             self.validate_style_element(&element)?;
                         } else if !element.self_closing() && !element.is_void() {
@@ -2937,8 +3475,8 @@ impl HtmlParser {
         Ok(())
     }
 
-    /// Reject `<boundary>`/`<webui-hydrate>` written inside `<route>`
-    /// markup.
+    /// Reject `<webui-hydrate>` in route markup and boundaries that are not
+    /// direct route children.
     ///
     /// `<route>` children are validated by a separate well-formedness walker
     /// ([`Self::parse_child_routes`]/[`Self::validate_ignored_route_html`]),
@@ -2946,9 +3484,13 @@ impl HtmlParser {
     /// reserved directives need an explicit check here to produce the same
     /// structured diagnostics as everywhere else instead of silently passing
     /// through as ignored HTML.
-    fn reject_boundary_or_hydrate_in_route(&self, element: &Element<'_>) -> Result<()> {
-        if element.name() == "boundary" {
-            Err(self.boundary_scope_error(element, "a <route> element"))
+    fn reject_boundary_or_hydrate_in_route(
+        &self,
+        element: &Element<'_>,
+        allow_boundary: bool,
+    ) -> Result<()> {
+        if element.name() == "boundary" && !allow_boundary {
+            Err(self.route_boundary_placement_error(element))
         } else if element.name().eq_ignore_ascii_case("webui-hydrate") {
             Err(self.authored_webui_hydrate_error(element))
         } else {
@@ -3093,12 +3635,13 @@ impl HtmlParser {
         }
 
         self.ensure_route_component_parsed(&component)?;
+        let content_fragment_id = self.parse_route_boundary_content(element, depth)?;
         let children =
             self.parse_child_routes(element.source(), element.inner(), &all_params, depth + 1)?;
 
-        Ok(route_parser::build_route_fragment(
-            &attrs, component, children,
-        ))
+        let mut route = route_parser::build_route_fragment(&attrs, component, children);
+        route.content_fragment_id = content_fragment_id;
+        Ok(route)
     }
 
     /// Ensure a route-referenced component is parsed and registered.
@@ -3578,6 +4121,14 @@ mod tests {
 
     fn structural_matcher(value: &str) -> FragmentMatcher {
         signal_raw(&format!("{STRUCTURAL_SIGNAL_PREFIX}{value}"))
+    }
+
+    fn boundary_matcher(name: &str, declaration: u32) -> FragmentMatcher {
+        webui_test_utils::boundary(name, declaration)
+    }
+
+    fn boundary_end_matcher(declaration: u32) -> FragmentMatcher {
+        webui_test_utils::boundary_end(declaration)
     }
 
     #[test]
@@ -6307,58 +6858,46 @@ mod tests {
     // Hydration) ───────────────────────────────────────────────────────────
 
     #[test]
-    fn boundary_emits_no_wrapper_and_brackets_children_with_signals() {
+    fn entry_boundary_is_an_inline_start_end_tape() {
         let html = r#"<body><div><boundary name="counter-ready"><my-counter></my-counter></boundary></div></body>"#;
-        let (fragments, _) = parse_and_get_fragments(html);
+        let (fragments, records) = parse_and_get_fragments(html);
 
-        // No `<boundary>`/`</boundary>` markup is emitted at
-        // all — only the raw boundary_start/boundary_end signals bracket
-        // the untouched children.
-        assert_fragments!(
-            fragments,
+        let boundary = match fragments[3].fragment.as_ref() {
+            Some(Fragment::Boundary(boundary)) => boundary,
+            other => panic!("expected typed boundary start, got {other:?}"),
+        };
+        assert_eq!(boundary.phase(), BoundaryPhase::Start);
+        assert_eq!(boundary.declaration_id, 0);
+        assert_eq!(boundary.owner_fragment_id, "index.html");
+        assert_eq!(boundary.name, "counter-ready");
+        assert_eq!(boundary.key, None);
+        assert!(!boundary.may_repeat);
+        // The body stays inline in the owner record, closed by an end marker,
+        // so ordinary rendering never looks up a second record.
+        assert_stream!(
+            records,
+            "index.html",
             [
                 raw("<body>"),
                 structural_matcher("body_start"),
                 raw("<div>"),
-                structural_matcher("boundary_start:0"),
+                boundary_matcher("counter-ready", 0),
                 raw("<my-counter></my-counter>"),
-                structural_matcher("boundary_end:0"),
+                boundary_end_matcher(0),
                 raw("</div>"),
                 structural_matcher("body_end"),
                 raw("</body>"),
             ]
         );
+        assert!(records["index.html"].contains_boundary);
+        assert!(
+            !records.contains_key("boundary-1"),
+            "an inline tape must not create a body record"
+        );
     }
 
     #[test]
-    fn boundary_sequence_increments_in_document_order_and_resets_per_entry() {
-        let html = concat!(
-            "<body>",
-            r#"<boundary name="a"><p>1</p></boundary>"#,
-            r#"<boundary name="b"><p>2</p></boundary>"#,
-            "</body>",
-        );
-        let (fragments, _) = parse_and_get_fragments(html);
-
-        assert_fragments!(
-            fragments,
-            [
-                raw("<body>"),
-                structural_matcher("body_start"),
-                structural_matcher("boundary_start:0"),
-                raw("<p>1</p>"),
-                structural_matcher("boundary_end:0"),
-                structural_matcher("boundary_start:1"),
-                raw("<p>2</p>"),
-                structural_matcher("boundary_end:1"),
-                structural_matcher("body_end"),
-                raw("</body>"),
-            ]
-        );
-
-        // A separate top-level entry parsed on the same `HtmlParser` starts
-        // its own boundary sequence back at 0 and does not reject "a" as a
-        // duplicate name — sequence/name state is per top-level entry.
+    fn boundary_names_are_scoped_per_owner_and_declaration_ids_are_protocol_wide() {
         let mut parser = HtmlParser::new();
         parser
             .parse(
@@ -6371,33 +6910,44 @@ mod tests {
                 "second.html",
                 r#"<body><boundary name="a"><p>2</p></boundary></body>"#,
             )
-            .expect("second entry reuses the name and sequence 0");
+            .expect("a second owner may reuse the name");
         let records = parser.into_fragment_records();
-        assert_stream!(
-            records,
-            "second.html",
-            [
-                raw("<body>"),
-                structural_matcher("body_start"),
-                structural_matcher("boundary_start:0"),
-                raw("<p>2</p>"),
-                structural_matcher("boundary_end:0"),
-                structural_matcher("body_end"),
-                raw("</body>"),
-            ]
-        );
+        let first = records["first.html"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("first boundary");
+        let second = records["second.html"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("second boundary");
+        assert_eq!((first.declaration_id, first.name.as_str()), (0, "a"));
+        assert_eq!((second.declaration_id, second.name.as_str()), (1, "a"));
     }
 
     #[test]
     fn boundary_missing_name_errors() {
-        let mut parser = HtmlParser::new();
-        let err = parser
-            .parse("index.html", "<body><boundary><p>x</p></boundary></body>")
-            .expect_err("a boundary without a name must error");
-        let ParserError::Template(diag) = err else {
-            panic!("expected ParserError::Template, got {err:?}");
-        };
-        assert_eq!(diag.error_code(), Some(codes::MISSING_BOUNDARY_NAME));
+        for html in [
+            "<body><boundary><p>x</p></boundary></body>",
+            r#"<body><boundary name=""><p>x</p></boundary></body>"#,
+            r#"<body><boundary name="   "><p>x</p></boundary></body>"#,
+        ] {
+            let mut parser = HtmlParser::new();
+            let err = parser
+                .parse("index.html", html)
+                .expect_err("a boundary without a non-empty name must error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(diag.error_code(), Some(codes::MISSING_BOUNDARY_NAME));
+        }
     }
 
     #[test]
@@ -6415,11 +6965,8 @@ mod tests {
         assert_eq!(diag.error_code(), Some(codes::INVALID_BOUNDARY_NAME));
     }
 
-    /// Boundary names stay free-form and are exposed separately for the
-    /// protocol's cold name-to-handle table. Render fragments still carry only
-    /// integer IDs, so response bytes never repeat author names.
     #[test]
-    fn boundary_names_are_free_form_ordered_and_absent_from_fragments() {
+    fn boundary_names_are_free_form_and_live_on_typed_fragments() {
         let mut parser = HtmlParser::new();
         let html = concat!(
             "<body>",
@@ -6431,47 +6978,32 @@ mod tests {
         parser
             .parse("index.html", html)
             .expect("free-form boundary names must be accepted");
-        assert_eq!(parser.boundary_count(), 3);
-        assert_eq!(
-            parser.boundary_names(),
-            ["above the fold", "feed/items #2", "ダッシュボード"]
-        );
-
         let records = parser.into_fragment_records();
-        let fragments = &records
-            .get("index.html")
-            .expect("index.html fragment record")
-            .fragments;
-
-        let mut starts = Vec::new();
-        for fragment in fragments {
-            let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() else {
-                continue;
-            };
-            let value = signal.value.as_str();
-            assert!(
-                !value.contains("above the fold")
-                    && !value.contains("feed/items")
-                    && !value.contains("ダッシュボード"),
-                "boundary names must never reach a fragment: {value}"
-            );
-            if let Some(sequence) = value
-                .strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
-                .and_then(|signal| signal.strip_prefix("boundary_start:"))
-            {
-                starts.push(sequence.to_string());
-            }
-        }
-        assert_eq!(
-            starts,
-            ["0", "1", "2"],
-            "only integer sequences are emitted"
-        );
+        let names: Vec<&str> = records["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) if boundary.phase() == BoundaryPhase::Start => {
+                    Some(boundary.name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, ["above the fold", "feed/items #2", "ダッシュボード"]);
     }
 
     #[test]
     fn module_entry_srcs_records_only_preloadable_critical_entries() {
         let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "weather-island",
+                r#"<script type="module" src="/nested-weather.js"></script>"#,
+                None,
+                true,
+            ))
+            .expect("register");
         let html = concat!(
             "<head>",
             // Recorded: a static, module-typed, non-boundary entry.
@@ -6491,6 +7023,7 @@ mod tests {
             // Skipped: an island loader is deferred on purpose.
             r#"<boundary name="weather">"#,
             r#"<script type="module" async src="/weather-panel.js"></script>"#,
+            "<weather-island></weather-island>",
             "</boundary>",
             // Recorded once: a bottom-of-body entry is still critical, and a
             // repeat of an already-seen src must not duplicate a hint.
@@ -6562,40 +7095,119 @@ mod tests {
     }
 
     #[test]
-    fn boundary_inside_if_errors() {
+    fn boundary_transitively_nested_through_component_errors() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "inner-panel",
+                r#"<boundary name="inner"><p>x</p></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><boundary name="outer"><inner-panel></inner-panel></boundary></body>"#,
+            )
+            .expect_err("transitively nested boundaries must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::NESTED_BOUNDARY));
+        assert!(diag
+            .help_text()
+            .is_some_and(|help| help.contains("runtime branches")));
+    }
+
+    #[test]
+    fn boundary_inside_if_preserves_false_branch_structure() {
         let mut parser = HtmlParser::new();
         let html =
             r#"<body><if condition="ready"><boundary name="x"><p>x</p></boundary></if></body>"#;
-        let err = parser
-            .parse("index.html", html)
-            .expect_err("a boundary inside <if> must error");
-        let ParserError::Template(diag) = err else {
-            panic!("expected ParserError::Template, got {err:?}");
-        };
-        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
-        assert!(diag.to_string().contains("<if>"), "{diag}");
+        parser.parse("index.html", html).expect("parse");
+        let records = parser.into_fragment_records();
+        let if_fragment_id = records["index.html"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::IfCond(if_cond)) => Some(if_cond.fragment_id.as_str()),
+                _ => None,
+            })
+            .expect("if reference");
+        let boundary = records[if_fragment_id]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("boundary remains behind the runtime if");
+        assert_eq!(boundary.owner_fragment_id, "index.html");
+        assert!(!boundary.may_repeat);
+        assert!(records["index.html"].contains_boundary);
+        assert!(records[if_fragment_id].contains_boundary);
+        assert_stream!(
+            records,
+            if_fragment_id,
+            [
+                boundary_matcher("x", 0),
+                raw("<p>x</p>"),
+                boundary_end_matcher(0),
+            ]
+        );
     }
 
     #[test]
-    fn boundary_inside_for_errors() {
+    fn boundary_inside_for_requires_and_preserves_key() {
         let mut parser = HtmlParser::new();
-        let html = r#"<body><for each="item in items"><boundary name="x"><p>x</p></boundary></for></body>"#;
         let err = parser
-            .parse("index.html", html)
-            .expect_err("a boundary inside <for> must error");
+            .parse(
+                "missing.html",
+                r#"<body><for each="item in items"><boundary name="x"><p>x</p></boundary></for></body>"#,
+            )
+            .expect_err("a repeated boundary without a key must error");
         let ParserError::Template(diag) = err else {
             panic!("expected ParserError::Template, got {err:?}");
         };
-        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
-        assert!(diag.to_string().contains("<for>"), "{diag}");
+        assert_eq!(diag.error_code(), Some(codes::MISSING_BOUNDARY_KEY));
+
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><boundary name="x" key="{{item.id}}"><p>{{item.name}}</p></boundary></for></body>"#,
+            )
+            .expect("a keyed repeated boundary parses");
+        let records = parser.into_fragment_records();
+        let boundary = records["for-1"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("boundary in for body");
+        assert_eq!(boundary.key.as_deref(), Some("{{item.id}}"));
+        assert!(boundary.may_repeat);
+
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "invalid.html",
+                r#"<body><boundary name="x" key=""><p>x</p></boundary></body>"#,
+            )
+            .expect_err("an empty key must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_BOUNDARY_KEY));
     }
 
     #[test]
-    fn boundary_inside_reusable_component_template_errors() {
-        // The boundary lives inside the component's own `.html` template, not
-        // the entry template — disallowed even though the entry's usage of
-        // `<my-widget>` looks unremarkable.
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+    fn boundary_inside_reusable_component_is_component_local() {
+        let mut parser = HtmlParser::new();
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
@@ -6606,13 +7218,95 @@ mod tests {
             ))
             .expect("register");
 
-        let err = parser
-            .parse("index.html", "<body><my-widget></my-widget></body>")
-            .expect_err("a boundary inside a component template must error");
-        let ParserError::Template(diag) = err else {
-            panic!("expected ParserError::Template, got {err:?}");
-        };
-        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+        parser
+            .parse(
+                "index.html",
+                r#"<body><my-widget></my-widget><boundary name="x"><p>entry</p></boundary></body>"#,
+            )
+            .expect("component-local boundary parses");
+        let records = parser.into_fragment_records();
+        let boundary = records["my-widget"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("component boundary");
+        assert_eq!(boundary.owner_fragment_id, "my-widget");
+        assert_eq!(boundary.name, "x");
+        assert!(records["my-widget"].contains_boundary);
+        assert!(records["index.html"].contains_boundary);
+        let owners: HashSet<&str> = records
+            .values()
+            .flat_map(|list| list.fragments.iter())
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) if boundary.name == "x" => {
+                    Some(boundary.owner_fragment_id.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(owners, HashSet::from(["index.html", "my-widget"]));
+    }
+
+    #[test]
+    fn component_boundary_is_marked_repeatable_from_for_callsite() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "row-item",
+                r#"<boundary name="row-ready"><span>{{label}}</span></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+        parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><row-item></row-item></for></body>"#,
+            )
+            .expect("component callsite parses");
+        let records = parser.into_fragment_records();
+        let boundary = records["row-item"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("component boundary");
+        assert!(boundary.may_repeat);
+    }
+
+    #[test]
+    fn component_boundary_once_per_independent_entry_is_not_repeatable() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "shared-panel",
+                r#"<boundary name="ready"><span>x</span></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+        for entry in ["first.html", "second.html"] {
+            parser
+                .parse(entry, "<body><shared-panel></shared-panel></body>")
+                .expect("entry parses");
+        }
+        let records = parser.into_fragment_records();
+        let boundary = records["shared-panel"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("component boundary");
+        assert!(!boundary.may_repeat);
     }
 
     #[test]
@@ -6681,32 +7375,71 @@ mod tests {
     }
 
     #[test]
-    fn boundary_inside_route_element_errors() {
-        let mut parser = HtmlParser::new();
-        // Directly inside <route> children.
-        let err = parser
+    fn route_contained_boundary_has_runtime_content_fragment() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "home-page",
+                "<h1>Home</h1>",
+                None,
+                true,
+            ))
+            .expect("register");
+        parser
             .parse(
                 "index.html",
-                r#"<body><route path="/" component="home"><boundary name="x"><p>x</p></boundary></route></body>"#,
+                r#"<route path="/" component="home-page"><boundary name="route-ready"><aside>Ready</aside></boundary></route>"#,
             )
-            .expect_err("a boundary directly inside <route> must error");
-        let ParserError::Template(diag) = err else {
-            panic!("expected ParserError::Template, got {err:?}");
-        };
-        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+            .expect("route-contained boundary parses");
+        let records = parser.into_fragment_records();
+        assert!(records["index.html"].contains_boundary);
+        let route = records["index.html"]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Route(route)) => Some(route),
+                _ => None,
+            })
+            .expect("route");
+        assert!(!route.content_fragment_id.is_empty());
+        let boundary = records[&route.content_fragment_id]
+            .fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Boundary(boundary)) => Some(boundary),
+                _ => None,
+            })
+            .expect("route boundary");
+        assert_eq!(boundary.owner_fragment_id, "index.html");
+        assert_eq!(boundary.name, "route-ready");
+        assert_stream!(
+            records,
+            route.content_fragment_id.as_str(),
+            [
+                boundary_matcher("route-ready", 0),
+                raw("<aside>Ready</aside>"),
+                boundary_end_matcher(0),
+            ]
+        );
+    }
 
-        // Nested deeper inside <route> ignored markup.
+    #[test]
+    fn route_boundary_nested_in_ignored_markup_errors() {
         let mut parser = HtmlParser::new();
         let err = parser
             .parse(
                 "index.html",
-                r#"<body><route path="/" component="home"><div><boundary name="x"><p>x</p></boundary></div></route></body>"#,
+                r#"<route path="/" component="home-page"><div><boundary name="late"><p>x</p></boundary></div></route>"#,
             )
-            .expect_err("a boundary nested inside <route> markup must error");
+            .expect_err("route boundaries must be direct children");
         let ParserError::Template(diag) = err else {
             panic!("expected ParserError::Template, got {err:?}");
         };
-        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_CROSSES_SCOPE));
+        assert_eq!(
+            diag.error_code(),
+            Some(codes::INVALID_ROUTE_BOUNDARY_PLACEMENT)
+        );
     }
 
     #[test]

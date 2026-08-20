@@ -25,9 +25,32 @@ serialization. Use `render_text()` only when an application specifically needs
 a Python string.
 
 `render_component_templates()` accepts either one component tag as a string or
-an iterable of tags. Streaming calls require state explicitly, including
-`finish(final_state)`, so the document tail cannot accidentally render against
-an empty state.
+an iterable of tags.
+
+Host-driven streaming discovers runtime occurrences instead of resolving
+compile-time names:
+
+```python
+from microsoft_webui import BoundaryMode
+
+session = renderer.stream_response()
+step = session.start({"title": "Home", "items": [{"id": 7}]})
+while not step.done:
+    boundary = step.boundary
+    assert boundary is not None
+    send(step.bytes)
+    step = session.resume(
+        boundary.instance_id,
+        {"title": "Home"},
+        mode=BoundaryMode.FINAL,
+    )
+send(step.bytes)
+```
+
+`start()` and `resume()` return immutable `StreamStep` values containing the
+bytes produced by that call, a `done` flag, and the optional next
+`BoundaryDescriptor`. Repeated boundary keys remain Python strings, integers,
+or floats. `update(instance_id, patch)` returns the update record as `bytes`.
 
 The first release targets regular CPython 3.11+ builds on Windows, macOS, and
 manylinux, on x64 and ARM64. PyPy, free-threaded CPython, and Alpine/musllinux

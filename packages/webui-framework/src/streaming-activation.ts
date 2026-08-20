@@ -22,6 +22,7 @@ export function activateRootsBetween(
   endMarker: Comment,
   state: Record<string, unknown> | undefined,
   updates?: PendingBoundaryUpdates,
+  bypassSpanInstanceId?: number,
 ): void {
   const root = startMarker.parentNode;
   if (!root) {
@@ -35,7 +36,13 @@ export function activateRootsBetween(
     root,
     endMarker,
     state,
-    updates ? { updates, countRetention: true } : undefined,
+    updates || bypassSpanInstanceId !== undefined
+      ? {
+        updates,
+        countRetention: updates !== undefined,
+        bypassSpanInstanceId,
+      }
+      : undefined,
   );
   if (!failure) return;
   abandonDeferredRange(startMarker, endMarker);

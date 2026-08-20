@@ -72,6 +72,7 @@ use crate::html_parser::{
     style_element_bounds,
 };
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
@@ -213,11 +214,12 @@ impl WebUIParserPlugin {
         template_html: &str,
         component: &Component,
     ) -> Result<()> {
+        let template_html = Self::strip_boundary_directive_tags(template_html);
         let client_module = ClientModule::from_component(component);
         let render_policy = parse_component_render_policy(tag_name, &component.html_content)?;
         if let Some(tracked) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             tracked.template_html.clear();
-            tracked.template_html.push_str(template_html);
+            tracked.template_html.push_str(&template_html);
             tracked.root_event_source.clear();
             tracked.root_event_source.push_str(&component.html_content);
             tracked.client_module = client_module;
@@ -226,12 +228,38 @@ impl WebUIParserPlugin {
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
-            template_html: template_html.to_string(),
+            template_html: template_html.into_owned(),
             root_event_source: component.html_content.clone(),
             client_module,
             render_policy,
         });
         Ok(())
+    }
+
+    fn strip_boundary_directive_tags(template: &str) -> Cow<'_, str> {
+        if !template.contains("<boundary") && !template.contains("</boundary") {
+            return Cow::Borrowed(template);
+        }
+
+        let mut output = String::with_capacity(template.len());
+        let mut index = 0usize;
+        while index < template.len() {
+            let remaining = &template[index..];
+            if remaining.starts_with('<') {
+                if let Some(tag) = parse_tag(remaining) {
+                    if tag.name == "boundary" {
+                        index += tag.close + 1;
+                        continue;
+                    }
+                }
+            }
+            let Some(ch) = remaining.chars().next() else {
+                break;
+            };
+            output.push(ch);
+            index += ch.len_utf8();
+        }
+        Cow::Owned(output)
     }
 }
 
@@ -3331,6 +3359,23 @@ fn extract_adopted_stylesheet_specifier(html: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn component_metadata_erases_boundary_directive_tags() {
+        let source = concat!(
+            "<template shadowrootmode=\"open\">",
+            "<boundary name=\"ready\" key=\"item.id\"><span>{{label}}</span></boundary>",
+            "</template>",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+        assert_eq!(
+            stripped,
+            "<template shadowrootmode=\"open\"><span>{{label}}</span></template>"
+        );
+        let metadata = generate_compiled_template("my-card", &stripped);
+        assert!(!metadata.contains("<boundary"));
+        assert!(!metadata.contains("</boundary>"));
+    }
 
     /// Test helper: compile a template and unwrap. The vast majority of tests
     /// exercise valid templates; tests that assert on authoring errors call

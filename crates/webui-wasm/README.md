@@ -15,9 +15,30 @@ WebAssembly bindings for the [WebUI](https://github.com/microsoft/webui) framewo
 The default feature is `all`, which powers the online playground. Consumers that only need to render prebuilt protobuf protocol bytes should use the handler bundle to avoid shipping parser code.
 
 Construct `Protocol` once from protocol bytes. It exposes `render`,
-`renderStream`, `renderPartial`, `renderComponentTemplates`, and `tokens`.
+`renderStream`, `renderPartial`, `renderComponentTemplates`, `tokens`, and
+`streamResponse`.
 Streaming callbacks are coalesced around a 16 KiB target before crossing into
 JavaScript.
+
+`Protocol.streamResponse(entry, requestPath, options)` returns a host-driven
+`StreamingSession`. Call `start(stateJson)` once, then
+`resume(instanceId, stateJson, mode)` for every discovered occurrence. State
+and patch arguments are JSON strings. Both step methods return:
+
+```js
+{
+  bytes: Uint8Array,
+  done: boolean,
+  boundary?: { instanceId, declarationId, owner, name, key }
+}
+```
+
+`mode` is `"final"` (the default) or `"updatable"`. A committed updatable
+occurrence accepts `update(instanceId, patch)`, which returns a `Uint8Array`.
+Boundary keys preserve JSON identity: string keys are JavaScript strings and
+finite numeric keys are JavaScript numbers. Boundaries are discovered through
+entries, reusable components, runtime branches, loops, and selected routes.
+The step with `done: true` already contains terminal and document-tail bytes.
 
 ## Building
 

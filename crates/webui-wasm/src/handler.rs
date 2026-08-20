@@ -4,7 +4,7 @@
 //! Handler-only WASM exports.
 
 use crate::error::WasmError;
-use js_sys::{Function, Object, Reflect};
+use js_sys::{Function, Object, Reflect, Uint8Array};
 use serde_json::Value;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -12,8 +12,9 @@ use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    BoundaryId, BoundaryMode, HandlerError, Protocol as HandlerProtocol, RenderOptions,
-    ResponseWriter, SessionOptions, StreamingSession as HandlerStreamingSession, WebUIHandler,
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError,
+    Protocol as HandlerProtocol, RenderOptions, ResponseWriter, SessionOptions,
+    StreamStep as HandlerStreamStep, StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 #[cfg(test)]
 use webui_protocol::WebUIProtocol;
@@ -236,19 +237,24 @@ impl Protocol {
     }
 }
 
-/// A progressive HTML response driven one chunk at a time from JavaScript.
+/// A progressive HTML response driven one semantic step at a time from JavaScript.
 ///
-/// Every method returns the UTF-8 bytes it produced. Write them to the
-/// response and apply the host's own backpressure; the session holds no
-/// transport and never blocks on one.
+/// `start()` and `resume()` return `{ bytes, done, boundary? }`, where `bytes`
+/// is a `Uint8Array` and a boundary is
+/// `{ instanceId, declarationId, owner, name, key }`. Boundary keys retain
+/// their authored JSON type: strings are JavaScript strings and finite numbers
+/// are JavaScript numbers.
 ///
 /// ```js
 /// const session = protocol.streamResponse('index.html', '/');
-/// const weather = session.boundary('weather-shell');
-/// controller.enqueue(session.writeShell(shellState));
-/// controller.enqueue(session.writeBoundary(weather, weatherState, 'updatable'));
-/// controller.enqueue(session.update(weather, forecast));
-/// controller.enqueue(session.finish(tailState));
+/// let step = session.start(JSON.stringify(shellState));
+/// controller.enqueue(step.bytes);
+/// while (!step.done) {
+///   const { instanceId, name, key } = step.boundary;
+///   const state = await loadBoundary(name, key);
+///   step = session.resume(instanceId, JSON.stringify(state), 'updatable');
+///   controller.enqueue(step.bytes);
+/// }
 /// ```
 #[wasm_bindgen]
 pub struct StreamingSession {
@@ -257,74 +263,95 @@ pub struct StreamingSession {
 
 #[wasm_bindgen]
 impl StreamingSession {
-    /// Resolve an authored boundary name to a stable integer handle.
-    ///
-    /// Resolve once outside the write loop; the handle costs nothing to reuse.
-    #[wasm_bindgen(js_name = boundary)]
-    pub fn boundary(&self, name: &str) -> Result<u32, JsValue> {
-        self.inner
-            .boundary(name)
-            .map(BoundaryId::raw)
-            .map_err(streaming_error)
-    }
-
-    /// Number of compile-time boundaries declared by this entry.
-    #[wasm_bindgen(getter, js_name = boundaryCount)]
-    pub fn boundary_count(&self) -> u32 {
-        // Boundary counts are bounded by the compiled entry, so this cannot
-        // exceed u32 in any protocol the build can produce.
-        u32::try_from(self.inner.boundary_count()).unwrap_or(u32::MAX)
-    }
-
-    /// Whether the terminal record has been written.
-    #[wasm_bindgen(getter, js_name = finished)]
-    pub fn finished(&self) -> bool {
-        self.inner.is_finished()
-    }
-
-    /// Render everything before the first boundary.
-    #[wasm_bindgen(js_name = writeShell)]
-    pub fn write_shell(&mut self, state_json: &str) -> Result<Vec<u8>, JsValue> {
+    /// Render until the first runtime boundary occurrence or terminal.
+    #[wasm_bindgen(js_name = start)]
+    pub fn start(&mut self, state_json: &str) -> Result<Object, JsValue> {
         let state = session_state(state_json)?;
-
-        self.inner.write_shell(&state).map_err(streaming_error)
+        let step = self.inner.start(&state).map_err(streaming_error)?;
+        stream_step_object(step)
     }
 
-    /// Render and commit the next boundary in declaration order.
+    /// Commit the pending occurrence and advance to the next one or terminal.
     ///
     /// `mode` is `"final"` (default) or `"updatable"`. Only updatable
     /// boundaries accept later `update()` calls.
-    #[wasm_bindgen(js_name = writeBoundary)]
-    pub fn write_boundary(
+    #[wasm_bindgen(js_name = resume)]
+    pub fn resume(
         &mut self,
-        boundary: u32,
+        instance_id: u32,
         state_json: &str,
         mode: Option<String>,
-    ) -> Result<Vec<u8>, JsValue> {
+    ) -> Result<Object, JsValue> {
         let state = session_state(state_json)?;
-
         let mode = parse_boundary_mode(mode.as_deref())?;
-        self.inner
-            .write_boundary(BoundaryId::from_raw(boundary), &state, mode)
-            .map_err(streaming_error)
+        let step = self
+            .inner
+            .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
+            .map_err(streaming_error)?;
+        stream_step_object(step)
     }
 
     /// Push a projected state patch to a committed updatable boundary.
     #[wasm_bindgen(js_name = update)]
-    pub fn update(&mut self, boundary: u32, state_json: &str) -> Result<Vec<u8>, JsValue> {
-        let state = session_state(state_json)?;
+    pub fn update(&mut self, instance_id: u32, patch_json: &str) -> Result<Vec<u8>, JsValue> {
+        let patch = session_state(patch_json)?;
 
         self.inner
-            .update(BoundaryId::from_raw(boundary), &state)
+            .update(BoundaryInstanceId::from_raw(instance_id), &patch)
             .map_err(streaming_error)
     }
+}
 
-    /// Render the document tail and emit the terminal record.
-    #[wasm_bindgen(js_name = finish)]
-    pub fn finish(&mut self, state_json: &str) -> Result<Vec<u8>, JsValue> {
-        let state = session_state(state_json)?;
+fn stream_step_object(step: HandlerStreamStep) -> Result<Object, JsValue> {
+    let result = Object::new();
+    let bytes = Uint8Array::from(step.bytes.as_slice());
+    set_object_property(&result, "bytes", bytes.as_ref())?;
+    set_object_property(&result, "done", &JsValue::from_bool(step.done))?;
+    if let Some(boundary) = step.boundary {
+        let boundary = boundary_object(boundary)?;
+        set_object_property(&result, "boundary", boundary.as_ref())?;
+    }
+    Ok(result)
+}
 
-        self.inner.finish(&state).map_err(streaming_error)
+fn boundary_object(boundary: BoundaryDescriptor) -> Result<Object, JsValue> {
+    let result = Object::new();
+    set_object_property(
+        &result,
+        "instanceId",
+        &JsValue::from_f64(f64::from(boundary.instance_id.raw())),
+    )?;
+    set_object_property(
+        &result,
+        "declarationId",
+        &JsValue::from_f64(f64::from(boundary.declaration_id)),
+    )?;
+    set_object_property(&result, "owner", &JsValue::from_str(&boundary.owner))?;
+    set_object_property(&result, "name", &JsValue::from_str(&boundary.name))?;
+    if let Some(key) = boundary.key {
+        set_object_property(&result, "key", &boundary_key_value(key)?)?;
+    }
+    Ok(result)
+}
+
+fn boundary_key_value(key: BoundaryKey) -> Result<JsValue, JsValue> {
+    match key {
+        BoundaryKey::String(value) => Ok(JsValue::from_str(&value)),
+        BoundaryKey::Number(value) => value.as_f64().map(JsValue::from_f64).ok_or_else(|| {
+            JsValue::from_str("boundary key cannot be represented as a JavaScript number")
+        }),
+    }
+}
+
+fn set_object_property(object: &Object, key: &str, value: &JsValue) -> Result<(), JsValue> {
+    let written = Reflect::set(object.as_ref(), &JsValue::from_str(key), value)
+        .map_err(|_| JsValue::from_str(&format!("failed to set StreamStep '{key}' property")))?;
+    if written {
+        Ok(())
+    } else {
+        Err(JsValue::from_str(&format!(
+            "failed to set StreamStep '{key}' property"
+        )))
     }
 }
 
@@ -512,6 +539,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("name".to_string(), true)],
+                contains_boundary: false,
             },
         );
         let bytes = WebUIProtocol::new(fragments)
@@ -549,12 +577,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "client-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>client</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -591,5 +621,117 @@ mod tests {
             !rendered.contains("dropped"),
             "server-only key name leaked into render:\n{rendered}"
         );
+    }
+
+    #[cfg(feature = "parser")]
+    mod streaming_tests {
+        use std::collections::HashMap;
+
+        use super::*;
+
+        fn session(html: &str) -> HandlerStreamingSession {
+            let files = HashMap::from([("index.html".to_string(), html.to_string())]);
+            let protocol = crate::parser::parse_to_protocol(&files, "index.html", &[])
+                .expect("protocol should parse");
+            HandlerStreamingSession::new(
+                Arc::new(WebUIHandler::new()),
+                Arc::new(HandlerProtocol::new(protocol)),
+                SessionOptions::new("index.html", "/"),
+            )
+            .expect("session should open")
+        }
+
+        fn state(json: &str) -> Value {
+            parse_state_json(json).expect("state should parse")
+        }
+
+        #[test]
+        fn streaming_start_and_resume_preserve_repeat_key_types() {
+            let mut session = session(concat!(
+                "<html><head></head><body>",
+                r#"<for each="item in items"><boundary name="row" key="{{item.id}}">"#,
+                "<p>{{item.label}}</p></boundary></for>",
+                "</body></html>",
+            ));
+            let state = state(r#"{"items":[{"id":"alpha","label":"a"},{"id":20,"label":"b"}]}"#);
+
+            let first = session
+                .start(&state)
+                .expect("start should discover first boundary");
+            assert!(!first.done);
+            assert!(!first.bytes.is_empty());
+            let first_boundary = first.boundary.expect("first boundary should be returned");
+            assert_eq!(first_boundary.instance_id.raw(), 0);
+            assert_eq!(first_boundary.declaration_id, 0);
+            assert_eq!(first_boundary.owner.as_ref(), "index.html");
+            assert_eq!(first_boundary.name.as_ref(), "row");
+            assert_eq!(
+                first_boundary.key,
+                Some(BoundaryKey::String("alpha".to_string()))
+            );
+
+            let second = session
+                .resume(first_boundary.instance_id, &state, BoundaryMode::Final)
+                .expect("resume should discover second boundary");
+            assert!(!second.done);
+            let second_boundary = second.boundary.expect("second boundary should be returned");
+            assert_eq!(second_boundary.instance_id.raw(), 1);
+            assert_eq!(second_boundary.key, Some(BoundaryKey::Number(20.into())));
+
+            let done = session
+                .resume(second_boundary.instance_id, &state, BoundaryMode::Final)
+                .expect("final resume should complete");
+            assert!(done.done);
+            assert!(done.boundary.is_none());
+            assert!(!done.bytes.is_empty());
+        }
+
+        #[test]
+        fn streaming_update_returns_bytes_for_updatable_occurrence() {
+            let mut session = session(concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="first"><p>{{count}}</p></boundary>"#,
+                r#"<boundary name="second"><p>done</p></boundary>"#,
+                "</body></html>",
+            ));
+            let initial = state(r#"{"count":1}"#);
+            let first = session
+                .start(&initial)
+                .expect("start should discover first boundary")
+                .boundary
+                .expect("first boundary should be returned");
+            let second = session
+                .resume(first.instance_id, &initial, BoundaryMode::Updatable)
+                .expect("resume should commit updatable boundary")
+                .boundary
+                .expect("second boundary should be returned");
+
+            let update = session
+                .update(first.instance_id, &state(r#"{"count":2}"#))
+                .expect("update should render");
+            assert!(!update.is_empty());
+            assert!(std::str::from_utf8(&update)
+                .expect("update should be UTF-8")
+                .contains(r#""count":2"#));
+
+            let done = session
+                .resume(second.instance_id, &state("{}"), BoundaryMode::Final)
+                .expect("second resume should complete");
+            assert!(done.done);
+        }
+
+        #[test]
+        fn streaming_start_returns_done_for_boundary_free_document() {
+            let mut session = session("<html><head></head><body><p>done</p></body></html>");
+
+            let step = session
+                .start(&state("{}"))
+                .expect("boundary-free start should complete");
+            assert!(step.done);
+            assert!(step.boundary.is_none());
+            assert!(std::str::from_utf8(&step.bytes)
+                .expect("output should be UTF-8")
+                .contains("<p>done</p>"));
+        }
     }
 }

@@ -25,6 +25,13 @@ use crate::{structural_signal_value, Result, WebUIProcessContext};
 /// ` data-ws` so the marker exists before custom-element upgrade.
 pub(super) const STREAMING_ROOT_PREFIX: &str = "streaming_root:";
 
+fn write_span_id(context: &mut WebUIProcessContext<'_, '_, '_>, id: u32) -> Result<()> {
+    let value = usize::try_from(id).map_err(|_| {
+        crate::HandlerError::Invariant("span instance ID does not fit usize".to_string())
+    })?;
+    crate::write_usize(context.writer, value)
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum StreamingRootStage {
     OpeningTagClose,
@@ -200,19 +207,36 @@ pub(crate) fn prepare_generated_streaming_root(
         return Ok(());
     }
     require_streaming_head_start(context, "route component host")?;
-    let (active_boundary, generated_root_ready) = context
+    let (active_boundary, current_span, pending_span_host, generated_root_ready) = context
         .streaming
         .as_ref()
-        .map_or((None, false), |streaming| {
-            (streaming.active_boundary, streaming.generated_root_ready)
+        .map_or((None, None, None, false), |streaming| {
+            (
+                streaming.active_boundary,
+                streaming.current_span,
+                streaming.pending_span_host,
+                streaming.generated_root_ready,
+            )
         });
-    if active_boundary.is_none() {
+    if active_boundary.is_none() && current_span.is_none() && pending_span_host.is_none() {
         return Err(streaming_root_outside_boundary_error(tag));
     }
     if generated_root_ready {
         return Err(generated_streaming_root_error(tag));
     }
     context.writer.write(" data-ws")?;
+    if let Some(span_id) = pending_span_host {
+        context.writer.write(" data-ws-span=\"")?;
+        write_span_id(context, span_id)?;
+        context.writer.write("\"")?;
+    }
+    if active_boundary.is_some() {
+        if let Some(span_id) = current_span {
+            context.writer.write(" data-ws-enclosing=\"")?;
+            write_span_id(context, span_id)?;
+            context.writer.write("\"")?;
+        }
+    }
     streaming_state(context)?.generated_root_ready = true;
     Ok(())
 }
@@ -266,18 +290,20 @@ pub(super) fn process_streaming_root_signal<'data>(
         ));
     }
 
-    let (active_boundary, pending_root, generated_root_ready) =
+    let (active_boundary, current_span, pending_span_host, pending_root, generated_root_ready) =
         context
             .streaming
             .as_ref()
-            .map_or((None, None, false), |streaming| {
+            .map_or((None, None, None, None, false), |streaming| {
                 (
                     streaming.active_boundary,
+                    streaming.current_span,
+                    streaming.pending_span_host,
                     streaming.pending_root,
                     streaming.generated_root_ready,
                 )
             });
-    if active_boundary.is_none() {
+    if active_boundary.is_none() && current_span.is_none() && pending_span_host.is_none() {
         return Err(streaming_root_outside_boundary_error(tag));
     }
     if let Some(pending) = pending_root {
@@ -291,6 +317,18 @@ pub(super) fn process_streaming_root_signal<'data>(
     }
 
     context.writer.write(" data-ws")?;
+    if let Some(span_id) = pending_span_host {
+        context.writer.write(" data-ws-span=\"")?;
+        write_span_id(context, span_id)?;
+        context.writer.write("\"")?;
+    }
+    if active_boundary.is_some() {
+        if let Some(span_id) = current_span {
+            context.writer.write(" data-ws-enclosing=\"")?;
+            write_span_id(context, span_id)?;
+            context.writer.write("\"")?;
+        }
+    }
     streaming_state(context)?.pending_root = Some(PendingStreamingRoot {
         tag,
         stage: StreamingRootStage::OpeningTagClose,

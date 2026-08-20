@@ -623,18 +623,21 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "for-body"),
                     WebUIFragment::if_cond(ConditionExpr::identifier("show"), "if-body"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "for-body".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("item", false)],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-body".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>yes</span>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);

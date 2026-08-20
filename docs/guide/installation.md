@@ -88,6 +88,9 @@ dotnet add package Microsoft.WebUI
 
 It targets .NET 8 and .NET 9. The package restores platform-specific `Microsoft.WebUI.Runtime.*` packages transitively, and .NET selects the matching native asset. Release builds stage `.nupkg` and `.snupkg` artifacts with Source Link and repository metadata for downstream signing and publishing. NuGet.org publishing is not automatic until an approved Microsoft-certificate signing path is available for `.nupkg` packages.
 
+See the [.NET integration guide](/guide/integrations/dotnet) for buffered and
+progressive ASP.NET response examples.
+
 Prepare `protocol.bin` once for repeated rendering:
 
 ```csharp

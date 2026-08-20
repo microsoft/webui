@@ -11,7 +11,10 @@ interactive before `DOMContentLoaded` while the response is still open; a
 **`weather-panel`** shows its own skeleton and receives server state through the
 same response; a three-batch **feed** streams in afterward, each
 batch's `feed-item` islands hydrating independently as their own
-`<boundary>` commits.
+`<boundary>` commits. The document entry contains only one
+`<streaming-page>` host. Its component template owns all five boundaries, so
+the composer becomes interactive before the parent page's final tail and span
+completion arrive.
 
 ```bash
 # Install JS dependencies
@@ -44,7 +47,9 @@ instruction instead of silently falling back to full-state payloads.
 The Node API feed gaps are bounded by `--feed-delay-min-ms` (500) and
 `--feed-delay-max-ms` (1000) and are re-rolled per request, so repeated loads
 do not look mechanically identical. The forecast resolves independently, so its
-state record can appear between any two feed checkpoints:
+state record can appear between any two feed checkpoints. If it is still
+pending at the last gap, the API sends the update before the final resume,
+because that resume completes the session and closes its update window:
 
 ```bash
 pnpm start:api -- --feed-delay-min-ms 200 --feed-delay-max-ms 400
@@ -52,22 +57,25 @@ pnpm start:api -- --feed-delay-min-ms 200 --feed-delay-max-ms 400
 
 For an HTML request, `webui serve` advertises
 `Accept: application/x-webui-stream, application/json`. The API selects
-streaming with the first media type and writes versioned NDJSON commands:
+streaming with the first media type and writes version-2 NDJSON controls:
 
 ```text
-{"type":"shell","version":1,"state":{...}}
-{"type":"boundary","name":"weather-shell","mode":"updatable"}
-{"type":"boundary","name":"composer-ready"}
-{"type":"update","name":"weather-shell","state":{...}}
-{"type":"finish"}
+{"type":"start","version":2,"state":{...}}
+{"type":"resume","boundary":{"owner":"streaming-page","name":"weather-shell"},"mode":"updatable","state":{}}
+{"type":"resume","boundary":{"owner":"streaming-page","name":"composer-ready"},"state":{}}
+{"type":"update","boundary":{"owner":"streaming-page","name":"weather-shell"},"state":{...}}
 ```
 
 In this topology Node controls readiness and order, but does not render WebUI.
-The CLI resolves each name once to an integer boundary handle and owns the
-compiled protocol, `StreamingResponse`, pooled `StreamingWriter`, and
-browser-facing record format. A capacity-one command channel and Node's
-`response.write()` / `drain` contract propagate backpressure across the loopback
-bridge.
+Each `resume` echoes the expected runtime descriptor's owner, name, and optional
+typed key. The one-way channel has no acknowledgement carrying instance IDs, so
+the CLI validates that selector against the current `StreamStep`, remembers the
+committed descriptor-to-instance mapping for later updates, and rejects stale or
+ambiguous targets. `declarationId` may be included as an extra validation field.
+The final `resume` returns `done`, writes the terminal automatically, and the API
+closes its NDJSON body; there is no finish control. A capacity-one command
+channel and Node's `response.write()` / `drain` contract propagate backpressure
+across the loopback bridge.
 
 **This is one of two supported topologies.** This example uses the
 **API-proxy** topology, which is the right fit when you want the CLI to own
@@ -84,7 +92,7 @@ ordering, projection, the wire format, and every diagnostic are identical.
 
 ### Why weather uses a state record
 
-Boundary HTML is delivered strictly in document order, so the weather boundary
+Runtime boundary HTML is delivered in discovery order, so the weather boundary
 ships a complete `weather-panel` in its `loading` state immediately. The host
 commits it as `BoundaryMode::Updatable`, starts forecast work concurrently, and
 calls `StreamingResponse::update` when the forecast resolves. The typed state
@@ -184,10 +192,10 @@ by the application bundle, not by CSS. See
 ### How it stays deterministic
 
 `server/src/pacing.ts` races weather readiness against each feed delay and
-writes commands in completion order. `server/src/stream-protocol.ts` emits one
-record per semantic write, honors Node HTTP backpressure, and ends immediately
-after `finish`. The API caps concurrent admitted streams before sending a 200
-response.
+writes controls in completion order. `server/src/stream-protocol.ts` emits one
+record per semantic write, honors Node HTTP backpressure, and closes the body
+after the final resume. The API caps concurrent admitted streams before sending
+a 200 response.
 
 Inside `webui serve`, one blocking worker owns the real
 `WebUIHandler::stream_response` and `StreamingWriter` for the response
@@ -196,7 +204,7 @@ the existing capacity-four browser channel and 30-second flush timeout remain
 in force. The example never manufactures browser envelopes or duplicates
 protocol rendering in JavaScript.
 
-Three feed batches are three explicit `<boundary>` groups — WebUI does not
+Three feed batches are three explicit component-local `<boundary>` groups — WebUI does not
 implement an open-ended `<webui-stream>` directive. The feed's `<section>`
 container is never itself hydrated: each `feed-item` carries its own state in
 its own attributes, so one batch's items can never read or mutate another

@@ -43,7 +43,10 @@ use streaming::{
     StreamingRenderState,
 };
 pub use streaming::{
-    BoundaryId, BoundaryMode, BufferSink, SessionOptions, StreamingResponse, StreamingSession,
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, BufferSink, SessionOptions,
+    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession,
+    MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_OPEN_SPANS,
+    MAX_SPAN_NESTING,
 };
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
@@ -186,6 +189,33 @@ pub trait ResponseWriter {
     #[doc(hidden)]
     fn stream_flush(&mut self) -> Result<()> {
         Ok(())
+    }
+
+    #[doc(hidden)]
+    fn stream_begin_component(&mut self) -> Result<()> {
+        Err(HandlerError::Invariant(
+            "component opening buffering requires a streaming sink".to_string(),
+        ))
+    }
+
+    #[doc(hidden)]
+    fn stream_mark_component_root(&mut self) -> Result<()> {
+        Err(HandlerError::Invariant(
+            "component root buffering requires a streaming sink".to_string(),
+        ))
+    }
+
+    #[doc(hidden)]
+    fn stream_commit_component(
+        &mut self,
+        span_id: Option<u32>,
+        enclosing_span_id: Option<u32>,
+        deferred: bool,
+    ) -> Result<()> {
+        let _ = (span_id, enclosing_span_id, deferred);
+        Err(HandlerError::Invariant(
+            "component opening commit requires a streaming sink".to_string(),
+        ))
     }
 }
 
@@ -548,6 +578,8 @@ fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<St
 }
 
 pub(crate) struct WebUiBootstrap<'a> {
+    pub(crate) declaration_id: Option<u32>,
+    pub(crate) enclosing_span_instance_id: Option<u32>,
     pub(crate) state: &'a Value,
     pub(crate) state_selection: StateSelection<'a>,
     pub(crate) chain: &'a [Value],
@@ -935,6 +967,24 @@ pub(crate) fn write_webui_bootstrap(
     let mut wrote_field = false;
 
     writer.write("{")?;
+    if let Some(declaration_id) = bootstrap.declaration_id {
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "declarationId",
+            &declaration_id,
+        )?;
+    }
+    if let Some(span_id) = bootstrap.enclosing_span_instance_id {
+        write_json_field(
+            writer,
+            scratch,
+            &mut wrote_field,
+            "enclosingSpanInstanceId",
+            &span_id,
+        )?;
+    }
     if !bootstrap.chain.is_empty() {
         write_json_field(writer, scratch, &mut wrote_field, "chain", bootstrap.chain)?;
     }
@@ -1192,6 +1242,7 @@ impl WebUIHandler {
                 Some(Fragment::Outlet(_)) => {
                     self.process_outlet(context)?;
                 }
+                Some(Fragment::Boundary(_)) => {}
                 None => {}
             }
         }
@@ -1273,6 +1324,10 @@ impl WebUIHandler {
                 context.writer.write(" data-ri=\"")?;
                 write_usize(context.writer, ri)?;
                 context.writer.write("\" active>")?;
+
+                if !matched_child.content_fragment_id.is_empty() {
+                    self.process_fragment_id(&matched_child.content_fragment_id, context)?;
+                }
 
                 context.writer.write("<")?;
                 context.writer.write(comp)?;
@@ -1415,18 +1470,21 @@ impl WebUIHandler {
             write_usize(context.writer, ri)?;
             context.writer.write("\" active>")?;
 
+            let saved_route_base = context.route_base.clone();
+            let saved_route_children = std::mem::take(&mut context.route_children);
+            if let Some((_, ref rm)) = best_route {
+                context.route_base = Cow::Owned(route_matcher::compute_route_base(
+                    context.request_path,
+                    rm.consumed_segments,
+                ));
+            }
+            context.route_children = route_frag.children.clone();
+
+            if !route_frag.content_fragment_id.is_empty() {
+                self.process_fragment_id(&route_frag.content_fragment_id, context)?;
+            }
+
             if !route_frag.fragment_id.is_empty() {
-                let saved_route_base = context.route_base.clone();
-                let saved_route_children = std::mem::take(&mut context.route_children);
-                if let Some((_, ref rm)) = best_route {
-                    context.route_base = Cow::Owned(route_matcher::compute_route_base(
-                        context.request_path,
-                        rm.consumed_segments,
-                    ));
-                }
-
-                context.route_children = route_frag.children.clone();
-
                 let comp = webui_protocol::WebUIFragmentComponent {
                     fragment_id: route_frag.fragment_id.clone(),
                 };
@@ -1444,10 +1502,9 @@ impl WebUIHandler {
                 context.writer.write("</")?;
                 context.writer.write(&route_frag.fragment_id)?;
                 context.writer.write(">")?;
-
-                context.route_base = saved_route_base;
-                context.route_children = saved_route_children;
             }
+            context.route_base = saved_route_base;
+            context.route_children = saved_route_children;
         } else {
             context.writer.write(" style=\"display:none\">")?;
         }
@@ -1899,6 +1956,8 @@ impl WebUIHandler {
                     context.writer,
                     &mut context.json_scratch,
                     WebUiBootstrap {
+                        declaration_id: None,
+                        enclosing_span_instance_id: None,
                         state: context.state,
                         state_selection,
                         chain: &chain_json,
@@ -2240,10 +2299,8 @@ fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::streaming::STREAMING_MARKER;
     use std::cell::RefCell;
-    use std::sync::Arc;
-    use webui_parser::{ComponentRegistration, DomStrategy, HtmlParser};
+    use webui_parser::HtmlParser;
     use webui_protocol::{
         web_ui_fragment, ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator,
         WebUIFragmentAttribute,
@@ -2300,6 +2357,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("Hello, WebUI!")],
+                contains_boundary: false,
             },
         );
 
@@ -2338,6 +2396,7 @@ mod tests {
                     WebUIFragment::signal("name", false),
                     WebUIFragment::raw("!"),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -2375,6 +2434,7 @@ mod tests {
                     WebUIFragment::raw("People: "),
                     WebUIFragment::for_loop("person", "people", "person-item"),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -2385,6 +2445,7 @@ mod tests {
                     WebUIFragment::signal("person.name", false),
                     WebUIFragment::raw(", "),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -2432,6 +2493,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("End"),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -2439,6 +2501,7 @@ mod tests {
             "active-content".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("Active")],
+                contains_boundary: false,
             },
         );
 
@@ -2518,6 +2581,7 @@ mod tests {
                     WebUIFragment::raw("Component: "),
                     WebUIFragment::component("my-component"),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -2525,6 +2589,7 @@ mod tests {
             "my-component".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Component Content</div>")],
+                contains_boundary: false,
             },
         );
 
@@ -2562,6 +2627,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("missing-component")],
+                contains_boundary: false,
             },
         );
 
@@ -2600,6 +2666,7 @@ mod tests {
                     WebUIFragment::signal("missing_field", false),
                     WebUIFragment::raw("!"),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -2639,6 +2706,7 @@ mod tests {
                     ),
                     WebUIFragment::raw(">Click</button>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2668,6 +2736,7 @@ mod tests {
                     ),
                     WebUIFragment::raw(">Click</button>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2697,6 +2766,7 @@ mod tests {
                     ),
                     WebUIFragment::raw(">"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2730,6 +2800,7 @@ mod tests {
                     ),
                     WebUIFragment::raw(">"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2758,6 +2829,7 @@ mod tests {
                     WebUIFragment::attribute("value", "inputValue"),
                     WebUIFragment::raw(">"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2784,6 +2856,7 @@ mod tests {
                     WebUIFragment::attribute("handle", "number"),
                     WebUIFragment::raw("></div>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2815,6 +2888,7 @@ mod tests {
                     WebUIFragment::attribute("href", "value"),
                     WebUIFragment::raw(">demo</a>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2854,6 +2928,7 @@ mod tests {
                     WebUIFragment::attribute("data-cfg", "cfg"),
                     WebUIFragment::raw("></div>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2891,6 +2966,7 @@ mod tests {
                     WebUIFragment::attribute_template("value", "attr-1"),
                     WebUIFragment::raw(">"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2900,6 +2976,7 @@ mod tests {
                     WebUIFragment::raw("hello "),
                     WebUIFragment::signal("item", false),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2927,6 +3004,7 @@ mod tests {
                     WebUIFragment::signal("html", false),
                     WebUIFragment::signal("html", true),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2958,6 +3036,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outer"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2968,12 +3047,14 @@ mod tests {
                     WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "inner"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "inner".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>Inner</span>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3008,6 +3089,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3018,6 +3100,7 @@ mod tests {
                     WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3028,6 +3111,7 @@ mod tests {
                     WebUIFragment::signal("innerItem.name", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3062,6 +3146,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3073,6 +3158,7 @@ mod tests {
                     WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3084,6 +3170,7 @@ mod tests {
                     WebUIFragment::signal("globalInner", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3118,6 +3205,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::for_loop("item", "items", "item-tpl")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3127,12 +3215,14 @@ mod tests {
                     ConditionExpr::identifier("item.visible"),
                     "visible-tpl",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "visible-tpl".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("item.name", false)],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3155,6 +3245,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::for_loop("item", "items", "item-tpl")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3164,12 +3255,14 @@ mod tests {
                     ConditionExpr::identifier("item.flag"),
                     "show-tpl",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "show-tpl".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("yes")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3211,6 +3304,8 @@ mod tests {
                     WebUIFragment::component("my-comp"),
                     WebUIFragment::raw("</my-comp>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3221,6 +3316,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3261,6 +3357,8 @@ mod tests {
                     WebUIFragment::component("my-comp"),
                     WebUIFragment::raw("</my-comp>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3270,6 +3368,7 @@ mod tests {
                     WebUIFragment::raw("hello "),
                     WebUIFragment::signal("item", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3280,6 +3379,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3320,6 +3420,8 @@ mod tests {
                     WebUIFragment::component("my-comp"),
                     WebUIFragment::raw("</my-comp>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3329,6 +3431,7 @@ mod tests {
                     WebUIFragment::raw("prefix "),
                     WebUIFragment::signal("item", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3339,6 +3442,7 @@ mod tests {
                     WebUIFragment::signal("dataTitle", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3380,6 +3484,8 @@ mod tests {
                     WebUIFragment::component("my-comp"),
                     WebUIFragment::raw("</my-comp>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3392,6 +3498,7 @@ mod tests {
                     WebUIFragment::signal("item.bar", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3432,6 +3539,8 @@ mod tests {
                     WebUIFragment::component("parent"),
                     WebUIFragment::raw("</parent>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3456,9 +3565,17 @@ mod tests {
                     WebUIFragment::raw("Label</child>After: "),
                     WebUIFragment::signal("var", false),
                 ],
+
+                contains_boundary: false,
             },
         );
-        fragments.insert("child".to_string(), FragmentList { fragments: vec![] });
+        fragments.insert(
+            "child".to_string(),
+            FragmentList {
+                fragments: vec![],
+                contains_boundary: false,
+            },
+        );
         let protocol = WebUIProtocol::new(fragments);
         let state = test_json!({"var": "original"});
         let mut writer = TestWriter::new();
@@ -3497,6 +3614,8 @@ mod tests {
                     WebUIFragment::component("my-comp"),
                     WebUIFragment::raw("</my-comp>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3506,12 +3625,14 @@ mod tests {
                     ConditionExpr::identifier("disabled"),
                     "show",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "show".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("disabled!")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3539,6 +3660,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::signal("v", false)],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3656,6 +3778,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3684,6 +3807,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3712,6 +3836,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3741,6 +3866,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3773,6 +3899,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3801,6 +3928,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3829,6 +3957,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3857,6 +3986,7 @@ mod tests {
                         ),
                         WebUIFragment::raw(">"),
                     ],
+                    contains_boundary: false,
                 },
             );
             let protocol = WebUIProtocol::new(fragments);
@@ -3887,6 +4017,7 @@ mod tests {
                     ),
                     WebUIFragment::raw(">Click</button>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3916,6 +4047,7 @@ mod tests {
                     ),
                     WebUIFragment::raw(">Click</button>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -3955,6 +4087,8 @@ mod tests {
                     WebUIFragment::component("parent-component"),
                     WebUIFragment::raw("</parent-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3964,6 +4098,7 @@ mod tests {
                     WebUIFragment::raw("Hello "),
                     WebUIFragment::signal("who", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3985,6 +4120,8 @@ mod tests {
                     WebUIFragment::component("child-component"),
                     WebUIFragment::raw("</child-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3994,6 +4131,7 @@ mod tests {
                     WebUIFragment::raw("Child of "),
                     WebUIFragment::signal("title", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4004,6 +4142,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4044,12 +4183,15 @@ mod tests {
                     WebUIFragment::component("parent-component"),
                     WebUIFragment::raw("</parent-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "p-title".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("P:"), WebUIFragment::signal("p", false)],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4071,6 +4213,8 @@ mod tests {
                     WebUIFragment::component("child-component"),
                     WebUIFragment::raw("</child-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4082,6 +4226,7 @@ mod tests {
                     WebUIFragment::raw(")-"),
                     WebUIFragment::signal("cExtra", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4103,6 +4248,8 @@ mod tests {
                     WebUIFragment::component("grandchild-component"),
                     WebUIFragment::raw("</grandchild-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4113,6 +4260,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4153,6 +4301,8 @@ mod tests {
                     WebUIFragment::component("parent-component"),
                     WebUIFragment::raw("</parent-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4162,12 +4312,14 @@ mod tests {
                     WebUIFragment::raw("Parent:"),
                     WebUIFragment::signal("who", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "parent-component".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::for_loop("item", "items", "child-loop")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4189,6 +4341,8 @@ mod tests {
                     WebUIFragment::component("child-component"),
                     WebUIFragment::raw("</child-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4200,6 +4354,7 @@ mod tests {
                     WebUIFragment::raw(" / "),
                     WebUIFragment::signal("title", false),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4210,6 +4365,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4270,24 +4426,29 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "attr-title".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("T:"), WebUIFragment::signal("t", false)],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "attr-data-title".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("D:"), WebUIFragment::signal("d", false)],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "attr-aria-label".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("A:"), WebUIFragment::signal("a", false)],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4302,6 +4463,7 @@ mod tests {
                     WebUIFragment::signal("ariaLabel", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4343,6 +4505,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4353,6 +4517,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4378,6 +4543,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::for_loop("item", "items", "loop")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4400,6 +4566,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4410,6 +4578,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4461,6 +4630,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4475,12 +4646,14 @@ mod tests {
                     WebUIFragment::signal("label", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "disabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Disabled</div>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4522,6 +4695,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4532,6 +4707,7 @@ mod tests {
                     WebUIFragment::signal("keyHyphen", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4631,6 +4807,8 @@ mod tests {
                     WebUIFragment::component("test-component"),
                     WebUIFragment::raw("</test-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4651,6 +4829,7 @@ mod tests {
                     WebUIFragment::signal("ariaLabel", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4704,6 +4883,8 @@ mod tests {
                     WebUIFragment::component("parent-component"),
                     WebUIFragment::raw("</parent-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4727,6 +4908,8 @@ mod tests {
                     WebUIFragment::component("child-component"),
                     WebUIFragment::raw("</child-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4737,6 +4920,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</h2>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4778,6 +4962,8 @@ mod tests {
                     WebUIFragment::component("parent-component"),
                     WebUIFragment::raw("</parent-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4800,6 +4986,8 @@ mod tests {
                     WebUIFragment::component("child-component"),
                     WebUIFragment::raw("</child-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4821,6 +5009,8 @@ mod tests {
                     WebUIFragment::component("grandchild-component"),
                     WebUIFragment::raw("</grandchild-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4831,6 +5021,7 @@ mod tests {
                     WebUIFragment::signal("title", false),
                     WebUIFragment::raw("</h3>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4872,6 +5063,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4884,6 +5077,7 @@ mod tests {
                     WebUIFragment::signal("item.bar", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4913,6 +5107,7 @@ mod tests {
                     "list.items",
                     "listTemplate",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4932,6 +5127,8 @@ mod tests {
                     },
                     WebUIFragment::component("item_component"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4942,6 +5139,7 @@ mod tests {
                     WebUIFragment::signal("item.name", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4968,6 +5166,7 @@ mod tests {
                     "data.outer",
                     "outerTemplate",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4978,6 +5177,7 @@ mod tests {
                     "outer.middle",
                     "middleTemplate",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -4988,6 +5188,7 @@ mod tests {
                     "middle.inner",
                     "innerTemplate",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5032,6 +5233,8 @@ mod tests {
                     WebUIFragment::component("card_component"),
                     WebUIFragment::raw("</card>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5046,6 +5249,7 @@ mod tests {
                     WebUIFragment::signal("inner.label", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5091,6 +5295,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5106,18 +5312,21 @@ mod tests {
                         "enabledTemplate",
                     ),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "disabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>Disabled</span>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "enabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>Enabled</span>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5158,6 +5367,8 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</my-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5173,18 +5384,21 @@ mod tests {
                         "enabledTemplate",
                     ),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "disabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>Disabled</span>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "enabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>Enabled</span>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5225,6 +5439,8 @@ mod tests {
                     WebUIFragment::component("parent-component"),
                     WebUIFragment::raw("</parent-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5250,12 +5466,15 @@ mod tests {
                     WebUIFragment::component("child-component"),
                     WebUIFragment::raw("</child-component>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "parentDisabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Parent Disabled</div>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5271,18 +5490,21 @@ mod tests {
                         "childEnabledTemplate",
                     ),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "childDisabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Child Disabled</div>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "childEnabledTemplate".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Child Enabled</div>")],
+                contains_boundary: false,
             },
         );
 
@@ -5340,12 +5562,14 @@ mod tests {
                     WebUIFragment::component("custom-element"),
                     WebUIFragment::raw("</custom-element>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "custom-element".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Custom Element</div>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5376,12 +5600,14 @@ mod tests {
                     WebUIFragment::component("custom-element"),
                     WebUIFragment::raw("Hello World</custom-element>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "custom-element".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<slot></slot>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5412,12 +5638,14 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "templateRepeat"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "custom-button".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<slot></slot>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5428,12 +5656,14 @@ mod tests {
                     WebUIFragment::component("custom-child"),
                     WebUIFragment::raw("</custom-child><slot></slot>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "custom-child".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>Hello World!</h1>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5446,6 +5676,7 @@ mod tests {
                     WebUIFragment::component("custom-button"),
                     WebUIFragment::raw("Ok</custom-button></custom-element>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5481,12 +5712,14 @@ mod tests {
                     ),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-1".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>If 1</span>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5527,6 +5760,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "template1"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5537,6 +5771,7 @@ mod tests {
                     WebUIFragment::if_cond(ConditionExpr::identifier("item.flag"), "ifBlock"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5547,6 +5782,7 @@ mod tests {
                     WebUIFragment::signal("item.label", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5583,6 +5819,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "template1"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5593,6 +5830,7 @@ mod tests {
                     WebUIFragment::if_cond(ConditionExpr::identifier("item.flag"), "ifBlock"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5603,6 +5841,7 @@ mod tests {
                     WebUIFragment::signal("item.label", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5637,6 +5876,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::for_loop("item", "items", "static")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5653,6 +5893,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "item.children", "static"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5694,6 +5935,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "templateComponent"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5704,6 +5946,7 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</component-tag>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5714,6 +5957,7 @@ mod tests {
                     WebUIFragment::signal("name", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5743,6 +5987,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5755,6 +6000,7 @@ mod tests {
                     WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5768,6 +6014,7 @@ mod tests {
                     WebUIFragment::signal("innerItem.innerLabel", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5803,6 +6050,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "templateComponent"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5813,6 +6061,7 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</component-tag>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5825,6 +6074,7 @@ mod tests {
                     WebUIFragment::signal("globalSuffix", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5855,6 +6105,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "templateComponent"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5865,6 +6116,7 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</component-tag>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5877,6 +6129,7 @@ mod tests {
                     WebUIFragment::signal("globalSuffix", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5907,6 +6160,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "template1"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5917,6 +6171,7 @@ mod tests {
                     WebUIFragment::signal("name", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -5946,6 +6201,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5961,6 +6217,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5971,6 +6228,7 @@ mod tests {
                     WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -5983,6 +6241,7 @@ mod tests {
                     WebUIFragment::signal("innerItem.innerLabel", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6020,6 +6279,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6036,6 +6296,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6049,6 +6310,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6059,6 +6321,7 @@ mod tests {
                     WebUIFragment::signal("middleItem.value", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6095,6 +6358,7 @@ mod tests {
                     WebUIFragment::for_loop("outerItem", "outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6106,6 +6370,7 @@ mod tests {
                     WebUIFragment::for_loop("innerItem", "outerItem.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6119,6 +6384,7 @@ mod tests {
                     ),
                     WebUIFragment::raw("</article>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6129,6 +6395,7 @@ mod tests {
                     WebUIFragment::signal("innerItem.detail", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6163,6 +6430,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "template1"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6179,6 +6447,7 @@ mod tests {
                     WebUIFragment::signal("item.otherVal", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6214,6 +6483,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "templateComponent"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6224,6 +6494,7 @@ mod tests {
                     WebUIFragment::component("my-component"),
                     WebUIFragment::raw("</component-tag>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6240,6 +6511,7 @@ mod tests {
                     WebUIFragment::signal("item.otherVal", false),
                     WebUIFragment::raw("</span>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6275,6 +6547,7 @@ mod tests {
                     WebUIFragment::for_loop("outer", "list.outer_items", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6285,6 +6558,7 @@ mod tests {
                     WebUIFragment::for_loop("inner_item", "outer.inner_items", "innerTemplate"),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6294,6 +6568,7 @@ mod tests {
                     ConditionExpr::identifier("inner_item.flag"),
                     "ifInner",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6304,6 +6579,7 @@ mod tests {
                     WebUIFragment::signal("inner_item.value", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6336,6 +6612,7 @@ mod tests {
                     WebUIFragment::for_loop("outer", "list.outer_items", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6346,6 +6623,7 @@ mod tests {
                     WebUIFragment::for_loop("inner_item", "outer.inner_items", "innerTemplate"),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6355,6 +6633,7 @@ mod tests {
                     ConditionExpr::identifier("inner_item.flag"),
                     "ifInner",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6365,6 +6644,7 @@ mod tests {
                     WebUIFragment::signal("inner_item.value", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6397,6 +6677,7 @@ mod tests {
                     WebUIFragment::for_loop("outer", "list.outerItems", "outerTemplate"),
                     WebUIFragment::raw("</div>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6408,6 +6689,7 @@ mod tests {
                     WebUIFragment::for_loop("inner", "outer.innerItems", "innerTemplate"),
                     WebUIFragment::raw("</section>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6425,6 +6707,7 @@ mod tests {
                     ),
                     "ifInner",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -6435,6 +6718,7 @@ mod tests {
                     WebUIFragment::signal("inner.value", false),
                     WebUIFragment::raw("</p>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -6488,6 +6772,8 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+
+                contains_boundary: false,
             },
         );
 
@@ -6496,6 +6782,7 @@ mod tests {
             "dash-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Dashboard</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -6504,6 +6791,7 @@ mod tests {
             "detail-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Detail</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -6540,6 +6828,8 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
 
@@ -6550,6 +6840,7 @@ mod tests {
                     WebUIFragment::raw("<h1>Shell</h1>"),
                     WebUIFragment::outlet(),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -6560,6 +6851,7 @@ mod tests {
                     WebUIFragment::raw("<h2>Section</h2>"),
                     WebUIFragment::outlet(),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -6567,6 +6859,7 @@ mod tests {
             "topic-comp".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Topic content</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -6989,12 +7282,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(template.to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7054,12 +7349,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(r#"<p>hello</p>"#.to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7099,12 +7396,14 @@ mod tests {
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(template.to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7150,6 +7449,7 @@ mod tests {
                     WebUIFragment::component("my-card"),
                     WebUIFragment::raw("</my-card></body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -7159,7 +7459,8 @@ mod tests {
                     "<template shadowrootmode=\"open\"><style>.card{color:red}</style><div>card</div></template>"
                         .to_string(),
                 )],
-            },
+                        contains_boundary: false,
+},
         );
 
         let protocol = WebUIProtocol::new(fragments);
@@ -7207,12 +7508,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>card</div>".to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7280,18 +7583,21 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "o-loading-state".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>loading</div>".to_string())],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>card</div>".to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7367,6 +7673,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
 
@@ -7407,6 +7714,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -7448,18 +7756,21 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "z-widget".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>z</div>".to_string())],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "a-widget".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>a</div>".to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7527,12 +7838,14 @@ mod tests {
                     WebUIFragment::raw("</my-card>".to_string()),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(r#"<p>hi</p>"#.to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7591,12 +7904,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "dash-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(template.to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7647,18 +7962,21 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "has-css".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>styled</p>".to_string())],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "no-css".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>plain</p>".to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7721,6 +8039,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         // app-shell contains a cart panel
@@ -7731,6 +8050,7 @@ mod tests {
                     WebUIFragment::raw("<div>Shell</div>".to_string()),
                     WebUIFragment::component("cart-panel"),
                 ],
+                contains_boundary: false,
             },
         );
         // cart-panel has an <if> block containing product-card
@@ -7742,6 +8062,7 @@ mod tests {
                     WebUIFragment::if_cond(ConditionExpr::identifier("hasItems"), "cart-items"),
                     WebUIFragment::raw("</aside>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         // cart-items (if block body) contains product-card
@@ -7749,12 +8070,14 @@ mod tests {
             "cart-items".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("product-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "product-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Card</div>".to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -7882,6 +8205,7 @@ mod tests {
                     structural_fragment("body_start"),
                     WebUIFragment::raw("<main>Body-only host</main></body>".to_string()),
                 ],
+                contains_boundary: false,
             },
         )]);
         let mut protocol = WebUIProtocol::new(fragments);
@@ -7917,6 +8241,7 @@ mod tests {
                     structural_fragment("head_end"),
                     WebUIFragment::raw("</head>".to_string()),
                 ],
+                contains_boundary: false,
             },
         )]);
         let mut protocol = WebUIProtocol::new(fragments);
@@ -7953,6 +8278,7 @@ mod tests {
                     structural_fragment("head_end"),
                     WebUIFragment::raw("</head><body></body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         )]);
         let mut protocol = WebUIProtocol::new(fragments);
@@ -8020,12 +8346,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "dash-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw(template.to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -8076,6 +8404,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -8085,18 +8414,21 @@ mod tests {
                     ConditionExpr::identifier("hasItems"),
                     "cart-items",
                 )],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "cart-items".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("product-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "product-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Card</div>".to_string())],
+                contains_boundary: false,
             },
         );
 
@@ -8147,12 +8479,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<span>shell</span>".to_string())],
+                contains_boundary: false,
             },
         );
         let index_fragments = fragments
@@ -8212,6 +8546,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -8247,12 +8582,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -8296,12 +8633,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -8338,12 +8677,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -8419,6 +8760,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -8456,12 +8798,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "items-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -8646,18 +8990,22 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "admin-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Admin</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -8779,6 +9127,8 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
 
@@ -8786,18 +9136,21 @@ mod tests {
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "compose-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "settings-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Settings</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -8896,6 +9249,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         WebUIProtocol::new(fragments)
@@ -8984,6 +9338,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         WebUIProtocol::new(fragments)
@@ -9147,12 +9502,14 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Shell</p>")],
+                contains_boundary: false,
             },
         );
         let mut document = WebUIProtocol::new(fragments);
@@ -9258,6 +9615,7 @@ mod tests {
                     structural_fragment("body_start"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -9341,6 +9699,7 @@ mod tests {
                     structural_fragment("body_end"),
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -9415,6 +9774,7 @@ mod tests {
                     structural_fragment("body_end"), // duplicate
                     WebUIFragment::raw("</body></html>".to_string()),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -9449,6 +9809,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw(
                     "<my-component>hi</my-component>".to_string(),
                 )],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -9650,6 +10011,7 @@ mod tests {
                     WebUIFragment::for_loop("item", "outer", "outer_body"),
                     WebUIFragment::raw("]"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -9663,6 +10025,7 @@ mod tests {
                     WebUIFragment::signal("item.tag", false),
                     WebUIFragment::raw(")"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -9673,6 +10036,7 @@ mod tests {
                     WebUIFragment::signal("item.tag", false),
                     WebUIFragment::raw("]"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -9704,2061 +10068,5 @@ mod tests {
             "[(O=A[I=X][I=Y],O=A)(O=B[I=X][I=Y],O=B)]",
             "outer `item` must stay bound to its iteration value across the inner loop's save/restore"
         );
-    }
-
-    #[derive(Default)]
-    struct FlushTestWriter {
-        output: String,
-        flushes: Vec<usize>,
-        fail_flush: bool,
-        fail_flush_at: Option<usize>,
-        flush_attempts: usize,
-        ended: bool,
-    }
-
-    impl ResponseWriter for FlushTestWriter {
-        fn write(&mut self, content: &str) -> Result<()> {
-            self.output.push_str(content);
-            Ok(())
-        }
-
-        fn end(&mut self) -> Result<()> {
-            self.ended = true;
-            Ok(())
-        }
-    }
-
-    impl FlushWriter for FlushTestWriter {
-        fn flush(&mut self) -> Result<()> {
-            let attempt = self.flush_attempts;
-            self.flush_attempts += 1;
-            if self.fail_flush || self.fail_flush_at == Some(attempt) {
-                return Err(HandlerError::ClientDisconnected);
-            }
-            self.flushes.push(self.output.len());
-            Ok(())
-        }
-    }
-
-    fn streaming_protocol(with_boundaries: bool) -> Protocol {
-        streaming_protocol_with_state_strategy(with_boundaries, InitialStateStrategy::Components)
-    }
-
-    fn streaming_protocol_with_state_strategy(
-        with_boundaries: bool,
-        state_strategy: InitialStateStrategy,
-    ) -> Protocol {
-        let mut fragments = HashMap::new();
-        let mut entry = vec![
-            WebUIFragment::raw("<!DOCTYPE html><html><HEAD data-shell=\"main\">"),
-            structural_fragment("head_start"),
-            WebUIFragment::raw("<script type=\"module\" async src=\"/index.js\"></script>"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</HEAD><body>"),
-            structural_fragment("body_start"),
-        ];
-        if with_boundaries {
-            entry.push(structural_fragment("boundary_start:0"));
-        }
-        entry.extend([
-            WebUIFragment::raw("<my-counter"),
-            structural_fragment("streaming_root:my-counter"),
-            WebUIFragment::raw(">"),
-            WebUIFragment::component("my-counter"),
-            WebUIFragment::raw("</my-counter>"),
-        ]);
-        if with_boundaries {
-            entry.push(structural_fragment("boundary_end:0"));
-        }
-        entry.extend([
-            WebUIFragment::raw("<app-footer>slow tail</app-footer>"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ]);
-        fragments.insert("index.html".to_string(), FragmentList { fragments: entry });
-        fragments.insert(
-            "my-counter".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<button>Count</button>")],
-            },
-        );
-
-        let mut document = WebUIProtocol::new(fragments);
-        document.initial_state_strategy = state_strategy as i32;
-        document.components.insert(
-            "my-counter".to_string(),
-            webui_protocol::ComponentData {
-                template_json: r#"{"h":"<button>Count</button>","th":1}"#.to_string(),
-                template_functions: "[function(){return true}]".to_string(),
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["count".to_string()],
-                ..Default::default()
-            },
-        );
-        Protocol::new(document)
-    }
-
-    #[test]
-    fn handler_error_stays_small() {
-        // Boxing the cold `StreamingBoundary` payload keeps `HandlerError` — and
-        // therefore `Result<(), HandlerError>` threaded through the hot legacy
-        // render path — down to a single `String`-sized payload plus a
-        // discriminant word. If the boundary payload is un-boxed back to
-        // `{ signal, reason }` it grows to two `String`s (48-byte payload) and
-        // this fails.
-        assert!(
-            std::mem::size_of::<HandlerError>()
-                <= std::mem::size_of::<String>() + std::mem::size_of::<usize>(),
-            "HandlerError grew to {} bytes",
-            std::mem::size_of::<HandlerError>()
-        );
-    }
-
-    #[test]
-    fn streaming_render_flushes_bootstrap_before_slow_tail_and_emits_terminal() {
-        let protocol = streaming_protocol(true);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let state = test_json!({ "count": 1, "serverOnly": "secret" });
-        let mut writer = FlushTestWriter::default();
-
-        handler
-            .render_streaming(
-                &protocol,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-
-        assert!(writer.ended);
-        assert_eq!(
-            writer.flushes.len(),
-            2,
-            "boundary commit plus one coalesced terminal-tail flush"
-        );
-        let first_flush = &writer.output[..writer.flushes[0]];
-        assert!(first_flush.contains("<!--wb:0-->"));
-        assert!(first_flush.contains("<!--/wb:0-->"));
-        assert!(first_flush.contains(r#"[1,0,0,0,{"inventory":"01","state":{"count":1}"#));
-        assert!(first_flush.contains(r#""templates":{"my-counter":"#));
-        assert!(!first_flush.contains("slow tail"));
-        assert!(!writer.output.contains("id=\"webui-data\""));
-        // The terminal flush commits the scriptless tail without manufacturing
-        // another state/template projection.
-        assert!(writer.output.contains("[1,1,3,0,{}]"));
-        assert!(!writer.output.contains("[1,1,0,1,"));
-        assert!(!writer.output.contains("[1,2,3,0,{}]"));
-
-        let marker = writer
-            .output
-            .find(STREAMING_MARKER)
-            .expect("streaming marker");
-        let attributed_head = writer
-            .output
-            .find("<HEAD data-shell=\"main\">")
-            .expect("attributed mixed-case head");
-        let authored_script = writer
-            .output
-            .find("src=\"/index.js\"")
-            .expect("entry script");
-        assert!(attributed_head < marker && marker < authored_script);
-    }
-
-    #[test]
-    fn streaming_terminal_tail_never_resends_full_state() {
-        let protocol = streaming_protocol_with_state_strategy(true, InitialStateStrategy::Full);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-
-        handler
-            .render_streaming(
-                &protocol,
-                &test_json!({ "count": 1, "serverOnly": "secret" }),
-                &RenderOptions::new("index.html", "/").with_body_inject(" \n"),
-                &mut writer,
-            )
-            .unwrap();
-
-        assert_eq!(
-            writer.output.matches("serverOnly").count(),
-            1,
-            "full state belongs only to the interactive boundary"
-        );
-        assert!(writer.output.contains("[1,1,3,0,{}]"));
-    }
-
-    /// Streaming must place the reserved-state injects exactly where the
-    /// ordinary render does, so a host can switch modes without its
-    /// boundary HTML moving.
-    #[test]
-    fn state_inject_placement_matches_between_render_modes() {
-        let entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-            WebUIFragment::raw("<main>static</main>"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ];
-        let fragments =
-            HashMap::from([("index.html".to_string(), FragmentList { fragments: entry })]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let state = test_json!({
-            "$webui": {
-                "headEnd": "<meta name=he>",
-                "bodyStart": "<span id=bs></span>",
-                "bodyEnd": "<script>be</script>",
-            }
-        });
-        let options = RenderOptions::new("index.html", "/");
-
-        let mut ordinary = TestWriter::new();
-        WebUIHandler::new()
-            .render(&protocol, &state, &options, &mut ordinary)
-            .unwrap();
-        let ordinary_html = ordinary.get_content().to_string();
-
-        let mut streamed = FlushTestWriter::default();
-        WebUIHandler::new()
-            .render_streaming(&protocol, &state, &options, &mut streamed)
-            .unwrap();
-        let streamed_html = &streamed.output;
-
-        for html in [ordinary_html.as_str(), streamed_html.as_str()] {
-            let head_end = html.find("<meta name=he>").expect("headEnd missing");
-            let head_close = html.find("</head>").expect("</head> missing");
-            let body_start = html.find("<span id=bs></span>").expect("bodyStart missing");
-            let main = html.find("<main>static</main>").expect("content missing");
-            let body_end = html.find("<script>be</script>").expect("bodyEnd missing");
-            let body_close = html.find("</body>").expect("</body> missing");
-            assert!(head_end < head_close, "headEnd misplaced: {html}");
-            assert!(body_start < main, "bodyStart misplaced: {html}");
-            assert!(
-                main < body_end && body_end < body_close,
-                "bodyEnd misplaced: {html}"
-            );
-        }
-
-        // The streaming response still terminates with its single empty
-        // terminal record: an inject must not perturb the record stream.
-        assert!(
-            streamed_html.contains(",3,0,{}]"),
-            "streaming must still end in one empty terminal record: {streamed_html}"
-        );
-    }
-
-    #[test]
-    fn streaming_state_inject_emits_and_strips_reserved_key() {
-        let entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ];
-        let fragments =
-            HashMap::from([("index.html".to_string(), FragmentList { fragments: entry })]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let state = test_json!({ "$webui": { "bodyEnd": "<script>be</script>" } });
-
-        let mut writer = FlushTestWriter::default();
-        WebUIHandler::new()
-            .render_streaming(
-                &protocol,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-        assert!(writer.output.contains("<script>be</script>"));
-        assert!(!writer.output.contains("$webui"));
-    }
-
-    #[test]
-    fn static_streaming_document_uses_one_empty_terminal_record() {
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>"),
-                    structural_fragment("head_start"),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</head><body>"),
-                    structural_fragment("body_start"),
-                    WebUIFragment::raw("<main>static</main>"),
-                    structural_fragment("body_end"),
-                    WebUIFragment::raw("</body></html>"),
-                ],
-            },
-        )]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let mut writer = FlushTestWriter::default();
-
-        WebUIHandler::new()
-            .render_streaming(
-                &protocol,
-                &test_json!({ "serverOnly": "secret" }),
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-
-        assert_eq!(writer.flushes.len(), 1);
-        assert!(writer.output.contains(STREAMING_MARKER));
-        assert!(writer.output.contains("[1,0,3,0,{}]"));
-        assert!(!writer.output.contains("serverOnly"));
-        assert!(!writer.output.contains("id=\"webui-data\""));
-        assert!(!writer.output.contains("<!--wb:"));
-    }
-
-    #[test]
-    fn streaming_render_emits_nonce_and_functions_before_sentinel() {
-        let protocol = streaming_protocol(true);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-        handler
-            .render_streaming(
-                &protocol,
-                &test_json!({ "count": 1 }),
-                &RenderOptions::new("index.html", "/").with_nonce("test-nonce-123"),
-                &mut writer,
-            )
-            .unwrap();
-
-        let boundary_end = writer.output.find("<!--/wb:0-->").expect("end marker");
-        let envelope = writer.output[boundary_end..]
-            .find("data-webui-boundary nonce=\"test-nonce-123\"")
-            .map(|index| index + boundary_end)
-            .expect("nonce-bearing envelope");
-        let functions = writer
-            .output
-            .find("templateFns")
-            .expect("function side channel");
-        let sentinel = writer
-            .output
-            .find("<webui-hydrate>")
-            .expect("hydration sentinel");
-        assert!(boundary_end < envelope && envelope < functions && functions < sentinel);
-        assert!(writer.output.contains("<script nonce=\"test-nonce-123\">"));
-    }
-
-    #[test]
-    fn streaming_render_rejects_out_of_order_and_nested_boundaries() {
-        fn protocol(signals: &[&str]) -> Protocol {
-            let mut protocol_signals = Vec::with_capacity(signals.len() + 1);
-            protocol_signals.push(structural_fragment("head_start"));
-            protocol_signals.extend(signals.iter().map(|signal| structural_fragment(*signal)));
-            let fragments = HashMap::from([(
-                "index.html".to_string(),
-                FragmentList {
-                    fragments: protocol_signals,
-                },
-            )]);
-            Protocol::new(WebUIProtocol::new(fragments))
-        }
-
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter::default();
-        let result = handler.render_streaming(
-            &protocol(&["boundary_start:1"]),
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-        match result {
-            Err(HandlerError::StreamingBoundary(err)) => {
-                assert_eq!(err.signal, "boundary_start:1");
-                assert!(err.reason.contains("expected boundary sequence 0"));
-            }
-            other => panic!("expected ordered-boundary error, got {other:?}"),
-        }
-
-        let mut writer = FlushTestWriter::default();
-        let result = handler.render_streaming(
-            &protocol(&["boundary_start:0", "boundary_start:1"]),
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-        assert!(matches!(result, Err(HandlerError::StreamingBoundary(_))));
-    }
-
-    #[test]
-    fn streaming_render_propagates_boundary_flush_disconnect() {
-        let protocol = streaming_protocol(true);
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter {
-            fail_flush: true,
-            ..FlushTestWriter::default()
-        };
-        let result = handler.render_streaming(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-        assert!(matches!(result, Err(HandlerError::ClientDisconnected)));
-        assert!(!writer.ended);
-    }
-
-    #[test]
-    fn streaming_render_requires_structural_head_start_before_writing() {
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw(
-                        "<html><HEAD data-shell=\"main\"><script src=\"/early.js\"></script>",
-                    ),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</HEAD><body>"),
-                    structural_fragment("body_start"),
-                    structural_fragment("body_end"),
-                ],
-            },
-        )]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let mut writer = FlushTestWriter::default();
-
-        let result = WebUIHandler::new().render_streaming(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-
-        assert!(matches!(
-            result,
-            Err(HandlerError::MissingStreamingHeadStart { before: "head_end" })
-        ));
-        assert!(
-            writer.output.is_empty(),
-            "preflight must fail before output"
-        );
-        assert!(writer.flushes.is_empty());
-        assert!(!writer.ended);
-    }
-
-    #[test]
-    fn streaming_render_rejects_duplicate_head_start() {
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>"),
-                    structural_fragment("head_start"),
-                    structural_fragment("head_start"),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</head><body>"),
-                    structural_fragment("body_start"),
-                    structural_fragment("body_end"),
-                ],
-            },
-        )]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let mut writer = FlushTestWriter::default();
-
-        let result = WebUIHandler::new().render_streaming(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-
-        assert!(matches!(
-            result,
-            Err(HandlerError::DuplicateStreamingHeadStart)
-        ));
-        assert_eq!(writer.output.matches(STREAMING_MARKER).count(), 1);
-        assert!(writer.flushes.is_empty());
-    }
-
-    #[test]
-    fn legacy_render_is_byte_identical_when_boundary_signals_are_present() {
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let state = test_json!({
-            "count": 1,
-            "head_start": "must not render",
-            "boundary_start:0": "must not render",
-            "boundary_end:0": "must not render",
-        });
-        let mut with_boundaries = TestWriter::new();
-        let mut without_boundaries = TestWriter::new();
-        handler
-            .render(
-                &streaming_protocol(true),
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut with_boundaries,
-            )
-            .unwrap();
-        handler
-            .render(
-                &streaming_protocol(false),
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut without_boundaries,
-            )
-            .unwrap();
-        assert_eq!(
-            with_boundaries.get_content(),
-            without_boundaries.get_content()
-        );
-    }
-
-    #[test]
-    fn parser_head_attributes_preserve_legacy_ordinary_render_bytes() {
-        for source in [
-            r#"<html><head data-theme="dark"><title>T</title></head><body>x</body></html>"#,
-            r#"<html><head data-theme="{{theme}}"><title>T</title></head><body>x</body></html>"#,
-        ] {
-            let mut parser = HtmlParser::new();
-            parser
-                .parse("index.html", source)
-                .expect("parse head fixture");
-            let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
-            let mut writer = TestWriter::new();
-            WebUIHandler::new()
-                .render(
-                    &protocol,
-                    &test_json!({ "theme": "light" }),
-                    &RenderOptions::new("index.html", "/"),
-                    &mut writer,
-                )
-                .unwrap();
-
-            assert_eq!(
-                writer.get_content(),
-                "<html><head><title>T</title></head><body>x</body></html>"
-            );
-        }
-    }
-
-    #[test]
-    fn mixed_case_native_tags_preserve_ordinary_bytes_and_stream_structurally() {
-        let source =
-            r#"<html><HEAD data-theme="dark"><title>T</title></HEAD><BODY>x</BODY></html>"#;
-        let mut parser = HtmlParser::new();
-        parser.parse("index.html", source).expect("parse fixture");
-        let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
-
-        let mut ordinary = TestWriter::new();
-        WebUIHandler::new()
-            .render(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/"),
-                &mut ordinary,
-            )
-            .unwrap();
-        assert_eq!(ordinary.get_content(), source);
-
-        let mut streaming = FlushTestWriter::default();
-        WebUIHandler::new()
-            .render_streaming(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/"),
-                &mut streaming,
-            )
-            .unwrap();
-        assert!(streaming.output.contains(r#"<HEAD data-theme="dark">"#));
-        assert!(streaming.output.contains("</HEAD><BODY>x"));
-        let opening = streaming.output.find("<HEAD").expect("mixed-case head");
-        let marker = streaming.output.find(STREAMING_MARKER).expect("marker");
-        let title = streaming.output.find("<title>").expect("title");
-        assert!(opening < marker && marker < title);
-        assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
-    }
-
-    /// Only `}}}webui:`-namespaced signals are compiler-owned, so an
-    /// unprefixed `body_end` is ordinary authored content.
-    #[test]
-    fn unnamespaced_signal_is_ordinary_content() {
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>"),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</head><body>"),
-                    WebUIFragment::signal("body_end".to_string(), false),
-                    structural_fragment("body_end"),
-                    WebUIFragment::raw("</body></html>"),
-                ],
-            },
-        )]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let mut writer = TestWriter::new();
-        WebUIHandler::new()
-            .render(
-                &protocol,
-                &test_json!({ "body_end": "content" }),
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .expect("current protocol must render");
-        assert!(writer.get_content().contains("content"));
-    }
-
-    #[test]
-    fn authored_raw_signal_keys_remain_content_in_both_render_modes() {
-        let source = concat!(
-            "<html><head></head><body>",
-            "{{{head_start}}}|{{{head_end}}}|{{{body_start}}}|{{{body_end}}}|",
-            "{{{boundary_start:0}}}|{{{boundary_end:0}}}|{{{streaming_root:forged}}}",
-            "</body></html>",
-        );
-        let state = test_json!({
-            "head_start": "hs",
-            "head_end": "he",
-            "body_start": "bs",
-            "body_end": "be",
-            "boundary_start:0": "b0s",
-            "boundary_end:0": "b0e",
-            "streaming_root:forged": "root",
-        });
-        let mut parser = HtmlParser::new();
-        parser.parse("index.html", source).expect("parse fixture");
-        let protocol = Protocol::new(WebUIProtocol::new(parser.into_fragment_records()));
-        let expected = "<html><head></head><body>hs|he|bs|be|b0s|b0e|root</body></html>";
-
-        let mut ordinary = TestWriter::new();
-        WebUIHandler::new()
-            .render(
-                &protocol,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut ordinary,
-            )
-            .unwrap();
-        assert_eq!(ordinary.get_content(), expected);
-
-        let mut streaming = FlushTestWriter::default();
-        WebUIHandler::new()
-            .render_streaming(
-                &protocol,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut streaming,
-            )
-            .unwrap();
-        assert!(streaming.output.contains("<body>hs|he|bs|be|b0s|b0e|root"));
-        assert!(!streaming.output.contains("<!--wb:"));
-        assert_eq!(streaming.output.matches(STREAMING_MARKER).count(), 1);
-        assert_eq!(streaming.output.matches("data-webui-boundary").count(), 1);
-    }
-
-    #[test]
-    fn streaming_rejects_structural_signals_after_terminal() {
-        let fragments = HashMap::from([(
-            "index.html".to_string(),
-            FragmentList {
-                fragments: vec![
-                    WebUIFragment::raw("<html><head>"),
-                    structural_fragment("head_start"),
-                    structural_fragment("head_end"),
-                    WebUIFragment::raw("</head><body>"),
-                    structural_fragment("body_start"),
-                    structural_fragment("body_end"),
-                    WebUIFragment::raw("</body>"),
-                    structural_fragment("boundary_start:0"),
-                    WebUIFragment::raw("</html>"),
-                ],
-            },
-        )]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let mut streaming = FlushTestWriter::default();
-        let result = WebUIHandler::new().render_streaming(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut streaming,
-        );
-
-        match result {
-            Err(HandlerError::StreamingBoundary(error)) => {
-                assert_eq!(error.signal, "boundary_start:0");
-                assert!(error.reason.contains("after the body_end terminal record"));
-            }
-            other => panic!("expected post-terminal rejection, got {other:?}"),
-        }
-        assert!(streaming.output.is_empty());
-        assert!(!streaming.output.contains("<!--wb:0-->"));
-
-        let mut ordinary = TestWriter::new();
-        WebUIHandler::new()
-            .render(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/"),
-                &mut ordinary,
-            )
-            .unwrap();
-        assert_eq!(
-            ordinary.get_content(),
-            "<html><head></head><body></body></html>"
-        );
-    }
-
-    /// Build a streaming protocol with one boundary per `hosts` entry. Each
-    /// boundary wraps a component host whose opening tag is split so the
-    /// compiler-owned `streaming_root:<tag>` signal (optionally emitted) lands
-    /// inside the tag, exactly as `HtmlParser` produces. Components `comp-a` and
-    /// `comp-b` carry disjoint templates and disjoint hydration keys.
-    fn disjoint_streaming_protocol_ext(hosts: &[&str], emit_root_signal: bool) -> Protocol {
-        let mut fragments = HashMap::new();
-        let mut entry = vec![
-            WebUIFragment::raw("<!DOCTYPE html><html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-        ];
-        for (sequence, host) in hosts.iter().enumerate() {
-            entry.push(structural_fragment(format!("boundary_start:{sequence}")));
-            entry.push(WebUIFragment::raw(format!("<{host}")));
-            if emit_root_signal {
-                entry.push(structural_fragment(format!("streaming_root:{host}")));
-            }
-            entry.push(WebUIFragment::raw(">"));
-            entry.push(WebUIFragment::component(*host));
-            entry.push(WebUIFragment::raw(format!("</{host}>")));
-            entry.push(structural_fragment(format!("boundary_end:{sequence}")));
-        }
-        entry.push(structural_fragment("body_end"));
-        entry.push(WebUIFragment::raw("</body></html>"));
-        fragments.insert("index.html".to_string(), FragmentList { fragments: entry });
-        fragments.insert(
-            "comp-a".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<b>A</b>")],
-            },
-        );
-        fragments.insert(
-            "comp-b".to_string(),
-            FragmentList {
-                fragments: vec![WebUIFragment::raw("<b>B</b>")],
-            },
-        );
-
-        let mut document = WebUIProtocol::new(fragments);
-        document.initial_state_strategy = InitialStateStrategy::Components as i32;
-        document.streaming_boundaries.insert(
-            "index.html".to_string(),
-            webui_protocol::StreamingBoundaryList {
-                names: (0..hosts.len())
-                    .map(|index| format!("boundary-{index}"))
-                    .collect(),
-            },
-        );
-        document.components.insert(
-            "comp-a".to_string(),
-            webui_protocol::ComponentData {
-                template_json: r#"{"h":"<i>A</i>","th":1}"#.to_string(),
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["a_count".to_string()],
-                ..Default::default()
-            },
-        );
-        document.components.insert(
-            "comp-b".to_string(),
-            webui_protocol::ComponentData {
-                template_json: r#"{"h":"<i>B</i>","th":1}"#.to_string(),
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["b_count".to_string()],
-                ..Default::default()
-            },
-        );
-        Protocol::new(document)
-    }
-
-    fn disjoint_streaming_protocol(hosts: &[&str]) -> Protocol {
-        disjoint_streaming_protocol_ext(hosts, true)
-    }
-
-    fn streaming_plan_validation_protocol(signals: &[&str], names: &[&str]) -> Protocol {
-        let mut entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-        ];
-        entry.extend(signals.iter().map(structural_fragment));
-        entry.extend([
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ]);
-
-        let mut document = WebUIProtocol::new(HashMap::from([(
-            "index.html".to_string(),
-            FragmentList { fragments: entry },
-        )]));
-        document.streaming_boundaries.insert(
-            "index.html".to_string(),
-            webui_protocol::StreamingBoundaryList {
-                names: names.iter().map(|name| (*name).to_string()).collect(),
-            },
-        );
-        Protocol::new(document)
-    }
-
-    #[test]
-    fn streaming_response_rejects_cached_malformed_boundary_plan_before_writing() {
-        let protocol =
-            streaming_plan_validation_protocol(&["boundary_start:0", "boundary_end:1"], &["one"]);
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-
-        let error = match handler.stream_response(&protocol, &options, &mut writer) {
-            Ok(_) => panic!("malformed boundary plan unexpectedly opened a response"),
-            Err(error) => error,
-        };
-
-        assert!(
-            matches!(error, HandlerError::StreamingBoundary(_)),
-            "error: {error}"
-        );
-        assert!(writer.output.is_empty());
-        assert!(writer.flushes.is_empty());
-    }
-
-    #[test]
-    fn streaming_response_rejects_boundary_name_count_mismatch_before_writing() {
-        let protocol = streaming_plan_validation_protocol(
-            &["boundary_start:0", "boundary_end:0"],
-            &["one", "two"],
-        );
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-
-        let error = match handler.stream_response(&protocol, &options, &mut writer) {
-            Ok(_) => panic!("mismatched boundary names unexpectedly opened a response"),
-            Err(error) => error,
-        };
-
-        assert!(
-            matches!(error, HandlerError::Invariant(_)),
-            "error: {error}"
-        );
-        assert!(writer.output.is_empty());
-        assert!(writer.flushes.is_empty());
-    }
-
-    #[test]
-    fn streaming_response_interleaves_projected_updates_with_later_boundaries() {
-        let protocol = disjoint_streaming_protocol(&["comp-a", "comp-b"]);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-        let mut response = handler
-            .stream_response(&protocol, &options, &mut writer)
-            .unwrap();
-        let first = response.boundary("boundary-0").unwrap();
-        let second = response.boundary("boundary-1").unwrap();
-
-        response.write_shell(&test_json!({})).unwrap();
-        response
-            .write_boundary(
-                first,
-                &test_json!({ "a_count": 1, "serverOnly": "secret" }),
-                BoundaryMode::Updatable,
-            )
-            .unwrap();
-        response
-            .update(first, &test_json!({ "a_count": 7, "serverOnly": "secret" }))
-            .unwrap();
-        response
-            .write_boundary(
-                second,
-                &test_json!({ "b_count": 2, "serverOnly": "secret" }),
-                BoundaryMode::Final,
-            )
-            .unwrap();
-        response.finish(&test_json!({})).unwrap();
-
-        assert_eq!(writer.flushes.len(), 5);
-        assert!(writer.output.contains(r#"[1,0,1,0,{"#));
-        assert!(writer.output.contains(r#""state":{"a_count":1}"#));
-        assert!(writer.output.contains(r#"[1,1,2,0,{"a_count":7}]"#));
-        assert!(writer.output.contains(r#"[1,2,0,1,{"#));
-        assert!(writer.output.contains(r#""state":{"b_count":2}"#));
-        assert!(writer.output.contains("[1,3,3,0,{}]"));
-        assert_eq!(writer.output.matches("serverOnly").count(), 0);
-
-        let update_start = writer.output.find("[1,1,2,0,").unwrap();
-        let update_end = writer.output[update_start..]
-            .find("</script>")
-            .map(|offset| update_start + offset)
-            .unwrap();
-        let update = &writer.output[update_start..update_end];
-        assert!(!update.contains("inventory"));
-        assert!(!update.contains("templates"));
-    }
-
-    #[test]
-    fn owned_streaming_session_matches_borrowed_response_bytes() {
-        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a", "comp-b"]));
-        let handler = Arc::new(WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        }));
-
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-        let mut response = handler
-            .stream_response(&protocol, &options, &mut writer)
-            .unwrap();
-        let first = response.boundary("boundary-0").unwrap();
-        let second = response.boundary("boundary-1").unwrap();
-        response.write_shell(&test_json!({})).unwrap();
-        response
-            .write_boundary(
-                first,
-                &test_json!({ "a_count": 1 }),
-                BoundaryMode::Updatable,
-            )
-            .unwrap();
-        response
-            .update(first, &test_json!({ "a_count": 7 }))
-            .unwrap();
-        response
-            .write_boundary(second, &test_json!({ "b_count": 2 }), BoundaryMode::Final)
-            .unwrap();
-        response.finish(&test_json!({})).unwrap();
-
-        let mut session = StreamingSession::new(
-            Arc::clone(&handler),
-            Arc::clone(&protocol),
-            SessionOptions::new("index.html", "/"),
-        )
-        .unwrap();
-        let session_first = session.boundary("boundary-0").unwrap();
-        let session_second = session.boundary("boundary-1").unwrap();
-        assert_eq!(session_first, first);
-        assert_eq!(session_second, second);
-        assert_eq!(session.boundary_count(), 2);
-
-        let chunks: Vec<Vec<u8>> = vec![
-            session.write_shell(&test_json!({})).unwrap(),
-            session
-                .write_boundary(
-                    session_first,
-                    &test_json!({ "a_count": 1 }),
-                    BoundaryMode::Updatable,
-                )
-                .unwrap(),
-            session
-                .update(session_first, &test_json!({ "a_count": 7 }))
-                .unwrap(),
-            session
-                .write_boundary(
-                    session_second,
-                    &test_json!({ "b_count": 2 }),
-                    BoundaryMode::Final,
-                )
-                .unwrap(),
-            session.finish(&test_json!({})).unwrap(),
-        ];
-
-        // One chunk per host call, matching the borrowed path's flush count.
-        assert_eq!(chunks.len(), writer.flushes.len());
-        assert!(session.is_finished());
-        let joined = String::from_utf8(chunks.concat()).unwrap();
-        assert_eq!(joined, writer.output);
-    }
-
-    #[test]
-    fn owned_streaming_session_rejects_use_after_finish() {
-        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
-        let handler = Arc::new(WebUIHandler::new());
-        let mut session =
-            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
-                .unwrap();
-        let boundary = session.boundary("boundary-0").unwrap();
-        session.write_shell(&test_json!({})).unwrap();
-        session
-            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap();
-        session.finish(&test_json!({})).unwrap();
-
-        let error = session.write_shell(&test_json!({})).unwrap_err();
-        assert!(error.to_string().contains("already finished"));
-        assert!(session.finish(&test_json!({})).is_err());
-    }
-
-    #[test]
-    fn owned_streaming_session_surfaces_unknown_boundary_names() {
-        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
-        let handler = Arc::new(WebUIHandler::new());
-        let session =
-            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
-                .unwrap();
-        let error = session.boundary("boundary-O").unwrap_err().to_string();
-        assert!(error.contains("boundary-0"));
-    }
-
-    #[test]
-    fn owned_streaming_session_stays_usable_after_a_rejected_call() {
-        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
-        let handler = Arc::new(WebUIHandler::new());
-        let mut session =
-            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
-                .unwrap();
-        let boundary = session.boundary("boundary-0").unwrap();
-        session.write_shell(&test_json!({})).unwrap();
-        // Rejected before any byte is written, so the session is not poisoned.
-        assert!(session.update(boundary, &test_json!({ "a": 1 })).is_err());
-        assert!(!session.is_finished());
-        session
-            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap();
-        session.finish(&test_json!({})).unwrap();
-    }
-
-    #[test]
-    fn owned_streaming_session_recovers_from_a_rejected_finish() {
-        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a", "comp-b"]));
-        let handler = Arc::new(WebUIHandler::new());
-        let mut session =
-            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
-                .unwrap();
-        let first = session.boundary("boundary-0").unwrap();
-        let second = session.boundary("boundary-1").unwrap();
-        session.write_shell(&test_json!({})).unwrap();
-        session
-            .write_boundary(first, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap();
-
-        // Rejected before any byte is written, so the response must survive.
-        let error = session.finish(&test_json!({})).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("every boundary must be committed"),
-            "unexpected error: {error}"
-        );
-        assert!(!session.is_finished());
-
-        session
-            .write_boundary(second, &test_json!({ "b_count": 1 }), BoundaryMode::Final)
-            .unwrap();
-        let tail = session.finish(&test_json!({})).unwrap();
-        assert!(!tail.is_empty());
-        assert!(session.is_finished());
-    }
-
-    #[test]
-    fn owned_streaming_session_rejects_finish_before_the_shell() {
-        let protocol = Arc::new(disjoint_streaming_protocol(&["comp-a"]));
-        let handler = Arc::new(WebUIHandler::new());
-        let mut session =
-            StreamingSession::new(handler, protocol, SessionOptions::new("index.html", "/"))
-                .unwrap();
-        let boundary = session.boundary("boundary-0").unwrap();
-
-        let error = session.finish(&test_json!({})).unwrap_err();
-        assert!(
-            error.to_string().contains("write_shell must be called"),
-            "unexpected error: {error}"
-        );
-        assert!(!session.is_finished());
-
-        session.write_shell(&test_json!({})).unwrap();
-        session
-            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap();
-        session.finish(&test_json!({})).unwrap();
-        assert!(session.is_finished());
-    }
-
-    #[test]
-    fn streaming_response_is_poisoned_after_partial_boundary_flush_failure() {
-        let protocol = disjoint_streaming_protocol(&["comp-a"]);
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter {
-            fail_flush_at: Some(1),
-            ..FlushTestWriter::default()
-        };
-        let options = RenderOptions::new("index.html", "/");
-        let mut response = handler
-            .stream_response(&protocol, &options, &mut writer)
-            .unwrap();
-        let boundary = response.boundary("boundary-0").unwrap();
-        response.write_shell(&test_json!({})).unwrap();
-
-        let first_error = response
-            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap_err();
-        assert!(matches!(first_error, HandlerError::ClientDisconnected));
-
-        let retry_error = response
-            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap_err();
-        assert!(
-            retry_error
-                .to_string()
-                .contains("unusable after a previous render or transport failure"),
-            "error: {retry_error}"
-        );
-
-        drop(response);
-        assert_eq!(writer.output.matches("<!--wb:0-->").count(), 1);
-        assert_eq!(writer.flushes.len(), 1);
-        assert!(!writer.ended);
-    }
-
-    #[test]
-    fn streaming_response_rejects_updates_to_final_boundaries() {
-        let protocol = disjoint_streaming_protocol(&["comp-a"]);
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-        let mut response = handler
-            .stream_response(&protocol, &options, &mut writer)
-            .unwrap();
-        let boundary = response.boundary("boundary-0").unwrap();
-        response.write_shell(&test_json!({})).unwrap();
-        response
-            .write_boundary(boundary, &test_json!({ "a_count": 1 }), BoundaryMode::Final)
-            .unwrap();
-
-        let error = response
-            .update(boundary, &test_json!({ "a_count": 2 }))
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("committed as final"),
-            "error: {error}"
-        );
-    }
-
-    #[test]
-    fn streaming_response_rejects_non_object_updates_before_writing() {
-        let protocol = disjoint_streaming_protocol(&["comp-a"]);
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-        let mut response = handler
-            .stream_response(&protocol, &options, &mut writer)
-            .unwrap();
-        let boundary = response.boundary("boundary-0").unwrap();
-        response.write_shell(&test_json!({})).unwrap();
-        response
-            .write_boundary(
-                boundary,
-                &test_json!({ "a_count": 1 }),
-                BoundaryMode::Updatable,
-            )
-            .unwrap();
-        let error = response
-            .update(boundary, &test_json!("invalid"))
-            .unwrap_err();
-        assert!(error.to_string().contains("JSON object"), "error: {error}");
-
-        response
-            .update(boundary, &test_json!({ "a_count": 2 }))
-            .unwrap();
-        response.finish(&test_json!({})).unwrap();
-        assert_eq!(writer.flushes.len(), 4);
-        assert_eq!(writer.output.matches("data-webui-boundary").count(), 3);
-        assert!(writer.output.contains(r#"[1,1,2,0,{"a_count":2}]"#));
-    }
-
-    #[test]
-    fn streaming_response_unknown_boundary_suggests_valid_name() {
-        let protocol = disjoint_streaming_protocol(&["comp-a"]);
-        let handler = WebUIHandler::new();
-        let mut writer = FlushTestWriter::default();
-        let options = RenderOptions::new("index.html", "/");
-        let response = handler
-            .stream_response(&protocol, &options, &mut writer)
-            .unwrap();
-
-        let error = response.boundary("boundry-0").unwrap_err();
-        assert!(
-            error.to_string().contains("did you mean `boundary-0`?"),
-            "error: {error}"
-        );
-    }
-
-    fn streaming_root_validation_protocol(
-        mut host_fragments: Vec<WebUIFragment>,
-        tail: Vec<WebUIFragment>,
-    ) -> Protocol {
-        let mut entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-            structural_fragment("boundary_start:0"),
-        ];
-        entry.append(&mut host_fragments);
-        entry.extend(tail);
-        let fragments = HashMap::from([
-            ("index.html".to_string(), FragmentList { fragments: entry }),
-            (
-                "comp-a".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<b>A</b>")],
-                },
-            ),
-            (
-                "comp-b".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<b>B</b>")],
-                },
-            ),
-        ]);
-        Protocol::new(WebUIProtocol::new(fragments))
-    }
-
-    fn completed_streaming_tail() -> Vec<WebUIFragment> {
-        vec![
-            WebUIFragment::raw("</comp-a>"),
-            structural_fragment("boundary_end:0"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ]
-    }
-
-    fn assert_streaming_root_error(
-        protocol: &Protocol,
-        expected_signal: &str,
-        expected_reason: &str,
-    ) {
-        let mut writer = FlushTestWriter::default();
-        let result = WebUIHandler::new().render_streaming(
-            protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-        match result {
-            Err(HandlerError::StreamingBoundary(error)) => {
-                assert_eq!(error.signal, expected_signal);
-                assert!(
-                    error.reason.contains(expected_reason),
-                    "reason: {}",
-                    error.reason
-                );
-            }
-            other => panic!("expected streaming-root rejection, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn streaming_root_signal_injects_data_ws_inside_boundary() {
-        let protocol = disjoint_streaming_protocol(&["comp-a"]);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-        handler
-            .render_streaming(
-                &protocol,
-                &test_json!({ "a_count": 1 }),
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-        // The parser-owned signal is consumed to inject exactly ` data-ws`
-        // inside the host's opening tag, before the custom element upgrades.
-        assert!(
-            writer.output.contains("<comp-a data-ws>"),
-            "streamed host must carry data-ws: {}",
-            writer.output
-        );
-    }
-
-    #[test]
-    fn streaming_root_signal_preserves_ordinary_output_bytes() {
-        // Ordinary rendering ignores `streaming_root` byte-for-byte: identical
-        // output with and without the signal, and never a `data-ws` attribute.
-        let with_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], true);
-        let without_signal = disjoint_streaming_protocol_ext(&["comp-a", "comp-b"], false);
-        let state = test_json!({ "a_count": 1, "b_count": 2 });
-        let plugin = || {
-            WebUIHandler::with_plugin(
-                || Box::new(crate::plugin::webui::WebUIHydrationPlugin::new()),
-            )
-        };
-        let mut with_writer = TestWriter::new();
-        let mut without_writer = TestWriter::new();
-        plugin()
-            .render(
-                &with_signal,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut with_writer,
-            )
-            .unwrap();
-        plugin()
-            .render(
-                &without_signal,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut without_writer,
-            )
-            .unwrap();
-        // The rendered DOM (everything up to the inert data block) is
-        // deterministic and is where a leaked `data-ws` would appear. The
-        // ordinary template map is HashSet-ordered, so compare the DOM prefix
-        // for byte identity rather than the whole document.
-        let dom_prefix = |content: &str| -> String {
-            content
-                .split_once(r#"<script type="application/json" id="webui-data""#)
-                .map_or_else(|| content.to_string(), |(head, _)| head.to_string())
-        };
-        assert_eq!(
-            dom_prefix(&with_writer.get_content()),
-            dom_prefix(&without_writer.get_content())
-        );
-        assert!(!with_writer.get_content().contains("data-ws"));
-        assert!(with_writer.get_content().contains("<comp-a>"));
-    }
-
-    #[test]
-    fn streaming_component_without_root_signal_is_rejected() {
-        let protocol = streaming_root_validation_protocol(
-            vec![
-                WebUIFragment::raw("<comp-a>"),
-                WebUIFragment::component("comp-a"),
-            ],
-            completed_streaming_tail(),
-        );
-
-        assert_streaming_root_error(
-            &protocol,
-            "streaming_root:comp-a",
-            "has no matching compiler-owned root signal",
-        );
-    }
-
-    #[test]
-    fn duplicate_and_misplaced_streaming_root_signals_are_rejected() {
-        let duplicate = streaming_root_validation_protocol(
-            vec![
-                WebUIFragment::raw("<comp-a"),
-                structural_fragment("streaming_root:comp-a"),
-                structural_fragment("streaming_root:comp-a"),
-                WebUIFragment::raw(">"),
-                WebUIFragment::component("comp-a"),
-            ],
-            completed_streaming_tail(),
-        );
-        assert_streaming_root_error(&duplicate, "streaming_root:comp-a", "is misplaced");
-
-        let after_tag_close = streaming_root_validation_protocol(
-            vec![
-                WebUIFragment::raw("<comp-a>"),
-                structural_fragment("streaming_root:comp-a"),
-                WebUIFragment::component("comp-a"),
-            ],
-            completed_streaming_tail(),
-        );
-        assert_streaming_root_error(&after_tag_close, "streaming_root:comp-a", "is misplaced");
-
-        let detached_from_opening = streaming_root_validation_protocol(
-            vec![
-                WebUIFragment::raw("not an opening tag"),
-                structural_fragment("streaming_root:comp-a"),
-                WebUIFragment::raw(">"),
-                WebUIFragment::component("comp-a"),
-            ],
-            completed_streaming_tail(),
-        );
-        assert_streaming_root_error(
-            &detached_from_opening,
-            "streaming_root:comp-a",
-            "unclosed component opening-tag close",
-        );
-    }
-
-    #[test]
-    fn mismatched_streaming_root_signal_is_rejected() {
-        let protocol = streaming_root_validation_protocol(
-            vec![
-                WebUIFragment::raw("<comp-a"),
-                structural_fragment("streaming_root:comp-b"),
-                WebUIFragment::raw(">"),
-                WebUIFragment::component("comp-a"),
-            ],
-            completed_streaming_tail(),
-        );
-
-        assert_streaming_root_error(
-            &protocol,
-            "streaming_root:comp-b",
-            "opening host renders component <comp-a>",
-        );
-    }
-
-    #[test]
-    fn pending_streaming_root_is_rejected_at_structural_ends() {
-        let protocol = streaming_root_validation_protocol(
-            vec![
-                WebUIFragment::raw("<comp-a"),
-                structural_fragment("streaming_root:comp-a"),
-                WebUIFragment::raw(">"),
-            ],
-            vec![structural_fragment("boundary_end:0")],
-        );
-        assert_streaming_root_error(&protocol, "streaming_root:comp-a", "is misplaced");
-    }
-
-    #[test]
-    fn streaming_root_outside_boundary_is_rejected() {
-        let fragments = HashMap::from([
-            (
-                "index.html".to_string(),
-                FragmentList {
-                    fragments: vec![
-                        WebUIFragment::raw("<html><head>"),
-                        structural_fragment("head_start"),
-                        structural_fragment("head_end"),
-                        WebUIFragment::raw("</head><body>"),
-                        structural_fragment("body_start"),
-                        WebUIFragment::raw("<comp-a"),
-                        structural_fragment("streaming_root:comp-a"),
-                        WebUIFragment::raw(">"),
-                        WebUIFragment::component("comp-a"),
-                        WebUIFragment::raw("</comp-a>"),
-                        structural_fragment("body_end"),
-                        WebUIFragment::raw("</body></html>"),
-                    ],
-                },
-            ),
-            (
-                "comp-a".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<b>A</b>")],
-                },
-            ),
-        ]);
-        let protocol = Protocol::new(WebUIProtocol::new(fragments));
-        let mut writer = FlushTestWriter::default();
-        let result = WebUIHandler::new().render_streaming(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-        match result {
-            Err(HandlerError::StreamingBoundary(err)) => {
-                assert_eq!(err.signal, "streaming_root:comp-a");
-                assert!(
-                    err.reason.contains("outside any <boundary>"),
-                    "reason: {}",
-                    err.reason
-                );
-            }
-            other => panic!("expected outside-boundary rejection, got {other:?}"),
-        }
-    }
-
-    fn parser_route_protocol(with_boundary: bool) -> Protocol {
-        let mut parser = HtmlParser::with_options(DomStrategy::Light);
-        parser
-            .component_registry_mut()
-            .register_component(ComponentRegistration::new(
-                "route-page",
-                "<p>route content</p>",
-                None,
-                true,
-            ))
-            .expect("register route component");
-        let route = r#"<route path="/" component="route-page" exact />"#;
-        let html = if with_boundary {
-            format!(
-                "<html><head></head><body>\
-                 <boundary name=\"route\">{route}</boundary>\
-                 </body></html>"
-            )
-        } else {
-            format!("<html><head></head><body>{route}</body></html>")
-        };
-        parser
-            .parse("index.html", &html)
-            .expect("parse route streaming fixture");
-        let mut document = WebUIProtocol::new(parser.into_fragment_records());
-        document.components.insert(
-            "route-page".to_string(),
-            webui_protocol::ComponentData::default(),
-        );
-        Protocol::new(document)
-    }
-
-    #[test]
-    fn streaming_parser_route_host_is_marked_inside_explicit_boundary() {
-        let protocol = parser_route_protocol(true);
-        let mut writer = FlushTestWriter::default();
-        WebUIHandler::new()
-            .render_streaming(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-
-        assert!(
-            writer
-                .output
-                .contains("<route-page data-ws><p>route content</p></route-page>"),
-            "matched route host must be deferred before upgrade: {}",
-            writer.output
-        );
-    }
-
-    #[test]
-    fn streaming_parser_route_host_outside_boundary_is_rejected() {
-        let protocol = parser_route_protocol(false);
-        let mut writer = FlushTestWriter::default();
-        let result = WebUIHandler::new().render_streaming(
-            &protocol,
-            &test_json!({}),
-            &RenderOptions::new("index.html", "/"),
-            &mut writer,
-        );
-
-        match result {
-            Err(HandlerError::StreamingBoundary(error)) => {
-                assert_eq!(error.signal, "streaming_root:route-page");
-                assert!(error.reason.contains("outside any <boundary>"));
-            }
-            other => panic!("expected route boundary rejection, got {other:?}"),
-        }
-        assert!(
-            !writer.output.contains("<route-page>"),
-            "an unmarked custom-element opening must never be completed"
-        );
-    }
-
-    #[test]
-    fn streaming_checkpoint_preserves_relative_route_base_for_metadata() {
-        let entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-            structural_fragment("boundary_start:0"),
-            WebUIFragment::route_from(webui_protocol::WebUiFragmentRoute {
-                path: "/account".into(),
-                fragment_id: "account-shell".into(),
-                exact: false,
-                ..Default::default()
-            }),
-            structural_fragment("boundary_end:0"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ];
-        let fragments = HashMap::from([
-            ("index.html".to_string(), FragmentList { fragments: entry }),
-            (
-                "account-shell".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::route_from(
-                        webui_protocol::WebUiFragmentRoute {
-                            path: "./details".into(),
-                            fragment_id: "details-page".into(),
-                            exact: true,
-                            pending_component: "details-loading".into(),
-                            error_component: "details-error".into(),
-                            ..Default::default()
-                        },
-                    )],
-                },
-            ),
-            (
-                "details-page".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<p>details</p>")],
-                },
-            ),
-            (
-                "details-loading".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<p>loading</p>")],
-                },
-            ),
-            (
-                "details-error".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<p>error</p>")],
-                },
-            ),
-        ]);
-        let mut document = WebUIProtocol::new(fragments);
-        document.initial_state_strategy = InitialStateStrategy::Components as i32;
-        for name in [
-            "account-shell",
-            "details-page",
-            "details-loading",
-            "details-error",
-        ] {
-            document.components.insert(
-                name.to_string(),
-                webui_protocol::ComponentData {
-                    template_json: format!(r#"{{"h":"<{name}></{name}>","th":1}}"#),
-                    ..Default::default()
-                },
-            );
-        }
-        let protocol = Protocol::new(document);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-
-        handler
-            .render_streaming(
-                &protocol,
-                &test_json!({}),
-                &RenderOptions::new("index.html", "/account/details"),
-                &mut writer,
-            )
-            .unwrap();
-
-        let first = &writer.output[..writer.flushes[0]];
-        assert!(
-            first.contains(r#""details-loading":"#),
-            "relative-route pending metadata missing: {first}"
-        );
-        assert!(
-            first.contains(r#""details-error":"#),
-            "relative-route error metadata missing: {first}"
-        );
-    }
-
-    #[test]
-    fn streaming_checkpoint_keeps_independent_siblings_beside_route_roots() {
-        let entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-            structural_fragment("boundary_start:0"),
-            WebUIFragment::raw("<static-shell"),
-            structural_fragment("streaming_root:static-shell"),
-            WebUIFragment::raw(">"),
-            WebUIFragment::component("static-shell"),
-            WebUIFragment::raw("</static-shell>"),
-            WebUIFragment::raw("<route-shell"),
-            structural_fragment("streaming_root:route-shell"),
-            WebUIFragment::raw(">"),
-            WebUIFragment::component("route-shell"),
-            WebUIFragment::raw("</route-shell>"),
-            structural_fragment("boundary_end:0"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ];
-        let fragments = HashMap::from([
-            ("index.html".to_string(), FragmentList { fragments: entry }),
-            (
-                "static-shell".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::if_cond(
-                        ConditionExpr::identifier("show_hidden"),
-                        "static-hidden-if",
-                    )],
-                },
-            ),
-            (
-                "static-hidden-if".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::component("static-hidden")],
-                },
-            ),
-            (
-                "static-hidden".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<p>hidden</p>")],
-                },
-            ),
-            (
-                "route-shell".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::route_from(
-                        webui_protocol::WebUiFragmentRoute {
-                            path: "/account".into(),
-                            fragment_id: "route-page".into(),
-                            exact: true,
-                            ..Default::default()
-                        },
-                    )],
-                },
-            ),
-            (
-                "route-page".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<p>route</p>")],
-                },
-            ),
-        ]);
-        let mut document = WebUIProtocol::new(fragments);
-        document.set_css_strategy(webui_protocol::CssStrategy::Link);
-        document.initial_state_strategy = InitialStateStrategy::Components as i32;
-        for (name, keys) in [
-            ("static-shell", vec!["show_hidden", "static_count"]),
-            ("static-hidden", vec!["hidden_count"]),
-            ("route-shell", vec!["route_shell_count"]),
-            ("route-page", vec!["route_count"]),
-        ] {
-            document.components.insert(
-                name.to_string(),
-                webui_protocol::ComponentData {
-                    template_json: format!(r#"{{"h":"<{name}></{name}>","th":1}}"#),
-                    hydration_mode: StateProjectionMode::Keys as i32,
-                    hydration_keys: keys.into_iter().map(str::to_string).collect(),
-                    css_href: format!("/{name}.css"),
-                    ..Default::default()
-                },
-            );
-        }
-        let protocol = Protocol::new(document);
-        assert_eq!(
-            protocol
-                .component_reachability()
-                .is_route_dependent(protocol.component_index()["route-shell"]),
-            Some(true),
-            "fixture must exercise request-aware checkpoint reachability"
-        );
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-
-        handler
-            .render_streaming(
-                &protocol,
-                &test_json!({
-                    "show_hidden": false,
-                    "static_count": 1,
-                    "hidden_count": 2,
-                    "route_shell_count": 3,
-                    "route_count": 4,
-                    "unrelated": "private",
-                }),
-                &RenderOptions::new("index.html", "/account"),
-                &mut writer,
-            )
-            .unwrap();
-
-        let checkpoint = &writer.output[..writer.flushes[0]];
-        for template in ["static-shell", "static-hidden", "route-shell", "route-page"] {
-            assert!(
-                checkpoint.contains(&format!(r#""{template}":"#)),
-                "{template} metadata missing: {checkpoint}"
-            );
-        }
-        for state in [
-            r#""show_hidden":false"#,
-            r#""static_count":1"#,
-            r#""hidden_count":2"#,
-            r#""route_shell_count":3"#,
-            r#""route_count":4"#,
-        ] {
-            assert!(
-                checkpoint.contains(state),
-                "{state} state missing: {checkpoint}"
-            );
-        }
-        assert!(
-            !checkpoint.contains("unrelated"),
-            "checkpoint leaked unrelated state: {checkpoint}"
-        );
-        assert!(
-            checkpoint.contains(
-                r#""css":["/static-shell.css","/static-hidden.css","/route-shell.css","/route-page.css"]"#
-            ),
-            "checkpoint metadata lost source order: {checkpoint}"
-        );
-    }
-
-    #[test]
-    fn streaming_checkpoints_carry_boundary_local_templates_and_state() {
-        // Three boundaries: comp-a, comp-b, then comp-a reused. Each checkpoint
-        // envelope must be locally scoped — templates/state for exactly the
-        // components rendered since the previous checkpoint, with reused tags
-        // carrying hydration state but never a duplicate template.
-        let protocol = disjoint_streaming_protocol(&["comp-a", "comp-b", "comp-a"]);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let state = test_json!({ "a_count": 1, "b_count": 2, "serverOnly": "secret" });
-        let mut writer = FlushTestWriter::default();
-        handler
-            .render_streaming(
-                &protocol,
-                &state,
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-
-        assert_eq!(
-            writer.flushes.len(),
-            4,
-            "three boundary commits plus one terminal"
-        );
-        let segment = |index: usize| -> &str {
-            let start = if index == 0 {
-                0
-            } else {
-                writer.flushes[index - 1]
-            };
-            &writer.output[start..writer.flushes[index]]
-        };
-        let b0 = segment(0);
-        let b1 = segment(1);
-        let b2 = segment(2);
-
-        // Boundary 0: only comp-a's template/state; no comp-b artifacts.
-        assert!(b0.contains(r#""templates":{"comp-a":"#), "b0: {b0}");
-        assert!(b0.contains(r#""a_count":1"#), "b0: {b0}");
-        assert!(b0.contains(r#"[1,0,0,0,{"inventory":"01""#), "b0: {b0}");
-        assert!(!b0.contains("comp-b"), "b0 leaked comp-b: {b0}");
-        assert!(!b0.contains("b_count"), "b0 leaked b_count: {b0}");
-
-        // Boundary 1: only comp-b's template/state; no duplicate comp-a template.
-        assert!(b1.contains(r#""templates":{"comp-b":"#), "b1: {b1}");
-        assert!(b1.contains(r#""b_count":2"#), "b1: {b1}");
-        assert!(b1.contains(r#"[1,1,0,1,{"inventory":"02""#), "b1: {b1}");
-        assert!(
-            !b1.contains(r#""templates":{"comp-a"#),
-            "b1 re-sent comp-a: {b1}"
-        );
-        assert!(!b1.contains("a_count"), "b1 leaked a_count: {b1}");
-
-        // Boundary 2: comp-a reused — state present, template absent (empty delta).
-        assert!(b2.contains(r#""a_count":1"#), "b2: {b2}");
-        assert!(b2.contains(r#"[1,2,0,2,{"inventory":"""#), "b2: {b2}");
-        assert!(
-            !b2.contains(r#""templates""#),
-            "b2 re-sent a template: {b2}"
-        );
-
-        // Server-only state never leaks into any envelope.
-        assert!(!writer.output.contains("serverOnly"));
-    }
-
-    #[test]
-    fn streaming_checkpoint_carries_reachable_unrendered_metadata_without_inventory() {
-        let entry = vec![
-            WebUIFragment::raw("<html><head>"),
-            structural_fragment("head_start"),
-            structural_fragment("head_end"),
-            WebUIFragment::raw("</head><body>"),
-            structural_fragment("body_start"),
-            structural_fragment("boundary_start:0"),
-            WebUIFragment::raw("<comp-a"),
-            structural_fragment("streaming_root:comp-a"),
-            WebUIFragment::raw(">"),
-            WebUIFragment::component("comp-a"),
-            WebUIFragment::raw("</comp-a>"),
-            structural_fragment("boundary_end:0"),
-            structural_fragment("boundary_start:1"),
-            WebUIFragment::raw("<comp-hidden"),
-            structural_fragment("streaming_root:comp-hidden"),
-            WebUIFragment::raw(">"),
-            WebUIFragment::component("comp-hidden"),
-            WebUIFragment::raw("</comp-hidden>"),
-            structural_fragment("boundary_end:1"),
-            structural_fragment("body_end"),
-            WebUIFragment::raw("</body></html>"),
-        ];
-        let fragments = HashMap::from([
-            ("index.html".to_string(), FragmentList { fragments: entry }),
-            (
-                "comp-a".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::if_cond(
-                        ConditionExpr::identifier("show_hidden"),
-                        "hidden-if",
-                    )],
-                },
-            ),
-            (
-                "hidden-if".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::component("comp-hidden")],
-                },
-            ),
-            (
-                "comp-hidden".to_string(),
-                FragmentList {
-                    fragments: vec![WebUIFragment::raw("<p>hidden</p>")],
-                },
-            ),
-        ]);
-        let mut document = WebUIProtocol::new(fragments);
-        document.initial_state_strategy = InitialStateStrategy::Components as i32;
-        document.components.insert(
-            "comp-a".to_string(),
-            webui_protocol::ComponentData {
-                template_json: r#"{"h":"<div></div>","th":1}"#.to_string(),
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["show_hidden".to_string()],
-                ..Default::default()
-            },
-        );
-        document.components.insert(
-            "comp-hidden".to_string(),
-            webui_protocol::ComponentData {
-                template_json: r#"{"h":"<p>hidden</p>","th":1}"#.to_string(),
-                css: ".hidden{display:block}".to_string(),
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["hidden_count".to_string()],
-                ..Default::default()
-            },
-        );
-        let protocol = Protocol::new(document);
-        let handler = WebUIHandler::with_plugin(|| {
-            Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-        });
-        let mut writer = FlushTestWriter::default();
-
-        handler
-            .render_streaming(
-                &protocol,
-                &test_json!({
-                    "show_hidden": false,
-                    "hidden_count": 7,
-                    "unrelated": "private",
-                }),
-                &RenderOptions::new("index.html", "/"),
-                &mut writer,
-            )
-            .unwrap();
-
-        let boundary = |index: usize| -> &str {
-            let start = if index == 0 {
-                0
-            } else {
-                writer.flushes[index - 1]
-            };
-            &writer.output[start..writer.flushes[index]]
-        };
-        let first = boundary(0);
-        let second = boundary(1);
-
-        assert!(first.contains(r#""comp-a":"#), "first: {first}");
-        assert!(first.contains(r#""comp-hidden":"#), "first: {first}");
-        assert!(first.contains(r#""show_hidden":false"#), "first: {first}");
-        assert!(first.contains(r#""hidden_count":7"#), "first: {first}");
-        assert!(first.contains(r#""inventory":"01""#), "first: {first}");
-        assert!(
-            first.contains(r#"<script type="importmap">"#),
-            "first: {first}"
-        );
-        assert!(
-            !first.contains("unrelated"),
-            "first leaked unrelated state: {first}"
-        );
-
-        assert!(
-            !second.contains(r#""templates""#),
-            "second re-sent metadata: {second}"
-        );
-        assert!(
-            !second.contains(r#"<script type="importmap">"#),
-            "second re-sent CSS: {second}"
-        );
-        assert!(second.contains(r#""hidden_count":7"#), "second: {second}");
-        assert!(second.contains(r#""inventory":"02""#), "second: {second}");
-        assert_eq!(
-            writer
-                .output
-                .matches(r#"<script type="importmap">"#)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn streaming_flush_count_is_boundaries_plus_one() {
-        for &count in &[1usize, 3, 10, 100] {
-            let hosts: Vec<&str> = (0..count)
-                .map(|index| if index % 2 == 0 { "comp-a" } else { "comp-b" })
-                .collect();
-            let protocol = disjoint_streaming_protocol(&hosts);
-            let handler = WebUIHandler::with_plugin(|| {
-                Box::new(crate::plugin::webui::WebUIHydrationPlugin::new())
-            });
-            let mut writer = FlushTestWriter::default();
-            handler
-                .render_streaming(
-                    &protocol,
-                    &test_json!({ "a_count": 1, "b_count": 2 }),
-                    &RenderOptions::new("index.html", "/"),
-                    &mut writer,
-                )
-                .unwrap();
-            assert_eq!(
-                writer.flushes.len(),
-                count + 1,
-                "expected boundaries+1 flushes for {count} boundaries"
-            );
-        }
-    }
-
-    #[test]
-    fn checkpoint_state_key_scratch_reuses_allocation_and_stays_local() {
-        let mut protocol = WebUIProtocol::new(HashMap::new());
-        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
-        protocol.components.insert(
-            "comp-a".to_string(),
-            webui_protocol::ComponentData {
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["a".to_string(), "shared".to_string()],
-                ..Default::default()
-            },
-        );
-        protocol.components.insert(
-            "comp-b".to_string(),
-            webui_protocol::ComponentData {
-                hydration_mode: StateProjectionMode::Keys as i32,
-                hydration_keys: vec!["b".to_string(), "shared".to_string()],
-                ..Default::default()
-            },
-        );
-
-        let mut scratch = Vec::with_capacity(INITIAL_KEY_CAPACITY);
-        assert!(!collect_hydration_state_into(
-            &protocol,
-            ["comp-a"],
-            &mut scratch,
-        ));
-        assert_eq!(scratch, ["a", "shared"]);
-        let pointer = scratch.as_ptr();
-        let capacity = scratch.capacity();
-
-        assert!(!collect_hydration_state_into(
-            &protocol,
-            ["comp-b"],
-            &mut scratch,
-        ));
-        assert_eq!(scratch, ["b", "shared"]);
-        assert_eq!(scratch.as_ptr(), pointer);
-        assert_eq!(scratch.capacity(), capacity);
     }
 }

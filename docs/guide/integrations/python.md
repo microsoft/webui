@@ -123,9 +123,9 @@ Both return `bytes`; write them directly as the response body for
 
 `renderer.stream_response()` opens a `StreamingSession` whose methods return
 the bytes they produced instead of writing anywhere themselves. **WebUI never
-touches your socket, so your server owns the write order and backpressure —
+touches your socket, so your server owns the write order and backpressure -
 the same contract as every other host binding** (see
-[Streaming Boundaries](/guide/concepts/directives/boundary#3-drive-a-host-controlled-response)
+[Streaming Boundaries](/guide/concepts/directives/boundary#drive-the-response)
 for the authoring side and full ordering rules).
 
 ### WSGI
@@ -136,13 +136,25 @@ directly onto the session:
 ```python
 def app(environ, start_response):
     session = renderer.stream_response(request_path=environ.get("PATH_INFO", "/"))
-    rows = session.boundary("rows")  # resolved once, outside the write loop
 
     def body():
-        yield session.write_shell({"title": "Home"})
-        yield session.write_boundary(rows, {"rows": []}, mode="updatable")
-        yield session.update(rows, {"rows": load_rows()})
-        yield session.finish({})
+        step = session.start(initial_state)
+        yield step.bytes
+        while not step.done:
+            boundary = step.boundary
+            if boundary is None:
+                raise RuntimeError("unfinished step has no boundary")
+            state = load_boundary_state(
+                boundary.owner,
+                boundary.name,
+                boundary.key,
+            )
+            step = session.resume(
+                boundary.instance_id,
+                state,
+                mode="final",
+            )
+            yield step.bytes
 
     start_response("200 OK", [
         ("Content-Type", "text/html; charset=utf-8"),
@@ -162,25 +174,37 @@ from starlette.responses import StreamingResponse
 
 async def index(request):
     session = renderer.stream_response(request_path=request.url.path)
-    rows = session.boundary("rows")
 
     async def body():
-        yield await anyio.to_thread.run_sync(session.write_shell, {"title": "Home"})
-        yield await anyio.to_thread.run_sync(
-            lambda: session.write_boundary(rows, {"rows": []}, mode="updatable"),
-        )
-        rows_data = await load_rows()  # your own async backend call
-        yield await anyio.to_thread.run_sync(session.update, rows, {"rows": rows_data})
-        yield await anyio.to_thread.run_sync(session.finish, {})
+        step = await anyio.to_thread.run_sync(session.start, initial_state)
+        yield step.bytes
+        while not step.done:
+            boundary = step.boundary
+            if boundary is None:
+                raise RuntimeError("unfinished step has no boundary")
+            state = await load_boundary_state(
+                boundary.owner,
+                boundary.name,
+                boundary.key,
+            )
+            step = await anyio.to_thread.run_sync(
+                lambda: session.resume(
+                    boundary.instance_id,
+                    state,
+                    mode="final",
+                ),
+            )
+            yield step.bytes
 
     return StreamingResponse(body(), media_type="text/html; charset=utf-8")
 ```
 
-Ordering is enforced by the session itself: the shell first, boundaries in
-declaration order, `update()` only on boundaries already committed
-`"updatable"`, and `finish()` last. A rejected call raises and leaves the
-session usable, so bad state input doesn't cost you the response. Sessions
-are **not** thread-safe — drive one session from one thread at a time;
+`start()` and `resume()` return a `StreamStep` with `bytes`, `done`, and an
+optional descriptor. The descriptor provides `instance_id`, `declaration_id`,
+`owner`, `name`, and `key`. The completed step already includes the tail and
+terminal bytes.
+
+Sessions are **not** multi-driver - drive one session from one thread at a time;
 independent sessions on the same `Renderer` may run concurrently.
 
 ## API reference
@@ -200,13 +224,9 @@ independent sessions on the same `Renderer` may run concurrently.
 
 | Member | Description |
 |--------|-------------|
-| `boundary(name) -> int` | Resolve an authored boundary name to its integer handle. Raises with the valid names and a "did you mean …?" suggestion on a typo |
-| `boundary_count` | Number of boundaries the entry declares |
-| `finished` | Whether `finish()` successfully emitted the terminal record |
-| `write_shell(state) -> bytes` | Document prefix through the first semantic flush |
-| `write_boundary(id, state, mode=BoundaryMode.FINAL) -> bytes` | One boundary's markup, metadata delta, and checkpoint |
-| `update(id, state) -> bytes` | Projected state patch for a boundary already committed `updatable` |
-| `finish(state) -> bytes` | Tail checkpoint, terminal record, and document suffix |
+| `start(state) -> StreamStep` | Bytes through the first runtime occurrence or terminal |
+| `resume(instance_id, state, mode=BoundaryMode.FINAL) -> StreamStep` | Commit the pending occurrence and continue |
+| `update(instance_id, patch) -> bytes` | Projected state for a committed updatable occurrence |
 
 ### `Plugin` and `BoundaryMode`
 
@@ -217,8 +237,8 @@ typo-checked by static analysis:
 ```python
 from microsoft_webui import BoundaryMode
 
-session.write_boundary(rows, state, mode=BoundaryMode.UPDATABLE)
-session.write_boundary(rows, state, mode="updatable")  # equivalent
+session.resume(boundary.instance_id, state, mode=BoundaryMode.UPDATABLE)
+session.resume(boundary.instance_id, state, mode="updatable")  # equivalent
 ```
 
 ## Fast path: pre-serialized state

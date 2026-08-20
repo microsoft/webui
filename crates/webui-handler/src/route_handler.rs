@@ -18,10 +18,12 @@ use serde_json::{value::RawValue, Map, Value};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use webui_protocol::{
     web_ui_fragment::Fragment, CssStrategy, DomStrategy, WebUIFragmentRoute, WebUIProtocol,
 };
+
+use crate::streaming::PreparedContinuationStatePlan;
 
 // ── Protocol Index ──────────────────────────────────────────────────────
 
@@ -40,9 +42,21 @@ pub struct Protocol {
     component_asset_style_links: String,
     component_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
-    streaming_plans: HashMap<String, crate::streaming::PreparedStreamingEntryPlan>,
+    fragment_ids: Vec<Arc<str>>,
+    fragment_slots: HashMap<Arc<str>, u32>,
     route_index: CompiledRouteIndex,
+    boundary_declarations: OnceLock<HashMap<u32, BoundaryDeclaration>>,
+    continuation_state_plans: RwLock<HashMap<Box<str>, Arc<PreparedContinuationStatePlan>>>,
     template_metadata_cache: RwLock<HashMap<String, Value>>,
+}
+
+/// Build-time identity of one streaming boundary declaration.
+///
+/// Interned once per protocol so a discovered occurrence clones two pointers
+/// instead of allocating the authored owner and name on every response.
+pub(crate) struct BoundaryDeclaration {
+    pub(crate) owner: Arc<str>,
+    pub(crate) name: Arc<str>,
 }
 
 impl Protocol {
@@ -78,30 +92,29 @@ impl Protocol {
             };
         let component_index = build_component_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
-        let streaming_plans = protocol
-            .streaming_boundaries
+        let mut fragment_ids: Vec<Arc<str>> = protocol
+            .fragments
             .keys()
-            .filter_map(|entry| {
-                protocol.fragments.get(entry).map(|fragments| {
-                    (
-                        entry.clone(),
-                        crate::streaming::PreparedStreamingEntryPlan::new(
-                            entry,
-                            &fragments.fragments,
-                            protocol.streaming_boundaries.get(entry),
-                        ),
-                    )
-                })
-            })
+            .map(|id| Arc::from(id.as_str()))
             .collect();
+        fragment_ids.sort_unstable();
+        let mut fragment_slots = HashMap::with_capacity(fragment_ids.len());
+        for (slot, id) in fragment_ids.iter().enumerate() {
+            // Record counts are bounded by the compiled graph, well inside u32.
+            #[allow(clippy::cast_possible_truncation)]
+            fragment_slots.insert(Arc::clone(id), slot as u32);
+        }
         Self {
             protocol,
             component_asset_style_manifest,
             component_asset_style_links,
             component_index,
             component_reachability: OnceLock::new(),
-            streaming_plans,
+            fragment_ids,
+            fragment_slots,
             route_index,
+            boundary_declarations: OnceLock::new(),
+            continuation_state_plans: RwLock::new(HashMap::new()),
             template_metadata_cache: RwLock::new(HashMap::new()),
         }
     }
@@ -130,24 +143,59 @@ impl Protocol {
             .get_or_init(|| ComponentReachabilityIndex::new(&self.protocol, &self.component_index))
     }
 
-    pub(crate) fn streaming_plan(
-        &self,
-        entry_id: &str,
-    ) -> crate::Result<Option<&crate::streaming::StreamingEntryPlan>> {
-        self.streaming_plans
-            .get(entry_id)
-            .map_or(Ok(None), |plan| plan.resolve().map(Some))
-    }
-
-    pub(crate) fn streaming_boundary_names(&self, entry_id: &str) -> &[String] {
-        self.protocol
-            .streaming_boundaries
-            .get(entry_id)
-            .map_or(&[], |boundaries| boundaries.names.as_slice())
-    }
-
     pub(crate) fn route_index(&self) -> &CompiledRouteIndex {
         &self.route_index
+    }
+
+    /// Resolve a compiled fragment record ID to its dense slot.
+    ///
+    /// Continuation frames carry slots instead of owned IDs, so descending into
+    /// a component, condition, or loop body allocates nothing.
+    pub(crate) fn fragment_slot(&self, id: &str) -> Option<u32> {
+        self.fragment_slots.get(id).copied()
+    }
+
+    /// Borrow the compiled fragment record ID for a dense slot.
+    pub(crate) fn fragment_id(&self, slot: u32) -> Option<&str> {
+        usize::try_from(slot)
+            .ok()
+            .and_then(|slot| self.fragment_ids.get(slot))
+            .map(Arc::as_ref)
+    }
+
+    /// Borrow the interned identity of one build-time boundary declaration.
+    ///
+    /// The table is built on first streaming use and shared by every later
+    /// response, so discovering an occurrence never re-allocates the authored
+    /// owner or name.
+    pub(crate) fn boundary_declaration(&self, declaration_id: u32) -> Option<&BoundaryDeclaration> {
+        self.boundary_declarations
+            .get_or_init(|| build_boundary_declarations(&self.protocol))
+            .get(&declaration_id)
+    }
+
+    /// Borrow the memoized continuation projection surface for one entry.
+    ///
+    /// The graph walk that decides which top-level state keys a continuation
+    /// retains depends only on the compiled protocol, so it runs at most once
+    /// per entry for the lifetime of this [`Protocol`]. Responses clone a
+    /// pointer instead of rebuilding the surface. Failures are captured and
+    /// replayed so the memo never re-walks a graph that is known to be
+    /// unusable.
+    pub(crate) fn continuation_state_plan(
+        &self,
+        entry_id: &str,
+    ) -> Arc<PreparedContinuationStatePlan> {
+        if let Ok(plans) = self.continuation_state_plans.read() {
+            if let Some(plan) = plans.get(entry_id) {
+                return Arc::clone(plan);
+            }
+        }
+        let plan = Arc::new(PreparedContinuationStatePlan::new(&self.protocol, entry_id));
+        if let Ok(mut plans) = self.continuation_state_plans.write() {
+            return Arc::clone(plans.entry(entry_id.into()).or_insert(plan));
+        }
+        plan
     }
 
     /// Borrow the build-time CSS token list.
@@ -273,6 +321,31 @@ struct RequestProtocolIndex<'a> {
 }
 
 // ── Component Inventory ─────────────────────────────────────────────────
+
+/// Intern the owner and authored name of every boundary declaration.
+///
+/// Only start markers carry identity; end markers repeat the declaration ID.
+fn build_boundary_declarations(protocol: &WebUIProtocol) -> HashMap<u32, BoundaryDeclaration> {
+    let mut declarations = HashMap::new();
+    for list in protocol.fragments.values() {
+        for fragment in &list.fragments {
+            let Some(Fragment::Boundary(boundary)) = fragment.fragment.as_ref() else {
+                continue;
+            };
+            if boundary.phase() != webui_protocol::BoundaryPhase::Start {
+                continue;
+            }
+            declarations.insert(
+                boundary.declaration_id,
+                BoundaryDeclaration {
+                    owner: Arc::from(boundary.owner_fragment_id.as_str()),
+                    name: Arc::from(boundary.name.as_str()),
+                },
+            );
+        }
+    }
+    declarations
+}
 
 /// Build a deterministic component-name → bit-index map from the protocol.
 ///
@@ -1244,6 +1317,7 @@ fn collect_inventoryable_components_from_stack(
                         route_base: queued.route_base.clone(),
                     });
                 }
+
                 Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
                     stack.push(QueuedFragment {
                         id: attr.template.clone(),
@@ -1255,6 +1329,13 @@ fn collect_inventoryable_components_from_stack(
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        stack.push(QueuedFragment {
+                            id: route_frag.content_fragment_id.clone(),
+                            inventoryable: false,
+                            route_base: queued.route_base.clone(),
+                        });
+                    }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         // Compute new route base from consumed segments
                         let child_route_base = if let Some((_, ref rm)) = matched_route {
@@ -1490,6 +1571,21 @@ pub fn collect_nested_route_params(
                         route_base: queued.route_base.clone(),
                     });
                 }
+                Some(Fragment::ForLoop(for_loop)) => {
+                    stack.push(QueuedFragment {
+                        id: for_loop.fragment_id.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+                Some(Fragment::IfCond(if_cond)) => {
+                    stack.push(QueuedFragment {
+                        id: if_cond.fragment_id.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
@@ -1667,6 +1763,7 @@ fn collect_inventory_and_chain(
                         route_base: queued.route_base.clone(),
                     });
                 }
+
                 Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
                     stack.push(QueuedFragment {
                         id: attr.template.clone(),
@@ -1678,6 +1775,13 @@ fn collect_inventory_and_chain(
                     let is_selected = matched_route
                         .as_ref()
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
+                    if is_selected && !route_frag.content_fragment_id.is_empty() {
+                        stack.push(QueuedFragment {
+                            id: route_frag.content_fragment_id.clone(),
+                            inventoryable: false,
+                            route_base: queued.route_base.clone(),
+                        });
+                    }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
                             // Chain: record matched route entry
@@ -2285,6 +2389,21 @@ pub(crate) fn collect_route_chain(
                         route_base: queued.route_base.clone(),
                     });
                 }
+                Some(Fragment::ForLoop(for_loop)) => {
+                    stack.push(QueuedFragment {
+                        id: for_loop.fragment_id.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+                Some(Fragment::IfCond(if_cond)) => {
+                    stack.push(QueuedFragment {
+                        id: if_cond.fragment_id.clone(),
+                        inventoryable: false,
+                        route_base: queued.route_base.clone(),
+                    });
+                }
+
                 Some(Fragment::Route(route_frag)) => {
                     let is_selected = matched_route
                         .as_ref()
@@ -2388,6 +2507,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Prepared</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::with_tokens(fragments, vec!["colorBrand".to_string()]);
@@ -2468,12 +2588,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route("/", "home-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -2495,12 +2617,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route("/", "home-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -2541,12 +2665,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::route("/", "home-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "home-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Home</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -2828,12 +2954,14 @@ mod tests {
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("card")],
+                contains_boundary: false,
             },
         );
 
@@ -2852,12 +2980,14 @@ mod tests {
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("card")],
+                contains_boundary: false,
             },
         );
 
@@ -2895,36 +3025,42 @@ mod tests {
                     WebUIFragment::for_loop("item", "items", "for-items"),
                     WebUIFragment::attribute_template("title", "attr-title"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-category-nav")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "for-items".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "attr-title".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("Products")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-category-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<article></article>")],
+                contains_boundary: false,
             },
         );
 
@@ -2952,6 +3088,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -2974,36 +3111,43 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-category-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-search-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-grid")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-grid".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>grid</div>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-detail")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-detail".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>detail</div>")],
+                contains_boundary: false,
             },
         );
 
@@ -3045,6 +3189,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3057,6 +3202,8 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3079,30 +3226,36 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-account-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-profile-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<profile></profile>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-order-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-order-detail")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-order-detail".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<detail></detail>")],
+                contains_boundary: false,
             },
         );
 
@@ -3149,6 +3302,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3161,6 +3315,8 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3173,30 +3329,35 @@ mod tests {
                     ),
                     WebUIFragment::for_loop("item", "items", "item-loop"),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "if-filters".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-filter-panel")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "item-loop".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-item-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-filter-panel".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<filters></filters>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-item-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<item></item>")],
+                contains_boundary: false,
             },
         );
 
@@ -3231,6 +3392,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -3243,18 +3405,22 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-search-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-grid")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-grid".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<grid></grid>")],
+                contains_boundary: false,
             },
         );
 
@@ -3320,6 +3486,8 @@ mod tests {
                     ],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         for id in [
@@ -3333,6 +3501,7 @@ mod tests {
                 id.to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw("<x></x>")],
+                    contains_boundary: false,
                 },
             );
         }
@@ -3376,18 +3545,21 @@ mod tests {
                 "comp-a".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::component("comp-b")],
+                    contains_boundary: false,
                 },
             ),
             (
                 "comp-b".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::route("/", "page-a")],
+                    contains_boundary: false,
                 },
             ),
             (
                 "page-a".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                    contains_boundary: false,
                 },
             ),
         ]));
@@ -3415,12 +3587,14 @@ mod tests {
                 "shared-shell".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::route("details", "detail-page")],
+                    contains_boundary: false,
                 },
             ),
             (
                 "detail-page".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw("<p>Detail</p>")],
+                    contains_boundary: false,
                 },
             ),
         ]));
@@ -3460,6 +3634,7 @@ mod tests {
             "comp-a".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>leaf</p>")],
+                contains_boundary: false,
             },
         )])));
 
@@ -3480,12 +3655,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -3533,12 +3710,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -3578,12 +3757,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -3628,12 +3809,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -3664,12 +3847,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -3724,6 +3909,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("app-shell")],
+                contains_boundary: false,
             },
         );
 
@@ -3742,6 +3928,8 @@ mod tests {
                     }),
                     WebUIFragment::component("cart-panel"),
                 ],
+
+                contains_boundary: false,
             },
         );
 
@@ -3750,18 +3938,21 @@ mod tests {
             "my-navbar".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav/>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "page-about".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>About</h1>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "cart-panel".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<aside>Cart</aside>")],
+                contains_boundary: false,
             },
         );
 
@@ -3862,18 +4053,22 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "compose-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -3913,12 +4108,15 @@ mod tests {
                     exact: true,
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "items-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Items</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -3961,12 +4159,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("authored-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "authored-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Card</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -4002,12 +4202,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("static-card")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "static-card".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Static</p>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::new(fragments);
@@ -4039,6 +4241,7 @@ mod tests {
             "settings-dialog".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div class='dialog'>Settings</div>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
@@ -4085,6 +4288,7 @@ mod tests {
             "my-dialog".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>Dialog</div>")],
+                contains_boundary: false,
             },
         );
         let mut protocol = WebUIProtocol::with_tokens(fragments, Vec::new());
@@ -4150,6 +4354,8 @@ mod tests {
                     ],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
 
@@ -4165,6 +4371,7 @@ mod tests {
                 name.to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw(format!("<p>{name}</p>"))],
+                    contains_boundary: false,
                 },
             );
         }
@@ -4312,18 +4519,22 @@ mod tests {
                     cache_tags: vec!["folders".to_string()],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mail-thread".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Thread</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4369,18 +4580,22 @@ mod tests {
                     }],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "compose-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Compose</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);
@@ -4419,18 +4634,22 @@ mod tests {
                     }],
                     ..Default::default()
                 })],
+
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "app-shell".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<h1>App</h1>"), WebUIFragment::outlet()],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "reply-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>Reply</p>")],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);

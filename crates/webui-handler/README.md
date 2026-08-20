@@ -25,6 +25,31 @@ let result = protocol.render_component_templates(
 
 Available via all bindings: Rust (`Protocol::render_component_templates`), Node/WASM/npm (`Protocol.renderComponentTemplates`), and FFI (`webui_protocol_render_component_templates`).
 
+### Runtime-discovered streaming
+
+`WebUIHandler::stream_response` returns a borrowed `StreamingResponse`.
+`StreamingSession` is the owned byte-returning form used by host bindings.
+
+```rust
+let mut session = StreamingSession::new(handler, protocol, options)?;
+let mut step = session.start(&initial_state)?;
+
+while let Some(boundary) = step.boundary {
+    let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+    step = session.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
+}
+```
+
+`start` and `resume` return `StreamStep { bytes, boundary, done }`. A descriptor
+contains response-local `instance_id`, stable `declaration_id`, owner-local
+`name`, `owner`, and an optional string or numeric `key`. The done step includes
+terminal and document-tail bytes.
+
+Commit an occurrence as `BoundaryMode::Updatable` to call
+`update(instance_id, patch)` later. Updates are projected state records and do
+not insert markup. Component-local occurrences use generated parent spans so an
+early child can hydrate before the parent tail.
+
 ## Documentation
 
 See the [WebUI repository](https://github.com/microsoft/webui) for full usage guides and examples.

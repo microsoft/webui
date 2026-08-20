@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>{{title}}</title>
+  </head>
+  <body>
+    <if condition="show">
+      <boundary name="greeting">
+        <p class="greeting">Hello, {{name}}!</p>
+      </boundary>
+      <boundary name="status">
+        <p id="status">{{status}}</p>
+      </boundary>
+      <for each="item in items">
+        <boundary name="row" key="{{item.id}}">
+          <p class="row">{{item.label}}</p>
+        </boundary>
+      </for>
+    </if>
+  </body>
+</html>

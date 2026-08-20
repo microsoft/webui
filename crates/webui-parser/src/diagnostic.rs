@@ -107,14 +107,18 @@ pub mod codes {
     /// `<boundary name>` is not a static string literal (e.g. it
     /// contains a `{{binding}}`).
     pub const INVALID_BOUNDARY_NAME: &str = "invalid-boundary-name";
-    /// Two `<boundary>` directives in the same entry template share a
-    /// `name`.
+    /// Two `<boundary>` directives in the same owning template share a `name`.
     pub const DUPLICATE_BOUNDARY_NAME: &str = "duplicate-boundary-name";
+    /// A `<boundary>` lexically nested in `<for>` has no stable occurrence key.
+    pub const MISSING_BOUNDARY_KEY: &str = "missing-boundary-key";
+    /// A `<boundary key>` is empty or has malformed binding delimiters.
+    pub const INVALID_BOUNDARY_KEY: &str = "invalid-boundary-key";
+    /// The protocol-wide boundary declaration identity space was exhausted.
+    pub const TOO_MANY_BOUNDARIES: &str = "too-many-boundaries";
     /// A `<boundary>` is nested inside another `<boundary>`.
     pub const NESTED_BOUNDARY: &str = "nested-boundary";
-    /// A `<boundary>` would cut through component host content, a reusable
-    /// component template, an inert/raw-text HTML element, `<if>`, `<for>`, or
-    /// `<route>` instead of independently wrapping it.
+    /// A `<boundary>` would cut through component host content or an
+    /// inert/raw-text HTML element instead of independently wrapping it.
     pub const BOUNDARY_CROSSES_SCOPE: &str = "boundary-crosses-scope";
     /// A `<boundary>` appears before `<body>` opens or after it closes.
     pub const BOUNDARY_OUTSIDE_BODY: &str = "boundary-outside-body";
@@ -123,12 +127,15 @@ pub mod codes {
     /// `<select>`, …), which would separate the generated `<webui-hydrate>`
     /// sentinel from its payload script.
     pub const BOUNDARY_IN_FOSTER_CONTEXT: &str = "boundary-in-foster-context";
+    /// A route-local `<boundary>` is nested in ignored route markup instead of
+    /// being a direct child of the `<route>`.
+    pub const INVALID_ROUTE_BOUNDARY_PLACEMENT: &str = "invalid-route-boundary-placement";
     /// `<webui-hydrate>` was written by an application author. It is reserved
     /// for the compiler/handler-generated runtime hydration sentinel.
     pub const AUTHORED_WEBUI_HYDRATE: &str = "authored-webui-hydrate";
-    /// An entry declares `<boundary>` streaming checkpoints but the
-    /// build has no state-projection manifest, so every checkpoint serializes
-    /// the whole state object instead of its own components' keys.
+    /// A build declares `<boundary>` streaming checkpoints but has no
+    /// state-projection manifest, so every checkpoint serializes the whole
+    /// state object instead of its own components' keys.
     /// Severity: warning.
     pub const STREAMING_WITHOUT_PROJECTION: &str = "streaming-without-projection";
     /// More than one build output shares the file name of an authored
