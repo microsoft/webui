@@ -8,6 +8,14 @@ import "./docs-site-navigation/docs-site-navigation.js";
 
 // Hash anchor scrolling
 if (window.location.hash) {
-  const anchor = decodeURIComponent(window.location.hash.slice(1));
+  const rawAnchor = window.location.hash.slice(1);
+  let anchor = rawAnchor;
+  try {
+    anchor = decodeURIComponent(rawAnchor);
+  } catch (error) {
+    if (!(error instanceof URIError)) {
+      throw error;
+    }
+  }
   document.getElementById(anchor)?.scrollIntoView();
 }

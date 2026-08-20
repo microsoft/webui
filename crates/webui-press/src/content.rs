@@ -40,6 +40,10 @@ fn normalize_link(base: &str, link: &str) -> String {
     }
 }
 
+fn config_paths_match(left: &str, right: &str) -> bool {
+    left.trim_end_matches('/') == right.trim_end_matches('/')
+}
+
 /// Build a JSON object from key-value pairs without using `json!` (which calls `unwrap`).
 fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
     let mut map = Map::with_capacity(N);
@@ -423,10 +427,10 @@ pub(crate) fn process_content_with_states(
         .nav
         .iter()
         .map(|item| {
-            let full_layout = config
-                .custom_pages
-                .get(&item.link)
-                .is_some_and(|page| page.layout() == "full");
+            let full_layout = !item.link.starts_with("http")
+                && config.custom_pages.iter().any(|(path, page)| {
+                    config_paths_match(path, &item.link) && page.layout() == "full"
+                });
             let (link, section) = if item.link.starts_with("http") {
                 // External links can never match a docs section. Use the URL
                 // itself as a unique sentinel so the equality check below
@@ -789,6 +793,13 @@ mod tests {
         // `&link[1..]` would have panicked here on UTF-8 boundary.
         let out = normalize_link("/webui/", "é-page");
         assert!(out.ends_with("é-page"), "got {out}");
+    }
+
+    #[test]
+    fn config_paths_match_with_or_without_trailing_slash() {
+        assert!(config_paths_match("/playground", "/playground/"));
+        assert!(config_paths_match("/playground/", "/playground"));
+        assert!(!config_paths_match("/playground", "/guide/"));
     }
 
     #[test]

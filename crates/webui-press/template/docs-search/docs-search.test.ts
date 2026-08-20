@@ -38,6 +38,10 @@ test('nested documentation components hydrate without page errors', async (t) =>
     waitUntil: 'networkidle',
   });
   await waitForDocsSearch(page);
+  await page.goto(`${server.origin}/webui/#%E0%A4`, {
+    waitUntil: 'networkidle',
+  });
+  await waitForDocsSearch(page);
 
   assert.deepEqual(pageErrors, []);
 });
@@ -580,6 +584,7 @@ test('playground runtime failures offer recovery without exposing raw details', 
     return {
       title: root.querySelector('.error-panel-title')?.textContent?.trim(),
       retry: root.querySelector('.error-retry-btn')?.textContent?.trim(),
+      help: root.querySelector('.error-help-text')?.textContent?.trim(),
       expanded: panel?.hasAttribute('data-expanded'),
       addWidth: addRect?.width ?? 0,
       addInsideHost: addRect ? addRect.right <= hostRect.right : false,
@@ -598,6 +603,7 @@ test('playground runtime failures offer recovery without exposing raw details', 
 
   assert.equal(failure.title, "Preview couldn't load.");
   assert.equal(failure.retry, 'Retry preview');
+  assert.ok(failure.help?.includes('cargo xtask build-wasm'));
   assert.equal(failure.expanded, false);
   assert.ok(failure.addWidth >= 44);
   assert.equal(failure.addInsideHost, true);

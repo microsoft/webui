@@ -961,7 +961,7 @@ export class DocsPlayground extends WebUIElement {
       this.setPreviewStatus("Unavailable", "failed");
       this.setError(`Preview couldn't load.\n\n${String(e)}`);
       this.errorHelp =
-        "The WebAssembly runtime could not be downloaded. Check your connection, then retry the preview.";
+        "The WebAssembly runtime could not be loaded. Check your connection, or run `cargo xtask build-wasm` when developing locally, then retry the preview.";
       this.errorCanRetry = true;
       this.errorExpanded = false;
     }
