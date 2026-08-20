@@ -375,8 +375,9 @@ This is roughly 15 KB - the handler renders faster, the network transfer is smal
 
 Shadow is the default fallback for unwrapped component content. Build with
 `--dom light` to make unwrapped components Light with authored/global CSS in
-their owning CSS tree. No selectors or template elements are compiler-scoped;
-normal CSS cascade and inheritance apply across Light components. Use deliberate
+their owning CSS tree. Selectors and template elements receive no compiler
+ownership markers; normal CSS cascade and inheritance apply across Light
+components. Use deliberate
 tag/class names, `@layer`, and custom properties when composition needs
 predictable ordering.
 

@@ -329,7 +329,9 @@ impl ComponentRegistry {
         uses_shadow_dom: bool,
     ) -> Result<()> {
         let Some(policy) = self.render_policies.get(tag_name) else {
-            return Ok(());
+            return Err(ParserError::NotFound(format!(
+                "component <{tag_name}> disappeared before render policy preparation"
+            )));
         };
         if policy.reserve_block_size().is_none() || self.policy_css.contains(tag_name) {
             return Ok(());

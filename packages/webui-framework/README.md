@@ -295,8 +295,9 @@ The runtime auto-detects which mode was used at hydration time:
 - If `childNodes` exist but no shadow root → light DOM SSR path
 - If neither → client-created path (uses `meta.sd` to decide)
 
-The compiler scopes ordinary paired CSS for Light components, lowers `:host`,
-and namespaces static keyframes. Shadow components keep native Shadow scoping.
+Light components use authored/global ordinary CSS in the owning CSS tree.
+Shadow components keep native Shadow scoping. `:host`, `:host-context`, and
+`::slotted` fail in effective Light CSS.
 The Link, Style, and Module delivery strategies all support both modes.
 
 In a Light build, add open wrappers to slot, native-encapsulation, or CSS-heavy

@@ -63,9 +63,9 @@ For each incoming request, the handler:
 ### Light DOM and Declarative Shadow DOM
 
 With `--dom light`, unwrapped components render directly into the custom-element
-host. The compiler scopes paired CSS and component-local `<style>` blocks, then
-installs styles in
-cascade order before interactivity starts:
+host. Paired CSS and component-local `<style>` blocks remain authored/global in
+the owning CSS tree, then the handler installs them in cascade order before
+interactivity starts:
 
 ```html
 <my-card>

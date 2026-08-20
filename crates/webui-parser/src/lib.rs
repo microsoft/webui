@@ -4366,8 +4366,10 @@ impl HtmlParser {
                 css_light::validate_global_css(tag_name, &html[*start..*end])?;
             }
         }
-        self.component_registry
-            .prepare_policy_css(tag_name, dom_analysis.uses_shadow_dom)?;
+        if self.component_registry.contains(tag_name) {
+            self.component_registry
+                .prepare_policy_css(tag_name, dom_analysis.uses_shadow_dom)?;
+        }
         let css_content = self
             .component_registry
             .get(tag_name)

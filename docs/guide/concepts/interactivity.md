@@ -124,7 +124,9 @@ unwrapped content directly into the component host.
 <button @click="{increment()}">{{label}}: {{count}}</button>
 ```
 
-The compiler scopes the paired CSS for this Light component.
+The paired CSS remains authored/global in the owning CSS tree. Use ordinary
+selectors such as `my-counter`; Shadow-only `:host` and `::slotted` selectors
+fail in effective Light CSS.
 
 **Authored Shadow island (including inside a Light build):**
 ```html
