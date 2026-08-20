@@ -78,8 +78,10 @@ template metadata is emitted) without rendering it during SSR.
 ## DOM ownership fixtures
 
 The real build pipeline produces Light DOM for unwrapped templates. Use ordinary
-source templates to test the production Light path. To test a Shadow component,
-make a sole top-level `<template shadowrootmode="open">` its complete template.
+source templates to test the production Light path. A sole bare top-level
+`<template>` is also an explicit Light wrapper, including in the default Shadow
+fixture. To test a Shadow component, make a sole top-level
+`<template shadowrootmode="open">` its complete template.
 
 The `light-dom` fixture exercises the unwrapped real-pipeline path and includes a
 component-level Shadow opt-in. Use manual template registration or hand-written

@@ -118,6 +118,11 @@ button {
 Unwrapped components default to Shadow DOM. Build with `--dom light` to render
 unwrapped content directly into the component host.
 
+A sole bare top-level `<template>` explicitly selects Light DOM and is unwrapped
+even when the build fallback is Shadow. A template with attributes or
+`w-render`/`w-hydrate` is not a mode selector; nested templates remain ordinary
+inert template content.
+
 **Light DOM (`--dom light`):**
 ```html
 <!-- my-counter.html -->

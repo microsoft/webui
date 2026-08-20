@@ -75,9 +75,11 @@ interactivity starts:
 ```
 
 Shadow is the default fallback for unwrapped components. Components whose
-complete template is a sole open declarative Shadow root also use
+complete template is a sole bare `<template>` explicitly use Light and are
+unwrapped. Components whose complete template is a sole open declarative Shadow
+root use
 [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom)
-even in a Light build. Both forms display fully styled server content before
+even in a Light build. Both explicit forms display fully styled server content before
 JavaScript.
 
 ## Client Hydration Phase

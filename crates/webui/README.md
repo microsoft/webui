@@ -56,9 +56,10 @@ build_to_disk(
 
 Unwrapped components default to a generated open Shadow root. Set
 `dom: DomStrategy::Light` to render unwrapped components as authored/global
-Light DOM; sole authored `<template shadowrootmode="open">` components remain
-Shadow. Light CSS must use ordinary selectors: `:host`, `:host-context`, and
-`::slotted` are rejected with `unsupported-light-css`.
+Light DOM. A sole bare `<template>` is also an explicit Light wrapper and is
+unwrapped; a sole authored `<template shadowrootmode="open">` remains Shadow.
+Light CSS must use ordinary selectors: `:host`, `:host-context`, and `::slotted`
+are rejected with `unsupported-light-css`.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:

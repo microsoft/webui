@@ -61,7 +61,8 @@ const result = build({
 ```
 
 Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
-to render unwrapped components as global Light DOM. A sole top-level
+to render unwrapped components as global Light DOM. A sole bare `<template>` is
+also an explicit Light wrapper and is unwrapped; a sole
 `<template shadowrootmode="open">` remains Shadow in either mode. Light CSS uses
 ordinary selectors; `:host`, `:host-context`, and `::slotted` fail with
 `unsupported-light-css`.

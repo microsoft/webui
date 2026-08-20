@@ -399,9 +399,9 @@ before importing it, then reuses the cached parsed sheet for every target.
 ## Light DOM vs Shadow DOM
 
 Unwrapped components follow the build fallback: Shadow by default, or Light with
-`dom: "light"`. A sole top-level `<template shadowrootmode="open">` containing
-the complete component always selects Shadow. The effective result is surfaced
-as `meta.sd`:
+`dom: "light"`. A sole bare top-level `<template>` explicitly selects Light and
+is unwrapped; a sole top-level `<template shadowrootmode="open">` always selects
+Shadow. The effective result is surfaced as `meta.sd`:
 
 - **Shadow DOM** (`meta.sd` truthy): SSR uses Declarative Shadow DOM. Client-created instances call `attachShadow({ mode: 'open' })`. Slot content stays in light DOM and projects through.
 - **Light DOM**: SSR renders children directly into the host. Client-created

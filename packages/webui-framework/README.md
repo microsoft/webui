@@ -258,9 +258,12 @@ compiled paths.
 
 An unwrapped component receives a generated open Shadow root by default. In a
 `dom: "light"` build it renders as direct children of its host. A component
-whose sole top-level element is `<template shadowrootmode="open">` remains
-Shadow in either mode. Closed roots and invalid values or placement are build
-errors; `<slot>` is rejected only for effective Light components.
+whose sole top-level element is a bare `<template>` explicitly renders as Light
+and is unwrapped, even under the Shadow fallback. A sole
+`<template shadowrootmode="open">` remains Shadow in either mode. Templates with
+attributes and policy wrappers do not select a mode. Closed roots and invalid
+values or placement are build errors; `<slot>` is rejected only for effective
+Light components.
 
 The runtime auto-detects which mode was used at hydration time:
 - If a `shadowRoot` already exists → shadow DOM SSR path

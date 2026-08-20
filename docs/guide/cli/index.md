@@ -230,8 +230,11 @@ a compiler-generated open Shadow root. Pass `--dom light` to render unwrapped
 components as direct Light DOM children with authored/global CSS in their
 owning CSS tree. Light CSS is not selector-rewritten or marker-scoped, so
 ordinary selectors can reach other Light DOM in that tree. In either build mode,
-a sole top-level `<template shadowrootmode="open">` is authoritative and keeps
-that component Shadow, so a Light build may contain Shadow islands.
+a sole bare top-level `<template>` explicitly selects Light and is unwrapped.
+A sole top-level `<template shadowrootmode="open">` is authoritative and keeps
+that component Shadow, so either build can contain explicit Shadow islands.
+Templates with attributes and policy wrappers such as `w-render` remain
+ordinary/policy content rather than selecting a mode.
 
 `:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
 and fail with `unsupported-light-css` in effective Light CSS. Use ordinary
