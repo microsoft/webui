@@ -1936,6 +1936,13 @@ inner `<template>` elements are also invalid. Sources without an `<f-template>`
 return `ComponentSourceResult::Unchanged` and follow the normal component
 template path.
 
+The `<f-template>` wrapper and its `name` attribute are matched
+ASCII-case-insensitively, so `<F-TEMPLATE NAME="my-card">` resolves the same as
+the lowercase spelling. Wrapper discovery and conversion treat raw-text element
+bodies (`<script>`, `<style>`, and the other HTML raw-text elements) as opaque:
+markup-shaped text inside them is copied verbatim and never interpreted as an
+`<f-template>`, inner `<template>`, or FAST directive.
+
 For build-time SSR parsing, WebUI internally adapts supported FAST declarative
 constructs into the WebUI parser view. The adapted inner template becomes the
 parser view returned as `TransformedComponentSource::parser_content`:
@@ -1943,7 +1950,13 @@ parser view returned as `TransformedComponentSource::parser_content`:
 - `<f-repeat value="{{item in items}}">` converts to
   `<for each="item in items">`.
 - `<f-when value="{{condition}}">` converts to
-  `<if condition="condition">`.
+  `<if condition="condition">`. The generated condition attribute uses a quote
+  delimiter that does not clash with a quoted string literal in the condition —
+  a single-quoted `<if condition='status == "ready"'>` when the expression
+  contains a double-quoted literal — because the WebUI parser reads the raw
+  attribute value without entity decoding. A condition that mixes both quote
+  styles cannot be represented with a raw delimiter and returns
+  `invalid-fast-template`.
 - The adaptation unwraps the `value` expression for those directives. Text
   `{{expression}}` bindings and `?boolean` bindings remain available to the
   WebUI parser; ordinary attributes are not treated as additional FAST

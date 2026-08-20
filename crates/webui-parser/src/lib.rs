@@ -6110,6 +6110,39 @@ mod tests {
     }
 
     #[test]
+    fn fast_v2_plugin_converts_double_quoted_when_condition_without_malformed_output() {
+        // `<f-when value='{{status == "ready"}}'>` must convert to a
+        // single-quoted `<if condition='…'>` so the double-quoted literal is not
+        // truncated. The stored SSR parser view must then parse cleanly.
+        let mut parser =
+            HtmlParser::with_plugin(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "status-card",
+                r#"<f-template name="status-card"><template><f-when value='{{status == "ready"}}'><span>{{label}}</span></f-when></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+
+        let parser_content = parser
+            .component_registry
+            .get("status-card")
+            .map(|component| component.html_content.clone())
+            .expect("registered component");
+        assert_eq!(
+            parser_content,
+            r#"<template><if condition='status == "ready"'><span>{{label}}</span></if></template>"#
+        );
+
+        // The generated SSR view parses without a malformed-condition error.
+        let mut ssr = HtmlParser::new();
+        ssr.parse("status-card.html", &parser_content)
+            .expect("converted parser content parses cleanly");
+    }
+
+    #[test]
     fn webui_plugin_leaves_f_template_shaped_source_inert() {
         // The WebUI plugin supplies no component-source transform, so
         // `<f-template>`-shaped markup is stored verbatim under the filename
@@ -7362,6 +7395,32 @@ mod tests {
             parse_and_get_fragments(r#"<if condition="valid"><p>hello</p><p>world</p></if>"#);
         assert_fragments!(fragments, [if_cond("if-1"),]);
         assert_stream!(records, "if-1", [raw("<p>hello</p><p>world</p>"),]);
+    }
+
+    #[test]
+    fn if_condition_with_double_quoted_literal_round_trips_through_parser() {
+        // The FAST converter emits a single-quoted `<if condition='…'>` when the
+        // expression contains a double-quoted literal. The WebUI parser must
+        // extract the full expression (no truncation at the embedded quote), so
+        // SSR and client see the same predicate.
+        let (fragments, _) =
+            parse_and_get_fragments(r#"<if condition='status == "ready"'><span>ok</span></if>"#);
+        let condition = fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(webui_protocol::web_ui_fragment::Fragment::IfCond(if_cond)) => {
+                    if_cond.condition.as_ref()
+                }
+                _ => None,
+            })
+            .expect("if-condition fragment with a parsed condition");
+        match condition.expr.as_ref() {
+            Some(webui_protocol::condition_expr::Expr::Predicate(pred)) => {
+                assert_eq!(pred.left, "status");
+                assert_eq!(pred.right, "\"ready\"");
+            }
+            other => panic!("expected a predicate condition, got {other:?}"),
+        }
     }
 
     #[test]

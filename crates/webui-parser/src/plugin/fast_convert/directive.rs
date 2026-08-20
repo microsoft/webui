@@ -7,10 +7,19 @@ use crate::html_parser::Tag;
 const F_REPEAT_NAME: &str = "f-repeat";
 const F_WHEN_NAME: &str = "f-when";
 
-pub(super) fn validate_directive_attributes<'a>(
+/// Validate a FAST directive's attributes and capture its `value` expression in
+/// a single attribute walk.
+///
+/// Rejects any `f-*` attribute (directives take only `value`) and extracts the
+/// inner expression from the required `value="{{…}}"` attribute. Errors on an
+/// `f-*` attribute take precedence over value validation, matching a prior
+/// full attribute scan followed by value extraction.
+pub(super) fn parse_directive<'a>(
     tag: &Tag<'a>,
+    kind: DirectiveKind,
     tag_offset: usize,
-) -> Result<(), ConvertError<'a>> {
+) -> Result<&'a str, ConvertError<'a>> {
+    let mut value: Option<(Option<&'a str>, usize)> = None;
     for attr in tag.attrs() {
         if attr.name.starts_with("f-") {
             return Err(ConvertError::new(
@@ -20,34 +29,12 @@ pub(super) fn validate_directive_attributes<'a>(
                 tag_offset + attr.raw_range.start,
             ));
         }
-    }
-    Ok(())
-}
-
-pub(super) fn validate_attributes<'a>(
-    tag: &Tag<'a>,
-    tag_offset: usize,
-) -> Result<(), ConvertError<'a>> {
-    for attr in tag.attrs() {
-        if attr.name.starts_with("f-") && !is_supported_f_attribute(attr.name) {
-            return Err(ConvertError::new(
-                ConvertErrorKind::UnsupportedFAttribute {
-                    attribute: attr.name,
-                },
-                tag_offset + attr.raw_range.start,
-            ));
+        if value.is_none() && attr.name == "value" {
+            value = Some((attr.value, attr.raw_range.start));
         }
     }
-    Ok(())
-}
 
-pub(super) fn directive_expression<'a>(
-    tag: &Tag<'a>,
-    kind: DirectiveKind,
-    tag_offset: usize,
-) -> Result<&'a str, ConvertError<'a>> {
-    let value_attr = tag.attrs().find(|attr| attr.name == "value");
-    let Some(value_attr) = value_attr else {
+    let Some((value, value_raw_start)) = value else {
         return Err(ConvertError::new(
             ConvertErrorKind::MissingValueAttribute {
                 tag: kind.tag_name(),
@@ -55,15 +42,15 @@ pub(super) fn directive_expression<'a>(
             tag_offset,
         ));
     };
-    let Some(value) = value_attr.value else {
+    let Some(value) = value else {
         return Err(ConvertError::new(
             ConvertErrorKind::MissingValueAttribute {
                 tag: kind.tag_name(),
             },
-            tag_offset + value_attr.raw_range.start,
+            tag_offset + value_raw_start,
         ));
     };
-    let value_offset = tag_offset + value_attr.raw_range.start;
+    let value_offset = tag_offset + value_raw_start;
     let trimmed = value.trim();
     if !trimmed.starts_with("{{") || !trimmed.ends_with("}}") || trimmed.len() <= 4 {
         return Err(ConvertError::new(
@@ -86,6 +73,23 @@ pub(super) fn directive_expression<'a>(
         ));
     }
     Ok(expression)
+}
+
+pub(super) fn validate_attributes<'a>(
+    tag: &Tag<'a>,
+    tag_offset: usize,
+) -> Result<(), ConvertError<'a>> {
+    for attr in tag.attrs() {
+        if attr.name.starts_with("f-") && !is_supported_f_attribute(attr.name) {
+            return Err(ConvertError::new(
+                ConvertErrorKind::UnsupportedFAttribute {
+                    attribute: attr.name,
+                },
+                tag_offset + attr.raw_range.start,
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn is_repeat_expression(expression: &str) -> bool {
@@ -136,14 +140,6 @@ impl DirectiveKind {
         match self {
             Self::Repeat => F_REPEAT_NAME,
             Self::When => F_WHEN_NAME,
-        }
-    }
-
-    #[inline]
-    pub(super) fn output_open(self) -> &'static str {
-        match self {
-            Self::Repeat => "<for each=\"",
-            Self::When => "<if condition=\"",
         }
     }
 

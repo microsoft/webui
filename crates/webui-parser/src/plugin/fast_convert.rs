@@ -9,12 +9,13 @@ mod scan;
 
 pub(super) use error::{ConvertError, ConvertErrorKind};
 
-use crate::html_parser::{find_comment_close, find_matching_end, parse_tag, Tag};
-use directive::{
-    directive_expression, is_repeat_expression, validate_attributes, validate_directive_attributes,
-    DirectiveKind,
+use crate::html_parser::{
+    find_comment_close, find_raw_text_end, is_raw_text_element, parse_tag, Tag,
 };
-use scan::{find_tag_end, read_opening_tag_name, scan_named_open_tags};
+use directive::{is_repeat_expression, parse_directive, validate_attributes, DirectiveKind};
+use scan::{
+    find_matching_end_skip_raw_text, find_tag_end, read_opening_tag_name, scan_named_open_tags,
+};
 use std::ops::Range;
 
 pub(super) const F_TEMPLATE_NAME: &str = "f-template";
@@ -46,10 +47,9 @@ pub(super) fn convert_template(
         ));
     }
 
-    let f_template_end = find_tag_end(source, f_template_start, source.len())
+    let f_template = parse_tag(&source[f_template_start..])
         .ok_or_else(|| ConvertError::new(ConvertErrorKind::UnclosedTag, f_template_start))?;
-    let f_template = parse_tag(&source[f_template_start..f_template_end])
-        .ok_or_else(|| ConvertError::new(ConvertErrorKind::UnclosedTag, f_template_start))?;
+    let f_template_end = f_template_start + f_template.close + 1;
     if f_template.self_closing {
         return Err(ConvertError::new(
             ConvertErrorKind::UnclosedElement {
@@ -59,14 +59,16 @@ pub(super) fn convert_template(
         ));
     }
     let (f_template_close, f_template_close_end) =
-        find_matching_end(source, f_template.name, f_template_end).ok_or_else(|| {
-            ConvertError::new(
-                ConvertErrorKind::UnclosedElement {
-                    tag: f_template.name,
-                },
-                f_template_start,
-            )
-        })?;
+        find_matching_end_skip_raw_text(source, f_template.name, f_template_end).ok_or_else(
+            || {
+                ConvertError::new(
+                    ConvertErrorKind::UnclosedElement {
+                        tag: f_template.name,
+                    },
+                    f_template_start,
+                )
+            },
+        )?;
     if first_non_whitespace_non_comment(source, 0..f_template_start).is_some()
         || first_non_whitespace_non_comment(source, f_template_close_end..source.len()).is_some()
     {
@@ -97,7 +99,7 @@ pub(super) fn convert_template(
         ));
     }
 
-    let inner_open_end = find_tag_end(source, inner_start, artifact.end).ok_or_else(|| {
+    let inner_template = parse_tag(&source[inner_start..artifact.end]).ok_or_else(|| {
         ConvertError::new(
             ConvertErrorKind::UnclosedElement {
                 tag: INNER_TEMPLATE_NAME,
@@ -105,14 +107,7 @@ pub(super) fn convert_template(
             inner_start,
         )
     })?;
-    let inner_template = parse_tag(&source[inner_start..inner_open_end]).ok_or_else(|| {
-        ConvertError::new(
-            ConvertErrorKind::UnclosedElement {
-                tag: INNER_TEMPLATE_NAME,
-            },
-            inner_start,
-        )
-    })?;
+    let inner_open_end = inner_start + inner_template.close + 1;
     if inner_template.self_closing {
         return Err(ConvertError::new(
             ConvertErrorKind::UnclosedElement {
@@ -121,20 +116,22 @@ pub(super) fn convert_template(
             inner_start,
         ));
     }
-    let (_, inner_close_end) =
-        find_matching_end(&source[..artifact.end], inner_template.name, inner_open_end)
-            .ok_or_else(|| {
-                ConvertError::new(
-                    ConvertErrorKind::UnclosedElement {
-                        tag: inner_template.name,
-                    },
-                    inner_start,
-                )
-            })?;
+    let (_, inner_close_end) = find_matching_end_skip_raw_text(
+        &source[..artifact.end],
+        inner_template.name,
+        inner_open_end,
+    )
+    .ok_or_else(|| {
+        ConvertError::new(
+            ConvertErrorKind::UnclosedElement {
+                tag: inner_template.name,
+            },
+            inner_start,
+        )
+    })?;
 
     let parser_content = convert_segment(source, inner_start..inner_close_end)?;
-    let name = f_template
-        .attr("name")
+    let name = attr_ignore_ascii_case(&f_template, "name")
         .map(str::trim)
         .filter(|name| !name.is_empty());
 
@@ -143,6 +140,18 @@ pub(super) fn convert_template(
         artifact,
         parser_content,
     }))
+}
+
+/// Case-insensitive attribute lookup scoped to FAST wrapper resolution.
+///
+/// FAST `<f-template>` wrappers are recognized ASCII-case-insensitively, so
+/// their `name` attribute must be resolved the same way (`<F-TEMPLATE NAME=…>`).
+/// This stays inside the FAST plugin subtree; the generic [`Tag::attr`] remains
+/// case-sensitive for WebUI directives.
+fn attr_ignore_ascii_case<'a>(tag: &Tag<'a>, name: &str) -> Option<&'a str> {
+    tag.attrs()
+        .find(|attr| attr.name.eq_ignore_ascii_case(name))
+        .and_then(|attr| attr.value)
 }
 
 fn first_non_whitespace_non_comment(source: &str, range: Range<usize>) -> Option<usize> {
@@ -182,7 +191,11 @@ struct DirectiveFrame {
 fn convert_segment<'a>(source: &'a str, range: Range<usize>) -> Result<String, ConvertError<'a>> {
     let mut state = ConvertState {
         output: String::with_capacity(range.len()),
-        directives: Vec::with_capacity(4),
+        // Static templates never push a directive frame, so defer the heap
+        // allocation until the first `<f-when>`/`<f-repeat>` is converted. The
+        // first push still allocates the same small capacity, so directive-heavy
+        // templates are unaffected.
+        directives: Vec::new(),
     };
     let mut cursor = range.start;
 
@@ -207,15 +220,39 @@ fn convert_segment<'a>(source: &'a str, range: Range<usize>) -> Result<String, C
             continue;
         }
 
-        let Some(end) = find_tag_end(source, start, range.end) else {
-            if read_opening_tag_name(source, start, range.end).is_some() {
+        let Some(tag) = parse_tag(remaining) else {
+            // Not a parseable element: a declaration/empty-name tag with a
+            // terminator is copied verbatim, an unterminated `<name` is an
+            // unclosed-tag diagnostic, and a bare `<` is emitted as text.
+            if let Some(end) = find_tag_end(source, start, range.end) {
+                state.output.push_str(&source[start..end]);
+                cursor = end;
+            } else if read_opening_tag_name(source, start, range.end).is_some() {
                 return Err(ConvertError::new(ConvertErrorKind::UnclosedTag, start));
+            } else {
+                state.output.push('<');
+                cursor = start + 1;
             }
-            state.output.push('<');
-            cursor = start + 1;
             continue;
         };
-        convert_tag(source, start, end, &mut state)?;
+
+        // Raw-text elements (`<script>`, `<style>`, …) are opaque: copy the
+        // whole element verbatim so tag-like text inside is never mistaken for a
+        // FAST directive or wrapper.
+        if !tag.closing && is_raw_text_element(tag.name) {
+            let raw_end = start + find_raw_text_end(remaining, tag.name, tag.close + 1);
+            state.output.push_str(&source[start..raw_end]);
+            cursor = raw_end;
+            continue;
+        }
+
+        let end = start + tag.close + 1;
+        let raw = &source[start..end];
+        if tag.closing {
+            convert_closing_tag(&tag, raw, &mut state)?;
+        } else {
+            convert_opening_tag(&tag, raw, start, &mut state)?;
+        }
         cursor = end;
     }
 
@@ -229,25 +266,6 @@ fn convert_segment<'a>(source: &'a str, range: Range<usize>) -> Result<String, C
     }
 
     Ok(state.output)
-}
-
-fn convert_tag<'a>(
-    source: &'a str,
-    start: usize,
-    end: usize,
-    state: &mut ConvertState,
-) -> Result<(), ConvertError<'a>> {
-    let Some(tag) = parse_tag(&source[start..end]) else {
-        state.output.push_str(&source[start..end]);
-        return Ok(());
-    };
-
-    let raw = &source[start..end];
-    if tag.closing {
-        convert_closing_tag(&tag, raw, state)
-    } else {
-        convert_opening_tag(&tag, raw, start, state)
-    }
 }
 
 fn convert_opening_tag<'a>(
@@ -307,8 +325,7 @@ fn convert_directive<'a>(
     offset: usize,
     state: &mut ConvertState,
 ) -> Result<(), ConvertError<'a>> {
-    validate_directive_attributes(tag, offset)?;
-    let expression = directive_expression(tag, kind, offset)?;
+    let expression = parse_directive(tag, kind, offset)?;
     if kind == DirectiveKind::Repeat && !is_repeat_expression(expression) {
         return Err(ConvertError::new(
             ConvertErrorKind::InvalidRepeatExpression { expr: expression },
@@ -324,9 +341,61 @@ fn convert_directive<'a>(
         ));
     }
 
-    state.output.push_str(kind.output_open());
-    state.output.push_str(expression);
-    state.output.push_str("\">");
+    push_directive_open(state, kind, expression, offset)?;
     state.directives.push(DirectiveFrame { kind, offset });
     Ok(())
+}
+
+/// Emit the WebUI opening tag for a converted FAST directive.
+///
+/// `<f-repeat>` expressions are validated to the quote-free `item in items`
+/// grammar, so the `<for each="…">` value is always safe in double quotes.
+/// `<f-when>` conditions may contain a string literal, so the generated
+/// `<if condition=…>` delimiter is chosen to avoid clashing with a quote in the
+/// expression (the WebUI parser reads the raw attribute value without entity
+/// decoding, so entity escaping is not an option).
+fn push_directive_open<'a>(
+    state: &mut ConvertState,
+    kind: DirectiveKind,
+    expression: &'a str,
+    offset: usize,
+) -> Result<(), ConvertError<'a>> {
+    match kind {
+        DirectiveKind::Repeat => {
+            state.output.push_str("<for each=\"");
+            state.output.push_str(expression);
+            state.output.push_str("\">");
+        }
+        DirectiveKind::When => {
+            let Some(delimiter) = condition_attribute_delimiter(expression) else {
+                return Err(ConvertError::new(
+                    ConvertErrorKind::ConditionQuoteConflict { value: expression },
+                    offset,
+                ));
+            };
+            state.output.push_str("<if condition=");
+            state.output.push(char::from(delimiter));
+            state.output.push_str(expression);
+            state.output.push(char::from(delimiter));
+            state.output.push('>');
+        }
+    }
+    Ok(())
+}
+
+/// Choose the quote delimiter for a generated `<if condition=…>` attribute.
+///
+/// Returns the ASCII delimiter byte that does not appear in `expression`, so
+/// the WebUI parser extracts the condition verbatim. A double quote is
+/// preferred (byte-identical to the historical output) and a single quote is
+/// used when the expression contains a double-quoted literal. Returns `None`
+/// when the expression contains both quote styles and cannot be represented
+/// with a raw attribute delimiter.
+fn condition_attribute_delimiter(expression: &str) -> Option<u8> {
+    let bytes = expression.as_bytes();
+    match (bytes.contains(&b'"'), bytes.contains(&b'\'')) {
+        (true, true) => None,
+        (true, false) => Some(b'\''),
+        (false, _) => Some(b'"'),
+    }
 }
