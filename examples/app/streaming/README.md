@@ -14,7 +14,8 @@ batch's `feed-item` islands hydrating independently as their own
 `<boundary>` commits. The document entry contains only one
 `<streaming-page>` host. Its component template owns all five boundaries, so
 the composer becomes interactive before the parent page's final tail and span
-completion arrive.
+completion arrive. Each declaration is static; no boundary executes from a
+`<for>` body.
 
 ```bash
 # Install JS dependencies
@@ -48,8 +49,9 @@ The Node API feed gaps are bounded by `--feed-delay-min-ms` (500) and
 `--feed-delay-max-ms` (1000) and are re-rolled per request, so repeated loads
 do not look mechanically identical. The forecast resolves independently, so its
 state record can appear between any two feed checkpoints. If it is still
-pending at the last gap, the API sends the update before the final resume,
-because that resume completes the session and closes its update window:
+pending at the last gap, the API sends the update before the resume control for
+the final descriptor, because the CLI follows that boundary-only resume with
+the final `advance`, which completes the session:
 
 ```bash
 pnpm start:api -- --feed-delay-min-ms 200 --feed-delay-max-ms 400
@@ -72,10 +74,17 @@ typed key. The one-way channel has no acknowledgement carrying instance IDs, so
 the CLI validates that selector against the current `StreamStep`, remembers the
 committed descriptor-to-instance mapping for later updates, and rejects stale or
 ambiguous targets. `declarationId` may be included as an extra validation field.
-The final `resume` returns `done`, writes the terminal automatically, and the API
-closes its NDJSON body; there is no finish control. A capacity-one command
-channel and Node's `response.write()` / `drain` contract propagate backpressure
-across the loopback bridge.
+Core `resume` writes only that occurrence through its checkpoint. The CLI then
+calls core `advance` to write following parent bytes through the next
+descriptor or terminal. The backend sends no `advance` control. After it sends
+the resume for the final descriptor, it closes its NDJSON body; the CLI's final
+`advance` writes the tail and terminal. A capacity-one command channel and
+Node's `response.write()` / `drain` contract propagate backpressure across the
+loopback bridge.
+
+This split is why the component-local composer needs no synthetic sibling
+boundary. Its resume step can flush the child checkpoint, and advance later
+writes the unfinished parent tail and span completion.
 
 **This is one of two supported topologies.** This example uses the
 **API-proxy** topology, which is the right fit when you want the CLI to own
@@ -194,8 +203,9 @@ by the application bundle, not by CSS. See
 `server/src/pacing.ts` races weather readiness against each feed delay and
 writes controls in completion order. `server/src/stream-protocol.ts` emits one
 record per semantic write, honors Node HTTP backpressure, and closes the body
-after the final resume. The API caps concurrent admitted streams before sending
-a 200 response.
+after the resume control for the final descriptor. The CLI then performs the
+final advance. The API caps concurrent admitted streams before sending a 200
+response.
 
 Inside `webui serve`, one blocking worker owns the real
 `WebUIHandler::stream_response` and `StreamingWriter` for the response

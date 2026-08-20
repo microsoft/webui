@@ -394,6 +394,17 @@ impl NativeStreamingSession {
         stream_step_dict(py, step)
     }
 
+    fn advance<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let step = py
+            .detach(|| {
+                self.session_binding()?
+                    .advance()
+                    .map_err(streaming_binding_error)
+            })
+            .map_err(BindingError::into_py_error)?;
+        stream_step_dict(py, step)
+    }
+
     fn update<'py>(
         &self,
         py: Python<'py>,

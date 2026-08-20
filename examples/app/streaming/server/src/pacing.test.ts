@@ -98,7 +98,7 @@ test('ready weather can arrive between feed boundaries', async () => {
   );
 });
 
-test('a late weather update is sent before the final resume completes the stream', async () => {
+test('a late weather update is sent before the final boundary control closes the stream', async () => {
   const controls = new TestControls();
   const session = controls.session('late-weather');
   assert.ok(session);

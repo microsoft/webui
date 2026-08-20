@@ -224,7 +224,7 @@ class StreamingSession:
         *,
         mode: BoundaryMode | str = BoundaryMode.FINAL,
     ) -> StreamStep:
-        """Commit the pending occurrence and advance to the next step."""
+        """Commit only the pending occurrence through its checkpoint."""
         parsed_mode = BoundaryMode(mode)
         return _stream_step(
             self._inner.resume(
@@ -233,6 +233,10 @@ class StreamingSession:
                 parsed_mode is BoundaryMode.UPDATABLE,
             )
         )
+
+    def advance(self) -> StreamStep:
+        """Render parent bytes until the next occurrence or completion."""
+        return _stream_step(self._inner.advance())
 
     def update(self, instance_id: int, patch: StateInput) -> bytes:
         """Push a projected state patch to an updatable occurrence."""

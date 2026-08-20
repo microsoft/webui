@@ -104,16 +104,17 @@ fn render_streaming(
         .context("Failed to open streaming session")?;
     let mut step = session.start(state).context("Failed to start stream")?;
     while !step.done {
-        let boundary = step
-            .boundary
-            .as_ref()
-            .context("Streaming step is unfinished but has no boundary descriptor")?;
-        let instance_id = boundary.instance_id;
-        let owner = boundary.owner.clone();
-        let name = boundary.name.clone();
-        step = session
-            .resume(instance_id, state, BoundaryMode::Final)
-            .with_context(|| format!("Failed to resume boundary {owner}/{name}"))?;
+        step = match step.boundary.as_ref() {
+            Some(boundary) => {
+                let instance_id = boundary.instance_id;
+                let owner = boundary.owner.clone();
+                let name = boundary.name.clone();
+                session
+                    .resume(instance_id, state, BoundaryMode::Final)
+                    .with_context(|| format!("Failed to resume boundary {owner}/{name}"))?
+            }
+            None => session.advance().context("Failed to advance stream")?,
+        };
     }
     Ok(())
 }

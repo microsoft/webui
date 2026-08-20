@@ -14,7 +14,7 @@ typedef void webui_protocol_t;
 typedef void webui_streaming_session_t;
 
 /**
- * Opaque owned result from one streaming start or resume call.
+ * Opaque owned result from one streaming start, resume, or advance call.
  */
 typedef void webui_streaming_step_t;
 
@@ -221,9 +221,10 @@ char *webui_protocol_tokens(const webui_protocol_t *protocol_ptr);
  * Open a host-driven progressive response for a streaming entry.
  *
  * Unlike [`webui_handler_render`], which produces the whole document in one
- * call, the returned session advances through [`webui_streaming_session_start`]
- * and [`webui_streaming_session_resume`] so the host owns the socket, write
- * order, and backpressure. Any nonce previously set with
+ * call, the returned session advances through [`webui_streaming_session_start`],
+ * [`webui_streaming_session_resume`], and [`webui_streaming_session_advance`]
+ * so the host owns the socket, write order, and backpressure. Any nonce
+ * previously set with
  * [`webui_handler_set_nonce`] is captured for the life of the session.
  *
  * Returns `NULL` on error; call [`webui_last_error`] for details. The handle
@@ -276,7 +277,7 @@ webui_streaming_step_t *webui_streaming_session_start(webui_streaming_session_t 
                                                       const char *state_json);
 
 /**
- * Commit the pending occurrence and advance to the next occurrence or terminal.
+ * Commit the pending occurrence through its checkpoint and stop.
  *
  * `mode` must be [`WEBUI_BOUNDARY_MODE_FINAL`] or
  * [`WEBUI_BOUNDARY_MODE_UPDATABLE`]. The returned owned step must be released
@@ -293,6 +294,20 @@ webui_streaming_step_t *webui_streaming_session_resume(webui_streaming_session_t
                                                        uint32_t instance_id,
                                                        const char *state_json,
                                                        webui_boundary_mode_t mode);
+
+/**
+ * Advance through parent bytes to the next occurrence or terminal completion.
+ *
+ * This call is valid only after [`webui_streaming_session_resume`] commits the
+ * pending occurrence. The returned owned step follows the same ownership rules
+ * as start and resume and must be released with [`webui_streaming_step_destroy`].
+ * A `NULL` return indicates an error available through [`webui_last_error`].
+ *
+ * # Safety
+ *
+ * `session_ptr` must be a live session handle with no concurrent operation.
+ */
+webui_streaming_step_t *webui_streaming_session_advance(webui_streaming_session_t *session_ptr);
 
 /**
  * Emit a projected state patch for a committed updatable occurrence.
@@ -323,8 +338,9 @@ char *webui_streaming_session_update(webui_streaming_session_t *session_ptr,
  * # Safety
  *
  * `step_ptr` must be a pointer returned by
- * [`webui_streaming_session_start`] or [`webui_streaming_session_resume`], or
- * `NULL` for a no-op. A non-null pointer must not be used after this call.
+ * [`webui_streaming_session_start`], [`webui_streaming_session_resume`], or
+ * [`webui_streaming_session_advance`], or `NULL` for a no-op. A non-null
+ * pointer must not be used after this call.
  */
 void webui_streaming_step_destroy(webui_streaming_step_t *step_ptr);
 

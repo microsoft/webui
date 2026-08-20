@@ -69,17 +69,20 @@ const body = new ReadableStream({
     controller.enqueue(step.bytes);
     while (!step.done) {
       const boundary = step.boundary;
-      if (!boundary) throw new Error('unfinished step has no boundary');
-      const state = await loadBoundaryState(
-        boundary.owner,
-        boundary.name,
-        boundary.key,
-      );
-      step = session.resume(
-        boundary.instanceId,
-        JSON.stringify(state),
-        'final',
-      );
+      if (boundary) {
+        const state = await loadBoundaryState(
+          boundary.owner,
+          boundary.name,
+          boundary.key,
+        );
+        step = session.resume(
+          boundary.instanceId,
+          JSON.stringify(state),
+          'final',
+        );
+      } else {
+        step = session.advance();
+      }
       controller.enqueue(step.bytes);
     }
     controller.close();
@@ -90,12 +93,18 @@ const body = new ReadableStream({
 | Member | Description |
 |--------|-------------|
 | `start(stateJson)` | Return `{ bytes, done, boundary? }` through the first occurrence or terminal |
-| `resume(instanceId, stateJson, mode?)` | Commit the pending occurrence and return the next step |
+| `resume(instanceId, stateJson, mode?)` | Return only the pending occurrence's bytes through its checkpoint |
+| `advance()` | Return following parent bytes through the next occurrence or terminal |
 | `update(instanceId, patchJson)` | Return projected state bytes for an updatable occurrence |
 
 Descriptors contain `instanceId`, `declarationId`, `owner`, `name`, and an
-optional string or numeric `key`. The final step's `Uint8Array` includes tail
-and terminal bytes. The contract is identical on Node, Python, C, and .NET.
+optional string or numeric `key`. A descriptor means `resume`; no descriptor
+with `done: false` means `advance`; `done: true` means complete. `resume`
+returns only the occurrence and checkpoint so it can be enqueued immediately.
+`advance` returns the following parent or tail bytes, with no sibling boundary
+workaround required. An update is valid between `resume` and `advance`. The
+final step's `Uint8Array` includes tail and terminal bytes. The contract is
+identical on Node, Python, C, and .NET.
 
 ## Parser-only API
 

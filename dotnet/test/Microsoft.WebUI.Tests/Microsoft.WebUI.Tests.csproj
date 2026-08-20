@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFrameworks>net8.0;net9.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
@@ -23,6 +23,7 @@
     invokes the CLI when the app sources change or the output is missing.
   -->
   <Target Name="BuildFixtureProtocol"
+          Condition="'$(TargetFramework)' != ''"
           BeforeTargets="Build"
           Inputs="fixtures/projection-app/index.html;fixtures/projection-app/kept-widget.html;fixtures/projection-app/kept-widget.ts"
           Outputs="$(OutDir)fixtures/projection-app/protocol.bin">
@@ -32,12 +33,13 @@
   </Target>
 
   <!--
-    Compile the streaming fixture app the same way. Its keyed declaration
-    produces string and numeric runtime occurrences and can be skipped entirely
+    Compile the streaming fixture app the same way. Its static keyed sibling
+    declarations cover string and numeric runtime keys and can both be skipped
     for boundary-free completion. No projection manifest is supplied, so every
     checkpoint falls back to the whole state object.
   -->
   <Target Name="BuildStreamingFixtureProtocol"
+          Condition="'$(TargetFramework)' != ''"
           BeforeTargets="Build"
           Inputs="fixtures/streaming-app/index.html;fixtures/streaming-app/stream-item.html;fixtures/streaming-app/stream-item.ts"
           Outputs="$(OutDir)fixtures/streaming-app/protocol.bin">

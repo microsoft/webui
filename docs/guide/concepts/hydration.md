@@ -210,10 +210,17 @@ import './search-box.js';
 ```
 
 The entry uses one `<ntp-page>`. When traversal reaches its internal boundary,
-WebUI pauses and returns a runtime descriptor to the host. Resuming that
-occurrence commits `<search-box>`, which can become interactive before the
-remaining parent section arrives. Boundaries can also occur in true
-conditions, loop iterations, and selected route content.
+WebUI pauses and returns a runtime descriptor to the host. `resume` commits only
+`<search-box>` through its checkpoint, so it can become interactive
+immediately. `advance` then renders the remaining parent section, generated
+span completion, and later shell bytes. This boundary-only resume means a
+sibling boundary is not needed to separate the early child from the parent
+tail.
+
+Boundaries can also occur in true conditions and selected route content. A
+boundary-bearing subtree reached from a `<for>` body fails the build with
+`boundary-in-repeat`. A complete `<for>` may instead sit inside one boundary,
+and boundaries before or after a `<for>` are valid.
 
 ### Timing and lifecycle
 

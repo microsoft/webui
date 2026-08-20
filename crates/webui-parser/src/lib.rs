@@ -419,7 +419,46 @@ struct PendingBoundary {
 
 struct BoundaryGraphEdge {
     target: String,
-    repeats: bool,
+}
+
+/// A `<for>` callsite, used to name the offending repeat in a diagnostic.
+struct RepeatSite<'a> {
+    owner: &'a str,
+    item: &'a str,
+    collection: &'a str,
+}
+
+/// A boundary declaration a `<for>` repeat body can reach.
+struct RepeatBoundaryViolation {
+    repeat_owner: String,
+    each: String,
+    boundary_owner: String,
+    boundary_name: String,
+}
+
+/// Push every record a route subtree renders into `targets`.
+fn push_route_records<'a>(targets: &mut Vec<&'a str>, root: &'a WebUiFragmentRoute) {
+    let mut pending = vec![root];
+    while let Some(route) = pending.pop() {
+        targets.push(route.fragment_id.as_str());
+        targets.push(route.content_fragment_id.as_str());
+        targets.push(route.pending_component.as_str());
+        targets.push(route.error_component.as_str());
+        pending.extend(route.children.iter());
+    }
+}
+
+/// Push every record `list` renders through a lexical child edge.
+fn push_child_records<'a>(list: &'a FragmentList, targets: &mut Vec<&'a str>) {
+    for fragment in &list.fragments {
+        match fragment.fragment.as_ref() {
+            Some(Fragment::Component(component)) => targets.push(&component.fragment_id),
+            Some(Fragment::IfCond(if_cond)) => targets.push(&if_cond.fragment_id),
+            Some(Fragment::ForLoop(for_loop)) => targets.push(&for_loop.fragment_id),
+            Some(Fragment::Route(route)) => push_route_records(targets, route),
+            _ => {}
+        }
+    }
 }
 
 #[derive(Default)]
@@ -972,20 +1011,26 @@ impl HtmlParser {
     }
 
     /// Compute transitive boundary presence and conservative declaration
-    /// repeatability for the complete parsed fragment graph.
+    /// repeatability for the complete parsed fragment graph, and reject every
+    /// boundary a `<for>` repeat body can reach.
     ///
-    /// This runs only after a top-level parse succeeds. Both analyses are
-    /// iterative: presence propagates through reverse edges, while occurrence
-    /// counts use a two-value (once/many) fixed point. Cycles therefore converge
-    /// without recursion and are conservatively classified as repeatable.
+    /// This runs only after a top-level parse succeeds. Every analysis is
+    /// iterative: presence propagates through reverse edges, repeat
+    /// reachability is a multi-source forward walk, and occurrence counts use a
+    /// two-value (once/many) fixed point. Cycles therefore converge without
+    /// recursion and are conservatively classified as repeatable.
     #[cold]
     #[inline(never)]
     fn finalize_boundary_metadata(&mut self) -> Result<()> {
         if self.next_boundary_declaration_id != 0 {
             let (outgoing, direct_boundary_records) = self.boundary_graph();
             self.mark_boundary_records(&outgoing, direct_boundary_records);
+            if let Some(violation) = self.find_repeat_reachable_boundary() {
+                return Err(Self::repeat_reachable_boundary_error(&violation));
+            }
             let occurrence_counts = self.boundary_occurrence_counts(&outgoing);
 
+            let mut unkeyed_repeat: Option<(u32, String, String)> = None;
             for (fragment_id, list) in &mut self.fragment_records {
                 let repeated = occurrence_counts
                     .get(fragment_id)
@@ -997,9 +1042,23 @@ impl HtmlParser {
                     if let Some(Fragment::Boundary(boundary)) = fragment.fragment.as_mut() {
                         if boundary.phase() == BoundaryPhase::Start {
                             boundary.may_repeat = true;
+                            if boundary.key.is_none()
+                                && unkeyed_repeat
+                                    .as_ref()
+                                    .is_none_or(|(id, _, _)| boundary.declaration_id < *id)
+                            {
+                                unkeyed_repeat = Some((
+                                    boundary.declaration_id,
+                                    boundary.owner_fragment_id.clone(),
+                                    boundary.name.clone(),
+                                ));
+                            }
                         }
                     }
                 }
+            }
+            if let Some((_, owner, name)) = unkeyed_repeat {
+                return Err(Self::missing_boundary_key_error(&owner, &name));
             }
 
             if let Some((owner, name)) = self.find_transitively_nested_boundary() {
@@ -1062,13 +1121,13 @@ impl HtmlParser {
             for fragment in &list.fragments {
                 match fragment.fragment.as_ref() {
                     Some(Fragment::Component(component)) => {
-                        Self::push_boundary_edge(edges, &component.fragment_id, false);
+                        Self::push_boundary_edge(edges, &component.fragment_id);
                     }
                     Some(Fragment::ForLoop(for_loop)) => {
-                        Self::push_boundary_edge(edges, &for_loop.fragment_id, true);
+                        Self::push_boundary_edge(edges, &for_loop.fragment_id);
                     }
                     Some(Fragment::IfCond(if_cond)) => {
-                        Self::push_boundary_edge(edges, &if_cond.fragment_id, false);
+                        Self::push_boundary_edge(edges, &if_cond.fragment_id);
                     }
                     Some(Fragment::Boundary(boundary)) => {
                         if boundary.phase() == BoundaryPhase::Start {
@@ -1085,11 +1144,10 @@ impl HtmlParser {
         (outgoing, direct_boundary_records)
     }
 
-    fn push_boundary_edge(edges: &mut Vec<BoundaryGraphEdge>, target: &str, repeats: bool) {
+    fn push_boundary_edge(edges: &mut Vec<BoundaryGraphEdge>, target: &str) {
         if !target.is_empty() {
             edges.push(BoundaryGraphEdge {
                 target: target.to_string(),
-                repeats,
             });
         }
     }
@@ -1097,10 +1155,10 @@ impl HtmlParser {
     fn push_route_boundary_edges(edges: &mut Vec<BoundaryGraphEdge>, root: &WebUiFragmentRoute) {
         let mut pending = vec![root];
         while let Some(route) = pending.pop() {
-            Self::push_boundary_edge(edges, &route.fragment_id, false);
-            Self::push_boundary_edge(edges, &route.content_fragment_id, false);
-            Self::push_boundary_edge(edges, &route.pending_component, false);
-            Self::push_boundary_edge(edges, &route.error_component, false);
+            Self::push_boundary_edge(edges, &route.fragment_id);
+            Self::push_boundary_edge(edges, &route.content_fragment_id);
+            Self::push_boundary_edge(edges, &route.pending_component);
+            Self::push_boundary_edge(edges, &route.error_component);
             pending.extend(route.children.iter());
         }
     }
@@ -1143,13 +1201,13 @@ impl HtmlParser {
         &self,
         outgoing: &HashMap<String, Vec<BoundaryGraphEdge>>,
     ) -> HashMap<String, u8> {
-        let mut incoming: HashMap<&str, Vec<(&str, bool)>> = HashMap::new();
+        let mut incoming: HashMap<&str, Vec<&str>> = HashMap::new();
         for (parent, edges) in outgoing {
             for edge in edges {
                 incoming
                     .entry(edge.target.as_str())
                     .or_default()
-                    .push((parent.as_str(), edge.repeats));
+                    .push(parent.as_str());
             }
         }
 
@@ -1171,7 +1229,7 @@ impl HtmlParser {
         &self,
         root: &str,
         outgoing: &HashMap<String, Vec<BoundaryGraphEdge>>,
-        incoming: &HashMap<&str, Vec<(&str, bool)>>,
+        incoming: &HashMap<&str, Vec<&str>>,
     ) -> HashMap<String, u8> {
         let mut counts: HashMap<String, u8> = HashMap::with_capacity(self.fragment_records.len());
         counts.insert(root.to_string(), 1);
@@ -1200,26 +1258,207 @@ impl HtmlParser {
     fn recompute_boundary_occurrences(
         fragment_id: &str,
         root: &str,
-        incoming: &HashMap<&str, Vec<(&str, bool)>>,
+        incoming: &HashMap<&str, Vec<&str>>,
         counts: &HashMap<String, u8>,
     ) -> u8 {
         let mut count = u8::from(fragment_id == root);
         let Some(parents) = incoming.get(fragment_id) else {
             return count;
         };
-        for (parent, repeats) in parents {
+        for parent in parents {
             let parent_count = counts.get(*parent).copied().unwrap_or(0);
-            let contribution = if *repeats && parent_count != 0 {
-                2
-            } else {
-                parent_count
-            };
-            count = count.saturating_add(contribution).min(2);
+            count = count.saturating_add(parent_count).min(2);
             if count == 2 {
                 break;
             }
         }
         count
+    }
+
+    /// Locate the lowest-numbered declaration a `<for>` repeat body reaches.
+    ///
+    /// Reachability is a single multi-source forward walk seeded with every
+    /// repeat body record, so a graph with many loops still costs one pass. It
+    /// follows the same component/condition/loop/route edges the presence
+    /// analysis uses, plus the route-child records an enclosing route mounts at
+    /// its component's `<outlet />` — the one runtime edge that has no
+    /// lexical counterpart.
+    fn find_repeat_reachable_boundary(&self) -> Option<RepeatBoundaryViolation> {
+        let mut origin: HashMap<&str, &str> = HashMap::new();
+        let mut pending: Vec<&str> = Vec::new();
+        let mut repeats: HashMap<&str, RepeatSite<'_>> = HashMap::new();
+        let mut seeds: Vec<(&str, RepeatSite<'_>)> = Vec::new();
+
+        for (owner, list) in &self.fragment_records {
+            for fragment in &list.fragments {
+                let Some(Fragment::ForLoop(for_loop)) = fragment.fragment.as_ref() else {
+                    continue;
+                };
+                if for_loop.fragment_id.is_empty() {
+                    continue;
+                }
+                let body = for_loop.fragment_id.as_str();
+                seeds.push((
+                    body,
+                    RepeatSite {
+                        owner: owner.as_str(),
+                        item: for_loop.item.as_str(),
+                        collection: for_loop.collection.as_str(),
+                    },
+                ));
+            }
+        }
+        seeds.sort_unstable_by(|(left_body, left), (right_body, right)| {
+            (left.owner, left.item, left.collection, *left_body).cmp(&(
+                right.owner,
+                right.item,
+                right.collection,
+                *right_body,
+            ))
+        });
+        for (body, site) in seeds {
+            if !origin.contains_key(body) {
+                repeats.insert(body, site);
+                origin.insert(body, body);
+                pending.push(body);
+            }
+        }
+        // `pending` is a LIFO stack. Reverse the sorted seeds so the lowest
+        // repeat site owns every shared reachable record deterministically.
+        pending.reverse();
+        if pending.is_empty() {
+            return None;
+        }
+
+        let mounts = self.route_mount_targets();
+        let mut found: Option<(u32, &str, &WebUiFragmentBoundary)> = None;
+        let mut targets: Vec<&str> = Vec::new();
+        while let Some(id) = pending.pop() {
+            let Some(seed) = origin.get(id).copied() else {
+                continue;
+            };
+            let Some(list) = self.fragment_records.get(id) else {
+                continue;
+            };
+            for fragment in &list.fragments {
+                if let Some(Fragment::Boundary(boundary)) = fragment.fragment.as_ref() {
+                    if boundary.phase() == BoundaryPhase::Start
+                        && found
+                            .as_ref()
+                            .is_none_or(|(id, _, _)| boundary.declaration_id < *id)
+                    {
+                        found = Some((boundary.declaration_id, seed, boundary));
+                    }
+                }
+            }
+            targets.clear();
+            push_child_records(list, &mut targets);
+            if let Some(mounted) = mounts.get(id) {
+                targets.extend(mounted.iter().copied());
+            }
+            for target in targets.drain(..) {
+                if target.is_empty() {
+                    continue;
+                }
+                if !origin.contains_key(target) {
+                    origin.insert(target, seed);
+                    pending.push(target);
+                }
+            }
+        }
+
+        found.map(|(_, seed, boundary)| {
+            let site = repeats.get(seed);
+            RepeatBoundaryViolation {
+                repeat_owner: site.map_or_else(String::new, |site| site.owner.to_string()),
+                each: site.map_or_else(String::new, |site| {
+                    format!("{} in {}", site.item, site.collection)
+                }),
+                boundary_owner: boundary.owner_fragment_id.clone(),
+                boundary_name: boundary.name.clone(),
+            }
+        })
+    }
+
+    /// Map every `<outlet />`-hosting record to the child-route records a
+    /// route can mount there.
+    ///
+    /// `<outlet />` is the only render edge with no lexical counterpart: the
+    /// mounted record is chosen from the enclosing route's children at request
+    /// time. Resolving it needs the parent route's render closure, so the map
+    /// is built once and reused by the repeat walk instead of being recomputed
+    /// per outlet.
+    fn route_mount_targets(&self) -> HashMap<&str, Vec<&str>> {
+        let outlet_hosts = self.outlet_host_records();
+        if outlet_hosts.is_empty() {
+            return HashMap::new();
+        }
+
+        let mut mounts: HashMap<&str, Vec<&str>> = HashMap::new();
+        let mut children: Vec<&str> = Vec::new();
+        let mut closure: HashSet<&str> = HashSet::new();
+        let mut pending: Vec<&str> = Vec::new();
+        let mut targets: Vec<&str> = Vec::new();
+        for list in self.fragment_records.values() {
+            for fragment in &list.fragments {
+                let Some(Fragment::Route(root)) = fragment.fragment.as_ref() else {
+                    continue;
+                };
+                let mut routes = vec![root];
+                while let Some(route) = routes.pop() {
+                    routes.extend(route.children.iter());
+                    if route.children.is_empty() {
+                        continue;
+                    }
+                    children.clear();
+                    for child in &route.children {
+                        push_route_records(&mut children, child);
+                    }
+                    closure.clear();
+                    pending.clear();
+                    for host in [
+                        route.fragment_id.as_str(),
+                        route.content_fragment_id.as_str(),
+                    ] {
+                        if !host.is_empty() && closure.insert(host) {
+                            pending.push(host);
+                        }
+                    }
+                    while let Some(id) = pending.pop() {
+                        if outlet_hosts.contains(id) {
+                            mounts
+                                .entry(id)
+                                .or_default()
+                                .extend(children.iter().copied());
+                        }
+                        let Some(list) = self.fragment_records.get(id) else {
+                            continue;
+                        };
+                        targets.clear();
+                        push_child_records(list, &mut targets);
+                        for target in targets.drain(..) {
+                            if !target.is_empty() && closure.insert(target) {
+                                pending.push(target);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        mounts
+    }
+
+    /// Records that render an `<outlet />`.
+    fn outlet_host_records(&self) -> HashSet<&str> {
+        self.fragment_records
+            .iter()
+            .filter(|(_, list)| {
+                list.fragments
+                    .iter()
+                    .any(|fragment| matches!(fragment.fragment.as_ref(), Some(Fragment::Outlet(_))))
+            })
+            .map(|(id, _)| id.as_str())
+            .collect()
     }
 
     /// Locate the lowest-numbered declaration whose inline body reaches another
@@ -1307,6 +1546,33 @@ impl HtmlParser {
         .element("boundary")
         .snippet(format!("name=\"{name}\""))
         .help("remove the inner declaration or move it outside the enclosing boundary, including declarations reached through components and runtime branches")
+        .into()
+    }
+
+    /// Build the error for a boundary a `<for>` repeat body reaches through a
+    /// component, condition, route, or outlet.
+    #[cold]
+    #[inline(never)]
+    fn repeat_reachable_boundary_error(violation: &RepeatBoundaryViolation) -> ParserError {
+        let RepeatBoundaryViolation {
+            repeat_owner,
+            each,
+            boundary_owner,
+            boundary_name,
+        } = violation;
+        Diagnostic::error(format!(
+            "boundary \"{boundary_name}\" in {boundary_owner} is reachable from a <for> repeat body"
+        ))
+        .code(codes::BOUNDARY_IN_REPEAT)
+        .component(repeat_owner)
+        .element("for")
+        .snippet(format!("each=\"{each}\""))
+        .help(
+            "a repeat iteration cannot suspend: move the boundary outside the <for>, or wrap the \
+             whole <for> in one <boundary> to render the list as a single independently paced \
+             region — this includes declarations reached through components, runtime branches, \
+             routes, and outlets",
+        )
         .into()
     }
 
@@ -2486,8 +2752,8 @@ impl HtmlParser {
     /// - `name` is missing/empty ([`codes::MISSING_BOUNDARY_NAME`]), dynamic
     ///   ([`codes::INVALID_BOUNDARY_NAME`]), or a duplicate within its owner
     ///   ([`codes::DUPLICATE_BOUNDARY_NAME`]).
-    /// - a boundary lexically inside `<for>` omits `key`
-    ///   ([`codes::MISSING_BOUNDARY_KEY`]), or an authored key is malformed
+    /// - the boundary sits inside a `<for>` repeat body
+    ///   ([`codes::BOUNDARY_IN_REPEAT`]), or an authored key is malformed
     ///   ([`codes::INVALID_BOUNDARY_KEY`]).
     fn enter_boundary_directive<'a>(
         &mut self,
@@ -2501,6 +2767,9 @@ impl HtmlParser {
         }
         if self.in_boundary {
             return Err(self.nested_boundary_error(element));
+        }
+        if self.for_depth != 0 {
+            return Err(self.boundary_in_repeat_error(element));
         }
         let owner_fragment_id = self.current_fragment_id.clone();
         let owner_is_component = self.component_registry.contains(&owner_fragment_id);
@@ -2521,11 +2790,7 @@ impl HtmlParser {
             return Err(self.duplicate_boundary_name_error(element, &name));
         }
         let key = self.validate_boundary_key(element)?;
-        if self.for_depth != 0 && key.is_none() {
-            return Err(self.missing_boundary_key_error(element));
-        }
         let declaration_id = self.allocate_boundary_declaration_id(element)?;
-        let may_repeat = self.for_depth != 0;
         self.in_boundary = true;
         self.add_fragment(
             WebUIFragment {
@@ -2534,7 +2799,7 @@ impl HtmlParser {
                     owner_fragment_id,
                     name,
                     key,
-                    may_repeat,
+                    may_repeat: false,
                     phase: BoundaryPhase::Start as i32,
                 })),
             },
@@ -2644,14 +2909,39 @@ impl HtmlParser {
 
     #[cold]
     #[inline(never)]
-    fn missing_boundary_key_error(&self, element: &Element<'_>) -> ParserError {
+    fn missing_boundary_key_error(owner: &str, name: &str) -> ParserError {
+        Diagnostic::error(format!(
+            "boundary \"{name}\" renders more than once and has no key"
+        ))
+        .code(codes::MISSING_BOUNDARY_KEY)
+        .component(owner)
+        .element("boundary")
+        .snippet(format!("name=\"{name}\""))
+        .help(
+            "the owning template is rendered from more than one callsite, so every occurrence \
+             needs a distinct key, e.g. key=\"{{sectionId}}\" — or render the declaration from a \
+             single callsite",
+        )
+        .into()
+    }
+
+    /// Build the error for a `<boundary>` authored directly inside `<for>`.
+    #[cold]
+    #[inline(never)]
+    fn boundary_in_repeat_error(&self, element: &Element<'_>) -> ParserError {
+        let name = element.attr("name").unwrap_or_default();
         self.authoring_error_at(
-            codes::MISSING_BOUNDARY_KEY,
-            "<boundary> inside <for> requires a key",
+            codes::BOUNDARY_IN_REPEAT,
+            "<boundary> is not valid inside a <for> repeat",
             element,
         )
         .element("boundary")
-        .help("add a stable item-relative key, e.g. <boundary name=\"row\" key=\"item.id\">")
+        .snippet(format!("name=\"{name}\""))
+        .help(
+            "a repeat iteration cannot suspend: move the boundary outside the <for>, or wrap the \
+             whole <for> in one <boundary> to render the list as a single independently paced \
+             region",
+        )
         .into()
     }
 
@@ -7160,38 +7450,223 @@ mod tests {
     }
 
     #[test]
-    fn boundary_inside_for_requires_and_preserves_key() {
+    fn boundary_directly_inside_for_is_rejected() {
         let mut parser = HtmlParser::new();
         let err = parser
             .parse(
-                "missing.html",
-                r#"<body><for each="item in items"><boundary name="x"><p>x</p></boundary></for></body>"#,
+                "index.html",
+                r#"<body><for each="item in items"><boundary name="x" key="{{item.id}}"><p>x</p></boundary></for></body>"#,
             )
-            .expect_err("a repeated boundary without a key must error");
+            .expect_err("a boundary inside a repeat must error");
         let ParserError::Template(diag) = err else {
             panic!("expected ParserError::Template, got {err:?}");
         };
-        assert_eq!(diag.error_code(), Some(codes::MISSING_BOUNDARY_KEY));
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+        assert!(
+            diag.help_text()
+                .is_some_and(|help| help.contains("wrap the whole <for>")),
+            "{diag}"
+        );
+    }
 
+    #[test]
+    fn boundary_under_if_inside_for_is_rejected() {
+        let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><if condition="item.ready"><boundary name="x" key="{{item.id}}"><p>x</p></boundary></if></for></body>"#,
+            )
+            .expect_err("a boundary behind a runtime branch in a repeat must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+    }
+
+    #[test]
+    fn component_boundary_used_inside_for_is_rejected() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "row-item",
+                r#"<boundary name="row-ready"><span>{{label}}</span></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><row-item></row-item></for></body>"#,
+            )
+            .expect_err("a component-local boundary reached from a repeat must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+        // The diagnostic names both ends of the chain: the repeat that would
+        // execute it and the template that declares it.
+        assert!(diag.to_string().contains("row-ready"), "{diag}");
+        assert_eq!(diag.component_name(), Some("index.html"));
+        assert!(diag.to_string().contains("item in items"), "{diag}");
+    }
+
+    #[test]
+    fn transitive_repeat_boundary_diagnostic_uses_lowest_repeat_site() {
+        for _ in 0..20 {
+            let mut parser = HtmlParser::new();
+            for (tag, template) in [
+                (
+                    "left-list",
+                    r#"<for each="a in xs"><row-card></row-card></for>"#,
+                ),
+                (
+                    "right-list",
+                    r#"<for each="b in ys"><row-card></row-card></for>"#,
+                ),
+                (
+                    "row-card",
+                    r#"<boundary name="row-ready"><p>row</p></boundary>"#,
+                ),
+            ] {
+                parser
+                    .component_registry
+                    .register_component(ComponentRegistration::new(tag, template, None, true))
+                    .expect("register");
+            }
+            let err = parser
+                .parse(
+                    "index.html",
+                    r#"<body><left-list></left-list><right-list></right-list></body>"#,
+                )
+                .expect_err("both repeats reach the same boundary declaration");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+            assert_eq!(diag.component_name(), Some("left-list"));
+            assert!(diag.to_string().contains("a in xs"), "{diag}");
+        }
+    }
+
+    #[test]
+    fn route_boundary_reached_from_for_is_rejected() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "row-page",
+                r#"<boundary name="row-ready"><p>row</p></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><route path="/" component="row-page"></route></for></body>"#,
+            )
+            .expect_err("a route-mounted boundary inside a repeat must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+    }
+
+    #[test]
+    fn outlet_mounted_boundary_reached_from_for_is_rejected() {
+        // The child route renders at the parent component's <outlet />, which
+        // the repeat body reaches through <shell-page>. That edge is a runtime
+        // mount with no lexical nesting, so only the mount analysis catches it.
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
+        for (tag, template) in [
+            (
+                "shell-page",
+                r#"<div><for each="item in items"><outlet></outlet></for></div>"#,
+            ),
+            (
+                "child-page",
+                r#"<boundary name="child-ready"><p>child</p></boundary>"#,
+            ),
+        ] {
+            parser
+                .component_registry
+                .register_component(ComponentRegistration::new(tag, template, None, true))
+                .expect("register");
+        }
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><route path="/" component="shell-page"><route path="child" component="child-page"></route></route></body>"#,
+            )
+            .expect_err("an outlet-mounted boundary inside a repeat must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+        assert!(diag.to_string().contains("child-ready"), "{diag}");
+    }
+
+    #[test]
+    fn for_inside_one_boundary_is_allowed_and_stays_atomic() {
+        // The whole finite list is one atomic checkpoint, so the repeat body
+        // record must not be marked as carrying a boundary of its own.
         let mut parser = HtmlParser::new();
         parser
             .parse(
                 "index.html",
-                r#"<body><for each="item in items"><boundary name="x" key="{{item.id}}"><p>{{item.name}}</p></boundary></for></body>"#,
+                r#"<body><boundary name="feed"><for each="item in items"><p>{{item.label}}</p></for></boundary></body>"#,
             )
-            .expect("a keyed repeated boundary parses");
+            .expect("a repeat inside one boundary parses");
         let records = parser.into_fragment_records();
-        let boundary = records["for-1"]
+        assert!(records["index.html"].contains_boundary);
+        assert!(
+            !records["for-1"].contains_boundary,
+            "the repeat body itself declares no boundary"
+        );
+        let boundary = records["index.html"]
             .fragments
             .iter()
             .find_map(|fragment| match fragment.fragment.as_ref() {
                 Some(Fragment::Boundary(boundary)) => Some(boundary),
                 _ => None,
             })
-            .expect("boundary in for body");
-        assert_eq!(boundary.key.as_deref(), Some("{{item.id}}"));
-        assert!(boundary.may_repeat);
+            .expect("boundary");
+        assert!(!boundary.may_repeat);
+    }
 
+    #[test]
+    fn boundary_after_for_is_allowed() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><p>{{item.label}}</p></for><boundary name="tail"><p>tail</p></boundary></body>"#,
+            )
+            .expect("a boundary following a repeat parses");
+        let records = parser.into_fragment_records();
+        assert!(records["index.html"].contains_boundary);
+        assert!(!records["for-1"].contains_boundary);
+    }
+
+    #[test]
+    fn boundary_free_for_still_renders_without_boundary_metadata() {
+        let mut parser = HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><p>{{item.label}}</p></for></body>"#,
+            )
+            .expect("an ordinary repeat parses");
+        let records = parser.into_fragment_records();
+        assert!(!records["index.html"].contains_boundary);
+        assert!(!records["for-1"].contains_boundary);
+    }
+
+    #[test]
+    fn empty_boundary_key_is_still_rejected() {
         let mut parser = HtmlParser::new();
         let err = parser
             .parse(
@@ -7251,7 +7726,10 @@ mod tests {
     }
 
     #[test]
-    fn component_boundary_is_marked_repeatable_from_for_callsite() {
+    fn component_boundary_repeated_from_static_callsites_requires_a_key() {
+        // `<for>` can no longer produce multiple occurrences, but two static
+        // callsites of the same boundary-bearing component still can, so the
+        // declaration keeps its key requirement.
         let mut parser = HtmlParser::new();
         parser
             .component_registry
@@ -7262,12 +7740,34 @@ mod tests {
                 true,
             ))
             .expect("register");
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><row-item></row-item><row-item></row-item></body>"#,
+            )
+            .expect_err("a repeated declaration without a key must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::MISSING_BOUNDARY_KEY));
+        assert_eq!(diag.component_name(), Some("row-item"));
+
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "row-item",
+                r#"<boundary name="row-ready" key="{{rowId}}"><span>{{label}}</span></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
         parser
             .parse(
                 "index.html",
-                r#"<body><for each="item in items"><row-item></row-item></for></body>"#,
+                r#"<body><row-item row-id="a"></row-item><row-item row-id="b"></row-item></body>"#,
             )
-            .expect("component callsite parses");
+            .expect("a keyed repeated declaration parses");
         let records = parser.into_fragment_records();
         let boundary = records["row-item"]
             .fragments
@@ -7278,6 +7778,7 @@ mod tests {
             })
             .expect("component boundary");
         assert!(boundary.may_repeat);
+        assert_eq!(boundary.key.as_deref(), Some("{{rowId}}"));
     }
 
     #[test]

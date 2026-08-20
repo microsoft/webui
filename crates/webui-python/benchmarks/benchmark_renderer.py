@@ -24,7 +24,10 @@ STATE = {"title": "Benchmark", "name": "Ada", "status": "ready"}
 STREAMING_STATE = {
     **STATE,
     "show": True,
-    "items": [{"id": 1, "label": "one"}, {"id": 2, "label": "two"}],
+    "integerKey": 1,
+    "floatKey": 2.5,
+    "stringKey": "last",
+    "summary": "All ready",
 }
 STATE_BYTES = json.dumps(STATE, separators=(",", ":")).encode()
 STREAMING_STATE_BYTES = json.dumps(STREAMING_STATE, separators=(",", ":")).encode()
@@ -100,14 +103,16 @@ def _stream_once(renderer: Renderer) -> bytes:
         boundary = step.boundary
         assert boundary is not None
         mode = BoundaryMode.UPDATABLE if first else BoundaryMode.FINAL
-        step = session.resume(
+        committed = session.resume(
             boundary.instance_id,
             STREAMING_STATE_BYTES,
             mode=mode,
         )
+        chunks.append(committed.bytes)
         if first:
             chunks.append(session.update(boundary.instance_id, STREAMING_STATE_BYTES))
             first = False
+        step = session.advance()
     chunks.append(step.bytes)
     return b"".join(chunks)
 

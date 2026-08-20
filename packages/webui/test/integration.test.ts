@@ -76,22 +76,26 @@ before(() => {
   <boundary name="first">
     <stream-item label="{{firstLabel}}"></stream-item>
   </boundary>
+  <p>between</p>
   <boundary name="second">
     <stream-item label="{{secondLabel}}"></stream-item>
   </boundary>
 </body>
 </html>
 `);
-  writeFileSync(join(appDir, 'index-stream-repeat.html'), `
+  writeFileSync(join(appDir, 'index-stream-keys.html'), `
 <!DOCTYPE html>
 <html>
 <head><script type="module" async src="./index.js"></script></head>
 <body>
-  <for each="item in items">
-    <boundary name="row" key="{{item.id}}">
-      <stream-item label="{{item.label}}"></stream-item>
-    </boundary>
-  </for>
+  <boundary name="string-key" key="{{stringId}}">
+    <stream-item label="{{firstLabel}}"></stream-item>
+  </boundary>
+  <p>between</p>
+  <boundary name="number-key" key="{{numberId}}">
+    <stream-item label="{{secondLabel}}"></stream-item>
+  </boundary>
+  <footer>tail</footer>
 </body>
 </html>
 `);
@@ -299,24 +303,46 @@ describe('streamResponse', () => {
     assert.equal(boundary.key, undefined);
   });
 
-  test('resume discovers the next boundary and returns a completed final step', () => {
+  test('resume stops at the checkpoint and advance discovers the next boundary', () => {
     const session = streamingProtocol().streamResponse(streamOptions);
     const start = session.start({});
     const first = boundaryOf(start);
-    const next = session.resume(first.instanceId, { firstLabel: 'alpha' });
+    const resumedFirst = session.resume(first.instanceId, { firstLabel: 'alpha' });
+    assert.ok(Buffer.isBuffer(resumedFirst.bytes));
+    assert.equal(resumedFirst.done, false);
+    assert.equal(resumedFirst.boundary, undefined);
+    assert.match(resumedFirst.bytes.toString('utf8'), /alpha/);
+    assert.doesNotMatch(resumedFirst.bytes.toString('utf8'), /second/);
+
+    const next = session.advance();
     const second = boundaryOf(next);
 
     assert.ok(Buffer.isBuffer(next.bytes));
     assert.equal(next.done, false);
     assert.equal(second.instanceId, 1);
     assert.equal(second.name, 'second');
+    assert.match(next.bytes.toString('utf8'), /between/);
+    assert.doesNotMatch(next.bytes.toString('utf8'), /beta/);
 
-    const done = session.resume(second.instanceId, { secondLabel: 'beta' });
+    const resumedSecond = session.resume(second.instanceId, { secondLabel: 'beta' });
+    assert.ok(Buffer.isBuffer(resumedSecond.bytes));
+    assert.equal(resumedSecond.done, false);
+    assert.equal(resumedSecond.boundary, undefined);
+    assert.match(resumedSecond.bytes.toString('utf8'), /beta/);
+    assert.doesNotMatch(resumedSecond.bytes.toString('utf8'), /<\/html>/);
+
+    const done = session.advance();
     assert.ok(Buffer.isBuffer(done.bytes));
     assert.equal(done.done, true);
     assert.equal(done.boundary, undefined);
 
-    const html = Buffer.concat([start.bytes, next.bytes, done.bytes]).toString('utf8');
+    const html = Buffer.concat([
+      start.bytes,
+      resumedFirst.bytes,
+      next.bytes,
+      resumedSecond.bytes,
+      done.bytes,
+    ]).toString('utf8');
     assert.ok(html.includes('<!DOCTYPE html>'));
     assert.ok(html.includes('alpha'));
     assert.ok(html.includes('beta'));
@@ -324,42 +350,55 @@ describe('streamResponse', () => {
     assert.ok(html.includes('</html>'));
   });
 
-  test('preserves string and number repeat keys', () => {
-    const entry = 'index-stream-repeat.html';
+  test('preserves string and number keys on static sibling occurrences', () => {
+    const entry = 'index-stream-keys.html';
     const session = streamingProtocol(entry).streamResponse({
       entry,
       requestPath: '/',
     });
     const state = {
-      items: [
-        { id: 'alpha', label: 'first' },
-        { id: 20, label: 'second' },
-      ],
+      stringId: 'alpha',
+      firstLabel: 'first',
+      numberId: 20,
+      secondLabel: 'second',
     };
 
     const start = session.start(state);
     const first = boundaryOf(start);
     assert.equal(first.key, 'alpha');
 
-    const next = session.resume(first.instanceId, {});
+    const resumedFirst = session.resume(first.instanceId, state);
+    assert.equal(resumedFirst.done, false);
+    assert.equal(resumedFirst.boundary, undefined);
+    assert.doesNotMatch(resumedFirst.bytes.toString('utf8'), /between/);
+
+    const next = session.advance();
     const second = boundaryOf(next);
     assert.equal(second.instanceId, 1);
-    assert.equal(second.declarationId, first.declarationId);
+    assert.notEqual(second.declarationId, first.declarationId);
     assert.equal(second.key, 20);
+    assert.match(next.bytes.toString('utf8'), /between/);
 
-    const done = session.resume(second.instanceId, {});
+    const resumedSecond = session.resume(second.instanceId, state);
+    assert.equal(resumedSecond.done, false);
+    assert.equal(resumedSecond.boundary, undefined);
+    assert.doesNotMatch(resumedSecond.bytes.toString('utf8'), /tail/);
+    const done = session.advance();
     assert.equal(done.done, true);
+    assert.match(done.bytes.toString('utf8'), /tail/);
   });
 
   test('updates a committed updatable occurrence', () => {
     const session = streamingProtocol().streamResponse(streamOptions);
     const start = session.start({});
     const first = boundaryOf(start);
-    const next = session.resume(
+    const resumed = session.resume(
       first.instanceId,
       { firstLabel: 'alpha' },
       'updatable',
     );
+    assert.equal(resumed.done, false);
+    assert.equal(resumed.boundary, undefined);
     const update = session.update(first.instanceId, {
       firstLabel: 'alpha-2',
     });
@@ -367,9 +406,33 @@ describe('streamResponse', () => {
     assert.ok(Buffer.isBuffer(update));
     assert.match(update.toString('utf8'), /alpha-2/);
 
+    const next = session.advance();
     const second = boundaryOf(next);
-    const done = session.resume(second.instanceId, { secondLabel: 'beta' });
+    const resumedSecond = session.resume(second.instanceId, { secondLabel: 'beta' });
+    assert.equal(resumedSecond.done, false);
+    assert.equal(resumedSecond.boundary, undefined);
+    const done = session.advance();
     assert.equal(done.done, true);
+  });
+
+  test('rejects advance before a boundary has been resumed', () => {
+    const session = streamingProtocol().streamResponse(streamOptions);
+    assert.throws(
+      () => session.advance(),
+      /start must be called before this operation/,
+    );
+
+    const start = session.start({});
+    assert.throws(
+      () => session.advance(),
+      /there is no committed boundary to advance past/,
+    );
+
+    const first = boundaryOf(start);
+    const resumed = session.resume(first.instanceId, { firstLabel: 'alpha' });
+    assert.equal(resumed.done, false);
+    assert.equal(resumed.boundary, undefined);
+    assert.equal(boundaryOf(session.advance()).name, 'second');
   });
 
   test('start completes a boundary-free document', () => {
@@ -434,12 +497,20 @@ describe('streamResponse over node:http', () => {
         assert.ok(step.boundary);
         step = session.resume(step.boundary.instanceId, { firstLabel: 'alpha' });
         await write(response, step.bytes);
+        assert.equal(step.done, false);
+        assert.equal(step.boundary, undefined);
 
         // Only reached if the client already has the bytes above.
         await clientSawFirstBoundary;
 
+        step = session.advance();
         assert.ok(step.boundary);
+        await write(response, step.bytes);
         step = session.resume(step.boundary.instanceId, { secondLabel: 'beta' });
+        assert.equal(step.done, false);
+        assert.equal(step.boundary, undefined);
+        await write(response, step.bytes);
+        step = session.advance();
         assert.equal(step.done, true);
         response.end(step.bytes);
       })().catch((error: unknown) => {
@@ -476,6 +547,7 @@ describe('streamResponse over node:http', () => {
       // The tail arrived only after the client acknowledged the head.
       assert.equal(sawTailBeforeRelease, false);
       assert.ok(received.includes('alpha'));
+      assert.ok(received.includes('between'));
       assert.ok(received.includes('beta'));
       assert.ok(received.includes('</html>'));
     } finally {

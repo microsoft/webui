@@ -14,7 +14,7 @@ use super::state::{
     increment_streaming_record_sequence, overlay_full_state, overlay_selected_state,
     selected_state_snapshot, StreamingProgress, StreamingRenderState,
 };
-use super::vm::ContinuationVm;
+use super::vm::{ContinuationVm, StepGoal};
 use super::StreamingSink;
 use crate::plugin::HandlerPlugin;
 use crate::route_handler::Protocol;
@@ -136,6 +136,14 @@ pub enum BoundaryMode {
 }
 
 /// Borrowed-writer result of one semantic streaming step.
+///
+/// The pair of fields names exactly one state:
+///
+/// | `boundary` | `done` | meaning |
+/// |------------|--------|---------|
+/// | `Some`     | `false`| the occurrence is waiting for [`StreamingResponse::resume`] |
+/// | `None`     | `false`| the committed occurrence flushed; call [`StreamingResponse::advance`] |
+/// | `None`     | `true` | the terminal record and writer end completed |
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StreamStatus {
     /// The next occurrence waiting for [`StreamingResponse::resume`].
@@ -145,6 +153,12 @@ pub struct StreamStatus {
 }
 
 /// A progressive response that writes directly through a [`FlushWriter`].
+///
+/// Steps alternate: [`Self::start`] writes the shell prefix and stops before
+/// the first occurrence, [`Self::resume`] writes exactly one occurrence through
+/// its checkpoint, and [`Self::advance`] writes the ordinary parent bytes that
+/// follow it until the next occurrence or the terminal. Every step is one
+/// independently writable, independently flushed segment.
 pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     handler: &'a WebUIHandler,
     protocol: &'a Protocol,
@@ -186,76 +200,83 @@ impl WebUIHandler {
 impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     /// Render until the first runtime boundary occurrence or terminal.
     pub fn start(&mut self, state: &Value) -> Result<StreamStatus> {
-        self.core.start(
-            SessionCall {
-                handler: self.handler,
-                protocol: self.protocol,
-                options: &self.options,
-                writer: &mut self.sink,
-            },
-            state,
-        )
+        let (core, call) = self.parts();
+        core.start(call, state)
     }
 
-    /// Commit the pending occurrence, then advance to the next occurrence or terminal.
+    /// Commit the pending occurrence through its checkpoint, then stop.
+    ///
+    /// The bytes written by this call are exactly the occurrence's own record —
+    /// no parent or tail bytes follow it — so the host can release the
+    /// occurrence the moment it resolves. Call [`Self::advance`] next.
     pub fn resume(
         &mut self,
         instance_id: BoundaryInstanceId,
         state: &Value,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
-        self.core.resume(
-            SessionCall {
-                handler: self.handler,
-                protocol: self.protocol,
-                options: &self.options,
-                writer: &mut self.sink,
-            },
-            instance_id,
-            state,
-            mode,
-        )
+        let (core, call) = self.parts();
+        core.resume(call, instance_id, state, mode)
+    }
+
+    /// Write the ordinary parent bytes that follow a committed occurrence.
+    ///
+    /// Valid only after [`Self::resume`]. Renders the shell until the next
+    /// occurrence suspends or the terminal record completes.
+    pub fn advance(&mut self) -> Result<StreamStatus> {
+        let (core, call) = self.parts();
+        core.advance(call)
     }
 
     /// Emit one projected state update for a committed updatable occurrence.
+    ///
+    /// Valid between [`Self::resume`] and [`Self::advance`] as well as after
+    /// the response has moved on, so a host can revise the occurrence it just
+    /// committed while the response is still open.
     pub fn update(&mut self, instance_id: BoundaryInstanceId, patch: &Value) -> Result<()> {
-        self.core.update(
-            SessionCall {
-                handler: self.handler,
-                protocol: self.protocol,
-                options: &self.options,
-                writer: &mut self.sink,
-            },
-            instance_id,
-            patch,
-        )
+        let (core, call) = self.parts();
+        core.update(call, instance_id, patch)
     }
 
-    /// Commit the pending occurrence without merging new state.
+    /// Commit the pending occurrence and continue to the next one.
     ///
-    /// Used by [`WebUIHandler::render_streaming`], which drives every
+    /// Used by [`WebUIHandler::render_streaming`], which has no host to hand
+    /// the checkpoint bytes to between the two steps and drives every
     /// occurrence from the single value it already snapshotted at start.
-    pub(crate) fn resume_current(
+    pub(crate) fn resume_current_and_advance(
         &mut self,
         instance_id: BoundaryInstanceId,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
-        self.core.resume_current(
-            SessionCall {
-                handler: self.handler,
-                protocol: self.protocol,
-                options: &self.options,
-                writer: &mut self.sink,
-            },
-            instance_id,
-            mode,
-        )
+        let (core, call) = self.parts();
+        core.resume_current_and_advance(call, instance_id, mode)
     }
 
     /// Whether the response has emitted its terminal and ended its writer.
     #[must_use]
     pub fn is_done(&self) -> bool {
         self.core.done
+    }
+
+    /// Split the response into its continuation and one call's borrowed
+    /// runtime, so every entry point shares the same wiring.
+    fn parts(&mut self) -> (&mut SessionCore, SessionCall<'_, '_>) {
+        let Self {
+            handler,
+            protocol,
+            options,
+            sink,
+            core,
+        } = self;
+        (
+            core,
+            SessionCall {
+                handler,
+                protocol,
+                options,
+                writer: sink,
+            },
+        )
     }
 }
 
@@ -267,6 +288,9 @@ pub(crate) struct SessionCore {
     started: bool,
     pub(crate) done: bool,
     failed: bool,
+    /// True between a committed occurrence and the `advance` that writes the
+    /// parent bytes following it.
+    awaiting_advance: bool,
     local_vars: HashMap<String, Value>,
     component_attrs: HashMap<String, Value>,
     route_base: Option<String>,
@@ -304,6 +328,7 @@ impl SessionCore {
             started: false,
             done: false,
             failed: false,
+            awaiting_advance: false,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
             route_base: None,
@@ -341,7 +366,7 @@ impl SessionCore {
             selected_state_snapshot(state, &self.frozen_keys)
         };
         self.started = true;
-        self.run_advance(call, None)
+        self.run_step(call, StepGoal::NextBoundary, None)
     }
 
     pub(crate) fn resume(
@@ -351,37 +376,42 @@ impl SessionCore {
         state: &Value,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
-        self.require_usable("resume")?;
-        self.require_started("resume")?;
+        self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
         if self.requires_full_state {
             overlay_full_state(&mut self.frozen_state, state);
         } else {
             overlay_selected_state(&mut self.frozen_state, state, &self.frozen_keys);
         }
-        self.run_advance(call, Some((instance_id, mode)))
+        self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
     }
 
-    /// Commit the pending occurrence against the snapshot the response already
-    /// holds.
+    pub(crate) fn advance(&mut self, call: SessionCall<'_, '_>) -> Result<StreamStatus> {
+        self.require_advanceable()?;
+        self.run_step(call, StepGoal::NextBoundary, None)
+    }
+
+    /// Commit the pending occurrence and continue to the next one in a single
+    /// continuation setup.
     ///
-    /// Callers that never introduce new state between occurrences — the
-    /// one-shot [`WebUIHandler::render_streaming`] helper is the canonical one —
-    /// would otherwise re-merge an identical value into the retained snapshot
-    /// once per boundary, making a large state cost O(boundaries × state size)
-    /// for a result that is byte-for-byte what the previous step already held.
-    /// The public [`Self::resume`] entry point keeps the overlay for hosts that
-    /// genuinely resolve new data per occurrence.
-    pub(crate) fn resume_current(
+    /// The public step machine deliberately returns at the checkpoint so a host
+    /// can write and release that occurrence on its own. The one-shot
+    /// [`WebUIHandler::render_streaming`] helper has no host in between, and
+    /// splitting the work would cost a second continuation hand-off — every
+    /// retained scope map, inventory buffer, and scratch vector moving in and
+    /// back out — plus a re-resolution of the parked record the step-local
+    /// cache already holds. [`StepGoal::NextBoundary`] commits the active
+    /// occurrence and keeps walking, so the fused call emits exactly the bytes
+    /// and flushes the split steps would.
+    pub(crate) fn resume_current_and_advance(
         &mut self,
         call: SessionCall<'_, '_>,
         instance_id: BoundaryInstanceId,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
-        self.require_usable("resume")?;
-        self.require_started("resume")?;
+        self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
-        self.run_advance(call, Some((instance_id, mode)))
+        self.run_step(call, StepGoal::NextBoundary, Some((instance_id, mode)))
     }
 
     pub(crate) fn update(
@@ -414,9 +444,10 @@ impl SessionCore {
         result
     }
 
-    fn run_advance(
+    fn run_step(
         &mut self,
         call: SessionCall<'_, '_>,
+        goal: StepGoal,
         resume: Option<(BoundaryInstanceId, BoundaryMode)>,
     ) -> Result<StreamStatus> {
         let state = std::mem::replace(
@@ -429,7 +460,7 @@ impl SessionCore {
             if let Some((instance_id, mode)) = resume {
                 vm.begin_resume(instance_id, mode, context)?;
             }
-            let status = vm.advance(handler, protocol, context)?;
+            let status = vm.advance(goal, handler, protocol, context)?;
             if !status.done {
                 context.writer.stream_flush()?;
             }
@@ -439,6 +470,7 @@ impl SessionCore {
         match result {
             Ok(status) => {
                 self.done = status.done;
+                self.awaiting_advance = goal == StepGoal::CommitBoundary && !status.done;
                 Ok(status)
             }
             Err(error) => {
@@ -535,6 +567,50 @@ impl SessionCore {
             return Err(boundary_order_error(
                 operation,
                 "start must be called before this operation",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject a `resume` that is out of order without writing a byte.
+    ///
+    /// Ordering is checked before any render work, so a rejected call leaves
+    /// the response exactly as it was and the host can retry with the right
+    /// instance ID or the missing `advance`.
+    fn require_resumable(&self) -> Result<()> {
+        self.require_usable("resume")?;
+        self.require_started("resume")?;
+        if self.done {
+            return Err(boundary_order_error(
+                "resume",
+                "the streaming response has already completed",
+            ));
+        }
+        if self.awaiting_advance {
+            return Err(boundary_order_error(
+                "resume",
+                "the previously committed boundary has not been advanced past; call advance \
+                 before resuming the next occurrence",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject an `advance` that is out of order without writing a byte.
+    fn require_advanceable(&self) -> Result<()> {
+        self.require_usable("advance")?;
+        self.require_started("advance")?;
+        if self.done {
+            return Err(boundary_order_error(
+                "advance",
+                "the streaming response has already completed",
+            ));
+        }
+        if !self.awaiting_advance {
+            return Err(boundary_order_error(
+                "advance",
+                "there is no committed boundary to advance past; resume the pending occurrence \
+                 first",
             ));
         }
         Ok(())
@@ -686,21 +762,29 @@ mod tests {
 
         let mut committed = 0usize;
         while !status.done {
-            let Some(boundary) = status.boundary.as_ref() else {
-                panic!("an unfinished step must carry a pending boundary");
+            status = match status.boundary.as_ref() {
+                Some(boundary) => {
+                    let next =
+                        response.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
+                    committed += 1;
+                    assert!(
+                        next.boundary.is_none() && !next.done,
+                        "a commit step stops at its checkpoint and waits for advance"
+                    );
+                    assert_eq!(
+                        rows_address(&response.core.frozen_state),
+                        snapshot,
+                        "committing occurrence {committed} must not re-copy the retained snapshot"
+                    );
+                    next
+                }
+                None => response.advance()?,
             };
-            status = response.resume_current(boundary.instance_id, BoundaryMode::Final)?;
-            committed += 1;
-            assert_eq!(
-                rows_address(&response.core.frozen_state),
-                snapshot,
-                "committing occurrence {committed} must not re-copy the retained snapshot"
-            );
         }
         assert_eq!(committed, 8, "every authored boundary must commit");
 
-        // The one-shot helper drives exactly this loop, so its bytes must match
-        // the snapshot-only path it delegates to.
+        // The one-shot helper fuses commit and advance into one continuation
+        // setup, so its bytes must match the split steps it stands in for.
         let mut helper_sink = TestSink {
             output: String::new(),
         };
@@ -709,6 +793,63 @@ mod tests {
             helper_sink.output, sink.output,
             "render_streaming must resume against the retained snapshot"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn fused_helper_matches_split_step_bytes_and_flushes() -> Result<()> {
+        // `render_streaming` skips the host hand-off between a commit and the
+        // parent bytes that follow it. That is a scheduling shortcut only: the
+        // emitted bytes and the positions at which they are flushed must match
+        // the split step machine exactly.
+        #[derive(Default)]
+        struct FlushSink {
+            output: String,
+            flushes: Vec<usize>,
+        }
+
+        impl ResponseWriter for FlushSink {
+            fn write(&mut self, content: &str) -> Result<()> {
+                self.output.push_str(content);
+                Ok(())
+            }
+
+            fn end(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        impl FlushWriter for FlushSink {
+            fn flush(&mut self) -> Result<()> {
+                self.flushes.push(self.output.len());
+                Ok(())
+            }
+        }
+
+        let protocol = boundary_protocol(4, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let state = test_json!({ "count": 3, "title": "fused" });
+        let render_options = options();
+
+        let mut split = FlushSink::default();
+        {
+            let mut response = handler.stream_response(&protocol, &render_options, &mut split)?;
+            let mut status = response.start(&state)?;
+            while !status.done {
+                status = match status.boundary.as_ref() {
+                    Some(boundary) => {
+                        response.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+                    }
+                    None => response.advance()?,
+                };
+            }
+        }
+
+        let mut fused = FlushSink::default();
+        handler.render_streaming(&protocol, &state, &render_options, &mut fused)?;
+
+        assert_eq!(fused.output, split.output, "bytes must match");
+        assert_eq!(fused.flushes, split.flushes, "flush positions must match");
         Ok(())
     }
 
@@ -754,7 +895,14 @@ mod tests {
             snapshot,
             "an unchanged subtree must not be copied again"
         );
-        assert!(status.boundary.is_some(), "the second occurrence follows");
+        assert!(
+            status.boundary.is_none() && !status.done,
+            "the commit step stops at its checkpoint"
+        );
+        assert!(
+            response.advance()?.boundary.is_some(),
+            "the second occurrence follows the parent bytes"
+        );
         Ok(())
     }
 
@@ -776,9 +924,10 @@ mod tests {
         let mut retained: Option<(usize, usize)> = None;
         while !status.done {
             let Some(boundary) = status.boundary.as_ref() else {
-                panic!("an unfinished step must carry a pending boundary");
+                status = response.advance()?;
+                continue;
             };
-            status = response.resume_current(boundary.instance_id, BoundaryMode::Updatable)?;
+            status = response.resume(boundary.instance_id, &state, BoundaryMode::Updatable)?;
             let Some(progress) = response.core.streaming.as_ref() else {
                 panic!("a suspended response must retain its progress");
             };

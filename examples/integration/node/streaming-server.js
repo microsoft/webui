@@ -84,9 +84,9 @@ async function handleRequest(request, response) {
 /**
  * Render one progressive response, one chunk per call.
  *
- * `start()` discovers the first runtime occurrence. Every `resume()` uses the
- * descriptor returned by the previous step, so loops, conditions, component
- * boundaries, and routes need no pre-resolved name table.
+ * `start()` discovers the first runtime occurrence. `resume()` commits only
+ * that occurrence, and `advance()` writes the following parent bytes while
+ * discovering the next descriptor, so runtime paths need no name table.
  */
 async function streamPage(response) {
   const session = protocol.streamResponse({ entry: "index.html", requestPath: "/" });
@@ -134,6 +134,8 @@ async function streamPage(response) {
       await write(response, session.update(jobStatus.instanceId, await job));
       jobPending = false;
     }
+    step = session.advance();
+    await write(response, step.bytes);
     const boundary = pendingBoundary(step, `log-batch-${index + 1}`);
     step = session.resume(boundary.instanceId, {
       [`batch${index + 1}`]: LOG_BATCHES[index],
@@ -141,8 +143,10 @@ async function streamPage(response) {
     await write(response, step.bytes);
   }
 
+  step = session.advance();
+  await write(response, step.bytes);
   if (!step.done) {
-    throw new Error("streaming session did not complete after the final log batch");
+    throw new Error("streaming session did not complete after advancing the final log batch");
   }
   response.end();
 }

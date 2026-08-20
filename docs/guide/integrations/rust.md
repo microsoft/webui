@@ -221,36 +221,44 @@ HttpResponse::Ok()
 occurrences as it renders:
 
 ```rust
-use webui::{BoundaryMode, HandlerError, RenderOptions, WebUIHandler};
+use webui::{BoundaryMode, RenderOptions, WebUIHandler};
 
 let options = RenderOptions::new("index.html", "/");
 let mut response = handler.stream_response(&protocol, &options, &mut writer)?;
 let mut step = response.start(&initial_state)?;
 
 while !step.done {
-    let boundary = step.boundary.as_ref().ok_or_else(|| {
-        HandlerError::Invariant(
-            "unfinished streaming step has no descriptor".to_string(),
-        )
-    })?;
-    let state = load_state(
-        &boundary.owner,
-        &boundary.name,
-        boundary.key.as_ref(),
-    )?;
-    step = response.resume(
-        boundary.instance_id,
-        &state,
-        BoundaryMode::Final,
-    )?;
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state = load_state(
+                &boundary.owner,
+                &boundary.name,
+                boundary.key.as_ref(),
+            )?;
+            response.resume(
+                boundary.instance_id,
+                &state,
+                BoundaryMode::Final,
+            )?
+        }
+        None => response.advance()?,
+    };
 }
 ```
 
-`start` writes through the first occurrence, or completes immediately when the
-selected path has none. `resume` must use the currently pending
-`BoundaryInstanceId`, commits that occurrence, and continues to the next one or
-terminal. The final returned status has `done == true`, no descriptor, and the
-writer already contains the tail and terminal.
+`start` writes the shell prefix through the first descriptor, or completes
+immediately when the selected path has none. `resume` must use the currently
+pending `BoundaryInstanceId` and writes only that occurrence through its
+checkpoint. Its result normally has no descriptor and `done == false`.
+`advance` writes the following parent or shell bytes until the next descriptor
+or terminal. This boundary-only resume lets the host flush an early component
+child independently; no sibling boundary is needed to separate it from the
+parent tail.
+
+The status states are exact: a descriptor requires `resume`; no descriptor with
+`done == false` requires `advance`; `done == true` completes the response. The
+completed status has no descriptor, and the writer already contains the tail
+and terminal.
 
 `WebUIHandler::render_streaming` uses one state value for the complete response:
 it projects and freezes that value once, then resumes each occurrence directly
@@ -259,8 +267,11 @@ public `resume` overlay because hosts may supply newly resolved state for each
 occurrence.
 
 Every descriptor contains `instance_id`, `declaration_id`, `owner`, `name`, and
-an optional string or numeric `key`. A declaration inside a repeated path
-requires a key, and live keys must be unique.
+an optional string or numeric `key`. A component-owned declaration reached from
+multiple static callsites in one entry traversal requires a key, and
+simultaneously live keys must be unique. A boundary-bearing subtree under
+`<for>` is rejected with `boundary-in-repeat`; a complete `<for>` may instead be
+inside one boundary.
 
 To send later state, resume the occurrence as `BoundaryMode::Updatable`, retain
 its instance ID, then call:
@@ -270,7 +281,8 @@ response.update(search_instance, &json!({ "query": "webui" }))?;
 ```
 
 `update` accepts an object patch, emits a projected markerless state record, and
-flushes immediately. It inserts no markup and does not rerun hydration.
+flushes immediately. It is valid between the occurrence's `resume` and
+`advance`, inserts no markup, and does not rerun hydration.
 
 The session borrows each state value only for its call. It does not await,
 allocate a task, or synchronize concurrent callers. An async server should use a
@@ -286,10 +298,11 @@ pub trait FlushWriter: ResponseWriter {
 ```
 
 `render_streaming` and `stream_response` accept a `FlushWriter`;
-`StreamingWriter` implements that trait. Each resumed occurrence is followed by
-its hydration checkpoint and a semantic flush. Generated component span
-completions, state updates, and terminal records also flush. The normal
-`render` method still accepts any `ResponseWriter`.
+`StreamingWriter` implements that trait. `resume` flushes immediately after the
+occurrence's hydration checkpoint. The matching `advance` separately flushes
+the following parent bytes through the next descriptor or terminal. Generated
+component span completions, state updates, and terminal records also flush. The
+normal `render` method still accepts any `ResponseWriter`.
 
 The entry template must load its application module with an early
 `<script type="module" async>` in `<head>`, before boundary content. See
@@ -461,7 +474,8 @@ component.
 |---|---|
 | `WebUIHandler::stream_response(protocol, options, writer)` | Create one progressive response session |
 | `StreamingResponse::start(state)` | Render and flush through the first runtime occurrence or terminal |
-| `StreamingResponse::resume(instance_id, state, mode)` | Commit the pending occurrence and continue |
+| `StreamingResponse::resume(instance_id, state, mode)` | Render and flush only the pending occurrence through its checkpoint |
+| `StreamingResponse::advance()` | Render following parent bytes through the next occurrence or terminal |
 | `StreamingResponse::update(instance_id, patch)` | Send projected object state to a committed updatable occurrence |
 | `StreamingResponse::is_done()` | Report whether terminal and writer end completed |
 
@@ -471,7 +485,7 @@ same language.
 
 When you would rather own the bytes - for example to feed a channel, a test
 harness, or a transport whose writer cannot be borrowed for that long —
-`StreamingSession` offers the same three operations and returns a `Vec<u8>` per
+`StreamingSession` offers the same four operations and returns a `Vec<u8>` per
 call instead:
 
 ```rust
@@ -481,11 +495,19 @@ let mut session = StreamingSession::new(
     SessionOptions::new("index.html", "/"),
 )?;
 let mut step = session.start(&initial_state)?;
-sink.send(step.bytes)?;
-while let Some(boundary) = step.boundary {
-    let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
-    step = session.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
-    sink.send(step.bytes)?;
+loop {
+    sink.send(std::mem::take(&mut step.bytes))?;
+    if step.done {
+        break;
+    }
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state =
+                load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            session.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        None => session.advance()?,
+    };
 }
 ```
 

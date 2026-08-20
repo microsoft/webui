@@ -19,11 +19,10 @@ STATE = {
 STREAMING_STATE = {
     **STATE,
     "show": True,
-    "items": [
-        {"id": 10, "label": "ten"},
-        {"id": 2.5, "label": "two-point-five"},
-        {"id": "last", "label": "last"},
-    ],
+    "integerKey": 10,
+    "floatKey": 2.5,
+    "stringKey": "last",
+    "summary": "All ready",
 }
 
 

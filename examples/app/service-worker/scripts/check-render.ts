@@ -52,10 +52,12 @@ let html = "";
 let step = session.start("{}") as WasmStreamStep;
 html += decoder.decode(step.bytes);
 while (!step.done) {
-  const boundary = step.boundary;
-  if (!boundary) {
-    throw new Error("Streaming session returned no pending boundary");
+  if (!step.boundary) {
+    step = session.advance() as WasmStreamStep;
+    html += decoder.decode(step.bytes);
+    continue;
   }
+  const boundary = step.boundary;
   const payload = payloads.get(boundary.name);
   if (!payload || boundary.owner !== "index.html") {
     throw new Error(`Unexpected boundary ${boundary.owner}/${boundary.name}`);

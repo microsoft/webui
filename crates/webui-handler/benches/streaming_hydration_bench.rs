@@ -396,19 +396,27 @@ fn render_state_updates(
     let Some(first) = first else {
         panic!("benchmark response did not discover its first boundary");
     };
-    let second = match response.resume(first.instance_id, state, BoundaryMode::Updatable) {
-        Ok(status) => status.boundary,
-        Err(error) => panic!("writing benchmark boundary failed: {error}"),
-    };
-    let Some(second) = second else {
-        panic!("benchmark response completed before state updates");
-    };
+    if let Err(error) = response.resume(first.instance_id, state, BoundaryMode::Updatable) {
+        panic!("writing benchmark boundary failed: {error}");
+    }
+    // Updates land between the commit and the parent bytes that follow it, so
+    // the benchmark exercises the live-occurrence window a host actually uses.
     for _ in 0..updates {
         if let Err(error) = response.update(first.instance_id, state) {
             panic!("writing benchmark state update failed: {error}");
         }
     }
-    match response.resume(second.instance_id, state, BoundaryMode::Final) {
+    let second = match response.advance() {
+        Ok(status) => status.boundary,
+        Err(error) => panic!("advancing past the benchmark boundary failed: {error}"),
+    };
+    let Some(second) = second else {
+        panic!("benchmark response completed before its second boundary");
+    };
+    if let Err(error) = response.resume(second.instance_id, state, BoundaryMode::Final) {
+        panic!("writing the second benchmark boundary failed: {error}");
+    }
+    match response.advance() {
         Ok(status) if status.done => {}
         Ok(_) => panic!("benchmark response did not complete"),
         Err(error) => panic!("finishing benchmark response failed: {error}"),

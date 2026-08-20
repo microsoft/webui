@@ -658,7 +658,7 @@ pub unsafe extern "C" fn webui_protocol_tokens(
 #[allow(non_camel_case_types)]
 pub type webui_streaming_session_t = c_void;
 
-/// Opaque owned result from one streaming start or resume call.
+/// Opaque owned result from one streaming start, resume, or advance call.
 #[allow(non_camel_case_types)]
 pub type webui_streaming_step_t = c_void;
 
@@ -699,9 +699,10 @@ struct StreamingStepContext {
 /// Open a host-driven progressive response for a streaming entry.
 ///
 /// Unlike [`webui_handler_render`], which produces the whole document in one
-/// call, the returned session advances through [`webui_streaming_session_start`]
-/// and [`webui_streaming_session_resume`] so the host owns the socket, write
-/// order, and backpressure. Any nonce previously set with
+/// call, the returned session advances through [`webui_streaming_session_start`],
+/// [`webui_streaming_session_resume`], and [`webui_streaming_session_advance`]
+/// so the host owns the socket, write order, and backpressure. Any nonce
+/// previously set with
 /// [`webui_handler_set_nonce`] is captured for the life of the session.
 ///
 /// Returns `NULL` on error; call [`webui_last_error`] for details. The handle
@@ -845,7 +846,7 @@ pub unsafe extern "C" fn webui_streaming_session_start(
     }
 }
 
-/// Commit the pending occurrence and advance to the next occurrence or terminal.
+/// Commit the pending occurrence through its checkpoint and stop.
 ///
 /// `mode` must be [`WEBUI_BOUNDARY_MODE_FINAL`] or
 /// [`WEBUI_BOUNDARY_MODE_UPDATABLE`]. The returned owned step must be released
@@ -893,6 +894,44 @@ pub unsafe extern "C" fn webui_streaming_session_resume(
         Ok(step) => step,
         Err(_) => {
             set_last_error("panic in webui_streaming_session_resume");
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Advance through parent bytes to the next occurrence or terminal completion.
+///
+/// This call is valid only after [`webui_streaming_session_resume`] commits the
+/// pending occurrence. The returned owned step follows the same ownership rules
+/// as start and resume and must be released with [`webui_streaming_step_destroy`].
+/// A `NULL` return indicates an error available through [`webui_last_error`].
+///
+/// # Safety
+///
+/// `session_ptr` must be a live session handle with no concurrent operation.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_session_advance(
+    session_ptr: *mut webui_streaming_session_t,
+) -> *mut webui_streaming_step_t {
+    clear_last_error();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if session_ptr.is_null() {
+            set_last_error("session_ptr must not be null");
+            return std::ptr::null_mut();
+        }
+        // SAFETY: The caller guarantees exclusive access to a live session.
+        let context = unsafe { &mut *(session_ptr as *mut StreamingSessionContext) };
+        match context.session.advance() {
+            Ok(step) => owned_streaming_step(step),
+            Err(error) => {
+                set_last_error(error.to_string());
+                std::ptr::null_mut()
+            }
+        }
+    })) {
+        Ok(step) => step,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_session_advance");
             std::ptr::null_mut()
         }
     }
@@ -971,8 +1010,9 @@ pub unsafe extern "C" fn webui_streaming_session_update(
 /// # Safety
 ///
 /// `step_ptr` must be a pointer returned by
-/// [`webui_streaming_session_start`] or [`webui_streaming_session_resume`], or
-/// `NULL` for a no-op. A non-null pointer must not be used after this call.
+/// [`webui_streaming_session_start`], [`webui_streaming_session_resume`], or
+/// [`webui_streaming_session_advance`], or `NULL` for a no-op. A non-null
+/// pointer must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn webui_streaming_step_destroy(step_ptr: *mut webui_streaming_step_t) {
     clear_last_error();

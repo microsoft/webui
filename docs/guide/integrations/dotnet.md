@@ -25,9 +25,9 @@ string html = handler.Render(
 
 ## Progressive streaming
 
-`StreamResponse` creates a single-driver session. `Start` and `Resume` return a
-`StreamingStep` containing `Bytes`, `Done`, and an optional `Boundary`
-descriptor.
+`StreamResponse` creates a single-driver session. `Start`, `Resume`, and
+`Advance` return a `StreamingStep` containing `Bytes`, `Done`, and an optional
+`Boundary` descriptor.
 
 ```csharp
 using var session = handler.StreamResponse(protocol, "index.html", "/");
@@ -41,18 +41,35 @@ while (true)
     await Response.Body.FlushAsync();
     if (step.Done) break;
 
-    BoundaryDescriptor boundary = step.Boundary
-        ?? throw new InvalidOperationException("Missing boundary descriptor");
-    string state = await LoadBoundaryStateAsync(
-        boundary.Owner,
-        boundary.Name,
-        boundary.Key);
-    step = session.Resume(
-        boundary.InstanceId,
-        state,
-        BoundaryMode.Final);
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadBoundaryStateAsync(
+            boundary.Owner,
+            boundary.Name,
+            boundary.Key);
+        step = session.Resume(
+            boundary.InstanceId,
+            state,
+            BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
 }
 ```
+
+| Member | Result |
+|---|---|
+| `Start(stateJson)` | Shell bytes through the first descriptor or terminal |
+| `Resume(instanceId, stateJson, mode)` | Only the pending occurrence's bytes through its checkpoint |
+| `Advance()` | Following parent bytes through the next descriptor or terminal |
+| `Update(instanceId, patchJson)` | Projected state bytes for an updatable occurrence |
+
+A descriptor requires `Resume`; no descriptor with `Done == false` requires
+`Advance`; `Done == true` means complete. `Resume` is boundary-only so the host
+can flush that checkpoint before parent or tail bytes. `Advance` renders those
+following bytes, so no sibling boundary workaround is required.
 
 The descriptor contains:
 
@@ -73,8 +90,9 @@ await Response.Body.FlushAsync();
 ```
 
 Updates apply projected state to existing roots. They do not insert markup or
-rerun hydration. The step that reports `Done` already includes the response
-tail and terminal record.
+rerun hydration, and are valid between an occurrence's `Resume` and `Advance`.
+The step that reports `Done` already includes the response tail and terminal
+record.
 
 Drive one session from one request flow at a time. Independent sessions may run
 concurrently against the same handler and protocol. `WebUIException` carries

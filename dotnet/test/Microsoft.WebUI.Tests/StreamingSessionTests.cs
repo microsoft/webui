@@ -11,7 +11,7 @@ namespace Microsoft.WebUI.Tests;
 public class StreamingSessionTests
 {
     private const string StreamingState =
-        """{"show":true,"items":[{"id":"alpha\u0000omega","label":"first"},{"id":7,"label":"second"}]}""";
+        """{"show":true,"stringKey":"alpha\u0000omega","numberKey":7,"firstLabel":"first","secondLabel":"second"}""";
 
     private static byte[] StreamingProtocolBytes() =>
         File.ReadAllBytes(Path.Combine(
@@ -23,7 +23,7 @@ public class StreamingSessionTests
     private static string Text(byte[] chunk) => Encoding.UTF8.GetString(chunk);
 
     [Fact]
-    public void Session_StartResumeAndUpdateExposeTypedDescriptorsAndComplete()
+    public void Session_StartResumeUpdateAndAdvanceExposeTypedDescriptorsAndComplete()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
@@ -34,35 +34,64 @@ public class StreamingSessionTests
         BoundaryDescriptor firstBoundary = Assert.IsType<BoundaryDescriptor>(first.Boundary);
         Assert.Equal(0u, firstBoundary.InstanceId);
         Assert.Equal("index.html", firstBoundary.Owner);
-        Assert.Equal("row", firstBoundary.Name);
+        Assert.Equal("string-row", firstBoundary.Name);
         Assert.Equal(BoundaryKeyType.String, firstBoundary.Key.Type);
         Assert.Equal("alpha\0omega", firstBoundary.Key.StringValue);
         Assert.Null(firstBoundary.Key.NumberValue);
 
-        StreamingStep second = session.Resume(
+        StreamingStep firstCommit = session.Resume(
             firstBoundary.InstanceId,
             StreamingState,
             BoundaryMode.Updatable);
+        Assert.False(firstCommit.Done);
+        Assert.Null(firstCommit.Boundary);
+        string firstCommitText = Text(firstCommit.Bytes);
+        Assert.Contains("label=\"first\"", firstCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("between-boundaries", firstCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("label=\"second\"", firstCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("always-complete", firstCommitText, StringComparison.Ordinal);
+
+        byte[] update = session.Update(firstBoundary.InstanceId, """{"firstLabel":"updated"}""");
+        Assert.NotEmpty(update);
+        Assert.Contains(@"""firstLabel"":""updated""", Text(update), StringComparison.Ordinal);
+
+        StreamingStep second = session.Advance();
         Assert.False(second.Done);
         BoundaryDescriptor secondBoundary = Assert.IsType<BoundaryDescriptor>(second.Boundary);
         Assert.Equal(1u, secondBoundary.InstanceId);
-        Assert.Equal(firstBoundary.DeclarationId, secondBoundary.DeclarationId);
+        Assert.NotEqual(firstBoundary.DeclarationId, secondBoundary.DeclarationId);
+        Assert.Equal("number-row", secondBoundary.Name);
         Assert.Equal(BoundaryKeyType.Number, secondBoundary.Key.Type);
         Assert.Null(secondBoundary.Key.StringValue);
         Assert.Equal(7.0, secondBoundary.Key.NumberValue);
+        string secondDiscoveryText = Text(second.Bytes);
+        Assert.Contains("between-boundaries", secondDiscoveryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("label=\"second\"", secondDiscoveryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("always-complete", secondDiscoveryText, StringComparison.Ordinal);
 
-        byte[] update = session.Update(firstBoundary.InstanceId, """{"label":"updated"}""");
-        Assert.NotEmpty(update);
-        Assert.Contains(@"""label"":""updated""", Text(update), StringComparison.Ordinal);
-
-        StreamingStep done = session.Resume(
+        StreamingStep secondCommit = session.Resume(
             secondBoundary.InstanceId,
             StreamingState,
             BoundaryMode.Final);
+        Assert.False(secondCommit.Done);
+        Assert.Null(secondCommit.Boundary);
+        string secondCommitText = Text(secondCommit.Bytes);
+        Assert.Contains("label=\"second\"", secondCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("always-complete", secondCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("</html>", secondCommitText, StringComparison.OrdinalIgnoreCase);
+
+        StreamingStep done = session.Advance();
         Assert.True(done.Done);
         Assert.Null(done.Boundary);
+        Assert.Contains("always-complete", Text(done.Bytes), StringComparison.Ordinal);
 
-        string document = Text(first.Bytes) + Text(second.Bytes) + Text(update) + Text(done.Bytes);
+        string document =
+            Text(first.Bytes) +
+            firstCommitText +
+            Text(update) +
+            secondDiscoveryText +
+            secondCommitText +
+            Text(done.Bytes);
         Assert.StartsWith("<!DOCTYPE html>", document, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("first", document, StringComparison.Ordinal);
         Assert.Contains("second", document, StringComparison.Ordinal);
@@ -77,7 +106,7 @@ public class StreamingSessionTests
         using var handler = new WebUIHandler("webui");
         using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
 
-        StreamingStep step = session.Start("""{"show":false,"items":[]}""");
+        StreamingStep step = session.Start("""{"show":false}""");
 
         Assert.True(step.Done);
         Assert.Null(step.Boundary);
@@ -85,7 +114,7 @@ public class StreamingSessionTests
     }
 
     [Fact]
-    public void Session_StaleResumeThrowsAndLeavesPendingBoundaryUsable()
+    public void Session_OutOfOrderCallsThrowAndLeavePendingBoundaryUsable()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
@@ -94,11 +123,17 @@ public class StreamingSessionTests
         StreamingStep first = session.Start(StreamingState);
         BoundaryDescriptor boundary = Assert.IsType<BoundaryDescriptor>(first.Boundary);
 
+        WebUIException advanceError = Assert.Throws<WebUIException>(() => session.Advance());
+        Assert.Contains("no committed boundary", advanceError.Message, StringComparison.OrdinalIgnoreCase);
+
         WebUIException error = Assert.Throws<WebUIException>(() =>
             session.Resume(99, StreamingState));
         Assert.Contains("stale", error.Message, StringComparison.OrdinalIgnoreCase);
 
-        StreamingStep second = session.Resume(boundary.InstanceId, StreamingState);
+        StreamingStep commit = session.Resume(boundary.InstanceId, StreamingState);
+        Assert.False(commit.Done);
+        Assert.Null(commit.Boundary);
+        StreamingStep second = session.Advance();
         Assert.NotNull(second.Boundary);
     }
 
@@ -111,13 +146,19 @@ public class StreamingSessionTests
 
         BoundaryDescriptor first = Assert.IsType<BoundaryDescriptor>(
             session.Start(StreamingState).Boundary);
-        StreamingStep secondStep = session.Resume(first.InstanceId, StreamingState);
-        BoundaryDescriptor second = Assert.IsType<BoundaryDescriptor>(secondStep.Boundary);
+        StreamingStep firstCommit = session.Resume(first.InstanceId, StreamingState);
+        Assert.False(firstCommit.Done);
+        Assert.Null(firstCommit.Boundary);
 
         Assert.Throws<WebUIException>(() =>
             session.Update(first.InstanceId, """{"label":"ignored"}"""));
 
-        Assert.True(session.Resume(second.InstanceId, StreamingState).Done);
+        StreamingStep secondStep = session.Advance();
+        BoundaryDescriptor second = Assert.IsType<BoundaryDescriptor>(secondStep.Boundary);
+        StreamingStep secondCommit = session.Resume(second.InstanceId, StreamingState);
+        Assert.False(secondCommit.Done);
+        Assert.Null(secondCommit.Boundary);
+        Assert.True(session.Advance().Done);
     }
 
     [Fact]
@@ -169,13 +210,20 @@ public class StreamingSessionTests
 
         BoundaryDescriptor first = Assert.IsType<BoundaryDescriptor>(
             session.Start(StreamingState).Boundary);
+        StreamingStep firstCommit = session.Resume(first.InstanceId, StreamingState);
+        Assert.False(firstCommit.Done);
+        Assert.Null(firstCommit.Boundary);
         BoundaryDescriptor second = Assert.IsType<BoundaryDescriptor>(
-            session.Resume(first.InstanceId, StreamingState).Boundary);
-        Assert.True(session.Resume(second.InstanceId, StreamingState).Done);
+            session.Advance().Boundary);
+        StreamingStep secondCommit = session.Resume(second.InstanceId, StreamingState);
+        Assert.False(secondCommit.Done);
+        Assert.Null(secondCommit.Boundary);
+        Assert.True(session.Advance().Done);
 
         Assert.Throws<WebUIException>(() => session.Start(StreamingState));
         Assert.Throws<WebUIException>(() =>
             session.Resume(second.InstanceId, StreamingState));
+        Assert.Throws<WebUIException>(() => session.Advance());
     }
 
     [Fact]
@@ -188,13 +236,15 @@ public class StreamingSessionTests
 
         BoundaryDescriptor firstA = Assert.IsType<BoundaryDescriptor>(
             a.Start(StreamingState).Boundary);
+        string stateB = StreamingState.Replace(
+            @"""first""",
+            @"""from-b""",
+            StringComparison.Ordinal);
         BoundaryDescriptor firstB = Assert.IsType<BoundaryDescriptor>(
-            b.Start(StreamingState.Replace("first", "from-b", StringComparison.Ordinal)).Boundary);
+            b.Start(stateB).Boundary);
 
         string chunkA = Text(a.Resume(firstA.InstanceId, StreamingState).Bytes);
-        string chunkB = Text(b.Resume(
-            firstB.InstanceId,
-            StreamingState.Replace("first", "from-b", StringComparison.Ordinal)).Bytes);
+        string chunkB = Text(b.Resume(firstB.InstanceId, stateB).Bytes);
 
         Assert.Contains("first", chunkA, StringComparison.Ordinal);
         Assert.DoesNotContain("from-b", chunkA, StringComparison.Ordinal);
@@ -225,6 +275,7 @@ public class StreamingSessionTests
         session.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => session.Start(StreamingState));
+        Assert.Throws<ObjectDisposedException>(() => session.Advance());
         Assert.Throws<ObjectDisposedException>(() => session.Update(0, "{}"));
     }
 

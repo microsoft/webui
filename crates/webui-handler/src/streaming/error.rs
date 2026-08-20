@@ -165,6 +165,17 @@ pub(super) fn duplicate_boundary_key_error(
 
 #[cold]
 #[inline(never)]
+pub(super) fn boundary_in_repeat_error(name: &str) -> HandlerError {
+    streaming_boundary_error(
+        name,
+        "boundary declarations are not valid inside a <for> repeat body; rebuild the protocol \
+         with a parser that rejects boundary-in-repeat, then move the boundary outside the \
+         repeat or wrap the whole repeat in one boundary",
+    )
+}
+
+#[cold]
+#[inline(never)]
 pub(super) fn keyed_instance_limit_error(limit: usize) -> HandlerError {
     streaming_boundary_error(
         "boundary key",

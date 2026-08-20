@@ -73,6 +73,11 @@ async function streamHtml(controller: ReadableStreamDefaultController<Uint8Array
   let step = session.start('{}');
   controller.enqueue(step.bytes);
   while (!step.done) {
+    if (!step.boundary) {
+      step = session.advance();
+      controller.enqueue(step.bytes);
+      continue;
+    }
     const boundary = pendingBoundary(step);
     const result = await pending.get(boundary.name);
     if (!result) {

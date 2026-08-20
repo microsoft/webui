@@ -180,13 +180,16 @@ await write(res, step.bytes);
 
 while (!step.done) {
   const boundary = step.boundary;
-  if (!boundary) throw new Error('unfinished step has no boundary');
-  const state = await loadBoundaryState(
-    boundary.owner,
-    boundary.name,
-    boundary.key,
-  );
-  step = session.resume(boundary.instanceId, state, 'final');
+  if (boundary) {
+    const state = await loadBoundaryState(
+      boundary.owner,
+      boundary.name,
+      boundary.key,
+    );
+    step = session.resume(boundary.instanceId, state, 'final');
+  } else {
+    step = session.advance();
+  }
   await write(res, step.bytes);
 }
 res.end();
@@ -213,13 +216,18 @@ async function write(res, chunk) {
 | Member | Returns | Description |
 |--------|---------|-------------|
 | `start(state)` | `StreamStep` | Bytes through the first occurrence or terminal |
-| `resume(instanceId, state, mode?)` | `StreamStep` | Commit the pending occurrence and continue (`'final'` \| `'updatable'`) |
+| `resume(instanceId, state, mode?)` | `StreamStep` | Only the pending occurrence's bytes through its checkpoint (`'final'` \| `'updatable'`) |
+| `advance()` | `StreamStep` | Following parent bytes through the next occurrence or terminal |
 | `update(instanceId, patch)` | `Buffer` | Projected state for a committed updatable occurrence |
 
 `StreamStep` contains `bytes`, `done`, and optional
-`{ instanceId, declarationId, owner, name, key }`. The completed step already
-contains tail and terminal bytes. Updates insert no markup and never rerun
-hydration. Sessions are single-driver and independent; hold one per request.
+`{ instanceId, declarationId, owner, name, key }`. A descriptor requires
+`resume`; no descriptor with `done: false` requires `advance`; `done: true`
+means complete. `resume` is boundary-only, while `advance` carries following
+parent or tail bytes. No sibling boundary workaround is required. The completed
+step already contains tail and terminal bytes. Updates are valid between
+`resume` and `advance`, insert no markup, and never rerun hydration. Sessions
+are single-driver and independent; hold one per request.
 
 ### `inspect(protocol: Buffer): string`
 

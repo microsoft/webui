@@ -142,18 +142,19 @@ def app(environ, start_response):
         yield step.bytes
         while not step.done:
             boundary = step.boundary
-            if boundary is None:
-                raise RuntimeError("unfinished step has no boundary")
-            state = load_boundary_state(
-                boundary.owner,
-                boundary.name,
-                boundary.key,
-            )
-            step = session.resume(
-                boundary.instance_id,
-                state,
-                mode="final",
-            )
+            if boundary is not None:
+                state = load_boundary_state(
+                    boundary.owner,
+                    boundary.name,
+                    boundary.key,
+                )
+                step = session.resume(
+                    boundary.instance_id,
+                    state,
+                    mode="final",
+                )
+            else:
+                step = session.advance()
             yield step.bytes
 
     start_response("200 OK", [
@@ -180,29 +181,38 @@ async def index(request):
         yield step.bytes
         while not step.done:
             boundary = step.boundary
-            if boundary is None:
-                raise RuntimeError("unfinished step has no boundary")
-            state = await load_boundary_state(
-                boundary.owner,
-                boundary.name,
-                boundary.key,
-            )
-            step = await anyio.to_thread.run_sync(
-                lambda: session.resume(
-                    boundary.instance_id,
-                    state,
-                    mode="final",
-                ),
-            )
+            if boundary is not None:
+                state = await load_boundary_state(
+                    boundary.owner,
+                    boundary.name,
+                    boundary.key,
+                )
+                step = await anyio.to_thread.run_sync(
+                    lambda: session.resume(
+                        boundary.instance_id,
+                        state,
+                        mode="final",
+                    ),
+                )
+            else:
+                step = await anyio.to_thread.run_sync(session.advance)
             yield step.bytes
 
     return StreamingResponse(body(), media_type="text/html; charset=utf-8")
 ```
 
-`start()` and `resume()` return a `StreamStep` with `bytes`, `done`, and an
-optional descriptor. The descriptor provides `instance_id`, `declaration_id`,
-`owner`, `name`, and `key`. The completed step already includes the tail and
-terminal bytes.
+`start()`, `resume()`, and `advance()` return a `StreamStep` with `bytes`,
+`done`, and an optional descriptor. The descriptor provides `instance_id`,
+`declaration_id`, `owner`, `name`, and `key`. A descriptor means call
+`resume()`; no descriptor with `done == False` means call `advance()`; a true
+`done` value means complete.
+
+`resume()` returns only the pending occurrence through its checkpoint.
+`advance()` returns the following parent or tail bytes through the next
+descriptor or terminal. This separation lets the host yield the checkpoint
+immediately, with no sibling boundary workaround. `update()` is valid between
+the occurrence's `resume()` and `advance()`. The completed step already includes
+the tail and terminal bytes.
 
 Sessions are **not** multi-driver - drive one session from one thread at a time;
 independent sessions on the same `Renderer` may run concurrently.
@@ -225,7 +235,8 @@ independent sessions on the same `Renderer` may run concurrently.
 | Member | Description |
 |--------|-------------|
 | `start(state) -> StreamStep` | Bytes through the first runtime occurrence or terminal |
-| `resume(instance_id, state, mode=BoundaryMode.FINAL) -> StreamStep` | Commit the pending occurrence and continue |
+| `resume(instance_id, state, mode=BoundaryMode.FINAL) -> StreamStep` | Bytes for only the pending occurrence through its checkpoint |
+| `advance() -> StreamStep` | Following parent bytes through the next occurrence or terminal |
 | `update(instance_id, patch) -> bytes` | Projected state for a committed updatable occurrence |
 
 ### `Plugin` and `BoundaryMode`

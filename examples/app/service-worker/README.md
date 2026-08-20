@@ -12,9 +12,10 @@ The browser loads only static assets:
 
 No application server is required. The service worker fetches public API state,
 constructs one `webui_wasm_handler.Protocol`, opens a
-`Protocol.streamResponse()` session, and enqueues every `start()` / `resume()`
-step into a `ReadableStream`. API fetches run concurrently, while each resume
-uses the runtime descriptor returned by the previous `StreamStep`.
+`Protocol.streamResponse()` session, and enqueues every `start()`, `resume()`,
+and `advance()` step into a `ReadableStream`. API fetches run concurrently,
+while each resume uses the runtime descriptor returned by the previous
+descriptor-bearing `StreamStep`.
 
 Because the example renders public API data, the service worker validates URL
 fields before calling the handler. Keep that boundary in copied code so
@@ -91,8 +92,13 @@ from public APIs. The serverless edge path can be:
 2. Browser service worker loads `protocol.bin`.
 3. Public APIs return JSON state concurrently.
 4. `start()` returns the first pending boundary descriptor.
-5. The worker resumes each descriptor with its matching state and streams the
-   returned bytes to the page; the final resume emits the terminal automatically.
+5. The worker calls `resume()` for a descriptor, `advance()` for a step with
+   neither a descriptor nor `done`, and stops when `done` is true.
+
+`resume()` enqueues only the resolved occurrence through its checkpoint.
+`advance()` enqueues following parent or tail bytes through the next descriptor
+or terminal. The final `advance()` emits the terminal, and no sibling boundary
+is needed to split a checkpoint from its parent tail.
 
 ## Source layout
 

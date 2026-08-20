@@ -7,11 +7,13 @@
   </head>
   <body>
     <if condition="show">
-      <for each="item in items">
-        <boundary name="row" key="{{item.id}}">
-          <stream-item label="{{item.label}}"></stream-item>
-        </boundary>
-      </for>
+      <boundary name="string-row" key="{{stringKey}}">
+        <stream-item label="{{firstLabel}}"></stream-item>
+      </boundary>
+      <p>between-boundaries</p>
+      <boundary name="number-row" key="{{numberKey}}">
+        <stream-item label="{{secondLabel}}"></stream-item>
+      </boundary>
     </if>
     <p>always-complete</p>
   </body>

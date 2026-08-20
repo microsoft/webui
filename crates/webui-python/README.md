@@ -37,20 +37,30 @@ session = renderer.stream_response()
 step = session.start({"title": "Home", "items": [{"id": 7}]})
 while not step.done:
     boundary = step.boundary
-    assert boundary is not None
     send(step.bytes)
-    step = session.resume(
-        boundary.instance_id,
-        {"title": "Home"},
-        mode=BoundaryMode.FINAL,
-    )
+    if boundary is not None:
+        step = session.resume(
+            boundary.instance_id,
+            {"title": "Home"},
+            mode=BoundaryMode.FINAL,
+        )
+    else:
+        step = session.advance()
 send(step.bytes)
 ```
 
-`start()` and `resume()` return immutable `StreamStep` values containing the
-bytes produced by that call, a `done` flag, and the optional next
-`BoundaryDescriptor`. Repeated boundary keys remain Python strings, integers,
-or floats. `update(instance_id, patch)` returns the update record as `bytes`.
+`start()`, `resume()`, and `advance()` return immutable `StreamStep` values
+containing the bytes produced by that call, a `done` flag, and an optional
+`BoundaryDescriptor`. A descriptor means call `resume()`; no descriptor with
+`done == False` means call `advance()`; `done == True` means complete.
+`resume()` returns only the pending occurrence through its checkpoint, while
+`advance()` returns following parent or tail bytes. No sibling boundary
+workaround is required.
+
+Optional boundary keys are Python strings, integers, or floats. They are
+required only when one component-owned declaration is reached from multiple
+static callsites in one entry traversal. `update(instance_id, patch)` returns
+the update record as `bytes` and is valid between `resume()` and `advance()`.
 
 The first release targets regular CPython 3.11+ builds on Windows, macOS, and
 manylinux, on x64 and ARM64. PyPy, free-threaded CPython, and Alpine/musllinux

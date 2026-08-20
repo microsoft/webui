@@ -106,17 +106,17 @@ export interface BoundaryDescriptor {
   owner: string;
   /** Free-form authored boundary name. */
   name: string;
-  /** Evaluated repeat key, preserving its authored JSON type. */
+  /** Evaluated boundary key, preserving its authored JSON type. */
   key?: string | number;
 }
 
-/** Bytes and continuation state produced by `start()` and `resume()`. */
+/** Bytes and continuation state produced by a streaming session step. */
 export interface StreamStep {
   /** Complete bytes produced by this semantic step. */
   bytes: Buffer;
   /** Whether the document tail and terminal record have been emitted. */
   done: boolean;
-  /** Next runtime boundary occurrence, absent when `done` is true. */
+  /** Runtime occurrence waiting for `resume()`, present only at a boundary. */
   boundary?: BoundaryDescriptor;
 }
 
@@ -215,6 +215,7 @@ interface NativeProtocol {
 interface NativeStreamingSession {
   start(stateJson: string): NativeStreamStep;
   resume(instanceId: number, stateJson: string, mode?: BoundaryMode): NativeStreamStep;
+  advance(): NativeStreamStep;
   update(instanceId: number, patchJson: string): Buffer;
 }
 
@@ -393,10 +394,10 @@ export class Protocol {
  * caller decides when they reach the socket and can await `drain` between
  * chunks. The session holds no transport and never blocks on one.
  *
- * `start()` discovers the first runtime occurrence. Each `resume()` commits the
- * pending occurrence and discovers the next one, or returns a completed step
- * containing the document tail and terminal record. `update()` targets a
- * previously committed `updatable` occurrence.
+ * `start()` discovers the first runtime occurrence. Each `resume()` commits
+ * only the pending occurrence. An optional `update()` may follow for an
+ * `updatable` occurrence, then `advance()` discovers the next occurrence or
+ * returns the document tail and terminal record.
  *
  * ```js
  * const session = protocol.streamResponse({ requestPath: req.url });
@@ -407,6 +408,8 @@ export class Protocol {
  *   const boundary = step.boundary;
  *   const state = await loadBoundary(boundary.owner, boundary.name, boundary.key);
  *   step = session.resume(boundary.instanceId, state);
+ *   res.write(step.bytes);
+ *   step = session.advance();
  *   res.write(step.bytes);
  * }
  * res.end();
@@ -425,13 +428,18 @@ export class StreamingSession {
     return toStreamStep(this.#native.start(toStateJson(state)));
   }
 
-  /** Commit the pending occurrence and advance to the next one or terminal. */
+  /** Commit the pending occurrence through its checkpoint, then stop. */
   resume(
     instanceId: number,
     state: object | string,
     mode: BoundaryMode = "final",
   ): StreamStep {
     return toStreamStep(this.#native.resume(instanceId, toStateJson(state), mode));
+  }
+
+  /** Write following parent bytes and discover the next boundary or terminal. */
+  advance(): StreamStep {
+    return toStreamStep(this.#native.advance());
   }
 
   /** Push a projected state patch to a committed `updatable` occurrence. */

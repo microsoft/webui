@@ -1,4 +1,49 @@
 
+∑
+if-1Æ
+(R&
+index.htmlgreeting"{{integerKey}}
+
+
+<p class="greeting">Hello, 
+"
+name
+	
+
+!</p>
+R8
+1
+/
+-<p id="greeting-tail">Greeting committed.</p>
+&R$
+index.htmlstatus"{{floatKey}}
+
+
+<p id="status">
+
+"
+status
+
+
+</p>
+R8
+-
++
+)<p id="status-tail">Status committed.</p>
+(R&
+index.htmlsummary"{{stringKey}}
+
+
+<p id="summary">
+"	
+summary
+
+
+</p>
+R8
+(
+&
+$<footer>Streaming complete.</footer>
 ú
 
 index.htmlç
@@ -31,44 +76,3 @@ index.htmlç
 
 
 </body></html>
-∆
-if-1Ω
-R
-index.htmlgreeting
-
-
-<p class="greeting">Hello, 
-"
-name
-	
-
-!</p>
-R8
-R
-index.htmlstatus
-
-
-<p id="status">
-
-"
-status
-
-
-</p>
-R8
-
-itemitemsfor-1
-h
-for-1_
-$R"
-index.htmlrow"{{item.id}}0
-
-
-<p class="row">
-"
-
-item.label
-
-
-</p>
-R8

@@ -38,5 +38,6 @@ export interface StreamStep {
 export class StreamingSession {
   start(stateJson: string): StreamStep;
   resume(instanceId: number, stateJson: string, mode?: 'final' | 'updatable'): StreamStep;
+  advance(): StreamStep;
   update(instanceId: number, stateJson: string): Uint8Array;
 }

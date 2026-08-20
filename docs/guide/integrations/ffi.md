@@ -206,9 +206,9 @@ erase the startup-only performance model.
 ### Progressive streaming sessions
 
 A streaming session lets a C host render one response in chunks it writes
-itself. Start and resume return owned step handles with borrowed byte slices;
-update returns an owned byte buffer. WebUI never touches your socket, so
-backpressure and cancellation stay yours.
+itself. Start, resume, and advance return owned step handles with borrowed byte
+slices; update returns an owned byte buffer. WebUI never touches your socket,
+so backpressure and cancellation stay yours.
 
 ```c
 webui_streaming_session_t *session = webui_streaming_session_create(
@@ -229,17 +229,22 @@ while (step != NULL) {
         break;
     }
 
-    /* Copies owner, name, typed key, and IDs from the step accessors. */
-    struct app_boundary target = copy_boundary_descriptor(step);
-    webui_streaming_step_destroy(step);
+    if (webui_streaming_step_has_boundary(step)) {
+        /* Copies owner, name, typed key, and IDs from the step accessors. */
+        struct app_boundary target = copy_boundary_descriptor(step);
+        webui_streaming_step_destroy(step);
 
-    const char *state_json = load_state(&target);
-    step = webui_streaming_session_resume(
-        session,
-        target.instance_id,
-        state_json,
-        WEBUI_BOUNDARY_MODE_FINAL);
-    free_boundary_descriptor(&target);
+        const char *state_json = load_state(&target);
+        step = webui_streaming_session_resume(
+            session,
+            target.instance_id,
+            state_json,
+            WEBUI_BOUNDARY_MODE_FINAL);
+        free_boundary_descriptor(&target);
+    } else {
+        webui_streaming_step_destroy(step);
+        step = webui_streaming_session_advance(session);
+    }
     if (step == NULL) {
         fprintf(stderr, "%s\n", webui_last_error());
         break;
@@ -254,7 +259,8 @@ webui_streaming_session_destroy(session);
 | `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Session handle, or `NULL`. Inherits the handler's nonce (set with `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json`, not through this call. |
 | `webui_streaming_session_destroy(session)` | Releases the session. `NULL` is a safe no-op. |
 | `webui_streaming_session_start(session, state_json)` | Owned step through the first runtime occurrence or terminal, or `NULL` |
-| `webui_streaming_session_resume(session, instance_id, state_json, mode)` | Commit the pending occurrence, then return the next owned step |
+| `webui_streaming_session_resume(session, instance_id, state_json, mode)` | Owned step containing only the pending occurrence through its checkpoint |
+| `webui_streaming_session_advance(session)` | Owned step containing following parent bytes through the next occurrence or terminal |
 | `webui_streaming_session_update(session, instance_id, patch_json, out_len)` | Projected state bytes for a committed updatable occurrence |
 | `webui_streaming_step_bytes(step, out_len)` | Borrow binary-safe step bytes until destroy |
 | `webui_streaming_step_done(step)` / `webui_streaming_step_has_boundary(step)` | Read completion and descriptor presence |
@@ -266,6 +272,12 @@ borrowed slices with explicit lengths and are not NUL-terminated. Key type is
 none, string, or number; numeric keys are returned as `double`. Copy any
 descriptor values needed after destroying the step. Free update bytes with
 `webui_free`.
+
+If a step has a descriptor, call `resume`. If it has neither a descriptor nor
+`done`, call `advance`. If `done` is true, the response is complete. `resume`
+is boundary-only so the host can send that checkpoint immediately; `advance`
+renders the following parent or document-tail bytes. No sibling boundary is
+needed. An update may be emitted between `resume` and `advance`.
 
 The session clones its own references to the handler and protocol, so you may
 destroy them in any order. Drive a session from one thread at a time. See
@@ -488,13 +500,18 @@ while (true)
     await Response.Body.FlushAsync();
     if (step.Done) break;
 
-    BoundaryDescriptor boundary = step.Boundary
-        ?? throw new InvalidOperationException("Missing boundary descriptor");
-    string state = await LoadStateAsync(
-        boundary.Owner,
-        boundary.Name,
-        boundary.Key);
-    step = session.Resume(boundary.InstanceId, state, BoundaryMode.Final);
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadStateAsync(
+            boundary.Owner,
+            boundary.Name,
+            boundary.Key);
+        step = session.Resume(boundary.InstanceId, state, BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
 }
 ```
 

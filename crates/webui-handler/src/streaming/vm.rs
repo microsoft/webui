@@ -16,7 +16,7 @@ use webui_protocol::{
 
 use super::checkpoint::RangeRecord;
 use super::error::{
-    boundary_limit_error, boundary_order_error, continuation_limit_error,
+    boundary_in_repeat_error, boundary_limit_error, boundary_order_error, continuation_limit_error,
     duplicate_boundary_key_error, invalid_boundary_key_error, keyed_instance_limit_error,
     malformed_span_signal_error, span_limit_error, span_nesting_error,
 };
@@ -104,6 +104,13 @@ pub(crate) struct ContinuationVm {
     committed_modes: Vec<BoundaryMode>,
     component_count: usize,
     pending_span_candidate: Option<Box<str>>,
+    /// Repeats currently being walked by this step.
+    ///
+    /// A boundary can never execute inside a repeat, so this is zero at every
+    /// point the VM hands control back to the host. Tracking it as a counter
+    /// makes that an O(1) checked invariant rather than an assumption about a
+    /// protocol the handler did not build.
+    open_repeats: usize,
 }
 
 /// Immutable per-entry projection surface shared by every response.
@@ -215,10 +222,7 @@ enum Frame {
     IfEnd {
         slot: u32,
     },
-    For(ForFrame),
-    RepeatEnd {
-        index: usize,
-    },
+    Repeat(RepeatFrame),
     GeneratedComponentStart {
         tag: Box<str>,
     },
@@ -239,11 +243,20 @@ struct FragmentFrame {
     best_route: Option<(String, RouteMatch)>,
 }
 
-struct ForFrame {
+/// One in-flight `<for>` repeat.
+///
+/// A repeat can never contain a boundary — the build rejects that with
+/// `boundary-in-repeat` and [`ContinuationVm::discover_boundary`] rejects a
+/// hand-built protocol that tries — so this frame is drained inside the step
+/// that created it and is never retained across a host call. Closing the
+/// previous item and opening the next share one frame, so a repeat costs two
+/// pushes per item instead of three without widening the frame: `index` is both
+/// the next item to open and, when non-zero, one past the item still open.
+struct RepeatFrame {
     slot: u32,
     item_name: Box<str>,
     items: std::vec::IntoIter<Value>,
-    next_index: usize,
+    index: usize,
     saved_value: Option<Value>,
 }
 
@@ -251,6 +264,23 @@ struct OutletFrame {
     routes: Vec<WebUiFragmentRoute>,
     index: usize,
     best: Option<(usize, RouteMatch)>,
+}
+
+/// What the current [`ContinuationVm::advance`] call is walking toward.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum StepGoal {
+    /// Write ordinary parent/shell bytes until the next occurrence or terminal.
+    NextBoundary,
+    /// Write the pending occurrence through its checkpoint, then stop.
+    CommitBoundary,
+}
+
+/// Borrowed runtime shared by every record one step walks.
+#[derive(Clone, Copy)]
+struct StepRuntime<'call, 'data> {
+    goal: StepGoal,
+    handler: &'call WebUIHandler,
+    protocol: &'data crate::Protocol,
 }
 
 impl ContinuationVm {
@@ -274,6 +304,7 @@ impl ContinuationVm {
             committed_modes: Vec::new(),
             component_count: protocol.component_index().len(),
             pending_span_candidate: None,
+            open_repeats: 0,
         })
     }
 
@@ -335,29 +366,37 @@ impl ContinuationVm {
         Ok(())
     }
 
+    /// Walk the continuation until `goal` is met.
+    ///
+    /// [`StepGoal::CommitBoundary`] stops on the active occurrence's checkpoint
+    /// so its bytes are one independently writable step;
+    /// [`StepGoal::NextBoundary`] writes ordinary parent/shell bytes until the
+    /// next occurrence suspends or the terminal record completes.
     pub(crate) fn advance<'data>(
         &mut self,
+        goal: StepGoal,
         handler: &WebUIHandler,
         protocol: &'data crate::Protocol,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<StreamStatus> {
         let mut records = RecordCache::new();
+        let runtime = StepRuntime {
+            goal,
+            handler,
+            protocol,
+        };
         while let Some(frame) = self.frames.pop() {
             match frame {
                 Frame::EnterFragment(slot) => {
                     let list = records.record(protocol, slot)?;
                     let frame = open_fragment(slot, list, context);
-                    if let Some(status) =
-                        self.run_fragment(frame, list, (handler, protocol), context)?
-                    {
+                    if let Some(status) = self.run_fragment(frame, list, runtime, context)? {
                         return Ok(status);
                     }
                 }
                 Frame::Fragment(frame) => {
                     let list = records.record(protocol, frame.slot)?;
-                    if let Some(status) =
-                        self.run_fragment(frame, list, (handler, protocol), context)?
-                    {
+                    if let Some(status) = self.run_fragment(frame, list, runtime, context)? {
                         return Ok(status);
                     }
                 }
@@ -373,13 +412,7 @@ impl ContinuationVm {
                         plugin.on_if_end(fragment_id, context.writer)?;
                     }
                 }
-                Frame::For(frame) => self.step_for(frame, protocol, context)?,
-                Frame::RepeatEnd { index } => {
-                    if let Some(plugin) = context.plugin.as_mut() {
-                        plugin.pop_scope();
-                        plugin.on_repeat_item_end(index, context.writer)?;
-                    }
-                }
+                Frame::Repeat(frame) => self.step_repeat(frame, protocol, context)?,
                 Frame::GeneratedComponentStart { tag } => {
                     self.start_generated_component(tag, handler, protocol, context)?;
                 }
@@ -406,6 +439,11 @@ impl ContinuationVm {
         if self.pending.is_some() || self.active.is_some() {
             return Err(HandlerError::Invariant(
                 "pending boundary lost its continuation".to_string(),
+            ));
+        }
+        if self.open_repeats != 0 {
+            return Err(HandlerError::Invariant(
+                "traversal completed while a repeat was still open".to_string(),
             ));
         }
         if !self.open_spans.is_empty() {
@@ -444,21 +482,26 @@ impl ContinuationVm {
         })
     }
 
-    /// Walk one fragment record until it descends, suspends, or ends.
+    /// Walk one fragment record until it descends, suspends, commits, or ends.
     ///
     /// The record is resolved by the caller — once per step for the whole
     /// descend/unwind cycle — and inert fragments never touch the frame stack,
     /// so a boundary body costs no record lookups at all. Only a construct that
-    /// owns a child record (component, condition, loop, route, outlet) or a
-    /// discovered boundary parks the frame and returns to the caller.
+    /// owns a child record (component, condition, loop, route, outlet), a
+    /// discovered boundary, or the checkpoint that ends a committed boundary
+    /// parks the frame and returns to the caller.
     fn run_fragment<'data>(
         &mut self,
         mut frame: FragmentFrame,
         list: &'data webui_protocol::FragmentList,
-        runtime: (&WebUIHandler, &'data crate::Protocol),
+        runtime: StepRuntime<'_, 'data>,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<Option<StreamStatus>> {
-        let (handler, protocol) = runtime;
+        let StepRuntime {
+            goal,
+            handler,
+            protocol,
+        } = runtime;
         loop {
             let index = frame.index;
             let Some(fragment) = list.fragments.get(index) else {
@@ -488,6 +531,16 @@ impl ContinuationVm {
                 Some(Fragment::Boundary(boundary)) => {
                     if boundary.phase() == BoundaryPhase::End {
                         self.finish_boundary(boundary, handler, context)?;
+                        if goal == StepGoal::CommitBoundary {
+                            // The checkpoint just flushed, so the committed
+                            // occurrence ends this step: the parent bytes that
+                            // follow belong to the caller's next `advance`.
+                            self.push(Frame::Fragment(frame))?;
+                            return Ok(Some(StreamStatus {
+                                boundary: None,
+                                done: false,
+                            }));
+                        }
                         continue;
                     }
                     let descriptor =
@@ -515,7 +568,7 @@ impl ContinuationVm {
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     self.push(Frame::Fragment(frame))?;
-                    self.begin_for(for_loop, handler, protocol, context)?;
+                    self.begin_repeat(for_loop, handler, protocol, context)?;
                     return Ok(None);
                 }
                 Some(Fragment::Route(route)) => {
@@ -694,7 +747,12 @@ impl ContinuationVm {
         Ok(())
     }
 
-    fn begin_for(
+    /// Open a `<for>` repeat.
+    ///
+    /// The whole repeat is atomic: it can carry no boundary, so every frame it
+    /// pushes is drained before this step returns to the host and the repeat
+    /// never becomes resumable continuation state.
+    fn begin_repeat(
         &mut self,
         for_loop: &WebUIFragmentFor,
         handler: &WebUIHandler,
@@ -715,27 +773,37 @@ impl ContinuationVm {
                 .local_vars
                 .insert(for_loop.item.clone(), Value::Null);
         }
-        self.push(Frame::For(ForFrame {
+        self.open_repeats = self
+            .open_repeats
+            .checked_add(1)
+            .ok_or_else(|| continuation_limit_error(MAX_CONTINUATION_DEPTH))?;
+        self.push(Frame::Repeat(RepeatFrame {
             slot: fragment_slot(protocol, &for_loop.fragment_id)?,
             item_name: for_loop.item.clone().into(),
             items: items.into_iter(),
-            next_index: 0,
+            index: 0,
             saved_value,
         }))
     }
 
-    fn step_for(
+    /// Close the item the repeat just rendered, then open the next one.
+    fn step_repeat(
         &mut self,
-        mut frame: ForFrame,
+        mut frame: RepeatFrame,
         protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
+        // The frame is only re-pushed after an item opens, so a non-zero index
+        // means the previous item's body has just finished.
+        if let Some(open) = frame.index.checked_sub(1) {
+            if let Some(plugin) = context.plugin.as_mut() {
+                plugin.pop_scope();
+                plugin.on_repeat_item_end(open, context.writer)?;
+            }
+        }
         if let Some(item) = frame.items.next() {
-            let index = frame.next_index;
-            frame.next_index = frame
-                .next_index
-                .checked_add(1)
-                .ok_or_else(|| boundary_limit_error(MAX_BOUNDARY_OCCURRENCES))?;
+            let index = frame.index;
+            frame.index = index.wrapping_add(1);
             if let Some(plugin) = context.plugin.as_mut() {
                 plugin.on_repeat_item_start(index, context.writer)?;
                 plugin.push_scope();
@@ -744,8 +812,7 @@ impl ContinuationVm {
                 *entry = item;
             }
             let slot = frame.slot;
-            self.push(Frame::For(frame))?;
-            self.push(Frame::RepeatEnd { index })?;
+            self.push(Frame::Repeat(frame))?;
             self.push(Frame::EnterFragment(slot))?;
             return Ok(());
         }
@@ -757,6 +824,7 @@ impl ContinuationVm {
                 context.local_vars.remove(frame.item_name.as_ref());
             }
         }
+        self.open_repeats = self.open_repeats.saturating_sub(1);
         if let Some(plugin) = context.plugin.as_mut() {
             let fragment_id = protocol
                 .fragment_id(frame.slot)
@@ -784,6 +852,9 @@ impl ContinuationVm {
                 "boundary",
                 "a nested boundary occurrence is not valid",
             ));
+        }
+        if self.open_repeats != 0 {
+            return Err(boundary_in_repeat_error(&boundary.name));
         }
         let index = usize::try_from(self.next_boundary_id)
             .map_err(|_| boundary_limit_error(MAX_BOUNDARY_OCCURRENCES))?;
@@ -1538,5 +1609,65 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    /// A hand-built protocol that puts a boundary in a repeat body is rejected
+    /// by the VM rather than retained as resumable repeat state.
+    ///
+    /// The parser rejects this at build time, but the handler decodes protocols
+    /// it did not build (FFI, WASM, cached artifacts), so the continuation
+    /// defends the invariant it relies on.
+    #[test]
+    fn boundary_discovered_inside_a_repeat_is_rejected() {
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::signal("$structural:head_start", true),
+                        WebUIFragment {
+                            fragment: Some(Fragment::ForLoop(WebUIFragmentFor {
+                                item: "item".to_string(),
+                                collection: "items".to_string(),
+                                fragment_id: "for-1".to_string(),
+                            })),
+                        },
+                        WebUIFragment::signal("$structural:body_end", true),
+                    ],
+                    contains_boundary: true,
+                },
+            ),
+            (
+                "for-1".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment {
+                        fragment: Some(Fragment::Boundary(WebUIFragmentBoundary {
+                            declaration_id: 0,
+                            owner_fragment_id: "index.html".to_string(),
+                            name: "row".to_string(),
+                            key: None,
+                            may_repeat: false,
+                            phase: BoundaryPhase::Start as i32,
+                        })),
+                    }],
+                    contains_boundary: true,
+                },
+            ),
+        ]);
+        let protocol = crate::Protocol::new(WebUIProtocol::new(fragments));
+        let handler = WebUIHandler::new();
+        let mut sink = super::super::BufferSink::default();
+        let options = crate::RenderOptions::new("index.html", "/");
+        let mut response = match handler.stream_response(&protocol, &options, &mut sink) {
+            Ok(response) => response,
+            Err(error) => panic!("building the response failed: {error}"),
+        };
+        let error = response
+            .start(&serde_json::json!({ "items": [1, 2] }))
+            .expect_err("a boundary inside a repeat must be rejected");
+        assert!(
+            error.to_string().contains("<for> repeat body"),
+            "unexpected error: {error}"
+        );
     }
 }

@@ -34,21 +34,46 @@ Available via all bindings: Rust (`Protocol::render_component_templates`), Node/
 let mut session = StreamingSession::new(handler, protocol, options)?;
 let mut step = session.start(&initial_state)?;
 
-while let Some(boundary) = step.boundary {
-    let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
-    step = session.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
+while !step.done {
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            // Writes only this occurrence, through its checkpoint.
+            session.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        // Writes the shell bytes up to the next occurrence or the terminal.
+        None => session.advance()?,
+    };
+    write_and_flush(&step.bytes)?;
 }
 ```
 
-`start` and `resume` return `StreamStep { bytes, boundary, done }`. A descriptor
-contains response-local `instance_id`, stable `declaration_id`, owner-local
-`name`, `owner`, and an optional string or numeric `key`. The done step includes
-terminal and document-tail bytes.
+`start`, `resume`, and `advance` return `StreamStep { bytes, boundary, done }`,
+and each step's bytes are one independently writable, independently flushed
+segment. A descriptor contains response-local `instance_id`, stable
+`declaration_id`, owner-local `name`, `owner`, and an optional string or numeric
+`key`. `boundary: Some` waits for `resume`; `boundary: None` with `done: false`
+means the committed occurrence flushed and the caller must `advance`; the done
+step includes terminal and document-tail bytes.
+
+`resume` is boundary-only: it writes the occurrence markers, body, checkpoint,
+and sentinel, then returns. `advance` writes the parent or shell bytes that
+follow through the next occurrence or terminal. This makes an early
+component-local child independently flushable without an authored sibling
+boundary.
 
 Commit an occurrence as `BoundaryMode::Updatable` to call
-`update(instance_id, patch)` later. Updates are projected state records and do
-not insert markup. Component-local occurrences use generated parent spans so an
-early child can hydrate before the parent tail.
+`update(instance_id, patch)` later, including between its `resume` and the
+following `advance`. Updates are projected state records and do not insert
+markup. Component-local occurrences use generated parent spans so an early child
+can hydrate before the parent tail.
+
+A `<boundary>` may not appear inside a `<for>` repeat body (directly or through
+a component, `<if>`, route, or outlet): the build rejects it with
+`boundary-in-repeat`. Wrap the whole `<for>` in one boundary to pace the list as
+a single region. Boundaries before and after a `<for>` are also valid. A
+component-owned declaration reached from multiple static callsites in one entry
+traversal still requires a unique string or numeric `key`.
 
 ## Documentation
 

@@ -68,18 +68,325 @@ fn component_local_boundary_suspends_and_emits_v2_span_contract() {
     assert!(shell.contains(r#"<!--ws:0--><shell-card title="frozen" data-ws data-ws-span="0">"#));
     assert!(!shell.contains("<!--wb:0-->"));
 
-    let end = session
+    let committed = session
         .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap();
-    assert!(end.done);
-    let html = String::from_utf8(end.bytes).unwrap();
+    assert!(!committed.done && committed.boundary.is_none());
+    let html = String::from_utf8(committed.bytes).unwrap();
     assert!(html.contains(r#"<!--wb:0--><child-box label="frozen" data-ws data-ws-enclosing="0">"#));
     assert!(html.contains(r#"<!--/wb:0--><script type="application/json" data-webui-boundary>[2,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0"#));
-    assert!(html.contains(
+    // The committed step stops at its checkpoint: the component tail and the
+    // span completion that follow belong to the next step.
+    assert!(!html.contains("<footer>tail</footer>"));
+    assert!(!html.contains("<!--/ws:0-->"));
+
+    let end = session.advance().unwrap();
+    assert!(end.done);
+    let tail = String::from_utf8(end.bytes).unwrap();
+    assert!(tail.contains("<footer>tail</footer>"));
+    assert!(tail.contains(
         r#"</shell-card><!--/ws:0--><script type="application/json" data-webui-boundary>[2,1,3,0,"#
     ));
-    assert!(html.contains("[2,2,4,0,{}]"));
-    assert!(html.contains("</script><webui-hydrate></webui-hydrate>"));
+    assert!(tail.contains("[2,2,4,0,{}]"));
+    assert!(tail.contains("</script><webui-hydrate></webui-hydrate>"));
+}
+
+#[test]
+fn resume_writes_only_the_committed_boundary_and_advance_writes_the_tail() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="search"><p>results</p></boundary>"#,
+            "<footer>tail</footer>",
+        )),
+        &[],
+    );
+    let mut session = new_session(protocol, "/");
+
+    let start = session.start(&test_json!({})).unwrap();
+    let boundary = start.boundary.unwrap();
+    assert_eq!(boundary.name.as_ref(), "search");
+
+    let committed = session
+        .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap();
+    assert!(!committed.done && committed.boundary.is_none());
+    let bytes = String::from_utf8(committed.bytes).unwrap();
+    // Exact segment: the occurrence markers, its body, its record, and nothing
+    // past the record's hydration sentinel.
+    assert!(bytes.starts_with("<!--wb:0--><p>results</p><!--/wb:0--><script"));
+    assert!(bytes.ends_with("<webui-hydrate></webui-hydrate>"));
+    assert!(!bytes.contains("<footer>tail</footer>"));
+    assert!(!bytes.contains("[2,1,4,0,{}]"));
+
+    let tail = session.advance().unwrap();
+    assert!(tail.done);
+    let tail = String::from_utf8(tail.bytes).unwrap();
+    assert!(tail.starts_with("<footer>tail</footer>"));
+    assert!(tail.contains("[2,1,4,0,{}]"));
+    assert!(!tail.contains("<!--wb:0-->"));
+}
+
+#[test]
+fn multiple_boundaries_alternate_descriptor_commit_and_advance() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="first"><p>1</p></boundary>"#,
+            "<hr>",
+            r#"<boundary name="second"><p>2</p></boundary>"#,
+            "<footer>tail</footer>",
+        )),
+        &[],
+    );
+    let mut session = new_session(protocol, "/");
+
+    let start = session.start(&test_json!({})).unwrap();
+    let first = start.boundary.clone().unwrap();
+    assert_eq!(first.instance_id.raw(), 0);
+
+    let committed = session
+        .resume(first.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap();
+    assert!(committed.boundary.is_none() && !committed.done);
+
+    let between = session.advance().unwrap();
+    let second = between.boundary.clone().unwrap();
+    assert_eq!(second.instance_id.raw(), 1);
+    let between = String::from_utf8(between.bytes).unwrap();
+    assert!(between.starts_with("<hr>"), "{between}");
+    assert!(!between.contains("<!--wb:1-->"));
+
+    let committed = session
+        .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap();
+    assert!(committed.boundary.is_none() && !committed.done);
+    assert!(String::from_utf8(committed.bytes)
+        .unwrap()
+        .contains("<!--wb:1--><p>2</p><!--/wb:1-->"));
+
+    let end = session.advance().unwrap();
+    assert!(end.done && end.boundary.is_none());
+    assert!(String::from_utf8(end.bytes)
+        .unwrap()
+        .contains("<footer>tail</footer>"));
+    assert!(session.is_done());
+}
+
+#[test]
+fn out_of_order_steps_are_rejected_without_poisoning() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="first"><p>1</p></boundary>"#,
+            r#"<boundary name="second"><p>2</p></boundary>"#,
+        )),
+        &[],
+    );
+    let mut session = new_session(protocol, "/");
+
+    // advance before any commit is an ordering error, and writes nothing.
+    assert!(session
+        .advance()
+        .unwrap_err()
+        .to_string()
+        .contains("start must be called before this operation"));
+
+    let first = session.start(&test_json!({})).unwrap().boundary.unwrap();
+    assert!(session
+        .advance()
+        .unwrap_err()
+        .to_string()
+        .contains("no committed boundary to advance past"));
+
+    let committed = session
+        .resume(first.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap();
+    assert!(committed.boundary.is_none());
+
+    // Resuming again before advancing is rejected, and the response stays
+    // usable: the very next advance still produces the second descriptor.
+    assert!(session
+        .resume(first.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap_err()
+        .to_string()
+        .contains("has not been advanced past"));
+    let second = session.advance().unwrap().boundary.unwrap();
+    assert_eq!(second.instance_id.raw(), 1);
+    assert!(session
+        .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    assert!(session.advance().unwrap().done);
+    assert!(session
+        .advance()
+        .unwrap_err()
+        .to_string()
+        .contains("already completed"));
+}
+
+#[test]
+fn boundary_in_repeat_is_rejected_at_build_time() {
+    let mut parser = HtmlParser::new();
+    let error = parser
+        .parse(
+            "index.html",
+            &document(
+                r#"<for each="item in items"><boundary name="row" key="{{item.id}}"><p>{{item.label}}</p></boundary></for>"#,
+            ),
+        )
+        .expect_err("a boundary inside a repeat must be rejected before render");
+    assert!(
+        error.to_string().contains("<for>"),
+        "the diagnostic must name the repeat: {error}"
+    );
+}
+
+#[test]
+fn boundary_free_repeat_renders_atomically_inside_one_boundary() {
+    // The whole finite list is one atomic checkpoint: it renders in the commit
+    // step and leaves no resumable repeat state behind.
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="feed"><for each="item in items"><p>{{item.label}}</p></for></boundary>"#,
+            "<footer>tail</footer>",
+        )),
+        &[],
+    );
+    let mut session = new_session(protocol, "/");
+    let state = test_json!({ "items": [{ "label": "a" }, { "label": "b" }, { "label": "c" }] });
+
+    let boundary = session.start(&state).unwrap().boundary.unwrap();
+    let committed = session
+        .resume(boundary.instance_id, &state, BoundaryMode::Final)
+        .unwrap();
+    assert!(committed.boundary.is_none() && !committed.done);
+    let html = String::from_utf8(committed.bytes).unwrap();
+    assert!(html.contains("<p>a</p><p>b</p><p>c</p>"), "{html}");
+    assert!(!html.contains("<footer>tail</footer>"));
+
+    let end = session.advance().unwrap();
+    assert!(end.done);
+    assert!(String::from_utf8(end.bytes)
+        .unwrap()
+        .contains("<footer>tail</footer>"));
+}
+
+#[test]
+fn nested_repeats_and_components_inside_a_boundary_keep_loop_locals_and_capture() {
+    // Nested repeats exercise the frame-driven walk (no recursion) and a
+    // component inside a repeat body must still land in the enclosing
+    // checkpoint's capture, so its template arrives with that record.
+    let protocol = parsed_protocol(
+        &document(
+            r#"<boundary name="grid"><for each="row in rows"><section>{{row.name}}<for each="cell in row.cells"><cell-box label="{{cell}}" owner="{{row.name}}"></cell-box></for></section></for></boundary>"#,
+        ),
+        &[("cell-box", "<span>{{owner}}:{{label}}</span>")],
+    );
+    let mut session = new_session(protocol, "/");
+    let state = test_json!({
+        "rows": [
+            { "name": "r1", "cells": ["a", "b"] },
+            { "name": "r2", "cells": ["c"] }
+        ]
+    });
+
+    let boundary = session.start(&state).unwrap().boundary.unwrap();
+    let html = String::from_utf8(
+        session
+            .resume(boundary.instance_id, &state, BoundaryMode::Final)
+            .unwrap()
+            .bytes,
+    )
+    .unwrap();
+    // The outer loop local stays visible inside the inner loop body, and the
+    // inner local does not leak between rows.
+    assert!(html.contains("<span>r1:a</span>"), "{html}");
+    assert!(html.contains("<span>r1:b</span>"), "{html}");
+    assert!(html.contains("<span>r2:c</span>"), "{html}");
+    assert_eq!(html.matches("<span>").count(), 3);
+    // The repeated component is captured by the enclosing checkpoint, so its
+    // inventory bit rides that record.
+    assert!(html.contains(r#""inventory":"01""#), "{html}");
+    assert!(session.advance().unwrap().done);
+}
+
+#[test]
+fn keyed_component_boundary_returns_gapless_descriptors_and_rejects_duplicates() {
+    // `<for>` can no longer repeat a declaration, but two static callsites of a
+    // boundary-bearing component still can, so keys stay live.
+    let protocol = parsed_protocol(
+        &document(
+            r#"<row-item row-id="{{first}}"></row-item><row-item row-id="{{second}}"></row-item>"#,
+        ),
+        &[(
+            "row-item",
+            r#"<boundary name="row" key="{{rowId}}"><p>{{rowId}}</p></boundary>"#,
+        )],
+    );
+    let mut session = new_session(Arc::clone(&protocol), "/");
+    let state = test_json!({ "first": 10, "second": 20 });
+
+    let first = session.start(&state).unwrap().boundary.unwrap();
+    assert_eq!(first.instance_id.raw(), 0);
+    assert_eq!(first.key, Some(BoundaryKey::Number(10.into())));
+    assert!(session
+        .resume(first.instance_id, &state, BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+
+    let second = session.advance().unwrap().boundary.unwrap();
+    assert_eq!(second.instance_id.raw(), 1);
+    assert_eq!(second.key, Some(BoundaryKey::Number(20.into())));
+    assert!(session
+        .resume(second.instance_id, &state, BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    assert!(session.advance().unwrap().done);
+
+    let mut duplicate = new_session(protocol, "/");
+    let duplicate_state = test_json!({ "first": 7, "second": 7 });
+    let first = duplicate.start(&duplicate_state).unwrap().boundary.unwrap();
+    assert!(duplicate
+        .resume(first.instance_id, &duplicate_state, BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    let error = duplicate.advance().unwrap_err();
+    assert!(error.to_string().contains("duplicate key"));
+    assert!(duplicate
+        .advance()
+        .unwrap_err()
+        .to_string()
+        .contains("poisoned"));
+}
+
+#[test]
+fn resume_overlays_boundary_state_on_frozen_parent_and_lexical_locals() {
+    let protocol = parsed_protocol(
+        &document(r#"<row-item label="local"></row-item>"#),
+        &[(
+            "row-item",
+            r#"<boundary name="row"><p>{{label}}/{{global}}</p></boundary>"#,
+        )],
+    );
+    let mut session = new_session(protocol, "/");
+    let first = session
+        .start(&test_json!({ "global": "frozen" }))
+        .unwrap()
+        .boundary
+        .unwrap();
+    let committed = session
+        .resume(
+            first.instance_id,
+            &test_json!({ "global": "boundary" }),
+            BoundaryMode::Final,
+        )
+        .unwrap();
+    assert!(String::from_utf8(committed.bytes)
+        .unwrap()
+        .contains("<p>local/boundary</p>"));
+    assert!(session.advance().unwrap().done);
 }
 
 #[test]
@@ -128,91 +435,6 @@ fn component_false_if_emits_generated_span_without_occurrence() {
     assert!(String::from_utf8(shown.bytes)
         .unwrap()
         .contains("<!--ws:0--><conditional-card"));
-}
-
-#[test]
-fn keyed_repeat_returns_gapless_descriptors_and_rejects_duplicates() {
-    let protocol = parsed_protocol(
-        &document(
-            r#"<for each="item in items"><boundary name="row" key="{{item.id}}"><p>{{item.label}}</p></boundary></for>"#,
-        ),
-        &[],
-    );
-    let mut session = new_session(Arc::clone(&protocol), "/");
-    let state = test_json!({
-        "items": [
-            { "id": 10, "label": "a" },
-            { "id": 20, "label": "b" }
-        ]
-    });
-    let first = session.start(&state).unwrap().boundary.unwrap();
-    assert_eq!(first.instance_id.raw(), 0);
-    assert_eq!(first.key, Some(BoundaryKey::Number(10.into())));
-    let second = session
-        .resume(first.instance_id, &state, BoundaryMode::Final)
-        .unwrap()
-        .boundary
-        .unwrap();
-    assert_eq!(second.instance_id.raw(), 1);
-    assert_eq!(second.key, Some(BoundaryKey::Number(20.into())));
-    assert!(
-        session
-            .resume(second.instance_id, &state, BoundaryMode::Final)
-            .unwrap()
-            .done
-    );
-
-    let mut duplicate = new_session(protocol, "/");
-    let duplicate_state = test_json!({
-        "items": [
-            { "id": 7, "label": "a" },
-            { "id": 7, "label": "b" }
-        ]
-    });
-    let first = duplicate.start(&duplicate_state).unwrap().boundary.unwrap();
-    let error = duplicate
-        .resume(first.instance_id, &duplicate_state, BoundaryMode::Final)
-        .unwrap_err();
-    assert!(error.to_string().contains("duplicate key"));
-    assert!(duplicate
-        .resume(
-            BoundaryInstanceId::from_raw(1),
-            &duplicate_state,
-            BoundaryMode::Final,
-        )
-        .unwrap_err()
-        .to_string()
-        .contains("poisoned"));
-}
-
-#[test]
-fn resume_overlays_boundary_state_on_frozen_parent_and_lexical_locals() {
-    let protocol = parsed_protocol(
-        &document(
-            r#"<for each="item in items"><boundary name="row" key="{{item.id}}"><p>{{item.label}}/{{global}}</p></boundary></for>"#,
-        ),
-        &[],
-    );
-    let mut session = new_session(protocol, "/");
-    let first = session
-        .start(&test_json!({
-            "items": [{ "id": "a", "label": "local" }],
-            "global": "frozen"
-        }))
-        .unwrap()
-        .boundary
-        .unwrap();
-    let end = session
-        .resume(
-            first.instance_id,
-            &test_json!({ "global": "boundary" }),
-            BoundaryMode::Final,
-        )
-        .unwrap();
-    assert!(end.done);
-    assert!(String::from_utf8(end.bytes)
-        .unwrap()
-        .contains("<p>local/boundary</p>"));
 }
 
 #[test]
@@ -314,11 +536,14 @@ fn selected_route_component_hydration_keys_survive_frozen_state() {
         }))
         .unwrap();
     let boundary = start.boundary.unwrap();
-    let completed = session
+    let committed = session
         .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap();
-    assert!(completed.done);
-    let html = String::from_utf8(completed.bytes).unwrap();
+    let end = session.advance().unwrap();
+    assert!(end.done);
+    // The route host's own hydration state rides its span-completion record,
+    // which the advance step writes after the boundary checkpoint.
+    let html = String::from_utf8([committed.bytes, end.bytes].concat()).unwrap();
     assert!(html.contains(r#""state":{"selectedHydration":"frozen"}"#));
     assert!(!html.contains("inactiveHydration"));
 }
@@ -346,11 +571,12 @@ fn route_component_all_projection_keeps_full_state_for_resume() {
         .start(&test_json!({ "opaqueRuntimeState": "frozen" }))
         .unwrap();
     let boundary = start.boundary.unwrap();
-    let completed = session
+    let committed = session
         .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap();
-    assert!(completed.done);
-    assert!(String::from_utf8(completed.bytes)
+    let end = session.advance().unwrap();
+    assert!(end.done);
+    assert!(String::from_utf8([committed.bytes, end.bytes].concat())
         .unwrap()
         .contains(r#""opaqueRuntimeState":"frozen""#));
 }
@@ -369,13 +595,13 @@ fn route_component_full_strategy_keeps_fast_state_for_resume() {
         .start(&test_json!({ "fastRuntimeState": "frozen" }))
         .unwrap();
     let boundary = start.boundary.unwrap();
-    let completed = session
+    let committed = session
         .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap();
-    assert!(completed.done);
-    assert!(String::from_utf8(completed.bytes)
+    assert!(String::from_utf8(committed.bytes)
         .unwrap()
         .contains(r#""fastRuntimeState":"frozen""#));
+    assert!(session.advance().unwrap().done);
 }
 
 #[test]
@@ -435,11 +661,15 @@ fn nested_component_spans_are_outer_first_and_complete_inner_first() {
     assert!(outer < inner);
 
     let boundary = start.boundary.unwrap();
-    let end = session
+    let committed = session
         .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap();
+    let commit = String::from_utf8(committed.bytes).unwrap();
+    assert!(commit.contains(r#""enclosingSpanInstanceId":1"#));
+
+    let end = session.advance().unwrap();
+    assert!(end.done);
     let html = String::from_utf8(end.bytes).unwrap();
-    assert!(html.contains(r#""enclosingSpanInstanceId":1"#));
     let inner_end = html.find("<!--/ws:1-->").unwrap();
     let outer_end = html.find("<!--/ws:0-->").unwrap();
     assert!(inner_end < outer_end);
@@ -466,9 +696,20 @@ fn update_targets_one_runtime_instance() {
             BoundaryMode::Updatable,
         )
         .unwrap();
-    assert!(committed.done);
+    assert!(!committed.done);
+    // An update lands between the commit and the tail: the response is still
+    // open, so the host can revise the occurrence it just wrote.
+    let update = String::from_utf8(
+        session
+            .update(boundary.instance_id, &test_json!({ "count": 2 }))
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(update.contains("[2,1,2,0,{\"count\":2}]"));
+
+    assert!(session.advance().unwrap().done);
     assert!(session
-        .update(boundary.instance_id, &test_json!({ "count": 2 }))
+        .update(boundary.instance_id, &test_json!({ "count": 3 }))
         .unwrap_err()
         .to_string()
         .contains("already completed"));
@@ -489,7 +730,7 @@ fn update_before_terminal_targets_the_runtime_occurrence() {
         .unwrap()
         .boundary
         .unwrap();
-    let second = session
+    assert!(session
         .resume(
             first.instance_id,
             &test_json!({ "count": 1 }),
@@ -497,7 +738,8 @@ fn update_before_terminal_targets_the_runtime_occurrence() {
         )
         .unwrap()
         .boundary
-        .unwrap();
+        .is_none());
+    let second = session.advance().unwrap().boundary.unwrap();
     let update = String::from_utf8(
         session
             .update(first.instance_id, &test_json!({ "count": 2 }))
@@ -505,12 +747,12 @@ fn update_before_terminal_targets_the_runtime_occurrence() {
     )
     .unwrap();
     assert!(update.contains("[2,1,2,0,{\"count\":2}]"));
-    assert!(
-        session
-            .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
-            .unwrap()
-            .done
-    );
+    assert!(session
+        .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    assert!(session.advance().unwrap().done);
 }
 
 #[test]
@@ -524,11 +766,12 @@ fn update_rejects_final_and_uncommitted_occurrences_without_poisoning() {
     );
     let mut session = new_session(protocol, "/");
     let first = session.start(&test_json!({})).unwrap().boundary.unwrap();
-    let second = session
+    assert!(session
         .resume(first.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap()
         .boundary
-        .unwrap();
+        .is_none());
+    let second = session.advance().unwrap().boundary.unwrap();
     assert!(session
         .update(first.instance_id, &test_json!({}))
         .unwrap_err()
@@ -539,12 +782,12 @@ fn update_rejects_final_and_uncommitted_occurrences_without_poisoning() {
         .unwrap_err()
         .to_string()
         .contains("has not committed"));
-    assert!(
-        session
-            .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
-            .unwrap()
-            .done
-    );
+    assert!(session
+        .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    assert!(session.advance().unwrap().done);
 }
 
 #[test]
@@ -564,12 +807,12 @@ fn wrong_resume_id_is_recoverable_but_render_failure_poisons() {
         .unwrap_err()
         .to_string()
         .contains("stale"));
-    assert!(
-        session
-            .resume(pending.instance_id, &test_json!({}), BoundaryMode::Final)
-            .unwrap()
-            .done
-    );
+    assert!(session
+        .resume(pending.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    assert!(session.advance().unwrap().done);
 
     let protocol = parsed_protocol(
         &document(
@@ -658,7 +901,10 @@ fn adjacent_boundaries_do_not_flush_the_same_position_twice() {
 #[test]
 fn borrowed_api_flushes_each_returned_semantic_step() {
     let protocol = parsed_protocol(
-        &document(r#"<boundary name="ready"><p>ok</p></boundary>"#),
+        &document(concat!(
+            r#"<boundary name="ready"><p>ok</p></boundary>"#,
+            "<footer>tail</footer>",
+        )),
         &[],
     );
     let handler = WebUIHandler::new();
@@ -672,15 +918,86 @@ fn borrowed_api_flushes_each_returned_semantic_step() {
         .unwrap();
     let first = response.start(&test_json!({})).unwrap();
     let boundary = first.boundary.unwrap();
-    assert!(
-        response
-            .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
-            .unwrap()
-            .done
-    );
+    assert!(response
+        .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
+        .unwrap()
+        .boundary
+        .is_none());
+    assert!(response.advance().unwrap().done);
     drop(response);
-    assert!(writer.flushes >= 3);
+
+    // Prefix, checkpoint, terminal: three flushes, each releasing new bytes,
+    // and the checkpoint flush lands exactly where the occurrence's record
+    // ends — before any tail byte.
+    assert_eq!(writer.flushes, 3);
+    assert!(writer.flush_positions.windows(2).all(|p| p[0] < p[1]));
+    let checkpoint = writer.flush_positions[1];
+    assert!(writer.output[..checkpoint].ends_with("<webui-hydrate></webui-hydrate>"));
+    assert!(!writer.output[..checkpoint].contains("<footer>tail</footer>"));
+    assert!(writer.output[checkpoint..].starts_with("<footer>tail</footer>"));
     assert!(writer.ended);
+}
+
+#[test]
+fn borrowed_and_owned_sessions_produce_identical_step_segments() {
+    let entry = document(concat!(
+        r#"<boundary name="first"><p>1</p></boundary>"#,
+        "<hr>",
+        r#"<boundary name="second"><p>2</p></boundary>"#,
+        "<footer>tail</footer>",
+    ));
+    let protocol = parsed_protocol(&entry, &[]);
+    let handler = WebUIHandler::new();
+
+    let mut owned = new_session(Arc::clone(&protocol), "/");
+    let mut segments: Vec<String> = Vec::new();
+    let mut step = owned.start(&test_json!({})).unwrap();
+    segments.push(String::from_utf8(step.bytes.clone()).unwrap());
+    while !step.done {
+        step = match step.boundary.as_ref() {
+            Some(boundary) => owned
+                .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
+                .unwrap(),
+            None => owned.advance().unwrap(),
+        };
+        segments.push(String::from_utf8(step.bytes.clone()).unwrap());
+    }
+
+    let mut writer = FlushStringWriter::default();
+    let mut response = handler
+        .stream_response(
+            &protocol,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+    let mut status = response.start(&test_json!({})).unwrap();
+    while !status.done {
+        status = match status.boundary.as_ref() {
+            Some(boundary) => response
+                .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
+                .unwrap(),
+            None => response.advance().unwrap(),
+        };
+    }
+    drop(response);
+
+    assert_eq!(
+        segments.concat(),
+        writer.output,
+        "owned steps must reassemble into the borrowed byte stream"
+    );
+    // Every non-empty owned step is one flushed segment, so the borrowed
+    // writer's flush positions are exactly the owned step offsets.
+    let mut offsets = Vec::new();
+    let mut position = 0usize;
+    for segment in &segments {
+        position += segment.len();
+        if !segment.is_empty() {
+            offsets.push(position);
+        }
+    }
+    assert_eq!(offsets, writer.flush_positions);
 }
 
 #[test]

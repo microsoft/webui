@@ -114,7 +114,7 @@ public sealed class BoundaryDescriptor
 }
 
 /// <summary>
-/// The immutable managed result of one streaming start or resume operation.
+/// The immutable managed result of one streaming start, resume, or advance operation.
 /// </summary>
 public sealed class StreamingStep
 {
@@ -145,9 +145,9 @@ public sealed class StreamingStep
 /// A progressive HTML response advanced one semantic step at a time.
 /// </summary>
 /// <remarks>
-/// <para><see cref="Start"/> and <see cref="Resume"/> eagerly copy native step
-/// bytes and descriptors into managed objects. The caller owns the transport
-/// and applies its own backpressure.</para>
+/// <para><see cref="Start"/>, <see cref="Resume"/>, and <see cref="Advance"/>
+/// eagerly copy native step bytes and descriptors into managed objects. The
+/// caller owns the transport and applies its own backpressure.</para>
 /// <para>This type is <b>not</b> thread-safe. Drive one session from one request
 /// at a time; independent sessions may run concurrently.</para>
 /// <example>
@@ -158,11 +158,12 @@ public sealed class StreamingStep
 /// {
 ///     await response.Body.WriteAsync(step.Bytes);
 ///     if (step.Done) break;
-///     BoundaryDescriptor boundary = step.Boundary!;
-///     step = session.Resume(
-///         boundary.InstanceId,
-///         await LoadBoundaryState(boundary),
-///         BoundaryMode.Final);
+///     step = step.Boundary is BoundaryDescriptor boundary
+///         ? session.Resume(
+///             boundary.InstanceId,
+///             await LoadBoundaryState(boundary),
+///             BoundaryMode.Final)
+///         : session.Advance();
 /// }
 /// </code>
 /// </example>
@@ -211,12 +212,15 @@ public sealed class StreamingSession : IDisposable
     }
 
     /// <summary>
-    /// Commits the pending occurrence and advances to the next occurrence or terminal.
+    /// Commits the pending occurrence and returns immediately after its checkpoint.
     /// </summary>
     /// <param name="instanceId">The pending descriptor's response-local instance ID.</param>
     /// <param name="stateJson">JSON-encoded state used while rendering this occurrence.</param>
     /// <param name="mode">Whether this occurrence may receive later updates.</param>
-    /// <returns>Produced bytes, completion state, and the next boundary descriptor.</returns>
+    /// <returns>
+    /// The occurrence bytes with no boundary descriptor and <see cref="StreamingStep.Done"/>
+    /// set to <c>false</c>.
+    /// </returns>
     /// <exception cref="ObjectDisposedException">Thrown after disposal.</exception>
     /// <exception cref="ArgumentOutOfRangeException">Thrown for an unknown boundary mode.</exception>
     /// <exception cref="WebUIException">Thrown for a stale ID or rendering failure.</exception>
@@ -239,6 +243,22 @@ public sealed class StreamingSession : IDisposable
                 stateJson,
                 (uint)mode),
             nameof(Resume));
+    }
+
+    /// <summary>
+    /// Advances through parent bytes to the next occurrence or terminal completion.
+    /// </summary>
+    /// <returns>Produced bytes, completion state, and the next boundary descriptor.</returns>
+    /// <exception cref="ObjectDisposedException">Thrown after disposal.</exception>
+    /// <exception cref="WebUIException">
+    /// Thrown when called out of order or when rendering fails.
+    /// </exception>
+    public StreamingStep Advance()
+    {
+        ThrowIfDisposed();
+        return TakeStep(
+            NativeBindings.AdvanceStreamingSession(_handle),
+            nameof(Advance));
     }
 
     /// <summary>

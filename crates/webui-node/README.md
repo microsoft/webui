@@ -9,9 +9,8 @@ Node.js native addon for the [WebUI](https://github.com/microsoft/webui) framewo
 ## Host-driven streaming
 
 `Protocol.streamResponse(entry, requestPath, options)` returns a
-`StreamingSession`. Call `start(stateJson)` once, then call
-`resume(instanceId, stateJson, mode)` for each discovered boundary. State and
-patch arguments are JSON strings. Both step methods return:
+`StreamingSession`. State and patch arguments are JSON strings. `start`,
+`resume`, and `advance` return:
 
 ```js
 {
@@ -21,12 +20,28 @@ patch arguments are JSON strings. Both step methods return:
 }
 ```
 
+| Method | Result |
+|---|---|
+| `start(stateJson)` | Shell bytes through the first descriptor or terminal |
+| `resume(instanceId, stateJson, mode)` | Only the pending occurrence's bytes through its checkpoint |
+| `advance()` | Following parent bytes through the next descriptor or terminal |
+| `update(instanceId, patchJson)` | Projected state bytes for an updatable occurrence |
+
+A descriptor means call `resume`; no descriptor with `done: false` means call
+`advance`; `done: true` means complete. Boundary-only `resume` lets the host
+flush the checkpoint immediately. `advance` renders following parent or tail
+bytes, so no sibling boundary workaround is needed.
+
 `mode` is `"final"` (the default) or `"updatable"`. A committed updatable
-occurrence accepts `update(instanceId, patch)`, which returns a `Buffer`.
-Boundary keys preserve JSON identity: string keys are JavaScript strings and
-finite numeric keys are JavaScript numbers. Boundaries are discovered through
-entries, reusable components, runtime branches, loops, and selected routes.
-The step with `done: true` already contains terminal and document-tail bytes.
+occurrence accepts `update(instanceId, patch)`, including between its `resume`
+and `advance`, and returns a `Buffer`. Optional boundary keys preserve JSON
+identity: string keys are JavaScript strings and finite numeric keys are
+JavaScript numbers. A key is required when one component-owned declaration is
+reached from multiple static callsites in one entry traversal. Boundaries are
+discovered through entries, reusable components, runtime branches, and selected
+routes. A boundary-bearing subtree under `<for>` fails with
+`boundary-in-repeat`; one boundary may wrap the whole `<for>`. The step with
+`done: true` already contains terminal and document-tail bytes.
 
 ## Benchmark
 
@@ -48,4 +63,4 @@ See the [WebUI repository](https://github.com/microsoft/webui) for full usage gu
 
 ## License
 
-MIT — Copyright (c) Microsoft Corporation.
+MIT - Copyright (c) Microsoft Corporation.

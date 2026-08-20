@@ -25,9 +25,11 @@ cursor API directly:
 cargo run -- streaming-protocol.bin state.json --plugin=webui --streaming
 ```
 
-The example calls `StreamingResponse::start()`, then resumes each
-`BoundaryDescriptor::instance_id` returned by the preceding step. The final
-resume emits the terminal automatically when `StreamStatus::done` becomes true;
-there is no separate finish call. Real servers can commit an occurrence as
-`BoundaryMode::Updatable` and call `update(instance_id, patch)` before the final
-step.
+The example calls `StreamingResponse::start()`, then follows the step state
+exactly: a descriptor requires `resume`, no descriptor with `done == false`
+requires `advance`, and `done == true` completes the response. `resume` emits
+only that boundary through its checkpoint. `advance` emits the following parent
+or tail bytes through the next descriptor or terminal, so no sibling boundary
+is needed. The final `advance` emits the terminal; there is no separate finish
+call. Real servers can commit an occurrence as `BoundaryMode::Updatable` and
+call `update(instance_id, patch)` between its `resume` and `advance`.

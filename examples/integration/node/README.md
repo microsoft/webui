@@ -70,12 +70,16 @@ await write(res, step.bytes);
 const status = step.boundary; // runtime descriptor discovered by start()
 step = session.resume(status.instanceId, statusState, 'updatable');
 await write(res, step.bytes);
-// ... later, on the same response:
+// The checkpoint is committed, but parent bytes have not advanced yet.
 await write(res, session.update(status.instanceId, { jobState: 'succeeded' }));
 
 while (!step.done) {
   const boundary = step.boundary;
-  step = session.resume(boundary.instanceId, await stateFor(boundary));
+  if (boundary) {
+    step = session.resume(boundary.instanceId, await stateFor(boundary));
+  } else {
+    step = session.advance();
+  }
   await write(res, step.bytes);
 }
 res.end();
@@ -108,12 +112,13 @@ client to see the chunk timing:
 
 ```
 status 200 at   7 ms
-step 1             start (<head> ships before any work finishes)
-step 2             resume job-status as updatable
-step 3             resume log batch 1
-step 4             resume log batch 2
-update             patch job-status on this same response
-step 5             resume log batch 3 and emit the terminal automatically
+start              <head> ships and job-status is discovered
+resume             commit job-status only, as updatable
+update             patch job-status before advancing its parent
+advance            write parent bytes and discover log batch 1
+resume / advance   commit log batch 1, then discover log batch 2
+resume / advance   commit log batch 2, then discover log batch 3
+resume / advance   commit log batch 3, then write the tail and terminal
 ```
 
 The update is the interesting one: the slow job finishes *after* its boundary was
@@ -122,7 +127,15 @@ record instead of forcing a client-side fetch or replacing DOM.
 
 The host never resolves authored names before `start()`. Every runtime
 descriptor comes from the preceding `StreamStep`, which also covers boundaries
-discovered through loops, routes, conditions, or component templates.
+discovered through routes, conditions, or component templates. A
+boundary-bearing subtree under `<for>` fails with `boundary-in-repeat`; a whole
+`<for>` may sit inside one boundary.
+
+The state machine has no ambiguous unfinished step: a descriptor means
+`resume`, neither a descriptor nor `done` means `advance`, and `done` means
+complete. Boundary-only `resume` makes each checkpoint independently writable.
+`advance` carries the following parent or tail bytes, so no sibling boundary is
+needed.
 
 ### Scope
 
@@ -131,6 +144,6 @@ updates, and backpressure. Its components are scriptless, so hydration comes
 from the framework's streaming entry loaded straight from
 `@microsoft/webui-framework`, with no bundler step.
 
-For the full picture — interactive islands, boundary-carried module loading,
-`modulepreload` scheduling, and the measured performance story — see
+For the full picture - interactive islands, boundary-carried module loading,
+`modulepreload` scheduling, and the measured performance story - see
 [`examples/app/streaming`](../../app/streaming/README.md).

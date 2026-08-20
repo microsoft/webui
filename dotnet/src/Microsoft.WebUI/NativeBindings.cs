@@ -214,6 +214,10 @@ internal static class NativeBindings
         [MarshalAs(UnmanagedType.LPUTF8Str)] string stateJson,
         uint mode);
 
+    [DllImport(LibName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "webui_streaming_session_advance")]
+    private static extern IntPtr webui_streaming_session_advance_raw(
+        WebUIStreamingSessionSafeHandle sessionPtr);
+
     [DllImport(LibName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr webui_streaming_session_update(
         WebUIStreamingSessionSafeHandle sessionPtr,
@@ -311,6 +315,13 @@ internal static class NativeBindings
             instanceId,
             stateJson,
             mode);
+        return new WebUIStreamingStepSafeHandle(handle);
+    }
+
+    internal static WebUIStreamingStepSafeHandle AdvanceStreamingSession(
+        WebUIStreamingSessionSafeHandle session)
+    {
+        IntPtr handle = webui_streaming_session_advance_raw(session);
         return new WebUIStreamingStepSafeHandle(handle);
     }
 

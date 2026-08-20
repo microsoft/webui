@@ -239,8 +239,8 @@ impl Protocol {
 
 /// A progressive HTML response driven one semantic step at a time from JavaScript.
 ///
-/// `start()` and `resume()` return `{ bytes, done, boundary? }`, where `bytes`
-/// is a `Uint8Array` and a boundary is
+/// `start()`, `resume()`, and `advance()` return
+/// `{ bytes, done, boundary? }`, where `bytes` is a `Uint8Array` and a boundary is
 /// `{ instanceId, declarationId, owner, name, key }`. Boundary keys retain
 /// their authored JSON type: strings are JavaScript strings and finite numbers
 /// are JavaScript numbers.
@@ -253,6 +253,8 @@ impl Protocol {
 ///   const { instanceId, name, key } = step.boundary;
 ///   const state = await loadBoundary(name, key);
 ///   step = session.resume(instanceId, JSON.stringify(state), 'updatable');
+///   controller.enqueue(step.bytes);
+///   step = session.advance();
 ///   controller.enqueue(step.bytes);
 /// }
 /// ```
@@ -271,7 +273,7 @@ impl StreamingSession {
         stream_step_object(step)
     }
 
-    /// Commit the pending occurrence and advance to the next one or terminal.
+    /// Commit the pending occurrence through its checkpoint, then stop.
     ///
     /// `mode` is `"final"` (default) or `"updatable"`. Only updatable
     /// boundaries accept later `update()` calls.
@@ -288,6 +290,16 @@ impl StreamingSession {
             .inner
             .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
             .map_err(streaming_error)?;
+        stream_step_object(step)
+    }
+
+    /// Write the parent bytes after the committed occurrence.
+    ///
+    /// Valid only after `resume()`. Returns the next boundary occurrence or
+    /// completes the document tail.
+    #[wasm_bindgen(js_name = advance)]
+    pub fn advance(&mut self) -> Result<Object, JsValue> {
+        let step = self.inner.advance().map_err(streaming_error)?;
         stream_step_object(step)
     }
 
@@ -646,14 +658,17 @@ mod tests {
         }
 
         #[test]
-        fn streaming_start_and_resume_preserve_repeat_key_types() {
+        fn streaming_steps_preserve_key_types_and_checkpoint_segments() {
             let mut session = session(concat!(
                 "<html><head></head><body>",
-                r#"<for each="item in items"><boundary name="row" key="{{item.id}}">"#,
-                "<p>{{item.label}}</p></boundary></for>",
+                r#"<boundary name="first" key="{{firstId}}"><p>{{firstLabel}}</p></boundary>"#,
+                "<span>between</span>",
+                r#"<boundary name="second" key="{{secondId}}"><p>{{secondLabel}}</p></boundary>"#,
+                "<footer>tail</footer>",
                 "</body></html>",
             ));
-            let state = state(r#"{"items":[{"id":"alpha","label":"a"},{"id":20,"label":"b"}]}"#);
+            let state =
+                state(r#"{"firstId":"alpha","firstLabel":"a","secondId":20,"secondLabel":"b"}"#);
 
             let first = session
                 .start(&state)
@@ -664,26 +679,52 @@ mod tests {
             assert_eq!(first_boundary.instance_id.raw(), 0);
             assert_eq!(first_boundary.declaration_id, 0);
             assert_eq!(first_boundary.owner.as_ref(), "index.html");
-            assert_eq!(first_boundary.name.as_ref(), "row");
+            assert_eq!(first_boundary.name.as_ref(), "first");
             assert_eq!(
                 first_boundary.key,
                 Some(BoundaryKey::String("alpha".to_string()))
             );
 
-            let second = session
+            let resumed = session
                 .resume(first_boundary.instance_id, &state, BoundaryMode::Final)
-                .expect("resume should discover second boundary");
-            assert!(!second.done);
-            let second_boundary = second.boundary.expect("second boundary should be returned");
+                .expect("resume should commit first boundary");
+            assert!(!resumed.done);
+            assert!(resumed.boundary.is_none());
+            let resumed_text =
+                std::str::from_utf8(&resumed.bytes).expect("resume output should be UTF-8");
+            assert!(resumed_text.contains(">a<"));
+            assert!(!resumed_text.contains("between"));
+
+            let next = session
+                .advance()
+                .expect("advance should discover second boundary");
+            assert!(!next.done);
+            let next_text =
+                std::str::from_utf8(&next.bytes).expect("advance output should be UTF-8");
+            assert!(next_text.contains("between"));
+            assert!(!next_text.contains(">b<"));
+            let second_boundary = next.boundary.expect("second boundary should be returned");
             assert_eq!(second_boundary.instance_id.raw(), 1);
+            assert_eq!(second_boundary.declaration_id, 1);
+            assert_eq!(second_boundary.name.as_ref(), "second");
             assert_eq!(second_boundary.key, Some(BoundaryKey::Number(20.into())));
 
-            let done = session
+            let resumed = session
                 .resume(second_boundary.instance_id, &state, BoundaryMode::Final)
-                .expect("final resume should complete");
+                .expect("resume should commit second boundary");
+            assert!(!resumed.done);
+            assert!(resumed.boundary.is_none());
+            let resumed_text =
+                std::str::from_utf8(&resumed.bytes).expect("resume output should be UTF-8");
+            assert!(resumed_text.contains(">b<"));
+            assert!(!resumed_text.contains("tail"));
+
+            let done = session.advance().expect("final advance should complete");
             assert!(done.done);
             assert!(done.boundary.is_none());
-            assert!(!done.bytes.is_empty());
+            assert!(std::str::from_utf8(&done.bytes)
+                .expect("advance output should be UTF-8")
+                .contains("tail"));
         }
 
         #[test]
@@ -700,11 +741,11 @@ mod tests {
                 .expect("start should discover first boundary")
                 .boundary
                 .expect("first boundary should be returned");
-            let second = session
+            let resumed = session
                 .resume(first.instance_id, &initial, BoundaryMode::Updatable)
-                .expect("resume should commit updatable boundary")
-                .boundary
-                .expect("second boundary should be returned");
+                .expect("resume should commit updatable boundary");
+            assert!(!resumed.done);
+            assert!(resumed.boundary.is_none());
 
             let update = session
                 .update(first.instance_id, &state(r#"{"count":2}"#))
@@ -714,10 +755,48 @@ mod tests {
                 .expect("update should be UTF-8")
                 .contains(r#""count":2"#));
 
-            let done = session
+            let second = session
+                .advance()
+                .expect("advance should discover second boundary")
+                .boundary
+                .expect("second boundary should be returned");
+            let resumed = session
                 .resume(second.instance_id, &state("{}"), BoundaryMode::Final)
-                .expect("second resume should complete");
+                .expect("second resume should commit boundary");
+            assert!(!resumed.done);
+            assert!(resumed.boundary.is_none());
+            let done = session.advance().expect("final advance should complete");
             assert!(done.done);
+        }
+
+        #[test]
+        fn streaming_advance_rejects_out_of_order_calls() {
+            let mut session = session(concat!(
+                "<html><head></head><body>",
+                r#"<boundary name="first"><p>first</p></boundary>"#,
+                "</body></html>",
+            ));
+
+            let before_start = session
+                .advance()
+                .expect_err("advance before start should fail");
+            assert!(before_start
+                .to_string()
+                .contains("start must be called before this operation"));
+
+            let start = session.start(&state("{}")).expect("start should succeed");
+            let before_resume = session
+                .advance()
+                .expect_err("advance before resume should fail");
+            assert!(before_resume
+                .to_string()
+                .contains("there is no committed boundary to advance past"));
+
+            let boundary = start.boundary.expect("first boundary should be returned");
+            session
+                .resume(boundary.instance_id, &state("{}"), BoundaryMode::Final)
+                .expect("resume should still succeed after rejected advance");
+            assert!(session.advance().expect("advance should complete").done);
         }
 
         #[test]

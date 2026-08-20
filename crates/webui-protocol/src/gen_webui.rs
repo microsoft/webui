@@ -206,7 +206,9 @@ pub struct WebUiFragmentBoundary {
     #[prost(string, optional, tag = "4")]
     pub key: ::core::option::Option<::prost::alloc::string::String>,
     /// Conservative graph result: this declaration may produce multiple runtime
-    /// occurrences through a loop or repeated component callsite.
+    /// occurrences through repeated component callsites. A `<for>` repeat can no
+    /// longer contribute: the build rejects every boundary a repeat body reaches
+    /// (`boundary-in-repeat`), because a repeat iteration cannot suspend.
     #[prost(bool, tag = "6")]
     pub may_repeat: bool,
     /// Whether this fragment opens or closes the declaration's body.

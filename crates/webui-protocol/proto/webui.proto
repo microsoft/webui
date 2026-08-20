@@ -193,7 +193,9 @@ message WebUIFragmentBoundary {
   reserved 5;
   reserved "fragment_id";
   // Conservative graph result: this declaration may produce multiple runtime
-  // occurrences through a loop or repeated component callsite.
+  // occurrences through repeated component callsites. A `<for>` repeat can no
+  // longer contribute: the build rejects every boundary a repeat body reaches
+  // (`boundary-in-repeat`), because a repeat iteration cannot suspend.
   bool may_repeat = 6;
   // Whether this fragment opens or closes the declaration's body.
   BoundaryPhase phase = 7;

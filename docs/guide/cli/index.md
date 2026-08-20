@@ -312,9 +312,20 @@ that occurrence and `mode` is `final` by default or `updatable`.
 `update.boundary` uses the same identity to target one previously committed
 updatable occurrence and requires object-valued `state`.
 
-The stream ends after the `start` or `resume` that completes the response. The
-final bytes already contain the terminal record, so there is no separate end
-command.
+The control stream has no `advance` record because the CLI drives that core
+operation:
+
+| Core step state | CLI action |
+|---|---|
+| descriptor present | Wait for the matching `resume` control and call core `resume` |
+| no descriptor and not done | Call core `advance` |
+| done | Complete the browser response |
+
+Core `resume` emits only the pending occurrence through its checkpoint. Core
+`advance` emits the following parent or tail bytes through the next descriptor
+or terminal. After the backend sends the resume for the final descriptor and
+closes its NDJSON body, the CLI's final `advance` emits the terminal. There is
+no separate end command.
 
 The CLI owns response-local instance IDs and the browser transport. A
 capacity-one command channel preserves backpressure, and each record is capped

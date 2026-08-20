@@ -722,7 +722,7 @@ removal, or reordering shifts compiled element indices.
 
 `<boundary>` is a compile-time checkpoint directive for progressive sessions.
 It is valid in entries and reusable components, including runtime conditions,
-loops, outlets, and selected route content.
+outlets, and selected route content.
 
 ```html
 <!-- index.html -->
@@ -747,21 +747,33 @@ loops, outlets, and selected route content.
 - `name` is required, non-empty, static, and unique within its entry or
   component owner. It
   cannot contain a <code v-pre>{{binding}}</code>.
-- Boundaries may appear inside reusable components, true `<if>` paths, each
-  `<for>` iteration, and selected route content. Authored boundaries may not
-  contain another authored boundary directly or transitively.
-- A declaration that can repeat requires `key`; it must resolve to a unique live
-  string or finite number.
+- Boundaries may appear inside reusable components, true `<if>` paths, and
+  selected route content. Authored boundaries may not contain another authored
+  boundary directly or transitively.
+- A boundary-bearing subtree reached from a `<for>` body fails with
+  `boundary-in-repeat`, including declarations reached through a component,
+  condition, route, or outlet. A `<for>` may be wholly inside one boundary, and
+  boundaries before or after a `<for>` are valid.
+- A component-owned declaration reached from multiple static callsites in one
+  entry traversal requires `key`; it must resolve to a unique live string or
+  finite number. Independent entries that each reach it once do not.
 - Never author `<webui-hydrate>`. It is reserved generated runtime output.
 - Put the async application module in `<head>` before boundary content and
   import `@microsoft/webui-framework/streaming.js` before component
   registration modules.
-- `start(state)` and `resume(instanceId, state, mode)` return the next runtime
-  descriptor `{ instanceId, declarationId, owner, name, key }` plus `done`.
-  The done step already includes terminal and parent tail bytes.
+- `start(state)`, `resume(instanceId, state, mode)`, and `advance()` return a
+  step with bytes, optional runtime descriptor
+  `{ instanceId, declarationId, owner, name, key }`, and `done`.
+- Drive the step state exactly: descriptor present means `resume`; no descriptor
+  with `done == false` means `advance`; `done == true` means complete.
+- `resume` writes only the pending occurrence through its checkpoint.
+  `advance` writes the following parent or shell bytes through the next
+  occurrence or terminal. No sibling boundary is needed to split an early
+  component child from its parent tail.
 - `update(instanceId, patch)` accepts only a committed updatable occurrence.
-  It calls `setState()` without inserting markup, rerunning hydration, or
-  rerunning `hydratedCallback()`.
+  It is valid between that occurrence's `resume` and `advance`, and calls
+  `setState()` without inserting markup, rerunning hydration, or rerunning
+  `hydratedCallback()`.
 - State resolution across a suspension is lexical locals, resume state, then
   the frozen projected parent state.
 - `render_streaming` projects its one state value once for the complete
@@ -787,9 +799,10 @@ loops, outlets, and selected route content.
 Malformed directives use stable diagnostics:
 `missing-boundary-name`, `invalid-boundary-name`,
 `duplicate-boundary-name`, `missing-boundary-key`,
-`invalid-boundary-key`, `nested-boundary`, `boundary-crosses-scope`, and
-`authored-webui-hydrate`. Malformed browser records fail closed and release
-discoverable deferred state within fixed bounds.
+`invalid-boundary-key`, `nested-boundary`, `boundary-in-repeat`,
+`boundary-crosses-scope`, and `authored-webui-hydrate`. Malformed browser
+records fail closed and release discoverable deferred state within fixed
+bounds.
 
 ### Lazy component mounting
 
@@ -1211,9 +1224,14 @@ renders before spawning it, and configure the transport's flush timeout.
 let mut page = handler.stream_response(&protocol, &options, &mut writer)?;
 let mut step = page.start(&initial_state)?;
 while !step.done {
-    let boundary = step.boundary.as_ref().ok_or_else(missing_boundary)?;
-    let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
-    step = page.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state =
+                load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            page.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        None => page.advance()?,
+    };
 }
 ```
 
@@ -1227,12 +1245,14 @@ newline-delimited control records instead:
 ```
 
 Honor HTTP write backpressure and cap concurrent streams. The CLI uses a
-capacity-one command channel and matches each nested `boundary` target by
+capacity-one command channel and matches each `boundary` target by
 descriptor `owner`, `name`, and optional `key` (plus optional
 `declarationId`). It keeps response-local instance IDs, the compiled protocol,
-and browser-facing bytes in Rust. The control stream ends after the start or
-resume that completes the response. Returning JSON keeps the buffered state
-path.
+and browser-facing bytes in Rust. A resume control commits boundary-only bytes;
+the CLI then calls `advance` internally for the following parent bytes. The
+control stream needs no advance record. After the backend sends the resume for
+the final descriptor and closes its body, the CLI's final `advance` completes
+the response. Returning JSON keeps the buffered state path.
 
 If the backend refuses a stream request (non-success status such as a `503`
 from its own concurrency cap), no response bytes were sent, so `webui serve` logs

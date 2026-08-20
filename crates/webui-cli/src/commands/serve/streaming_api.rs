@@ -20,7 +20,7 @@ use tokio_stream::{Stream, StreamExt};
 use webui::streaming::{ChunkPool, StreamingWriter};
 use webui::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError, Protocol,
-    RenderOptions,
+    RenderOptions, StreamStatus, StreamingResponse,
 };
 
 use super::create_handler;
@@ -275,7 +275,7 @@ enum RendererError {
     )]
     Truncated { pending: String },
     #[error(
-        "WebUI API stream record {record} sends {command} after the streaming response completed; close the response body after the resume that returns done"
+        "WebUI API stream record {record} sends {command} after the streaming response completed; close the response body after the final resume or update control"
     )]
     CommandAfterDone {
         record: usize,
@@ -641,6 +641,7 @@ fn run_renderer(
 
     loop {
         let Some(record) = commands.blocking_recv() else {
+            advance_committed_cursor(&mut response, &mut status)?;
             if status.done {
                 return Ok(());
             }
@@ -666,6 +667,13 @@ fn run_renderer(
                 mode,
                 state,
             } => {
+                advance_committed_cursor(&mut response, &mut status)?;
+                if status.done {
+                    return Err(RendererError::CommandAfterDone {
+                        record: record.index,
+                        command: "resume",
+                    });
+                }
                 let pending = status
                     .boundary
                     .as_ref()
@@ -688,6 +696,19 @@ fn run_renderer(
             }
         }
     }
+}
+
+fn advance_committed_cursor(
+    response: &mut StreamingResponse<'_, StreamingWriter>,
+    status: &mut StreamStatus,
+) -> Result<(), RendererError> {
+    // A following resume (or backend EOF) is the implicit advance control.
+    // Updates stay ahead of that point so they can target the just-committed
+    // occurrence before its separately flushed parent segment is rendered.
+    if !status.done && status.boundary.is_none() {
+        *status = response.advance()?;
+    }
+    Ok(())
 }
 
 struct CommittedBoundary {
@@ -918,7 +939,7 @@ mod tests {
         boundary_names: &[&str],
     ) -> RenderConfig {
         let mut fragments =
-            Vec::with_capacity(precommit_fragments.len() + boundary_names.len() * 3 + 7);
+            Vec::with_capacity(precommit_fragments.len() + boundary_names.len() * 3 + 8);
         fragments.extend([
             WebUIFragment::raw("<html><head>"),
             structural("head_start"),
@@ -942,7 +963,11 @@ mod tests {
             )));
             fragments.push(WebUIFragment::boundary_end(declaration_id));
         }
-        fragments.extend([structural("body_end"), WebUIFragment::raw("</body></html>")]);
+        fragments.extend([
+            WebUIFragment::raw("<footer data-page-tail>tail</footer>"),
+            structural("body_end"),
+            WebUIFragment::raw("</body></html>"),
+        ]);
         records.insert(
             "index.html".to_owned(),
             FragmentList {
@@ -1010,7 +1035,7 @@ mod tests {
     fn run_commands(
         config: RenderConfig,
         commands: Vec<ApiStreamCommand>,
-    ) -> (Result<(), RendererError>, Vec<u8>) {
+    ) -> (Result<(), RendererError>, Vec<Bytes>) {
         let (command_tx, command_rx) = mpsc::channel(commands.len().max(1));
         for (index, command) in commands.into_iter().enumerate() {
             command_tx
@@ -1023,11 +1048,20 @@ mod tests {
         let (ready_tx, _ready_rx) = oneshot::channel();
         let result = run_renderer(config, command_rx, &mut writer, ready_tx);
         drop(writer);
-        let mut html = Vec::new();
+        let mut segments = Vec::new();
         while let Ok(chunk) = html_rx.try_recv() {
-            html.extend_from_slice(&chunk);
+            segments.push(chunk);
         }
-        (result, html)
+        (result, segments)
+    }
+
+    fn join_segments(segments: &[Bytes]) -> Vec<u8> {
+        let capacity = segments.iter().map(Bytes::len).sum();
+        let mut bytes = Vec::with_capacity(capacity);
+        for segment in segments {
+            bytes.extend_from_slice(segment);
+        }
+        bytes
     }
 
     #[test]
@@ -1167,7 +1201,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_uses_start_resume_update_and_completes_without_finish_command() {
+    fn renderer_writes_resume_update_and_advance_as_ordered_segments() {
         let commands = vec![
             ApiStreamCommand::Start {
                 version: VERSION,
@@ -1188,16 +1222,99 @@ mod tests {
                 state: serde_json::json!({}),
             },
         ];
-        let (result, html) = run_commands(
+        let (result, segments) = run_commands(
             valid_streaming_config(Vec::new(), &["content", "tail"]),
             commands,
         );
         result.unwrap_or_else(|error| panic!("renderer failed: {error}"));
-        let html = String::from_utf8(html)
+        let content = segments
+            .iter()
+            .position(|segment| {
+                segment
+                    .windows(b"data-boundary=\"content\"".len())
+                    .any(|window| window == b"data-boundary=\"content\"")
+            })
+            .unwrap_or_else(|| panic!("content checkpoint segment is missing"));
+        let update = segments
+            .iter()
+            .position(|segment| {
+                segment
+                    .windows(b"[2,1,2,0,".len())
+                    .any(|window| window == b"[2,1,2,0,")
+            })
+            .unwrap_or_else(|| panic!("update segment is missing"));
+        let tail = segments
+            .iter()
+            .position(|segment| {
+                segment
+                    .windows(b"data-boundary=\"tail\"".len())
+                    .any(|window| window == b"data-boundary=\"tail\"")
+            })
+            .unwrap_or_else(|| panic!("tail checkpoint segment is missing"));
+        let terminal = segments
+            .iter()
+            .position(|segment| {
+                segment
+                    .windows(b"[2,3,4,0,{}]".len())
+                    .any(|window| window == b"[2,3,4,0,{}]")
+            })
+            .unwrap_or_else(|| panic!("terminal segment is missing"));
+        assert!(content < update);
+        assert!(update < tail);
+        assert!(tail < terminal);
+        assert!(!segments[content]
+            .windows(b"data-boundary=\"tail\"".len())
+            .any(|window| window == b"data-boundary=\"tail\""));
+
+        let html = String::from_utf8(join_segments(&segments))
             .unwrap_or_else(|error| panic!("renderer produced invalid UTF-8: {error}"));
         assert!(html.contains("data-boundary=\"content\""));
         assert!(html.contains("data-boundary=\"tail\""));
         assert!(html.contains("[2,3,4,0,{}]"));
+    }
+
+    #[test]
+    fn renderer_flushes_a_single_checkpoint_before_its_tail() {
+        let commands = vec![
+            ApiStreamCommand::Start {
+                version: VERSION,
+                state: serde_json::json!({}),
+            },
+            ApiStreamCommand::Resume {
+                boundary: target("index.html", "content"),
+                mode: ApiBoundaryMode::Final,
+                state: serde_json::json!({}),
+            },
+        ];
+        let (result, segments) =
+            run_commands(valid_streaming_config(Vec::new(), &["content"]), commands);
+        result.unwrap_or_else(|error| panic!("renderer failed: {error}"));
+
+        let checkpoint = segments
+            .iter()
+            .position(|segment| {
+                segment
+                    .windows(b"data-boundary=\"content\"".len())
+                    .any(|window| window == b"data-boundary=\"content\"")
+            })
+            .unwrap_or_else(|| panic!("checkpoint segment is missing"));
+        let tail = segments
+            .iter()
+            .position(|segment| {
+                segment
+                    .windows(b"<footer data-page-tail>".len())
+                    .any(|window| window == b"<footer data-page-tail>")
+            })
+            .unwrap_or_else(|| panic!("tail segment is missing"));
+        assert!(checkpoint < tail);
+        assert!(!segments[checkpoint]
+            .windows(b"<footer data-page-tail>".len())
+            .any(|window| window == b"<footer data-page-tail>"));
+        assert!(!segments[checkpoint]
+            .windows(b"[2,1,4,0,{}]".len())
+            .any(|window| window == b"[2,1,4,0,{}]"));
+        assert!(segments[checkpoint].ends_with(b"<webui-hydrate></webui-hydrate>"));
+        assert!(segments[tail].starts_with(b"<footer data-page-tail>"));
     }
 
     #[test]
@@ -1231,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_rejects_commands_after_automatic_completion() {
+    fn renderer_rejects_resume_after_automatic_advance_completes() {
         let commands = vec![
             ApiStreamCommand::Start {
                 version: VERSION,
@@ -1242,8 +1359,9 @@ mod tests {
                 mode: ApiBoundaryMode::Final,
                 state: serde_json::json!({}),
             },
-            ApiStreamCommand::Update {
+            ApiStreamCommand::Resume {
                 boundary: target("index.html", "content"),
+                mode: ApiBoundaryMode::Final,
                 state: serde_json::json!({}),
             },
         ];
@@ -1252,7 +1370,7 @@ mod tests {
             result,
             Err(RendererError::CommandAfterDone {
                 record: 2,
-                command: "update"
+                command: "resume"
             })
         ));
     }
@@ -1263,8 +1381,9 @@ mod tests {
             version: VERSION,
             state: serde_json::json!({}),
         }];
-        let (result, html) = run_commands(valid_streaming_config(Vec::new(), &[]), commands);
+        let (result, segments) = run_commands(valid_streaming_config(Vec::new(), &[]), commands);
         result.unwrap_or_else(|error| panic!("boundary-free render failed: {error}"));
+        let html = join_segments(&segments);
         assert!(String::from_utf8_lossy(&html).contains("[2,0,4,0,{}]"));
     }
 

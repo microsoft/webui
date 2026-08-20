@@ -200,10 +200,14 @@ authored `<boundary>` directives through
 normal applications pay no streaming bundle or initialization cost.
 
 Boundaries may be authored in entries and reusable components, including
-runtime conditions, loops, outlets, and selected routes. A component-local
-boundary uses a generated parent span, so an early compiler-marked child can
-hydrate before the opaque parent tail in light or shadow DOM. Authored
-boundaries cannot nest.
+runtime conditions, outlets, and selected routes. A boundary-bearing subtree
+reached from a `<for>` body fails the build with `boundary-in-repeat`. A whole
+`<for>` may sit inside one boundary, and boundaries before or after a `<for>`
+are valid. A component-local boundary uses a generated parent span, so an early
+compiler-marked child can hydrate before the opaque parent tail in light or
+shadow DOM. The server's boundary-only `resume` emits that checkpoint first;
+`advance` emits the following parent tail, with no sibling boundary workaround.
+Authored boundaries cannot nest.
 
 Span resolution is entirely coordinator-owned: the generated `data-ws-span` and
 `data-ws-enclosing` attributes, and the open-span registry that pairs them, live

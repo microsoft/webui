@@ -237,14 +237,16 @@ await write(res, step.bytes);
 
 while (!step.done) {
   const boundary = step.boundary;
-  if (!boundary) throw new Error('unfinished step has no boundary');
-
-  const state = await loadBoundaryState(
-    boundary.owner,
-    boundary.name,
-    boundary.key,
-  );
-  step = session.resume(boundary.instanceId, state, 'final');
+  if (boundary) {
+    const state = await loadBoundaryState(
+      boundary.owner,
+      boundary.name,
+      boundary.key,
+    );
+    step = session.resume(boundary.instanceId, state, 'final');
+  } else {
+    step = session.advance();
+  }
   await write(res, step.bytes);
 }
 res.end();
@@ -269,21 +271,29 @@ async function write(res, chunk) {
 ```
 
 The same shape works behind Express, Fastify, Hapi, or a raw socket. Boundaries
-are discovered at runtime through entries, reusable components, conditions,
-loops, and the selected route.
+are discovered at runtime through entries, reusable components, conditions, and
+the selected route. A boundary-bearing subtree under `<for>` fails the build
+with `boundary-in-repeat`; a whole `<for>` may sit inside one boundary.
 
 ### StreamingSession
 
 | Member | Description |
 |--------|-------------|
 | `start(state)` | Return `{ bytes, done, boundary? }` through the first occurrence or terminal |
-| `resume(instanceId, state, mode?)` | Commit the pending occurrence, then return the next step |
+| `resume(instanceId, state, mode?)` | Return only the pending occurrence's bytes through its checkpoint |
+| `advance()` | Return following parent bytes through the next occurrence or terminal |
 | `update(instanceId, patch)` | Return projected state bytes for a committed updatable occurrence |
 
 A descriptor contains `instanceId`, `declarationId`, `owner`, `name`, and an
 optional string or numeric `key`. Use those fields to load state, then pass
-`instanceId` back to `resume`. The final step already contains tail and terminal
-bytes. `mode` is `"final"` by default or `"updatable"`.
+`instanceId` back to `resume`. A descriptor means call `resume`; no descriptor
+with `done: false` means call `advance`; `done: true` means complete.
+
+`resume` is boundary-only so its bytes can be written and flushed without
+waiting for following parent content. `advance` carries that parent content and
+the document tail. No sibling boundary workaround is needed. The final step
+already contains tail and terminal bytes. `mode` is `"final"` by default or
+`"updatable"`.
 
 An update never inserts markup or reruns hydration:
 
@@ -292,5 +302,6 @@ const patch = session.update(searchInstanceId, { query: 'webui' });
 await write(res, patch);
 ```
 
+An update may be written between the occurrence's `resume` and `advance`.
 Sessions are single-driver and independent. Hold one per in-flight request and
 stop driving it after a rendering or transport failure.

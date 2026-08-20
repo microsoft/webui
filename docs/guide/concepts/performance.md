@@ -195,10 +195,12 @@ Each layer of the architecture contributes to the overall performance profile:
   per request.
 
 - **Runtime-discovered streaming.** The continuation VM walks only the selected
-  entry, component, condition, loop, and route path. It is iterative and keeps
-  bounded frames, projected parent keys, lexical locals, occurrence keys, and
+  entry, component, condition, and route path. It is iterative and keeps bounded
+  frames, projected parent keys, lexical locals, static-occurrence keys, and
   generated component spans instead of cloning full state for every boundary or
-  prebuilding a request plan. Full-state fallback snapshots once per response;
+  prebuilding a request plan. A repeat body cannot reach a boundary, so each
+  `<for>` finishes inside its current step and no repeat iterator survives a
+  host call. Full-state fallback snapshots once per response;
   `render_streaming` reuses that snapshot for every occurrence. Boundary-free
   fragment records are skipped through a build-time `contains_boundary` bit.
   Capture and projection scratch buffers retain capacity across checkpoints.
@@ -210,10 +212,12 @@ Each layer of the architecture contributes to the overall performance profile:
   document-wide selector; only fatal cleanup may perform one bounded sweep.
 - **Host-owned backpressure.** `StreamingWriter` uses a bounded `tokio::mpsc`
   channel, reusable `ChunkPool`, and configurable flush deadline. Owned
-  `StreamingSession` calls return one byte chunk for `start`, `resume`, or
-  `update`, so Node, WASM, Python, C, and .NET hosts write through their native
-  backpressure APIs. `webui serve --api-port` uses a capacity-one version-2
-  control channel over the same session.
+  `StreamingSession` calls return one byte chunk for `start`, `resume`,
+  `advance`, or `update`, so Node, WASM, Python, C, and .NET hosts write through
+  their native backpressure APIs. A boundary-only `resume` can flush immediately;
+  `advance` carries the following parent and tail bytes. `webui serve
+  --api-port` uses a capacity-one version-2 control channel over the same
+  session.
   Hosts must also bound concurrent blocking renders before calling
   `spawn_blocking`; channel backpressure bounds bytes after a task starts, not
   the runtime's queued blocking-task count. Reject saturation before spawning
@@ -231,10 +235,10 @@ Each layer of the architecture contributes to the overall performance profile:
 
 ### Progressive streaming cost profile
 
-The progressive path does more work than the former fixed entry-boundary model:
-it discovers runtime occurrences, preserves continuation state, and completes
-generated component spans. Interleaved release-mode measurements against that
-fixed model produced:
+The progressive path discovers runtime occurrences, preserves continuation
+state, and completes generated component spans. A fixed entry-boundary
+benchmark provides a lower-feature baseline for these interleaved release-mode
+measurements:
 
 | Boundaries | Fixed model | Runtime-discovered model |
 |-----------:|------------:|-------------------------:|

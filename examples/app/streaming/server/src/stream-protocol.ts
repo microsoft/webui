@@ -37,6 +37,10 @@ type StreamRecord =
     }
   | { type: 'update'; boundary: BoundaryTarget; state: JsonObject };
 
+/**
+ * Backend controls intentionally omit `advance`: the CLI advances its Rust
+ * session after intervening updates, before the next resume or at stream EOF.
+ */
 export interface StreamSink {
   start(state: JsonObject): Promise<void>;
   resume(

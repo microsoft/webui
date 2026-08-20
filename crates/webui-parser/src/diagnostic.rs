@@ -109,8 +109,15 @@ pub mod codes {
     pub const INVALID_BOUNDARY_NAME: &str = "invalid-boundary-name";
     /// Two `<boundary>` directives in the same owning template share a `name`.
     pub const DUPLICATE_BOUNDARY_NAME: &str = "duplicate-boundary-name";
-    /// A `<boundary>` lexically nested in `<for>` has no stable occurrence key.
+    /// A `<boundary>` declaration renders more than once — through repeated
+    /// static callsites of its owning component — without a stable occurrence
+    /// key.
     pub const MISSING_BOUNDARY_KEY: &str = "missing-boundary-key";
+    /// A `<boundary>` is reachable from a `<for>` repeat body, directly or
+    /// transitively through `<if>`, routes/outlets, or a reusable component.
+    /// A repeat iteration cannot suspend, so the declaration can never be paced
+    /// independently.
+    pub const BOUNDARY_IN_REPEAT: &str = "boundary-in-repeat";
     /// A `<boundary key>` is empty or has malformed binding delimiters.
     pub const INVALID_BOUNDARY_KEY: &str = "invalid-boundary-key";
     /// The protocol-wide boundary declaration identity space was exhausted.

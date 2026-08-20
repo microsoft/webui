@@ -85,9 +85,22 @@ The control response uses version 2 and exactly three command types:
 the pending runtime descriptor's `owner`, `name`, and optional string-or-number
 `key`; `declarationId` may also be supplied for validation. The CLI retains
 committed descriptors, so `update` uses the same target without a reverse
-acknowledgement channel. Ambiguous unkeyed update targets are rejected. A
-`resume` automatically completes the response when its returned step is done;
-the backend then closes its NDJSON body. There is no terminal control command.
+acknowledgement channel. Ambiguous unkeyed update targets are rejected.
+
+The CLI drives the Rust step machine as follows:
+
+| Rust step state | CLI action |
+|---|---|
+| descriptor present | Wait for the matching backend `resume`, then call `resume` |
+| no descriptor and not done | Call `advance` internally |
+| done | Complete the browser response |
+
+Rust `resume` emits only the pending boundary through its checkpoint. The
+following internal `advance` emits parent or tail bytes through the next
+descriptor or terminal. The backend does not send an `advance` control record.
+It closes its NDJSON body after sending the resume for the final descriptor;
+the CLI's final `advance` completes the response. There is no terminal control
+command.
 
 ### `webui inspect`
 
