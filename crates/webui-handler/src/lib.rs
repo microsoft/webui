@@ -30,6 +30,7 @@ pub use html_encode::encode_safe;
 use plugin::BootstrapExtensionContext;
 use plugin::HandlerPlugin;
 use plugin::WebUiTemplatePayload;
+use route_handler::ComponentReachabilityIndex;
 use route_matcher::CompiledRouteIndex;
 use serde::ser::SerializeMap;
 use serde::Serialize;
@@ -711,7 +712,7 @@ where
 /// carry nothing hydratable and serialize as an empty object.
 struct ProjectedState<'a> {
     value: &'a Value,
-    keys: &'a [&'a str],
+    keys: KeyView<'a>,
 }
 
 impl Serialize for ProjectedState<'_> {
@@ -726,15 +727,15 @@ impl Serialize for ProjectedState<'_> {
         let mut out = serializer.serialize_map(None)?;
         if self.keys.len() < map.len() {
             let mut previous = None;
-            for key in self.keys {
-                if *key == STATE_INJECT_KEY {
+            for key in self.keys.iter() {
+                if key == STATE_INJECT_KEY {
                     continue;
                 }
-                if previous == Some(*key) {
+                if previous == Some(key) {
                     continue;
                 }
-                previous = Some(*key);
-                if let Some(value) = map.get(*key) {
+                previous = Some(key);
+                if let Some(value) = map.get(key) {
                     out.serialize_entry(key, value)?;
                 }
             }
@@ -743,11 +744,7 @@ impl Serialize for ProjectedState<'_> {
                 if key == STATE_INJECT_KEY {
                     continue;
                 }
-                if self
-                    .keys
-                    .binary_search_by(|candidate| candidate.cmp(&key.as_str()))
-                    .is_ok()
-                {
+                if self.keys.contains(key.as_str()) {
                     out.serialize_entry(key, value)?;
                 }
             }
@@ -822,8 +819,8 @@ pub(crate) fn write_selected_state(
 ) -> Result<()> {
     let keys = match selection {
         StateSelection::Full => return write_full_state(writer, scratch, state),
-        StateSelection::Keys(keys) => keys.as_slice(),
-        StateSelection::BorrowedKeys(keys) => *keys,
+        StateSelection::Keys(keys) => KeyView::Borrowed(keys.as_slice()),
+        StateSelection::KeyIds(selection) => KeyView::Ids(*selection),
     };
     if keys.is_empty() {
         return writer.write("{}");
@@ -834,12 +831,14 @@ pub(crate) fn write_selected_state(
     // deduped at build time; this guard makes hand-built protocols that violate
     // the invariant fail loudly in tests at zero release cost.
     debug_assert!(
-        keys.windows(2).all(|pair| pair[0] <= pair[1]),
+        keys.iter()
+            .zip(keys.iter().skip(1))
+            .all(|(left, right)| left <= right),
         "hydration keys must be sorted for binary-search projection"
     );
     if let Value::Object(map) = state {
         let selects_entire_map =
-            keys.len() == map.len() && keys.iter().copied().eq(map.keys().map(String::as_str));
+            keys.len() == map.len() && keys.iter().eq(map.keys().map(String::as_str));
         if selects_entire_map {
             return write_full_state(writer, scratch, state);
         }
@@ -857,8 +856,79 @@ pub(crate) enum StateSelection<'a> {
     Full,
     /// Project an object to a sorted, deduplicated key allowlist.
     Keys(Vec<&'a str>),
-    /// Project using request-local scratch owned by the streaming render.
-    BorrowedKeys(&'a [&'a str]),
+    /// Project using the streaming continuation's interned hydration key IDs.
+    ///
+    /// IDs are assigned in lexicographic order, so a sorted ID slice is a
+    /// sorted key slice and the projection needs no borrowed-string buffer at
+    /// all — the streaming record keeps its scratch as plain integers that
+    /// survive every semantic step.
+    KeyIds(HydrationKeySelection<'a>),
+}
+
+/// A projection expressed as interned hydration key IDs.
+#[derive(Clone, Copy)]
+pub(crate) struct HydrationKeySelection<'a> {
+    pub(crate) ids: &'a [u32],
+    pub(crate) index: &'a ComponentReachabilityIndex,
+}
+
+impl<'a> HydrationKeySelection<'a> {
+    fn key(self, position: usize) -> Option<&'a str> {
+        let id = self.ids.get(position).copied()?;
+        self.index.hydration_key(id)
+    }
+}
+
+/// A sorted, deduplicated key allowlist in whichever form its producer holds.
+#[derive(Clone, Copy)]
+enum KeyView<'a> {
+    Borrowed(&'a [&'a str]),
+    Ids(HydrationKeySelection<'a>),
+}
+
+impl<'a> KeyView<'a> {
+    fn len(self) -> usize {
+        match self {
+            Self::Borrowed(keys) => keys.len(),
+            Self::Ids(selection) => selection.ids.len(),
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+
+    fn get(self, position: usize) -> Option<&'a str> {
+        match self {
+            Self::Borrowed(keys) => keys.get(position).copied(),
+            Self::Ids(selection) => selection.key(position),
+        }
+    }
+
+    fn iter(self) -> impl Iterator<Item = &'a str> {
+        (0..self.len()).map_while(move |position| self.get(position))
+    }
+
+    /// Sorted-membership probe used when the state object is smaller than the
+    /// allowlist.
+    fn contains(self, key: &str) -> bool {
+        match self {
+            Self::Borrowed(keys) => keys
+                .binary_search_by(|candidate| str::cmp(candidate, key))
+                .is_ok(),
+            Self::Ids(selection) => selection
+                .ids
+                .binary_search_by(|id| {
+                    selection
+                        .index
+                        .hydration_key(*id)
+                        .map_or(std::cmp::Ordering::Less, |candidate| {
+                            str::cmp(candidate, key)
+                        })
+                })
+                .is_ok(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -882,16 +952,32 @@ pub(crate) fn collect_hydration_state<'a, 'b>(
     collect_component_state(protocol, components, ComponentStateSurface::Hydration)
 }
 
-pub(crate) fn collect_hydration_state_into<'a, 'b>(
-    protocol: &'a WebUIProtocol,
-    components: impl IntoIterator<Item = &'b str>,
-    keys: &mut Vec<&'a str>,
+/// Fill a reusable hydration key-ID allowlist for a streaming record.
+///
+/// Components arrive as inventory indexes, so the projection never resolves a
+/// component name, never hashes it against the compiled component map, and
+/// never sorts strings: the interned runs concatenate and the integer sort
+/// leaves the IDs in lexicographic key order. Returns `true` when correctness
+/// requires sending full state instead.
+pub(crate) fn collect_hydration_key_ids_into(
+    protocol: &WebUIProtocol,
+    index: &ComponentReachabilityIndex,
+    components: impl IntoIterator<Item = u32>,
+    ids: &mut Vec<u32>,
 ) -> bool {
+    ids.clear();
     if protocol.initial_state_strategy != InitialStateStrategy::Components as i32 {
-        keys.clear();
         return true;
     }
-    collect_component_state_into(protocol, components, ComponentStateSurface::Hydration, keys)
+    for component in components {
+        if index.extend_hydration_keys(component, ids) {
+            ids.clear();
+            return true;
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    false
 }
 
 /// Select state for client-created components reachable during navigation.
@@ -8729,7 +8815,7 @@ mod tests {
 
         match collect_navigation_state(&protocol, ["app-shell"]) {
             StateSelection::Keys(keys) => assert_eq!(keys, vec!["selected"]),
-            StateSelection::Full | StateSelection::BorrowedKeys(_) => {
+            StateSelection::Full | StateSelection::KeyIds(_) => {
                 panic!("legacy navigation keys should remain owned and projected")
             }
         }
@@ -9574,12 +9660,38 @@ mod tests {
     }
 
     #[test]
-    fn write_selected_state_strips_reserved_key_from_borrowed_projection() {
+    fn write_selected_state_strips_reserved_key_from_key_id_projection() {
+        // The streaming record projects through interned key IDs, so the
+        // reserved inject key must be filtered on that path too.
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+        protocol.fragments.insert(
+            "keep-card".to_string(),
+            webui_protocol::FragmentList::default(),
+        );
+        protocol.components.insert(
+            "keep-card".to_string(),
+            webui_protocol::ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec![STATE_INJECT_KEY.to_string(), "keep".to_string()],
+                ..Default::default()
+            },
+        );
+        let protocol = Protocol::new(protocol);
+        let index = protocol.component_reachability();
+        let component = protocol.component_index()["keep-card"];
+        let mut ids = Vec::new();
+        assert!(!collect_hydration_key_ids_into(
+            protocol.protocol(),
+            index,
+            [component],
+            &mut ids
+        ));
+
         let state = test_json!({
             "$webui": { "bodyEnd": "<b>x</b>" },
             "keep": 1,
         });
-        let keys = [STATE_INJECT_KEY, "keep", "missing"];
         let mut sink = TestWriter::new();
         let mut scratch = Vec::new();
 
@@ -9587,7 +9699,7 @@ mod tests {
             &mut sink,
             &mut scratch,
             &state,
-            &StateSelection::BorrowedKeys(&keys),
+            &StateSelection::KeyIds(HydrationKeySelection { ids: &ids, index }),
         )
         .unwrap();
 

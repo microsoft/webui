@@ -59,7 +59,12 @@ pub(crate) struct StreamingRenderState<'data> {
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
     pub(super) checkpoint_needs_expansion: bool,
-    pub(super) state_key_scratch: Vec<&'data str>,
+    /// Interned hydration key IDs for the record being committed.
+    ///
+    /// Integers instead of borrowed keys: the buffer outlives every semantic
+    /// step in [`StreamingProgress`], so a checkpoint or update never allocates
+    /// a fresh projection scratch.
+    pub(super) state_key_ids: Vec<u32>,
     pub(super) template_tag_scratch: Vec<&'data str>,
     pub(super) css_href_scratch: Vec<&'data str>,
     pub(super) style_spec_scratch: Vec<&'data str>,
@@ -69,7 +74,7 @@ pub(crate) struct StreamingRenderState<'data> {
 
 pub(super) struct StateUpdatePlan {
     pub(super) requires_full_state: bool,
-    pub(super) keys: Vec<Box<str>>,
+    pub(super) key_ids: Vec<u32>,
 }
 
 /// Owned state retained between calls by borrowed and host-owned sessions.
@@ -90,6 +95,7 @@ pub(crate) struct StreamingProgress {
     pub(super) checkpoint_walk_roots: Vec<(u32, Option<Box<str>>)>,
     pub(super) checkpoint_seen: Vec<u8>,
     pub(super) checkpoint_needs_expansion: bool,
+    pub(super) state_key_ids: Vec<u32>,
     pub(super) reachability_stack: Vec<u32>,
     pub(super) update_plans: Vec<Option<StateUpdatePlan>>,
 }
@@ -114,6 +120,7 @@ impl StreamingProgress {
             checkpoint_walk_roots: Vec::new(),
             checkpoint_seen: vec![0; inventory_bytes],
             checkpoint_needs_expansion: false,
+            state_key_ids: Vec::new(),
             reachability_stack: Vec::new(),
             update_plans: Vec::new(),
         }
@@ -128,7 +135,9 @@ impl<'data> StreamingRenderState<'data> {
         Self {
             component_reachability,
             pending_root: None,
-            state_key_scratch: Vec::with_capacity(crate::INITIAL_KEY_CAPACITY),
+            // Borrowed template/CSS scratch starts empty: only a record that
+            // delivers first-time component metadata ever fills it, so a
+            // steady-state step allocates nothing here.
             template_tag_scratch: Vec::new(),
             css_href_scratch: Vec::new(),
             style_spec_scratch: Vec::new(),
@@ -148,6 +157,7 @@ impl<'data> StreamingRenderState<'data> {
             checkpoint_walk_roots: progress.checkpoint_walk_roots,
             checkpoint_seen: progress.checkpoint_seen,
             checkpoint_needs_expansion: progress.checkpoint_needs_expansion,
+            state_key_ids: progress.state_key_ids,
             reachability_stack: progress.reachability_stack,
             update_plans: progress.update_plans,
         }
@@ -171,6 +181,7 @@ impl<'data> StreamingRenderState<'data> {
             checkpoint_walk_roots: self.checkpoint_walk_roots,
             checkpoint_seen: self.checkpoint_seen,
             checkpoint_needs_expansion: self.checkpoint_needs_expansion,
+            state_key_ids: self.state_key_ids,
             reachability_stack: self.reachability_stack,
             update_plans: self.update_plans,
         }
@@ -235,9 +246,16 @@ pub(crate) fn selected_state_snapshot(
 /// Merge the caller's state for this step into the retained continuation
 /// snapshot.
 ///
-/// Keys already present reuse their existing entry, so a host that supplies
-/// the same surface on every step pays no key allocation and lets
-/// [`serde_json::Value::clone_from`] reuse the previous value's buffers.
+/// Merging is *patch*, not replace: a key the caller omits keeps the value the
+/// snapshot already holds, and no key is ever removed. Only the projected
+/// surface is considered, so state a continuation never reads is not retained.
+///
+/// A value that is already identical is left alone, so a host resuming with the
+/// same surface every step copies nothing — the comparison walks the shared
+/// shape and stops at the first difference, while a copy would allocate a fresh
+/// tree for data the snapshot already holds. Keys that do change reuse their
+/// existing entry, letting [`serde_json::Value::clone_from`] reuse the previous
+/// value's buffers.
 pub(crate) fn overlay_selected_state(
     frozen: &mut serde_json::Value,
     state: &serde_json::Value,
@@ -257,7 +275,11 @@ pub(crate) fn overlay_selected_state(
             continue;
         };
         match target.get_mut(key.as_ref()) {
-            Some(slot) => slot.clone_from(value),
+            Some(slot) => {
+                if slot != value {
+                    slot.clone_from(value);
+                }
+            }
             None => {
                 target.insert(key.to_string(), value.clone());
             }
@@ -265,6 +287,11 @@ pub(crate) fn overlay_selected_state(
     }
 }
 
+/// Merge every top-level key of the caller's state into the retained snapshot.
+///
+/// Same patch semantics as [`overlay_selected_state`]: omitted keys keep their
+/// snapshot value, nothing is removed, and an unchanged subtree is neither
+/// copied nor reallocated.
 pub(crate) fn overlay_full_state(frozen: &mut serde_json::Value, state: &serde_json::Value) {
     let serde_json::Value::Object(source) = state else {
         return;
@@ -277,7 +304,11 @@ pub(crate) fn overlay_full_state(frozen: &mut serde_json::Value, state: &serde_j
     };
     for (key, value) in source {
         match target.get_mut(key) {
-            Some(slot) => slot.clone_from(value),
+            Some(slot) => {
+                if slot != value {
+                    slot.clone_from(value);
+                }
+            }
             None => {
                 target.insert(key.clone(), value.clone());
             }

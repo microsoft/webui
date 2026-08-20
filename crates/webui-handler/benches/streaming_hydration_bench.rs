@@ -27,6 +27,8 @@ use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
 const BOUNDARY_COUNTS: &[usize] = &[1, 3, 10, 100];
+const LARGE_STATE_BOUNDARIES: &[usize] = &[1, 8];
+const LARGE_STATE_ROWS: usize = 128;
 const WRITER_CAPACITY: usize = 32 * 1024;
 const ENTRY_ID: &str = "index.html";
 const REQUEST_PATH: &str = "/";
@@ -545,6 +547,106 @@ fn bench_streaming_hydration(c: &mut Criterion) {
         );
     }
     update_group.finish();
+
+    bench_large_state_boundaries(c);
+}
+
+/// Time a full-state continuation across several boundaries.
+///
+/// A protocol whose reachable component projects `ALL` forces the response to
+/// retain the caller's whole state for the life of the response. The per-
+/// boundary cost must stay flat in the size of that state: the snapshot is
+/// taken once when the response starts, not re-merged at every occurrence.
+fn bench_large_state_boundaries(c: &mut Criterion) {
+    let state = large_state(LARGE_STATE_ROWS);
+    let mut group = c.benchmark_group("streaming_large_state");
+    for boundaries in LARGE_STATE_BOUNDARIES.iter().copied() {
+        let protocol = full_state_protocol(boundaries);
+        let handler = hydration_handler();
+        let mut writer = BenchWriter::new(boundaries + 2);
+        render_streaming(&handler, &protocol, &state, &mut writer);
+        let bytes = writer.output.len();
+        assert_eq!(
+            occurrences(&writer.output, "data-webui-boundary"),
+            boundaries + 1,
+            "each boundary plus the terminal needs one envelope"
+        );
+        println!(
+            "streaming_large_state boundaries={boundaries}: rows={LARGE_STATE_ROWS}, output_bytes={bytes}"
+        );
+
+        group.throughput(Throughput::Bytes(bytes as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(boundaries),
+            &protocol,
+            |b, protocol| {
+                let handler = hydration_handler();
+                let mut writer = BenchWriter::new(boundaries + 2);
+                b.iter(|| {
+                    writer.reset();
+                    render_streaming(
+                        &handler,
+                        black_box(protocol),
+                        black_box(&state),
+                        &mut writer,
+                    );
+                    black_box(writer.output.len());
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Build the same authored page as [`parser_protocol`] with an island whose
+/// compiled hydration surface is `ALL`, which is what forces the continuation
+/// to retain full state.
+fn full_state_protocol(boundaries: usize) -> Protocol {
+    let entry_html = entry_html(boundaries);
+    let mut parser =
+        HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), CssStrategy::Style);
+    if let Err(error) = parser
+        .component_registry_mut()
+        .register_component(ComponentRegistration {
+            tag_name: ISLAND_TAG,
+            html_content: "<button>{{title}}</button>",
+            css_content: None,
+            is_client_owned: false,
+        })
+    {
+        panic!("registering <bench-island> failed: {error}");
+    }
+    if let Err(error) = parser.parse(ENTRY_ID, &entry_html) {
+        panic!("parsing benchmark entry failed: {error}");
+    }
+    let mut document = WebUIProtocol::new(parser.into_fragment_records());
+    document.initial_state_strategy = InitialStateStrategy::Components as i32;
+    document.components.insert(
+        ISLAND_TAG.to_string(),
+        ComponentData {
+            template_json: r#"{"h":"<button></button>","th":1}"#.to_string(),
+            hydration_mode: StateProjectionMode::All as i32,
+            ..Default::default()
+        },
+    );
+    Protocol::new(document)
+}
+
+/// A state whose payload makes a per-boundary copy unmistakable.
+fn large_state(rows: usize) -> Value {
+    let mut items = Vec::with_capacity(rows);
+    for row in 0..rows {
+        items.push(json!({
+            "id": row,
+            "label": format!("row-{row}"),
+            "tags": ["alpha", "beta", "gamma"],
+        }));
+    }
+    json!({
+        "count": 42,
+        "title": "Hydration benchmark",
+        "rows": items,
+    })
 }
 
 criterion_group!(benches, bench_streaming_hydration);

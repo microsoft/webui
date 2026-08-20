@@ -46,6 +46,50 @@ const CAPTURE_POOL_LIMIT: usize = 8;
 /// a component host, and one conditional or loop body) so the common response
 /// never reallocates its frame stack.
 const INITIAL_FRAME_CAPACITY: usize = 16;
+/// Records kept resolved while one semantic step walks the graph.
+///
+/// A step touches the record it entered, the parent it returns to, and at most
+/// a couple of enclosing hosts, so four entries cover the common continuation
+/// without turning the probe into a search.
+const RECORD_CACHE_SIZE: usize = 4;
+
+/// Bounded slot→record cache scoped to a single [`ContinuationVm::advance`].
+///
+/// Resolving a slot costs a dense-vector read plus a hash of the compiled
+/// record ID, and a step re-resolves the same few records every time it
+/// descends into a child and unwinds back to the parked parent. Caching the
+/// borrow for the duration of one step collapses those repeats to a handful of
+/// integer comparisons while keeping the VM itself lifetime-free between calls.
+struct RecordCache<'data> {
+    entries: [Option<(u32, &'data webui_protocol::FragmentList)>; RECORD_CACHE_SIZE],
+    next: usize,
+}
+
+impl<'data> RecordCache<'data> {
+    const fn new() -> Self {
+        Self {
+            entries: [None; RECORD_CACHE_SIZE],
+            next: 0,
+        }
+    }
+
+    /// Borrow the record for `slot`, resolving and retaining it on a miss.
+    fn record(
+        &mut self,
+        protocol: &'data crate::Protocol,
+        slot: u32,
+    ) -> Result<&'data webui_protocol::FragmentList> {
+        for (cached, list) in self.entries.iter().flatten() {
+            if *cached == slot {
+                return Ok(list);
+            }
+        }
+        let list = slot_fragment(protocol, slot)?;
+        self.entries[self.next] = Some((slot, list));
+        self.next = (self.next + 1) % RECORD_CACHE_SIZE;
+        Ok(list)
+    }
+}
 
 pub(crate) struct ContinuationVm {
     frames: Vec<Frame>,
@@ -77,8 +121,10 @@ pub(crate) struct ContinuationStatePlan {
 /// Building the plan can fail on a malformed protocol. Capturing that failure
 /// keeps the memo authoritative: a bad entry is diagnosed identically on every
 /// response without re-walking a graph that is already known to be unusable.
+/// The failure is boxed so the memo table stores one small cell per compiled
+/// record instead of reserving the diagnostic's payload for every slot.
 pub(crate) struct PreparedContinuationStatePlan {
-    result: std::result::Result<ContinuationStatePlan, ContinuationStatePlanError>,
+    result: std::result::Result<ContinuationStatePlan, Box<ContinuationStatePlanError>>,
 }
 
 enum ContinuationStatePlanError {
@@ -95,14 +141,14 @@ impl PreparedContinuationStatePlan {
                 entry_id,
                 super::session::MAX_FROZEN_STATE_KEYS,
             )
-            .map_err(ContinuationStatePlanError::capture),
+            .map_err(|error| Box::new(ContinuationStatePlanError::capture(error))),
         }
     }
 
     pub(crate) fn resolve(&self) -> Result<&ContinuationStatePlan> {
         self.result
             .as_ref()
-            .map_err(ContinuationStatePlanError::to_handler_error)
+            .map_err(|error| error.to_handler_error())
     }
 }
 
@@ -295,16 +341,23 @@ impl ContinuationVm {
         protocol: &'data crate::Protocol,
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<StreamStatus> {
+        let mut records = RecordCache::new();
         while let Some(frame) = self.frames.pop() {
             match frame {
                 Frame::EnterFragment(slot) => {
-                    let frame = self.open_fragment(slot, protocol, context)?;
-                    if let Some(status) = self.run_fragment(frame, handler, protocol, context)? {
+                    let list = records.record(protocol, slot)?;
+                    let frame = open_fragment(slot, list, context);
+                    if let Some(status) =
+                        self.run_fragment(frame, list, (handler, protocol), context)?
+                    {
                         return Ok(status);
                     }
                 }
                 Frame::Fragment(frame) => {
-                    if let Some(status) = self.run_fragment(frame, handler, protocol, context)? {
+                    let list = records.record(protocol, frame.slot)?;
+                    if let Some(status) =
+                        self.run_fragment(frame, list, (handler, protocol), context)?
+                    {
                         return Ok(status);
                     }
                 }
@@ -391,41 +444,21 @@ impl ContinuationVm {
         })
     }
 
-    fn open_fragment(
-        &mut self,
-        slot: u32,
-        protocol: &crate::Protocol,
-        context: &WebUIProcessContext<'_, '_, '_>,
-    ) -> Result<FragmentFrame> {
-        let list = slot_fragment(protocol, slot)?;
-        let best_route = crate::route_renderer::find_best_route_match(
-            &list.fragments,
-            context.request_path,
-            &context.route_base,
-            context.route_index,
-        );
-        Ok(FragmentFrame {
-            slot,
-            index: 0,
-            best_route,
-        })
-    }
-
     /// Walk one fragment record until it descends, suspends, or ends.
     ///
-    /// The record is resolved once per entry and inert fragments never touch
-    /// the frame stack, so a boundary body costs one map lookup rather than one
-    /// per fragment. Only a construct that owns a child record (component,
-    /// condition, loop, route, outlet) or a discovered boundary parks the frame
-    /// and returns to the caller.
+    /// The record is resolved by the caller — once per step for the whole
+    /// descend/unwind cycle — and inert fragments never touch the frame stack,
+    /// so a boundary body costs no record lookups at all. Only a construct that
+    /// owns a child record (component, condition, loop, route, outlet) or a
+    /// discovered boundary parks the frame and returns to the caller.
     fn run_fragment<'data>(
         &mut self,
         mut frame: FragmentFrame,
-        handler: &WebUIHandler,
-        protocol: &'data crate::Protocol,
+        list: &'data webui_protocol::FragmentList,
+        runtime: (&WebUIHandler, &'data crate::Protocol),
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<Option<StreamStatus>> {
-        let list = slot_fragment(protocol, frame.slot)?;
+        let (handler, protocol) = runtime;
         loop {
             let index = frame.index;
             let Some(fragment) = list.fragments.get(index) else {
@@ -1364,6 +1397,28 @@ fn fragment_slot(protocol: &crate::Protocol, id: &str) -> Result<u32> {
     protocol
         .fragment_slot(id)
         .ok_or_else(|| HandlerError::MissingFragment(id.to_string()))
+}
+
+/// Park a freshly entered record, pre-selecting its best route match.
+///
+/// The record is already resolved by the caller's step-local cache, so entering
+/// a child costs no additional lookup.
+fn open_fragment(
+    slot: u32,
+    list: &webui_protocol::FragmentList,
+    context: &WebUIProcessContext<'_, '_, '_>,
+) -> FragmentFrame {
+    let best_route = crate::route_renderer::find_best_route_match(
+        &list.fragments,
+        context.request_path,
+        &context.route_base,
+        context.route_index,
+    );
+    FragmentFrame {
+        slot,
+        index: 0,
+        best_route,
+    }
 }
 
 /// Borrow the record a continuation frame is walking.

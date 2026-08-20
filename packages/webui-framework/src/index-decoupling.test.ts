@@ -42,6 +42,33 @@ import { fileURLToPath } from 'node:url';
 const ALLOWED_STREAMING_MODULES = new Set(['./streaming-mode.js']);
 
 /**
+ * Tokens that must never reach the always-shipped bundle.
+ *
+ * Component-span hydration is an opt-in streaming feature: the compiler
+ * attribute names and the open-span registry that resolves them belong to the
+ * coordinator graph. `TemplateElement` receives an already-resolved bypass
+ * ancestor element and compares it by identity, so a non-streaming app pays
+ * nothing for spans. One leaked string literal is enough to show that contract
+ * broke — and because `streaming-mode.js` is allow-listed above, a leak there
+ * would slip past the module-reachability walk. So the reachable graph is also
+ * checked as text.
+ */
+const FORBIDDEN_ORDINARY_TOKENS = [
+  // Compiler-owned span attribute names.
+  'data-ws-span',
+  'data-ws-enclosing',
+  // Open-span registry surface.
+  'registerEnclosingSpans',
+  'prepareSpanCompletion',
+  'spanHostFor',
+  'openSpans',
+  'SpanInstanceId',
+  // Span registry diagnostics.
+  'span instance ',
+  'component span',
+] as const;
+
+/**
  * The one lazy-hydration module the default entry is allowed to reach.
  *
  * `lazy-hydration-contract.js` is a dependency-free contract: the activation symbol,
@@ -128,6 +155,42 @@ describe('default entry decoupling', () => {
     );
     // Sanity: the walk actually traversed a non-trivial graph.
     assert.ok(visited.size > 3, 'import-graph walk should visit multiple modules');
+  });
+
+  test('the reachable default-entry graph contains no span attribute or registry token', () => {
+    const distDir = dirname(fileURLToPath(import.meta.url));
+    const visited = walkIndexImportGraph(distDir);
+
+    const leaks: string[] = [];
+    for (const spec of visited) {
+      let source: string;
+      try {
+        source = readFileSync(resolve(distDir, spec), 'utf8');
+      } catch {
+        continue;
+      }
+      for (const token of FORBIDDEN_ORDINARY_TOKENS) {
+        if (source.includes(token)) leaks.push(`${spec}: ${token}`);
+      }
+    }
+
+    assert.deepEqual(
+      leaks,
+      [],
+      'the default index entry must ship no component-span attribute names or ' +
+        `open-span registry code, but found: ${leaks.join(', ')}`,
+    );
+    // Sanity: the tokens are real — the opt-in streaming graph does carry them.
+    const dom = readFileSync(resolve(distDir, 'streaming-dom.js'), 'utf8');
+    assert.ok(
+      dom.includes('data-ws-span') && dom.includes('data-ws-enclosing'),
+      'expected the opt-in streaming graph to own the compiler span attributes',
+    );
+    const spans = readFileSync(resolve(distDir, 'streaming-spans.js'), 'utf8');
+    assert.ok(
+      spans.includes('registerEnclosingSpans'),
+      'expected the opt-in streaming graph to own the open-span registry',
+    );
   });
 
   test('dist/index.js has no static or dynamic path to the lazy-hydration coordinator', () => {

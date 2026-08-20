@@ -231,6 +231,27 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
         )
     }
 
+    /// Commit the pending occurrence without merging new state.
+    ///
+    /// Used by [`WebUIHandler::render_streaming`], which drives every
+    /// occurrence from the single value it already snapshotted at start.
+    pub(crate) fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus> {
+        self.core.resume_current(
+            SessionCall {
+                handler: self.handler,
+                protocol: self.protocol,
+                options: &self.options,
+                writer: &mut self.sink,
+            },
+            instance_id,
+            mode,
+        )
+    }
+
     /// Whether the response has emitted its terminal and ended its writer.
     #[must_use]
     pub fn is_done(&self) -> bool {
@@ -274,8 +295,7 @@ impl SessionCore {
         if !protocol.protocol().fragments.contains_key(entry_id) {
             return Err(HandlerError::MissingFragment(entry_id.to_string()));
         }
-        let prepared = protocol.continuation_state_plan(entry_id);
-        let state_plan = prepared.resolve()?;
+        let state_plan = protocol.continuation_state_plan(entry_id)?.resolve()?;
         Ok(Self {
             vm: ContinuationVm::new(entry_id, protocol)?,
             frozen_keys: Arc::clone(&state_plan.keys),
@@ -339,6 +359,28 @@ impl SessionCore {
         } else {
             overlay_selected_state(&mut self.frozen_state, state, &self.frozen_keys);
         }
+        self.run_advance(call, Some((instance_id, mode)))
+    }
+
+    /// Commit the pending occurrence against the snapshot the response already
+    /// holds.
+    ///
+    /// Callers that never introduce new state between occurrences — the
+    /// one-shot [`WebUIHandler::render_streaming`] helper is the canonical one —
+    /// would otherwise re-merge an identical value into the retained snapshot
+    /// once per boundary, making a large state cost O(boundaries × state size)
+    /// for a result that is byte-for-byte what the previous step already held.
+    /// The public [`Self::resume`] entry point keeps the overlay for hosts that
+    /// genuinely resolve new data per occurrence.
+    pub(crate) fn resume_current(
+        &mut self,
+        call: SessionCall<'_, '_>,
+        instance_id: BoundaryInstanceId,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus> {
+        self.require_usable("resume")?;
+        self.require_started("resume")?;
+        self.vm.validate_resume(instance_id)?;
         self.run_advance(call, Some((instance_id, mode)))
     }
 
@@ -503,4 +545,308 @@ impl SessionCore {
 #[inline(never)]
 fn missing_progress_error() -> HandlerError {
     HandlerError::Invariant("streaming progress is unavailable".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{FlushWriter, ResponseWriter};
+    use webui_parser::{ComponentRegistration, HtmlParser};
+    use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
+    use webui_test_utils::test_json;
+
+    const ISLAND_TAG: &str = "state-island";
+
+    struct TestSink {
+        output: String,
+    }
+
+    impl ResponseWriter for TestSink {
+        fn write(&mut self, content: &str) -> Result<()> {
+            self.output.push_str(content);
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl FlushWriter for TestSink {
+        fn flush(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Build a parser-produced entry with `boundaries` runtime occurrences,
+    /// each hosting one island component.
+    fn boundary_protocol(boundaries: usize, hydration_mode: StateProjectionMode) -> Protocol {
+        let mut html = String::from("<!doctype html><html><head></head><body>");
+        for sequence in 0..boundaries {
+            html.push_str("<boundary name=\"b");
+            html.push_str(&sequence.to_string());
+            html.push_str("\"><article><");
+            html.push_str(ISLAND_TAG);
+            html.push_str("></");
+            html.push_str(ISLAND_TAG);
+            html.push_str("></article></boundary>");
+        }
+        html.push_str("</body></html>");
+
+        let mut parser = HtmlParser::new();
+        match parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                ISLAND_TAG,
+                "<button>{{title}}</button>",
+                None,
+                true,
+            )) {
+            Ok(()) => {}
+            Err(error) => panic!("registering the island failed: {error}"),
+        }
+        if let Err(error) = parser.parse("index.html", &html) {
+            panic!("parsing the streaming entry failed: {error}");
+        }
+        let mut document = WebUIProtocol::new(parser.into_fragment_records());
+        document.initial_state_strategy = InitialStateStrategy::Components as i32;
+        document.components.insert(
+            ISLAND_TAG.to_string(),
+            ComponentData {
+                template_json: r#"{"h":"<button></button>","th":1}"#.to_string(),
+                hydration_mode: hydration_mode as i32,
+                hydration_keys: if matches!(hydration_mode, StateProjectionMode::Keys) {
+                    vec!["count".to_string(), "title".to_string()]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            },
+        );
+        Protocol::new(document)
+    }
+
+    /// A state whose payload is large enough that a per-boundary copy would be
+    /// unmistakable in both time and allocation.
+    fn large_state(rows: usize) -> Value {
+        let mut items = Vec::with_capacity(rows);
+        for row in 0..rows {
+            items.push(test_json!({
+                "id": row,
+                "label": format!("row-{row}"),
+                "tags": ["alpha", "beta", "gamma"],
+            }));
+        }
+        test_json!({
+            "count": 42,
+            "title": "large state",
+            "rows": items,
+        })
+    }
+
+    /// Heap address of the retained snapshot's `rows` buffer, or `None` when
+    /// the snapshot does not hold it.
+    fn rows_address(state: &Value) -> Option<usize> {
+        state
+            .get("rows")
+            .and_then(Value::as_array)
+            .map(|rows| rows.as_ptr().addr())
+    }
+
+    fn options<'a>() -> RenderOptions<'a> {
+        RenderOptions::new("index.html", "/")
+    }
+
+    #[test]
+    fn render_streaming_projects_full_state_once_per_response() -> Result<()> {
+        // Full-state protocols retain the caller's whole tree. Committing each
+        // occurrence against the snapshot the response already holds must not
+        // re-copy that tree, so the retained buffer keeps its identity for the
+        // entire response no matter how many boundaries commit.
+        let protocol = boundary_protocol(8, StateProjectionMode::All);
+        let handler = WebUIHandler::new();
+        let state = large_state(256);
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let mut status = response.start(&state)?;
+        let snapshot = rows_address(&response.core.frozen_state);
+        assert!(
+            snapshot.is_some(),
+            "a full-state protocol must retain the caller's payload"
+        );
+        assert_ne!(
+            snapshot,
+            rows_address(&state),
+            "the response owns its snapshot rather than borrowing the caller's tree"
+        );
+
+        let mut committed = 0usize;
+        while !status.done {
+            let Some(boundary) = status.boundary.as_ref() else {
+                panic!("an unfinished step must carry a pending boundary");
+            };
+            status = response.resume_current(boundary.instance_id, BoundaryMode::Final)?;
+            committed += 1;
+            assert_eq!(
+                rows_address(&response.core.frozen_state),
+                snapshot,
+                "committing occurrence {committed} must not re-copy the retained snapshot"
+            );
+        }
+        assert_eq!(committed, 8, "every authored boundary must commit");
+
+        // The one-shot helper drives exactly this loop, so its bytes must match
+        // the snapshot-only path it delegates to.
+        let mut helper_sink = TestSink {
+            output: String::new(),
+        };
+        handler.render_streaming(&protocol, &state, &render_options, &mut helper_sink)?;
+        assert_eq!(
+            helper_sink.output, sink.output,
+            "render_streaming must resume against the retained snapshot"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn resume_overlays_new_state_and_reuses_unchanged_subtrees() -> Result<()> {
+        // The public resume keeps its patch semantics: a changed key lands in
+        // the snapshot, an omitted key survives, and an unchanged subtree is
+        // left in place instead of being copied again.
+        let protocol = boundary_protocol(2, StateProjectionMode::All);
+        let handler = WebUIHandler::new();
+        let state = large_state(64);
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let status = response.start(&state)?;
+        let snapshot = rows_address(&response.core.frozen_state);
+        let Some(boundary) = status.boundary.as_ref() else {
+            panic!("the first occurrence must suspend");
+        };
+
+        let mut next = state.clone();
+        if let Some(object) = next.as_object_mut() {
+            object.insert("title".to_string(), Value::String("second".to_string()));
+            object.remove("count");
+        }
+        let status = response.resume(boundary.instance_id, &next, BoundaryMode::Final)?;
+
+        assert_eq!(
+            response.core.frozen_state.get("title"),
+            Some(&Value::String("second".to_string())),
+            "a changed key must land in the snapshot"
+        );
+        assert_eq!(
+            response.core.frozen_state.get("count"),
+            Some(&test_json!(42)),
+            "an omitted key keeps the value the snapshot already holds"
+        );
+        assert_eq!(
+            rows_address(&response.core.frozen_state),
+            snapshot,
+            "an unchanged subtree must not be copied again"
+        );
+        assert!(status.boundary.is_some(), "the second occurrence follows");
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_steps_reuse_projection_scratch() -> Result<()> {
+        // The record projection scratch lives in the retained progress as plain
+        // integers, so after the first record every later step reuses the same
+        // allocation instead of rebuilding one per step.
+        let protocol = boundary_protocol(6, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let state = test_json!({ "count": 1, "title": "scratch", "unused": "x" });
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let mut status = response.start(&state)?;
+        let mut retained: Option<(usize, usize)> = None;
+        while !status.done {
+            let Some(boundary) = status.boundary.as_ref() else {
+                panic!("an unfinished step must carry a pending boundary");
+            };
+            status = response.resume_current(boundary.instance_id, BoundaryMode::Updatable)?;
+            let Some(progress) = response.core.streaming.as_ref() else {
+                panic!("a suspended response must retain its progress");
+            };
+            let observed = (
+                progress.state_key_ids.capacity(),
+                progress.state_key_ids.as_ptr().addr(),
+            );
+            assert!(
+                observed.0 > 0,
+                "the projection scratch must survive the record that filled it"
+            );
+            match retained {
+                None => retained = Some(observed),
+                Some(previous) => assert_eq!(
+                    observed, previous,
+                    "a later step must reuse the projection buffer, not allocate a new one"
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn updates_reuse_their_committed_projection_buffer() -> Result<()> {
+        // An update writes through the plan captured at commit time: no key
+        // list is rebuilt, so the plan's buffer keeps its identity across every
+        // update it serves.
+        let protocol = boundary_protocol(2, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let state = test_json!({ "count": 1, "title": "updates" });
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let status = response.start(&state)?;
+        let Some(boundary) = status.boundary.as_ref() else {
+            panic!("the first occurrence must suspend");
+        };
+        let instance_id = boundary.instance_id;
+        response.resume(instance_id, &state, BoundaryMode::Updatable)?;
+
+        let mut retained: Option<(usize, usize)> = None;
+        for _ in 0..4 {
+            response.update(instance_id, &state)?;
+            let Some(progress) = response.core.streaming.as_ref() else {
+                panic!("a live response must retain its progress");
+            };
+            let Some(Some(plan)) = progress.update_plans.first() else {
+                panic!("an updatable occurrence must retain its projection plan");
+            };
+            let observed = (plan.key_ids.capacity(), plan.key_ids.as_ptr().addr());
+            assert!(!plan.requires_full_state, "keyed islands project keys");
+            assert!(observed.0 > 0, "the plan must retain its key buffer");
+            match retained {
+                None => retained = Some(observed),
+                Some(previous) => assert_eq!(
+                    observed, previous,
+                    "every update must reuse the committed projection buffer"
+                ),
+            }
+        }
+        assert_eq!(
+            sink.output.matches(",2,0,{").count(),
+            4,
+            "each update emits exactly one typed state-update record"
+        );
+        Ok(())
+    }
 }

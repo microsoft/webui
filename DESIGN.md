@@ -2178,7 +2178,10 @@ regions while the document is still loading.
    lexical locals, component attributes, route state, inventories, and
    continuation frames. Resume state overlays the frozen parent projection for
    selected keys. Expression resolution remains lexical first, then the
-   boundary resume overlay, then frozen parent state.
+   boundary resume overlay, then frozen parent state. The one-shot
+   `WebUIHandler::render_streaming` helper resumes every occurrence directly
+   against its original start snapshot, avoiding redundant overlays when one
+   state value drives the complete response.
 6. **Generated component spans.** When traversal suspends inside a reusable
    component, the handler opens a generated component span around its unfinished
    host. An early child checkpoint may bypass exactly its nearest unfinished

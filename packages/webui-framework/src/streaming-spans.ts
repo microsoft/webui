@@ -6,14 +6,17 @@ import {
   safeRemove,
   safeRemoveAttribute,
   SPAN_START_PREFIX,
+  STREAMING_SPAN_HOST_ATTR,
 } from './streaming-dom.js';
 import type { HydrationRange } from './streaming-dom.js';
-import { STREAMING_SPAN_HOST_ATTR } from './streaming-mode.js';
 
 /** Maximum unfinished component hosts retained by one response. */
 export const MAX_OPEN_SPANS = 128;
 /** Maximum runtime component ancestry crossed by one early boundary. */
 export const MAX_SPAN_NESTING = 32;
+
+const INVALID_SPAN_ID = -1;
+const NOT_A_SPAN_HOST = -2;
 
 interface OpenSpan {
   readonly host: Element;
@@ -27,6 +30,43 @@ const openSpans = new Map<number, OpenSpan>();
 const hostScratch: Element[] = [];
 const idScratch: number[] = [];
 let nextExpectedSpanInstanceId = 0;
+
+/**
+ * Read one element's declared SpanInstanceId.
+ *
+ * `NOT_A_SPAN_HOST` when the element carries no marker at all and
+ * `INVALID_SPAN_ID` when it carries one that is not a canonical base-10
+ * integer, so both discovery walks share one attribute read and one parse.
+ */
+function spanIdOf(element: Element): number {
+  if (typeof element.hasAttribute !== 'function') return NOT_A_SPAN_HOST;
+  if (!element.hasAttribute(STREAMING_SPAN_HOST_ATTR)) return NOT_A_SPAN_HOST;
+  const raw = element.getAttribute(STREAMING_SPAN_HOST_ATTR);
+  if (raw === null || raw.length === 0) return INVALID_SPAN_ID;
+  let value = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i) - 48;
+    if (code < 0 || code > 9) return INVALID_SPAN_ID;
+    value = value * 10 + code;
+    if (!Number.isSafeInteger(value)) return INVALID_SPAN_ID;
+  }
+  return String(value) === raw ? value : INVALID_SPAN_ID;
+}
+
+function invalidSpanAttrReason(): string {
+  return `invalid ${STREAMING_SPAN_HOST_ATTR} value`;
+}
+
+/**
+ * The element one already-registered span will eventually activate.
+ *
+ * The coordinator hands this to the activation walk so an entitled early root
+ * can skip that exact ancestor by identity — no attribute name, and no span
+ * bookkeeping, ever reaches the always-shipped bundle.
+ */
+export function spanHostFor(id: number): Element | undefined {
+  return openSpans.get(id)?.host;
+}
 
 /**
  * Register the unfinished component ancestry enclosing an early boundary.
@@ -47,32 +87,28 @@ export function registerEnclosingSpans(
 
   while (current && hops < MAX_MARKER_SCAN_NODES) {
     hops++;
-    const element = elementForNode(current);
-    if (
-      element &&
-      typeof element.hasAttribute === 'function' &&
-      element.hasAttribute(STREAMING_SPAN_HOST_ATTR)
-    ) {
+    const element = current.nodeType === 1 /* ELEMENT_NODE */
+      ? current as Element
+      : null;
+    const id = element ? spanIdOf(element) : NOT_A_SPAN_HOST;
+    if (id !== NOT_A_SPAN_HOST) {
       if (hostScratch.length >= MAX_SPAN_NESTING) {
         clearScratch();
         return `runtime component span nesting exceeds ${MAX_SPAN_NESTING}`;
       }
-      const id = parseInstanceId(
-        element.getAttribute(STREAMING_SPAN_HOST_ATTR),
-      );
-      if (id === null) {
+      if (id === INVALID_SPAN_ID) {
         clearScratch();
-        return `invalid ${STREAMING_SPAN_HOST_ATTR} value`;
+        return invalidSpanAttrReason();
       }
       if (firstSpan && id !== enclosingSpanInstanceId) {
         clearScratch();
         return `boundary declares enclosing span ${enclosingSpanInstanceId}, but its nearest spanning ancestor is ${id}`;
       }
       firstSpan = false;
-      hostScratch.push(element);
+      hostScratch.push(element as Element);
       idScratch.push(id);
     }
-    current = parentAcrossRenderRoot(current, element);
+    current = ascendRenderRoots(current);
   }
 
   if (firstSpan) {
@@ -140,81 +176,59 @@ function registerSpan(
 }
 
 /**
- * Discover a previously unseen completion target from its concrete marker range.
+ * Resolve and validate one span completion before it mutates or hydrates.
  *
- * Zero-occurrence component spans have no checkpoint to register their
- * ancestry, so their completion must do the same bounded, root-local discovery.
+ * One bounded, root-local sibling scan serves both jobs. A span opened by an
+ * earlier checkpoint is already registered and only needs its recorded host and
+ * marker confirmed; a zero-occurrence span has never been seen at all, so the
+ * same scan discovers the host its ancestry is registered from.
  */
-export function registerSpanCompletionTarget(
+export function prepareSpanCompletion(
   id: number,
   range: HydrationRange,
 ): string | null {
-  if (openSpans.has(id)) return null;
-  if (!range.start || !range.end) {
-    return `span ${id} completion is markerless`;
-  }
+  const start = range.start;
+  const end = range.end;
+  if (!start || !end) return `span ${id} completion is markerless`;
 
-  let node = range.start.nextSibling;
+  let host: Element | undefined;
+  let node: Node | null = start.nextSibling;
   let hops = 0;
-  while (node && node !== range.end) {
+  while (node && node !== end) {
     if (hops >= MAX_MARKER_SCAN_NODES) {
       return `span ${id} host lookup exceeds ${MAX_MARKER_SCAN_NODES} nodes`;
     }
     hops++;
     if (node.nodeType === 1 /* ELEMENT_NODE */) {
-      const element = node as Element;
-      if (
-        typeof element.hasAttribute === 'function' &&
-        element.hasAttribute(STREAMING_SPAN_HOST_ATTR)
-      ) {
-        const hostId = parseInstanceId(
-          element.getAttribute(STREAMING_SPAN_HOST_ATTR),
-        );
-        if (hostId === null) {
-          return `invalid ${STREAMING_SPAN_HOST_ATTR} value`;
-        }
+      const hostId = spanIdOf(node as Element);
+      if (hostId === INVALID_SPAN_ID) return invalidSpanAttrReason();
+      if (hostId !== NOT_A_SPAN_HOST) {
         if (hostId !== id) {
           return `span completion targets span ${id}, but its host declares span ${hostId}`;
         }
-        return registerEnclosingSpans(element, id);
+        host = node as Element;
+        break;
       }
     }
     node = node.nextSibling;
   }
-  return `span completion targets span ${id}, but no spanning host was found inside its markers`;
-}
+  if (!host) {
+    return `span completion targets span ${id}, but no spanning host was found inside its markers`;
+  }
 
-/** Validate one span completion before mutating or hydrating its range. */
-export function validateSpanCompletion(
-  id: number,
-  range: HydrationRange,
-): string | null {
+  if (!openSpans.has(id)) {
+    const error = registerEnclosingSpans(host, id);
+    if (error) return error;
+  }
   const span = openSpans.get(id);
   if (!span) return `span completion targets span ${id}, which is not open`;
   if (span.openChildren !== 0) {
     return `span ${id} completed before its nested component spans`;
   }
-  if (
-    !range.start ||
-    !range.end ||
-    range.start !== span.start ||
-    span.host.parentNode !== range.start.parentNode
-  ) {
-    return `span completion markers do not match the open span ${id}`;
-  }
-
-  let node = range.start.nextSibling;
-  let hops = 0;
-  while (node && node !== range.end && node !== span.host) {
-    if (hops >= MAX_MARKER_SCAN_NODES) {
-      return `span ${id} host lookup exceeds ${MAX_MARKER_SCAN_NODES} nodes`;
-    }
-    hops++;
-    node = node.nextSibling;
-  }
-  return node === span.host
+  return span.host === host && span.start === start &&
+      host.parentNode === start.parentNode
     ? null
-    : `span ${id} host is outside its completion markers`;
+    : `span completion markers do not match the open span ${id}`;
 }
 
 /** Release one successfully completed span and its ancestry accounting. */
@@ -239,44 +253,22 @@ export function abandonOpenSpans(): void {
   nextExpectedSpanInstanceId = 0;
 }
 
-function elementForNode(node: Node): Element | null {
-  if (node.nodeType === 1 /* ELEMENT_NODE */) return node as Element;
+/**
+ * Step one level out of the current render root.
+ *
+ * A shadow root resolves to its host, a slotted element to its assigned slot,
+ * and anything else to its parent node — so one function crosses every render
+ * root boundary an ancestry walk can hit.
+ */
+function ascendRenderRoots(node: Node): Node | null {
   if (node.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */) {
     return (node as ShadowRoot).host ?? null;
   }
-  return null;
-}
-
-function parentAcrossRenderRoot(
-  node: Node,
-  element: Element | null,
-): Node | null {
-  let current = node;
-  let currentElement = element;
-  if (node.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */) {
-    const host = (node as ShadowRoot).host;
-    if (!host) return null;
-    current = host;
-    currentElement = host;
+  if (node.nodeType === 1 /* ELEMENT_NODE */) {
+    const slot = (node as Element).assignedSlot;
+    if (slot) return slot;
   }
-  if (currentElement?.assignedSlot) return currentElement.assignedSlot;
-  const parent = current.parentNode;
-  if (parent?.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */) {
-    return (parent as ShadowRoot).host ?? null;
-  }
-  return parent;
-}
-
-function parseInstanceId(raw: string | null): number | null {
-  if (raw === null || raw.length === 0) return null;
-  let value = 0;
-  for (let i = 0; i < raw.length; i++) {
-    const code = raw.charCodeAt(i) - 48;
-    if (code < 0 || code > 9) return null;
-    value = value * 10 + code;
-    if (!Number.isSafeInteger(value)) return null;
-  }
-  return String(value) === raw ? value : null;
+  return node.parentNode;
 }
 
 function clearScratch(): void {

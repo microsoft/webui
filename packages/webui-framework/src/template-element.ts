@@ -60,9 +60,7 @@ import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
   isStreamingHydrationMode,
   PENDING_ROOT_CONNECTED,
-  STREAMING_ENCLOSING_SPAN_ATTR,
   STREAMED_HOST_ATTR,
-  STREAMING_SPAN_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
 import {
@@ -426,10 +424,17 @@ export class TemplateElement extends HTMLElement {
    * result objects. The optional `state` is this element's boundary-local SSR
    * state, handed straight through to hydration instead of via the global
    * `window.__webui.state` handoff.
+   *
+   * `bypassAncestor`, when supplied, is one already-resolved ancestor element
+   * this root may skip exactly once while looking for its hydration barrier.
+   * The coordinator owns that resolution — which compiler attributes name the
+   * ancestor, and whether this root is entitled to skip it — so the
+   * always-shipped bundle carries a plain identity comparison and no streaming
+   * attribute names at all.
    */
   [STREAMING_BOUNDARY_ACTIVATE](
     state?: Record<string, unknown>,
-    bypassSpanInstanceId?: number,
+    bypassAncestor?: Element,
   ): number {
     // `customElements.upgrade()` installs this class on detached roots without
     // invoking connectedCallback(). Preserve the same marker-driven dormant
@@ -447,7 +452,7 @@ export class TemplateElement extends HTMLElement {
     }
     this.$meta = meta;
     if (!this.$shouldActivateOnBoundaryCommit()) return ACTIVATION_STATIC_HOST_OPT_OUT;
-    const ancestor = this.$nearestHydrationBarrier(bypassSpanInstanceId);
+    const ancestor = this.$nearestHydrationBarrier(bypassAncestor);
     if (ancestor) {
       this.$deferredByAncestor = true;
       this.$ancestorBoundaryState = state;
@@ -455,12 +460,9 @@ export class TemplateElement extends HTMLElement {
       this.$registerWithHydrationBarrier(ancestor);
       return ACTIVATION_ANCESTOR_BARRIER;
     }
-    if (this.$deferredByAncestor) {
-      this.$detachDeferredAncestor();
-      this.$deferredByAncestor = undefined;
-      this.$ancestorBoundaryState = undefined;
-      this.$hasAncestorBoundaryState = undefined;
-    }
+    // A root re-activated after its barrier lifted must not keep the stale
+    // registration; the boundary state it carried is superseded by `state`.
+    if (this.$deferredByAncestor) this.$clearAncestorDeferral();
     this.$activatingDeferredSSR = true;
     try {
       this.$activateDeferredSSR(state);
@@ -472,16 +474,45 @@ export class TemplateElement extends HTMLElement {
 
   /** Clear element-owned streaming deferral after a fatal stream failure. */
   [STREAMING_BOUNDARY_ABANDON](): void {
-    this.$detachDeferredAncestor();
+    this.$clearAncestorDeferral();
     this.$abandonDeferredDescendants();
     this.$deferredSSR = false;
-    this.$deferredByAncestor = undefined;
-    this.$ancestorBoundaryState = undefined;
-    this.$hasAncestorBoundaryState = undefined;
     this.$activatingDeferredSSR = false;
     this.$ready = false;
     this.$preReadyWrites = null;
     if (this.$deferredWrites) this.$deferredWrites = undefined;
+  }
+
+  /**
+   * Drop any registration behind an ancestor hydration barrier.
+   *
+   * Shared by abandon, destroy, and re-activation so the four pieces of
+   * barrier bookkeeping can never be cleared partially.
+   */
+  private $clearAncestorDeferral(): void {
+    this.$detachDeferredAncestor();
+    this.$deferredByAncestor = undefined;
+    this.$ancestorBoundaryState = undefined;
+    this.$hasAncestorBoundaryState = undefined;
+  }
+
+  /**
+   * Hand control back to whoever retained this root, if anyone did.
+   *
+   * The streaming coordinator installs the hook on roots it is holding — for a
+   * pending definition or a pending ancestor barrier — and owns every
+   * continuation from there: eager activation, re-registration behind a
+   * barrier, lazy observation, or a static-host opt-out. Re-entering ordinary
+   * deferral instead can replay older page bootstrap state over a queued
+   * boundary update.
+   */
+  private $resumeRetainedRoot(): boolean {
+    const resume = (
+      this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void }
+    )[PENDING_ROOT_CONNECTED];
+    if (typeof resume !== 'function') return false;
+    resume.call(this);
+    return true;
   }
 
   /**
@@ -557,15 +588,7 @@ export class TemplateElement extends HTMLElement {
     ) {
       this.$deferredSSR = true;
       this.$ready = true;
-      const resume = (this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void })[PENDING_ROOT_CONNECTED];
-      if (typeof resume === 'function') {
-        // The coordinator owns every continuation after a pending definition:
-        // eager activation, span-barrier registration, lazy observation, or
-        // static-host opt-out. Re-entering ordinary deferral here can replay
-        // older page bootstrap state over a queued boundary update.
-        resume.call(this);
-        return;
-      }
+      if (this.$resumeRetainedRoot()) return;
       this.$didDeferSSRHydration();
       return;
     }
@@ -820,12 +843,9 @@ export class TemplateElement extends HTMLElement {
       this.$resetClientShadow = true;
     }
     if (!this.$root) {
-      this.$detachDeferredAncestor();
+      this.$clearAncestorDeferral();
       this.$abandonDeferredDescendants();
       this.$deferredSSR = false;
-      this.$deferredByAncestor = undefined;
-      this.$ancestorBoundaryState = undefined;
-      this.$hasAncestorBoundaryState = undefined;
       this.$ready = false;
       this.$hasUnknownScopes = false;
       if (this.$deferredWrites) this.$deferredWrites = undefined;
@@ -953,16 +973,19 @@ export class TemplateElement extends HTMLElement {
     return this.$meta ?? this.$templateMeta();
   }
 
+  /**
+   * Walk up to the nearest ancestor that must hydrate before this instance.
+   *
+   * `bypassAncestor` is an opt-in, coordinator-resolved escape hatch: exactly
+   * one occurrence of that element is stepped over, which is how an early
+   * streamed child hydrates ahead of the still-unfinished component host that
+   * encloses it. Every other barrier — including a second, outer one — is
+   * still honoured, so parent-first ordering holds.
+   */
   private $nearestHydrationBarrier(
-    bypassSpanInstanceId?: number,
+    bypassAncestor?: Element,
   ): Element | undefined {
-    const bypassSpan = bypassSpanInstanceId === undefined
-      ? undefined
-      : String(bypassSpanInstanceId);
-    const mayBypass = bypassSpan !== undefined &&
-      this.getAttribute(STREAMING_ENCLOSING_SPAN_ATTR) ===
-        bypassSpan;
-    let bypassed = false;
+    let bypass = bypassAncestor;
     let current: Element = this;
     while (true) {
       let parent: Element | null =
@@ -980,13 +1003,8 @@ export class TemplateElement extends HTMLElement {
           : null;
       }
       if (!parent) return undefined;
-      if (
-        mayBypass &&
-        !bypassed &&
-        parent.getAttribute(STREAMING_SPAN_HOST_ATTR) ===
-          bypassSpan
-      ) {
-        bypassed = true;
+      if (parent === bypass) {
+        bypass = undefined;
         current = parent;
         continue;
       }
@@ -1110,13 +1128,7 @@ export class TemplateElement extends HTMLElement {
     const boundaryState = this.$ancestorBoundaryState;
     this.$hasAncestorBoundaryState = undefined;
     this.$ancestorBoundaryState = undefined;
-    const resume = (
-      this as unknown as { [PENDING_ROOT_CONNECTED]?: () => void }
-    )[PENDING_ROOT_CONNECTED];
-    if (typeof resume === 'function') {
-      resume.call(this);
-      return;
-    }
+    if (this.$resumeRetainedRoot()) return;
     const meta = this.$meta;
     if (meta && this.$shouldDeferSSRHydration(meta)) {
       if (hasBoundaryState) {

@@ -17,9 +17,10 @@
  *
  * Deterministic correctness is always enforced (equal live roots, zero residual
  * scaffolding, no globally-published streamed state, coordinator-free ordinary
- * bundle, bounded coordinator bundle bytes). The noisy performance/memory gates
- * (component CPU <= single-boundary streaming one-shot * 1.05, bounded retained-
- * heap slope, bounded peak heap, linear elapsed growth) are opt-in via
+ * bundle, absolute ordinary bundle byte caps, bounded coordinator bundle
+ * bytes). The noisy performance/memory gates (component CPU <= single-boundary
+ * streaming one-shot * 1.05, bounded retained-heap slope, bounded peak heap,
+ * linear elapsed growth) are opt-in via
  * `WEBUI_STREAMING_HYDRATION_ENFORCE=1` so ordinary CI stays stable.
  *
  * # Baseline workflow (distinct from the transport snapshot)
@@ -93,15 +94,39 @@ const RETAINED_SLOPE_PCT = 2;
  *  scaffolding the control never allocates. */
 const PEAK_HEAP_ABS_FLOOR_BYTES = 512 * 1024;
 const PEAK_HEAP_TOLERANCE_PCT = 15;
-/** Deterministic production coordinator size caps. Raising either requires
- *  explicit review because every streaming application pays these bytes.
- *  The v2 coordinator includes checkpoint declaration/span validation, retained
- *  roots for state updates, span completion, terminal cleanup, commit marks, and
- *  the opt-in time-sliced drain. The reviewed production bundle is 17,147 bytes
- *  minified / 5,885 bytes gzip incrementally; these caps leave roughly 4%
- *  headroom, so further growth still fails. */
-const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 17.5 * 1024;
-const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 6 * 1024;
+/**
+ * Deterministic production bundle-size caps. Raising any of them requires
+ * explicit review because every application pays these bytes.
+ *
+ * Two kinds are enforced, and both are needed:
+ *
+ * - **Absolute ordinary caps.** The always-shipped `@microsoft/webui-framework`
+ *   entry is what a *non-streaming* app downloads. Only an absolute cap catches
+ *   growth here, because the incremental metric below subtracts the ordinary
+ *   bundle — so code added to the always-shipped entry silently cancels out of
+ *   it. That is exactly how span-attribute parsing once reached every app while
+ *   the incremental number looked unchanged.
+ * - **Incremental coordinator caps.** Streaming bytes an app pays *on top of*
+ *   the ordinary entry: checkpoint/span validation, retained roots for state
+ *   updates, span completion, terminal cleanup, commit marks, and the opt-in
+ *   time-sliced drain.
+ *
+ * Measured with this exact fixture pipeline (esbuild, `minify: true`,
+ * `__WEBUI_DEV__=false`, `format: 'iife'`, `target: es2022`):
+ *
+ *   ordinary     60,528 minified / 18,993 gzip
+ *   streaming    77,180 minified / 24,921 gzip
+ *   incremental  16,652 minified /  5,928 gzip
+ *
+ * Each cap is that measurement plus ~4.5% headroom, so real growth fails while
+ * a minifier or toolchain nudge does not. The test logs the live numbers and
+ * the remaining headroom on every run — update both together, never the cap
+ * alone.
+ */
+const ORDINARY_MINIFIED_CAP_BYTES = 63_500;
+const ORDINARY_GZIP_CAP_BYTES = 19_850;
+const STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES = 17_400;
+const STREAMING_INCREMENTAL_GZIP_CAP_BYTES = 6_190;
 /** Marginal elapsed-time cap per added boundary. The relative allowance scales
  *  with slower hosts while the absolute floor absorbs sub-millisecond noise. */
 const COORDINATOR_MARGINAL_ABS_CAP_MS = 0.25;
@@ -327,16 +352,30 @@ test.describe('progressive streaming hydration matrix', () => {
     const fixtures: BuiltFixtures = await buildFixtures();
 
     const ordinaryTokens = coordinatorTokensIn(fixtures.ordinary.code);
-    expect(ordinaryTokens, 'ordinary bundle must be coordinator-free').toEqual([]);
+    expect(
+      ordinaryTokens,
+      'ordinary bundle must be coordinator-free (no boundary transport, no span attributes, no open-span registry)',
+    ).toEqual([]);
     // Sanity: the streaming bundle *does* carry the coordinator it advertises.
     expect(coordinatorTokensIn(fixtures.streaming.code).length).toBeGreaterThan(0);
+
+    // Absolute caps on the always-shipped entry. These are what stop growth
+    // there from being cancelled out of the incremental numbers below.
+    expect(
+      fixtures.ordinary.minifiedBytes,
+      `ordinary (always-shipped) minified bytes stay within ${ORDINARY_MINIFIED_CAP_BYTES}`,
+    ).toBeLessThanOrEqual(ORDINARY_MINIFIED_CAP_BYTES);
+    expect(
+      fixtures.ordinary.gzipBytes,
+      `ordinary (always-shipped) gzip bytes stay within ${ORDINARY_GZIP_CAP_BYTES}`,
+    ).toBeLessThanOrEqual(ORDINARY_GZIP_CAP_BYTES);
     expect(
       fixtures.streamingIncrementalBytes,
-      'streaming coordinator incremental minified bytes stay within the reviewed 17.5KiB cap',
+      `streaming coordinator incremental minified bytes stay within ${STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES}`,
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES);
     expect(
       fixtures.streamingIncrementalGzipBytes,
-      'streaming coordinator incremental gzip bytes stay within the reviewed 6KiB cap',
+      `streaming coordinator incremental gzip bytes stay within ${STREAMING_INCREMENTAL_GZIP_CAP_BYTES}`,
     ).toBeLessThanOrEqual(STREAMING_INCREMENTAL_GZIP_CAP_BYTES);
 
     const bundle: BundleSizes = {
@@ -354,6 +393,20 @@ test.describe('progressive streaming hydration matrix', () => {
     console.log(`ordinary    | ${String(bundle.ordinaryMinifiedBytes).padStart(9)} | ${String(bundle.ordinaryGzipBytes).padStart(8)}`);
     console.log(`streaming   | ${String(bundle.streamingMinifiedBytes).padStart(9)} | ${String(bundle.streamingGzipBytes).padStart(8)}`);
     console.log(`incremental | ${String(bundle.streamingIncrementalBytes).padStart(9)} | ${String(bundle.streamingIncrementalGzipBytes).padStart(8)}`);
+    console.log('\nCap headroom (measured vs cap):');
+    for (
+      const [label, value, cap] of [
+        ['ordinary    minified', bundle.ordinaryMinifiedBytes, ORDINARY_MINIFIED_CAP_BYTES],
+        ['ordinary        gzip', bundle.ordinaryGzipBytes, ORDINARY_GZIP_CAP_BYTES],
+        ['incremental minified', bundle.streamingIncrementalBytes, STREAMING_INCREMENTAL_MINIFIED_CAP_BYTES],
+        ['incremental     gzip', bundle.streamingIncrementalGzipBytes, STREAMING_INCREMENTAL_GZIP_CAP_BYTES],
+      ] as const
+    ) {
+      console.log(
+        `${label} | ${String(value).padStart(6)} / ${String(cap).padStart(6)}`
+        + ` | ${(100 * (1 - value / cap)).toFixed(2)}% headroom`,
+      );
+    }
 
     // ── 2. Verify equal-total-work invariants across scenarios ───────
     const control = buildOrdinaryScenario();

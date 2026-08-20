@@ -9,6 +9,7 @@ import {
 } from './streaming-deferred.js';
 import type {
   PendingBoundaryUpdates,
+  SpanBypass,
 } from './streaming-deferred.js';
 
 /**
@@ -22,7 +23,7 @@ export function activateRootsBetween(
   endMarker: Comment,
   state: Record<string, unknown> | undefined,
   updates?: PendingBoundaryUpdates,
-  bypassSpanInstanceId?: number,
+  bypass?: SpanBypass,
 ): void {
   const root = startMarker.parentNode;
   if (!root) {
@@ -36,12 +37,8 @@ export function activateRootsBetween(
     root,
     endMarker,
     state,
-    updates || bypassSpanInstanceId !== undefined
-      ? {
-        updates,
-        countRetention: updates !== undefined,
-        bypassSpanInstanceId,
-      }
+    updates || bypass
+      ? { updates, bypass, countRetention: updates !== undefined }
       : undefined,
   );
   if (!failure) return;

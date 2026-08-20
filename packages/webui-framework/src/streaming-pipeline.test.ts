@@ -48,7 +48,7 @@ interface FakeElement extends FakeNode {
   setState?: (state: Record<string, unknown>) => void;
   [ACTIVATE]?: (
     state?: Record<string, unknown>,
-    bypassSpanInstanceId?: number,
+    bypassAncestor?: FakeElement,
   ) => number;
   [ABANDON]?: () => void;
   [RESUME_PENDING]?: () => void;
@@ -108,7 +108,7 @@ interface ElementSpec {
   text?: string;
   hook?: (
     state?: Record<string, unknown>,
-    bypassSpanInstanceId?: number,
+    bypassAncestor?: FakeElement,
   ) => void | number;
   activationOutcome?: number;
   abandon?: () => void;
@@ -154,8 +154,8 @@ function element(tagName: string, spec: ElementSpec = {}): FakeElement {
   } as unknown as FakeElement & { _children: FakeNode[] };
   addSiblingGetters(node);
   if (spec.hook) {
-    node[ACTIVATE] = (state, bypassSpanInstanceId?: number) => {
-      const outcome = spec.hook!(state, bypassSpanInstanceId);
+    node[ACTIVATE] = (state, bypassAncestor?: FakeElement) => {
+      const outcome = spec.hook!(state, bypassAncestor);
       return typeof outcome === 'number'
         ? outcome
         : spec.activationOutcome ?? 1;
@@ -1833,19 +1833,16 @@ describe('streaming coordinator pipeline', () => {
     await flush();
 
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('later-span-child', {
-      hook(_state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(_state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         order.push('child');
         return 1;
       },
     });
-    const parent = element('later-span-parent', {
+    parent = element('later-span-parent', {
       hook() {
         parentActive = true;
         order.push('parent');
@@ -1880,20 +1877,17 @@ describe('streaming coordinator pipeline', () => {
     const childStates: Array<Record<string, unknown> | undefined> = [];
     const parentStates: Array<Record<string, unknown> | undefined> = [];
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('early-child', {
-      hook(state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         order.push('child');
         childStates.push(state);
         return 1;
       },
     });
-    const parent = element('spanning-parent', {
+    parent = element('spanning-parent', {
       hook(state) {
         parentActive = true;
         order.push('parent');
@@ -1937,19 +1931,16 @@ describe('streaming coordinator pipeline', () => {
   test('keeps an unmarked or mismatched early child behind the ancestor barrier', async () => {
     const order: string[] = [];
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('mismatch-child', {
-      hook(_state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(_state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         order.push('child');
         return 1;
       },
     });
-    const parent = element('mismatch-parent', {
+    parent = element('mismatch-parent', {
       hook() {
         parentActive = true;
         order.push('parent');
@@ -1994,18 +1985,68 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__isHaltedForTests(), false);
   });
 
+  test('activates the retained subtree of a barrier-deferred root after release', async () => {
+    const order: string[] = [];
+    let parentActive = false;
+    let parent!: FakeElement;
+    const nested = element('barrier-nested-root', {
+      hook() {
+        order.push('nested');
+        return 1;
+      },
+    });
+    nested.setAttribute('data-ws', '');
+    const child = element('barrier-outer-root', {
+      hook() {
+        if (!parentActive) return 4;
+        order.push('child');
+        return 1;
+      },
+      children: [nested],
+    });
+    parent = element('barrier-span-parent', {
+      hook() {
+        parentActive = true;
+        order.push('parent');
+      },
+    });
+    // `enclosingMarker: 1` mismatches span 0, so the outer child is retained
+    // behind the barrier and the coordinator's walk skips its whole subtree.
+    const scenario = buildSpanScenario(parent, child, { enclosingMarker: 1 });
+    predefine(
+      'barrier-outer-root',
+      'barrier-nested-root',
+      'barrier-span-parent',
+    );
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    assert.deepEqual(order, []);
+    assert.equal(__pendingBarrierRootCountForTests(), 1);
+    assert.equal(hasWs(nested), true, 'the skipped descendant stays marked');
+
+    enqueue(scenario.spanSentinel);
+    await flush();
+
+    assert.deepEqual(
+      order,
+      ['parent', 'child', 'nested'],
+      'the released root activates its own retained subtree, parent-first',
+    );
+    assert.equal(hasWs(nested), false);
+    assert.equal(__pendingBarrierRootCountForTests(), 0);
+    assert.equal(__isHaltedForTests(), false);
+  });
+
   test('updates a live early child by BoundaryInstanceId before parent completion', async () => {
     const activations: Array<Record<string, unknown> | undefined> = [];
     const updates: Array<Record<string, unknown>> = [];
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('updatable-early-child', {
-      hook(state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         activations.push(state);
         return 1;
       },
@@ -2013,7 +2054,7 @@ describe('streaming coordinator pipeline', () => {
         updates.push(state);
       },
     });
-    const parent = element('updatable-span-parent', {
+    parent = element('updatable-span-parent', {
       hook() {
         parentActive = true;
       },
@@ -2046,18 +2087,15 @@ describe('streaming coordinator pipeline', () => {
   test('replays an update once when an undefined early child defines before span completion', async () => {
     const childActivations: Array<Record<string, unknown> | undefined> = [];
     const childUpdates: Array<Record<string, unknown>> = [];
-    const bypasses: Array<number | undefined> = [];
+    const bypasses: Array<FakeElement | undefined> = [];
     let parentActivations = 0;
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('late-early-child', {
-      hook(state, bypassSpanInstanceId) {
-        bypasses.push(bypassSpanInstanceId);
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(state, bypassAncestor) {
+        bypasses.push(bypassAncestor);
+        if (!parentActive && bypassAncestor !== parent) return 4;
         childActivations.push(state);
         return 1;
       },
@@ -2065,7 +2103,7 @@ describe('streaming coordinator pipeline', () => {
         childUpdates.push(state);
       },
     });
-    const parent = element('late-early-parent', {
+    parent = element('late-early-parent', {
       hook() {
         parentActive = true;
         parentActivations++;
@@ -2088,7 +2126,7 @@ describe('streaming coordinator pipeline', () => {
 
     defineTag('late-early-child');
     await flush();
-    assert.deepEqual(bypasses, [0], 'the pending root retains its enclosing-span bypass');
+    assert.deepEqual(bypasses, [parent], 'the pending root retains its enclosing-span bypass');
     assert.deepEqual(childActivations, [{ scope: 'child' }]);
     assert.deepEqual(plainPatches(childUpdates), [{ status: 'ready' }]);
     assert.equal(parentActivations, 0, 'the child activates while its parent span is unfinished');
@@ -2118,19 +2156,16 @@ describe('streaming coordinator pipeline', () => {
   test('resolves a nested light-DOM boundary inside its actual component render root', async () => {
     const order: string[] = [];
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('light-span-child', {
-      hook(_state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(_state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         order.push('child');
         return 1;
       },
     });
-    const parent = element('light-span-parent', {
+    parent = element('light-span-parent', {
       hook() {
         parentActive = true;
         order.push('parent');
@@ -2155,18 +2190,17 @@ describe('streaming coordinator pipeline', () => {
     const order: string[] = [];
     let outerActive = false;
     let innerActive = false;
+    let inner!: FakeElement;
     let child!: FakeElement;
     child = element('nested-span-child', {
-      hook(_state, bypassSpanInstanceId) {
-        const bypassesInner =
-          child.getAttribute('data-ws-enclosing') ===
-            String(bypassSpanInstanceId);
+      hook(_state, bypassAncestor) {
+        const bypassesInner = bypassAncestor === inner;
         if ((!innerActive && !bypassesInner) || !outerActive) return 4;
         order.push('child');
         return 1;
       },
     });
-    const inner = element('nested-inner-parent', {
+    inner = element('nested-inner-parent', {
       hook() {
         if (!outerActive) return 4;
         innerActive = true;
@@ -2281,19 +2315,16 @@ describe('streaming coordinator pipeline', () => {
   test('resolves an early boundary inside an open declarative shadow root', async () => {
     const order: string[] = [];
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('shadow-span-child', {
-      hook(_state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(_state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         order.push('child');
         return 1;
       },
     });
-    const parent = element('shadow-span-parent', {
+    parent = element('shadow-span-parent', {
       shadowChildren: [],
       hook() {
         parentActive = true;
@@ -2317,18 +2348,15 @@ describe('streaming coordinator pipeline', () => {
   test('span truncation releases open-span state, markers, and compiler attributes', async () => {
     __installTruncationGuardForTests();
     let parentActive = false;
+    let parent!: FakeElement;
     let child!: FakeElement;
     child = element('truncated-span-child', {
-      hook(_state, bypassSpanInstanceId) {
-        if (
-          !parentActive &&
-          child.getAttribute('data-ws-enclosing') !==
-            String(bypassSpanInstanceId)
-        ) return 4;
+      hook(_state, bypassAncestor) {
+        if (!parentActive && bypassAncestor !== parent) return 4;
         return 1;
       },
     });
-    const parent = element('truncated-span-parent', {
+    parent = element('truncated-span-parent', {
       hook() {
         parentActive = true;
       },

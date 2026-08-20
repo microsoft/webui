@@ -335,8 +335,11 @@ impl WebUIHandler {
 
     /// Render every runtime boundary in document order as final.
     ///
-    /// Hosts that need asynchronous work between occurrences should use
-    /// [`Self::stream_response`] or [`StreamingSession`].
+    /// The value is snapshotted once when the response starts and every
+    /// occurrence resumes against that snapshot, so a large state is projected
+    /// once per response rather than re-merged once per boundary. Hosts that
+    /// need asynchronous work — or genuinely new state — between occurrences
+    /// should use [`Self::stream_response`] or [`StreamingSession`].
     pub fn render_streaming<'a, W: FlushWriter + ?Sized>(
         &self,
         protocol: &'a Protocol,
@@ -352,7 +355,7 @@ impl WebUIHandler {
                     "unfinished streaming step has no pending boundary".to_string(),
                 ));
             };
-            status = response.resume(boundary.instance_id, state, BoundaryMode::Final)?;
+            status = response.resume_current(boundary.instance_id, BoundaryMode::Final)?;
         }
         Ok(())
     }

@@ -11,8 +11,9 @@ use super::state::StateUpdatePlan;
 use super::{flush_streaming_transport, streaming_state, MarkerBuffer};
 use crate::plugin::WebUiTemplatePayload;
 use crate::{
-    collect_hydration_state_into, write_selected_state, write_webui_bootstrap, HandlerError,
-    Result, StateSelection, WebUIHandler, WebUIProcessContext, WebUiBootstrap,
+    collect_hydration_key_ids_into, write_selected_state, write_webui_bootstrap, HandlerError,
+    HydrationKeySelection, Result, StateSelection, WebUIHandler, WebUIProcessContext,
+    WebUiBootstrap,
 };
 
 pub(super) const RECORD_KIND_FINAL_CHECKPOINT: usize = 0;
@@ -121,19 +122,18 @@ impl WebUIHandler {
         let template_payloads = context.plugin.as_ref().and_then(|plugin| {
             plugin.collect_template_payloads_slice(context.protocol, &new_template_tags)
         });
-        let (mut state_key_scratch, checkpoint_reachability) = {
+        let (mut state_key_ids, checkpoint_reachability) = {
             let streaming = streaming_state(context)?;
             (
-                std::mem::take(&mut streaming.state_key_scratch),
+                std::mem::take(&mut streaming.state_key_ids),
                 streaming.component_reachability,
             )
         };
-        let requires_full_state = collect_hydration_state_into(
+        let requires_full_state = collect_hydration_key_ids_into(
             context.protocol,
-            checkpoint_tags
-                .iter()
-                .filter_map(|&index| checkpoint_reachability.name(index)),
-            &mut state_key_scratch,
+            checkpoint_reachability,
+            checkpoint_tags.iter().copied(),
+            &mut state_key_ids,
         );
         let chain = if first_checkpoint {
             crate::route_handler::collect_route_chain(
@@ -198,7 +198,10 @@ impl WebUIHandler {
         let state_selection = if requires_full_state {
             StateSelection::Full
         } else {
-            StateSelection::BorrowedKeys(&state_key_scratch)
+            StateSelection::KeyIds(HydrationKeySelection {
+                ids: &state_key_ids,
+                index: checkpoint_reachability,
+            })
         };
         let inventory = context
             .streaming
@@ -253,21 +256,27 @@ impl WebUIHandler {
             if streaming.update_plans.len() <= target {
                 streaming.update_plans.resize_with(target + 1, || None);
             }
-            streaming.update_plans[target] = Some(StateUpdatePlan {
-                requires_full_state,
-                keys: if requires_full_state {
-                    Vec::new()
-                } else {
-                    state_key_scratch.iter().copied().map(Box::from).collect()
-                },
-            });
+            // Reuse the slot's existing key buffer so a boundary that commits
+            // updatable more than once in a response does not re-allocate.
+            let mut plan = streaming.update_plans[target]
+                .take()
+                .unwrap_or(StateUpdatePlan {
+                    requires_full_state,
+                    key_ids: Vec::new(),
+                });
+            plan.requires_full_state = requires_full_state;
+            plan.key_ids.clear();
+            if !requires_full_state {
+                plan.key_ids.extend_from_slice(&state_key_ids);
+            }
+            streaming.update_plans[target] = Some(plan);
         }
         finish_capture(
             context,
             CapturedBuffers {
                 checkpoint_tags,
                 template_tags: new_template_tags,
-                state_keys: state_key_scratch,
+                state_key_ids,
                 css_hrefs,
                 style_specs,
             },
@@ -298,6 +307,9 @@ impl WebUIHandler {
         if !context.state.is_object() {
             return Err(super::error::state_update_type_error());
         }
+        // The plan is moved out for the duration of the write so the record can
+        // borrow the writer mutably, then handed straight back: an update never
+        // rebuilds or reallocates the projection it committed with.
         let Some(plan) = context
             .streaming
             .as_mut()
@@ -314,32 +326,37 @@ impl WebUIHandler {
             RECORD_KIND_STATE_UPDATE,
             boundary_id,
         )?;
-        let selection = if plan.requires_full_state {
-            StateSelection::Full
-        } else {
-            StateSelection::Keys(plan.keys.iter().map(Box::as_ref).collect())
+        let result = match context.streaming.as_ref() {
+            Some(streaming) if !plan.requires_full_state => write_selected_state(
+                context.writer,
+                &mut context.json_scratch,
+                context.state,
+                &StateSelection::KeyIds(HydrationKeySelection {
+                    ids: &plan.key_ids,
+                    index: streaming.component_reachability,
+                }),
+            ),
+            _ => write_selected_state(
+                context.writer,
+                &mut context.json_scratch,
+                context.state,
+                &StateSelection::Full,
+            ),
         };
-        write_selected_state(
-            context.writer,
-            &mut context.json_scratch,
-            context.state,
-            &selection,
-        )?;
-        context
-            .writer
-            .write("]</script><webui-hydrate></webui-hydrate>")?;
-        flush_streaming_transport(context)?;
-        let Some(slot) = context
+        // Restore the plan before propagating a write failure so a poisoned
+        // response still owns its buffers instead of leaking their capacity.
+        if let Some(slot) = context
             .streaming
             .as_mut()
             .and_then(|streaming| streaming.update_plans.get_mut(boundary_id))
-        else {
-            return Err(HandlerError::Invariant(
-                "streaming update projection slot disappeared".to_string(),
-            ));
-        };
-        *slot = Some(plan);
-        Ok(())
+        {
+            *slot = Some(plan);
+        }
+        result?;
+        context
+            .writer
+            .write("]</script><webui-hydrate></webui-hydrate>")?;
+        flush_streaming_transport(context)
     }
 }
 
@@ -392,7 +409,7 @@ fn write_script_open(context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()
 struct CapturedBuffers<'a> {
     checkpoint_tags: Vec<u32>,
     template_tags: Vec<&'a str>,
-    state_keys: Vec<&'a str>,
+    state_key_ids: Vec<u32>,
     css_hrefs: Vec<&'a str>,
     style_specs: Vec<&'a str>,
 }
@@ -409,8 +426,8 @@ fn finish_capture<'a>(
     streaming.checkpoint_walk_roots.clear();
     buffers.template_tags.clear();
     streaming.template_tag_scratch = buffers.template_tags;
-    buffers.state_keys.clear();
-    streaming.state_key_scratch = buffers.state_keys;
+    buffers.state_key_ids.clear();
+    streaming.state_key_ids = buffers.state_key_ids;
     buffers.css_hrefs.clear();
     streaming.css_href_scratch = buffers.css_hrefs;
     buffers.style_specs.clear();

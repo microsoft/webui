@@ -405,7 +405,13 @@ test.describe('component lazy hydration', () => {
       hydratedBefore: [false, false],
       hydratedAfterParent: [false, false],
       hydratedAfter: [false, false],
-      outcomes: [1, 1],
+      // The parent is a lazy (visibility-deferred) host, so its own activation
+      // is an accepted commit that simply does not hydrate yet. The child sits
+      // behind that unfinished barrier, which the hook reports distinctly
+      // (`ACTIVATION_ANCESTOR_BARRIER`) so the coordinator retains it and
+      // replays activation when the barrier lifts, rather than believing it
+      // already activated.
+      outcomes: [1, 4],
       streamingMode: true,
     });
     await expect(page.locator('#streamed-nested')).not.toHaveAttribute(

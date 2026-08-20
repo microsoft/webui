@@ -141,11 +141,31 @@ root proven hydrated** (successful-hydration count and reactive `setState`-probe
 count both equal 1500), zero residual scaffolding (scripts, sentinels, `wb:`
 comments, `[data-ws]`), no globally-published streamed state
 (`window.__webui.state` stays unset), the ordinary bundle contains no coordinator
-tokens (`webui-hydrate` / `data-webui-boundary`), measured component CPU is
-non-zero, distinct boundary-local states reach only their own real activation
-hooks, and the streaming entry adds no more than 17.5 KiB minified / 6 KiB
-gzip. Esbuild output is deterministic and the cap retains roughly 4% headroom, so
-further growth still fails.
+tokens (`webui-hydrate`, `data-webui-boundary`, the `data-ws-span` /
+`data-ws-enclosing` compiler span attributes, or open-span registry code),
+measured component CPU is non-zero, distinct boundary-local states reach only
+their own real activation hooks, and four absolute bundle-byte caps hold.
+
+The byte caps come in two kinds, and both are required:
+
+| Cap | Bytes | Measured | Headroom |
+|---|---|---|---|
+| ordinary minified | 63,500 | 60,528 | 4.7% |
+| ordinary gzip | 19,850 | 18,993 | 4.3% |
+| streaming incremental minified | 17,400 | 16,652 | 4.3% |
+| streaming incremental gzip | 6,190 | 5,928 | 4.2% |
+
+The **ordinary** caps are absolute because they bound what a *non-streaming* app
+downloads. The incremental caps alone cannot: they subtract the ordinary bundle,
+so bytes added to the always-shipped entry cancel out of them entirely. Component
+spans are the concrete case — the compiler attribute names and open-span registry
+live only in the opt-in coordinator, and `TemplateElement` receives an
+already-resolved bypass ancestor element it compares by identity.
+
+Esbuild output is deterministic, so ~4-5% headroom absorbs a minifier or
+toolchain nudge while still failing on real growth. The spec logs measured bytes
+and remaining headroom on every run; update the recorded numbers and the caps
+together, never a cap alone.
 
 Opt-in via `WEBUI_STREAMING_HYDRATION_ENFORCE=1` (noisy, off by default), each
 printing its effective cap:

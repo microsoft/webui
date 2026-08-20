@@ -75,6 +75,11 @@ pub(crate) fn write_escaped_state_attr(writer: &mut dyn ResponseWriter, value: &
 /// This ensures `/contacts/add` (2 literals) beats `/contacts/:id` (1 literal + 1 param).
 ///
 /// `route_base` is used to resolve relative paths (starting with `./`).
+///
+/// Request segmentation is deferred until a route fragment is actually seen:
+/// every record entry calls this, and the overwhelming majority of records —
+/// component bodies, conditions, loop bodies — carry no routes at all, so a
+/// route-free record must not pay for a segment vector.
 pub(crate) fn find_best_route_match(
     fragments: &[WebUIFragment],
     request_path: &str,
@@ -82,16 +87,17 @@ pub(crate) fn find_best_route_match(
     route_index: &CompiledRouteIndex,
 ) -> Option<(String, route_matcher::RouteMatch)> {
     let mut best: Option<(String, route_matcher::RouteMatch)> = None;
-
-    let request_segments = route_matcher::split_request_path(request_path);
+    let mut request_segments: Option<Vec<&str>> = None;
 
     for item in fragments {
         if let Some(Fragment::Route(route_frag)) = item.fragment.as_ref() {
+            let segments = request_segments
+                .get_or_insert_with(|| route_matcher::split_request_path(request_path));
             if let Some(m) = route_matcher::match_route_indexed_with_segments(
                 route_index,
                 &route_frag.path,
                 route_base,
-                &request_segments,
+                segments,
                 route_frag.exact,
             ) {
                 let is_better = best

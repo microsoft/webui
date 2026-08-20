@@ -28,8 +28,26 @@ const here = dirname(fileURLToPath(import.meta.url));
  *  the framework's `./foo.js` intra-package imports to their `.ts` sources. */
 const FRAMEWORK_SRC = resolve(here, '..', '..', '..', '..', '..', 'packages', 'webui-framework', 'src');
 
-/** Coordinator wire tokens that must never leak into the ordinary bundle. */
-export const COORDINATOR_TOKENS = ['webui-hydrate', 'data-webui-boundary'] as const;
+/**
+ * Coordinator wire tokens that must never leak into the ordinary bundle.
+ *
+ * The first two are the boundary transport. The rest are component-span
+ * hydration: the compiler attribute names and the open-span registry that
+ * resolves them are coordinator-owned, and `TemplateElement` only ever
+ * receives an already-resolved bypass ancestor element it compares by
+ * identity. A leak here means a non-streaming app is paying for spans, which
+ * the incremental metric alone cannot detect — subtracting a grown ordinary
+ * bundle from a grown streaming bundle hides exactly this.
+ */
+export const COORDINATOR_TOKENS = [
+  'webui-hydrate',
+  'data-webui-boundary',
+  'data-ws-span',
+  'data-ws-enclosing',
+  'registerEnclosingSpans',
+  'prepareSpanCompletion',
+  'component span',
+] as const;
 
 export interface Fixture {
   readonly kind: 'ordinary' | 'streaming';

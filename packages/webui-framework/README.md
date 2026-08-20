@@ -205,6 +205,13 @@ boundary uses a generated parent span, so an early compiler-marked child can
 hydrate before the opaque parent tail in light or shadow DOM. Authored
 boundaries cannot nest.
 
+Span resolution is entirely coordinator-owned: the generated `data-ws-span` and
+`data-ws-enclosing` attributes, and the open-span registry that pairs them, live
+only in the opt-in streaming entry. It resolves the one ancestor an entitled
+early child may skip and passes that element to the activation hook, which
+compares it by identity. The always-shipped entry therefore carries no span
+attribute name and no span bookkeeping at all.
+
 Each runtime occurrence receives an ephemeral state object directly during
 activation. The coordinator does not publish that state to
 `window.__webui.state`, and it removes generated checkpoint and span

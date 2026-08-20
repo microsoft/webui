@@ -390,7 +390,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     assert.deepEqual(received, { detached: true });
   });
 
-  test('a matching compiler span marker bypasses exactly the unfinished spanning ancestor', () => {
+  test('a coordinator-resolved bypass ancestor is skipped exactly once', () => {
     const parentTag = 'test-spanning-parent';
     const childTag = 'test-early-span-child';
     registerTemplate(parentTag);
@@ -401,12 +401,10 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       tagName: string;
       parentElement: Element | null;
       $deferredSSR: boolean;
-      setAttribute(name: string, value: string): void;
     };
     parentRaw.tagName = parentTag;
     parentRaw.parentElement = null;
     parentRaw.$deferredSSR = true;
-    parentRaw.setAttribute('data-ws-span', '4');
 
     const child = new TemplateElement();
     const childRaw = child as unknown as {
@@ -417,24 +415,26 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       setAttribute(name: string, value: string): void;
       [STREAMING_BOUNDARY_ACTIVATE](
         state?: Record<string, unknown>,
-        bypassSpanInstanceId?: number,
+        bypassAncestor?: Element,
       ): number;
     };
     childRaw.tagName = childTag;
     childRaw.parentElement = parent as unknown as Element;
     childRaw.setAttribute('data-ws', '');
-    childRaw.setAttribute('data-ws-enclosing', '4');
     child.connectedCallback();
     childRaw.$hydrated = true;
 
     assert.equal(
-      childRaw[STREAMING_BOUNDARY_ACTIVATE]({ child: true }, 4),
+      childRaw[STREAMING_BOUNDARY_ACTIVATE](
+        { child: true },
+        parent as unknown as Element,
+      ),
       1,
     );
     assert.equal(childRaw.$deferredSSR, false);
   });
 
-  test('a mismatched compiler span marker preserves the parent-first barrier', () => {
+  test('an unrelated bypass ancestor preserves the parent-first barrier', () => {
     const parentTag = 'test-mismatch-span-parent';
     const childTag = 'test-mismatch-span-child';
     registerTemplate(parentTag);
@@ -445,12 +445,13 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       tagName: string;
       parentElement: Element | null;
       $deferredSSR: boolean;
-      setAttribute(name: string, value: string): void;
     };
     parentRaw.tagName = parentTag;
     parentRaw.parentElement = null;
     parentRaw.$deferredSSR = true;
-    parentRaw.setAttribute('data-ws-span', '4');
+
+    const unrelated = new TemplateElement();
+    (unrelated as unknown as { tagName: string }).tagName = parentTag;
 
     const child = new TemplateElement();
     const childRaw = child as unknown as {
@@ -460,17 +461,74 @@ describe('TemplateElement — streamed-host activation ownership', () => {
       setAttribute(name: string, value: string): void;
       [STREAMING_BOUNDARY_ACTIVATE](
         state?: Record<string, unknown>,
-        bypassSpanInstanceId?: number,
+        bypassAncestor?: Element,
       ): number;
     };
     childRaw.tagName = childTag;
     childRaw.parentElement = parent as unknown as Element;
     childRaw.setAttribute('data-ws', '');
-    childRaw.setAttribute('data-ws-enclosing', '5');
     child.connectedCallback();
 
     assert.equal(
-      childRaw[STREAMING_BOUNDARY_ACTIVATE]({ child: true }, 4),
+      childRaw[STREAMING_BOUNDARY_ACTIVATE](
+        { child: true },
+        unrelated as unknown as Element,
+      ),
+      4,
+    );
+    assert.equal(childRaw.$deferredSSR, true);
+  });
+
+  test('only one barrier is bypassed when barriers nest', () => {
+    const outerTag = 'test-nested-bypass-outer';
+    const innerTag = 'test-nested-bypass-inner';
+    const childTag = 'test-nested-bypass-child';
+    registerTemplate(outerTag);
+    registerTemplate(innerTag);
+    registerTemplate(childTag);
+
+    const outer = new TemplateElement();
+    const outerRaw = outer as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+    };
+    outerRaw.tagName = outerTag;
+    outerRaw.parentElement = null;
+    outerRaw.$deferredSSR = true;
+
+    const inner = new TemplateElement();
+    const innerRaw = inner as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+    };
+    innerRaw.tagName = innerTag;
+    innerRaw.parentElement = outer as unknown as Element;
+    innerRaw.$deferredSSR = true;
+
+    const child = new TemplateElement();
+    const childRaw = child as unknown as {
+      tagName: string;
+      parentElement: Element;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+        bypassAncestor?: Element,
+      ): number;
+    };
+    childRaw.tagName = childTag;
+    childRaw.parentElement = inner as unknown as Element;
+    childRaw.setAttribute('data-ws', '');
+    child.connectedCallback();
+
+    // `inner` is stepped over, but `outer` is still an unfinished barrier.
+    assert.equal(
+      childRaw[STREAMING_BOUNDARY_ACTIVATE](
+        { child: true },
+        inner as unknown as Element,
+      ),
       4,
     );
     assert.equal(childRaw.$deferredSSR, true);
