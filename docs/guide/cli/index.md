@@ -69,8 +69,8 @@ URI-style values.
 | `module` | Delivers compiled CSS with an SSR fallback and shares imported CSS module stylesheets across component instances when supported. No separate CSS files are written. |
 
 All modes support Light and Shadow components. A component's ordinary paired
-CSS file is scoped by the compiler in Light DOM and remains native Shadow CSS in
-Shadow DOM. Resources are installed once per Document or ShadowRoot in
+CSS file remains authored/global CSS in Light DOM and remains native Shadow CSS
+in Shadow DOM. Resources are installed once per Document or ShadowRoot in
 first-discovery order, including partial navigation, streaming, and static
 component assets. Full-document SSR installs Document resources before
 `</head>`. When the document omits an explicit head, resources precede document
@@ -230,9 +230,15 @@ Use `--legal-comments none` to strip all non-signal comments.
 
 Shadow is the backward-compatible default: unwrapped component content receives
 a compiler-generated open Shadow root. Pass `--dom light` to render unwrapped
-components as direct Light DOM children with compiler-scoped CSS. In either
-build mode, a sole top-level `<template shadowrootmode="open">` is authoritative
-and keeps that component Shadow, so a Light build may contain Shadow islands.
+components as direct Light DOM children with authored/global CSS in their
+owning CSS tree. Light CSS is not selector-rewritten or marker-scoped, so
+ordinary selectors can reach other Light DOM in that tree. In either build mode,
+a sole top-level `<template shadowrootmode="open">` is authoritative and keeps
+that component Shadow, so a Light build may contain Shadow islands.
+
+`:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
+and fail with `unsupported-light-css` in effective Light CSS. Use ordinary
+selectors such as the component tag, or author an open Shadow root.
 
 Closed roots and invalid values or placement always fail the build. Native
 `<slot>` is allowed in effective Shadow components and rejected in effective

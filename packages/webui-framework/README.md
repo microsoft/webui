@@ -7,7 +7,7 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 - `WebUIElement` for SSR hydration and client-created elements
 - `@observable`, `@attr`, and `@volatile` decorators
 - direct DOM binding updates
-- Shadow-default components with opt-in scoped Light and authored Shadow islands
+- Shadow-default components with opt-in global Light and authored Shadow islands
 - SSR state seeding
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.

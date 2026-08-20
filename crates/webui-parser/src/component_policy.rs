@@ -79,13 +79,23 @@ impl ComponentRenderPolicy {
         output.push(';');
     }
 
-    pub(crate) fn append_scoped_css(&self, output: &mut String, tag_name: &str) {
+    pub(crate) fn append_shadow_css(&self, output: &mut String, tag_name: &str) {
         if !matches!(self, Self::LazyRender { .. }) {
             return;
         }
         output.push_str(":host(");
         output.push_str(tag_name);
         output.push_str(r#":not([w-render="eager"])),"#);
+        output.push_str(tag_name);
+        output.push_str(r#":not([w-render="eager"]){"#);
+        self.append_declarations(output);
+        output.push('}');
+    }
+
+    pub(crate) fn append_light_css(&self, output: &mut String, tag_name: &str) {
+        if !matches!(self, Self::LazyRender { .. }) {
+            return;
+        }
         output.push_str(tag_name);
         output.push_str(r#":not([w-render="eager"]){"#);
         self.append_declarations(output);

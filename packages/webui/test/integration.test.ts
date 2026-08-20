@@ -149,7 +149,7 @@ describe('build', () => {
   test('BuildOptions exposes the DOM strategy union', () => {
     const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'light' };
     assert.equal(options.dom, 'light');
-    // @ts-expect-error only open Shadow or scoped Light strategies are supported.
+    // @ts-expect-error only open Shadow or global Light strategies are supported.
     const invalid: import('@microsoft/webui').BuildOptions = { appDir, dom: 'closed' };
     assert.equal(invalid.appDir, appDir);
   });

@@ -1586,8 +1586,8 @@ mod tests {
 
     #[test]
     fn light_css_bytes_align_across_link_style_and_module() {
-        let authored = " \n:host(.ready){color:red}\n ";
-        let expected = " \nmy-card[data-wl]:is(.ready){color:red}\n ";
+        let authored = " \n.ready{color:red}\n ";
+        let expected = authored;
 
         for strategy in [CssStrategy::Link, CssStrategy::Style, CssStrategy::Module] {
             let app = create_app_dir(&[
@@ -2996,7 +2996,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(entry_html.contains("<light-card data-wl>"));
+        assert!(entry_html.contains("<light-card>"));
         assert!(entry_html.contains("<shadow-card>"));
         assert!(!entry_html.contains("<shadow-card data-wl"));
     }

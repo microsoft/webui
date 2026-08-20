@@ -1,6 +1,11 @@
 # Interactivity
 
-WebUI uses **Islands Architecture** for client-side interactivity. Each Web Component is a self-contained island with its own HTML template, scoped CSS, and TypeScript behavior. Only components that need interactivity ship JavaScript - everything else stays as static server-rendered HTML.
+WebUI uses **Islands Architecture** for client-side interactivity. Each Web
+Component is a self-contained island with its own HTML template, authored CSS,
+and TypeScript behavior. Shadow components provide CSS isolation; Light
+components intentionally participate in the owning CSS tree's global cascade.
+Only components that need interactivity ship JavaScript - everything else stays
+as static server-rendered HTML.
 
 ## Component Files
 
@@ -9,13 +14,13 @@ Every interactive component consists of three separate files. Templates are decl
 ```
 my-counter/
 ├── my-counter.html   ← Template (structure and bindings)
-├── my-counter.css    ← Styles (scoped at build time)
+├── my-counter.css    ← Authored styles
 └── my-counter.ts     ← Behavior (TypeScript class)
 ```
 
 - **HTML** defines what the component renders and where dynamic values appear
-- **CSS** styles the component. WebUI scopes it for Light DOM or keeps native
-  Shadow scoping for an opted-in Shadow component
+- **CSS** styles the component. Light DOM uses the owning tree's global cascade;
+  Shadow components use the browser's native boundary
 - **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
 
 Components that do not need client-side behavior can omit the TypeScript file:
@@ -94,10 +99,10 @@ The matching template (`my-counter.html`):
 </button>
 ```
 
-And scoped styles (`my-counter.css`):
+And authored Light DOM styles (`my-counter.css`):
 
 ```css
-:host {
+my-counter {
   display: inline-block;
 }
 
@@ -565,13 +570,13 @@ is missing.
 ## Styling
 
 Keep styles in the ordinary paired `.css` file. For an effective Light
-component, the compiler scopes rules to that component, lowers `:host`, and
-namespaces static keyframes. For effective Shadow roots, the browser provides
+component, CSS is authored/global in the owning CSS tree: selectors are not
+rewritten or marker-scoped. For effective Shadow roots, the browser provides
 native style scoping.
 
-### The `:host` Selector
+### The `:host` Selector (Shadow DOM only)
 
-Style the component's root element with `:host`:
+Style an effective Shadow component's root element with `:host`:
 
 ```css
 :host {
@@ -581,9 +586,18 @@ Style the component's root element with `:host`:
 }
 ```
 
+In effective Light DOM, target the component tag directly instead:
+
+```css
+my-card {
+  display: block;
+  padding: 1rem;
+}
+```
+
 ### Attribute-Based Styling
 
-Style the component differently based on its attributes with `:host([attr])`:
+In Shadow DOM, style component attributes with `:host([attr])`:
 
 ```css
 :host([variant="primary"]) {
@@ -597,14 +611,18 @@ Style the component differently based on its attributes with `:host([attr])`:
 }
 ```
 
-### Scoping Rules
+The equivalent global Light selector is `my-card[variant="primary"]` or
+`my-card[disabled]`. `:host`, `:host-context`, and `::slotted` in effective
+Light CSS fail with `unsupported-light-css`; use ordinary selectors or opt the
+component into Shadow DOM.
 
-- Paired component styles are scoped for both Light and Shadow components
-- `:host` and `:host([attr])` work in both forms
-- Light DOM keeps normal inheritance and cascade behavior
+### CSS Ownership Rules
+
+- Light DOM uses authored/global selectors and normal inheritance/cascade
+- Light CSS can reach other Light DOM in the same Document or ShadowRoot
+- Use deliberate names, `@layer`, and custom properties for global composition
 - Shadow DOM provides a native style boundary
-- Shadow-only selectors and unsafe dynamic local-keyframe references in Light
-  components fail the build
+- Shadow-only selectors in Light components fail the build
 - No CSS-in-JS - styles stay in `.css` files, separate from behavior
 - Use CSS custom properties (`--my-color`) to allow external theming
 

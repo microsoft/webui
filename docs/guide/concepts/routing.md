@@ -707,7 +707,7 @@ When `Accept: application/json` or `application/x-ndjson`:
       "user-detail": {
         "kind": "module",
         "specifier": "user-detail",
-        "css": ".detail:where([data-wl-4kq2p1]) { ... }"
+        "css": ".detail { ... }"
       }
     },
     "closures": {

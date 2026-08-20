@@ -338,7 +338,7 @@ mod tests {
             ),
             (
                 "my-card.css".to_string(),
-                ":host { display: block; }".to_string(),
+                ".card { display: block; }".to_string(),
             ),
         ]);
 
@@ -346,7 +346,7 @@ mod tests {
         assert!(shadow.components["my-card"].uses_shadow_dom);
         assert_eq!(
             shadow.components["my-card"].css,
-            ":host { display: block; }"
+            ".card { display: block; }"
         );
         assert_eq!(
             shadow.style_closure("my-card").expect("Shadow closure"),
@@ -357,9 +357,10 @@ mod tests {
             parse_to_protocol_with_dom(&files, "index.html", &[], DomStrategy::Light).unwrap();
         assert_eq!(protocol.css_strategy(), webui_protocol::CssStrategy::Style);
         assert!(!protocol.components["my-card"].uses_shadow_dom);
-        assert!(protocol.components["my-card"]
-            .css
-            .contains("my-card[data-wl]"));
+        assert_eq!(
+            protocol.components["my-card"].css,
+            ".card { display: block; }"
+        );
         assert_eq!(
             protocol.style_closure("index.html").expect("entry closure"),
             ["my-card"]

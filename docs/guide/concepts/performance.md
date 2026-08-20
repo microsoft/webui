@@ -270,11 +270,11 @@ hide behind subtraction. These figures are workload and machine specific; use
 
 Neither mode is universally faster. Light removes ShadowRoot and per-instance
 stylesheet objects, enables aggressive CSS bundling, and can improve SSR
-throughput and document completion. Correctly scoped Light CSS still shares one
-large CSS tree, so broad or frequent class/attribute invalidations may cost more
-than native Shadow isolation. Shadow pays more parsing and stylesheet-instance
-overhead but can recalculate styles substantially faster in CSS-heavy repeated
-component trees.
+throughput and document completion. Global Light CSS shares one large CSS tree,
+so broad or frequent class/attribute invalidations may cost more than native
+Shadow isolation. Shadow pays more parsing and stylesheet-instance overhead but
+can recalculate styles substantially faster in CSS-heavy repeated component
+trees.
 
 ### When to Use Each
 
@@ -282,6 +282,7 @@ component trees.
 - Components are mostly static or moderately styled
 - Components benefit from normal CSS inheritance
 - CSS request/stylesheet consolidation matters
+- Global CSS composition is intentional
 - Native slot composition is not required
 
 **Shadow DOM** - use when:
@@ -299,13 +300,13 @@ template is a sole top-level `<template shadowrootmode="open">` as Shadow.
 Invalid or closed wrappers fail every build; `<slot>` fails only when the
 effective component mode is Light.
 
-Keep authoring ordinary paired CSS in both modes. The compiler scopes Light CSS,
-lowers `:host`, and namespaces static keyframes. It rejects selectors and
-dynamic local-keyframe references that cannot be isolated safely.
+Keep authoring ordinary paired CSS in both modes. Light CSS remains authored
+global CSS and rejects Shadow-only selectors such as `:host`; Shadow CSS keeps
+native selector semantics.
 
 Component resources can use the router's template inventory, but bundled chunks
 have distinct identities and are never inferred from component bits. Chunk
-metadata lists the component resources it covers, so claiming one SSR marker
+metadata lists the component resources it covers, so claiming one SSR resource
 also prevents each Light descendant from reinstalling a fallback stylesheet.
 
 Progressive streaming keeps a separate request-local style resource inventory.

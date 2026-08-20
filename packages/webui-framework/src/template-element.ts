@@ -752,18 +752,19 @@ export class TemplateElement extends HTMLElement {
     let deferredHydrationFinish = false;
     hydrationStart();
     try {
-      if (!isSSR && !wantShadow && !this.hasAttribute('data-wl')) {
-        this.setAttribute('data-wl', '');
-      }
-
-      if (isSSR) {
-        // Seed explicit authored state. A streamed activation (forceSSR) supplies
-        // its boundary-local state directly; ordinary hydration defaults to the
-        // global `window.__webui.state` handoff. Passing `forceSSR`'s state as-is
-        // (even when undefined) keeps a stateless streamed boundary from falling
-        // back to a later boundary's global state.
-        if (this.$shouldApplySSRBootstrapState()) {
-          this.$applySSRState(forceSSR ? ssrState : window.__webui?.state);
+      if (!reconnecting) {
+        if (isSSR) {
+          // Seed explicit authored state. A streamed activation (forceSSR)
+          // supplies its boundary-local state directly; ordinary hydration
+          // defaults to the global `window.__webui.state` handoff. Passing a
+          // boundary's state as-is (even when undefined) keeps a stateless
+          // streamed boundary from falling back to a later boundary's global
+          // state.
+          if (this.$shouldApplySSRBootstrapState()) {
+            this.$applySSRState(
+              hasBoundaryState ? ssrState : window.__webui?.state,
+            );
+          }
         }
         this.$applyPendingParentState(isSSR);
       }

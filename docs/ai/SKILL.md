@@ -376,50 +376,40 @@ self-closing form is preferred.
 
 ## Styling
 
-Keep ordinary paired component CSS. The compiler scopes Light CSS, lowers
-`:host`, and namespaces static keyframes. Shadow components retain native
-Shadow CSS scoping. No CSS-in-JS or styles written from script.
+Keep ordinary paired component CSS. Light CSS is authored/global in its owning
+Document or ShadowRoot; selectors, keyframes, and cascade layers are not
+rewritten. Shadow components retain native Shadow CSS scoping. No CSS-in-JS or
+styles written from script.
 
 ```css
 /* my-component.css */
-:host {
+my-component {
   display: block;
   padding: 1rem;
 }
 
-:host([disabled]) {
+my-component[disabled] {
   opacity: 0.5;
   pointer-events: none;
 }
 
-:host([variant="primary"]) {
+my-component[variant="primary"] {
   background: var(--colorBrandBackground);
 }
 
 .header { font-weight: bold; }
 ```
 
-- `:host` styles the component root; `:host([attr])` styles by attribute in
-  both Light and Shadow components.
-- Light DOM preserves normal inheritance while compiler scoping bounds
-  component rules. Shadow DOM creates a native boundary.
-- Light scoping is applied at build time: every element your template declares
-  is stamped with a per-component marker attribute, and every selector is
-  qualified against it. Selector relationships inside `:is()`, `:where()`,
-  `:not()`, and `:has()` are qualified too, and named `@layer` values receive a
-  component namespace. **Elements you create imperatively from script (setting
-  `innerHTML`, `document.createElement` inside a component) carry no marker and
-  are not styled by that component's CSS.** Declare markup in the template, or
-  render it through `<if>` / `<for>`, and it is scoped automatically. Creating a
-  *component host* from script is fine — its content comes from the compiled
-  template. A template that interpolates raw HTML (`{{{expr}}}`) is scoped with a
-  native `@scope` enclosure instead, which covers the interpolated markup.
-  Selector functions are not allowed in that enclosed shape because their
-  relationships can inspect outside the scope; simplify the selector or keep
-  that component Shadow.
-- Shadow-only selectors and unsafe Light keyframe references fail the build.
-- `data-wl` and `data-wl-*` are reserved for scoping; authoring either fails the
-  build.
+- `:host` styles the component root only in Shadow DOM. In Light DOM, target
+  the component tag directly, for example `my-card` or `my-card[disabled]`.
+- Light DOM preserves normal inheritance and global cascade. Parent rules can
+  reach Light descendants and matching selectors can affect other Light
+  components in the same CSS tree.
+- `:host`, `:host-context`, and `::slotted` fail with
+  `unsupported-light-css` in effective Light components; use ordinary
+  selectors or author an open Shadow root.
+- `data-wl` and `data-wl-*` are ordinary author attributes; WebUI no longer
+  generates or reserves them for Light CSS.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Malformed CSS fails the build, including unterminated `var()` calls,
@@ -922,7 +912,7 @@ the router for routed components.
   Shadow roots are preloaded the same way.
 - FAST 2/3 plugins require effective Shadow components. An unwrapped component
   under `dom: "light"` fails with `fast-light-dom-unsupported`; use the WebUI
-  plugin for scoped Light DOM.
+  plugin for global Light DOM.
 
 | Attribute | Example | Description |
 |---|---|---|

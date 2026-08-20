@@ -731,7 +731,7 @@ fn fast_light_dom_error(tag_name: &str) -> ParserError {
         .code(codes::FAST_LIGHT_DOM_UNSUPPORTED)
         .component(tag_name)
         .help(
-            "build with `dom: \"shadow\"`, author an open declarative Shadow root for this component, or use the WebUI plugin for scoped Light DOM",
+            "build with `dom: \"shadow\"`, author an open declarative Shadow root for this component, or use the WebUI plugin for global Light DOM",
         )
         .into()
 }

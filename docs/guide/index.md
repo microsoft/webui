@@ -21,7 +21,7 @@ Your backend handler loads the pre-compiled protocol, receives state data, and p
 ### 3. Hydrate - Interactive islands come alive
 
 On the client, only **Web Components marked as interactive** hydrate. Each
-component is an island with its own template, scoped styles, and behavior.
+component is an island with its own template, authored styles, and behavior.
 Unwrapped components default to Shadow; a build can opt into Light while
 retaining explicit Shadow islands. A page
 with 10 components where only 2 need click handlers ships JavaScript for just

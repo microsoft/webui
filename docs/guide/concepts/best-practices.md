@@ -374,17 +374,16 @@ This is roughly 15 KB - the handler renders faster, the network transfer is smal
 ## Light DOM vs Shadow DOM
 
 Shadow is the default fallback for unwrapped component content. Build with
-`--dom light` to make unwrapped components Light; the compiler scopes their
-ordinary paired CSS and component-local `<style>` blocks, so authors still use
-`:host` and do not need global component styles. Selector relationships inside
-`:is()`, `:where()`, `:not()`, and `:has()` are scoped recursively, and named
-`@layer` values receive a component namespace.
+`--dom light` to make unwrapped components Light with authored/global CSS in
+their owning CSS tree. No selectors or template elements are compiler-scoped;
+normal CSS cascade and inheritance apply across Light components. Use deliberate
+tag/class names, `@layer`, and custom properties when composition needs
+predictable ordering.
 
-Raw `{{{html}}}` bindings use the general `@scope` enclosure because their
-elements are unknown at build time. Avoid selector functions in those
-components: browser scope limits do not stop relational selectors from
-inspecting external ancestors or nested component internals, so WebUI rejects
-that combination. Use simpler selectors or keep that component Shadow.
+`:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
+and fail with `unsupported-light-css` in Light components. Use an ordinary
+selector such as the component tag, or keep that component Shadow. Raw
+`{{{html}}}` bindings do not change the CSS behavior.
 
 ### Performance Comparison
 

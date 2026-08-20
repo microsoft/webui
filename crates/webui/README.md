@@ -44,7 +44,7 @@ build_to_disk(
         app_dir: "src".into(),
         entry: "index.html".into(),
         css: CssStrategy::Link,        // or CssStrategy::Style for inline
-        dom: DomStrategy::Light,       // opt into scoped Light + authored Shadow islands
+        dom: DomStrategy::Light,       // opt into global Light + authored Shadow islands
         plugin: Some(Plugin::FastV3),    // @microsoft/fast-element 3.x hydration plugin
         legal_comments: LegalComments::Inline, // preserve legal CSS comments
         components: vec![],             // additional component sources
@@ -55,8 +55,10 @@ build_to_disk(
 ```
 
 Unwrapped components default to a generated open Shadow root. Set
-`dom: DomStrategy::Light` to render unwrapped components as scoped Light DOM;
-sole authored `<template shadowrootmode="open">` components remain Shadow.
+`dom: DomStrategy::Light` to render unwrapped components as authored/global
+Light DOM; sole authored `<template shadowrootmode="open">` components remain
+Shadow. Light CSS must use ordinary selectors: `:host`, `:host-context`, and
+`::slotted` are rejected with `unsupported-light-css`.
 
 For CDN/cache-friendly Link-mode CSS and static component assets, override the
 asset output fields:

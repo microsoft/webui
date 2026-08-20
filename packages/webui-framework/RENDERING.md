@@ -405,8 +405,8 @@ as `meta.sd`:
 
 - **Shadow DOM** (`meta.sd` truthy): SSR uses Declarative Shadow DOM. Client-created instances call `attachShadow({ mode: 'open' })`. Slot content stays in light DOM and projects through.
 - **Light DOM**: SSR renders children directly into the host. Client-created
-  instances populate the host. Compiler-scoped CSS is installed in the owning
-  Document, and native `<slot>` is rejected at build time.
+  instances populate the host. Authored/global CSS is installed in the owning
+  Document or ShadowRoot, and native `<slot>` is rejected at build time.
 
 `$mount` auto-detects:
 
