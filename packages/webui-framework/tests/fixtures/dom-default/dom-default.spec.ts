@@ -61,3 +61,23 @@ test('unwrapped components default to Shadow DOM and support slots', async ({ pa
     resources: ['test-shadow-default'],
   });
 });
+
+test('a sole bare template explicitly opts out of the Shadow fallback', async ({ page }) => {
+  await page.goto('/dom-default/fixture.html');
+  const host = page.locator('#explicit-light');
+
+  await expect(host).toHaveJSProperty('$ready', true);
+  await expect(host.locator(':scope > .label')).toHaveText('Explicit light');
+  await expect(host.locator(':scope > .label')).toHaveCSS(
+    'color',
+    'rgb(0, 128, 0)',
+  );
+  const result = await host.evaluate((element) => ({
+    hasShadow: !!element.shadowRoot,
+    childTags: Array.from(element.children).map(child => child.localName),
+  }));
+  expect(result).toEqual({
+    hasShadow: false,
+    childTags: ['span'],
+  });
+});

@@ -301,6 +301,11 @@ state that a template binding could express.
 Unwrapped components default to Shadow. In a `--dom light` build they use
 authored/global Light DOM:
 
+A sole bare top-level `<template>` is also an explicit Light wrapper and is
+unwrapped, even when the build fallback is Shadow. Templates with attributes or
+`w-render`/`w-hydrate` are not mode selectors; nested templates remain inert
+template content.
+
 ```html
 <!-- my-card.html -->
 <h2>{{title}}</h2>
@@ -1175,6 +1180,8 @@ Before emitting WebUI code, confirm:
 - [ ] No conditions mix `&&` with `||`, use parentheses, or use a ternary.
 - [ ] Every native `<slot>` resolves to Shadow DOM; in a `--dom light` build its
       component authors a sole top-level `<template shadowrootmode="open">`.
+- [ ] A sole bare top-level `<template>` is an explicit Light wrapper and is
+      unwrapped even when the build fallback is Shadow.
 
 ## Build and run
 
@@ -1198,7 +1205,8 @@ Common flags on both commands: `--entry`, `--css <link|style|module>`,
 
 Unwrapped components default to Shadow. Under `--dom light`, they use
 authored/global Light DOM while a sole top-level
-`<template shadowrootmode="open">` remains a Shadow island.
+`<template shadowrootmode="open">` remains a Shadow island. A sole bare
+`<template>` explicitly selects Light and is unwrapped.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

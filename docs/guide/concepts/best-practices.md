@@ -381,6 +381,12 @@ components. Use deliberate
 tag/class names, `@layer`, and custom properties when composition needs
 predictable ordering.
 
+A sole bare top-level `<template>` is an explicit Light-mode wrapper even in a
+`--dom shadow` build; WebUI removes the wrapper before rendering. A template
+with attributes, a `w-render`/`w-hydrate` policy wrapper, or a nested template
+does not select a mode. Use `<template shadowrootmode="open">` for explicit
+Shadow DOM.
+
 `:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
 and fail with `unsupported-light-css` in Light components. Use an ordinary
 selector such as the component tag, or keep that component Shadow. Raw

@@ -724,6 +724,9 @@ struct ComponentDomAnalysis {
     uses_shadow_dom: bool,
     /// Byte range of the authored declarative Shadow DOM root, when present.
     authored_shadow_root: Option<(usize, usize)>,
+    /// Content range of a sole bare `<template>` that explicitly selects Light
+    /// DOM.
+    authored_light_root: Option<(usize, usize)>,
 }
 
 struct ShadowRootModeOccurrence<'a> {
@@ -746,6 +749,7 @@ fn analyze_component_dom(
     let mut top_level_element_count = 0usize;
     let mut top_level_root_start = 0usize;
     let mut has_top_level_content = false;
+    let mut bare_template_root = None;
     let mut shadow_mode = None;
     let mut slot_offset = None;
 
@@ -762,6 +766,10 @@ fn analyze_component_dom(
                     if top_level {
                         top_level_element_count += 1;
                         top_level_root_start = element.start;
+                        bare_template_root = (element.name().eq_ignore_ascii_case("template")
+                            && !element.self_closing()
+                            && element.attrs().next().is_none())
+                        .then_some((element.content_start, element.content_end));
                     }
 
                     for attr in element.attrs() {
@@ -859,7 +867,15 @@ fn analyze_component_dom(
         None => None,
     };
 
-    let uses_shadow_dom = authored_shadow_root.is_some() || fallback == DomStrategy::Shadow;
+    let authored_light_root =
+        if authored_shadow_root.is_none() && top_level_element_count == 1 && !has_top_level_content
+        {
+            bare_template_root
+        } else {
+            None
+        };
+    let uses_shadow_dom = authored_shadow_root.is_some()
+        || (authored_light_root.is_none() && fallback == DomStrategy::Shadow);
     if !uses_shadow_dom {
         if let Some(offset) = slot_offset {
             return Err(light_dom_slot_error(tag_name, source, offset));
@@ -869,6 +885,7 @@ fn analyze_component_dom(
     Ok(ComponentDomAnalysis {
         uses_shadow_dom,
         authored_shadow_root,
+        authored_light_root,
     })
 }
 
@@ -4461,8 +4478,12 @@ impl HtmlParser {
     ///   styles still apply. For `CssStrategy::Module`, the parser appends
     ///   `shadowrootadoptedstylesheets="<tag>"` when it is missing.
     ///
-    /// - **No authored declarative Shadow DOM root:** emits the Light DOM
-    ///   content as-is (with the CSS snippet prepended, if any).
+    /// - **Sole bare `<template>` root:** unwraps the wrapper and emits its
+    ///   contents as explicit Light DOM.
+    ///
+    /// - **No authored root:** follows the configured fallback, generating an
+    ///   open Shadow wrapper for `DomStrategy::Shadow` or emitting direct Light
+    ///   DOM for `DomStrategy::Light`.
     ///
     /// Performance: zero recursion, zero regex. The dev-template path uses
     /// quote-aware scanners for opening-tag queries and pre-sizes the output
@@ -4535,6 +4556,16 @@ impl HtmlParser {
             result.push_str(&root);
             result.push_str(&html[root_end..trim_end]);
             result
+        } else if let Some((content_start, content_end)) = dom_analysis.authored_light_root {
+            let base = html[content_start..content_end].to_string();
+            if snippet.is_empty() {
+                base
+            } else {
+                let mut result = String::with_capacity(snippet.len() + base.len());
+                result.push_str(snippet);
+                result.push_str(&base);
+                result
+            }
         } else if dom_analysis.uses_shadow_dom {
             if mode.policy_wrapper {
                 let base = self.strip_template_build_attrs(trimmed, mode.preserve_runtime_attrs);
@@ -4562,10 +4593,23 @@ impl HtmlParser {
                 result
             }
         } else {
-            let mut result = String::with_capacity(snippet.len() + trimmed.len());
-            result.push_str(snippet);
-            result.push_str(trimmed);
-            result
+            // A policy component authors its `w-render`/`w-hydrate` on a plain
+            // `<template>` wrapper. The policy is applied to the host element
+            // through generated CSS, so a Light template must drop the wrapper
+            // or its contents would never render.
+            let base = if mode.policy_wrapper {
+                Self::unwrap_component_template(trimmed)
+            } else {
+                trimmed.to_string()
+            };
+            if snippet.is_empty() {
+                base
+            } else {
+                let mut result = String::with_capacity(snippet.len() + base.len());
+                result.push_str(snippet);
+                result.push_str(&base);
+                result
+            }
         };
 
         self.strip_template_comments(processed)
@@ -4634,7 +4678,7 @@ impl HtmlParser {
         result
     }
 
-    fn unwrap_component_policy_template(html: &str) -> String {
+    fn unwrap_component_template(html: &str) -> String {
         let Some(tag) = html::parse_tag(html) else {
             return html.to_string();
         };
@@ -4861,6 +4905,27 @@ mod tests {
     }
 
     #[test]
+    fn bare_template_explicitly_selects_light_dom_over_shadow_fallback() {
+        let analysis = analyze_component_dom(
+            "x-card",
+            "<template><div>content</div></template>",
+            DomStrategy::Shadow,
+        )
+        .expect("valid explicit Light wrapper");
+        assert!(!analysis.uses_shadow_dom);
+        assert!(analysis.authored_light_root.is_some());
+
+        let attributed = analyze_component_dom(
+            "x-card",
+            r#"<template data-purpose="content"><div>content</div></template>"#,
+            DomStrategy::Shadow,
+        )
+        .expect("ordinary template remains valid");
+        assert!(attributed.uses_shadow_dom);
+        assert!(attributed.authored_light_root.is_none());
+    }
+
+    #[test]
     fn plugin_artifacts_preserve_resolved_shadow_mode() {
         let component_html = r#"<template shadowrootmode="open"><p>shadow</p></template>"#;
         {
@@ -4971,6 +5036,15 @@ mod tests {
                 .expect("implicit Shadow components support slots")
                 .uses_shadow_dom
         );
+
+        let explicit_light = "<template><slot name=\"label\"></slot></template>";
+        let error = analyze_component_dom("x-card", explicit_light, DomStrategy::Shadow)
+            .expect_err("bare template explicitly selects Light");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::LIGHT_DOM_SLOT)
+        ));
     }
 
     #[test]
@@ -7738,7 +7812,7 @@ mod tests {
 
     #[test]
     fn light_preserves_dev_template_with_static_attrs() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template(
                 r#"<template foo="bar"><div>hi</div></template>"#,
@@ -7758,7 +7832,7 @@ mod tests {
 
     #[test]
     fn light_preserves_dev_template_with_signal_fragment_attrs() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser
             .process_component_template(
                 r#"<template foo="{{foo}}"><div>hi</div></template>"#,
@@ -7774,7 +7848,7 @@ mod tests {
 
     #[test]
     fn light_preserves_dev_template_with_multiple_attrs() {
-        let mut parser = HtmlParser::new();
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         let processed = parser.process_component_template(
             r#"<template autofocus tabindex="0" role="region" data-x="y"><div>hi</div></template>"#,
             None,
@@ -7823,6 +7897,39 @@ mod tests {
         assert!(
             !processed.contains("shadowrootmode"),
             "ordinary template must not gain a generated Shadow root, got: {processed}"
+        );
+    }
+
+    #[test]
+    fn bare_template_is_unwrapped_as_explicit_light_dom() {
+        let mut parser = HtmlParser::new();
+        let built = parser
+            .build_component_templates(
+                "my-card",
+                "<template><div class=\"label\">hi</div></template>",
+                Some(".label{color:red}"),
+                false,
+            )
+            .expect("bare template should select Light DOM");
+        assert!(!built.uses_shadow_dom);
+        assert_eq!(built.ssr, r#"<div class="label">hi</div>"#);
+    }
+
+    #[test]
+    fn attributed_template_keeps_the_shadow_fallback() {
+        let mut parser = HtmlParser::new();
+        let built = parser
+            .build_component_templates(
+                "my-card",
+                r#"<template data-purpose="content"><div>hi</div></template>"#,
+                None,
+                false,
+            )
+            .expect("attributed template should remain ordinary content");
+        assert!(built.uses_shadow_dom);
+        assert_eq!(
+            built.ssr,
+            r#"<template shadowrootmode="open"><template data-purpose="content"><div>hi</div></template></template>"#
         );
     }
 

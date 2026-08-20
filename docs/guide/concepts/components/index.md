@@ -43,6 +43,11 @@ host:
 <p>{{email}}</p>
 ```
 
+A sole bare top-level `<template>` is an explicit Light-mode wrapper and is
+unwrapped even when the build fallback is Shadow. Templates with attributes or
+policy directives do not select a mode; use the `shadowrootmode` attribute for
+an explicit Shadow root.
+
 In a Light build, use a sole top-level
 `<template shadowrootmode="open">` when a component must remain Shadow for a
 native `<slot>`, native encapsulation, or root events on the host element:

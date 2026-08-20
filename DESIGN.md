@@ -1484,9 +1484,19 @@ declarative Shadow root:
 | Build strategy | Component source | Effective mode |
 | --- | --- | --- |
 | `Shadow` (default) | Unwrapped component content | Compiler-generated open Shadow root |
+| `Shadow` (default) | Sole bare `<template>` wrapper | Explicit authored/global Light DOM |
 | `Shadow` (default) | Sole authored `<template shadowrootmode="open">` | Authored Shadow root |
 | `Light` | Unwrapped component content | Authored/global Light DOM |
+| `Light` | Sole bare `<template>` wrapper | Explicit authored/global Light DOM |
 | `Light` | Sole authored `<template shadowrootmode="open">` | Authored Shadow root |
+
+`DomStrategy` applies only when a component has no explicit root mode. A sole
+top-level bare `<template>` with no attributes is an explicit Light wrapper;
+the wrapper is removed and its contents render directly into the host. A
+`<template>` carrying compiler policy attributes such as `w-render` or
+`w-hydrate` is a policy wrapper, not a mode selector, and still follows the
+build fallback. Attributed ordinary templates and nested templates remain
+ordinary inert template content.
 
 An authored Shadow wrapper must contain the complete component and be the only
 top-level content other than whitespace and comments. A dynamic value, `closed`,
@@ -1499,8 +1509,8 @@ Native `<slot>` is valid whenever the effective component mode is Shadow. A
 and help to author a sole top-level `<template shadowrootmode="open">`.
 
 `ComponentData.uses_shadow_dom` stores this effective parser-derived boolean once per
-component. It controls HTML structure, style-tree boundaries, CSS
-transformation, and client-created DOM without runtime template scans. The root
+component. It controls HTML structure, style-tree boundaries, CSS ownership, and
+client-created DOM without runtime template scans. The root
 protocol has no DOM mode; the build fallback is never needed at runtime.
 
 #### CSS Strategy

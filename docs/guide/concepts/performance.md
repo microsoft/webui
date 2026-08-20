@@ -295,8 +295,9 @@ trees.
 ### Authoring Shadow DOM
 
 Shadow is the default fallback for unwrapped components. `--dom light` makes
-unwrapped components Light while preserving any component whose complete
-template is a sole top-level `<template shadowrootmode="open">` as Shadow.
+unwrapped components Light. A sole bare top-level `<template>` is also an
+explicit Light wrapper; `<template shadowrootmode="open">` explicitly remains
+Shadow in either build mode.
 Invalid or closed wrappers fail every build; `<slot>` fails only when the
 effective component mode is Light.
 
