@@ -47,9 +47,21 @@ export class DocsSiteNavigation extends WebUIElement {
   private pageSwapHandler = (event: Event): void => {
     if (!this.skipNextTransition) return;
     const pageSwap = event as Event & {
-      viewTransition?: { skipTransition(): void } | null;
+      viewTransition?: {
+        ready: Promise<void>;
+        skipTransition(): void;
+      } | null;
     };
-    pageSwap.viewTransition?.skipTransition();
+    const transition = pageSwap.viewTransition;
+    if (transition) {
+      void transition.ready.catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        console.error("[WebUI Press] View transition failed", error);
+      });
+      transition.skipTransition();
+    }
     this.skipNextTransition = false;
   };
 
