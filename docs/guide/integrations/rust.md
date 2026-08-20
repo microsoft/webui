@@ -252,6 +252,12 @@ selected path has none. `resume` must use the currently pending
 terminal. The final returned status has `done == true`, no descriptor, and the
 writer already contains the tail and terminal.
 
+`WebUIHandler::render_streaming` uses one state value for the complete response:
+it projects and freezes that value once, then resumes each occurrence directly
+against the same snapshot. The lower-level `stream_response` API keeps the
+public `resume` overlay because hosts may supply newly resolved state for each
+occurrence.
+
 Every descriptor contains `instance_id`, `declaration_id`, `owner`, `name`, and
 an optional string or numeric `key`. A declaration inside a repeated path
 requires a key, and live keys must be unique.

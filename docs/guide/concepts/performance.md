@@ -197,10 +197,11 @@ Each layer of the architecture contributes to the overall performance profile:
 - **Runtime-discovered streaming.** The continuation VM walks only the selected
   entry, component, condition, loop, and route path. It is iterative and keeps
   bounded frames, projected parent keys, lexical locals, occurrence keys, and
-  generated component spans instead of cloning the full state or prebuilding a
-  request plan. Boundary-free fragment records are skipped through a build-time
-  `contains_boundary` bit. Capture and projection scratch buffers retain
-  capacity across checkpoints.
+  generated component spans instead of cloning full state for every boundary or
+  prebuilding a request plan. Full-state fallback snapshots once per response;
+  `render_streaming` reuses that snapshot for every occurrence. Boundary-free
+  fragment records are skipped through a build-time `contains_boundary` bit.
+  Capture and projection scratch buffers retain capacity across checkpoints.
 - **Bounded browser activation.** Each checkpoint or generated span completion
   walks one root-local marker range, including open shadow roots, and removes
   its scaffolding after commit. Final occurrences retain no root list.
@@ -227,6 +228,39 @@ Each layer of the architecture contributes to the overall performance profile:
 - **Targeted updates.** On the client side, path-indexed binding updates touch
   only the affected DOM nodes - not entire subtrees. This keeps hydration and
   reactive updates fast even in large documents.
+
+### Progressive streaming cost profile
+
+The progressive path does more work than the former fixed entry-boundary model:
+it discovers runtime occurrences, preserves continuation state, and completes
+generated component spans. Interleaved release-mode measurements against that
+fixed model produced:
+
+| Boundaries | Fixed model | Runtime-discovered model |
+|-----------:|------------:|-------------------------:|
+| 1 | 2.20 us | 2.57 us |
+| 3 | 4.25 us | 4.58 us |
+| 10 | 9.95 us | 11.05 us |
+| 100 | 76.1 us | 98.3 us |
+
+The ordinary renderer remains effectively unchanged in the same comparison
+(732 ns versus 741 ns). A separate large-state benchmark verifies that frozen
+state is projected once per response: optimization reduced an eight-boundary
+render from 354.6 us to 114.1 us.
+
+The optional browser coordinator is also measured independently from the
+always-shipped framework entry:
+
+| Production bundle | Minified | Gzip |
+|-------------------|---------:|-----:|
+| Ordinary framework entry | 60,528 bytes | 18,993 bytes |
+| Streaming-only increment | 16,652 bytes | 5,928 bytes |
+
+The hydration matrix enforces absolute ordinary and incremental limits with
+4-5% headroom, so moving optional streaming code into the default entry cannot
+hide behind subtraction. These figures are workload and machine specific; use
+`examples/integration/streaming-browser-bench` and
+`streaming_hydration_bench` for changes to either hot path.
 
 ## Light DOM vs Shadow DOM
 

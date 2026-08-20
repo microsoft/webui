@@ -764,6 +764,9 @@ loops, outlets, and selected route content.
   rerunning `hydratedCallback()`.
 - State resolution across a suspension is lexical locals, resume state, then
   the frozen projected parent state.
+- `render_streaming` projects its one state value once for the complete
+  response. Host-driven `stream_response` sessions use each `resume` state as
+  an overlay for newly resolved occurrence data.
 - A component-local boundary uses generated parent spans. Its early marked child
   may hydrate before the opaque parent tail in light or shadow DOM.
 - `webui:boundary-hydrated` is emitted only when
