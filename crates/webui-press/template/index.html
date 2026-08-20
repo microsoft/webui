@@ -88,23 +88,24 @@
 </head>
 
 <body data-layout="{{page.layout}}">
+  <a class="skip-link" href="#main-content">Skip to content</a>
   <header class="nav-bar">
     <a href="{{site.base}}" class="logo">
       <img src="{{site.base}}logo.svg" alt="{{site.title}}" />
       <span>{{site.title}}</span>
     </a>
-    <nav class="nav-links">
-      <for each="link in navigation">
-        <a href="{{link.link}}" class="nav-link" ?active="{{link.section == page.section}}">{{link.text}}</a>
-      </for>
-      <docs-search></docs-search>
-      <docs-theme-toggle></docs-theme-toggle>
-      <button class="mobile-menu-btn" id="mobile-menu-btn" aria-label="Toggle menu">☰</button>
-    </nav>
+    <docs-site-navigation
+      :navigation="{{navigation}}"
+      :sections="{{sidebar.sections}}"
+      section="{{page.section}}"
+      ?home="{{page.isHome}}"
+      ?full-layout="{{page.layout == 'full'}}"
+      :open="{{page.mobileNavigationOpen}}"
+    ></docs-site-navigation>
   </header>
 
   <if condition="page.isHome">
-    <main class="main-content" tabindex="-1">
+    <main class="main-content" id="main-content" tabindex="-1">
       <div class="home-container">
         <if condition="hero">
           <div class="home-hero">
@@ -132,7 +133,7 @@
               <div class="feature-card">
                 <div class="feature-card-header">
                   <div class="feature-icon">{{feature.icon}}</div>
-                  <h3>{{feature.title}}</h3>
+                  <h2>{{feature.title}}</h2>
                 </div>
                 <p>{{feature.description}}</p>
               </div>
@@ -150,54 +151,20 @@
 
   <if condition="!page.isHome">
     <div class="layout">
-    <aside class="sidebar">
-      <for each="section in sidebar.sections">
-        <div class="sidebar-group">
-          <h3 class="sidebar-title">{{section.title}}</h3>
-          <ul class="sidebar-items">
-            <for each="item in section.items">
-              <li>
-                <if condition="item.hasChildren">
-                  <if condition="item.link">
-                    <if condition="item.active">
-                      <a href="{{item.link}}" class="sidebar-link sidebar-link-active">{{item.text}}</a>
-                    </if>
-                    <if condition="!item.active">
-                      <a href="{{item.link}}" class="sidebar-link">{{item.text}}</a>
-                    </if>
-                  </if>
-                  <if condition="!item.link">
-                    <span class="sidebar-parent-label">{{item.text}}</span>
-                  </if>
-                  <ul class="sidebar-children">
-                    <for each="child in item.children">
-                      <li>
-                        <if condition="child.active">
-                          <a href="{{child.link}}" class="sidebar-link sidebar-link-active">{{child.text}}</a>
-                        </if>
-                        <if condition="!child.active">
-                          <a href="{{child.link}}" class="sidebar-link">{{child.text}}</a>
-                        </if>
-                      </li>
-                    </for>
-                  </ul>
-                </if>
-                <if condition="!item.hasChildren">
-                  <if condition="item.active">
-                    <a href="{{item.link}}" class="sidebar-link sidebar-link-active">{{item.text}}</a>
-                  </if>
-                  <if condition="!item.active">
-                    <a href="{{item.link}}" class="sidebar-link">{{item.text}}</a>
-                  </if>
-                </if>
-              </li>
-            </for>
-          </ul>
-        </div>
-      </for>
+    <aside class="sidebar" aria-label="Documentation sections">
+      <docs-sidebar-navigation
+        :sections="{{sidebar.sections}}"
+      ></docs-sidebar-navigation>
     </aside>
 
-    <main class="main-content" tabindex="-1">
+    <main class="main-content" id="main-content" tabindex="-1">
+      <if condition="sidebar.currentSection">
+        <div class="mobile-page-context" aria-label="Current location">
+          <span>{{sidebar.currentSection}}</span>
+          <span aria-hidden="true">/</span>
+          <strong>{{page.title}}</strong>
+        </div>
+      </if>
       <article class="doc-content">
         {{{page.content}}}
       </article>

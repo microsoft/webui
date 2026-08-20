@@ -52,6 +52,32 @@ export class DocsSearch extends WebUIElement {
   // Each input change clears nested <for> result rows before re-inserting the
   // next set. The version guard drops stale microtasks from rapid typing.
   private renderVersion = 0;
+  private listenersAttached = false;
+  private dialogClickHandler = (event: Event): void => {
+    if (event.target === this.dialog) {
+      this.dialog.close();
+    }
+  };
+  private documentKeydownHandler = (event: KeyboardEvent): void => {
+    if ((event.metaKey || event.ctrlKey) && event.key === "k") {
+      event.preventDefault();
+      this.openSearch();
+    }
+    if (!this.dialog.open) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      this.setActiveIdx(
+        Math.min(this.activeIdx + 1, this.resultItems.length - 1),
+      );
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      this.setActiveIdx(Math.max(this.activeIdx - 1, 0));
+    }
+    if (event.key === "Enter" && this.resultItems[this.activeIdx]) {
+      window.location.href = this.resultItems[this.activeIdx].path;
+    }
+  };
 
   // Keep title matches decisively above heading matches, and heading matches
   // above body/path matches. Sorting remains deterministic via title/path ties.
@@ -62,32 +88,29 @@ export class DocsSearch extends WebUIElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    if (this.dialog) {
+      this.attachListeners();
+    }
+  }
 
-    // Close on backdrop click (click on <dialog> itself, not its children)
-    this.dialog.addEventListener("click", (e: Event) => {
-      if (e.target === this.dialog) this.dialog.close();
-    });
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    if (this.listenersAttached) {
+      this.dialog.removeEventListener("click", this.dialogClickHandler);
+      document.removeEventListener("keydown", this.documentKeydownHandler);
+      this.listenersAttached = false;
+    }
+  }
 
-    document.addEventListener("keydown", (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        this.openSearch();
-      }
-      if (!this.dialog.open) return;
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        this.setActiveIdx(
-          Math.min(this.activeIdx + 1, this.resultItems.length - 1),
-        );
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        this.setActiveIdx(Math.max(this.activeIdx - 1, 0));
-      }
-      if (e.key === "Enter" && this.resultItems[this.activeIdx]) {
-        window.location.href = this.resultItems[this.activeIdx].path;
-      }
-    });
+  protected hydratedCallback(): void {
+    this.attachListeners();
+  }
+
+  private attachListeners(): void {
+    if (this.listenersAttached) return;
+    this.dialog.addEventListener("click", this.dialogClickHandler);
+    document.addEventListener("keydown", this.documentKeydownHandler);
+    this.listenersAttached = true;
   }
 
   openSearch(): void {

@@ -285,6 +285,40 @@ fn build_page_registry(
     pages
 }
 
+fn build_sidebar_item_state(item: &SidebarItem, base: &str, url_path: &str) -> (Value, bool) {
+    let item_path = normalize_link(base, &item.link);
+    let active = !item_path.is_empty() && item_path == url_path;
+    let mut descendant_active = false;
+    let children: Vec<Value> = item
+        .items
+        .iter()
+        .map(|child| {
+            let child_path = normalize_link(base, &child.link);
+            let child_active = !child_path.is_empty() && child_path == url_path;
+            descendant_active |= child_active;
+            json_obj([
+                ("text", Value::String(child.text.clone())),
+                ("link", Value::String(child_path)),
+                ("active", Value::Bool(child_active)),
+                ("hasChildren", Value::Bool(false)),
+                ("children", Value::Array(vec![])),
+            ])
+        })
+        .collect();
+    let expanded = active || descendant_active;
+    (
+        json_obj([
+            ("text", Value::String(item.text.clone())),
+            ("link", Value::String(item_path)),
+            ("active", Value::Bool(active)),
+            ("expanded", Value::Bool(expanded)),
+            ("hasChildren", Value::Bool(!children.is_empty())),
+            ("children", Value::Array(children)),
+        ]),
+        expanded,
+    )
+}
+
 fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value {
     let base = &config.base_path;
 
@@ -300,38 +334,23 @@ fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value
         .map(|(_, s)| s.as_slice())
         .unwrap_or(&config.sidebar);
 
-    // Convert a SidebarItem to a JSON value (iterative via stack for children)
-    let item_to_value = |item: &SidebarItem| -> Value {
-        let item_path = normalize_link(base, &item.link);
-        let active = !item_path.is_empty() && item_path == url_path;
-        let children: Vec<Value> = item
-            .items
-            .iter()
-            .map(|child| {
-                let child_path = normalize_link(base, &child.link);
-                let child_active = !child_path.is_empty() && child_path == url_path;
-                json_obj([
-                    ("text", Value::String(child.text.clone())),
-                    ("link", Value::String(child_path)),
-                    ("active", Value::Bool(child_active)),
-                    ("hasChildren", Value::Bool(false)),
-                    ("children", Value::Array(vec![])),
-                ])
-            })
-            .collect();
-        json_obj([
-            ("text", Value::String(item.text.clone())),
-            ("link", Value::String(item_path)),
-            ("active", Value::Bool(active)),
-            ("hasChildren", Value::Bool(!children.is_empty())),
-            ("children", Value::Array(children)),
-        ])
-    };
-
+    let mut current_section = String::new();
     let sections: Vec<Value> = active_sidebar
         .iter()
         .map(|section| {
-            let items: Vec<Value> = section.items.iter().map(item_to_value).collect();
+            let mut section_active = false;
+            let items: Vec<Value> = section
+                .items
+                .iter()
+                .map(|item| {
+                    let (value, branch_active) = build_sidebar_item_state(item, base, url_path);
+                    section_active |= branch_active;
+                    value
+                })
+                .collect();
+            if section_active {
+                current_section.clone_from(&section.title);
+            }
             json_obj([
                 ("title", Value::String(section.title.clone())),
                 ("items", Value::Array(items)),
@@ -339,7 +358,10 @@ fn build_sidebar_state(url_path: &str, config: &DocsConfig) -> serde_json::Value
         })
         .collect();
 
-    json_obj([("sections", Value::Array(sections))])
+    json_obj([
+        ("sections", Value::Array(sections)),
+        ("currentSection", Value::String(current_section)),
+    ])
 }
 
 fn find_sidebar_text(url_path: &str, config: &DocsConfig) -> Option<String> {
@@ -401,6 +423,10 @@ pub(crate) fn process_content_with_states(
         .nav
         .iter()
         .map(|item| {
+            let full_layout = config
+                .custom_pages
+                .get(&item.link)
+                .is_some_and(|page| page.layout() == "full");
             let (link, section) = if item.link.starts_with("http") {
                 // External links can never match a docs section. Use the URL
                 // itself as a unique sentinel so the equality check below
@@ -422,6 +448,7 @@ pub(crate) fn process_content_with_states(
                 ("text", Value::String(item.text.clone())),
                 ("link", Value::String(link)),
                 ("section", Value::String(section)),
+                ("fullLayout", Value::Bool(full_layout)),
             ])
         })
         .collect();
@@ -615,6 +642,7 @@ pub(crate) fn process_content_with_states(
                             ("isHome", Value::Bool(is_home)),
                             ("layout", Value::String(layout)),
                             ("section", Value::String(page_section)),
+                            ("mobileNavigationOpen", Value::Bool(false)),
                         ]),
                     ),
                     ("hero", hero_val),
@@ -761,6 +789,26 @@ mod tests {
         // `&link[1..]` would have panicked here on UTF-8 boundary.
         let out = normalize_link("/webui/", "é-page");
         assert!(out.ends_with("é-page"), "got {out}");
+    }
+
+    #[test]
+    fn sidebar_item_expands_for_active_descendant() {
+        let item = SidebarItem {
+            text: "Template Syntax".to_string(),
+            link: "/guide/concepts/directives".to_string(),
+            items: vec![SidebarItem {
+                text: "Signals".to_string(),
+                link: "/guide/concepts/directives/signals".to_string(),
+                items: Vec::new(),
+            }],
+        };
+
+        let (state, branch_active) =
+            build_sidebar_item_state(&item, "/webui/", "/webui/guide/concepts/directives/signals");
+
+        assert!(branch_active);
+        assert_eq!(state["expanded"], Value::Bool(true));
+        assert_eq!(state["children"][0]["active"], Value::Bool(true));
     }
 
     // --- normalize_path_as_index -----------------------------------------

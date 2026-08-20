@@ -1,7 +1,7 @@
 <div class="pg">
   <div class="editor-pane">
     <div class="tab-bar">
-      <div class="tab-strip">
+      <div class="tab-strip" role="group" aria-label="Playground files">
         <for each="file in files">
           <div
             class="tab"
@@ -9,11 +9,8 @@
             ?data-editing="{{file.editing}}"
             title="{{file.name}}"
             data-name="{{file.name}}"
-            role="button"
-            tabindex="0"
             @click="{selectTab(e)}"
             @dblclick="{startFileRename(e)}"
-            @keydown="{onTabKeydown(e)}"
           >
             <span class="tab-icon tab-icon-html" aria-hidden="true">
               <svg viewBox="0 0 16 16" focusable="false">
@@ -50,12 +47,20 @@
               />
             </if>
             <if condition="!file.editing">
-              <span class="tab-name">{{file.name}}</span>
+              <button
+                class="tab-select"
+                type="button"
+                aria-label="Open {{file.name}}"
+                aria-pressed="{{file.active}}"
+              >
+                <span class="tab-name">{{file.name}}</span>
+              </button>
               <if condition="!file.locked">
                 <button
                   class="tab-close-btn"
                   type="button"
                   title="Close file"
+                  aria-label="Close {{file.name}}"
                   data-name="{{file.name}}"
                   @click="{closeFile(e)}"
                   @dblclick="{stopTabEvent(e)}"
@@ -67,9 +72,9 @@
           </div>
         </for>
       </div>
-      <button class="tab-add-btn" type="button" title="New file" @click="{openNewFileInput()}">+</button>
+      <button class="tab-add-btn" type="button" title="New file" aria-label="New file" @click="{openNewFileInput()}">+</button>
     </div>
-    <div class="editor-wrap" w-ref="{editorWrap}"></div>
+    <div class="editor-wrap" role="region" aria-label="Code editor" w-ref="{editorWrap}"></div>
   </div>
   <div class="panel-divider"></div>
   <div class="preview-pane">
@@ -88,7 +93,7 @@
         <button class="share-btn" type="button" @click="{sharePlayground()}">Share</button>
       </div>
     </div>
-    <iframe sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
+    <iframe title="Rendered preview" sandbox="allow-scripts" class="preview-frame" srcdoc="{{previewSrcdoc}}"></iframe>
     <if condition="hasError">
       <div
         class="error-panel"
@@ -117,6 +122,12 @@
             </svg>
           </span>
         </button>
+        <if condition="errorCanRetry">
+          <div class="error-recovery">
+            <span>The preview runtime did not load. Your files are safe.</span>
+            <button class="error-retry-btn" type="button" @click="{retryPreview()}">Retry preview</button>
+          </div>
+        </if>
         <div class="error-panel-body-wrap">
           <div class="error-panel-body">
             <if condition="errorSnippet">
