@@ -41,7 +41,7 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link", "style", or "module"
-  dom: "light",          // Optional: unwrapped Light + authored Shadow islands
+  dom: "light",          // Optional: global Light + authored Shadow islands
   cssBundle: true,       // Merge component stylesheets into shared chunks
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
@@ -61,8 +61,10 @@ const result = build({
 ```
 
 Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
-to render unwrapped components as scoped Light DOM. A sole top-level
-`<template shadowrootmode="open">` remains Shadow in either mode.
+to render unwrapped components as global Light DOM. A sole top-level
+`<template shadowrootmode="open">` remains Shadow in either mode. Light CSS uses
+ordinary selectors; `:host`, `:host-context`, and `::slotted` fail with
+`unsupported-light-css`.
 
 Static component assets use a root/chunk graph. Entry-reachable dependencies
 remain external, dependencies used by one root stay inline, and dependencies

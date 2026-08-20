@@ -7,7 +7,7 @@
 
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(feature = "fs")]
 use std::fs;
 #[cfg(feature = "fs")]
@@ -92,10 +92,10 @@ impl<'a> ComponentRegistration<'a> {
 pub struct ComponentRegistry {
     /// Map of component tag names to their component data
     components: HashMap<String, Component>,
-    /// Pre-transform CSS retained only when delivery bytes are replaced.
-    authored_component_css: HashMap<String, String>,
     /// Compiler-owned rendering policies kept outside the public component API.
     render_policies: HashMap<String, ComponentRenderPolicy>,
+    /// Components whose render policy CSS has been appended.
+    policy_css: HashSet<String>,
     /// Reusable CSS parser for token extraction during registration.
     css_parser: CssParser,
     /// Legal comment preservation policy for component CSS.
@@ -139,8 +139,8 @@ impl ComponentRegistry {
     pub(crate) fn with_legal_comments(legal_comments: LegalComments) -> Self {
         Self {
             components: HashMap::new(),
-            authored_component_css: HashMap::new(),
             render_policies: HashMap::new(),
+            policy_css: HashSet::new(),
             css_parser: CssParser::new(),
             legal_comments,
         }
@@ -220,9 +220,7 @@ impl ComponentRegistry {
         })?;
 
         // Read CSS content and extract definitions/fallback requirements if available
-        let (mut css_content, css_definitions, css_fallback_chains) = if let Some(css_path) =
-            css_path
-        {
+        let (css_content, css_definitions, css_fallback_chains) = if let Some(css_path) = css_path {
             let css_path = css_path.as_ref();
             if css_path.exists() {
                 let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
@@ -241,7 +239,6 @@ impl ComponentRegistry {
         let is_client_owned = has_component_script(html_path)?;
 
         let render_policy = parse_component_render_policy(tag_name, &html_content)?;
-        Self::append_scoped_policy_css(&mut css_content, &render_policy, tag_name);
 
         // Create and register the component
         let component = Component {
@@ -288,16 +285,14 @@ impl ComponentRegistry {
         }
 
         // Extract CSS definitions/fallback requirements if CSS content is provided
-        let (mut css_content, css_definitions, css_fallback_chains) = match css_content {
+        let (css_content, css_definitions, css_fallback_chains) = match css_content {
             Some(css) => {
                 let (content, definitions, requirements) = self.process_css_content(css)?;
                 (Some(content), definitions, requirements)
             }
             None => (None, Vec::new(), Vec::new()),
         };
-
         let render_policy = parse_component_render_policy(tag_name, html_content)?;
-        Self::append_scoped_policy_css(&mut css_content, &render_policy, tag_name);
         let component: Component = Component {
             tag_name: tag_name.to_string(),
             html_content: html_content.to_string(),
@@ -327,19 +322,39 @@ impl ComponentRegistry {
         Ok((stripped.into_owned(), sorted_definitions, requirements))
     }
 
-    fn append_scoped_policy_css(
-        css_content: &mut Option<String>,
-        policy: &ComponentRenderPolicy,
-        raw_tag_name: &str,
-    ) {
-        if policy.reserve_block_size().is_none() {
-            return;
+    /// Append the render policy CSS appropriate for the component's CSS tree.
+    pub(crate) fn prepare_policy_css(
+        &mut self,
+        tag_name: &str,
+        uses_shadow_dom: bool,
+    ) -> Result<()> {
+        let Some(policy) = self.render_policies.get(tag_name) else {
+            return Ok(());
+        };
+        if policy.reserve_block_size().is_none() || self.policy_css.contains(tag_name) {
+            return Ok(());
         }
-        let css = css_content.get_or_insert_with(|| String::with_capacity(112));
-        css.reserve(144);
-        let mut tag_name = String::with_capacity(32);
-        crate::css_boundary::push_css_identifier(&mut tag_name, raw_tag_name);
-        policy.append_scoped_css(css, &tag_name);
+        let component_tag = {
+            let component = self.components.get_mut(tag_name).ok_or_else(|| {
+                ParserError::NotFound(format!(
+                    "component <{tag_name}> disappeared before render policy preparation"
+                ))
+            })?;
+            let css = component
+                .css_content
+                .get_or_insert_with(|| String::with_capacity(112));
+            css.reserve(144);
+            let mut escaped_tag = String::with_capacity(32);
+            crate::css_light::push_css_identifier(&mut escaped_tag, component.tag_name.as_str());
+            if uses_shadow_dom {
+                policy.append_shadow_css(css, &escaped_tag);
+            } else {
+                policy.append_light_css(css, &escaped_tag);
+            }
+            component.tag_name.clone()
+        };
+        self.policy_css.insert(component_tag);
+        Ok(())
     }
 
     /// Check if a tag name is registered as a component.
@@ -352,39 +367,11 @@ impl ComponentRegistry {
         self.components.get(tag_name)
     }
 
-    /// Replace a component's processed CSS after its boundary-specific transform.
-    pub(crate) fn replace_css_content(
-        &mut self,
-        tag_name: &str,
-        css_content: String,
-    ) -> Result<()> {
-        let component = self.components.get_mut(tag_name).ok_or_else(|| {
-            ParserError::NotFound(format!(
-                "component <{tag_name}> disappeared before CSS compilation"
-            ))
-        })?;
-        // `css_content` is overwritten below, so move the authored bytes into
-        // the diagnostic cache rather than cloning a second full copy of every
-        // transformed stylesheet.
-        if let Some(authored) = component.css_content.take() {
-            self.authored_component_css
-                .entry(tag_name.to_string())
-                .or_insert(authored);
-        }
-        component.css_content = Some(css_content);
-        Ok(())
-    }
-
-    /// Return pre-transform component CSS for source diagnostics.
+    /// Return component CSS for source diagnostics.
     pub(crate) fn diagnostic_css_content(&self, tag_name: &str) -> Option<&str> {
-        self.authored_component_css
+        self.components
             .get(tag_name)
-            .map(String::as_str)
-            .or_else(|| {
-                self.components
-                    .get(tag_name)
-                    .and_then(|component| component.css_content.as_deref())
-            })
+            .and_then(|component| component.css_content.as_deref())
     }
 
     /// Get all registered components.
@@ -410,7 +397,7 @@ impl ComponentRegistry {
 
         let mut css = String::with_capacity(policies.len() * 112);
         for (tag_name, policy) in policies {
-            crate::css_boundary::push_css_identifier(&mut css, tag_name);
+            crate::css_light::push_css_identifier(&mut css, tag_name);
             css.push_str(r#":not([w-render="eager"]){"#);
             policy.append_declarations(&mut css);
             css.push('}');
@@ -625,8 +612,42 @@ mod tests {
             registry
                 .get("a-row")
                 .and_then(|component| component.css_content.as_deref()),
+            None
+        );
+        registry
+            .prepare_policy_css("a-row", true)
+            .expect("prepare Shadow policy CSS");
+        assert_eq!(
+            registry
+                .get("a-row")
+                .and_then(|component| component.css_content.as_deref()),
             Some(
                 r#":host(a-row:not([w-render="eager"])),a-row:not([w-render="eager"]){content-visibility:auto;contain-intrinsic-block-size:auto 72px;}"#,
+            )
+        );
+    }
+
+    #[test]
+    fn lazy_render_policy_uses_a_normal_selector_for_light_css() {
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_component(ComponentRegistration::new(
+                "light-row",
+                r#"<template w-render="lazy" w-reserve-block-size="72px"><p>x</p></template>"#,
+                None,
+                false,
+            ))
+            .expect("valid lazy render policy");
+
+        registry
+            .prepare_policy_css("light-row", false)
+            .expect("prepare Light policy CSS");
+        assert_eq!(
+            registry
+                .get("light-row")
+                .and_then(|component| component.css_content.as_deref()),
+            Some(
+                r#"light-row:not([w-render="eager"]){content-visibility:auto;contain-intrinsic-block-size:auto 72px;}"#,
             )
         );
     }

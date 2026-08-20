@@ -1271,7 +1271,6 @@ impl WebUIHandler {
                 }
                 context.writer.write("<")?;
                 context.writer.write(comp)?;
-                self.write_light_dom_marker(comp, context)?;
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
@@ -1693,18 +1692,6 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Mark a handler-generated component host when it uses Light DOM.
-    fn write_light_dom_marker(
-        &self,
-        component: &str,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
-        if !context.protocol.component_uses_shadow_dom(component) {
-            context.writer.write(" data-wl")?;
-        }
-        Ok(())
-    }
-
     /// Process a route fragment — renders `<webui-route>` with matched/hidden state.
     fn process_route(
         &self,
@@ -1765,7 +1752,6 @@ impl WebUIHandler {
 
                 context.writer.write("<")?;
                 context.writer.write(&route_frag.fragment_id)?;
-                self.write_light_dom_marker(&route_frag.fragment_id, context)?;
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
@@ -7959,10 +7945,8 @@ mod tests {
         let dashboard_style = html
             .find(r#"data-webui-resource="dashboard-page""#)
             .expect("dashboard style");
-        let app_host = html.find("<app-shell data-wl").expect("app route host");
-        let dashboard_host = html
-            .find("<dashboard-page data-wl")
-            .expect("dashboard route host");
+        let app_host = html.find("<app-shell").expect("app route host");
+        let dashboard_host = html.find("<dashboard-page").expect("dashboard route host");
         assert!(
             app_style < dashboard_style
                 && dashboard_style < head_end
@@ -8151,9 +8135,7 @@ mod tests {
             let head_end = html.find("</head>").expect("head close");
             let marker = r#"data-webui-resource="dashboard-page""#;
             let style = html.find(marker).expect("route style fallback");
-            let host = html
-                .find("<dashboard-page data-wl")
-                .expect("dashboard route host");
+            let host = html.find("<dashboard-page").expect("dashboard route host");
             let strategy_name = if strategy == webui_protocol::CssStrategy::Module {
                 "module"
             } else {
@@ -8247,9 +8229,7 @@ mod tests {
         let shadow_start = html
             .find("<template shadowrootmode=\"open\">")
             .expect("Shadow template");
-        let dashboard_host = html
-            .find("<dashboard-page data-wl")
-            .expect("dashboard route host");
+        let dashboard_host = html.find("<dashboard-page").expect("dashboard route host");
         let dashboard_href = crate::html_encode::encode_safe("/dashboard-page.css");
 
         assert!(
@@ -8379,7 +8359,7 @@ mod tests {
                     fragments: vec![
                         WebUIFragment::raw("<template shadowrootmode=\"open\">"),
                         structural_fragment("shadow_styles:app-shell"),
-                        WebUIFragment::raw("<shared-card data-wl"),
+                        WebUIFragment::raw("<shared-card"),
                         structural_fragment("streaming_root:shared-card"),
                         WebUIFragment::raw(">"),
                         WebUIFragment::component("shared-card"),
@@ -8393,7 +8373,7 @@ mod tests {
                 "dashboard-page".to_string(),
                 FragmentList {
                     fragments: vec![
-                        WebUIFragment::raw("<shared-card data-wl"),
+                        WebUIFragment::raw("<shared-card"),
                         structural_fragment("streaming_root:shared-card"),
                         WebUIFragment::raw(">"),
                         WebUIFragment::component("shared-card"),
@@ -8456,9 +8436,7 @@ mod tests {
         let dashboard_style = html
             .find(r#"data-webui-resource="dashboard-page""#)
             .expect("dashboard style");
-        let dashboard_host = html
-            .find("<dashboard-page data-wl")
-            .expect("dashboard route host");
+        let dashboard_host = html.find("<dashboard-page").expect("dashboard route host");
         let shadow_end = html.find("</template>").expect("Shadow template close");
         assert!(
             shadow_start < dashboard_style
@@ -8503,12 +8481,12 @@ mod tests {
             vec![
                 WebUIFragment::raw("<!DOCTYPE html><html><body>"),
                 structural_fragment("body_start"),
-                WebUIFragment::raw("<my-card data-wl>"),
+                WebUIFragment::raw("<my-card>"),
                 WebUIFragment::component("my-card"),
                 WebUIFragment::raw("</my-card></body></html>"),
             ],
             vec![
-                WebUIFragment::raw("<!doctype html><html><my-card data-wl>"),
+                WebUIFragment::raw("<!doctype html><html><my-card>"),
                 WebUIFragment::component("my-card"),
                 WebUIFragment::raw("</my-card></html>"),
             ],
@@ -8552,7 +8530,7 @@ mod tests {
             );
             let style = html.find("data-webui-resource=\"my-card\"").expect("style");
             let document = html.find("<html").expect("document root");
-            let component = html.find("<my-card data-wl>").expect("component host");
+            let component = html.find("<my-card>").expect("component host");
             assert!(
                 style < document && style < component,
                 "headless document styles must precede document content: {html}"
@@ -9044,7 +9022,7 @@ mod tests {
         let fallback = html
             .find(r#"data-webui-resource="dash-page" data-webui-strategy="module""#)
             .expect("route Module fallback");
-        let host_open = html.find("<dash-page data-wl>").expect("route host");
+        let host_open = html.find("<dash-page>").expect("route host");
         let content = html.find("<h1>Dashboard</h1>").expect("route content");
         assert!(
             fallback < host_open && host_open < content,
@@ -12521,7 +12499,7 @@ mod tests {
         assert!(
             writer
                 .output
-                .contains("<route-page data-wl data-ws><p>route content</p></route-page>"),
+                .contains("<route-page data-ws><p>route content</p></route-page>"),
             "matched route host must be deferred before upgrade: {}",
             writer.output
         );

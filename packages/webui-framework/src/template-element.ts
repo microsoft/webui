@@ -651,10 +651,6 @@ export class TemplateElement extends HTMLElement {
 
     hydrationStart();
     try {
-      if (!isSSR && !wantShadow && !this.hasAttribute('data-wl')) {
-        this.setAttribute('data-wl', '');
-      }
-
       if (!reconnecting) {
         if (isSSR) {
           // Seed explicit authored state. A streamed activation (forceSSR)

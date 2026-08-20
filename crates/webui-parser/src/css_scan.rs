@@ -7,14 +7,12 @@
 //!
 //! 1. `css_scan` (this module) — advance past one token: a string, a comment,
 //!    an escape, an identifier, a balanced paren group.
-//! 2. [`crate::css_selector`] — segment a selector list into compounds.
-//! 3. [`crate::css_boundary`] — the Light DOM scoping transform.
+//! 2. [`crate::css_light`] — validate Shadow-only selectors and emit identifiers.
 //!
 //! Every function here takes a byte offset and returns the offset just past the
 //! token, so callers stay iterative and allocation-free. Nothing here allocates
 //! except [`identifier_value`], which only does so for escaped or quoted input.
 
-use crate::comment_policy;
 use std::ops::Range;
 
 /// Advance past a quoted string starting at `start`.
@@ -87,12 +85,6 @@ pub(crate) fn is_ident_start_byte(byte: u8) -> bool {
 /// Whether `byte` can continue a CSS identifier.
 pub(crate) fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') || byte >= 0x80
-}
-
-/// Whether an identifier token *starts* at `index` rather than continuing one.
-pub(crate) fn is_identifier_token_start(bytes: &[u8], index: usize, start: usize) -> bool {
-    is_ident_start_byte(bytes[index])
-        && (index == start || !is_ident_byte(bytes[index - 1]) && bytes[index - 1] != b'\\')
 }
 
 /// Advance past a CSS escape sequence (`\26`, `\@`, …) starting at `start`.
@@ -222,39 +214,6 @@ pub(crate) fn pseudo_name(source: &str, start: usize) -> Option<PseudoName> {
     })
 }
 
-/// Find the `)` that closes the `(` at `open`, skipping nested groups,
-/// strings, and comments. Returns the offset just past the `)`.
-pub(crate) fn matching_paren_end(source: &str, open: usize) -> Option<usize> {
-    let bytes = source.as_bytes();
-    let mut index = open + 1;
-    let mut depth = 1usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'"' | b'\'' => index = quoted_end(source, index),
-            b'\\' => index = css_escape_end(bytes, index, bytes.len()),
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                index = block_comment_end(source, index);
-            }
-            b'/' if comment_policy::is_css_line_comment_start(source, index) => {
-                index = comment_policy::find_css_line_comment_end(source, index + 2);
-            }
-            b'(' => {
-                depth += 1;
-                index += 1;
-            }
-            b')' => {
-                depth -= 1;
-                index += 1;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => index = next_char_boundary(source, index),
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,7 +226,6 @@ mod tests {
         assert_eq!(block_comment_end("/* unterminated", 0), 15);
         assert_eq!(css_escape_end(b"\\26 x", 0, 5), 4);
         assert_eq!(css_escape_end(b"\\@rest", 0, 6), 2);
-        assert_eq!(matching_paren_end(r"(\)) tail", 0), Some(4));
     }
 
     #[test]
@@ -291,7 +249,5 @@ mod tests {
         assert_eq!(&"::before"[element.name], "before");
 
         assert!(pseudo_name(":", 0).is_none());
-        assert_eq!(matching_paren_end(":is(a, (b))x", 3), Some(11));
-        assert_eq!(matching_paren_end(":is(a", 3), None);
     }
 }

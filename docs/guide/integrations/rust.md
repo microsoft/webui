@@ -359,7 +359,7 @@ delivery from a cancelled or stalled stream.
 | `app_dir` | `PathBuf` | - | Path to app folder |
 | `entry` | `String` | `"index.html"` | Entry file |
 | `css` | `CssStrategy` | `Link` | CSS delivery: `Link`, `Style`, or `Module` |
-| `dom` | `DomStrategy` | `Shadow` | Fallback for unwrapped components: `Shadow` or scoped `Light` |
+| `dom` | `DomStrategy` | `Shadow` | Fallback for unwrapped components: `Shadow` or global `Light` |
 | `plugin` | `Option<Plugin>` | `None` | Parser plugin (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `Vec<String>` | `[]` | External component sources |
 | `component_asset_roots` | `Vec<String>` | `[]` | Root component tags emitted as static `.webui.js` ESM assets |
@@ -370,8 +370,10 @@ delivery from a cancelled or stalled stream.
 | `theme` | `Option<TokenFile>` | `None` | Loaded design-token theme used to validate unresolved CSS tokens during build |
 
 Unwrapped components default to generated open Shadow roots. Set
-`DomStrategy::Light` to make unwrapped components scoped Light DOM; authored
-sole open Shadow roots remain Shadow in either mode.
+`DomStrategy::Light` to make unwrapped components global Light DOM; authored
+sole open Shadow roots remain Shadow in either mode. Light CSS uses ordinary
+selectors, and `:host`, `:host-context`, and `::slotted` fail with
+`unsupported-light-css`.
 
 `BuildResult::component_asset_files` contains root and shared chunk modules.
 Entry-reachable dependencies remain in the protocol and are external

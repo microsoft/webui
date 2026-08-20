@@ -75,7 +75,7 @@ pub struct StyleChunk {
 pub struct ComponentData {
     /// Non-WebUI client-side template payload, such as FAST `<f-template>` HTML.
     pub template: String,
-    /// Compiled component CSS content for Style and Module strategies.
+    /// Retained component CSS content for Style and Module strategies.
     pub css: String,
     /// External stylesheet href for the Link CSS strategy.
     /// Default format is `<component-name>.css`, but build-time naming
@@ -1220,7 +1220,7 @@ declarative Shadow root:
 | --- | --- | --- |
 | `Shadow` (default) | Unwrapped component content | Compiler-generated open Shadow root |
 | `Shadow` (default) | Sole authored `<template shadowrootmode="open">` | Authored Shadow root |
-| `Light` | Unwrapped component content | Scoped Light DOM |
+| `Light` | Unwrapped component content | Authored/global Light DOM |
 | `Light` | Sole authored `<template shadowrootmode="open">` | Authored Shadow root |
 
 An authored Shadow wrapper must contain the complete component and be the only
@@ -1265,125 +1265,36 @@ pub enum CssStrategy {
   support.
 
 All three strategies use the ordered component style closures below. CSS
-strategy changes delivery, not component discovery, Shadow ownership,
-transformation, or cascade order.
+strategy changes delivery, not component discovery, Shadow ownership, authored
+CSS semantics, or cascade order.
 
-#### Component CSS Isolation
+#### Component CSS Ownership
 
 Developers author paired component stylesheets or component-local `<style>`
-blocks and use `:host` as the Light/Shadow host API. After legal-comment
-processing, Shadow components retain those CSS bytes unchanged. Light
-components are compiled before Link filename hashing or Style/Module storage.
+blocks. After legal-comment processing, Shadow components retain those CSS
+bytes unchanged. Effective Light components also retain authored CSS bytes:
+their styles are ordinary global CSS in the owning `Document` or `ShadowRoot`
+CSS tree.
 
-Light DOM has no native style boundary, so the compiler builds one. Two shapes
-exist, and the compiler picks the strongest one each component's DOM permits:
+The compiler does not stamp HTML, qualify selectors, generate `@scope`,
+namespace keyframes, or namespace cascade layers for Light components. This is
+intentional composition rather than an isolation boundary. A Light component's
+`.card` selector can match any `.card` in the same CSS tree, and parent CSS can
+reach Light descendants. Authors should use deliberate names, `@layer`, and
+custom properties when they need predictable global composition. Native Shadow
+DOM remains the isolation escape hatch.
 
-- **Stamped** — the fast path, taken whenever the component's rendered DOM is
-  fully known at build time. Every element is marked, and every selector is
-  qualified so it can only match a marked element.
-- **Enclosed** — the general path, taken when the component can render markup the
-  compiler never sees. The authored rules are wrapped in a native
-  `@scope (<tag>[data-wl]) to (:scope [data-wl] > *)` prelude, which resolves
-  membership at match time.
+Shadow-only selectors are not silently rewritten. `:host`, `:host(...)`,
+`:host-context(...)`, and `::slotted(...)` in effective Light CSS fail with
+`unsupported-light-css`, with help to use an ordinary selector such as the
+component tag or author an open declarative Shadow root. The check covers both
+external component CSS and inline `<style>` blocks. Shadow CSS keeps the native
+meaning of those selectors.
 
-A component takes the enclosed path for a raw HTML binding (`{{{expr}}}`) in
-its template, which interpolates
-author-supplied markup at render time. Such elements exist in no compiled template,
-so a stamped selector would silently stop matching them; `@scope` covers them
-natively. The detection is conservative and purely textual, so a false positive
-costs the fast path but never correctness. Every other binding form escapes its
-value into text and is safe to stamp.
-
-CSS the stamper cannot represent safely fails with `unsupported-light-css`
-rather than silently changing semantics. In particular, a `:host` nested inside
-a selector function cannot be lowered to one marker family. A pre-scan
-(`stamping_is_representable`) detects that shape before output is committed,
-using the same token primitives as the stamper.
-
-The stamped shape:
-
-- Every element the component's template declares is stamped at build time with a
-  presence-only marker attribute `data-wl-<id>`, where `<id>` is a base36 FNV-1a
-  hash of the tag name. Hashing rather than counting keeps the marker independent
-  of compilation order, which is lazy and route-dependent. Two tags that derive
-  the same id fail with `light-scope-collision` rather than cross-styling
-  silently.
-- Every top-level compound in every selector is qualified with
-  `:where([data-wl-<id>])`, which contributes zero specificity so authored
-  cascade order is preserved exactly. Qualifying every compound, not just the
-  subject, is what prevents an ancestor *outside* the component from satisfying a
-  leading compound. Selector-bearing `:is()`, `:where()`, `:not()`, and `:has()`
-  arguments are walked iteratively and every relationship compound is qualified
-  too. A qualifier is always spliced before a pseudo-element.
-- Every element is stamped, including inert `<template>`, `<script>`, `<style>`,
-  `<link>`, `<meta>`, `<title>`, `<base>`, and `<head>` nodes. They can anchor
-  structural selectors such as `style + .content`, even when they never paint.
-  `<template>` content is also stamped because WebUI clones it for repeats and
-  conditionals.
-- Selectors are qualified rather than nested, so a rule is statically bounded to
-  one template. That makes the element inventory for a stylesheet finite and known
-  at build time, which is the precondition for future dead-selector elimination
-  and minification. Enclosed components are not eligible for those passes, since
-  their matchable element set is open.
-
-Stamping was measured against the enclosure it fast-paths, on a 26-component app
-served from two independently built release binaries. The two shapes produce
-byte-identical computed styles (~642,000 declarations compared across four
-routes), and stamping recalculates styles 13-15% faster at load and 7-9% faster
-across a route change at a 100% and 76-85% paired win rate respectively, at
-roughly +4% compressed document bytes. Anchoring rules on the host as a plain
-descendant selector (`<tag>[data-wl] .sel`) was also measured and is rejected
-permanently: it is slower than stamping *and* leaks parent rules into nested
-components. The `@scope` prelude's lower boundary is a saving, not a cost —
-removing it measured 5.4% slower, because it prunes nested component subtrees out
-of the scope.
-
-Two behaviors differ between the shapes, both by construction:
-
-- **Imperative DOM.** DOM created imperatively inside a stamped component
-  (`element.innerHTML = '<div class="x">'`) carries no marker and is not styled by
-  that component's CSS; an enclosed component covers it. Component hosts created
-  with `document.createElement` are unaffected in either shape: their content
-  comes from the compiled template. This is documented in the styling guide.
-- **Projected children.** A stamped component's CSS cannot style children
-  projected into it by its parent, because those carry the parent's marker. An
-  enclosed component's CSS can, since projected children sit under the scope root
-  and above the `[data-wl] > *` limit. This only surfaces for a component that
-  uses a raw binding, receives projected children, *and* styles them.
-
-Shared by both shapes:
-
-- Selector anchors lower from `:host` to `<tag>[data-wl]` when stamped and to
-  `:scope` when enclosed; functional `:host(<compound>)` lowers to the same anchor
-  followed by `:is(<compound>)`. The host owns `data-wl` and never carries the
-  descendant marker. A bare top-level `:scope` lowers the same way as `:host`;
-  inside an authored `@scope` it keeps its platform meaning. Strings, comments,
-  declaration values, and custom properties are never selector-rewritten.
-- Authored selector functions are unsupported in the enclosed shape: browser
-  `@scope` limits constrain the subject but do not stop `:has()` or complex
-  `:is()`/`:not()` arguments from inspecting outside ancestors or nested
-  component subtrees. Stamped components qualify those arguments; components
-  that require opaque raw HTML must instead simplify the selector or use Shadow.
-- Block grouping rules (`@media`, `@supports`, `@container`, `@layer`, and
-  authored `@scope`) remain nested, and an authored `@scope` prelude has both its
-  root and limit selector lists qualified. Named layer blocks and statement-form
-  ordering declarations receive a deterministic component namespace because
-  cascade-layer names are global within a Document CSS tree. Other global or
-  statement-form at-rules that cannot be isolated fail with
-  `unsupported-light-css`.
-- Shadow-only `:host-context()` and `::slotted()` are rejected in Light
-  CSS with `unsupported-light-css`. Authors must use entry CSS or opt that
-  component into `<template shadowrootmode="open">`.
-- Component-local keyframes receive a deterministic, collision-free component
-  prefix (`wui<tag-length>-<tag>-<name>`, whose length delimiter keeps
-  `<x-foo>`/`bar-baz` distinct from `<x-foo-bar>`/`baz`), and static
-  `animation` / `animation-name` references (including vendor-prefixed forms) are
-  rewritten token-by-token. Neither shape isolates `@keyframes`, so this applies
-  to both. Dynamic references that could name a local keyframe fail with
-  `dynamic-light-keyframe` rather than silently targeting an unnamespaced rule.
-
-The same compiled bytes feed Link assets and hashes, inline Style content, Module
-data URIs, component CSS storage, and token diagnostics.
+Ordinary CSS comment/legal-comment processing and token analysis still run for
+Light CSS. Raw bindings, nested selectors, relational selectors, keyframes,
+layers, and other authored at-rules are not rewritten by the Light path; the
+browser receives the authored global CSS semantics.
 
 #### Component Style Closures
 
@@ -1393,7 +1304,7 @@ in `WebUIProtocol.style_closures` (protobuf field 9). Each closure is a repeated
 component-tag list in cascade-sensitive first-discovery order; it is never sorted
 or derived from the component-asset set traversal. Link builds consider a tag a
 style resource only when `css_href` is nonempty. Style and Module builds use
-nonempty retained compiled `ComponentData.css`.
+nonempty retained authored `ComponentData.css`.
 
 For a component-root closure, that component's paired CSS is first when present.
 The iterative graph walk then follows fragment source order. Light children
@@ -1414,13 +1325,10 @@ hook inside its declarative root.
 Visited-fragment and first-style sets make malformed or cyclic protocols finite
 without changing first-discovery order.
 
-Every Light host receives a persistent `data-wl` marker in SSR and
-client-created DOM, and every element its template declares receives the
-component's `data-wl-<id>` scope marker. Both are reserved: authored static or
-bound ownership fails with `reserved-light-dom-marker`. Servers and clients
-consume stored closures
-directly and must not expand the fragment graph per request. A styled protocol
-without required closure metadata is invalid.
+Light hosts and their template elements receive no compiler-owned CSS markers.
+Servers and clients consume stored closures directly and must not expand the
+fragment graph per request. A styled protocol without required closure metadata
+is invalid.
 
 The handler keeps Document delivered-resource state directly and uses a lazily
 allocated stack of component indexes only while rendering Shadow
@@ -1442,7 +1350,8 @@ resource already applied to the Document or preloaded by an active route is
 deduplicated; the actual stylesheet still installs only in its owning
 ShadowRoot. Before any
 component closure installs, the framework scans that complete
-Document or ShadowRoot for compiler-owned SSR markers and claims them in place.
+Document or ShadowRoot for compiler-owned resource markers and claims them in
+place.
 It rescans an activating route's direct children for later streaming markers.
 Loaded Link elements are never reparented, avoiding a second request for
 non-cacheable CSS; the router preserves those route-owned markers across
@@ -1547,7 +1456,10 @@ module specifier recorded on `shadowrootadoptedstylesheets`. A single-member
 chunk is named after its sole member and carries that member's exact bytes, so
 keeping these unmerged keeps both references valid without a rewrite pass.
 Effective Light components carry no such parse-time identity and merge freely
-when the build opts into `DomStrategy::Light`.
+when the build opts into `DomStrategy::Light`. This does not promise one
+application-wide file: route-specific closures and distinct ShadowRoot
+consumers can require separate chunks, and each chunk remains in the exact
+authored cascade order for its consumers.
 
 #### Legal Comments
 ```rust

@@ -10,7 +10,7 @@ test.describe('light-dom pipeline', () => {
     await expect(page.locator('#shadow-opt-in')).toHaveJSProperty('$ready', true);
   });
 
-  test('unwrapped component uses Light DOM and applies scoped CSS', async ({ page }) => {
+  test('unwrapped component uses Light DOM and applies global CSS', async ({ page }) => {
     await expect(page.locator('test-light-dom .greeting')).toHaveText('Hello');
     await expect(page.locator('test-light-dom .name')).toHaveText('World');
     await expect(page.locator('test-light-dom .greeting')).toHaveCSS(
@@ -19,34 +19,27 @@ test.describe('light-dom pipeline', () => {
     );
     await expect(page.locator('test-light-dom .greeting')).toHaveCSS(
       'background-color',
-      'rgba(0, 0, 0, 0)',
+      'rgb(255, 0, 0)',
     );
     await expect(page.locator('test-light-dom .child-boundary')).toHaveCSS(
       'border-top-width',
-      '0px',
+      '5px',
     );
 
     const result = await page.locator('#light-root').evaluate((host) => {
-      const marker = Array.from(
-        host.querySelector('.greeting')?.attributes ?? [],
-        attribute => attribute.name,
-      ).find(name => name.startsWith('data-wl-'));
       return {
         hasShadow: !!host.shadowRoot,
-        lightMarker: host.hasAttribute('data-wl'),
-        // The host owns `data-wl`; only its declared content is stamped.
-        hostUnstamped: !marker || !host.hasAttribute(marker),
-        scopedCss: !!marker && Array.from(
+        hasLightMarker: host.hasAttribute('data-wl'),
+        globalCss: Array.from(
           document.head.querySelectorAll('style[data-webui-resource]'),
           style => style.textContent,
-        ).some(css => css?.includes(`:where([${marker}])`)),
+        ).some(css => css?.includes('.greeting')),
       };
     });
     expect(result).toEqual({
       hasShadow: false,
-      lightMarker: true,
-      hostUnstamped: true,
-      scopedCss: true,
+      hasLightMarker: false,
+      globalCss: true,
     });
   });
 
@@ -76,32 +69,27 @@ test.describe('light-dom pipeline', () => {
     expect(await resourceIds()).toEqual(['test-light-dom', 'test-light-child']);
   });
 
-  test('a parent may style a nested Light host but never its internals', async ({ page }) => {
+  test('global Light CSS reaches nested Light hosts and internals', async ({ page }) => {
     const child = page.locator('test-light-child').first();
 
-    // The nested host is declared by the parent template, so it carries the
-    // parent's marker and the parent's `test-light-child` rule applies.
+    // The nested host is declared by the parent template, and global CSS
+    // applies its host rule normally.
     await expect(child).toHaveCSS('outline-color', 'rgb(1, 2, 3)');
     await expect(child).toHaveCSS('display', 'block');
 
-    // `.child-label` is declared by the child template, so it carries only the
-    // child's marker. The parent's identically-named rule must not reach it.
+    // The parent and child both use `.child-label`; the child stylesheet is
+    // later in the closure, so its rule wins by normal cascade order.
     await expect(child.locator('.child-label')).toHaveCSS(
       'color',
       'rgb(34, 139, 34)',
     );
 
-    const markers = await child.evaluate((host) => {
-      const label = host.querySelector('.child-label');
-      const names = (element: Element | null) => (element
-        ? element.getAttributeNames().filter(name => name.startsWith('data-wl-'))
-        : []);
-      return { host: names(host), label: names(label) };
-    });
-
-    expect(markers.host).toHaveLength(1);
-    expect(markers.label).toHaveLength(1);
-    expect(markers.host).not.toEqual(markers.label);
+    await expect(child).not.toHaveAttribute('data-wl');
+    const markerNames = await child.evaluate((host) => [
+      ...host.getAttributeNames(),
+      ...(host.querySelector('.child-label')?.getAttributeNames() ?? []),
+    ].filter(name => name.startsWith('data-wl')));
+    expect(markerNames).toEqual([]);
   });
 
   test('Shadow opt-in cuts the Document closure and projects a native slot', async ({ page }) => {
@@ -119,7 +107,7 @@ test.describe('light-dom pipeline', () => {
             .filter(element => element.hasAttribute('data-webui-resource'))
             .map(element => element.getAttribute('data-webui-resource'))
           : [],
-        nestedLightMarkers: root?.querySelectorAll(
+        nestedLightMarkerCount: root?.querySelectorAll(
           'test-shadow-light-child[data-wl]',
         ).length ?? 0,
         nestedColor: (() => {
@@ -134,7 +122,7 @@ test.describe('light-dom pipeline', () => {
       lightMarker: false,
       projected: ['Projected label'],
       resourceIds: ['test-shadow-opt-in', 'test-shadow-light-child'],
-      nestedLightMarkers: 2,
+      nestedLightMarkerCount: 0,
       nestedColor: 'rgb(70, 130, 180)',
     });
     await expect(page.locator('#shadow-opt-in > .projected')).toHaveCSS(

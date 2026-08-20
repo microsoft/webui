@@ -509,8 +509,8 @@ fn parser_css_strategy_bench(c: &mut Criterion) {
     group.finish();
 }
 
-fn parser_light_css_boundary_bench(c: &mut Criterion) {
-    let mut group = c.benchmark_group("parser_light_css_boundary");
+fn parser_light_css_global_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_light_css_global");
     let input = "<x-styled-card></x-styled-card>";
     let css = build_component_stylesheet(40);
     group.throughput(Throughput::Bytes((input.len() + css.len()) as u64));
@@ -536,7 +536,7 @@ fn parser_light_css_boundary_bench(c: &mut Criterion) {
                     .unwrap_or_else(|error| panic!("failed to register styled component: {error}"));
                 parser
                     .parse("index.html", black_box(input))
-                    .unwrap_or_else(|error| panic!("{name} CSS boundary parse failed: {error}"));
+                    .unwrap_or_else(|error| panic!("{name} global CSS parse failed: {error}"));
             });
         });
     }
@@ -650,7 +650,7 @@ criterion_group!(
     parser_parse_fresh_vs_reuse,
     parser_plugin_bench,
     parser_css_strategy_bench,
-    parser_light_css_boundary_bench,
+    parser_light_css_global_bench,
     parser_size_sweep_bench,
     parser_realistic_bench,
     parser_text_vs_directive_bench,

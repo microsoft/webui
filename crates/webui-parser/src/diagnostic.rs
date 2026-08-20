@@ -91,16 +91,10 @@ pub mod codes {
     pub const LIGHT_DOM_SLOT: &str = "light-dom-slot";
     /// A declarative Shadow DOM wrapper has an unsupported mode or placement.
     pub const INVALID_SHADOW_ROOT_MODE: &str = "invalid-shadow-root-mode";
-    /// Authored markup attempts to own a WebUI Light DOM marker.
-    pub const RESERVED_LIGHT_DOM_MARKER: &str = "reserved-light-dom-marker";
-    /// Two component tags derive the same Light DOM scope marker.
-    pub const LIGHT_SCOPE_COLLISION: &str = "light-scope-collision";
-    /// Light component CSS contains a selector or at-rule that cannot be scoped.
+    /// Light component CSS contains a Shadow-only selector.
     pub const UNSUPPORTED_LIGHT_CSS: &str = "unsupported-light-css";
     /// A FAST plugin was asked to compile a Light DOM component it cannot mount faithfully.
     pub const FAST_LIGHT_DOM_UNSUPPORTED: &str = "fast-light-dom-unsupported";
-    /// A Light component refers to a component-local keyframe dynamically.
-    pub const DYNAMIC_LIGHT_KEYFRAME: &str = "dynamic-light-keyframe";
     /// An HTML comment was opened but never closed with `-->`.
     pub const UNTERMINATED_HTML_COMMENT: &str = "unterminated-html-comment";
     /// An HTML declaration was opened but never closed with `>`.

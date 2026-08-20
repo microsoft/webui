@@ -175,7 +175,9 @@ render immediately and propagate to the caller.
 | `theme` | `string` | - | Design token theme JSON path or npm package name. Missing required CSS tokens fail the build (literal `var()` fallbacks are exempt) |
 
 Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
-to make them scoped Light DOM; authored sole open Shadow roots remain Shadow.
+to make them global Light DOM; authored sole open Shadow roots remain Shadow.
+Light CSS uses ordinary selectors, and `:host`, `:host-context`, and
+`::slotted` fail with `unsupported-light-css`.
 
 ```js
 const result = build({
