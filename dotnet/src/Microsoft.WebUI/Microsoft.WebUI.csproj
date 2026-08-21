@@ -13,7 +13,6 @@
     <ProjectReference Include="..\..\runtime\Microsoft.WebUI.Runtime.linux-arm64\Microsoft.WebUI.Runtime.linux-arm64.csproj" />
     <ProjectReference Include="..\..\runtime\Microsoft.WebUI.Runtime.linux-x64\Microsoft.WebUI.Runtime.linux-x64.csproj" />
     <ProjectReference Include="..\..\runtime\Microsoft.WebUI.Runtime.osx-arm64\Microsoft.WebUI.Runtime.osx-arm64.csproj" />
-    <ProjectReference Include="..\..\runtime\Microsoft.WebUI.Runtime.osx-x64\Microsoft.WebUI.Runtime.osx-x64.csproj" />
     <ProjectReference Include="..\..\runtime\Microsoft.WebUI.Runtime.win-arm64\Microsoft.WebUI.Runtime.win-arm64.csproj" />
     <ProjectReference Include="..\..\runtime\Microsoft.WebUI.Runtime.win-x64\Microsoft.WebUI.Runtime.win-x64.csproj" />
   </ItemGroup>

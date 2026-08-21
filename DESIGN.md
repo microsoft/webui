@@ -4367,7 +4367,6 @@ webui/
 │   ├── @microsoft/
 │   │   ├── webui/            # npm package (CLI + programmatic JS API)
 │   │   ├── webui-darwin-arm64/   # Platform binary (macOS ARM64)
-│   │   ├── webui-darwin-x64/     # Platform binary (macOS x64)
 │   │   ├── webui-linux-x64/      # Platform binary (Linux x64)
 │   │   ├── webui-linux-arm64/    # Platform binary (Linux ARM64)
 │   │   ├── webui-win32-x64/      # Platform binary (Windows x64)
@@ -4469,18 +4468,18 @@ Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each s
 
 Azure release automation uses `.ado/pipelines/azure-pipelines-build.yml` and
 `.ado/pipelines/azure-pipelines-cd.yml`. `Web UI - CD Build` triggers on `main`
-and can also be queued manually. All six target legs build in one Linux-hosted
+and can also be queued manually. All five target legs build in one Linux-hosted
 matrix job. Linux natives build on the host and Linux wheels build in
 digest-pinned `manylinux2014` cross images. Windows targets use pinned
-`cargo-xwin` plus LLVM/LLD, while macOS targets use pinned `cargo-zigbuild` and
-Zig.
+`cargo-xwin` plus LLVM/LLD, while the macOS ARM64 target uses pinned
+`cargo-zigbuild` and Zig.
 
 macOS legs require a legally obtained Apple SDK uploaded as the
 `WebUI-MacOSX-SDK.tar.xz` Azure secure file. Its expected digest comes from the
 required `WEBUI_APPLE_SDK_SHA256` pipeline/library variable. The pipeline
 validates the digest, extracts exactly one contained `*.sdk` below
-`Agent.TempDirectory`, sets `SDKROOT` and the target-specific
-`MACOSX_DEPLOYMENT_TARGET` (10.12 for x64, 11.0 for ARM64), and removes the SDK
+`Agent.TempDirectory`, sets `SDKROOT` and `MACOSX_DEPLOYMENT_TARGET=11.0`, and
+removes the SDK
 after the leg. SDK contents are never cached or published; the digest participates
 in the macOS Cargo cache key. The pinned Zig archive is also checksum-verified.
 
@@ -4490,10 +4489,10 @@ successful cross-linking, staging, and package assembly as its target validation
 it does not inspect binary headers or execute Windows/macOS artifacts. Runtime
 qualification remains a separate release step on matching hardware.
 
-The assembly job merges all six outputs, restores its Cargo, target, and pnpm
+The assembly job merges all five outputs, restores its Cargo, target, and pnpm
 caches, and runs `cargo xtask publish-stage --pack-only`. The packer validates
-the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python
-wheel, 1 Python sdist, and 20 standalone asset contract. Completion on `main`
+the exact 8 npm, 15 crate, 7 NuGet package, 2 NuGet symbol package, 5 Python
+wheel, 1 Python sdist, and 19 standalone asset contract. Completion on `main`
 triggers the unscheduled 1ES Official `Web UI - CD` pipeline, whose main and SDL
 source-analysis pools are Linux. It signs artifacts, creates or verifies the
 annotated release tag, publishes npm and Rust crates, and creates the GitHub
@@ -4601,12 +4600,12 @@ these fields. See [Per-Render HTML Injection](#per-render-html-injection) and
 
 `webui-python` builds against PyO3's `abi3-py311` stable ABI, so one wheel per
 platform serves every CPython 3.11+ interpreter without a per-minor-version
-build matrix. v1 ships six wheels plus one `sdist`:
+build matrix. v1 ships five wheels plus one `sdist`:
 
 | Platform | Architectures |
 |----------|---------------|
 | Windows | x86_64, ARM64 |
-| macOS | x86_64, ARM64 (separate wheels, not a `universal2` fat binary) |
+| macOS | ARM64 |
 | manylinux | x86_64, ARM64 |
 
 Explicitly out of scope for v1: PyPy, GraalPy, free-threaded (`t`-suffixed)

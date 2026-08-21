@@ -86,17 +86,6 @@ const PLATFORMS: &[PlatformEntry] = &[
         macos_deployment_target: None,
     },
     PlatformEntry {
-        triple: "x86_64-apple-darwin",
-        npm_package: "webui-darwin-x64",
-        nuget_rid: "osx-x64",
-        ffi_lib: "libwebui_ffi.dylib",
-        node_addon: "libwebui_node.dylib",
-        cli_binary: "webui",
-        platform_suffix: "darwin-x64",
-        python_platform_tag: "macosx_10_12_x86_64",
-        macos_deployment_target: Some("10.12"),
-    },
-    PlatformEntry {
         triple: "aarch64-apple-darwin",
         npm_package: "webui-darwin-arm64",
         nuget_rid: "osx-arm64",
@@ -219,7 +208,6 @@ const WASM_VARIANT_DIRS: &[&str] = &["all", "handler", "parser"];
 
 const STANDALONE_RELEASE_FILES: &[(&str, &str)] = &[
     ("native/webui-darwin-arm64", "webui-darwin-arm64"),
-    ("native/webui-darwin-x64", "webui-darwin-x64"),
     ("native/webui-linux-arm64", "webui-linux-arm64"),
     ("native/webui-linux-x64", "webui-linux-x64"),
     ("native/webui-win32-arm64.exe", "webui-win32-arm64.exe"),
@@ -2151,7 +2139,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
     let publish = root.join("publish");
     validate_artifact_count(
         count_files_with_extension(&publish.join("npm"), "tgz"),
-        9,
+        8,
         "npm packages",
     )?;
     validate_artifact_count(
@@ -2161,7 +2149,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
     )?;
     validate_artifact_count(
         count_files_with_extension(&publish.join("nuget"), "nupkg"),
-        8,
+        7,
         "NuGet packages",
     )?;
     validate_artifact_count(
@@ -2171,7 +2159,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
     )?;
     validate_artifact_count(
         count_regular_files(&publish.join("standalone")),
-        20,
+        19,
         "standalone release assets",
     )?;
     validate_python_release_artifacts(&publish, version)
@@ -2415,6 +2403,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_build_options_rejects_removed_macos_x64_target() {
+        let error = parse_build(&["--target", "x86_64-apple-darwin"])
+            .expect_err("Intel macOS is no longer a release target");
+
+        assert!(error.contains("unknown target triple"));
+    }
+
+    #[test]
     fn parse_build_options_rejects_all_target() {
         let error =
             parse_build(&["--target", "all"]).expect_err("all should require explicit targets");
@@ -2492,7 +2488,7 @@ mod tests {
     #[test]
     fn select_backend_for_host_linux_accepts_every_platform_entry() {
         // A Linux host must have a defined (non-panicking) backend for all
-        // six release targets: this is the primary cross-compilation host.
+        // five release targets: this is the primary cross-compilation host.
         for platform in PLATFORMS {
             let backend = select_backend_for_host(HostOs::Linux, platform.triple);
             assert_ne!(
@@ -2506,10 +2502,6 @@ mod tests {
 
     #[test]
     fn select_backend_for_host_macos_builds_its_own_darwin_targets_natively() {
-        assert_eq!(
-            select_backend_for_host(HostOs::MacOs, "x86_64-apple-darwin"),
-            Backend::Cargo
-        );
         assert_eq!(
             select_backend_for_host(HostOs::MacOs, "aarch64-apple-darwin"),
             Backend::Cargo
@@ -2591,10 +2583,6 @@ mod tests {
 
     #[test]
     fn macos_deployment_target_env_matches_platform_metadata() {
-        assert_eq!(
-            macos_deployment_target_env("x86_64-apple-darwin"),
-            Some(("MACOSX_DEPLOYMENT_TARGET", "10.12"))
-        );
         assert_eq!(
             macos_deployment_target_env("aarch64-apple-darwin"),
             Some(("MACOSX_DEPLOYMENT_TARGET", "11.0"))
@@ -2913,7 +2901,6 @@ mod tests {
             "cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64",
             "cp311-abi3-win_amd64",
             "cp311-abi3-win_arm64",
-            "cp311-abi3-macosx_10_12_x86_64",
             "cp311-abi3-macosx_11_0_arm64",
         ] {
             fs::write(
@@ -2945,8 +2932,8 @@ mod tests {
         let root = tempfile::TempDir::new().expect("root should be created");
         let python_dir = root.path().join("publish").join("python");
         fs::create_dir_all(&python_dir).expect("publish/python should be created");
-        // Only stage 5 of the 6 expected wheels, plus a matching sdist.
-        for platform in &PLATFORMS[..5] {
+        // Only stage 4 of the 5 expected wheels, plus a matching sdist.
+        for platform in &PLATFORMS[..4] {
             fs::write(
                 python_dir.join(format!(
                     "{PYTHON_DISTRIBUTION_NAME}-1.2.3-{}.whl",
@@ -2965,7 +2952,7 @@ mod tests {
         let error = validate_python_release_artifacts(&root.path().join("publish"), "1.2.3")
             .expect_err("missing wheel should fail validation");
 
-        assert!(error.contains("expected 6 Python wheels, found 5"));
+        assert!(error.contains("expected 5 Python wheels, found 4"));
         assert!(error.contains("pre-stage one wheel per supported target"));
         assert!(error.contains("macosx_11_0_arm64"));
     }
@@ -3097,11 +3084,11 @@ mod tests {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
-        write_numbered_files(root.path().join("publish/npm"), 9, "tgz");
+        write_numbered_files(root.path().join("publish/npm"), 8, "tgz");
         write_numbered_files(root.path().join("publish/crates"), 15, "crate");
-        write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
+        write_numbered_files(root.path().join("publish/nuget"), 7, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
-        write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+        write_numbered_files(root.path().join("publish/standalone"), 19, "asset");
         write_python_release_fixtures(&root.path().join("publish/python"), "1.2.3");
 
         assert!(validate_release_artifact_counts(root.path(), "1.2.3").is_ok());
@@ -3114,16 +3101,16 @@ mod tests {
             fs::create_dir_all(root.path().join("publish").join(directory))
                 .expect("publish directory should be created");
         }
-        write_numbered_files(root.path().join("publish/npm"), 8, "tgz");
+        write_numbered_files(root.path().join("publish/npm"), 7, "tgz");
         write_numbered_files(root.path().join("publish/crates"), 15, "crate");
-        write_numbered_files(root.path().join("publish/nuget"), 8, "nupkg");
+        write_numbered_files(root.path().join("publish/nuget"), 7, "nupkg");
         write_numbered_files(root.path().join("publish/nuget"), 2, "snupkg");
-        write_numbered_files(root.path().join("publish/standalone"), 20, "asset");
+        write_numbered_files(root.path().join("publish/standalone"), 19, "asset");
 
         let error = validate_release_artifact_counts(root.path(), "1.2.3")
             .expect_err("missing npm package should fail validation");
 
-        assert!(error.contains("expected 9 npm packages, found 8"));
+        assert!(error.contains("expected 8 npm packages, found 7"));
     }
 
     fn write_numbered_files(directory: PathBuf, count: u32, extension: &str) {
@@ -3133,7 +3120,7 @@ mod tests {
         }
     }
 
-    /// Write six correctly-tagged wheel fixtures plus one matching sdist into
+    /// Write five correctly-tagged wheel fixtures plus one matching sdist into
     /// `python_dir`, mirroring what a real `AssembleRelease` job would have
     /// pre-staged before `publish-stage --pack-only` runs.
     fn write_python_release_fixtures(python_dir: &Path, version: &str) {
@@ -3366,12 +3353,12 @@ mod tests {
 
         let copied = stage_standalone_release_assets(root.path()).unwrap();
 
-        assert_eq!(copied, 20);
+        assert_eq!(copied, 19);
         let output = publish.join("standalone");
         for (_, destination) in STANDALONE_RELEASE_FILES {
             assert!(output.join(destination).is_file());
         }
-        assert_eq!(fs::read_dir(output).unwrap().count(), 20);
+        assert_eq!(fs::read_dir(output).unwrap().count(), 19);
     }
 
     #[test]

@@ -67,7 +67,6 @@ The managed package depends on all supported `Microsoft.WebUI.Runtime.<rid>` pac
 | Windows ARM64 | `Microsoft.WebUI.Runtime.win-arm64` |
 | Linux x64 | `Microsoft.WebUI.Runtime.linux-x64` |
 | Linux ARM64 | `Microsoft.WebUI.Runtime.linux-arm64` |
-| macOS x64 | `Microsoft.WebUI.Runtime.osx-x64` |
 | macOS ARM64 | `Microsoft.WebUI.Runtime.osx-arm64` |
 
 ### Package Metadata

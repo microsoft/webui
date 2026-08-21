@@ -63,13 +63,13 @@ jobs:
 
   # ── Phase 2: macOS check (SDK-free, on a Linux runner) ─────────────
   # There is no macOS runner in this pipeline. `cargo check` never invokes a
-  # linker, so it can prove the release crates still type-check for both
-  # Apple targets without an Apple SDK or a native macOS host. This is not a
+  # linker, so it can prove the release crates still type-check for the Apple
+  # ARM64 target without an Apple SDK or a native macOS host. This is not a
   # substitute for a real macOS build/link: the release pipeline now fully
-  # cross-links both Apple targets on its own trusted Linux-hosted jobs, via
+  # cross-links Apple ARM64 on its own trusted Linux-hosted job, via
   # cargo-zigbuild plus a secure, out-of-band Apple SDK unavailable to PR CI.
   # `platform_tag` isn't consumed by `cargo check` itself; it's restated here
-  # only so `validate_release_targets.py` sees all six release-contract
+  # only so `validate_release_targets.py` sees all five release-contract
   # platform tags accounted for in this file.
   macos-check:
     name: macOS check (${{ matrix.platform.label }})
@@ -79,9 +79,6 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - label: x64
-            target: x86_64-apple-darwin
-            platform_tag: macosx_10_12_x86_64
           - label: ARM64
             target: aarch64-apple-darwin
             platform_tag: macosx_11_0_arm64

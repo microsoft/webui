@@ -459,9 +459,6 @@ importers:
       '@microsoft/webui-darwin-arm64':
         specifier: workspace:*
         version: link:../webui-darwin-arm64
-      '@microsoft/webui-darwin-x64':
-        specifier: workspace:*
-        version: link:../webui-darwin-x64
       '@microsoft/webui-linux-arm64':
         specifier: workspace:*
         version: link:../webui-linux-arm64
@@ -476,8 +473,6 @@ importers:
         version: link:../webui-win32-x64
 
   packages/webui-darwin-arm64: {}
-
-  packages/webui-darwin-x64: {}
 
   packages/webui-examples-theme: {}
 

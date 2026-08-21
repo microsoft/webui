@@ -50,7 +50,6 @@
   },
   "optionalDependencies": {
     "@microsoft/webui-darwin-arm64": "workspace:*",
-    "@microsoft/webui-darwin-x64": "workspace:*",
     "@microsoft/webui-linux-arm64": "workspace:*",
     "@microsoft/webui-linux-x64": "workspace:*",
     "@microsoft/webui-win32-arm64": "workspace:*",

@@ -112,7 +112,7 @@ stages:
     sourceDateEpoch: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.sourceDateEpoch'] ]
     CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
-    # Pinned cross-compilation toolchain versions. All six target legs build
+    # Pinned cross-compilation toolchain versions. All five target legs build
     # on Linux; Windows and macOS legs cross-compile instead of running on
     # native hosted pools, so these versions gate reproducibility for them.
     # Bump deliberately, and update the matching `toolchainIdentity` cache
@@ -164,12 +164,6 @@ stages:
           artifactName: stage-windows-arm64
           backend: windows
           toolchainIdentity: xwin-0.23.0-llvm-18
-        MacOSX64:
-          targetTriple: x86_64-apple-darwin
-          artifactName: stage-macos-x64
-          backend: macos
-          macosDeploymentTarget: '10.12'
-          toolchainIdentity: zigbuild-0.23.0-zig-0.13.0-sdk-10.12
         MacOSArm64:
           targetTriple: aarch64-apple-darwin
           artifactName: stage-macos-arm64
@@ -547,12 +541,6 @@ stages:
         artifactName: stage-macos-arm64
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
-      displayName: Download macOS x64 release asset
-      inputs:
-        buildType: current
-        artifactName: stage-macos-x64
-        targetPath: $(Build.SourcesDirectory)
-    - task: DownloadPipelineArtifact@2
       displayName: Download Windows x64 release asset
       inputs:
         buildType: current
@@ -592,7 +580,7 @@ stages:
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
           # Needed for the `cargo xtask publish-stage --pack-only` sdist step
-          # below; the six pre-built wheels were already downloaded above.
+          # below; the five pre-built wheels were already downloaded above.
           python3.11 -m pip install --upgrade "maturin==1.14.1"
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
@@ -603,7 +591,6 @@ stages:
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_amd64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_arm64.whl" \
-            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_10_12_x86_64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_11_0_arm64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}.tar.gz"
       env:

@@ -259,9 +259,8 @@ already escaped yourself.
 
 `microsoft-webui` builds against PyO3's `abi3-py311` stable ABI, so one wheel
 per platform serves every CPython 3.11+ interpreter — no per-minor-version
-build matrix. v1 ships six wheels (Windows, macOS, and manylinux, each for
-x86_64 and ARM64; macOS ships separate x86_64/ARM64 wheels, not a
-`universal2` fat binary) plus one `sdist`.
+build matrix. v1 ships five wheels: x86_64 and ARM64 for Windows and manylinux,
+plus ARM64 for macOS, alongside one `sdist`.
 
 v1 is **runtime-only**: it renders compiled protocols and does not expose a
 build/compile API. Produce `protocol.bin` with `webui build` (the npm or Rust

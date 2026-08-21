@@ -39,7 +39,7 @@ For Python server-side bindings:
 pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 ```
 
-`microsoft-webui` is a native PyO3 binding (not `ctypes`) for CPython 3.11+, distributed as prebuilt wheels for Windows, macOS, and manylinux on x86_64 and ARM64, plus one sdist. It is runtime-only: render `webui build` output, but don't compile templates from Python.
+`microsoft-webui` is a native PyO3 binding (not `ctypes`) for CPython 3.11+, distributed as prebuilt x86_64/ARM64 wheels for Windows and manylinux plus an ARM64 wheel for macOS, alongside one sdist. It is runtime-only: render `webui build` output, but don't compile templates from Python.
 
 ## Learn
 
@@ -112,23 +112,20 @@ referenced by cargo-xwin.
 ### Manual macOS cross-builds on Linux
 
 macOS release artifacts build through cargo-zigbuild with a legally obtained
-Apple SDK. Install Zig 0.13.0, cargo-zigbuild, maturin, and both Rust targets:
+Apple SDK. Install Zig 0.13.0, cargo-zigbuild, maturin, and the Rust ARM64 target:
 
 ```bash
 zig version # must print 0.13.0
 cargo install --locked cargo-zigbuild --version 0.23.0
 python3.11 -m pip install "maturin==1.14.1"
-rustup target add x86_64-apple-darwin aarch64-apple-darwin
+rustup target add aarch64-apple-darwin
 ```
 
 Point `SDKROOT` at the extracted SDK and retain the release contract's minimum
-deployment version for each architecture:
+deployment version:
 
 ```bash
 export SDKROOT=/absolute/path/to/MacOSX.sdk
-
-MACOSX_DEPLOYMENT_TARGET=10.12 \
-  cargo xtask publish-build --target x86_64-apple-darwin
 
 MACOSX_DEPLOYMENT_TARGET=11.0 \
   cargo xtask publish-build --target aarch64-apple-darwin
