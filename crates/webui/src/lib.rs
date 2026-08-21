@@ -539,11 +539,12 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
     parser
         .component_registry_mut()
         .register_from_paths(&[&options.app_dir])
-        .map_err(|e| {
-            WebUIError::ComponentRegistration(format!(
-                "Failed to register components from {}: {e}",
+        .map_err(|source| WebUIError::ComponentRegistration {
+            context: format!(
+                "Failed to register components from {}",
                 options.app_dir.display()
-            ))
+            ),
+            source,
         })?;
 
     // Discover and register external component sources
@@ -564,11 +565,12 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
                     css_content: comp.css_content.as_deref(),
                     is_client_owned: comp.is_client_owned,
                 })
-                .map_err(|e| {
-                    WebUIError::ComponentRegistration(format!(
-                        "Failed to register component '{}' from {}: {e}",
+                .map_err(|source| WebUIError::ComponentRegistration {
+                    context: format!(
+                        "Failed to register component '{}' from {}",
                         comp.tag_name, comp.source
-                    ))
+                    ),
+                    source,
                 })?;
         }
     }
@@ -2613,6 +2615,168 @@ mod tests {
             result.protocol.initial_state_strategy,
             webui_protocol::InitialStateStrategy::Full as i32
         );
+    }
+
+    #[test]
+    fn all_fast_plugin_variants_build_authored_f_templates() {
+        let app = create_app_dir(&[
+            (
+                "index.html",
+                "<named-card></named-card><fallback-card></fallback-card><plain-card></plain-card>",
+            ),
+            (
+                "file-card.html",
+                r#"<f-template name="named-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><button @click="{save()}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#,
+            ),
+            ("file-card.css", "/* remove */ .card { color: red; }"),
+            (
+                "fallback-card.html",
+                r#"<f-template><template><span>{{label}}</span></template></f-template>"#,
+            ),
+            (
+                "plain-card.html",
+                r#"<template><if condition="visible"><span>{{label}}</span></if></template>"#,
+            ),
+        ]);
+
+        for plugin in [Plugin::Fast, Plugin::FastV2, Plugin::FastV3] {
+            let mut options = default_options(app.path());
+            options.plugin = Some(plugin);
+            options.css = CssStrategy::Style;
+
+            let result = build(options).unwrap();
+            assert!(result.protocol.fragments.contains_key("named-card"));
+            let component = result
+                .protocol
+                .components
+                .get("named-card")
+                .expect("named FAST component");
+            assert!(component.template.contains("<f-when"));
+            assert!(component.template.contains("<f-repeat"));
+            assert!(component.template.contains(r#"@click="{save()}""#));
+            assert!(component
+                .template
+                .contains("<style>.card { color: red; }</style>"));
+            let fallback = result
+                .protocol
+                .components
+                .get("fallback-card")
+                .expect("file-named FAST component");
+            assert!(fallback
+                .template
+                .contains(r#"<f-template name="fallback-card">"#));
+            assert!(fallback.template.contains("<span>{{label}}</span>"));
+            let plain = result
+                .protocol
+                .components
+                .get("plain-card")
+                .expect("ordinary WebUI component");
+            assert!(plain.template.contains(r#"<f-template name="plain-card">"#));
+            assert!(plain.template.contains(r#"<f-when value="{{visible}}">"#));
+        }
+    }
+
+    #[test]
+    fn fast_authored_artifact_is_not_double_wrapped_across_css_strategies() {
+        // End-to-end artifact verification for the FAST plugin under the
+        // default Shadow DOM. The authored `<f-template>` carries comment
+        // siblings around its inner `<template>` (allowed, inert) plus
+        // client-only bindings (`@click`, `:config`, `?disabled`, `f-ref`).
+        // The emitted artifact must retain exactly one inner `<template>` — no
+        // accidental nesting — and preserve every client binding so the client
+        // runtime can register a complete `observedAttributes` surface (the
+        // guarantee #461 depends on for late/partial metadata registration).
+        for css in [CssStrategy::Style, CssStrategy::Module, CssStrategy::Link] {
+            let app = create_app_dir(&[
+                ("index.html", "<named-card></named-card>"),
+                (
+                    "file-card.html",
+                    concat!(
+                        r#"<f-template name="named-card">"#,
+                        "<!-- lead comment -->",
+                        r#"<template><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}">{{label}}</button></template>"#,
+                        "<!-- tail comment -->",
+                        r#"</f-template>"#,
+                    ),
+                ),
+                ("file-card.css", ".card { color: red; }"),
+            ]);
+
+            let mut options = default_options(app.path());
+            options.plugin = Some(Plugin::FastV3);
+            options.css = css;
+
+            let result =
+                build(options).unwrap_or_else(|error| panic!("build failed for {css:?}: {error}"));
+            let component = result
+                .protocol
+                .components
+                .get("named-card")
+                .expect("named FAST component");
+            let template = &component.template;
+
+            // Exactly one inner `<template>` — `<f-template` does not contain
+            // the `<template` substring, so the count isolates real inner
+            // templates and catches any accidental re-wrapping.
+            assert_eq!(
+                template.matches("<template").count(),
+                1,
+                "artifact for {css:?} must contain exactly one inner <template>, not a nested pair: {template}"
+            );
+            assert!(
+                template.contains(r#"<f-template name="named-card">"#),
+                "artifact for {css:?} must be wrapped once in the resolved f-template: {template}"
+            );
+            for binding in [
+                r#"@click="{save()}""#,
+                r#":config="{config}""#,
+                r#"?disabled="{{disabled}}""#,
+                r#"f-ref="{button}""#,
+            ] {
+                assert!(
+                    template.contains(binding),
+                    "artifact for {css:?} lost client binding {binding}: {template}"
+                );
+            }
+            // The inert comment siblings are excluded from the retained inner
+            // template, never smuggled in as extra content.
+            assert!(
+                !template.contains("lead comment") && !template.contains("tail comment"),
+                "artifact for {css:?} must not carry inert comment siblings: {template}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_preserves_structured_fast_diagnostic_through_registration() {
+        // A FAST authoring mistake in an app-directory component must reach the
+        // caller as a structured `ComponentRegistration` error whose source is
+        // `ParserError::Template`, not a flattened string — so `webui build
+        // --format json` can report the stable code, owning file, location,
+        // snippet, and help.
+        let app = create_app_dir(&[
+            ("index.html", "<bad-card></bad-card>"),
+            (
+                "bad-card.html",
+                "<f-template name=\"bad-card\">\n  <template>\n    <f-choose></f-choose>\n  </template>\n</f-template>",
+            ),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::FastV3);
+
+        let err = build(options).expect_err("invalid FAST component should fail the build");
+        let WebUIError::ComponentRegistration {
+            source: ParserError::Template(diag),
+            ..
+        } = err
+        else {
+            panic!("expected a structured ComponentRegistration template error, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some("invalid-fast-template"));
+        assert_eq!(diag.component_name(), Some("bad-card"));
+        assert_eq!(diag.position_line_column(), Some((3, 5)));
+        assert_eq!(diag.snippet_text(), Some("<f-choose>"));
+        assert!(diag.help_text().is_some());
     }
 
     #[test]

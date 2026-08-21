@@ -8,6 +8,8 @@
 //! and emit per-element hydration metadata for the handler.
 
 pub mod fast;
+mod fast_convert;
+mod fast_shared;
 pub mod fast_v2;
 pub mod fast_v3;
 pub mod webui;
@@ -153,6 +155,61 @@ impl ComponentTemplateArtifact {
     }
 }
 
+/// Borrowed authored component source presented to a parser plugin before the
+/// component registry stores it.
+#[derive(Debug, Clone, Copy)]
+pub struct ComponentSource<'a> {
+    /// Filename-derived custom-element tag name.
+    pub tag_name: &'a str,
+    /// Authored HTML template for the component.
+    pub html_content: &'a str,
+}
+
+/// Owned replacement views produced by a plugin's component-source transform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransformedComponentSource {
+    /// Resolved registry key. May differ from the filename-derived tag when the
+    /// authored source names the component itself.
+    pub tag_name: String,
+    /// Content the WebUI SSR parser consumes for this component.
+    pub parser_content: String,
+    /// Optional distinct authored source retained for the plugin's client
+    /// artifact. `None` reuses `parser_content` for the artifact.
+    pub artifact_content: Option<String>,
+}
+
+/// Outcome of applying a [`ComponentSourceTransform`] to one component.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComponentSourceResult {
+    /// Preserve the registration tag and HTML exactly, without allocation.
+    Unchanged,
+    /// Replace the registry key and/or the parser/artifact views.
+    Transformed(TransformedComponentSource),
+}
+
+/// Stateless component-source transform installed into a [`ComponentRegistry`].
+///
+/// A parser plugin that owns an alternate authored-template dialect supplies
+/// this hook through [`ParserPlugin::component_source_transform`]. The registry
+/// runs it once per component — after reading the authored HTML but before name
+/// validation, duplicate checking, CSS processing, or insertion — so the plugin
+/// can resolve the registry key, produce the SSR parser view, and retain a
+/// distinct client artifact. Returning [`ComponentSourceResult::Unchanged`]
+/// leaves the component's filename-derived tag and HTML untouched.
+///
+/// The transform is a plain function pointer: it is deterministic, allocation
+/// free when absent, [`Copy`], and keeps [`ComponentRegistry`] `Debug` without
+/// a trait object.
+///
+/// # Errors
+///
+/// Returns a [`crate::Diagnostic`]-carrying error when the authored source is
+/// invalid.
+///
+/// [`ComponentRegistry`]: crate::component_registry::ComponentRegistry
+pub type ComponentSourceTransform =
+    for<'a> fn(ComponentSource<'a>) -> Result<ComponentSourceResult>;
+
 /// A parser plugin that can customize template parsing behavior.
 ///
 /// Plugins receive callbacks at key points during HTML parsing:
@@ -185,6 +242,52 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+
+    /// Return a stateless transform applied to each component's authored source
+    /// before registry insertion, or `None` to store sources unchanged.
+    ///
+    /// Plugins that own an alternate authored-template dialect (resolving the
+    /// registry key, producing the SSR parser view, and retaining a distinct
+    /// client artifact) supply the transform here. The default performs no
+    /// transformation, so a component's filename-derived tag and HTML are
+    /// stored verbatim and framework-specific markup is inert.
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> {
+        None
+    }
+
+    /// Whether the plugin classifies client-only bindings authored directly on
+    /// a component's root `<template>` element.
+    ///
+    /// FAST authors host-element event/property/boolean bindings on the root
+    /// `<template>` (e.g. `<template @click="{…}">`). They never render into
+    /// SSR, but they must be counted so server hydration markers stay aligned
+    /// with the client template's binding order. When this returns `true`, the
+    /// SSR view keeps those attributes so the parser classifies them through
+    /// [`Self::classify_attribute`] (skipping them from output while counting
+    /// them) instead of the pre-parse strip dropping them uncounted. Plugins
+    /// that do not own such bindings (WebUI, and the no-plugin path) return
+    /// `false`, preserving the zero-overhead strip fast path.
+    fn classifies_root_template_bindings(&self) -> bool {
+        false
+    }
+
+    /// Whether the plugin's client runtime parses the component `<template>`
+    /// body for `{`/`}` bindings, and therefore requires Style-strategy
+    /// `<style>` blocks to trail every brace-bearing binding.
+    ///
+    /// FAST's declarative `TemplateParser` scans the client `<f-template>` body
+    /// for brace bindings. A raw CSS rule block (`selector { … }`), especially
+    /// with nested at-rules like `@media`, leaves the outer `}` unbalanced in
+    /// FAST's naive brace scan; when the next real binding (`f-ref="{…}"`) sits
+    /// after `</style>`, that stray `}` corrupts the binding and FAST emits an
+    /// extra factory, shifting the whole hydration walk. Emitting the `<style>`
+    /// after the body keeps every binding ahead of the CSS braces. Styles apply
+    /// regardless of position in the shadow root. WebUI-native and the
+    /// no-plugin path return `false`, preserving the authored `{{styles}}`
+    /// position.
+    fn styles_trail_template_body(&self) -> bool {
+        false
+    }
 
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;

@@ -1288,7 +1288,7 @@ pub enum CssStrategy {
 ```
 
 - **Link** (default): Emits `<link>` tags referencing external `.css` files only for components whose discovery/registration data included CSS. Used by the CLI for production builds where CSS files are served separately. Output filenames are configurable with a naming template (`[name]`, `[hash]`, `[ext]`), defaulting to `[name].[ext]`. `[hash]` is SHA-256 truncated to 8 hex chars. An optional public base prefix can be applied so protocol `css_href` values point to CDN URLs. The resolved href is used consistently for handler-emitted head links and parser/plugin-generated component template stylesheet links. Handler-emitted `<head>` links are ordered by **document/traversal order** (the order components are first discovered while walking the fragment graph), not alphabetically by tag name. This keeps the Light-DOM cascade aligned with source order (stable across component renames) and prioritizes Shadow-DOM `<link rel="preload">` hints by appearance. The order is deterministic because the graph walk is deterministic. For a client-created Shadow DOM component, the framework starts a bounded per-metadata `<link rel="preload" as="style">` with matching CORS, integrity, and referrer-policy attributes. This uses the same style request destination as the native link, so a cold mount does not make a second download. Static component asset builds also store final Link hrefs in compiler-owned metadata. Shadow builds publish the metadata for `assets.preload(tag)`, which starts those styles beside the lazy root module and lets registration adopt the resolved-href preload. Light builds emit the deduplicated asset hrefs as document stylesheets with the entry because their CSS is globally scoped. Preload bytes are never applied directly, and preload does not inspect response MIME type. The first client instance keeps its original links behind a visibility guard until every applicable link fires `load`, preserving native CSP, MIME, integrity, CORS, redirect, and service-worker enforcement. The framework releases that guard as soon as the native styles are active, then serializes only browser-authorized native CSSOM rules into shared constructable sheets. The complete set is inserted before existing adopted sheets with one assignment, preserving the cascade. Promoted links remain as disabled structural placeholders so reconnect hydration retains compiler element indexes. Later instances without an authored hydration lifecycle can reuse the authorized set synchronously.
-- **Style**: Embeds the full CSS content in `<style>` tags inside the shadow DOM template. Used when all files are needed in-memory.
+- **Style**: Embeds the full CSS content in a `<style>` tag inside the shadow DOM template. Used when all files are needed in-memory. For plugins whose client runtime parses the template body for `{`/`}` bindings (FAST, via `styles_trail_template_body`), the `<style>` is emitted after the body (before `</template>`) rather than at the authored `{{styles}}` position, so raw CSS rule blocks cannot be misread as bindings and shift hydration; the CSS keeps its literal braces and applies to both SSR-hydrated and client-created instances. Other plugins and the no-plugin path inject the `<style>` at the marker position. CSP parity is unchanged (still inline `<style>`, no injected `<script>`).
 - **Module**: Registers each component's CSS as a CSS Module via an [Import Map](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) entry whose value is a `data:text/css,...` URI. During SSR, the handler emits a `<script type="importmap">{"imports":{"component-name":"data:text/css,..."}}</script>` in each component's light DOM on first render (e.g., `<my-comp><script type="importmap">...</script><template ...>`) and adds `shadowrootadoptedstylesheets="component-name"` to each shadow root `<template>`. When the developer supplies their own `<template>` wrapper (e.g., to attach `@event` handlers), the parser preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. Multi-specifier values already authored by the developer (`shadowrootadoptedstylesheets="component-name other-sheet"`) are honored verbatim. Components inside false `<if>` blocks or empty `<for>` loops that were not rendered during SSR get their importmap definitions emitted at `body_end`, so client-side activation can adopt them. CSS bytes are percent-encoded as needed to survive the `data:` URI parser (`%`, `#`, `"`, whitespace, and non-ASCII / control bytes); the importmap JSON object is built via `serde_json` so the specifier and URI value are correctly JSON-escaped. **Requires browser support for [Multiple Import Maps](https://github.com/WICG/import-maps/blob/main/proposals/multiple-import-maps.md) (Chrome 133+)** so each component's importmap can be emitted independently and merged into the document-level resolution table by the browser. When a CSP nonce is configured (via `RenderOptions::with_nonce` / `webui_handler_set_nonce`), the SSR-emitted `<script type="importmap">` tags include `nonce="VALUE"` (in `type`, `nonce` order) so strict `script-src 'nonce-...'` policies allow them, matching the existing nonce treatment of inline `<script>` tags. The browser registers the CSS module globally and shares a single `CSSStyleSheet` across all shadow roots that adopt it. No external CSS files are produced. During SPA partial navigation, definitions for newly needed components are sent in the `templateStyles` array as `<script type="importmap">{"imports":{...}}</script>` strings (without a `nonce` attribute - the router materializes each tag client-side and applies the per-request nonce when appending to `<head>` before installing component template closure arrays). WebUI Framework compiled metadata carries the adopted stylesheet specifier (`sa`) so client-created components can adopt the registered stylesheet on their shadow root.
 
 Constructable Link promotion is a progressive enhancement. Unsupported
@@ -1369,6 +1369,7 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> { None }
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
     fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
     fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts>;
@@ -1380,6 +1381,9 @@ pub trait ParserPlugin {
 - **Attribute loop**: `classify_attribute` decides whether framework-owned attrs are kept, skipped, or skipped-and-counted as bindings
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
+- **Component-source transform**: `component_source_transform` returns an optional stateless function pointer, `for<'a> fn(ComponentSource<'a>) -> Result<ComponentSourceResult>`. The component registry calls it once per component — after reading the authored HTML but before name validation, duplicate checking, CSS processing, or insertion. `Unchanged` stores the filename-derived tag and HTML verbatim; `Transformed` may replace the registry key and supplies the HTML the WebUI parser consumes, plus an optional distinct source retained for the plugin's client artifact. The default returns `None`, so a component's filename-derived tag and HTML are stored unchanged and any plugin-specific markup in the source is inert. Because a transform can resolve the registry key from the authored source, recursive discovery (`register_from_paths`) also admits an HTML file whose stem is not itself a custom-element name (no hyphen) **when a transform is installed**, so a plugin dialect such as FAST's `<f-template name>` can name a component whose filename cannot. Such a file is only registered when the transform resolves a valid name; a file the transform does not claim (returns `Unchanged`) and whose stem is not a custom-element name is ignored, exactly as when no transform is installed. With no transform, non-custom-element filenames keep the zero-overhead skip. This is the sole extension point for a plugin that owns an alternate authored-template dialect; see "Built-in FAST parser plugins" below for the concrete FAST implementation.
+- **Root-template binding classification**: `classifies_root_template_bindings` (default `false`) reports whether the plugin owns client-only bindings authored directly on a component's root `<template>`. When `true`, the SSR view keeps those attributes so the parser classifies them through `classify_attribute` (skipping them from output while counting them as `finish_element` bindings), instead of the pre-parse strip dropping them uncounted. FAST returns `true`; WebUI and the no-plugin path return `false` and keep the strip fast path.
+- **Trailing Style-strategy `<style>`**: `styles_trail_template_body` (default `false`) reports whether the plugin's client runtime parses the component `<template>` body for `{`/`}` bindings and therefore needs `CssStrategy::Style` `<style>` blocks emitted after the body (before `</template>`) instead of immediately inside the opening tag. FAST's declarative `TemplateParser` scans the client `<f-template>` body for brace bindings; a raw CSS rule block (`selector { … }`), especially with nested at-rules like `@media`, otherwise leaves the outer `}` unbalanced in FAST's naive brace scan and corrupts the next real binding after `</style>`, emitting a phantom factory that shifts hydration. Trailing the `<style>` keeps every binding ahead of the CSS braces; styles apply regardless of shadow-root position and reach both SSR-hydrated and client-created instances. Both FAST plugins return `true` (they share the same declarative runtime); this repositions only the inert `<style>` node and touches neither the FAST 2 nor FAST 3 hydration-marker contract. WebUI and the no-plugin path return `false`, keeping the authored `{{styles}}` position. Applies only to `CssStrategy::Style`; `Link`/`Module` carry no CSS braces into the body and are unchanged.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1392,6 +1396,126 @@ documentation for the current list. Each plugin defines:
 - The opaque `Plugin` fragment payload it emits per element
 - Any post-parse artifacts (e.g., client component templates) it injects at `</body>`
 - Any template-syntax conversions it performs inside component templates
+
+**Built-in FAST parser plugins**
+
+The `fast`, `fast_v2`, and `fast_v3` parser implementations (selected as
+`fast`, `fast-v2`, and `fast-v3` by CLI and host string APIs) share one
+`component_source_transform` implementation. Only when one of these plugins is
+selected does the component registry run that transform for each component,
+after reading the authored HTML but before name validation, duplicate
+checking, CSS processing, or insertion. With no plugin, or with any other
+plugin (including `webui`) that returns `None` from
+`component_source_transform`, the registry never scans for or interprets
+`<f-template>` syntax — an `<f-template>`-shaped source passes through
+unchanged, exactly like any other component.
+
+The shared FAST transform scans the authored source for an `<f-template>`. A
+source that has one must contain exactly one `<f-template>` with exactly one
+inner `<template>` as its only meaningful child — only whitespace and comments
+may surround that inner `<template>`, and a meaningful sibling around it (text
+or another element) returns `invalid-fast-template` rather than being silently
+dropped from the SSR view. A present, non-empty `name` becomes the registered
+component tag and overrides the filename-derived tag. If `name` is absent or
+trims to empty, registration keeps the filename-derived tag. Multiple
+`<f-template>` elements return `unsupported-multiple-f-templates`; multiple
+inner `<template>` elements are also invalid. Sources without an `<f-template>`
+return `ComponentSourceResult::Unchanged` and follow the normal component
+template path.
+
+The `<f-template>` wrapper and its `name` attribute are matched
+ASCII-case-insensitively, so `<F-TEMPLATE NAME="my-card">` resolves the same as
+the lowercase spelling. Wrapper discovery and conversion treat raw-text element
+bodies (`<script>`, `<style>`, and the other HTML raw-text elements) as opaque:
+markup-shaped text inside them is copied verbatim and never interpreted as an
+`<f-template>`, inner `<template>`, or FAST directive.
+
+The `<f-template>` wrapper carries only its `name` and declarative-shadow-root
+options — any attribute whose name begins with `shadowroot` (`shadowrootmode`,
+`shadowrootdelegatesfocus`, …). Any other wrapper attribute returns
+`invalid-fast-template` at its own offset rather than being silently discarded.
+The shadow-root options are moved onto the inner `<template>` element (the WebUI
+declarative shadow root) in both the parser view and the retained artifact,
+matching the reference `@microsoft/fast-test-harness` WebUI template output. In a
+`DomStrategy::Shadow` build the SSR `<template>` therefore activates a
+declarative shadow root with the authored `shadowrootmode` (default `open`) and
+`shadowrootdelegatesfocus`, and the FAST client hydration runtime reads the same
+options back off the regenerated `<f-template>` wrapper, where the artifact
+generator hoists them (leaving the inner client `<template>` free of
+shadow-root-creation options). Authored shadow options are preserved verbatim in
+both `DomStrategy::Shadow` and `DomStrategy::Light`, consistent with WebUI's
+contract that a dev-authored `<template>` is never rewritten; `--dom` governs
+only whether WebUI wraps a *dev-omitted* template, not the options a FAST
+component authored.
+
+`@microsoft/fast-test-harness`'s `generate-templates` emits a `{{styles}}`
+placeholder immediately after the inner `<template>` opening. It is a build-time
+style-injection marker the harness replaces with a `<link rel="stylesheet">` (or
+strips) before hydration — not component state. WebUI removes that exact marker
+from that generated position (allowing generator whitespace) in both the parser
+view and the artifact, so it is neither rendered as a `styles` text signal nor
+counted as a hydration binding, and lets the selected CSS strategy inject the
+real `<style>`/`<link>`/adopted-stylesheet at the same position. A legitimate
+`{{styles}}` interpolation elsewhere in the template is left untouched.
+
+For build-time SSR parsing, WebUI internally adapts supported FAST declarative
+constructs into the WebUI parser view. The adapted inner template becomes the
+parser view returned as `TransformedComponentSource::parser_content`:
+
+- `<f-repeat value="{{item in items}}">` converts to
+  `<for each="item in items">`.
+- `<f-when value="{{condition}}">` converts to
+  `<if condition="condition">`. The generated condition attribute uses a quote
+  delimiter that does not clash with a quoted string literal in the condition —
+  a single-quoted `<if condition='status == "ready"'>` when the expression
+  contains a double-quoted literal — because the WebUI parser reads the raw
+  attribute value without entity decoding. A condition that mixes both quote
+  styles cannot be represented with a raw delimiter and returns
+  `invalid-fast-template`.
+- The adaptation unwraps the `value` expression for those directives. Text
+  `{{expression}}` bindings and `?boolean` bindings remain available to the
+  WebUI parser; ordinary attributes are not treated as additional FAST
+  declarative syntax.
+- A FAST directive (`<f-when>`/`<f-repeat>`) accepts only its `value`
+  attribute. Any other attribute — a framework `f-*` attribute or an ordinary
+  one such as `id`, `class`, or `data-*` — returns `invalid-fast-template` at
+  that attribute's offset, so it is never silently discarded.
+- Unsupported `f-*` elements or attributes and malformed directive expressions
+  return structured authoring diagnostics. A stray FAST closing tag — a
+  `</f-when>`/`</f-repeat>` with no matching opening directive, or an
+  unsupported `</f-*>` element — is likewise rejected at its own offset instead
+  of leaking into the WebUI parser view. WebUI claims support only for the
+  FAST constructs described here. Stable codes are
+  `unsupported-multiple-f-templates` for multiple wrappers,
+  `invalid-fast-template` for unsupported or malformed FAST declarative syntax,
+  and the shared `unclosed-html-tag` for unclosed markup.
+- The FAST plugins' `classify_attribute` skips `@event`, `:property`, `f-ref`,
+  `f-slotted`, and `f-children` and counts each as a binding, so they are
+  absent from the SSR view while the hydration binding count still reflects
+  them. No parser-core marker or FAST-named branch is involved. FAST idiomatically
+  authors host-element bindings directly on the root `<template>` (e.g.
+  `<template @click="{…}">`); because the FAST plugins return `true` from
+  `classifies_root_template_bindings`, those root bindings flow through the same
+  `classify_attribute`/`finish_element` count as any other element, so the
+  server emits a `FastElementData` binding count for the root that keeps the
+  client hydration markers aligned with the client template's binding order.
+
+The transform separately returns the authored inner `<template>` (with its
+client-only bindings) as `TransformedComponentSource::artifact_content`, rather
+than deriving it from the converted parser view. Retaining exactly the inner
+`<template>` — not the whole `<f-template>` body — keeps the artifact anchored
+to an element that always begins with `<template`, so it can never be
+accidentally re-wrapped in a synthetic outer `<template>` (which would strand
+the authored template, and its bindings, as inert content of a declarative
+shadow root). The FAST plugin wraps that retained source in the resolved
+`<f-template name="...">` for insertion. The artifact is normalized rather than
+preserved byte-for-byte: it passes through the same generic component-template
+processing as any other component, including wrapper normalization, selected
+CSS-strategy injection, module stylesheet adoption where applicable,
+legal-comment handling, and plugin artifact normalization. The deprecated
+`fast` selector aliases the FAST 2 implementation, while `fast_v2` and `fast_v3`
+use their respective hydration marker formats; all three share this transform,
+conversion, and artifact-retention behavior.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)

@@ -12,6 +12,35 @@
 - **Server-side logic:** Conditions, loops, and expressions are evaluated on the server.
 - **Plugin-ready:** Parser and handler plugins support framework-specific hydration and directives.
 
+## FAST plugin authored templates
+
+WebUI's parser is framework-neutral by default: with no plugin selected, or
+with the `webui` plugin, `<f-template>` markup is not scanned or interpreted
+and passes through like any other HTML. Selecting the `fast`, `fast_v2`, or
+`fast_v3` integration (CLI names `fast`, `fast-v2`, and `fast-v3`) installs a
+shared plugin hook that detects component HTML authored as a single
+`<f-template>`. A non-empty `name` replaces the component tag derived from the
+filename; an absent or whitespace-only name keeps the filename-derived tag. The
+wrapper must contain exactly one inner `<template>`. Unsupported FAST syntax and
+multiple `<f-template>` blocks fail the build with an authoring diagnostic. Only
+whitespace and comments may surround that inner `<template>`; a meaningful
+sibling around it is rejected rather than silently dropped.
+
+For build-time SSR, WebUI internally adapts supported FAST declarative
+constructs into its parser view. It converts `<f-repeat>` and `<f-when>`
+directives to WebUI `<for>` and `<if>` directives while preserving text
+interpolation and boolean bindings. An absent or empty authored name continues
+to use the filename-derived component tag. WebUI then removes client-only
+`@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` attributes from the
+SSR view while retaining their binding counts for FAST hydration. The authored
+inner `<template>`, including its client bindings, is retained for the emitted
+`<f-template>` instead of being regenerated from the SSR conversion. Anchoring
+the artifact to the inner `<template>` keeps it from being accidentally
+re-wrapped in a synthetic outer `<template>`. It still receives normal wrapper
+normalization, legal comment
+processing, and CSS injection for the selected strategy. Component HTML without
+an `<f-template>` continues through the normal WebUI template path.
+
 ## Install
 
 ```bash

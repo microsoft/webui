@@ -479,6 +479,56 @@ fn tag_is_self_closing(input: &str, close: usize) -> bool {
     input[..close].trim_end().ends_with('/')
 }
 
+/// Return true for HTML elements whose content is raw or inert text rather than
+/// markup, so any tag-like bytes inside their body must be copied verbatim.
+///
+/// Tag names are compared ASCII-case-insensitively, matching the rest of the
+/// scanner. This is the canonical set recognized across the parser (component
+/// policy scanning and FAST template conversion) so markup-shaped text such as
+/// `<div>` inside `<script>`/`<style>` is never mistaken for a real element.
+#[inline]
+pub(crate) fn is_raw_text_element(tag_name: &str) -> bool {
+    tag_name.eq_ignore_ascii_case("script")
+        || tag_name.eq_ignore_ascii_case("style")
+        || tag_name.eq_ignore_ascii_case("textarea")
+        || tag_name.eq_ignore_ascii_case("title")
+        || tag_name.eq_ignore_ascii_case("xmp")
+        || tag_name.eq_ignore_ascii_case("iframe")
+        || tag_name.eq_ignore_ascii_case("noembed")
+        || tag_name.eq_ignore_ascii_case("noframes")
+        || tag_name.eq_ignore_ascii_case("noscript")
+        || tag_name.eq_ignore_ascii_case("plaintext")
+}
+
+/// Return the byte offset in `source` just past a raw-text element's matching
+/// close tag, given `content_start` (the offset immediately after its opening
+/// `>`). `source` must begin at the raw-text element's opening `<`.
+///
+/// The body is treated as opaque: only a case-insensitive closing tag of the
+/// same name terminates it, so inner tag-like bytes are ignored. `plaintext`
+/// has no end tag and consumes the remainder. An unterminated body also
+/// consumes the remainder (`source.len()`).
+#[inline]
+pub(crate) fn find_raw_text_end(source: &str, tag_name: &str, content_start: usize) -> usize {
+    if tag_name.eq_ignore_ascii_case("plaintext") {
+        return source.len();
+    }
+    let mut cursor = content_start;
+    while cursor < source.len() {
+        let Some(relative) = source[cursor..].find('<') else {
+            return source.len();
+        };
+        cursor += relative;
+        if let Some(tag) = parse_tag(&source[cursor..]) {
+            if tag.closing && tag.name.eq_ignore_ascii_case(tag_name) {
+                return cursor + tag.close + 1;
+            }
+        }
+        cursor += 1;
+    }
+    source.len()
+}
+
 impl<'a> Iterator for Attrs<'a> {
     type Item = Attr<'a>;
 

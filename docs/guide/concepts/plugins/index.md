@@ -102,6 +102,117 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
 
+### Using FAST Plugins
+
+The Rust FAST integrations are `fast`, `fast_v2`, and `fast_v3`; their CLI
+names are `fast`, `fast-v2`, and `fast-v3`:
+
+```bash
+webui build ./src --out ./dist --plugin=fast-v3
+webui serve ./src --state ./data/state.json --plugin=fast-v3 --watch
+```
+
+When a FAST plugin is selected, it installs a `component_source_transform` that
+recognizes an HTML file authored as one wrapping `<f-template>`. With no
+plugin, or with the `webui` plugin, `<f-template>` markup is not scanned or
+converted and passes through like any other HTML:
+
+```html
+<!-- src/components/file-card.html -->
+<f-template name="named-card" shadowrootmode="open">
+  <template @click="{select($e)}">
+    {{styles}}
+    <f-when value="{{visible}}">
+      <f-repeat value="{{item in items}}">
+        <button @click="{select(item)}" :config="{config}">
+          {{item.label}}
+        </button>
+      </f-repeat>
+    </f-when>
+  </template>
+</f-template>
+```
+
+`<f-template name="named-card">` registers the component as `named-card` instead
+of deriving `file-card` from the filename. If `name` is absent or contains only
+whitespace, WebUI keeps the filename-derived tag. The wrapper must contain
+exactly one inner `<template>` as its only meaningful child: only whitespace and
+comments may surround it. A meaningful sibling around the inner `<template>`,
+multiple inner templates, and unsupported FAST syntax all fail the build with an
+authoring error rather than being silently dropped. Multiple `<f-template>`
+elements are not currently supported and have a dedicated authoring diagnostic.
+
+Because the authored `<f-template name>` supplies the registry key, recursive
+discovery also accepts a file whose stem is not itself a custom-element name.
+FAST's generated files are named `<component>.template.html`, whose stem
+(`button.template`) has no hyphen; a FAST plugin still discovers and registers
+them under their authored `fluent-*` name. Without a FAST plugin those files are
+ignored, exactly as any non-custom-element filename is.
+
+The wrapper accepts only `name` and declarative-shadow-root options — attributes
+beginning with `shadowroot` such as `shadowrootmode` and
+`shadowrootdelegatesfocus`; any other wrapper attribute is a build error rather
+than being silently dropped. Those shadow options move onto the inner
+`<template>` (the declarative shadow root) so a Shadow-DOM SSR build activates the
+shadow root with the authored mode and `delegatesFocus`, and the client artifact
+carries them back on its `<f-template>` wrapper where the FAST runtime reads
+them. The `{{styles}}` marker that FAST's harness injects right after the inner
+`<template>` opening is a build-time style placeholder, not component state:
+WebUI removes it from that position and lets the selected CSS strategy inject the
+real styles there, so it is never rendered or counted as a binding. A `{{styles}}`
+interpolation anywhere else is preserved.
+
+For the `style` CSS strategy specifically, the FAST plugins emit the component
+`<style>` at the **end** of the inner `<template>` body (before `</template>`)
+rather than at the marker position. FAST's declarative template parser scans the
+client `<f-template>` body for `{`/`}` bindings, and a raw CSS rule block —
+especially with nested at-rules like `@media` — would otherwise be misread as a
+binding and shift hydration alignment. Trailing the `<style>` keeps every real
+binding ahead of the CSS braces; the CSS keeps its literal braces and styles both
+the SSR-hydrated first instance and every client-created instance. The `link` and
+`module` strategies carry no CSS braces into the body and are unaffected.
+
+WebUI uses two views of this source:
+
+- **SSR parse view:** WebUI internally adapts supported FAST declarative
+  constructs into the WebUI parser view. It rewrites supported `f-repeat` and
+  `f-when` directives to WebUI `for` and `if` directives and unwraps their
+  `value` expressions; an `f-when` condition may contain a quoted string
+  literal (such as `status == "ready"`) and is preserved without truncation.
+  Text interpolation and boolean bindings remain available
+  to the WebUI parser. Markup-shaped text inside `<script>` and `<style>`
+  bodies is copied verbatim, never treated as a FAST wrapper or directive. An
+  absent or empty authored name continues to use the
+  filename-derived component tag. Unsupported `f-*` constructs fail conversion
+  instead of being silently accepted. A FAST directive accepts only its
+  `value` attribute; any other attribute (an `f-*` attribute or an ordinary one
+  such as `id`, `class`, or `data-*`) and any stray FAST closing tag are
+  rejected at their own offset. The FAST plugins' `classify_attribute`
+  skips `@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` and counts
+  each as a binding, so hydration binding indexes stay aligned without any
+  parser-core marker. Client-only bindings FAST authors directly on the root
+  `<template>` (such as `@click`) are counted the same way, so the server emits a
+  binding count for the root element and hydration markers stay aligned with the
+  client template's binding order.
+- **Client artifact view:** WebUI retains the authored inner `<template>`, with
+  its client bindings, and emits it inside the resolved `<f-template>` rather
+  than regenerating it from the SSR view. Anchoring the artifact to the inner
+  `<template>` (not the whole `<f-template>` body) means it always begins with
+  `<template` and can never be accidentally re-wrapped in a synthetic outer
+  `<template>`. The
+  artifact is normalized and still receives normal wrapper handling, legal
+  comment processing, and CSS injection for the selected strategy. Plugins that
+  return `None` from
+  `component_source_transform` never receive FAST artifacts; they parse the
+  component's HTML unchanged.
+
+Multiple wrappers report `unsupported-multiple-f-templates`; malformed or
+unsupported FAST declarative syntax reports `invalid-fast-template`, while
+unclosed markup uses the shared `unclosed-html-tag` diagnostic.
+
+The deprecated `fast` selector aliases FAST 2. `fast`, `fast_v2`, and `fast_v3`
+all share this same transform, conversion, and retained-artifact path.
+
 ## Writing Custom Plugins
 
 To create a custom plugin, implement the `ParserPlugin` and/or `HandlerPlugin` traits:
@@ -121,6 +232,14 @@ pub trait ParserPlugin {
         component: &Component,
         processed_template: &str,
     ) -> Result<()>;
+
+    /// Return a stateless transform applied to a component's authored source
+    /// before registry insertion, or `None` to store sources unchanged. Only
+    /// plugins that own an alternate authored-template dialect (such as FAST's
+    /// `<f-template>`) need to implement this.
+    fn component_source_transform(&self) -> Option<ComponentSourceTransform> {
+        None
+    }
 
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
