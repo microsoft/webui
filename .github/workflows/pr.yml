@@ -61,19 +61,19 @@ jobs:
         with:
           shared-cache-key: ubuntu-build
 
-  # ── Phase 2: macOS check (SDK-free, on a Linux runner) ─────────────
-  # There is no macOS runner in this pipeline. `cargo check` never invokes a
-  # linker, so it can prove the release crates still type-check for the Apple
-  # ARM64 target without an Apple SDK or a native macOS host. This is not a
-  # substitute for a real macOS build/link: the release pipeline now fully
-  # cross-links Apple ARM64 on its own trusted Linux-hosted job, via
-  # cargo-zigbuild plus a secure, out-of-band Apple SDK unavailable to PR CI.
+  # ── Phase 2: macOS check (native ARM64 runner) ─────────────────────
+  # The Linux-hosted `cargo check` attempt added in this PR still executed C
+  # build scripts (for example `zstd-sys` via actix-web), which failed before
+  # linking because the generic Linux `cc` cannot compile Apple-targeted flags
+  # like `-arch arm64`. Keep PR validation on a native Apple Silicon runner,
+  # while the release pipeline continues to do the full Linux-hosted
+  # cargo-zigbuild packaging flow with its trusted SDK.
   # `platform_tag` isn't consumed by `cargo check` itself; it's restated here
   # only so `validate_release_targets.py` sees all five release-contract
   # platform tags accounted for in this file.
   macos-check:
     name: macOS check (${{ matrix.platform.label }})
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     needs: lint
     strategy:
       fail-fast: false
@@ -84,13 +84,29 @@ jobs:
             platform_tag: macosx_11_0_arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/build
+
+      - name: Install protoc
+        shell: bash
+        run: |
+          if ! command -v protoc >/dev/null 2>&1; then
+            brew install protobuf
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          skip-build: 'true'
-          rust-targets: ${{ matrix.platform.target }}
-          shared-cache-key: macos-check-${{ matrix.platform.target }}
+          toolchain: 1.93
+          targets: ${{ matrix.platform.target }}
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: macos-check-${{ matrix.platform.target }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
 
       - name: Check release crates
+        shell: bash
         run: |
           cargo check --target ${{ matrix.platform.target }} \
             -p microsoft-webui-cli \
@@ -134,9 +150,10 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang-18 lld-18
+          sudo apt-get install -y -qq clang-18 lld-18 llvm-18
           sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang-cl
           sudo ln -sf /usr/bin/lld-link-18 /usr/local/bin/lld-link
+          sudo ln -sf /usr/bin/llvm-lib-18 /usr/local/bin/llvm-lib
           cargo install --locked cargo-xwin --version 0.23.0
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0

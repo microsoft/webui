@@ -373,9 +373,10 @@ stages:
           : "${LLVM_APT_VERSION:?LLVM_APT_VERSION is required}"
 
           sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler "clang-${LLVM_APT_VERSION}" "lld-${LLVM_APT_VERSION}"
+          sudo apt-get install -y -q protobuf-compiler "clang-${LLVM_APT_VERSION}" "lld-${LLVM_APT_VERSION}" "llvm-${LLVM_APT_VERSION}"
           sudo ln -sf "/usr/bin/clang-${LLVM_APT_VERSION}" /usr/local/bin/clang-cl
           sudo ln -sf "/usr/bin/lld-link-${LLVM_APT_VERSION}" /usr/local/bin/lld-link
+          sudo ln -sf "/usr/bin/llvm-lib-${LLVM_APT_VERSION}" /usr/local/bin/llvm-lib
           export CARGO_HOME="$CARGO_CACHE_HOME"
           export PATH="$CARGO_HOME/bin:/usr/local/bin:$PATH"
 

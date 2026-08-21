@@ -271,14 +271,15 @@ fn missing_targets_message(missing: &[&str]) -> String {
     message
 }
 
-/// Verify `clang-cl` and LLD are on PATH.
+/// Verify `clang-cl`, `lld-link`, and `llvm-lib` are on PATH.
 ///
 /// Shared with `publish-build`'s `CargoXwin` backend; see `ensure_cargo_xwin`.
 pub(crate) fn ensure_llvm_tools() -> Result<(), String> {
     let has_clang_cl = which_exists("clang-cl");
     let has_lld = which_exists("lld-link") || which_exists("ld.lld") || which_exists("lld");
+    let has_llvm_lib = which_exists("llvm-lib");
 
-    if has_clang_cl && has_lld {
+    if has_clang_cl && has_lld && has_llvm_lib {
         return Ok(());
     }
 
@@ -286,7 +287,7 @@ pub(crate) fn ensure_llvm_tools() -> Result<(), String> {
 }
 
 fn llvm_tools_help() -> &'static str {
-    "clang-cl and LLD are required for cargo-xwin. On macOS: brew install llvm lld; on Linux: install clang and lld from your package manager. Then ensure both are on PATH"
+    "clang-cl, lld-link, and llvm-lib are required for cargo-xwin. On macOS: brew install llvm lld; on Linux: install clang, lld, and llvm from your package manager, then ensure clang-cl, lld-link, and llvm-lib are on PATH"
 }
 
 fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result<(), String> {
@@ -467,10 +468,12 @@ mod tests {
     }
 
     #[test]
-    fn llvm_tools_help_mentions_clang_cl() {
+    fn llvm_tools_help_mentions_required_tools() {
         let message = llvm_tools_help();
 
         assert!(message.contains("clang-cl"));
+        assert!(message.contains("lld-link"));
+        assert!(message.contains("llvm-lib"));
         assert!(message.contains("brew install llvm lld"));
     }
 
