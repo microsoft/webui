@@ -17,6 +17,8 @@
  *   <!--/wc-->  conditional block end
  */
 
+import { isComponentStyleResourceMarker } from './styles.js';
+
 // Marker data constants matching the handler plugin output.
 export const MARKER_REPEAT_START = 'wr';
 export const MARKER_REPEAT_END = '/wr';
@@ -217,7 +219,11 @@ export function buildSSRIndex(
           continue;
         }
       } else if (type === 1 /* ELEMENT_NODE */) {
-        break;
+        // A compiler-emitted style fallback is server-only: `meta.h` never
+        // contains it, so counting it would pair every following template
+        // element with its predecessor's node. `findByOrdinal` skips it for
+        // the same reason.
+        if (!isComponentStyleResourceMarker(s as Element)) break;
       }
       s = s.nextSibling;
     }
@@ -269,8 +275,9 @@ export function buildSSRIndex(
  *
  * This function walks `parent.firstChild` → siblings, counting only
  * children of the requested `nodeType` that are NOT inside a structural
- * block range.  Nested blocks of the same type are handled via depth
- * tracking.  Returns the child at the given `ordinal`, or null.
+ * block range or compiler-emitted style fallback. Nested blocks of the same
+ * type are handled via depth tracking. Returns the child at the given
+ * `ordinal`, or null.
  *
  * Used by `$findSSRText` to keep SSR text ordinals aligned with the template.
  * Elements are addressed by pre-order index instead (see `buildSSRIndex`);
@@ -291,7 +298,9 @@ export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): 
         continue;
       }
     }
-    if (child.nodeType === nodeType) {
+    const isStyleResource = child.nodeType === 1 &&
+      isComponentStyleResourceMarker(child as Element);
+    if (child.nodeType === nodeType && !isStyleResource) {
       if (count === ordinal) return child;
       count++;
     }

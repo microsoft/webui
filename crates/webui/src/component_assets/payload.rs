@@ -3,17 +3,23 @@
 
 use rayon::prelude::*;
 use std::borrow::Cow;
-use webui_handler::css_module;
-use webui_protocol::WebUIProtocol;
+use webui_protocol::{CssStrategy, WebUIProtocol};
 
 use super::graph::AssetGraphPlan;
 use super::json::encode_json_string;
 use crate::WebUIError;
 
 pub(super) struct RenderedComponent<'a> {
-    pub style: Option<String>,
+    pub resource: Option<RenderedStyleResource<'a>>,
     pub template: Cow<'a, str>,
     pub functions: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum RenderedStyleResource<'a> {
+    Link(&'a str),
+    Style(&'a str),
+    Module(&'a str),
 }
 
 pub(super) fn render_component_payloads<'a>(
@@ -57,15 +63,7 @@ fn render_component<'a>(
             "component asset payload for <{tag}> is missing protocol metadata"
         ))
     })?;
-    let style = if component.css.is_empty() {
-        None
-    } else {
-        let importmap = css_module::build_importmap_tag(tag, &component.css, None);
-        Some(encode_json_string(
-            &importmap,
-            "component asset templateStyles entry",
-        )?)
-    };
+    let resource = render_style_resource(protocol, tag)?;
     let template = if component.template_json.is_empty() {
         Cow::Owned(encode_json_string(
             &component.template,
@@ -77,8 +75,33 @@ fn render_component<'a>(
     let functions =
         (!component.template_functions.is_empty()).then_some(component.template_functions.as_str());
     Ok(RenderedComponent {
-        style,
+        resource,
         template,
         functions,
     })
+}
+
+/// Resolve a component's delivered style resource, tagged with the shape the
+/// asset payload should emit.
+///
+/// The strategy-dependent field selection lives in
+/// [`WebUIProtocol::component_style_resource`]; this only classifies the result
+/// so the serializer knows which JSON shape to write.
+pub(super) fn render_style_resource<'a>(
+    protocol: &'a WebUIProtocol,
+    tag: &str,
+) -> Result<Option<RenderedStyleResource<'a>>, WebUIError> {
+    if !protocol.components.contains_key(tag) {
+        return Err(WebUIError::InvalidBuildOptions(format!(
+            "component asset style resource for <{tag}> is missing protocol metadata"
+        )));
+    }
+    let Some(resource) = protocol.component_style_resource(tag) else {
+        return Ok(None);
+    };
+    Ok(Some(match protocol.css_strategy() {
+        CssStrategy::Link => RenderedStyleResource::Link(resource),
+        CssStrategy::Style => RenderedStyleResource::Style(resource),
+        CssStrategy::Module => RenderedStyleResource::Module(resource),
+    }))
 }

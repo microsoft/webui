@@ -41,7 +41,8 @@ const result = build({
   appDir: "./src",        // Path to the template directory
   entry: "index.html",   // Entry file (default: "index.html")
   css: "link",           // CSS strategy: "link", "style", or "module"
-  dom: "shadow",         // DOM strategy: "shadow" or "light"
+  dom: "light",          // Optional: global Light + authored Shadow islands
+  cssBundle: true,       // Merge component stylesheets into shared chunks
   plugin: "webui",       // Parser plugin name
   components: [],        // Additional component sources
   componentAssetRoots: ["settings-dialog"], // Static .webui.js asset roots
@@ -58,6 +59,13 @@ const result = build({
 // result.warnings  - Array of non-fatal build advisory diagnostics
 // result.stats     - { durationMs, fragmentCount, componentCount, cssFileCount, protocolSizeBytes, tokenCount }
 ```
+
+Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
+to render unwrapped components as global Light DOM. A sole bare `<template>` is
+also an explicit Light wrapper and is unwrapped; a sole
+`<template shadowrootmode="open">` remains Shadow in either mode. Light CSS uses
+ordinary selectors; `:host`, `:host-context`, and `::slotted` fail with
+`unsupported-light-css`.
 
 Static component assets use a root/chunk graph. Entry-reachable dependencies
 remain external, dependencies used by one root stay inline, and dependencies
@@ -231,11 +239,11 @@ Produces a JSON partial response for client-side navigation, including state, te
 
 ### `protocol.renderComponentTemplates(componentTags, inventoryHex): string`
 
-Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `templateStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
+Renders templates and styles for on-demand component loading (used by `Router.ensureLoaded()`). Returns a JSON string with `componentStyles`, `templates`, `templateFunctions`, and `inventory`. Uses the same inventory bitfield as partial navigation to avoid sending duplicates.
 
 ```js
 const json = protocol.renderComponentTemplates(["settings-dialog"], inventoryHex);
-const { templates, templateFunctions, templateStyles, inventory } = JSON.parse(json);
+const { templates, templateFunctions, componentStyles, inventory } = JSON.parse(json);
 ```
 
 ## CLI

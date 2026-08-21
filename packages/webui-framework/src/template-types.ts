@@ -89,7 +89,6 @@ export interface TemplateBlockMeta {
 
 export interface TemplateMeta extends TemplateBlockMeta {
   b?: TemplateBlockMeta[];
-  sa?: string;
   re?: [string, string, CompiledEventArgs][];
   /** Component-level state roots referenced by template bindings. */
   tr?: string[];

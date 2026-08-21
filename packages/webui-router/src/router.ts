@@ -36,6 +36,8 @@ import {
   applyParamsQueryState,
   setRouteMeta,
   getRouteMeta,
+  mountedRouteComponent,
+  clearRouteContent,
   WebUIRouteElement,
 } from './route-element.js';
 
@@ -46,6 +48,7 @@ import {
   injectCssLinks,
   fetchComponentTemplates,
   notifyTemplatesRegistered,
+  registerInitialTemplatesAndStyles,
   waitForTemplateReadiness,
 } from './templates.js';
 import type {
@@ -85,7 +88,6 @@ export class WebUIRouter {
   private basePath = '';
   /** O(1) lookup sets backed by the global arrays — kept in sync. */
   private cssSet = new Set<string>();
-  private stylesSet = new Set<string>();
   private navGeneration = 0;
   private currentRequestPath = '/';
   private navCache: import('./cache.js').NavigationCache | null = null;
@@ -196,12 +198,11 @@ export class WebUIRouter {
 
     this.installDocumentTransitionOverride();
 
-    // Build O(1) lookup Sets from the global arrays, then free the arrays —
-    // they were one-shot SSR data; the Sets are the live lookup structure.
+    // Build the router's O(1) CSS URL lookup, then free its source array.
+    // Keep `styles`: the framework lazily consumes those SSR Module specifiers
+    // when it initializes the per-Document import-map deduplication set.
     for (const href of meta.css) this.cssSet.add(href);
-    for (const spec of meta.styles) this.stylesSet.add(spec);
     delete meta.css;
-    delete meta.styles;
 
     const nav = window.navigation;
     const handler = (event: NavigateEvent) => {
@@ -273,7 +274,7 @@ export class WebUIRouter {
       });
     }
 
-    this.startInitialNavigation(meta.templates);
+    this.startInitialNavigation(meta);
   }
 
   /** Navigate to a new path. */
@@ -317,7 +318,11 @@ export class WebUIRouter {
       const inv = window.__webui!.inventory!;
       const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
       const fetchPromise = fetchComponentTemplates(
-        missing, inv, endpoint, window.__webui!.nonce!, this.stylesSet,
+        missing,
+        inv,
+        endpoint,
+        window.__webui!.nonce!,
+        this.cssSet,
         (inv) => this.updateInventory(inv),
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
@@ -364,7 +369,6 @@ export class WebUIRouter {
     this.ssrPreloadsCleared = false;
     this.documentNavigationUrl = null;
     this.cssSet.clear();
-    this.stylesSet.clear();
 
     this.currentRequestPath = '/';
     this.navCache?.clear();
@@ -408,9 +412,9 @@ export class WebUIRouter {
       if (thisGen !== this.navGeneration) return;
 
       for (const entry of this.activeChain) {
-        const state = loaderStates.get(entry.component);
+        const state = loaderStates.get(entry);
         if (state && state !== LOADER_FAILED && entry.el) {
-          const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+          const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
           if (compEl) entry.compEl = compEl;
           if (compEl && isStateful(compEl)) {
             compEl.setState(state);
@@ -608,7 +612,7 @@ export class WebUIRouter {
       const stylesReady = registerTemplatesAndStyles(
         data,
         window.__webui!.nonce!,
-        this.stylesSet,
+        this.cssSet,
         (inv) => this.updateInventory(inv),
       );
       injectCssLinks(data, this.cssSet);
@@ -637,12 +641,12 @@ export class WebUIRouter {
     query?: Record<string, string>,
   ): void {
     // Destroy existing component bindings before clearing DOM
-    const existing = routeEl.firstElementChild;
+    const existing = mountedRouteComponent(routeEl);
     if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
       (existing as unknown as { $destroy: () => void }).$destroy();
     }
     const component = document.createElement(componentTag);
-    routeEl.textContent = '';
+    clearRouteContent(routeEl);
     routeEl.appendChild(component);
     applyParamsQueryState(component, routeEl, params, state, query);
   }
@@ -650,14 +654,14 @@ export class WebUIRouter {
   private applyState(
     entry: RouteChainEntry,
     query?: Record<string, string>,
-    loaderStates?: Map<string, Record<string, unknown> | typeof LOADER_FAILED>,
+    loaderStates?: Map<RouteChainEntry, Record<string, unknown> | typeof LOADER_FAILED>,
   ): void {
     if (!entry.component || !entry.el) return;
-    const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+    const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
     if (!compEl) return;
     entry.compEl = compEl;
 
-    const override = loaderStates?.get(entry.component);
+    const override = loaderStates?.get(entry);
     const effectiveOverride = override === LOADER_FAILED ? undefined : override;
     const loaderExists = override !== undefined;
     const isKeepAlive = entry.keepAlive || getRouteMeta(entry.el)?.keepAlive || false;
@@ -688,7 +692,6 @@ export class WebUIRouter {
       get currentRequestPath() { return self.currentRequestPath; },
       get activeChain() { return self.activeChain; },
       get nonce() { return window.__webui!.nonce!; },
-      get injectedStyles() { return self.stylesSet; },
       get injectedCss() { return self.cssSet; },
       setDeferredReader(r) {
         if (r) {
@@ -790,8 +793,12 @@ export class WebUIRouter {
     this.cleanupFns.push(() => style.remove());
   }
 
-  private startInitialNavigation(templates: Record<string, unknown>): void {
-    notifyTemplatesRegistered(templates);
+  private startInitialNavigation(meta: RouterRuntimeGlobal): void {
+    if (meta.componentStyles) {
+      registerInitialTemplatesAndStyles(meta.templates ?? {}, meta.componentStyles);
+    } else {
+      notifyTemplatesRegistered(meta.templates);
+    }
     this.handleNavigation(this.currentTarget());
   }
 
@@ -865,12 +872,8 @@ export class WebUIRouter {
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
     const commitNavigation = (): void => {
-      // Deactivate old chain from leaf up. An entry whose declaration won't
-      // be reused by the incoming chain (a sibling route matched instead —
-      // e.g. two `<route>`s sharing a component but distinguished by path)
-      // has its mounted component destroyed so it doesn't linger, invisible,
-      // in the DOM. Entries kept for in-place reuse (same declaration, or
-      // opted into `keep-alive`) are left mounted.
+      // Deactivate old chain from leaf up. Preserve route-owned style markers,
+      // but tear down component state when the declaration will not be reused.
       for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
         const oldEntry = this.activeChain[i];
         if (oldEntry.el) {
@@ -879,11 +882,11 @@ export class WebUIRouter {
           if (!willReuse) {
             const isKeepAlive = oldEntry.keepAlive || getRouteMeta(oldEntry.el)?.keepAlive || false;
             if (!isKeepAlive) {
-              const existing = oldEntry.compEl ?? oldEntry.el.firstElementChild;
+              const existing = oldEntry.compEl ?? mountedRouteComponent(oldEntry.el);
               if (existing && typeof (existing as unknown as { $destroy?: () => void }).$destroy === 'function') {
                 (existing as unknown as { $destroy: () => void }).$destroy();
               }
-              oldEntry.el.textContent = '';
+              clearRouteContent(oldEntry.el);
             }
           }
           deactivateRoute(oldEntry.el);
@@ -928,12 +931,12 @@ export class WebUIRouter {
           keepAlive: entry.keepAlive ?? false,
         });
         if (entry.component) {
-          const override = loaderStates.get(entry.component);
+          const override = loaderStates.get(entry);
           const effectiveOverride = override === LOADER_FAILED ? undefined : override;
 
           const isKeepAlive = entry.keepAlive || getRouteMeta(routeEl)?.keepAlive || false;
-          const existingComp = routeEl.firstElementChild;
-          if (isKeepAlive && existingComp?.matches(entry.component)) {
+          const existingComp = mountedRouteComponent(routeEl);
+          if (isKeepAlive && existingComp?.localName === entry.component.toLowerCase()) {
             entry.compEl = existingComp;
             const stateToApply = effectiveOverride ?? entry.state;
             if (hasState(stateToApply)) {
@@ -944,7 +947,7 @@ export class WebUIRouter {
           } else {
             const stateToApply = effectiveOverride ?? entry.state;
             this.mountComponent(routeEl, entry.component, entry.params, stateToApply, query);
-            entry.compEl = routeEl.firstElementChild ?? undefined;
+            entry.compEl = mountedRouteComponent(routeEl) ?? undefined;
           }
         }
         activateRoute(routeEl, entry.params);

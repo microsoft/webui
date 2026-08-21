@@ -7,7 +7,7 @@
  * Chunk 2 contains deferred per-component state applied after mount.
  */
 
-import { hasState } from './route-element.js';
+import { hasState, mountedRouteComponent } from './route-element.js';
 import { isStateful } from './types.js';
 import {
   injectCssLinks,
@@ -25,7 +25,6 @@ export interface StreamingContext {
   readonly currentRequestPath: string;
   readonly activeChain: RouteChainEntry[];
   readonly nonce: string;
-  readonly injectedStyles: Set<string>;
   readonly injectedCss: Set<string>;
   setDeferredReader(reader: Promise<void> | null): void;
   setDeferredGeneration(gen: number): void;
@@ -118,7 +117,7 @@ export async function readStreamingPartial(
   const stylesReady = registerTemplatesAndStyles(
     chunk1,
     ctx.nonce,
-    ctx.injectedStyles,
+    ctx.injectedCss,
     ctx.updateInventory,
   );
   injectCssLinks(chunk1, ctx.injectedCss);
@@ -328,7 +327,7 @@ export function applyDeferredStates(
       ((new () => HTMLElement) & { loader?: Function }) | undefined;
     if (ctor && typeof ctor.loader === 'function') continue;
 
-    const compEl = entry.compEl ?? entry.el.querySelector(entry.component);
+    const compEl = entry.compEl ?? mountedRouteComponent(entry.el, entry.component);
     if (!compEl) continue;
     entry.compEl = compEl;
     if (isStateful(compEl)) {

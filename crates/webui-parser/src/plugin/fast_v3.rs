@@ -7,16 +7,30 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::{
+    AttributeAction, ComponentStyleDelivery, ComponentTemplateArtifact, ComponentTemplateContext,
+    ParserPlugin, ParserPluginArtifacts,
+};
 use crate::component_registry::Component;
-use crate::html_parser::{find_element_end, find_tag_close, leading_content, opening_tag_name};
-use crate::{CssLinkOptions, CssStrategy, Result};
+use crate::diagnostic::{codes, Diagnostic};
+use crate::html_parser::{
+    find_element_end, find_tag_close, leading_content, opening_tag_name, parse_tag,
+    starts_with_html_tag_name,
+};
+use crate::{CssLinkOptions, CssStrategy, ParserError, Result};
 use webui_protocol::FastElementData;
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
     tag_name: String,
     template_html: String,
+    uses_shadow_dom: bool,
+    /// Prebuilt style snippet kept inside this component's shadow root.
+    ///
+    /// FAST's client runtime builds roots from `<f-template>` rather than from
+    /// WebUI's style registry, so a Shadow component's CSS has to travel with
+    /// the template that creates the root.
+    style_injection: Option<String>,
 }
 
 /// FAST 3 parser plugin used by `fast-v3`.
@@ -50,10 +64,55 @@ impl FastV3ParserPlugin {
         self.components
             .iter()
             .map(|comp| {
-                let tmpl = generate_f_template_from_processed(&comp.tag_name, &comp.template_html);
-                ComponentTemplateArtifact::template(comp.tag_name.clone(), tmpl)
+                let tmpl = build_f_template(
+                    &comp.tag_name,
+                    &convert_btr_to_fast(&comp.template_html),
+                    comp.style_injection.as_deref(),
+                    None,
+                );
+                ComponentTemplateArtifact::template(
+                    comp.tag_name.clone(),
+                    tmpl,
+                    comp.uses_shadow_dom,
+                )
             })
             .collect()
+    }
+
+    fn track_component(
+        &mut self,
+        tag_name: &str,
+        processed_template: &str,
+        context: ComponentTemplateContext<'_>,
+    ) {
+        if self.components.iter().any(|c| c.tag_name == tag_name) {
+            return;
+        }
+        self.components.push(TrackedComponent {
+            tag_name: tag_name.to_string(),
+            template_html: processed_template.to_string(),
+            uses_shadow_dom: context.uses_shadow_dom,
+            style_injection: context.style.and_then(style_injection_snippet),
+        });
+    }
+
+    #[cfg(test)]
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()> {
+        <Self as ParserPlugin>::register_component_template(
+            self,
+            tag_name,
+            component,
+            processed_template,
+            ComponentTemplateContext {
+                uses_shadow_dom: true,
+                style: None,
+            },
+        )
     }
 }
 
@@ -69,16 +128,10 @@ impl ParserPlugin for FastV3ParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()> {
-        // Only track each component once (avoids duplicate <f-template> blocks
-        // when a component is used in multiple parent templates)
-        if self.components.iter().any(|c| c.tag_name == tag_name) {
-            return Ok(());
-        }
-        self.components.push(TrackedComponent {
-            tag_name: tag_name.to_string(),
-            template_html: processed_template.to_string(),
-        });
+        require_fast_shadow_dom(tag_name, context)?;
+        self.track_component(tag_name, processed_template, context);
         let _ = component;
         Ok(())
     }
@@ -139,26 +192,134 @@ pub fn generate_f_template(
     )
 }
 
-fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) -> String {
+/// Build the inline style snippet FAST keeps inside a component's shadow root.
+///
+/// `Adopted` needs no snippet: the parser already recorded the specifier on the
+/// template's `shadowrootadoptedstylesheets` attribute.
+pub(super) fn style_injection_snippet(style: ComponentStyleDelivery<'_>) -> Option<String> {
+    match style {
+        ComponentStyleDelivery::Link { href } => {
+            let mut link = String::with_capacity(30 + href.len());
+            link.push_str("<link rel=\"stylesheet\" href=\"");
+            link.push_str(href);
+            link.push_str("\">");
+            Some(link)
+        }
+        ComponentStyleDelivery::Inline { css } => {
+            let trimmed = css.trim();
+            let mut style = String::with_capacity(15 + trimmed.len());
+            style.push_str("<style>");
+            push_style_text(&mut style, trimmed);
+            style.push_str("</style>");
+            Some(style)
+        }
+        ComponentStyleDelivery::Adopted { .. } => None,
+    }
+}
+
+/// Append CSS inside an HTML raw-text element without permitting `</style`
+/// (ASCII case-insensitive) to terminate the element.
+fn push_style_text(output: &mut String, css: &str) {
+    let bytes = css.as_bytes();
+    let mut chunk_start = 0usize;
+    let mut index = 0usize;
+    while index + 7 <= bytes.len() {
+        if bytes[index] == b'<'
+            && bytes[index + 1] == b'/'
+            && bytes[index + 2].eq_ignore_ascii_case(&b's')
+            && bytes[index + 3].eq_ignore_ascii_case(&b't')
+            && bytes[index + 4].eq_ignore_ascii_case(&b'y')
+            && bytes[index + 5].eq_ignore_ascii_case(&b'l')
+            && bytes[index + 6].eq_ignore_ascii_case(&b'e')
+        {
+            output.push_str(&css[chunk_start..index + 1]);
+            output.push_str("\\/");
+            chunk_start = index + 2;
+            index += 7;
+        } else {
+            index += 1;
+        }
+    }
+    output.push_str(&css[chunk_start..]);
+}
+
+/// Serialize one `<f-template>`, injecting `css_injection` inside the root
+/// `<template>` when present.
+///
+/// `converted_html` is already in the caller's FAST dialect, which is what lets
+/// both FAST versions share this serializer.
+///
+/// `module_specifier` adds `shadowrootadoptedstylesheets` when this function
+/// synthesizes the wrapper; templates that already went through the parser
+/// carry it verbatim and pass `None`.
+pub(super) fn build_f_template(
+    tag_name: &str,
+    converted_html: &str,
+    css_injection: Option<&str>,
+    module_specifier: Option<&str>,
+) -> String {
     let mut output = String::with_capacity(256);
     output.push_str("<f-template name=\"");
     output.push_str(tag_name);
     output.push_str("\">\n");
 
-    let converted = convert_btr_to_fast(processed_template);
-    let trimmed = minify_inter_tag_whitespace(converted.trim());
+    let trimmed = minify_inter_tag_whitespace(converted_html.trim());
     let (trimmed, _) = leading_content(&trimmed);
 
-    if trimmed.starts_with("<template") {
-        output.push_str(trimmed);
+    if starts_with_html_tag_name(trimmed, "template") {
+        if let Some(close_pos) = find_tag_close(trimmed) {
+            // Dev owns the wrapper — preserve attributes verbatim.
+            // For `CssStrategy::Module` the parser pass enforces
+            // `shadowrootadoptedstylesheets`, so by the time we get here
+            // either the dev wrote it or the build already failed.
+            output.push_str(&trimmed[..close_pos]);
+            output.push('>');
+            if let Some(injection) = css_injection {
+                output.push_str(injection);
+            }
+            output.push_str(&trimmed[close_pos + 1..]);
+        } else {
+            output.push_str(trimmed);
+        }
     } else {
-        output.push_str("<template>");
+        output.push_str("<template");
+        if let Some(specifier) = module_specifier {
+            output.push_str(" shadowrootadoptedstylesheets=\"");
+            output.push_str(specifier);
+            output.push('"');
+        }
+        output.push('>');
+        if let Some(injection) = css_injection {
+            output.push_str(injection);
+        }
         output.push_str(trimmed);
         output.push_str("</template>");
     }
 
     output.push_str("\n</f-template>\n");
     output
+}
+
+/// Resolve the root-`<template>` style injection and adopted-stylesheet
+/// specifier a compiled component needs, shared by both FAST versions.
+pub(super) fn f_template_style_injection<'a>(
+    tag_name: &'a str,
+    css_content: Option<&str>,
+    css_strategy: CssStrategy,
+    css_link_options: &CssLinkOptions,
+) -> (Option<String>, Option<&'a str>) {
+    let css_injection = css_content.and_then(|css| match css_strategy {
+        CssStrategy::Link => style_injection_snippet(ComponentStyleDelivery::Link {
+            href: &css_link_options.resolve(tag_name, css).href,
+        }),
+        CssStrategy::Style => style_injection_snippet(ComponentStyleDelivery::Inline { css }),
+        CssStrategy::Module => None,
+    });
+    let module_specifier = match css_strategy {
+        CssStrategy::Module if css_content.is_some() => Some(tag_name),
+        _ => None,
+    };
+    (css_injection, module_specifier)
 }
 
 /// Generate a FAST 3 f-template with Link CSS filename/href options.
@@ -169,67 +330,15 @@ pub fn generate_f_template_with_css_options(
     css_strategy: CssStrategy,
     css_link_options: &CssLinkOptions,
 ) -> String {
-    let mut output = String::with_capacity(256);
-    output.push_str("<f-template name=\"");
-    output.push_str(tag_name);
-    output.push_str("\">\n");
+    let (css_injection, module_specifier) =
+        f_template_style_injection(tag_name, css_content, css_strategy, css_link_options);
 
-    let converted = convert_btr_to_fast(html_content);
-    let trimmed = minify_inter_tag_whitespace(converted.trim());
-    let (trimmed, _) = leading_content(&trimmed);
-
-    // Build the CSS injection string based on the configured strategy
-    let css_injection = match css_strategy {
-        CssStrategy::Link => css_content.map(|css| {
-            let href = css_link_options.resolve(tag_name, css);
-            let mut s = String::with_capacity(40 + href.href.len());
-            s.push_str("<link rel=\"stylesheet\" href=\"");
-            s.push_str(&href.href);
-            s.push_str("\">");
-            s
-        }),
-        CssStrategy::Style => css_content.map(|css| {
-            let mut s = String::with_capacity(15 + css.len());
-            s.push_str("<style>");
-            s.push_str(css.trim());
-            s.push_str("</style>");
-            s
-        }),
-        CssStrategy::Module => None,
-    };
-
-    if trimmed.starts_with("<template") {
-        if let Some(close_pos) = find_tag_close(trimmed) {
-            // Dev owns the wrapper — preserve attributes verbatim.
-            // For `CssStrategy::Module` the parser pass enforces
-            // `shadowrootadoptedstylesheets`, so by the time we get here
-            // either the dev wrote it or the build already failed.
-            output.push_str(&trimmed[..close_pos]);
-            output.push('>');
-            if let Some(ref injection) = css_injection {
-                output.push_str(injection);
-            }
-            output.push_str(&trimmed[close_pos + 1..]);
-        } else {
-            output.push_str(trimmed);
-        }
-    } else {
-        output.push_str("<template");
-        if css_strategy == CssStrategy::Module && css_content.is_some() {
-            output.push_str(" shadowrootadoptedstylesheets=\"");
-            output.push_str(tag_name);
-            output.push('"');
-        }
-        output.push('>');
-        if let Some(ref injection) = css_injection {
-            output.push_str(injection);
-        }
-        output.push_str(trimmed);
-        output.push_str("</template>");
-    }
-
-    output.push_str("\n</f-template>\n");
-    output
+    build_f_template(
+        tag_name,
+        &convert_btr_to_fast(html_content),
+        css_injection.as_deref(),
+        module_specifier,
+    )
 }
 
 /// Convert WebUI Framework template syntax to FAST syntax in HTML content.
@@ -317,7 +426,7 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
     // Check for tags with :attr="{{expr}}" complex attribute values
     if remaining.starts_with("<") {
         // Strip shadowrootmode from <template> tags
-        if starts_with_tag_name(remaining, "template") {
+        if starts_with_html_tag_name(remaining, "template") {
             if let Some(consumed) = strip_shadowrootmode(remaining, result) {
                 return Some(consumed);
             }
@@ -590,78 +699,41 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
 
 /// Strip `shadowrootmode` attribute from a `<template ...>` opening tag.
 /// Returns `Some(bytes_consumed)` if a `<template` tag was found and processed.
-fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>' outside of quoted attribute values
-    let close = find_tag_close(tag_str)?;
-    let tag_content = &tag_str[..=close];
-
-    // Only process if this tag contains shadowrootmode
-    if !tag_content.contains("shadowrootmode") {
-        return None;
+pub(super) fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
+    let tag = parse_tag(tag_str)?;
+    let shadow_mode = tag
+        .attrs()
+        .find(|attr| attr.name.eq_ignore_ascii_case("shadowrootmode"))?;
+    let bytes = tag_str.as_bytes();
+    let mut removal_start = shadow_mode.raw_range.start;
+    while removal_start > 0 && bytes[removal_start - 1].is_ascii_whitespace() {
+        removal_start -= 1;
     }
+    result.push_str(&tag_str[..removal_start]);
+    result.push_str(&tag_str[shadow_mode.raw_range.end..=tag.close]);
+    Some(tag.close + 1)
+}
 
-    // Rebuild the tag without the shadowrootmode attribute
-    result.push_str("<template");
-    let attr_start = "<template".len();
-    let inner = &tag_content[attr_start..close];
-
-    // Scan through the attributes, skipping shadowrootmode
-    let inner_bytes = inner.as_bytes();
-    let inner_len = inner_bytes.len();
-    let mut j = 0;
-    while j < inner_len {
-        // Skip whitespace
-        if is_whitespace(inner_bytes[j]) {
-            j += 1;
-            continue;
-        }
-
-        // Find the end of this attribute (name="value" or just name)
-        let attr_begin = j;
-        // Find '=' or whitespace or end
-        while j < inner_len && inner_bytes[j] != b'=' && !is_whitespace(inner_bytes[j]) {
-            j += 1;
-        }
-        let attr_name = &inner[attr_begin..j];
-
-        // If there's a '=', consume the value
-        let mut attr_end = j;
-        if j < inner_len && inner_bytes[j] == b'=' {
-            j += 1; // skip '='
-            if j < inner_len && inner_bytes[j] == b'"' {
-                j += 1; // skip opening quote
-                while j < inner_len && inner_bytes[j] != b'"' {
-                    j += 1;
-                }
-                if j < inner_len {
-                    j += 1; // skip closing quote
-                }
-            } else {
-                // Unquoted value
-                while j < inner_len && !is_whitespace(inner_bytes[j]) {
-                    j += 1;
-                }
-            }
-            attr_end = j;
-        }
-
-        // Skip the shadowrootmode attribute entirely
-        if attr_name == "shadowrootmode" {
-            continue;
-        }
-
-        // Keep this attribute
-        result.push(' ');
-        result.push_str(&inner[attr_begin..attr_end]);
+pub(super) fn require_fast_shadow_dom(
+    tag_name: &str,
+    context: ComponentTemplateContext<'_>,
+) -> Result<()> {
+    if context.uses_shadow_dom {
+        return Ok(());
     }
+    Err(fast_light_dom_error(tag_name))
+}
 
-    if tag_content.ends_with("/>") {
-        result.push_str("/>");
-    } else {
-        result.push('>');
-    }
-
-    Some(close + 1)
+#[cold]
+#[inline(never)]
+fn fast_light_dom_error(tag_name: &str) -> ParserError {
+    Diagnostic::error("FAST plugins require effective Shadow DOM")
+        .code(codes::FAST_LIGHT_DOM_UNSUPPORTED)
+        .component(tag_name)
+        .help(
+            "build with `dom: \"shadow\"`, author an open declarative Shadow root for this component, or use the WebUI plugin for global Light DOM",
+        )
+        .into()
 }
 
 #[cfg(test)]
@@ -847,6 +919,19 @@ mod tests {
         assert!(
             !html.contains("<link"),
             "Style strategy should not emit <link> tags"
+        );
+    }
+
+    #[test]
+    fn inline_component_css_cannot_terminate_the_style_element() {
+        let snippet = style_injection_snippet(ComponentStyleDelivery::Inline {
+            css: ".a{content:'</StYlE>'}</template><img src=x onerror=alert(1)>",
+        })
+        .expect("inline style snippet");
+
+        assert_eq!(
+            snippet,
+            "<style>.a{content:'<\\/StYlE>'}</template><img src=x onerror=alert(1)></style>"
         );
     }
 
@@ -1155,6 +1240,45 @@ mod tests {
         let input = r#"<template shadowrootmode="open"><div>Hello</div></template>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, "<template><div>Hello</div></template>");
+    }
+
+    #[test]
+    fn strips_uppercase_native_shadow_wrapper() {
+        let input = r#"<TEMPLATE SHADOWROOTMODE="open"><div>Hello</div></TEMPLATE>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, "<TEMPLATE><div>Hello</div></TEMPLATE>");
+    }
+
+    #[test]
+    fn shadow_mode_stripping_preserves_unrelated_attribute_bytes() {
+        let input = "<TEMPLATE SHADOWROOTMODE = 'open' aria-label='keep shadowrootmode word' data-x = \"y\">";
+        let output = convert_btr_to_fast(input);
+        assert_eq!(
+            output,
+            "<TEMPLATE aria-label='keep shadowrootmode word' data-x = \"y\">"
+        );
+    }
+
+    #[test]
+    fn rejects_effective_light_dom() {
+        let mut plugin = FastV3ParserPlugin::new();
+        let component = make_component("my-card", "<p>content</p>", None);
+        let error = <FastV3ParserPlugin as ParserPlugin>::register_component_template(
+            &mut plugin,
+            "my-card",
+            &component,
+            component.html_content.as_str(),
+            ComponentTemplateContext {
+                uses_shadow_dom: false,
+                style: None,
+            },
+        )
+        .expect_err("FAST cannot mount Light DOM faithfully");
+        assert!(matches!(
+            error,
+            ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(codes::FAST_LIGHT_DOM_UNSUPPORTED)
+        ));
     }
 
     #[test]

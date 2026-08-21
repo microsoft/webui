@@ -7,9 +7,11 @@
 //! rendered component delta, first-delivery template metadata, and the state
 //! keys this surface actually reads.
 
+use super::error::component_style_payload_resources_missing_error;
 use super::inventory::{
     commit_checkpoint_inventory, expand_static_checkpoint_reachability,
-    mark_streaming_template_sent, replace_checkpoint_reachability,
+    mark_streaming_style_resource_sent, mark_streaming_template_sent,
+    replace_checkpoint_reachability,
 };
 use super::{flush_streaming_transport, streaming_state};
 use crate::plugin::WebUiTemplatePayload;
@@ -106,16 +108,18 @@ impl WebUIHandler {
         // Rendered components emitted module importmaps inline before their
         // declarative shadow roots. Emit the same metadata here only for
         // reachable-but-unrendered descendants.
-        for &name in &new_template_tags {
-            if !context.rendered_components.contains(name) {
-                if let Some(css) = context
-                    .protocol
-                    .components
-                    .get(name)
-                    .map(|component| component.css.as_str())
-                    .filter(|css| !css.is_empty())
-                {
-                    self.emit_css_module_importmap(name, css, context)?;
+        if context.css_strategy == webui_protocol::CssStrategy::Module {
+            for &name in &new_template_tags {
+                if !context.rendered_components.contains(name) {
+                    if let Some(css) = context
+                        .protocol
+                        .components
+                        .get(name)
+                        .map(|component| component.css.as_str())
+                        .filter(|css| !css.is_empty())
+                    {
+                        self.emit_css_module_importmap(name, css, context)?;
+                    }
                 }
             }
         }
@@ -147,15 +151,14 @@ impl WebUIHandler {
             &mut state_key_scratch,
         );
         let chain = if first_checkpoint {
-            crate::route_handler::collect_route_chain(
-                context.protocol,
-                context.entry_id,
-                context.request_path,
-                context.route_index,
-            )
-            .iter()
-            .map(crate::route_handler::RouteChainEntry::to_json)
-            .collect::<Vec<_>>()
+            crate::WebUIHandler::ensure_request_route_chain(context);
+            match context.route_chain.as_deref() {
+                Some(chain) => chain
+                    .iter()
+                    .map(crate::route_handler::RouteChainEntry::to_json)
+                    .collect::<Vec<_>>(),
+                None => Vec::new(),
+            }
         } else {
             Vec::new()
         };
@@ -168,13 +171,15 @@ impl WebUIHandler {
         };
         css_hrefs.clear();
         style_specs.clear();
-        let is_link = context.protocol.css_strategy() == webui_protocol::CssStrategy::Link;
+        let css_strategy = context.css_strategy;
+        let is_link = css_strategy == webui_protocol::CssStrategy::Link;
+        let is_module = css_strategy == webui_protocol::CssStrategy::Module;
         for &name in &new_template_tags {
             if let Some(component) = context.protocol.components.get(name) {
                 if is_link && !component.css_href.is_empty() {
                     css_hrefs.push(component.css_href.as_str());
                 }
-                if !component.css.is_empty() {
+                if is_module && !component.css.is_empty() {
                     style_specs.push(name);
                 }
             }
@@ -182,6 +187,31 @@ impl WebUIHandler {
 
         let empty_payloads: [WebUiTemplatePayload<'_>; 0] = [];
         let payloads = template_payloads.as_deref().unwrap_or(&empty_payloads);
+        let entry_style_root = first_checkpoint.then_some(context.entry_id);
+        let style_roots = entry_style_root
+            .into_iter()
+            .chain(new_template_tags.iter().copied());
+        let component_styles = {
+            let style_inventory = context.streaming.as_ref().map_or(&[][..], |streaming| {
+                streaming.style_resource_inventory.as_slice()
+            });
+            crate::route_handler::collect_component_style_delta(
+                context.protocol,
+                style_roots,
+                style_inventory,
+                context.style_resource_index,
+            )?
+        };
+        let resources = component_styles
+            .get("resources")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(component_style_payload_resources_missing_error)?;
+        for resource in resources.keys() {
+            let Some(&index) = context.style_resource_index.get(resource) else {
+                continue;
+            };
+            mark_streaming_style_resource_sent(streaming_state(context)?, index)?;
+        }
         context
             .writer
             .write("<script type=\"application/json\" data-webui-boundary")?;
@@ -190,7 +220,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(
@@ -225,6 +255,7 @@ impl WebUIHandler {
                     nonce: context.nonce,
                     css_hrefs: &css_hrefs,
                     style_specs: &style_specs,
+                    component_styles: &component_styles,
                     templates: payloads,
                 },
             )?;
@@ -288,7 +319,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(context.writer, RECORD_KIND_TERMINAL)?;
@@ -324,7 +355,7 @@ impl WebUIHandler {
             context.writer.write(nonce)?;
             context.writer.write("\"")?;
         }
-        context.writer.write(">[1,")?;
+        context.writer.write(">[2,")?;
         write_usize(context.writer, record_sequence)?;
         context.writer.write(",")?;
         write_usize(context.writer, RECORD_KIND_STATE_UPDATE)?;

@@ -150,6 +150,7 @@ fn run(args: &BuildArgs) -> Result<()> {
     output::field("Entry", &args.app_args.entry);
     output::field("Output", &protocol_path.display());
     output::field("CSS", &args.app_args.css);
+    output::field("DOM", &args.app_args.dom);
     if let Some(ref plugin_name) = args.app_args.plugin {
         output::field("Plugin", plugin_name);
     }
@@ -275,6 +276,7 @@ pub fn build(app: &std::path::Path, out: &std::path::Path, entry: &str) -> Resul
             entry: entry.to_string(),
             css: CssStrategy::Link,
             dom: DomStrategy::Shadow,
+            css_bundle: false,
             plugin: None,
             components: Vec::new(),
             projection_manifests: Vec::new(),
@@ -356,7 +358,7 @@ mod tests {
     fn test_build_with_component_css() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            ("my-card.html", "<div>content</div>"),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out_dir = TempDir::new().unwrap();
@@ -374,7 +376,10 @@ mod tests {
     fn test_build_with_inline_css_skips_css_files() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-card>Hello</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out_dir = TempDir::new().unwrap();
@@ -385,6 +390,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Style,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -425,6 +431,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -455,7 +462,8 @@ mod tests {
 
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":2"#));
+        assert!(asset.contains(r#""version":3"#));
+        assert!(asset.contains(r#""componentStyles":{"version":1"#));
         assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""inventory""#));
@@ -486,6 +494,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -519,6 +528,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -559,6 +569,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -599,6 +610,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -638,6 +650,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -675,6 +688,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -703,6 +717,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -737,6 +752,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::FastV3),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -755,7 +771,8 @@ mod tests {
         assert!(asset_path.exists());
         let asset = fs::read_to_string(asset_path).unwrap();
         assert!(asset.contains(r#""type":"webui-component-asset""#));
-        assert!(asset.contains(r#""version":2"#));
+        assert!(asset.contains(r#""version":3"#));
+        assert!(asset.contains(r#""componentStyles":{"version":1"#));
         assert!(asset.contains(r#""kind":"root""#));
         assert!(!asset.contains(r#""plugin""#));
         assert!(!asset.contains(r#""templateFunctionModule""#));
@@ -779,6 +796,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: Some(Plugin::WebUI),
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -899,7 +917,7 @@ mod tests {
         let ext_dir = TempDir::new().unwrap();
         fs::write(
             ext_dir.path().join("ext-card.html"),
-            "<div class=\"card\"><slot></slot></div>",
+            r#"<template shadowrootmode="open"><div class="card"><slot></slot></div></template>"#,
         )
         .unwrap();
         fs::write(
@@ -917,6 +935,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: vec![ext_path],
                 projection_manifests: Vec::new(),
@@ -951,7 +970,7 @@ mod tests {
         // Create the npm package files
         fs::write(
             pkg_dir.join("template-webui.html"),
-            "<button><slot></slot></button>",
+            r#"<template shadowrootmode="open"><button><slot></slot></button></template>"#,
         )
         .unwrap();
         fs::write(pkg_dir.join("styles.css"), ".btn { padding: 4px; }").unwrap();
@@ -1004,6 +1023,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: vec!["test-widget".to_string()],
                 projection_manifests: Vec::new(),
@@ -1035,8 +1055,16 @@ mod tests {
 
         // Create two sub-packages under the scope
         for (sub, tag, html) in &[
-            ("btn", "myui-btn", "<button><slot></slot></button>"),
-            ("txt", "myui-txt", "<span><slot></slot></span>"),
+            (
+                "btn",
+                "myui-btn",
+                r#"<template shadowrootmode="open"><button><slot></slot></button></template>"#,
+            ),
+            (
+                "txt",
+                "myui-txt",
+                r#"<template shadowrootmode="open"><span><slot></slot></span></template>"#,
+            ),
         ] {
             let pkg_dir = scope_dir.join(sub);
             fs::create_dir_all(&pkg_dir).unwrap();
@@ -1088,6 +1116,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: vec!["@myui".to_string()],
                 projection_manifests: Vec::new(),
@@ -1109,7 +1138,7 @@ mod tests {
     fn test_build_protocol_includes_tokens_from_components() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-btn></my-btn>"),
-            ("my-btn.html", "<button><slot></slot></button>"),
+            ("my-btn.html", "<button>Button</button>"),
             (
                 "my-btn.css",
                 ".btn { color: var(--text-color); padding: var(--spacing-m); }",
@@ -1129,7 +1158,10 @@ mod tests {
     fn test_build_theme_missing_token_fails() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-btn></my-btn>"),
-            ("my-btn.html", "<button><slot></slot></button>"),
+            (
+                "my-btn.html",
+                r#"<template shadowrootmode="open"><button><slot></slot></button></template>"#,
+            ),
             (
                 "my-btn.css",
                 ":host { --token-a: red; --foo-bar: var(--token-a, var(--token-b, var(--token-c))); }",
@@ -1143,6 +1175,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1173,7 +1206,10 @@ mod tests {
     fn test_build_custom_protocol_name() {
         let app_dir = create_app_dir(&[
             ("index.html", "<my-card>Hi</my-card>"),
-            ("my-card.html", "<div><slot></slot></div>"),
+            (
+                "my-card.html",
+                r#"<template shadowrootmode="open"><div><slot></slot></div></template>"#,
+            ),
             ("my-card.css", ".card { color: red; }"),
         ]);
         let out_dir = TempDir::new().unwrap();
@@ -1185,6 +1221,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1224,6 +1261,7 @@ mod tests {
                 entry: "index.html".to_string(),
                 css: CssStrategy::Link,
                 dom: DomStrategy::Shadow,
+                css_bundle: false,
                 plugin: None,
                 components: Vec::new(),
                 projection_manifests: Vec::new(),
@@ -1272,7 +1310,7 @@ mod tests {
         <my-btn></my-btn>"#;
         let app_dir = create_app_dir(&[
             ("index.html", html),
-            ("my-btn.html", "<button><slot></slot></button>"),
+            ("my-btn.html", "<button>Button</button>"),
             (
                 "my-btn.css",
                 ".btn { color: var(--text-color); margin: var(--spacing-m); }",

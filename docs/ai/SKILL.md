@@ -298,10 +298,13 @@ state that a template binding could express.
 
 ### The `<template>` tag
 
-The `<template shadowrootmode="open">` wrapper is **optional**. The build tool
-auto-injects it when absent.
+Unwrapped components default to Shadow. In a `--dom light` build they use
+authored/global Light DOM:
 
-Omit it for most components:
+A sole bare top-level `<template>` is also an explicit Light wrapper and is
+unwrapped, even when the build fallback is Shadow. Templates with attributes or
+`w-render`/`w-hydrate` are not mode selectors; nested templates remain inert
+template content.
 
 ```html
 <!-- my-card.html -->
@@ -309,7 +312,10 @@ Omit it for most components:
 <p>{{description}}</p>
 ```
 
-Include it only when you need root host events on the component root:
+In a Light build, use a sole top-level
+`<template shadowrootmode="open">` when the component must remain Shadow for a
+native `<slot>`, native isolation, CSS-heavy frequent restyling, or root host
+events:
 
 ```html
 <!-- todo-app.html -->
@@ -323,12 +329,17 @@ Include it only when you need root host events on the component root:
 </template>
 ```
 
-Root host events catch custom events bubbling up from child components. To arrive
-from a child, an event must bubble and - to cross the child's shadow boundary -
-be `composed`; `this.$emit()` sets both whenever the emitting component has a
-shadow root (the default), but a hand-built `new CustomEvent(name)` defaults to
-neither and will never reach the root - pass `{ bubbles: true, composed: true }`
-or bind it on the child element.
+The wrapper must contain the complete component. `closed`, a dynamic or invalid
+value, placement on another element, multiple declarations, or extra top-level
+content fails the build. `<slot>` is a build error only when the effective mode
+is Light.
+
+Root host events catch custom events bubbling up from child components. To
+cross any Shadow boundary between the child and the listener, an event must
+bubble and be `composed`; `this.$emit()` always sets both so Light components
+nested in a Shadow tree work too. A hand-built `new CustomEvent(name)` defaults
+to neither and will never reach the root - pass
+`{ bubbles: true, composed: true }` or bind it on the child element.
 
 The binding sits on the host element, so it also catches events targeted at the
 host itself - what host-interactive components (host `tabindex`, presentational
@@ -370,30 +381,40 @@ self-closing form is preferred.
 
 ## Styling
 
-CSS is scoped per component via Shadow DOM. No CSS-in-JS, no inline styles
-written from script, no runtime style injection.
+Keep ordinary paired component CSS. Light CSS is authored/global in its owning
+Document or ShadowRoot; selectors, keyframes, and cascade layers are not
+rewritten. Shadow components retain native Shadow CSS scoping. No CSS-in-JS or
+styles written from script.
 
 ```css
 /* my-component.css */
-:host {
+my-component {
   display: block;
   padding: 1rem;
 }
 
-:host([disabled]) {
+my-component[disabled] {
   opacity: 0.5;
   pointer-events: none;
 }
 
-:host([variant="primary"]) {
+my-component[variant="primary"] {
   background: var(--colorBrandBackground);
 }
 
 .header { font-weight: bold; }
 ```
 
-- `:host` styles the component root; `:host([attr])` styles by attribute.
-- Internal selectors are scoped to the shadow root. No styles leak in or out.
+- `:host` styles the component root only in Shadow DOM. In Light DOM, target
+  the component tag directly, for example `my-card` or `my-card[disabled]`.
+- Light DOM preserves normal inheritance and global cascade. Parent rules can
+  reach Light descendants and matching selectors can affect other Light
+  components in the same CSS tree.
+- `:host`, `:host-context`, and `::slotted` fail with
+  `unsupported-light-css` in effective Light components; use ordinary
+  selectors or author an open Shadow root.
+- `data-wl` and `data-wl-*` are ordinary author attributes; WebUI no longer
+  generates or reserves them for Light CSS.
 - Use CSS custom properties for theming. Nested fallbacks like
   `var(--primary, var(--fallback))` are also discovered as tokens.
 - Malformed CSS fails the build, including unterminated `var()` calls,
@@ -872,6 +893,14 @@ the router for routed components.
 - Child paths are relative to the parent (no leading `/`).
 - Use `exact` on leaf routes; omit it on parents that have `<outlet />`.
 - Path params: `:id` (required), `:query?` (optional), `*path` (catch-all).
+- Initial SSR delivers CSS only for the matched route chain; inactive route
+  styles remain deferred until navigation. Matched route CSS targeting the
+  Document is applied before `</head>`. ShadowRoot-targeted Link CSS is preloaded
+  from the head and applied inside its owning root. Static request-reachable
+  Shadow roots are preloaded the same way.
+- FAST 2/3 plugins require effective Shadow components. An unwrapped component
+  under `dom: "light"` fails with `fast-light-dom-unsupported`; use the WebUI
+  plugin for global Light DOM.
 
 | Attribute | Example | Description |
 |---|---|---|
@@ -1132,6 +1161,10 @@ Before emitting WebUI code, confirm:
 - [ ] `::view-transition-*` rules are in the entry template, not component CSS.
 - [ ] `prefers-reduced-motion` is honored wherever motion is used.
 - [ ] No conditions mix `&&` with `||`, use parentheses, or use a ternary.
+- [ ] Every native `<slot>` resolves to Shadow DOM; in a `--dom light` build its
+      component authors a sole top-level `<template shadowrootmode="open">`.
+- [ ] A sole bare top-level `<template>` is an explicit Light wrapper and is
+      unwrapped even when the build fallback is Shadow.
 
 ## Build and run
 
@@ -1147,9 +1180,16 @@ webui inspect ./dist/protocol.bin
 ```
 
 Common flags on both commands: `--entry`, `--css <link|style|module>`,
-`--dom <shadow|light>`, `--components`, `--theme`,
+`--dom <shadow|light>` (default `shadow`),
+`--css-bundle` (merge component stylesheets into shared chunks; not valid with
+`--css module`), `--components`, `--theme`,
 `--projection-manifest`, `--emit-component-assets`, `--metafile`,
 `--format json`.
+
+Unwrapped components default to Shadow. Under `--dom light`, they use
+authored/global Light DOM while a sole top-level
+`<template shadowrootmode="open">` remains a Shadow island. A sole bare
+`<template>` explicitly selects Light and is unwrapped.
 
 Authoring mistakes fail the build with a structured diagnostic carrying a stable
 code, source location, snippet, and a `help:` fix. Branch on the `code`, never

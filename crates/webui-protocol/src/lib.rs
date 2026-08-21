@@ -9,7 +9,7 @@
 //! no conversion layer between domain types and protobuf types.
 
 use prost::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use thiserror::Error;
@@ -48,6 +48,8 @@ pub type WebUIFragmentPlugin = WebUiFragmentPlugin;
 pub type WebUIFragmentRoute = WebUiFragmentRoute;
 pub type WebUIFragmentOutlet = WebUiFragmentOutlet;
 pub type ComponentData = proto::ComponentData;
+pub type ComponentStyleClosure = proto::ComponentStyleClosure;
+pub type StyleChunk = proto::StyleChunk;
 pub type StreamingBoundaryList = proto::StreamingBoundaryList;
 
 /// A mapping of unique fragment identifiers to their corresponding fragment lists.
@@ -321,7 +323,321 @@ impl ConditionExpr {
 
 // ── Constructors ────────────────────────────────────────────────────────
 
+enum StyleClosureOp<'a> {
+    Fragment(&'a str),
+    Component(&'a str),
+}
+
+/// One delivery unit of a style closure, resolved in cascade order.
+///
+/// A bundled build delivers merged chunks; otherwise every component delivers
+/// its own stylesheet. Both walk the closure in the same order, so the emitted
+/// cascade is identical either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StyleClosureUnit<'a> {
+    /// Name the client installs this resource under: a chunk name, or a tag.
+    pub name: &'a str,
+    /// The delivered resource, or `None` when the protocol holds none.
+    pub resource: Option<&'a str>,
+    /// Covering chunk index, or `None` for a standalone component stylesheet.
+    pub chunk: Option<u32>,
+}
+
+impl CssStrategy {
+    /// Return the lowercase wire name the client runtime expects.
+    ///
+    /// prost's generated `as_str_name` yields the uppercase proto identifier
+    /// (`"LINK"`), so it cannot serve the JSON payloads. Every host that writes
+    /// a strategy onto the wire routes through this so the spellings agree.
+    #[must_use]
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            CssStrategy::Link => "link",
+            CssStrategy::Style => "style",
+            CssStrategy::Module => "module",
+        }
+    }
+}
+
 impl WebUiProtocol {
+    /// Return whether a component authored a declarative Shadow DOM root.
+    #[must_use]
+    pub fn component_uses_shadow_dom(&self, tag_name: &str) -> bool {
+        self.components
+            .get(tag_name)
+            .is_some_and(|component| component.uses_shadow_dom)
+    }
+
+    /// Return the stored style resource for a component.
+    ///
+    /// Link protocols identify a resource by `css_href`; Style and Module
+    /// protocols retain the compiled CSS bytes. An empty field means that the
+    /// component has no paired style resource.
+    #[must_use]
+    pub fn component_style_resource(&self, tag_name: &str) -> Option<&str> {
+        let component = self.components.get(tag_name)?;
+        let resource = match self.css_strategy() {
+            CssStrategy::Link => component.css_href.as_str(),
+            CssStrategy::Style | CssStrategy::Module => component.css.as_str(),
+        };
+        (!resource.is_empty()).then_some(resource)
+    }
+
+    /// Return a precomputed style closure for `root`.
+    #[must_use]
+    pub fn style_closure(&self, root: &str) -> Option<&[String]> {
+        self.style_closures
+            .get(root)
+            .map(|closure| closure.component_tags.as_slice())
+    }
+
+    /// Precompute ordered style-resource closures for entry fragments and every
+    /// compiled component root.
+    ///
+    /// Traversal is iterative, follows source order, stops at Shadow
+    /// children and route activation edges, and deduplicates resources at first
+    /// discovery. Matched route roots install their own stored closures.
+    pub fn populate_style_closures(&mut self, entry_fragments: &[&str]) {
+        // Chunks are planned from the closures this call rebuilds, so any
+        // previously planned bundle is stale the moment closures change.
+        self.style_chunks.clear();
+        let mut roots: Vec<String> = entry_fragments
+            .iter()
+            .map(|root| (*root).to_string())
+            .collect();
+        roots.extend(
+            self.components
+                .keys()
+                .filter(|tag| self.fragments.contains_key(*tag))
+                .cloned(),
+        );
+        roots.sort_unstable();
+        roots.dedup();
+
+        let has_style_resources = match self.css_strategy() {
+            CssStrategy::Link => self
+                .components
+                .values()
+                .any(|component| !component.css_href.is_empty()),
+            CssStrategy::Style | CssStrategy::Module => self
+                .components
+                .values()
+                .any(|component| !component.css.is_empty()),
+        };
+        if !has_style_resources {
+            self.style_closures = roots
+                .into_iter()
+                .map(|root| (root, ComponentStyleClosure::default()))
+                .collect();
+            return;
+        }
+
+        self.style_closures = roots
+            .into_iter()
+            .map(|root| {
+                let closure = self.build_style_closure(&root);
+                (root, closure)
+            })
+            .collect();
+    }
+
+    fn build_style_closure<'a>(&'a self, root: &'a str) -> ComponentStyleClosure {
+        let mut component_tags = Vec::new();
+        let mut seen_styles = HashSet::new();
+        let mut visited_fragments = HashSet::new();
+        let mut work = Vec::new();
+
+        // A component-root closure owns its paired CSS regardless of whether
+        // callers normally encounter that component as a Light or Shadow child.
+        if self.component_style_resource(root).is_some() {
+            seen_styles.insert(root);
+            component_tags.push(root.to_string());
+        }
+        work.push(StyleClosureOp::Fragment(root));
+
+        while let Some(op) = work.pop() {
+            match op {
+                StyleClosureOp::Fragment(fragment_id) => {
+                    if !visited_fragments.insert(fragment_id) {
+                        continue;
+                    }
+                    let Some(fragment_list) = self.fragments.get(fragment_id) else {
+                        continue;
+                    };
+                    for fragment in fragment_list.fragments.iter().rev() {
+                        match fragment.fragment.as_ref() {
+                            Some(web_ui_fragment::Fragment::Component(component)) => {
+                                work.push(StyleClosureOp::Component(&component.fragment_id));
+                            }
+                            Some(web_ui_fragment::Fragment::ForLoop(for_loop)) => {
+                                work.push(StyleClosureOp::Fragment(&for_loop.fragment_id));
+                            }
+                            Some(web_ui_fragment::Fragment::IfCond(if_cond)) => {
+                                work.push(StyleClosureOp::Fragment(&if_cond.fragment_id));
+                            }
+                            Some(web_ui_fragment::Fragment::Attribute(attribute))
+                                if !attribute.template.is_empty() =>
+                            {
+                                work.push(StyleClosureOp::Fragment(&attribute.template));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                StyleClosureOp::Component(tag_name) => {
+                    if self.component_uses_shadow_dom(tag_name) {
+                        continue;
+                    }
+                    if self.component_style_resource(tag_name).is_some()
+                        && seen_styles.insert(tag_name)
+                    {
+                        component_tags.push(tag_name.to_string());
+                    }
+                    work.push(StyleClosureOp::Fragment(tag_name));
+                }
+            }
+        }
+
+        ComponentStyleClosure {
+            component_tags,
+            style_chunks: Vec::new(),
+        }
+    }
+
+    /// Return the delivered style resource for a bundled chunk index.
+    ///
+    /// Mirrors [`Self::component_style_resource`]: Link protocols identify a
+    /// chunk by `css_href`, Style and Module protocols carry the concatenated
+    /// CSS bytes.
+    #[must_use]
+    pub fn style_chunk_resource(&self, chunk: u32) -> Option<(&str, &str)> {
+        let chunk = self.style_chunks.get(chunk as usize)?;
+        let resource = match self.css_strategy() {
+            CssStrategy::Link => chunk.css_href.as_str(),
+            CssStrategy::Style | CssStrategy::Module => chunk.css.as_str(),
+        };
+        (!resource.is_empty()).then_some((chunk.name.as_str(), resource))
+    }
+
+    /// Return the component tags merged into `chunk`, in cascade order.
+    #[must_use]
+    pub fn style_chunk_members(&self, chunk: u32) -> Option<&[String]> {
+        self.style_chunks
+            .get(chunk as usize)
+            .map(|chunk| chunk.component_tags.as_slice())
+    }
+
+    /// Map every component whose stylesheet a bundled chunk already ships to
+    /// that chunk's index.
+    ///
+    /// This is the single definition of "already covered by a chunk", and every
+    /// delivery path must agree on it. A closure carries `style_chunks` only
+    /// when the bundler treated it as a root; other closures still list their
+    /// members individually, and delivering those members verbatim in a bundled
+    /// build re-ships bytes the covering chunk already contains. Resolving a
+    /// member through this map instead keeps each closure self-sufficient, so
+    /// correctness never depends on which closure happens to install first.
+    ///
+    /// Empty for unbundled builds. Build it once per render: it allocates.
+    #[must_use]
+    pub fn style_chunk_index(&self) -> HashMap<&str, u32> {
+        let mut index = HashMap::new();
+        for (position, chunk) in self.style_chunks.iter().enumerate() {
+            let Ok(position) = u32::try_from(position) else {
+                break;
+            };
+            index.reserve(chunk.component_tags.len());
+            for tag in &chunk.component_tags {
+                index.insert(tag.as_str(), position);
+            }
+        }
+        index
+    }
+
+    /// Return the bundled chunk indices for `root`, in cascade order.
+    ///
+    /// Empty when the build did not bundle CSS, in which case callers deliver
+    /// [`Self::style_closure`] component resources individually.
+    #[must_use]
+    pub fn style_closure_chunks(&self, root: &str) -> Option<&[u32]> {
+        self.style_closures
+            .get(root)
+            .map(|closure| closure.style_chunks.as_slice())
+    }
+
+    /// Number of delivery units `closure` walks, in cascade order.
+    ///
+    /// A closure the bundler treated as a root ships one unit per chunk;
+    /// every other closure ships one unit per member.
+    #[must_use]
+    pub fn style_closure_unit_count(closure: &ComponentStyleClosure) -> usize {
+        if closure.style_chunks.is_empty() {
+            closure.component_tags.len()
+        } else {
+            closure.style_chunks.len()
+        }
+    }
+
+    /// Resolve one position of `closure` to the resource that delivers it.
+    ///
+    /// This is the single walk shared by every delivery path, so all of them
+    /// agree on [`Self::style_chunk_index`]'s definition of "already covered by
+    /// a chunk". A closure that was not a bundler root uses a chunk only when
+    /// the chunk's complete ordered membership is present; otherwise it falls
+    /// back to the individual component resource. `chunk_index` must come from
+    /// that accessor; pass an empty map for an unbundled protocol.
+    ///
+    /// Returns `None` only when `position` is out of range. A unit whose
+    /// `resource` is `None` names a resource the protocol does not hold, which
+    /// callers report or skip according to their own delivery contract.
+    #[must_use]
+    pub fn style_closure_unit<'a>(
+        &'a self,
+        closure: &'a ComponentStyleClosure,
+        chunk_index: &HashMap<&str, u32>,
+        position: usize,
+    ) -> Option<StyleClosureUnit<'a>> {
+        let chunk = if closure.style_chunks.is_empty() {
+            let tag = closure.component_tags.get(position)?.as_str();
+            let fallback = || {
+                Some(StyleClosureUnit {
+                    name: tag,
+                    resource: self.component_style_resource(tag),
+                    chunk: None,
+                })
+            };
+            let Some(index) = chunk_index.get(tag).copied() else {
+                return fallback();
+            };
+            let Some(members) = self.style_chunk_members(index) else {
+                return fallback();
+            };
+            let Some(member_position) = members.iter().position(|member| member == tag) else {
+                return fallback();
+            };
+            let Some(start) = position.checked_sub(member_position) else {
+                return fallback();
+            };
+            let Some(end) = start.checked_add(members.len()) else {
+                return fallback();
+            };
+            if closure.component_tags.get(start..end) != Some(members) {
+                return fallback();
+            }
+            index
+        } else {
+            *closure.style_chunks.get(position)?
+        };
+        let record = self.style_chunks.get(chunk as usize)?;
+        Some(StyleClosureUnit {
+            name: record.name.as_str(),
+            resource: self
+                .style_chunk_resource(chunk)
+                .map(|(_, resource)| resource),
+            chunk: Some(chunk),
+        })
+    }
+
     /// Create a protocol from fragment records with no CSS tokens.
     pub fn new(fragments: WebUIFragmentRecords) -> Self {
         Self {
@@ -329,11 +645,12 @@ impl WebUiProtocol {
             tokens: Vec::new(),
             components: HashMap::new(),
             css_strategy: 0,
-            dom_strategy: 0,
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
             component_render_css: String::new(),
+            style_closures: HashMap::new(),
+            style_chunks: Vec::new(),
             component_asset_style_preloads: Vec::new(),
         }
     }
@@ -345,11 +662,12 @@ impl WebUiProtocol {
             tokens,
             components: HashMap::new(),
             css_strategy: 0,
-            dom_strategy: 0,
             initial_state_strategy: InitialStateStrategy::Full as i32,
             module_preloads: Vec::new(),
             streaming_boundaries: HashMap::new(),
             component_render_css: String::new(),
+            style_closures: HashMap::new(),
+            style_chunks: Vec::new(),
             component_asset_style_preloads: Vec::new(),
         }
     }
@@ -360,6 +678,12 @@ impl WebUiProtocol {
 impl WebUiProtocol {
     /// Validate that all fragment references point to existing fragment IDs.
     fn validate_protocol(protocol: Self) -> Result<Self> {
+        CssStrategy::try_from(protocol.css_strategy).map_err(|_| {
+            ProtocolError::Validation(format!(
+                "unknown CSS strategy value: {}",
+                protocol.css_strategy
+            ))
+        })?;
         let fragments = &protocol.fragments;
 
         let invalid_ref = fragments.iter().find_map(|(_, fragment_list)| {
@@ -495,6 +819,493 @@ mod tests {
             },
         );
         WebUIProtocol::new(fragments)
+    }
+
+    fn add_style_component(
+        protocol: &mut WebUIProtocol,
+        tag: &str,
+        uses_shadow_dom: bool,
+        has_css: bool,
+    ) {
+        protocol
+            .fragments
+            .entry(tag.to_string())
+            .or_insert_with(|| FragmentList {
+                fragments: Vec::new(),
+            });
+        protocol.components.insert(
+            tag.to_string(),
+            ComponentData {
+                css: has_css.then(|| format!(".{tag}{{}}")).unwrap_or_default(),
+                uses_shadow_dom,
+                ..Default::default()
+            },
+        );
+    }
+
+    #[test]
+    fn style_closure_preserves_order_deduplicates_and_cuts_at_shadow() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::component("light-a"),
+                    WebUIFragment::component("light-b"),
+                    WebUIFragment::component("no-css"),
+                    WebUIFragment::component("shadow-cut"),
+                    WebUIFragment::component("after-cut"),
+                ],
+            },
+        );
+        fragments.insert(
+            "light-a".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shared-light")],
+            },
+        );
+        fragments.insert(
+            "light-b".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shared-light")],
+            },
+        );
+        fragments.insert(
+            "no-css".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("styled-descendant")],
+            },
+        );
+        fragments.insert(
+            "shadow-cut".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shadow-descendant")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        for tag in [
+            "light-a",
+            "light-b",
+            "shared-light",
+            "styled-descendant",
+            "shadow-descendant",
+            "after-cut",
+        ] {
+            add_style_component(&mut protocol, tag, false, true);
+        }
+        add_style_component(&mut protocol, "no-css", false, false);
+        add_style_component(&mut protocol, "shadow-cut", true, true);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            [
+                "light-a",
+                "shared-light",
+                "light-b",
+                "styled-descendant",
+                "after-cut",
+            ]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("shadow-cut")
+                .expect("Shadow closure"),
+            ["shadow-cut", "shadow-descendant"]
+        );
+    }
+
+    #[test]
+    fn style_closure_follows_dynamic_dependencies_but_not_routes() {
+        let nested_route = WebUiFragmentRoute {
+            fragment_id: "nested-route".to_string(),
+            ..Default::default()
+        };
+        let route = WebUiFragmentRoute {
+            fragment_id: "route-body".to_string(),
+            children: vec![nested_route],
+            pending_component: "route-pending".to_string(),
+            error_component: "route-error".to_string(),
+            ..Default::default()
+        };
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::for_loop("item", "items", "for-body"),
+                    WebUIFragment::if_cond(ConditionExpr::identifier("show"), "if-body"),
+                    WebUIFragment::attribute_template("title", "attribute-body"),
+                    WebUIFragment::route_from(route),
+                ],
+            },
+        );
+        for (fragment, component) in [
+            ("for-body", "for-card"),
+            ("if-body", "if-card"),
+            ("attribute-body", "attribute-card"),
+        ] {
+            fragments.insert(
+                fragment.to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::component(component)],
+                },
+            );
+        }
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        for tag in [
+            "for-card",
+            "if-card",
+            "attribute-card",
+            "route-body",
+            "nested-route",
+            "route-pending",
+            "route-error",
+        ] {
+            add_style_component(&mut protocol, tag, false, true);
+        }
+        protocol.fragments.insert(
+            "route-body".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+            },
+        );
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            ["for-card", "if-card", "attribute-card"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("route-body")
+                .expect("route body closure"),
+            ["route-body"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("nested-route")
+                .expect("nested route closure"),
+            ["nested-route"]
+        );
+    }
+
+    #[test]
+    fn style_closure_keeps_nested_routes_out_of_shadow_outlet_tree() {
+        let child_route = WebUiFragmentRoute {
+            fragment_id: "dashboard-page".to_string(),
+            pending_component: "dashboard-pending".to_string(),
+            error_component: "dashboard-error".to_string(),
+            ..Default::default()
+        };
+        let route = WebUiFragmentRoute {
+            fragment_id: "app-shell".to_string(),
+            children: vec![child_route],
+            pending_component: "shell-pending".to_string(),
+            error_component: "shell-error".to_string(),
+            ..Default::default()
+        };
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(route)],
+            },
+        );
+        fragments.insert(
+            "app-shell".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::component("shell-header"),
+                    WebUIFragment::component("route-layout"),
+                    WebUIFragment::component("shell-footer"),
+                ],
+            },
+        );
+        fragments.insert(
+            "route-layout".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "dashboard-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("contact-card")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        for tag in [
+            "shell-header",
+            "route-layout",
+            "shell-footer",
+            "dashboard-page",
+            "contact-card",
+            "dashboard-pending",
+            "dashboard-error",
+            "shell-pending",
+            "shell-error",
+        ] {
+            add_style_component(&mut protocol, tag, false, true);
+        }
+        add_style_component(&mut protocol, "app-shell", true, true);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert!(protocol
+            .style_closure("index.html")
+            .expect("entry closure")
+            .is_empty());
+        assert_eq!(
+            protocol
+                .style_closure("app-shell")
+                .expect("Shadow shell closure"),
+            ["app-shell", "shell-header", "route-layout", "shell-footer"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("dashboard-page")
+                .expect("active route closure"),
+            ["dashboard-page", "contact-card"]
+        );
+    }
+
+    #[test]
+    fn style_closure_keeps_routes_out_of_nested_shadow_outlet_component() {
+        let route = WebUiFragmentRoute {
+            fragment_id: "light-shell".to_string(),
+            children: vec![WebUiFragmentRoute {
+                fragment_id: "dashboard-page".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::route_from(route)],
+            },
+        );
+        fragments.insert(
+            "light-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shadow-layout")],
+            },
+        );
+        fragments.insert(
+            "shadow-layout".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::outlet()],
+            },
+        );
+        fragments.insert(
+            "dashboard-page".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("contact-card")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        for tag in ["light-shell", "dashboard-page", "contact-card"] {
+            add_style_component(&mut protocol, tag, false, true);
+        }
+        add_style_component(&mut protocol, "shadow-layout", true, true);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert!(protocol
+            .style_closure("index.html")
+            .expect("entry closure")
+            .is_empty());
+        assert_eq!(
+            protocol
+                .style_closure("light-shell")
+                .expect("route shell closure"),
+            ["light-shell"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("shadow-layout")
+                .expect("nested Shadow closure"),
+            ["shadow-layout"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("dashboard-page")
+                .expect("active route closure"),
+            ["dashboard-page", "contact-card"]
+        );
+    }
+
+    #[test]
+    fn style_closure_guards_same_tag_cycles_and_is_deterministic() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("cycle-card")],
+            },
+        );
+        fragments.insert(
+            "cycle-card".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("cycle-card")],
+            },
+        );
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(CssStrategy::Style);
+        add_style_component(&mut protocol, "cycle-card", false, true);
+
+        protocol.populate_style_closures(&["index.html"]);
+        let first = protocol.style_closures.clone();
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(
+            protocol.style_closure("index.html").expect("entry closure"),
+            ["cycle-card"]
+        );
+        assert_eq!(
+            protocol
+                .style_closure("cycle-card")
+                .expect("component closure"),
+            ["cycle-card"]
+        );
+        assert_eq!(protocol.style_closures, first);
+    }
+
+    #[test]
+    fn style_closure_populates_empty_roots_without_resources() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("light-shell")],
+            },
+        );
+        fragments.insert(
+            "light-shell".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::component("shadow-card")],
+            },
+        );
+        fragments.insert("shadow-card".to_string(), FragmentList::default());
+        let mut protocol = WebUIProtocol::new(fragments);
+        add_style_component(&mut protocol, "light-shell", false, false);
+        add_style_component(&mut protocol, "shadow-card", true, false);
+
+        protocol.populate_style_closures(&["index.html"]);
+
+        assert_eq!(protocol.style_closures.len(), 3);
+        for root in ["index.html", "light-shell", "shadow-card"] {
+            assert_eq!(protocol.style_closure(root), Some([].as_slice()));
+        }
+    }
+
+    #[test]
+    fn style_closure_roundtrips() {
+        let mut protocol = sample_protocol();
+        protocol.set_css_strategy(CssStrategy::Link);
+        protocol.components.insert(
+            "contact-card".to_string(),
+            ComponentData {
+                css_href: "/contact-card.css".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.populate_style_closures(&["index.html"]);
+
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+        assert_eq!(
+            decoded.style_closure("index.html").expect("entry closure"),
+            ["contact-card"]
+        );
+    }
+
+    #[test]
+    fn current_json_requires_style_and_component_shadow_metadata() {
+        let mut protocol = sample_protocol();
+        protocol.components.insert(
+            "my-card".to_string(),
+            ComponentData {
+                uses_shadow_dom: false,
+                ..Default::default()
+            },
+        );
+        protocol.populate_style_closures(&["index.html"]);
+        let current = serde_json::to_value(&protocol).expect("JSON encode failed");
+
+        let mut missing_closures = current.clone();
+        missing_closures
+            .as_object_mut()
+            .expect("protocol JSON object")
+            .remove("style_closures");
+        assert!(serde_json::from_value::<WebUIProtocol>(missing_closures).is_err());
+
+        let mut missing_shadow_dom = current;
+        missing_shadow_dom["components"]["my-card"]
+            .as_object_mut()
+            .expect("component JSON object")
+            .remove("uses_shadow_dom");
+        assert!(serde_json::from_value::<WebUIProtocol>(missing_shadow_dom).is_err());
+
+        let mut legacy_root = serde_json::to_value(&protocol).expect("JSON encode failed");
+        legacy_root["dom_strategy"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<WebUIProtocol>(legacy_root).is_err());
+
+        let mut legacy_component = serde_json::to_value(&protocol).expect("JSON encode failed");
+        legacy_component["components"]["my-card"]["effective_dom_strategy"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<WebUIProtocol>(legacy_component).is_err());
+    }
+
+    #[test]
+    fn component_style_resource_uses_the_active_strategy_field() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.components.insert(
+            "my-card".to_string(),
+            ComponentData {
+                css: ".card{}".to_string(),
+                css_href: "/my-card.css".to_string(),
+                ..Default::default()
+            },
+        );
+
+        protocol.set_css_strategy(CssStrategy::Link);
+        assert_eq!(
+            protocol.component_style_resource("my-card"),
+            Some("/my-card.css")
+        );
+        protocol.set_css_strategy(CssStrategy::Style);
+        assert_eq!(
+            protocol.component_style_resource("my-card"),
+            Some(".card{}")
+        );
+        protocol.set_css_strategy(CssStrategy::Module);
+        assert_eq!(
+            protocol.component_style_resource("my-card"),
+            Some(".card{}")
+        );
+        assert_eq!(protocol.component_style_resource("missing-card"), None);
+    }
+
+    #[test]
+    fn declared_link_strategy_does_not_infer_module_from_css_bytes() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.components.insert(
+            "my-card".to_string(),
+            ComponentData {
+                css: ".card{}".to_string(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(protocol.css_strategy(), CssStrategy::Link);
+        assert_eq!(protocol.component_style_resource("my-card"), None);
     }
 
     #[test]
@@ -870,6 +1681,23 @@ mod tests {
             Some(StateProjectionMode::All as i32)
         );
         assert!(component.navigation_keys.is_empty());
+    }
+
+    #[test]
+    fn test_component_uses_shadow_dom_roundtrips() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.components.insert(
+            "my-card".to_string(),
+            ComponentData {
+                uses_shadow_dom: true,
+                ..Default::default()
+            },
+        );
+
+        let bytes = protocol.to_protobuf().unwrap();
+        let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
+        assert!(decoded.component_uses_shadow_dom("my-card"));
+        assert!(!decoded.component_uses_shadow_dom("missing-card"));
     }
 
     #[test]

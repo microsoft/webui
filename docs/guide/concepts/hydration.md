@@ -85,10 +85,9 @@ can be deferred without removing the SSR DOM:
 2. It emits `content-visibility: auto` and
    `contain-intrinsic-block-size: auto 72px` for the component tag in a
    document-level `<style>` before first layout, plus a tag-qualified component
-   rule for Shadow DOM instances. For a `--dom=light` component placed inside an
-   authored shadow root, use the `style` CSS strategy or include the containment
-   rule in that root's stylesheet; document-scoped Link and Module styles do not
-   cross that boundary.
+   rule for Shadow DOM instances. A Light component nested inside an authored
+   shadow root receives the rule through its precomputed style closure, which
+   delivers the stylesheet into that root under every CSS strategy.
 
 The required reservation should approximate one instance's rendered block size.
 It preserves scroll geometry while the browser skips offscreen style, layout,
@@ -97,9 +96,10 @@ instance renders. Accepted values are single non-negative CSS lengths such as
 `72px`, `18rem`, `40dvh`, or `25cqb`; percentages, `auto`, negative values, and
 functions such as `calc()` are rejected at build time.
 
-The policy wrapper is build-only. WebUI removes its policy attributes, uses the
-wrapper as the declarative shadow root under `--dom=shadow`, and unwraps it under
-`--dom=light`.
+The policy wrapper is build-only. WebUI removes its policy attributes. A
+component that authors `<template shadowrootmode="open">` keeps that wrapper as
+its declarative shadow root; every other component is Light, so the wrapper is
+unwrapped.
 
 Import the optional entry once before registering policy-bearing components:
 
@@ -335,7 +335,7 @@ state is never copied into `window.__webui.state`. Applications should not query
 or depend on generated scaffolding.
 
 At `body_end`, the handler emits one markerless empty terminal envelope:
-`[1,nextSequence,3,0,{}]`. Its flush also commits any preceding native or static
+`[2,nextSequence,3,0,{}]`. Its flush also commits any preceding native or static
 tail HTML, but terminal records never repeat template metadata or state. A
 truncated or malformed stream, or one exceeding a client work bound such as the
 queued-boundary or marker-scan limit, logs an error, suppresses

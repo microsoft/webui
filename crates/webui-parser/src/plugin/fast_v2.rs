@@ -7,9 +7,18 @@
 //! artifacts after parsing. Converts WebUI Framework template syntax (`<if>`, `<for>`, `{{}}`)
 //! into FAST-compatible syntax (`<f-when>`, `<f-repeat>`, `{}`).
 
-use super::{AttributeAction, ComponentTemplateArtifact, ParserPlugin, ParserPluginArtifacts};
+use super::fast_v3::{
+    build_f_template, f_template_style_injection, require_fast_shadow_dom, strip_shadowrootmode,
+    style_injection_snippet,
+};
+use super::{
+    AttributeAction, ComponentTemplateArtifact, ComponentTemplateContext, ParserPlugin,
+    ParserPluginArtifacts,
+};
 use crate::component_registry::Component;
-use crate::html_parser::{find_element_end, find_tag_close, leading_content, opening_tag_name};
+use crate::html_parser::{
+    find_element_end, find_tag_close, opening_tag_name, starts_with_html_tag_name,
+};
 use crate::{CssLinkOptions, CssStrategy, Result};
 use webui_protocol::FastElementData;
 
@@ -17,6 +26,13 @@ use webui_protocol::FastElementData;
 struct TrackedComponent {
     tag_name: String,
     template_html: String,
+    uses_shadow_dom: bool,
+    /// Prebuilt style snippet kept inside this component's shadow root.
+    ///
+    /// FAST's client runtime builds roots from `<f-template>` rather than from
+    /// WebUI's style registry, so a Shadow component's CSS has to travel with
+    /// the template that creates the root.
+    style_injection: Option<String>,
 }
 
 /// Deprecated FAST 2 parser plugin used by `fast` and `fast-v2`.
@@ -50,10 +66,55 @@ impl FastV2ParserPlugin {
         self.components
             .iter()
             .map(|comp| {
-                let tmpl = generate_f_template_from_processed(&comp.tag_name, &comp.template_html);
-                ComponentTemplateArtifact::template(comp.tag_name.clone(), tmpl)
+                let tmpl = build_f_template(
+                    &comp.tag_name,
+                    &convert_btr_to_fast(&comp.template_html),
+                    comp.style_injection.as_deref(),
+                    None,
+                );
+                ComponentTemplateArtifact::template(
+                    comp.tag_name.clone(),
+                    tmpl,
+                    comp.uses_shadow_dom,
+                )
             })
             .collect()
+    }
+
+    fn track_component(
+        &mut self,
+        tag_name: &str,
+        processed_template: &str,
+        context: ComponentTemplateContext<'_>,
+    ) {
+        if self.components.iter().any(|c| c.tag_name == tag_name) {
+            return;
+        }
+        self.components.push(TrackedComponent {
+            tag_name: tag_name.to_string(),
+            template_html: processed_template.to_string(),
+            uses_shadow_dom: context.uses_shadow_dom,
+            style_injection: context.style.and_then(style_injection_snippet),
+        });
+    }
+
+    #[cfg(test)]
+    fn register_component_template(
+        &mut self,
+        tag_name: &str,
+        component: &Component,
+        processed_template: &str,
+    ) -> Result<()> {
+        <Self as ParserPlugin>::register_component_template(
+            self,
+            tag_name,
+            component,
+            processed_template,
+            ComponentTemplateContext {
+                uses_shadow_dom: true,
+                style: None,
+            },
+        )
     }
 }
 
@@ -69,16 +130,10 @@ impl ParserPlugin for FastV2ParserPlugin {
         tag_name: &str,
         component: &Component,
         processed_template: &str,
+        context: ComponentTemplateContext<'_>,
     ) -> Result<()> {
-        // Only track each component once (avoids duplicate <f-template> blocks
-        // when a component is used in multiple parent templates)
-        if self.components.iter().any(|c| c.tag_name == tag_name) {
-            return Ok(());
-        }
-        self.components.push(TrackedComponent {
-            tag_name: tag_name.to_string(),
-            template_html: processed_template.to_string(),
-        });
+        require_fast_shadow_dom(tag_name, context)?;
+        self.track_component(tag_name, processed_template, context);
         let _ = component;
         Ok(())
     }
@@ -139,28 +194,6 @@ pub fn generate_f_template(
     )
 }
 
-fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) -> String {
-    let mut output = String::with_capacity(256);
-    output.push_str("<f-template name=\"");
-    output.push_str(tag_name);
-    output.push_str("\">\n");
-
-    let converted = convert_btr_to_fast(processed_template);
-    let trimmed = minify_inter_tag_whitespace(converted.trim());
-    let (trimmed, _) = leading_content(&trimmed);
-
-    if trimmed.starts_with("<template") {
-        output.push_str(trimmed);
-    } else {
-        output.push_str("<template>");
-        output.push_str(trimmed);
-        output.push_str("</template>");
-    }
-
-    output.push_str("\n</f-template>\n");
-    output
-}
-
 /// Generate a FAST 2 f-template with Link CSS filename/href options.
 pub fn generate_f_template_with_css_options(
     tag_name: &str,
@@ -169,67 +202,15 @@ pub fn generate_f_template_with_css_options(
     css_strategy: CssStrategy,
     css_link_options: &CssLinkOptions,
 ) -> String {
-    let mut output = String::with_capacity(256);
-    output.push_str("<f-template name=\"");
-    output.push_str(tag_name);
-    output.push_str("\">\n");
+    let (css_injection, module_specifier) =
+        f_template_style_injection(tag_name, css_content, css_strategy, css_link_options);
 
-    let converted = convert_btr_to_fast(html_content);
-    let trimmed = minify_inter_tag_whitespace(converted.trim());
-    let (trimmed, _) = leading_content(&trimmed);
-
-    // Build the CSS injection string based on the configured strategy
-    let css_injection = match css_strategy {
-        CssStrategy::Link => css_content.map(|css| {
-            let href = css_link_options.resolve(tag_name, css);
-            let mut s = String::with_capacity(40 + href.href.len());
-            s.push_str("<link rel=\"stylesheet\" href=\"");
-            s.push_str(&href.href);
-            s.push_str("\">");
-            s
-        }),
-        CssStrategy::Style => css_content.map(|css| {
-            let mut s = String::with_capacity(15 + css.len());
-            s.push_str("<style>");
-            s.push_str(css.trim());
-            s.push_str("</style>");
-            s
-        }),
-        CssStrategy::Module => None,
-    };
-
-    if trimmed.starts_with("<template") {
-        if let Some(close_pos) = find_tag_close(trimmed) {
-            // Dev owns the wrapper — preserve attributes verbatim.
-            // For `CssStrategy::Module` the parser pass enforces
-            // `shadowrootadoptedstylesheets`, so by the time we get here
-            // either the dev wrote it or the build already failed.
-            output.push_str(&trimmed[..close_pos]);
-            output.push('>');
-            if let Some(ref injection) = css_injection {
-                output.push_str(injection);
-            }
-            output.push_str(&trimmed[close_pos + 1..]);
-        } else {
-            output.push_str(trimmed);
-        }
-    } else {
-        output.push_str("<template");
-        if css_strategy == CssStrategy::Module && css_content.is_some() {
-            output.push_str(" shadowrootadoptedstylesheets=\"");
-            output.push_str(tag_name);
-            output.push('"');
-        }
-        output.push('>');
-        if let Some(ref injection) = css_injection {
-            output.push_str(injection);
-        }
-        output.push_str(trimmed);
-        output.push_str("</template>");
-    }
-
-    output.push_str("\n</f-template>\n");
-    output
+    build_f_template(
+        tag_name,
+        &convert_btr_to_fast(html_content),
+        css_injection.as_deref(),
+        module_specifier,
+    )
 }
 
 /// Convert WebUI Framework template syntax to FAST syntax in HTML content.
@@ -317,7 +298,7 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
     // Check for tags with :attr="{{expr}}" complex attribute values
     if remaining.starts_with("<") {
         // Strip shadowrootmode from <template> tags
-        if starts_with_tag_name(remaining, "template") {
+        if starts_with_html_tag_name(remaining, "template") {
             if let Some(consumed) = strip_shadowrootmode(remaining, result) {
                 return Some(consumed);
             }
@@ -554,114 +535,6 @@ fn push_char_at(input: &str, pos: usize, out: &mut String) -> usize {
 /// Check if a byte is ASCII whitespace.
 fn is_whitespace(b: u8) -> bool {
     b == b' ' || b == b'\t' || b == b'\n' || b == b'\r'
-}
-
-/// Collapse whitespace-only text between `>` and `<` to eliminate extra DOM
-/// text nodes that would shift element indices during hydration.
-/// This ensures the f-template DOM structure matches the minified DSD output.
-fn minify_inter_tag_whitespace(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    while i < len {
-        if bytes[i] == b'>' && i + 1 < len {
-            result.push('>');
-            i += 1;
-            // Skip whitespace-only content between > and <
-            let ws_start = i;
-            while i < len && is_whitespace(bytes[i]) {
-                i += 1;
-            }
-            // If we hit '<', the whitespace was inter-tag — drop it
-            // If we hit non-'<', it's meaningful text — keep it
-            if i >= len || bytes[i] != b'<' {
-                // Keep the whitespace (it's before text content)
-                result.push_str(&input[ws_start..i]);
-            }
-        } else {
-            i = push_char_at(input, i, &mut result);
-        }
-    }
-
-    result
-}
-
-/// Strip `shadowrootmode` attribute from a `<template ...>` opening tag.
-/// Returns `Some(bytes_consumed)` if a `<template` tag was found and processed.
-fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>' outside of quoted attribute values
-    let close = find_tag_close(tag_str)?;
-    let tag_content = &tag_str[..=close];
-
-    // Only process if this tag contains shadowrootmode
-    if !tag_content.contains("shadowrootmode") {
-        return None;
-    }
-
-    // Rebuild the tag without the shadowrootmode attribute
-    result.push_str("<template");
-    let attr_start = "<template".len();
-    let inner = &tag_content[attr_start..close];
-
-    // Scan through the attributes, skipping shadowrootmode
-    let inner_bytes = inner.as_bytes();
-    let inner_len = inner_bytes.len();
-    let mut j = 0;
-    while j < inner_len {
-        // Skip whitespace
-        if is_whitespace(inner_bytes[j]) {
-            j += 1;
-            continue;
-        }
-
-        // Find the end of this attribute (name="value" or just name)
-        let attr_begin = j;
-        // Find '=' or whitespace or end
-        while j < inner_len && inner_bytes[j] != b'=' && !is_whitespace(inner_bytes[j]) {
-            j += 1;
-        }
-        let attr_name = &inner[attr_begin..j];
-
-        // If there's a '=', consume the value
-        let mut attr_end = j;
-        if j < inner_len && inner_bytes[j] == b'=' {
-            j += 1; // skip '='
-            if j < inner_len && inner_bytes[j] == b'"' {
-                j += 1; // skip opening quote
-                while j < inner_len && inner_bytes[j] != b'"' {
-                    j += 1;
-                }
-                if j < inner_len {
-                    j += 1; // skip closing quote
-                }
-            } else {
-                // Unquoted value
-                while j < inner_len && !is_whitespace(inner_bytes[j]) {
-                    j += 1;
-                }
-            }
-            attr_end = j;
-        }
-
-        // Skip the shadowrootmode attribute entirely
-        if attr_name == "shadowrootmode" {
-            continue;
-        }
-
-        // Keep this attribute
-        result.push(' ');
-        result.push_str(&inner[attr_begin..attr_end]);
-    }
-
-    if tag_content.ends_with("/>") {
-        result.push_str("/>");
-    } else {
-        result.push('>');
-    }
-
-    Some(close + 1)
 }
 
 #[cfg(test)]
@@ -1158,6 +1031,35 @@ mod tests {
     }
 
     #[test]
+    fn strips_uppercase_native_shadow_wrapper() {
+        let input = r#"<TEMPLATE SHADOWROOTMODE="open"><div>Hello</div></TEMPLATE>"#;
+        let output = convert_btr_to_fast(input);
+        assert_eq!(output, "<TEMPLATE><div>Hello</div></TEMPLATE>");
+    }
+
+    #[test]
+    fn rejects_effective_light_dom() {
+        let mut plugin = FastV2ParserPlugin::new();
+        let component = make_component("my-card", "<p>content</p>", None);
+        let error = <FastV2ParserPlugin as ParserPlugin>::register_component_template(
+            &mut plugin,
+            "my-card",
+            &component,
+            component.html_content.as_str(),
+            ComponentTemplateContext {
+                uses_shadow_dom: false,
+                style: None,
+            },
+        )
+        .expect_err("FAST cannot mount Light DOM faithfully");
+        assert!(matches!(
+            error,
+            crate::ParserError::Template(ref diagnostic)
+                if diagnostic.error_code() == Some(crate::diagnostic::codes::FAST_LIGHT_DOM_UNSUPPORTED)
+        ));
+    }
+
+    #[test]
     fn strip_shadowrootmode_preserves_other_attrs() {
         let input =
             r#"<template shadowrootmode="open" @click="{onClick(e)}"><div>Hi</div></template>"#;
@@ -1385,20 +1287,6 @@ mod tests {
         let input = r#"<if condition="x"><span>✓</span></if>"#;
         let output = convert_btr_to_fast(input);
         assert_eq!(output, r#"<f-when value="{{x}}"><span>✓</span></f-when>"#);
-    }
-
-    #[test]
-    fn minify_preserves_utf8_text_content() {
-        let input = "<span>✓</span><span>✗</span>";
-        let output = minify_inter_tag_whitespace(input);
-        assert_eq!(output, "<span>✓</span><span>✗</span>");
-    }
-
-    #[test]
-    fn minify_preserves_utf8_between_elements() {
-        let input = "<div> ✓ </div>";
-        let output = minify_inter_tag_whitespace(input);
-        assert_eq!(output, "<div> ✓ </div>");
     }
 
     #[test]

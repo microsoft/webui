@@ -25,18 +25,19 @@ pub struct FrontendRuntime {
 }
 
 impl FrontendRuntime {
-    pub fn load(app_root: &Path, css: CssStrategy) -> Result<Self> {
-        Self::load_with_projection(app_root, css, true)
+    pub fn load(app_root: &Path, css: CssStrategy, css_bundle: bool) -> Result<Self> {
+        Self::load_with_projection(app_root, css, css_bundle, true)
     }
 
     #[cfg(test)]
     pub(crate) fn load_for_tests(app_root: &Path, css: CssStrategy) -> Result<Self> {
-        Self::load_with_projection(app_root, css, false)
+        Self::load_with_projection(app_root, css, false, false)
     }
 
     fn load_with_projection(
         app_root: &Path,
         css: CssStrategy,
+        css_bundle: bool,
         use_projection_manifest: bool,
     ) -> Result<Self> {
         let app_dir = app_root.join("src");
@@ -54,6 +55,7 @@ impl FrontendRuntime {
             app_dir,
             entry: "index.html".to_string(),
             css,
+            css_bundle,
             plugin: Some(Plugin::WebUI),
             projection_manifests,
             ..BuildOptions::default()

@@ -288,7 +288,7 @@
       {
         "icon": "◇",
         "title": "webui-framework",
-        "description": "A tiny client runtime for Web Components, tuned for rendering speed and low memory. Built on Declarative Shadow DOM and native browser APIs. No virtual DOM, no proprietary component model, no JSX."
+        "description": "A tiny client runtime for Web Components, tuned for rendering speed and low memory. Built on authored global Light DOM, opt-in Declarative Shadow DOM, and native browser APIs. No virtual DOM, no proprietary component model, no JSX."
       },
       {
         "icon": "↗",

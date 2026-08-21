@@ -1,6 +1,11 @@
 # Interactivity
 
-WebUI uses **Islands Architecture** for client-side interactivity. Each Web Component is a self-contained island with its own HTML template, scoped CSS, and TypeScript behavior. Only components that need interactivity ship JavaScript - everything else stays as static server-rendered HTML.
+WebUI uses **Islands Architecture** for client-side interactivity. Each Web
+Component is a self-contained island with its own HTML template, authored CSS,
+and TypeScript behavior. Shadow components provide CSS isolation; Light
+components intentionally participate in the owning CSS tree's global cascade.
+Only components that need interactivity ship JavaScript - everything else stays
+as static server-rendered HTML.
 
 ## Component Files
 
@@ -9,12 +14,13 @@ Every interactive component consists of three separate files. Templates are decl
 ```
 my-counter/
 ├── my-counter.html   ← Template (structure and bindings)
-├── my-counter.css    ← Styles (scoped via Shadow DOM)
+├── my-counter.css    ← Authored styles
 └── my-counter.ts     ← Behavior (TypeScript class)
 ```
 
 - **HTML** defines what the component renders and where dynamic values appear
-- **CSS** styles the component in isolation - Shadow DOM prevents leaking
+- **CSS** styles the component. Light DOM uses the owning tree's global cascade;
+  Shadow components use the browser's native boundary
 - **TypeScript** defines JS-visible reactive properties, event handlers, and component logic
 
 Components that do not need client-side behavior can omit the TypeScript file:
@@ -93,10 +99,10 @@ The matching template (`my-counter.html`):
 </button>
 ```
 
-And scoped styles (`my-counter.css`):
+And authored Light DOM styles (`my-counter.css`):
 
 ```css
-:host {
+my-counter {
   display: inline-block;
 }
 
@@ -109,17 +115,25 @@ button {
 
 ## The `<template>` Tag
 
-The `<template shadowrootmode="open">` wrapper is **optional** in component HTML files. The build tool auto-injects it when it is not present.
+Unwrapped components default to Shadow DOM. Build with `--dom light` to render
+unwrapped content directly into the component host.
 
-**Without `<template>` (most components):**
+A sole bare top-level `<template>` explicitly selects Light DOM and is unwrapped
+even when the build fallback is Shadow. A template with attributes or
+`w-render`/`w-hydrate` is not a mode selector; nested templates remain ordinary
+inert template content.
+
+**Light DOM (`--dom light`):**
 ```html
 <!-- my-counter.html -->
 <button @click="{increment()}">{{label}}: {{count}}</button>
 ```
 
-The framework wraps this in a `<template shadowrootmode="open">` during build.
+The paired CSS remains authored/global in the owning CSS tree. Use ordinary
+selectors such as `my-counter`; Shadow-only `:host` and `::slotted` selectors
+fail in effective Light CSS.
 
-**With `<template>` (root host events):**
+**Authored Shadow island (including inside a Light build):**
 ```html
 <!-- todo-app.html -->
 <template shadowrootmode="open"
@@ -135,9 +149,15 @@ The framework wraps this in a `<template shadowrootmode="open">` during build.
 </template>
 ```
 
-When you include the `<template>` tag explicitly, the framework uses yours instead of auto-injecting one. The main reason to include it is to attach **root host events** - listeners on the component root that catch events bubbling up from child components (`@toggle-item`, `@delete-item` above).
+The open template must be the sole top-level element and wrap the complete
+component. Use it when the component needs native `<slot>` composition, a
+native Shadow boundary, or **root host events** - listeners on the component
+root that catch events bubbling up from child components (`@toggle-item`,
+`@delete-item` above). `closed`, another value, invalid placement, multiple
+wrappers, or extra top-level content fails the build. A native `<slot>` fails
+only when the component's effective mode is Light.
 
-To reach a root binding from a **child component**, an event must **bubble** and - because it has to cross the child's shadow boundary - be **composed**. `this.$emit()` sets both whenever the emitting component has a shadow root, which is the default. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
+To reach a root binding from a **child component**, an event must **bubble** and be **composed** whenever any Shadow boundary exists between the child and the listener. `this.$emit()` always sets both, including for a Light component nested in another component's Shadow tree. A hand-built `new CustomEvent('my-event')` defaults to neither and will never arrive - bind it on the child element instead, or pass `{ bubbles: true, composed: true }` yourself.
 
 A root binding lives on the **host element**, so it also catches events targeted at the host itself - what host-interactive components (host `tabindex`, presentational shadow content) rely on. It does not see non-composed events (`change`, `submit`, `select`, media events), which stop at the shadow boundary because they identify one specific inner element; bind those per element - `<input @change="{onChange(e)}">`.
 
@@ -556,11 +576,14 @@ is missing.
 
 ## Styling
 
-CSS is scoped to each component via Shadow DOM. Styles in one component cannot leak into or be affected by another.
+Keep styles in the ordinary paired `.css` file. For an effective Light
+component, CSS is authored/global in the owning CSS tree: selectors are not
+rewritten or marker-scoped. For effective Shadow roots, the browser provides
+native style scoping.
 
-### The `:host` Selector
+### The `:host` Selector (Shadow DOM only)
 
-Style the component's root element with `:host`:
+Style an effective Shadow component's root element with `:host`:
 
 ```css
 :host {
@@ -570,9 +593,18 @@ Style the component's root element with `:host`:
 }
 ```
 
+In effective Light DOM, target the component tag directly instead:
+
+```css
+my-card {
+  display: block;
+  padding: 1rem;
+}
+```
+
 ### Attribute-Based Styling
 
-Style the component differently based on its attributes with `:host([attr])`:
+In Shadow DOM, style component attributes with `:host([attr])`:
 
 ```css
 :host([variant="primary"]) {
@@ -586,10 +618,18 @@ Style the component differently based on its attributes with `:host([attr])`:
 }
 ```
 
-### Scoping Rules
+The equivalent global Light selector is `my-card[variant="primary"]` or
+`my-card[disabled]`. `:host`, `:host-context`, and `::slotted` in effective
+Light CSS fail with `unsupported-light-css`; use ordinary selectors or opt the
+component into Shadow DOM.
 
-- Styles defined in a component's `.css` file only apply inside that component's shadow root
-- External page styles do not penetrate into the component
+### CSS Ownership Rules
+
+- Light DOM uses authored/global selectors and normal inheritance/cascade
+- Light CSS can reach other Light DOM in the same Document or ShadowRoot
+- Use deliberate names, `@layer`, and custom properties for global composition
+- Shadow DOM provides a native style boundary
+- Shadow-only selectors in Light components fail the build
 - No CSS-in-JS - styles stay in `.css` files, separate from behavior
 - Use CSS custom properties (`--my-color`) to allow external theming
 
@@ -599,16 +639,17 @@ Understanding the lifecycle helps you write components that work correctly from 
 
 ### 1. Server renders HTML
 
-The handler renders the component's template using JSON state data. No JavaScript runs. The output includes Declarative Shadow DOM:
+The handler renders the component's template using JSON state data. No
+JavaScript runs. In a Light build, unwrapped content is emitted directly:
 
 ```html
 <my-counter>
-  <template shadowrootmode="open">
-    <style>/* scoped styles */</style>
-    <button>Count: 0</button>
-  </template>
+  <button>Count: 0</button>
 </my-counter>
 ```
+
+The default build and authored Shadow islands emit Declarative Shadow DOM with
+styles installed inside the shadow root.
 
 ### 2. Browser displays content
 
@@ -616,7 +657,8 @@ The browser parses the HTML and renders it immediately. The user sees fully styl
 
 ### 3. JavaScript loads and components hydrate
 
-The framework detects the existing Declarative Shadow DOM roots and upgrades elements in place:
+The framework detects the existing Light or Shadow SSR DOM and upgrades
+elements in place:
 
 - Bindings are wired to class properties
 - Event handlers are attached

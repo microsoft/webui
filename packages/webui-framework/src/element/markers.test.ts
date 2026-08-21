@@ -19,6 +19,7 @@ interface MockNode {
   nodeType: number;
   data?: string;
   nextSibling: MockNode | null;
+  hasAttribute?(name: string): boolean;
 }
 
 const ELEMENT = 1;
@@ -263,6 +264,44 @@ describe('findByOrdinal', () => {
     assert.strictEqual(findByOrdinal(parent as unknown as Node, ELEMENT, 1), div);
   });
 
+  test('skips compiler-emitted style fallbacks when counting elements', () => {
+    const style = {
+      nodeType: ELEMENT,
+      nextSibling: null,
+      localName: 'style',
+      getAttribute: (name: string) =>
+        name === 'data-webui-resource' ? 'card' :
+          name === 'data-webui-strategy' ? 'style' : null,
+    } as MockNode;
+    const button = el('button');
+    const parent = makeParent(style, button);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      button,
+    );
+  });
+
+  test('does not skip authored data-webui-resource attributes', () => {
+    const authored = {
+      nodeType: ELEMENT,
+      nextSibling: null,
+      localName: 'div',
+      getAttribute: (name: string) => name === 'data-webui-resource' ? 'authored' : null,
+    } as MockNode;
+    const button = el('button');
+    const parent = makeParent(authored, button);
+
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 0),
+      authored,
+    );
+    assert.strictEqual(
+      findByOrdinal(parent as unknown as Node, ELEMENT, 1),
+      button,
+    );
+  });
+
   test('skips conditional block content when counting elements', () => {
     // Simulates:  <link> <!--wc--> <p>no results</p> <!--/wc--> <div.grid>
     // Template only has <link> and <div.grid>, so <div.grid> = element ordinal 1.
@@ -502,6 +541,75 @@ describe('buildSSRIndex', () => {
 
     assert.strictEqual(index.elements[1], ssrA);
     assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('skips a compiler-emitted style fallback the template never contained', () => {
+    // Inline-CSS components render a `<style data-webui-resource>` into the
+    // render root that `meta.h` has no counterpart for. Counting it shifts
+    // every binding onto the previous element's node.
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', tplA, tplB);
+    const style = {
+      nodeType: ELEMENT,
+      tagName: 'STYLE',
+      localName: 'style',
+      firstChild: null,
+      nextSibling: null,
+      getAttribute: (name: string) =>
+        name === 'data-webui-resource' ? 'card' :
+          name === 'data-webui-strategy' ? 'style' : null,
+    } as unknown as TreeNode;
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', style, ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('skips a compiler-emitted CSS import map the template never contained', () => {
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', tplA, tplB);
+    const importMap = {
+      nodeType: ELEMENT,
+      tagName: 'SCRIPT',
+      localName: 'script',
+      firstChild: null,
+      nextSibling: null,
+      getAttribute: (name: string) =>
+        name === 'type' ? 'importmap' :
+          name === 'data-webui-resource' ? 'card' : null,
+    } as unknown as TreeNode;
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', importMap, ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
+  });
+
+  test('indexes authored elements that use data-webui-resource', () => {
+    const tplAuthored = el('DIV');
+    const tplButton = el('BUTTON');
+    const tpl = el('ROOT', tplAuthored, tplButton);
+    const ssrAuthored = {
+      ...el('DIV'),
+      localName: 'div',
+      getAttribute: (name: string) => name === 'data-webui-resource' ? 'authored' : null,
+    } as unknown as TreeNode;
+    const ssrButton = el('BUTTON');
+    const ssr = el('ROOT', ssrAuthored, ssrButton);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrAuthored);
+    assert.strictEqual(index.elements[2], ssrButton);
   });
 
   test('collects block markers in document order across depths', () => {

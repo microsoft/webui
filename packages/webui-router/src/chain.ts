@@ -10,6 +10,7 @@
 import {
   ROUTE_SELECTOR,
   activateRoute,
+  mountedRouteComponent,
   renderRoot,
   createRouteStub,
   setRouteMeta,
@@ -143,7 +144,7 @@ export function findOrCreateRouteElement(
 
   // For nested routes, search in parent component's render root
   if (parent.el) {
-    const compEl = parent.compEl ?? parent.el.querySelector(parent.component);
+    const compEl = parent.compEl ?? mountedRouteComponent(parent.el, parent.component);
     if (compEl) {
       const root = renderRoot(compEl);
       const allRoutes = root.querySelectorAll(ROUTE_SELECTOR);

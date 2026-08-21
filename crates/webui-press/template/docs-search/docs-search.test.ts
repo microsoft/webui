@@ -166,8 +166,12 @@ test('search results do not retain stale title segments while typing', async (t)
   await page.waitForTimeout(500);
 
   const first = await page.locator('docs-search').evaluate((el) => {
-    const result = el.shadowRoot.querySelector('.result');
+    const root = el.shadowRoot;
+    if (!root) throw new Error('docs-search ShadowRoot missing');
+    const result = root.querySelector('.result');
+    if (!result) throw new Error('docs-search result missing');
     const title = result.querySelector('.result-title');
+    if (!title) throw new Error('docs-search result title missing');
     return {
       href: result.getAttribute('href'),
       normalizedTitle: title.textContent.replace(/\s+/g, ''),
@@ -196,14 +200,17 @@ test('heading search results use CSS spacing for breadcrumb separators', async (
   await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const input = el.shadowRoot.querySelector('input');
+    const input = el.shadowRoot?.querySelector<HTMLInputElement>('input');
+    if (!input) throw new Error('docs-search input missing');
     input.value = 'wasm bundles';
     el.onInput();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   const separator = await page.locator('docs-search').evaluate((el) => {
-    const results = [...el.shadowRoot.querySelectorAll('.result')];
+    const root = el.shadowRoot;
+    if (!root) throw new Error('docs-search ShadowRoot missing');
+    const results = [...root.querySelectorAll('.result')];
     const hrefs = results.map((result) => result.getAttribute('href'));
     const item = results.find((result) =>
       result.getAttribute('href').includes('#building-the-wasm-bundles'),
@@ -351,14 +358,18 @@ test('scrollbars and search highlights use theme-specific colors', async (t) => 
   await page.locator('docs-search').evaluate(async (el) => {
     el.openSearch();
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const input = el.shadowRoot.querySelector('input');
+    const input = el.shadowRoot?.querySelector<HTMLInputElement>('input');
+    if (!input) throw new Error('docs-search input missing');
     input.value = 'asse';
     el.onInput();
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   const dark = await page.locator('docs-search').evaluate((el) => {
-    const mark = el.shadowRoot.querySelector('mark');
+    const root = el.shadowRoot;
+    if (!root) throw new Error('docs-search ShadowRoot missing');
+    const mark = root.querySelector('mark');
+    if (!mark) throw new Error('docs-search highlight missing');
     const hostStyle = getComputedStyle(el);
     return {
       thumb: hostStyle.getPropertyValue('--docs-scrollbar-thumb').trim(),
@@ -629,11 +640,11 @@ async function waitForDocsSearch(page: Page): Promise<void> {
     const el = document
       .querySelector('docs-site-navigation')
       ?.shadowRoot?.querySelector('docs-search');
+    const root = el?.shadowRoot;
     return (
-      el &&
+      root &&
       customElements.get('docs-search') &&
-      el.shadowRoot &&
-      el.shadowRoot.querySelector('input')
+      root.querySelector('input')
     );
   });
 }

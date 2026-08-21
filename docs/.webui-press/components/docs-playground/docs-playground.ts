@@ -23,7 +23,12 @@ import { json as jsonLang } from "@codemirror/lang-json";
 import { css as cssLang } from "@codemirror/lang-css";
 
 interface WasmModule {
-  build_protocol(files: Record<string, string>, entry: string): Uint8Array;
+  build_protocol(
+    files: Record<string, string>,
+    entry: string,
+    projectionManifests?: unknown[],
+    dom?: 'shadow' | 'light',
+  ): Uint8Array;
   Protocol: new (protocol: Uint8Array, plugin?: string) => {
     renderStream(
     state: string,

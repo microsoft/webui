@@ -133,7 +133,6 @@ The compiler emits one JSON-safe `TemplateMeta` per component plus a small compo
       "r": [["items", "item", 1, [[0], 0]]],
       "eg": [],
       "b": [],
-      "sa": "todo-app",
       "sd": 1,
       "re": []
     }
@@ -152,7 +151,6 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
 | `eg` | Event bindings grouped by event name, with handler argument specs and target paths. |
 | `b` | Nested block table (sub-templates for conditional/repeat bodies). |
-| `sa` | Adopted-stylesheet specifier (CSS module). |
 | `sd` | Truthy when client-created instances should attach a shadow root. |
 | `re` | Root-level host events (attached to the host element; observe events targeted at the host itself plus anything bubbling to it - `composed` is required only to cross a shadow boundary). |
 
@@ -382,24 +380,33 @@ Listener cleanup is automatic. `$destroy` (called from `disconnectedCallback` vi
 
 ## CSS strategies
 
-Three delivery modes, set by the compiler from `<link>` / `<style>` declarations in the source HTML:
+Three delivery modes are set by the compiler:
 
 | Strategy | How it works |
 |---|---|
-| **Link** | `<link rel="stylesheet">` baked into `meta.h`. The browser fetches it normally. |
-| **Inline** | `<style>` element baked into `meta.h`. No extra request. |
-| **Module** | A `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` block in the page payload registers the CSS as a module. The framework retrieves the same `CSSStyleSheet` via `import(tag, { with: { type: 'css' } })` and applies it to every instance via `adoptedStyleSheets` (`meta.sa` carries the specifier). |
+| **Link** | Installs an external stylesheet resource |
+| **Style** | Installs compiled CSS in a `<style>` element |
+| **Module** | Starts with an SSR style fallback, then imports and adopts a shared `CSSStyleSheet` |
 
-Module sheets are cached, so each instance pays the cost of one `adoptedStyleSheets` push, not a full CSS parse.
+Compiler-ordered closures install resources once per Document or ShadowRoot.
+Partial navigation, progressive streaming, and component assets share the same
+required `componentStyles` catalog. Module resources carry their CSS directly;
+the catalog installs each specifier's import map once per owning Document
+before importing it, then reuses the cached parsed sheet for every target.
 
 ---
 
 ## Light DOM vs Shadow DOM
 
-Set by the compiler via `--dom` flag, surfaced as `meta.sd`:
+Unwrapped components follow the build fallback: Shadow by default, or Light with
+`dom: "light"`. A sole bare top-level `<template>` explicitly selects Light and
+is unwrapped; a sole top-level `<template shadowrootmode="open">` always selects
+Shadow. The effective result is surfaced as `meta.sd`:
 
 - **Shadow DOM** (`meta.sd` truthy): SSR uses Declarative Shadow DOM. Client-created instances call `attachShadow({ mode: 'open' })`. Slot content stays in light DOM and projects through.
-- **Light DOM**: SSR renders children directly into the host. Client-created instances populate the host's `appendChild` slot. No style isolation; CSS lives globally or on the host.
+- **Light DOM**: SSR renders children directly into the host. Client-created
+  instances populate the host. Authored/global CSS is installed in the owning
+  Document or ShadowRoot, and native `<slot>` is rejected at build time.
 
 `$mount` auto-detects:
 
@@ -407,6 +414,9 @@ Set by the compiler via `--dom` flag, surfaced as `meta.sd`:
 - Children present and `meta.sd` not set → light DOM SSR.
 - `meta.sd` set, no shadow root → shadow DOM client-created (existing children become slot content).
 - Otherwise → light DOM client-created.
+
+Style resources follow compiler-ordered closures and install once per Document
+or ShadowRoot. A ShadowRoot is a closure cut point.
 
 ---
 
@@ -466,7 +476,8 @@ src/
 │   ├── markers.ts              Marker constants, collectItemMarkers,
 │   │                           buildSSRIndex (block-skipping pre-order walk)
 │   ├── diff.ts                 syncRepeat: positional + explicit-key reconciliation
-│   ├── styles.ts               injectModuleStyle (adopted CSS modules)
+│   ├── styles.ts               componentStyles catalog, installComponentStyles
+│   │                           (Link/Style/Module resources, import maps)
 │   └── types.ts                AttrBinding, CondBinding, RepeatBinding,
 │                               TextBinding, ScopeFrame, TemplateInstance
 ├── decorators.ts               @observable, @attr, attribute name registry,

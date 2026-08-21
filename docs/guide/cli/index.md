@@ -33,7 +33,7 @@ Use `--format json` in editors, CI, or AI/agent tooling that needs to parse buil
 Build a WebUI application from an app folder.
 
 ```bash
-webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -44,8 +44,9 @@ webui build [APP] --out <OUT> [--entry <FILE>] [--css <MODE>] [--plugin <NAME>] 
 | `--out <OUT>` | Output folder for protocol and assets, or a `.bin` file path to set the protocol filename (e.g. `./dist/app1.bin`) | *(required)* |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <STRATEGY>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
+| `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load a parser plugin | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--emit-component-assets <TAGS>` | Comma-separated root component tags to emit as static WebUI component assets in `--out` | *(none)* |
@@ -63,9 +64,20 @@ URI-style values.
 
 | Mode | Behavior |
 |------|----------|
-| `link` | Emits `<link>` tags referencing external `.css` files. CSS files are copied to the output folder. |
-| `style` | Embeds CSS content directly in `<style>` tags inside shadow DOM templates. No separate CSS files are written. |
-| `module` | Emits `<script type="importmap">{"imports":{"component":"data:text/css,..."}}</script>` tags that register each component's CSS under a data URI, and adds `shadowrootadoptedstylesheets` to `<template>` tags. The browser shares a single `CSSStyleSheet` across all shadow roots that adopt it. No separate CSS files are written. Based on the [Import Maps](https://html.spec.whatwg.org/multipage/webappapis.html#import-maps) and [CSS Module Scripts](https://github.com/whatwg/html/issues/9572) proposals. If a component supplies its own `<template>` wrapper (e.g. to attach `@event` handlers), WebUI preserves the wrapper attributes and appends `shadowrootadoptedstylesheets="component-name"` when it is missing. |
+| `link` | Emits external `.css` files and installs their `<link>` resources in compiler-defined cascade order. |
+| `style` | Installs compiled CSS in `<style>` elements. No separate CSS files are written. |
+| `module` | Delivers compiled CSS with an SSR fallback and shares imported CSS module stylesheets across component instances when supported. No separate CSS files are written. |
+
+All modes support Light and Shadow components. A component's ordinary paired
+CSS file remains authored/global CSS in Light DOM and remains native Shadow CSS
+in Shadow DOM. Resources are installed once per Document or ShadowRoot in
+first-discovery order, including partial navigation, streaming, and static
+component assets. Full-document SSR installs Document resources before
+`</head>`. When the document omits an explicit head, resources precede document
+content while remaining immediately after any leading doctype.
+Document fragment renders install resources before fragment content; a Shadow
+component rendered directly as the entry installs them inside
+its declarative root.
 
 For long-lived CDN/browser caching, include `[hash]` in
 `--asset-file-name-template`. `[hash]` is the emitted file's SHA-256 content hash
@@ -74,6 +86,60 @@ truncated to 8 hex characters. Link-mode CSS files are still written to `--out`;
 emitted in `<link>` tags. Templates must be ASCII filenames. URL delimiters
 (`#`, `%`, and `?`), path separators, whitespace, control characters, and
 Windows-reserved filename characters are rejected.
+
+**CSS bundling:**
+
+Every component stylesheet is render-blocking, so one file per component costs a
+request each and forfeits cross-file compression. `--css-bundle` merges component
+stylesheets into shared chunks:
+
+```bash
+webui build ./my-app --out ./dist --css link --css-bundle
+```
+
+It composes with `--css` rather than replacing it: bundling decides how
+stylesheets are *grouped*, `--css` decides how they *reach the page*. A Link
+build gets fewer `<link>` tags and requests, and a Style build gets fewer inline
+blocks.
+
+Chunks split rather than duplicate. Only components reached by an identical set
+of CSS trees share a chunk, so a stylesheet used by several routes lands in its
+own chunk and is downloaded and cached once instead of being copied into every
+route bundle. Cascade order is preserved exactly: a chunk's members must be
+adjacent and identically ordered in every closure that contains them. The
+compiler verifies both properties and splits any incompatible chunk.
+
+Chunks are named `_chunk-<first-member>-<count>`, or the component's own tag when
+a chunk has a single member. The leading underscore keeps multi-member resource
+IDs distinct from legal component tags. Link builds retain per-component files
+as independently loaded component and older-handler fallbacks, but current
+handlers link only chunks on the bundled path, so the fallbacks add no requests.
+
+Pair bundling with content-hashed filenames so chunks can be served immutably:
+
+```bash
+webui build ./my-app --out ./dist --css link --css-bundle \
+  --asset-file-name-template "[name]-[hash].[ext]"
+```
+
+The default template is `[name].[ext]`, which emits `_chunk-nav-4.css`. That name
+is stable across builds even when the CSS inside it changes, so it cannot carry a
+long `Cache-Control: max-age=…, immutable`. With `[hash]` the same chunk becomes
+`_chunk-nav-4-36c58ce5.css` and changes only when its bytes change, which is what
+makes a shared chunk worth sharing: it stays in cache across deploys and across
+routes.
+
+Measured on a 26-component example over HTTP/2 with Brotli, bundling is a byte
+and CSSOM optimization first: 14% fewer compressed CSS bytes (identical rules
+compress better in fewer, larger files) and 27% fewer `CSSStyleSheet` objects,
+both deterministic. Load-time metrics improve by low single-digit percentages.
+The win is substantially larger over HTTP/1.1, where request count is bounded by
+head-of-line blocking rather than multiplexed.
+
+`--css-bundle` is rejected with `--css module`, which already inlines every
+stylesheet as a data URI: there is no request to merge, and module specifiers are
+resolved per component at compile time. Bundling is off by default, so protocol
+size and emitted resource names are unchanged unless you opt in.
 
 **Component assets:**
 
@@ -101,6 +167,10 @@ Dependencies shared by the same two or more roots are emitted once as
 `chunk-<first-sorted-component>.webui.js`, and each root dynamically imports the
 chunks it needs. Requested-root order does not change ownership, bytes, or
 hashes. Asset-only records are removed from `protocol.bin`.
+
+Component assets use version 3 with a required, atomically registered
+`componentStyles` catalog. Other versions and assets without the catalog are
+rejected before registration.
 
 `--metafile` writes esbuild-compatible `inputs` and `outputs`, including every
 root-to-chunk `dynamic-import` edge and exact byte attribution. It can be opened
@@ -156,12 +226,31 @@ With the default `--legal-comments inline`, CSS comments that contain
 `@license` or `@preserve`, or start with `/*!` or `//!`, are preserved inline.
 Use `--legal-comments none` to strip all non-signal comments.
 
-**DOM Strategies:**
+**Component DOM ownership:**
 
-| Strategy | Behavior |
-|----------|----------|
-| `shadow` | Components render inside `<template shadowrootmode="open">`. Style encapsulation via Shadow DOM. Default. |
-| `light` | Components render as direct children. No shadow boundary. 26% faster FCP on high-component-count pages. |
+Shadow is the backward-compatible default: unwrapped component content receives
+a compiler-generated open Shadow root. Pass `--dom light` to render unwrapped
+components as direct Light DOM children with authored/global CSS in their
+owning CSS tree. Light CSS is not selector-rewritten or marker-scoped, so
+ordinary selectors can reach other Light DOM in that tree. In either build mode,
+a sole bare top-level `<template>` explicitly selects Light and is unwrapped.
+A sole top-level `<template shadowrootmode="open">` is authoritative and keeps
+that component Shadow, so either build can contain explicit Shadow islands.
+Templates with attributes and policy wrappers such as `w-render` remain
+ordinary/policy content rather than selecting a mode.
+
+`:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
+and fail with `unsupported-light-css` in effective Light CSS. Use ordinary
+selectors such as the component tag, or author an open Shadow root.
+
+Closed roots and invalid values or placement always fail the build. Native
+`<slot>` is allowed in effective Shadow components and rejected in effective
+Light components.
+
+FAST 2/3 plugins currently require effective Shadow components. Combining
+`--plugin fast`, `fast-v2`, or `fast-v3` with an unwrapped component under
+`--dom light` fails with `fast-light-dom-unsupported` instead of allowing the
+FAST client runtime to replace Light SSR with a Shadow root.
 
 See [Performance - Light DOM vs Shadow DOM](/guide/concepts/performance#light-dom-vs-shadow-dom) for benchmarks and guidance.
 
@@ -176,6 +265,9 @@ webui build ./my-app --out ./dist
 
 # Use a custom entry file
 webui build ./my-app --out ./dist --entry home.html
+
+# Opt into mixed Light DOM with authored Shadow islands
+webui build ./my-app --out ./dist --dom light
 
 # Build with style CSS (no external CSS files)
 webui build ./my-app --out ./dist --css style
@@ -249,7 +341,7 @@ webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
 ```
 
 **Arguments:**
@@ -263,8 +355,9 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
+| `--dom <MODE>` | Fallback for components without an authored Shadow root: `shadow` or `light` | `shadow` |
+| `--css-bundle` | Merge component stylesheets into shared chunks. Composes with `--css`; rejected with `--css module`. | *(off)* |
 | `--plugin <NAME>` | Load parser + handler plugins (e.g., `webui`) | *(none)* |
-| `--dom <STRATEGY>` | DOM strategy: `shadow` or `light` | `shadow` |
 | `--components <SOURCE>` | Additional component sources (npm packages or local paths). Repeatable. | *(none)* |
 | `--projection-manifest <PATH>` | Bundler projection manifest fragment. Repeatable and valid only with `--plugin=webui`. | *(none; full state)* |
 | `--api-port <PORT>` | Proxy route requests to your API server. JSON responses provide buffered state; `application/x-webui-stream` responses drive progressive boundary rendering. Encoded paths and queries are forwarded unchanged. | *(none)* |

@@ -231,44 +231,55 @@ Each layer of the architecture contributes to the overall performance profile:
 
 ## Light DOM vs Shadow DOM
 
-Shadow DOM provides style encapsulation but has a performance cost. Benchmark
-data from a 2,400-component email client:
-
-| Metric | Shadow DOM | Light DOM | Improvement |
-|--------|-----------|-----------|-------------|
-| First Contentful Paint | baseline | **26% faster** | fewer shadow root constructions |
-| Layout Operations | baseline | **60% fewer** | no shadow boundary recalculations |
+Neither mode is universally faster. Light removes ShadowRoot and per-instance
+stylesheet objects, enables aggressive CSS bundling, and can improve SSR
+throughput and document completion. Global Light CSS shares one large CSS tree,
+so broad or frequent class/attribute invalidations may cost more than native
+Shadow isolation. Shadow pays more parsing and stylesheet-instance overhead but
+can recalculate styles substantially faster in CSS-heavy repeated component
+trees.
 
 ### When to Use Each
 
-**Shadow DOM** (default) - use when:
-- Style encapsulation is important (shared component libraries)
-- Components are used in contexts where CSS conflicts are likely
-- You need slot-based composition
+**Light DOM** - build with `--dom light` when:
+- Components are mostly static or moderately styled
+- Components benefit from normal CSS inheritance
+- CSS request/stylesheet consolidation matters
+- Global CSS composition is intentional
+- Native slot composition is not required
 
-**Light DOM** - use when:
-- Performance is critical (high-component-count pages)
-- Components are leaf nodes (list items, cards, badges)
-- You control the full page CSS and don't need encapsulation
+**Shadow DOM** - use when:
+- You need native `<slot>` composition
+- Components run in unknown host pages
+- A native Shadow boundary is an explicit requirement
+- Components have large stylesheets, many repeated instances, or frequent host
+  class/attribute changes
 
-### Switching to Light DOM
+### Authoring Shadow DOM
 
-Build with the `--dom=light` flag:
+Shadow is the default fallback for unwrapped components. `--dom light` makes
+unwrapped components Light. A sole bare top-level `<template>` is also an
+explicit Light wrapper; `<template shadowrootmode="open">` explicitly remains
+Shadow in either build mode.
+Invalid or closed wrappers fail every build; `<slot>` fails only when the
+effective component mode is Light.
 
-```bash
-webui build ./src --out ./dist --dom=light
-```
+Keep authoring ordinary paired CSS in both modes. Light CSS remains authored
+global CSS and rejects Shadow-only selectors such as `:host`; Shadow CSS keeps
+native selector semantics.
 
-In Rust handlers, use `DomStrategy::Light`:
+Component resources can use the router's template inventory, but bundled chunks
+have distinct identities and are never inferred from component bits. Chunk
+metadata lists the component resources it covers, so claiming one SSR resource
+also prevents each Light descendant from reinstalling a fallback stylesheet.
 
-```rust
-let options = RenderOptions::new("index.html", "/")
-    .with_dom_strategy(DomStrategy::Light);
-```
+Progressive streaming keeps a separate request-local style resource inventory.
+Each closure and CSS definition is serialized at most once per response, even
+when later boundaries reuse a component or a resource arrived transitively
+through an earlier closure.
 
-CSS differences:
-- Shadow DOM: `:host { display: block; }`
-- Light DOM: `my-component { display: block; }` (use the tag name)
+In a Light build, add open wrappers to slot, encapsulation, or CSS-heavy
+frequently restyled components.
 
 ## Performance Rules
 

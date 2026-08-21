@@ -5,9 +5,22 @@ import type {
   CompiledConditionFn,
   TemplateMeta,
 } from '../template.js';
+import {
+  requireComponentStyles,
+  type ComponentStyles,
+} from '../element/styles.js';
 
 const ASSET_TYPE = 'webui-component-asset';
-const ASSET_VERSION = 2;
+const COMPONENT_STYLES_ASSET_VERSION = 3;
+
+/**
+ * Detached style catalogs already produced by {@link validateAsset}.
+ *
+ * Preparing a catalog validates and deep-copies every resource and closure.
+ * Validation and payload preparation are separate steps that both need the
+ * result, so the first one keeps it instead of making the second redo the walk.
+ */
+const preparedAssetStyles = new WeakMap<object, ComponentStyles>();
 
 /** Dynamic import edge from a component asset root to a shared chunk. */
 export interface ComponentAssetImport {
@@ -22,20 +35,37 @@ export interface ComponentAssetImport {
 /** WebUI Framework component asset emitted by `webui build --emit-component-assets`. */
 export interface ComponentAsset {
   type: 'webui-component-asset';
-  version: 2;
+  /** Light-DOM-aware assets require an atomic component style catalog. */
+  version: 3;
   kind: 'root' | 'chunk';
   root?: string;
   components: string[];
   requiredComponents: string[];
   externalComponents: string[];
   imports: ComponentAssetImport[];
-  templateStyles: string[];
+  componentStyles: ComponentStyles;
   templates: Record<string, TemplateMeta>;
   templateFunctions?: Record<string, CompiledConditionFn[]>;
 }
 
-/** Read the default payload exported by an imported component asset module. */
-export function readComponentAssetModule(module: unknown): unknown {
+/**
+ * Validate and detach an asset's style catalog, remembering the result.
+ *
+ * Returns the same detached catalog on repeat calls for one raw payload, so
+ * validation and payload preparation share a single deep copy.
+ */
+export function prepareAssetComponentStyles(value: unknown): ComponentStyles {
+  if (typeof value === 'object' && value !== null) {
+    const cached = preparedAssetStyles.get(value);
+    if (cached) return cached;
+    const prepared = requireComponentStyles(value);
+    preparedAssetStyles.set(value, prepared);
+    return prepared;
+  }
+  return requireComponentStyles(value);
+}
+
+/** Read the default payload exported by an imported component asset module. */export function readComponentAssetModule(module: unknown): unknown {
   if (!isObject(module) || !isObject(module.default)) {
     throw new Error('[WebUI] Component asset module must default-export an asset object.');
   }
@@ -54,8 +84,11 @@ export function validateAsset(
   if (asset.type !== ASSET_TYPE) {
     throw new Error(`[WebUI] Invalid component asset type: ${String(asset.type)}`);
   }
-  if (asset.version !== ASSET_VERSION) {
+  if (asset.version !== COMPONENT_STYLES_ASSET_VERSION) {
     throw new Error(`[WebUI] Unsupported component asset version: ${String(asset.version)}`);
+  }
+  if (asset.componentStyles === undefined) {
+    throw new Error('[WebUI] Version 3 component assets require componentStyles.');
   }
   if (asset.kind !== expectedKind) {
     throw new Error(
@@ -68,7 +101,7 @@ export function validateAsset(
   if (!Array.isArray(asset.imports)) {
     throw new Error('[WebUI] Component asset imports must be an array.');
   }
-  validateStringArray(asset.templateStyles, 'templateStyles');
+  prepareAssetComponentStyles(asset.componentStyles);
   if (!isObject(asset.templates)) {
     throw new Error('[WebUI] Component asset templates must be an object.');
   }

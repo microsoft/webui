@@ -347,6 +347,13 @@ pub(crate) fn opening_tag_name(input: &str) -> Option<&str> {
     (!tag.closing).then_some(tag.name)
 }
 
+/// Check whether `input` starts with an opening `<name` tag, matched with the
+/// ASCII case-insensitivity HTML tag names use.
+#[inline]
+pub(crate) fn starts_with_html_tag_name(input: &str, name: &str) -> bool {
+    opening_tag_name(input).is_some_and(|tag_name| tag_name.eq_ignore_ascii_case(name))
+}
+
 /// Return the content and closing-tag byte ranges for a `<style>` element that
 /// starts at the beginning of `input`.
 #[inline]

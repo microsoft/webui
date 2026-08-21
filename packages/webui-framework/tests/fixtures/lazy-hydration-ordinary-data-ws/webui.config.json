@@ -1,3 +1,4 @@
 {
-  "script": "module"
+  "script": "module",
+  "dom": "light"
 }

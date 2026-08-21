@@ -62,7 +62,7 @@ export function hasState(state?: Record<string, unknown> | null): state is Recor
 /**
  * Get the render root of a component element.
  * Returns shadowRoot if present, otherwise the element itself.
- * This allows the router to work in both shadow and light DOM modes.
+ * This allows the router to work with both authored Shadow roots and Light DOM.
  */
 export function renderRoot(el: Element): Element | ShadowRoot {
   return (el as HTMLElement).shadowRoot ?? el;
@@ -181,6 +181,41 @@ export function deactivateRoute(el: HTMLElement): void {
   routeParamsMap.set(el, {});
   el.removeAttribute('active');
   el.style.display = 'none';
+}
+
+/** Identify a compiler-owned style marker kept directly inside a route host. */
+function isRouteStyleMarker(node: Node): boolean {
+  if (node.nodeType !== 1) return false;
+  const element = node as Element;
+  if (element.getAttribute('data-webui-resource') === null) return false;
+  const strategy = element.getAttribute('data-webui-strategy');
+  return (element.localName === 'link' && strategy === 'link') ||
+    (element.localName === 'style' && (strategy === 'style' || strategy === 'module'));
+}
+
+/** Return the mounted route component without parsing its tag as a CSS selector. */
+export function mountedRouteComponent(
+  route: HTMLElement,
+  expectedTag?: string,
+): HTMLElement | null {
+  let element = route.firstElementChild;
+  while (element && isRouteStyleMarker(element)) {
+    element = element.nextElementSibling;
+  }
+  if (!element || (expectedTag && element.localName !== expectedTag.toLowerCase())) {
+    return null;
+  }
+  return element as HTMLElement;
+}
+
+/** Remove replaceable route content while retaining compiler-owned style markers. */
+export function clearRouteContent(route: HTMLElement): void {
+  let node = route.firstChild;
+  while (node) {
+    const next = node.nextSibling;
+    if (!isRouteStyleMarker(node)) route.removeChild(node);
+    node = next;
+  }
 }
 
 // ── Compound helpers ─────────────────────────────────────────────

@@ -12,7 +12,14 @@ import { resolveLoaders } from './loaders.js';
 import { ensureComponentLoaded } from './loaders.js';
 import { NavigationCache } from './cache.js';
 import { setupPreloadListeners } from './preload.js';
-import { registerTemplatesAndStyles } from './templates.js';
+import {
+  registerInitialTemplatesAndStyles,
+  registerTemplatesAndStyles,
+} from './templates.js';
+import { findChangeLevel, sameRouteDeclaration } from './chain.js';
+import { findActionRouteEntry } from './actions.js';
+import { mountedRouteComponent } from './route-element.js';
+import type { ComponentStyles } from './types.js';
 
 // ── Test-only type access ────────────────────────────────────────
 // The router's `inventory` and `activeChain` are private at compile
@@ -39,12 +46,18 @@ interface TemplateRegistry {
   __webui?: {
     templates?: Record<string, unknown>;
     templateFns?: Record<string, unknown>;
+    styles?: string[];
     [key: string]: unknown;
   };
 }
 
 function globals(): TemplateRegistry {
   return globalThis as unknown as TemplateRegistry;
+}
+
+/** An empty componentStyles catalog for fixtures that don't exercise CSS. */
+function emptyComponentStyles(): { version: 1; strategy: 'style'; resources: {}; closures: {} } {
+  return { version: 1, strategy: 'style', resources: {}, closures: {} };
 }
 
 // Assign deterministic indices for test components
@@ -136,6 +149,11 @@ describe('WebUIRouter', () => {
         assert.deepEqual(globals().__webui!.state, { title: 'Hello' });
         assert.ok(globals().__webui!.templates?.greeting, 'template metadata should be loaded');
         assert.ok(globals().__webui!.templateFns?.greeting, 'existing templateFns should be preserved');
+        assert.deepEqual(
+          globals().__webui!.styles,
+          ['x-card'],
+          'SSR Module specifiers must remain available for lazy framework deduplication',
+        );
         assert.equal(
           (globals().__webui!.templateHostExclusions as Set<string>).has('lazy-card'),
           true,
@@ -238,7 +256,8 @@ describe('WebUIRouter', () => {
         registerTemplatesAndStyles({
           templates: { 'test-comp': { h: '<div>hello</div>', c: [[[0, ['ready']], 0, [[], 0]]] } },
           templateFunctions: { 'test-comp': '[function(){return true}]' },
-        }, '', new Set(), () => {});
+          componentStyles: emptyComponentStyles(),
+        }, '', () => {});
 
         const registry = globals().__webui!.templates!;
         assert.ok(registry['test-comp'], 'template should be registered');
@@ -278,7 +297,8 @@ describe('WebUIRouter', () => {
         assert.throws(
           () => registerTemplatesAndStyles({
             templates: { 'old-executable': 'window.executed=true;' },
-          }, '', new Set(), () => {}),
+            componentStyles: emptyComponentStyles(),
+          }, '', () => {}),
           /Unsupported executable template payload/,
         );
 
@@ -290,27 +310,203 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial appends module styles before one batched script execution', async () => {
+    test('registers component styles and closures before templates are announced', () => {
+      const origCreateElement = (globalThis as any).document.createElement;
+      const origHead = (globalThis as any).document.head;
+      const origBridge = window.__webuiRegisterComponentStyles;
+      const order: string[] = [];
+      const tag = 'ordered-component';
+      let styleRegistrations = 0;
+      let announcedStyles: unknown = 'not-dispatched';
+      const onRegistered = (event: Event): void => {
+        order.push('event');
+        announcedStyles = (event as CustomEvent<{
+          componentStyles?: unknown;
+        }>).detail.componentStyles;
+        assert.ok(globals().__webui?.templates?.[tag]);
+      };
+      window.addEventListener('webui:templates-registered', onRegistered);
+      window.__webuiRegisterComponentStyles = () => {
+        assert.equal(globals().__webui?.templates?.[tag], undefined);
+        styleRegistrations++;
+        order.push('styles');
+      };
+      (globalThis as any).document.createElement = (elementTag: string) => ({
+        tagName: elementTag,
+        nonce: '',
+        textContent: '',
+      });
+
+      (globalThis as any).document.head = {
+        appendChild(el: Record<string, unknown>) {
+          order.push('closures');
+          // eslint-disable-next-line no-new-func
+          Function(el.textContent as string)();
+          return el;
+        },
+        removeChild() { return undefined; },
+      };
+
+      try {
+        registerTemplatesAndStyles({
+          componentStyles: {
+            version: 1,
+            strategy: 'style',
+            resources: {
+              [tag]: { kind: 'style', css: '.ordered{}' },
+            },
+            closures: { [tag]: [tag] },
+          },
+          templateFunctions: { [tag]: '[function(){return true}]' },
+          templates: { [tag]: { h: '<p>ordered</p>' } },
+        }, '', () => {});
+
+        assert.deepEqual(order, ['styles', 'closures', 'event']);
+        assert.equal(styleRegistrations, 1);
+        assert.equal(
+          announcedStyles,
+          undefined,
+          'styles accepted by the framework bridge should not be registered again from the event',
+        );
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = origBridge;
+        (globalThis as any).document.createElement = origCreateElement;
+        (globalThis as any).document.head = origHead;
+        delete globals().__webui?.templates?.[tag];
+      }
+    });
+
+    test('registers initial component styles before announcing bootstrap templates', () => {
+      const originalBridge = window.__webuiRegisterComponentStyles;
+      const order: string[] = [];
+      const styles = emptyComponentStyles();
+      const templates = { 'initial-card': { h: '<p>Initial</p>' } };
+      const onRegistered = (): void => {
+        order.push('templates');
+      };
+      window.addEventListener('webui:templates-registered', onRegistered);
+      window.__webuiRegisterComponentStyles = (value: unknown) => {
+        assert.strictEqual(value, styles);
+        order.push('styles');
+      };
+
+      try {
+        registerInitialTemplatesAndStyles(templates, styles);
+        assert.deepEqual(order, ['styles', 'templates']);
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = originalBridge;
+      }
+    });
+
+    test('keeps component styles in the template event when the framework bridge is absent', () => {
+      const origBridge = window.__webuiRegisterComponentStyles;
+      const previousStyles = window.__webui!.componentStyles;
+      const tag = 'fallback-event-component';
+      const componentStyles: ComponentStyles = {
+        version: 1,
+        strategy: 'style',
+        resources: {
+          [tag]: { kind: 'style', css: '.fallback{}' },
+        },
+        closures: { [tag]: [tag] },
+      };
+      let announcedStyles: unknown;
+      const onRegistered = (event: Event): void => {
+        announcedStyles = (event as CustomEvent<{
+          componentStyles?: unknown;
+        }>).detail.componentStyles;
+      };
+      window.__webuiRegisterComponentStyles = undefined;
+      delete window.__webui!.componentStyles;
+      window.addEventListener('webui:templates-registered', onRegistered);
+
+      try {
+        registerTemplatesAndStyles({
+          componentStyles,
+          templates: { [tag]: { h: '<p>fallback</p>' } },
+        }, '', () => {});
+
+        assert.equal(announcedStyles, componentStyles);
+        assert.equal(window.__webui!.componentStyles, componentStyles);
+      } finally {
+        window.removeEventListener('webui:templates-registered', onRegistered);
+        window.__webuiRegisterComponentStyles = origBridge;
+        if (previousStyles) window.__webui!.componentStyles = previousStyles;
+        else delete window.__webui!.componentStyles;
+        delete globals().__webui?.templates?.[tag];
+      }
+    });
+
+    test('fallback style merging ignores resource property order', () => {
+      const origBridge = window.__webuiRegisterComponentStyles;
+      window.__webuiRegisterComponentStyles = undefined;
+      window.__webui!.componentStyles = {
+        version: 1,
+        strategy: 'module',
+        resources: {
+          'ordered-component': {
+            css: '.ordered{}',
+            specifier: 'ordered-component',
+            kind: 'module',
+          },
+        },
+        closures: { 'ordered-component': ['ordered-component'] },
+      };
+
+      try {
+        assert.doesNotThrow(() => registerTemplatesAndStyles({
+          componentStyles: {
+            version: 1,
+            strategy: 'module',
+            resources: {
+              'ordered-component': {
+                kind: 'module',
+                specifier: 'ordered-component',
+                css: '.ordered{}',
+              },
+            },
+            closures: { 'ordered-component': ['ordered-component'] },
+          },
+        }, '', () => {}));
+      } finally {
+        window.__webuiRegisterComponentStyles = origBridge;
+        delete window.__webui!.componentStyles;
+      }
+    });
+
+    test('fetchPartial forwards componentStyles through the registration bridge and batches closure scripts', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origQuerySelector = (globalThis as any).document.querySelector;
       const origHead = (globalThis as any).document.head;
+      const origBridge = window.__webuiRegisterComponentStyles;
 
       const order: string[] = [];
       const templateScriptBodies: string[] = [];
       const templateScriptNonces: string[] = [];
-      const importmapBodies: string[] = [];
-      const importmapNonces: string[] = [];
+      let receivedComponentStyles: unknown;
+
+      window.__webuiRegisterComponentStyles = (value: unknown) => {
+        order.push('styles');
+        receivedComponentStyles = value;
+      };
 
       (globalThis as any).fetch = async () => ({
         ok: true,
         headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
-          templateStyles: [
-            '<script type="importmap">{"imports":{"alpha":"data:text/css,.alpha{color:red}"}}</script>',
-            '<script type="importmap">{"imports":{"beta":"data:text/css,.beta{color:blue}"}}</script>',
-          ],
+          componentStyles: {
+            version: 1,
+            strategy: 'module',
+            resources: {
+              alpha: { kind: 'module', specifier: 'alpha', css: '.alpha{color:red}' },
+              beta: { kind: 'module', specifier: 'beta', css: '.beta{color:blue}' },
+            },
+            closures: { alpha: ['alpha'], beta: ['beta'] },
+          },
           templates: {
             alpha: { h: '<div>a</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
             beta: { h: '<div>b</div>', c: [[[0, ['ready']], 0, [[], 0]]] },
@@ -338,15 +534,10 @@ describe('WebUIRouter', () => {
       (globalThis as any).document.querySelector = () => null;
       (globalThis as any).document.head = {
         appendChild(el: Record<string, unknown>) {
-          if (el.tagName === 'script' && el.type === 'importmap') {
-            const body = el.textContent as string;
-            const parsed = JSON.parse(body) as { imports: Record<string, string> };
-            const specifier = Object.keys(parsed.imports)[0];
-            order.push(`importmap:${specifier}`);
-            importmapBodies.push(body);
-            importmapNonces.push(el.nonce as string);
-            return el;
-          }
+          // Import-map installation for Module resources is now the
+          // framework's responsibility (installed lazily per Document when
+          // a component mounts), so the router only appends the batched
+          // condition-closure script.
           order.push('script');
           templateScriptNonces.push(el.nonce as string);
           templateScriptBodies.push(el.textContent as string);
@@ -371,10 +562,9 @@ describe('WebUIRouter', () => {
         const result = await fetchPartial('/test');
 
         assert.ok(result, 'should return partial data');
-        // SSR and SPA paths emit ONE <script type="importmap"> per component
-        // (consistent 1:1 mapping); importmap scripts must be appended
-        // BEFORE the batched closure script.
-        assert.deepEqual(order, ['importmap:alpha', 'importmap:beta', 'script']);
+        // componentStyles registration (via the bridge) happens before the
+        // batched closure script executes.
+        assert.deepEqual(order, ['styles', 'script']);
         // All condition closure arrays are batched into one script tag
         assert.equal(
           templateScriptBodies.length,
@@ -393,35 +583,22 @@ describe('WebUIRouter', () => {
           templateScriptBodies[0].includes('f["beta"]'),
           'batch should include beta closure table',
         );
-        // CSP nonce preserved on every emitted script (importmaps + closure batch).
+        // CSP nonce preserved on the emitted closure batch script.
         assert.deepEqual(
           templateScriptNonces,
           ['test-nonce'],
           'batched closure script should carry the nonce',
         );
-        assert.deepEqual(
-          importmapNonces,
-          ['test-nonce', 'test-nonce'],
-          'each appended importmap script should carry the per-request nonce',
-        );
-        // Each importmap body should register exactly one specifier.
         assert.equal(
-          importmapBodies.length,
-          2,
-          'one importmap script per component (1:1 with SSR emission)',
-        );
-        assert.ok(
-          importmapBodies[0].includes('"alpha":"data:text/css,'),
-          'alpha importmap body should register alpha under a data:text/css URI',
-        );
-        assert.ok(
-          importmapBodies[1].includes('"beta":"data:text/css,'),
-          'beta importmap body should register beta under a data:text/css URI',
+          (receivedComponentStyles as { strategy?: string } | undefined)?.strategy,
+          'module',
+          'the module componentStyles catalog should reach the registration bridge',
         );
         // Templates actually registered
         assert.ok(globals().__webui?.templates?.['alpha'], 'alpha template should register');
         assert.ok(globals().__webui?.templates?.['beta'], 'beta template should register');
       } finally {
+        window.__webuiRegisterComponentStyles = origBridge;
         (globalThis as any).fetch = origFetch;
         (globalThis as any).document.createElement = origCreateElement;
         (globalThis as any).document.querySelector = origQuerySelector;
@@ -429,7 +606,7 @@ describe('WebUIRouter', () => {
       }
     });
 
-    test('fetchPartial handles empty templateStyles for Link/Style modes', async () => {
+    test('fetchPartial handles an empty componentStyles catalog for Link/Style modes', async () => {
       const origFetch = (globalThis as any).fetch;
       const origCreateElement = (globalThis as any).document.createElement;
       const origHead = (globalThis as any).document.head;
@@ -441,7 +618,7 @@ describe('WebUIRouter', () => {
         headers: { get: () => 'application/json' },
         json: async () => ({
           state: {},
-          templateStyles: [],
+          componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
           templates: {
             'link-comp': { h: '<div></div>' },
           },
@@ -538,6 +715,7 @@ describe('WebUIRouter', () => {
             templates: {
               'abort-test': { h: '<div></div>' },
             },
+            componentStyles: emptyComponentStyles(),
             path: '/',
             chain: [],
             inventory: 'ff',
@@ -571,7 +749,7 @@ describe('WebUIRouter', () => {
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
         assert.ok(opts?.signal, 'bounded fetch should always receive a timeout signal');
         assert.equal(opts.signal.aborted, false);
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }) };
+        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }) };
       };
 
       try {
@@ -658,7 +836,7 @@ describe('WebUIRouter', () => {
           const body = new ReadableStream<Uint8Array>({
             start(controller) {
               controller.enqueue(encoder.encode(
-                '{"chain":[],"templates":{},"path":"/first"}\n',
+                '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/first"}\n',
               ));
               firstSignal?.addEventListener(
                 'abort',
@@ -672,7 +850,7 @@ describe('WebUIRouter', () => {
           });
         }
         return new Response(
-          '{"chain":[],"templates":{},"path":"/second"}',
+          '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/second"}',
           { headers: { 'content-type': 'application/json' } },
         );
       };
@@ -1145,12 +1323,13 @@ describe('WebUIRouter', () => {
       };
 
       try {
+        const entry = { component: 'dash-page', path: '/', params: { id: '42' } };
         const results = await resolveLoaders(
-          [{ component: 'dash-page', path: '/', params: { id: '42' } }],
+          [entry],
           { filter: 'active' },
         );
-        assert.ok(results.has('dash-page'), 'should have loader result for dash-page');
-        assert.deepEqual(results.get('dash-page'), { dashId: '42', source: 'loader' });
+        assert.ok(results.has(entry), 'should have loader result for the route entry');
+        assert.deepEqual(results.get(entry), { dashId: '42', source: 'loader' });
       } finally {
         (globalThis as any).customElements.get = origGet;
       }
@@ -1230,6 +1409,32 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('keeps loader state distinct for declarations sharing a component', async () => {
+      const origGet = (globalThis as any).customElements.get;
+      (globalThis as any).customElements.get = (name: string) => {
+        if (name === 'shared-page') {
+          return class SharedPage {
+            static async loader(ctx: { params: Record<string, string> }) {
+              return { id: ctx.params.id };
+            }
+          };
+        }
+        return origGet(name);
+      };
+      const first = { component: 'shared-page', path: '/first/:id', params: { id: 'first' } };
+      const second = { component: 'shared-page', path: '/second/:id', params: { id: 'second' } };
+
+      try {
+        const results = await resolveLoaders([first, second], {});
+
+        assert.equal(results.size, 2);
+        assert.deepEqual(results.get(first), { id: 'first' });
+        assert.deepEqual(results.get(second), { id: 'second' });
+      } finally {
+        (globalThis as any).customElements.get = origGet;
+      }
+    });
+
     test('mountComponent calls applyParamsQueryState with state', () => {
       const router = new WebUIRouter();
       const source = (router as any).mountComponent.toString() as string;
@@ -1277,12 +1482,67 @@ describe('WebUIRouter', () => {
         path: '/',
         params: { id: '42' },
         el: mockRouteEl,
+        compEl: mockCompEl,
         keepAlive: true,
         state: null,  // null = skip setState
       };
 
       priv.applyState(entry, {}, new Map());
       assert.ok(!setStateCalled, 'setState must not be called for keep-alive with null state');
+    });
+
+    describe('route declaration identity and teardown', () => {
+      test('treats distinct paths using one component as different declarations', () => {
+        const login = { component: 'auth-page', path: '/login', params: {} };
+        const signup = { component: 'auth-page', path: '/signup', params: {} };
+
+        assert.equal(sameRouteDeclaration(login, signup), false);
+        assert.equal(findChangeLevel([login], [signup]), 0);
+      });
+
+      test('tears down non-keep-alive siblings through marker-preserving cleanup', () => {
+        const router = new WebUIRouter();
+        const source = (router as unknown as {
+          commitWithData: (...args: unknown[]) => Promise<void>;
+        }).commitWithData.toString();
+
+        assert.ok(source.includes('sameRouteDeclaration(oldEntry, newEntry)'));
+        assert.ok(source.includes('$destroy'));
+        assert.ok(source.includes('clearRouteContent(oldEntry.el)'));
+      });
+
+      test('resolves actions by route element when component tags repeat', () => {
+        const firstRoute = {} as HTMLElement;
+        const secondRoute = {} as HTMLElement;
+        const first = {
+          component: 'shared-page',
+          path: '/first',
+          params: {},
+          el: firstRoute,
+          invalidates: ['first'],
+        };
+        const second = {
+          component: 'shared-page',
+          path: '/second',
+          params: {},
+          el: secondRoute,
+          invalidates: ['second'],
+        };
+
+        assert.strictEqual(findActionRouteEntry([first, second], secondRoute), second);
+      });
+
+      test('finds a dotted component tag without CSS selector parsing', () => {
+        const component = {
+          localName: 'x-foo.bar',
+          nextElementSibling: null,
+        } as unknown as HTMLElement;
+        const route = {
+          firstElementChild: component,
+        } as unknown as HTMLElement;
+
+        assert.strictEqual(mountedRouteComponent(route, 'x-foo.bar'), component);
+      });
     });
 
     test('applyState calls setState for keep-alive with loader override', () => {
@@ -1306,11 +1566,12 @@ describe('WebUIRouter', () => {
         path: '/',
         params: {},
         el: mockRouteEl,
+        compEl: mockCompEl,
         keepAlive: true,
         state: null,
       };
       const loaderStates = new Map();
-      loaderStates.set('test-comp', { fresh: 'data' });
+      loaderStates.set(entry, { fresh: 'data' });
 
       priv.applyState(entry, {}, loaderStates);
       assert.deepEqual(setStateArg, { fresh: 'data' }, 'setState should receive loader override');
@@ -1337,6 +1598,7 @@ describe('WebUIRouter', () => {
         path: '/',
         params: {},
         el: mockRouteEl as any,
+        compEl: mockCompEl,
         keepAlive: false,
         state: { from: 'server' },
       };
@@ -1477,7 +1739,7 @@ describe('WebUIRouter', () => {
         return {
           ok: true,
           headers: { get: () => 'application/json' },
-          json: async () => ({ state: {}, templates: {}, path: '/', chain: [] }),
+          json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }),
         };
       };
 

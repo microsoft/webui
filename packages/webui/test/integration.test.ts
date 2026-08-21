@@ -32,7 +32,7 @@ before(() => {
       ? 'libwebui_node.dylib'
       : 'libwebui_node.so';
   const workspaceAddon = join(process.cwd(), '..', '..', 'target', 'debug', addonName);
-  if (existsSync(workspaceAddon)) {
+  if (!process.env.WEBUI_ADDON_PATH && existsSync(workspaceAddon)) {
     process.env.WEBUI_ADDON_PATH = workspaceAddon;
   }
 
@@ -53,7 +53,11 @@ before(() => {
 </html>
 `);
 
-  writeFileSync(join(appDir, 'my-card.html'), '<div class="card"><slot></slot></div>');
+  writeFileSync(join(appDir, 'my-card.html'), '<div class="card">Content</div>');
+  writeFileSync(
+    join(appDir, 'shadow-card.html'),
+    '<template shadowrootmode="open"><div><slot></slot></div></template>',
+  );
   writeFileSync(join(appDir, 'my-card.css'), '.card { border: 1px solid #ccc; }');
   writeFileSync(join(appDir, 'index2.html'), '<my-card>Hello</my-card>');
   writeFileSync(join(appDir, 'app-shell.html'), '<div>{{name}}</div>');
@@ -100,6 +104,26 @@ describe('build', () => {
     assert.ok(result.stats.componentCount > 0);
     assert.equal(result.cssFiles.length, 2); // [filename, content]
     assert.equal(result.stats.cssFileCount, 1);
+  });
+
+  test('defaults to Shadow and supports mixed Light mode', () => {
+    const defaultShadow = build({ appDir, entry: 'index2.html' });
+    assert.ok(inspect(defaultShadow.protocol).includes('shadowrootmode'));
+
+    const light = build({ appDir, entry: 'index2.html', dom: 'light' });
+    assert.ok(!inspect(light.protocol).includes('shadowrootmode'));
+
+    writeFileSync(join(appDir, 'index-shadow.html'), '<shadow-card>slot</shadow-card>');
+    const shadow = build({ appDir, entry: 'index-shadow.html', dom: 'light' });
+    assert.ok(inspect(shadow.protocol).includes('shadowrootmode'));
+  });
+
+  test('BuildOptions exposes the DOM strategy union', () => {
+    const options: import('@microsoft/webui').BuildOptions = { appDir, dom: 'light' };
+    assert.equal(options.dom, 'light');
+    // @ts-expect-error only open Shadow or global Light strategies are supported.
+    const invalid: import('@microsoft/webui').BuildOptions = { appDir, dom: 'closed' };
+    assert.equal(invalid.appDir, appDir);
   });
 
   test('emits static component asset files and an analyzable metafile', async () => {
@@ -490,7 +514,7 @@ describe('renderComponentTemplates', () => {
     const json = protocol.renderComponentTemplates(['my-card'], '');
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.equal(typeof parsed.templates, 'object');
-    assert.ok(Array.isArray(parsed.templateStyles));
+    assert.equal(typeof parsed.componentStyles, 'object');
     assert.equal(typeof parsed.templateFunctions, 'object');
     assert.equal(typeof parsed.inventory, 'string');
   });
@@ -502,7 +526,8 @@ describe('renderComponentTemplates', () => {
     const parsed: ComponentTemplatesResponse = JSON.parse(json);
     assert.deepEqual(parsed.templates, {});
     assert.deepEqual(parsed.templateFunctions, {});
-    assert.deepEqual(parsed.templateStyles, []);
+    assert.deepEqual(parsed.componentStyles.resources, {});
+    assert.deepEqual(parsed.componentStyles.closures, {});
   });
 });
 

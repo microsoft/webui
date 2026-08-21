@@ -1,13 +1,15 @@
-<section>
-  <test-offscreen-item
-    id="shadow-render-offscreen"
-    label="Shadow offscreen"
-    count="0"
-  ></test-offscreen-item>
-  <test-offscreen-item
-    id="shadow-render-eager"
-    w-render="eager"
-    label="Shadow eager"
-    count="0"
-  ></test-offscreen-item>
-</section>
+<template shadowrootmode="open">
+  <section>
+    <test-offscreen-item
+      id="shadow-render-offscreen"
+      label="Shadow offscreen"
+      count="0"
+    ></test-offscreen-item>
+    <test-offscreen-item
+      id="shadow-render-eager"
+      w-render="eager"
+      label="Shadow eager"
+      count="0"
+    ></test-offscreen-item>
+  </section>
+</template>

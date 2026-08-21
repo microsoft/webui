@@ -10,19 +10,14 @@ message ComponentData {
   // Non-WebUI client-side template payload.
   // FAST plugins store complete <f-template> HTML here.
   string template = 1;
-  // Component CSS content for the Module strategy.
-  // Contains the full CSS content when CssStrategy::Module is active.
-  // Empty for Link and Style strategies (CSS is handled via <link> tags
-  // or inline <style> tags baked into raw fragments by the parser).
+  // Compiled component CSS content for the Style and Module strategies.
+  // Empty for Link and for components without CSS.
   string css = 2;
   // External stylesheet href for the Link CSS strategy.
   // Set to e.g. "/my-card.css" when the component has a CSS file and the
   // build used CssStrategy::Link. Empty for Style/Module strategies and
   // for components without CSS.
-  // The handler uses css_strategy and dom_strategy on WebUIProtocol to
-  // decide what to emit in <head>:
-  //   Link + Shadow → <link rel="preload"> (shadow root has the stylesheet)
-  //   Link + Light  → <link rel="stylesheet"> (no shadow root to host it)
+  // Ordered style closures decide which Document or ShadowRoot owns the link.
   string css_href = 3;
   // WebUI plugin JSON-safe component metadata.
   // Stored separately from executable condition closures so handlers can emit
@@ -49,6 +44,9 @@ message ComponentData {
   // significant: protocols produced before projection metadata leave this
   // absent, so handlers preserve full state instead of treating it as NONE.
   optional StateProjectionMode navigation_mode = 9;
+  // Whether this component effectively uses Shadow DOM after build-time
+  // fallback and authored declarative Shadow DOM resolution.
+  bool uses_shadow_dom = 10;
 }
 
 // Link stylesheet metadata for one static component asset root.
@@ -88,12 +86,6 @@ enum CssStrategy {
   CSS_STRATEGY_MODULE = 2;
 }
 
-// DOM encapsulation strategy chosen at build time.
-enum DomStrategy {
-  DOM_STRATEGY_SHADOW = 0;
-  DOM_STRATEGY_LIGHT = 1;
-}
-
 // Root protocol containing all fragment records and build metadata.
 message WebUIProtocol {
   map<string, FragmentList> fragments = 1;
@@ -103,12 +95,11 @@ message WebUIProtocol {
   repeated string tokens = 2;
   // Per-component data keyed by tag name (f-template + CSS).
   map<string, ComponentData> components = 3;
-  // Build-wide CSS delivery strategy. Determines how the handler emits
-  // CSS-related tags in <head> for components with css_href.
+  // Build-wide CSS delivery strategy. Determines how compiled component
+  // resources are installed in each CSS tree.
   CssStrategy css_strategy = 4;
-  // Build-wide DOM encapsulation strategy. Combined with css_strategy to
-  // decide preload vs stylesheet emission.
-  DomStrategy dom_strategy = 5;
+  reserved 5;
+  reserved "dom_strategy";
   // Whether initial SSR metadata contains full state or WebUI component
   // projection. Partial-navigation state remains component-driven.
   InitialStateStrategy initial_state_strategy = 6;
@@ -132,11 +123,46 @@ message WebUIProtocol {
   // Build-generated document-level rules for component rendering policies.
   // Empty when no component opts into lazy rendering.
   string component_render_css = 9;
+  // Ordered, deduplicated component style resource tags for each Document or
+  // component-root CSS tree entry point.
+  map<string, ComponentStyleClosure> style_closures = 10;
+  // Bundled stylesheets in global cascade order. Empty unless the build
+  // enabled CSS bundling, in which case every component that owns a style
+  // resource belongs to exactly one chunk and handlers deliver chunks instead
+  // of individual component resources.
+  repeated StyleChunk style_chunks = 11;
   // Build-generated eager metadata for static component asset roots.
   //
   // Entries are sorted by root tag. Builds without component assets omit the
   // field from the wire.
-  repeated ComponentAssetStylePreload component_asset_style_preloads = 10;
+  repeated ComponentAssetStylePreload component_asset_style_preloads = 12;
+}
+
+// Compile-time component style resources for one CSS tree.
+message ComponentStyleClosure {
+  // Component tags in cascade-sensitive first-discovery order.
+  repeated string component_tags = 1;
+  // Indices into WebUIProtocol.style_chunks covering exactly the components in
+  // component_tags, in the same cascade order. Empty unless the build enabled
+  // CSS bundling. A chunk is listed only when the closure consumes every
+  // component the chunk carries, so delivering a chunk never over-delivers.
+  repeated uint32 style_chunks = 2;
+}
+
+// One bundled stylesheet carrying a contiguous run of component styles that
+// share the same set of consuming CSS trees.
+message StyleChunk {
+  // Stable build-time chunk name. Surfaces as the data-webui-resource value so
+  // delivered stylesheets stay attributable without a source map.
+  string name = 1;
+  // Concatenated compiled CSS for the Style and Module strategies.
+  // Empty for Link.
+  string css = 2;
+  // External stylesheet href for the Link strategy.
+  // Empty for Style and Module.
+  string css_href = 3;
+  // Component tags whose CSS this chunk concatenates, in cascade order.
+  repeated string component_tags = 4;
 }
 
 // Ordered compile-time boundary names for one entry fragment.

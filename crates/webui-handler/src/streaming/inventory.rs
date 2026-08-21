@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use super::error::component_style_inventory_error;
 use super::StreamingRenderState;
 use crate::{HandlerError, Result, WebUIProcessContext};
 
@@ -249,6 +250,22 @@ pub(super) fn mark_streaming_template_sent(
     Ok(true)
 }
 
+/// Mark one indexed style resource definition as delivered.
+pub(super) fn mark_streaming_style_resource_sent(
+    streaming: &mut StreamingRenderState<'_>,
+    index: u32,
+) -> Result<()> {
+    let byte_index = usize::try_from(index / 8)
+        .map_err(|_| component_style_inventory_error("component style index does not fit usize"))?;
+    if byte_index >= streaming.style_resource_inventory.len() {
+        return Err(component_style_inventory_error(
+            "component style index exceeds the request-local bitset",
+        ));
+    }
+    streaming.style_resource_inventory[byte_index] |= 1u8 << (index % 8);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,7 +286,7 @@ mod tests {
             Vec::new(),
         ));
         let mut streaming = StreamingRenderState::from_progress(
-            super::super::state::StreamingProgress::new(2),
+            super::super::state::StreamingProgress::new(2, 2),
             protocol.component_reachability(),
         );
         streaming.head_marker_emitted = true;

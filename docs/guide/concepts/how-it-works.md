@@ -60,21 +60,27 @@ For each incoming request, the handler:
 - **No expression compilation** - expressions are pre-compiled to key lookups
 - **No JavaScript runtime** - the server is pure native code (Rust, C, or any FFI host)
 
-### Declarative Shadow DOM
+### Light DOM and Declarative Shadow DOM
 
-The rendered HTML includes [Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom) markup. This means the browser can display fully styled component content **before any JavaScript loads**:
+With `--dom light`, unwrapped components render directly into the custom-element
+host. Paired CSS and component-local `<style>` blocks remain authored/global in
+the owning CSS tree, then the handler installs them in cascade order before
+interactivity starts:
 
 ```html
 <my-card>
-  <template shadowrootmode="open">
-    <style>/* scoped styles */</style>
-    <h2>Card Title</h2>
-    <p>Content rendered on the server</p>
-  </template>
+  <h2>Card Title</h2>
+  <p>Content rendered on the server</p>
 </my-card>
 ```
 
-The user sees rendered content immediately - no blank page, no loading spinner.
+Shadow is the default fallback for unwrapped components. Components whose
+complete template is a sole bare `<template>` explicitly use Light and are
+unwrapped. Components whose complete template is a sole open declarative Shadow
+root use
+[Declarative Shadow DOM](https://developer.chrome.com/docs/css-ui/declarative-shadow-dom)
+even in a Light build. Both explicit forms display fully styled server content before
+JavaScript.
 
 ## Client Hydration Phase
 
@@ -85,7 +91,8 @@ server-rendered content unless later navigation or state updates need them.
 ### How hydration works
 
 1. **Custom elements upgrade** - the browser calls `connectedCallback` for each registered Web Component
-2. **Shadow root detection** - the framework finds the existing Declarative Shadow DOM root (it does **not** recreate the DOM)
+2. **Existing DOM detection** - the framework uses the rendered Light children
+   or Declarative Shadow DOM root without recreating the DOM
 3. **Bindings wired** - template expressions (`{{count}}`, `?disabled`) are connected to class properties
 4. **Events connected** - `@click`, `@keydown`, and other handlers are attached with their compiled argument scopes
 5. **Reactive state activated** - `@observable` properties become live; changes trigger targeted DOM updates
@@ -161,7 +168,7 @@ WebUI's architecture is designed so that the most common operation - rendering a
 | **Key-based dynamic resolution** | Simple hash map lookup against JSON state - no expression parsing |
 | **Loaded protocol reuse** | Decode protobuf and build deterministic indices once at startup |
 | **No JavaScript on the server** | Native code (Rust/C) handles rendering - no VM startup, no GC pauses |
-| **Declarative Shadow DOM** | Browser renders content before JS loads - no white flash |
+| **Light or Declarative Shadow DOM SSR** | Browser renders content before JS loads - no white flash |
 | **Islands Architecture** | Only interactive components ship JS - static content has zero client cost |
 | **Binary Protocol Buffer** | Compact build artifact with no runtime template parsing |
 

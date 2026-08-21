@@ -8,7 +8,7 @@
 
 import { isStateful } from './types.js';
 import type { RouteActionContext, RouteActionResult, ActionCompleteEvent } from './types.js';
-import { getRouteParams } from './route-element.js';
+import { getRouteParams, mountedRouteComponent } from './route-element.js';
 import type { RouteChainEntry } from './cache.js';
 
 /** Context needed by form interception to interact with router state. */
@@ -17,6 +17,17 @@ export interface ActionContext {
   readonly currentRequestPath: string;
   setActionController(controller: AbortController | null): void;
   invalidateTags(tags: string[]): void;
+}
+
+/** Resolve the exact active chain entry that owns a route element. */
+export function findActionRouteEntry(
+  activeChain: readonly RouteChainEntry[],
+  routeEl: HTMLElement,
+): RouteChainEntry | undefined {
+  for (let i = 0; i < activeChain.length; i++) {
+    if (activeChain[i].el === routeEl) return activeChain[i];
+  }
+  return undefined;
 }
 
 /**
@@ -81,7 +92,7 @@ export function setupFormInterception(ctx: ActionContext): () => void {
 
     // Get resolved invalidation tags from the active chain entry
     // (not from DOM attr which has unresolved {param} templates)
-    const chainEntry = ctx.activeChain.find(e => e.component === componentTag);
+    const chainEntry = findActionRouteEntry(ctx.activeChain, routeEl);
     const routeInvalidates = chainEntry?.invalidates ?? [];
 
     ctor.action({ formData, params, signal: controller.signal })
@@ -90,7 +101,7 @@ export function setupFormInterception(ctx: ActionContext): () => void {
 
         // Apply optimistic state if provided
         if (result?.state) {
-          const compEl = chainEntry?.compEl ?? routeEl!.querySelector(componentTag!);
+          const compEl = chainEntry?.compEl ?? mountedRouteComponent(routeEl!, componentTag!);
           if (compEl && isStateful(compEl)) {
             compEl.setState(result.state);
           }

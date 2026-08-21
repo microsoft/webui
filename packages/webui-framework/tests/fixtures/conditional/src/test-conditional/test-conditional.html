@@ -1,3 +1,4 @@
+<template shadowrootmode="open">
 <button class="toggle" @click="{toggleOpen()}" ?disabled="{{busy}}">Toggle</button>
 <if condition="open">
   <span class="details">{{details}}</span>
@@ -14,3 +15,4 @@
 <if condition="count > 0">
   <span class="gt-zero">Positive</span>
 </if>
+</template>

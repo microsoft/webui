@@ -87,7 +87,6 @@ test('streaming registration rejects a stale navigation after readiness wait', a
     currentRequestPath: '/old',
     activeChain: [],
     nonce: '',
-    injectedStyles: new Set(),
     injectedCss: new Set(),
     setDeferredReader(reader) {
       deferredReaderSet = reader !== null;
@@ -169,7 +168,6 @@ test('streaming defers chunk-two state until route commit', async () => {
     currentRequestPath: '/new',
     activeChain,
     nonce: '',
-    injectedStyles: new Set(),
     injectedCss: new Set(),
     setDeferredReader(reader) {
       deferredReader = reader;
@@ -244,7 +242,6 @@ test('same-read chunk-two state is folded into commit data once', async () => {
       compEl: component,
     }],
     nonce: '',
-    injectedStyles: new Set(),
     injectedCss: new Set(),
     setDeferredReader(reader) {
       deferredReader = reader;
@@ -322,7 +319,6 @@ test('streaming registration releases its reader when readiness rejects', async 
     currentRequestPath: '/failed',
     activeChain: [],
     nonce: '',
-    injectedStyles: new Set(),
     injectedCss: new Set(),
     setDeferredReader() {},
     setDeferredGeneration() {},
@@ -364,7 +360,6 @@ test('router cancels an unread deferred stream when commit rejects', async () =>
     currentRequestPath: '/failed',
     activeChain: [],
     nonce: '',
-    injectedStyles: new Set(),
     injectedCss: new Set(),
     setDeferredReader() {},
     setDeferredGeneration() {},

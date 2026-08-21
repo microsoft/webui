@@ -7,7 +7,7 @@ This package is the browser-side runtime used by `webui build --plugin=webui`. I
 - `WebUIElement` for SSR hydration and client-created elements
 - `@observable`, `@attr`, and `@volatile` decorators
 - direct DOM binding updates
-- light DOM or shadow DOM rendering (`--dom=light|shadow` flag)
+- Shadow-default components with opt-in global Light and authored Shadow islands
 - SSR state seeding
 
 If you are building WebUI apps in this repo, this is the component model used by examples like `examples/app/todo-webui`, `examples/app/commerce`, and `examples/app/contact-book-manager`.
@@ -79,7 +79,9 @@ CounterCard.define('counter-card');
 <button @click="{increment()}">Increment</button>
 ```
 
-Build with `--dom=shadow` (default) to wrap in a declarative shadow root, or `--dom=light` for light DOM rendering.
+Unwrapped components default to Shadow. A `dom: "light"` build renders them as
+Light while preserving any sole top-level
+`<template shadowrootmode="open">` component as Shadow.
 
 ### Use it from your page
 
@@ -128,10 +130,9 @@ rendered block size of one instance; WebUI emits it as
 `contain-intrinsic-block-size: auto 18rem` before first layout. The SSR DOM
 remains present, searchable, and accessible while the browser skips offscreen
 style, layout, and paint work. The generated policy applies to instances in the
-document, Light DOM, and standard Shadow DOM components. A `--dom=light`
-component inside an authored shadow root needs the `style` CSS strategy or an
-equivalent rule in that root's stylesheet because document styles cannot cross
-the boundary.
+document, Light DOM, and standard Shadow DOM components. A Light component
+inside a Shadow root receives the rule through its precomputed style
+closure, which delivers the stylesheet into that root under every CSS strategy.
 
 Import the optional coordinator entry once before component modules:
 
@@ -258,22 +259,29 @@ post-hydration signal. Descendants must not structurally mutate a containing
 component's SSR subtree before it hydrates, because hydration relies on stable
 compiled paths.
 
-### DOM strategy (`--dom`)
+### Light and Shadow DOM
 
-The `--dom` flag controls how the server renders component content:
-
-| Flag | Behavior |
-|------|----------|
-| `--dom=shadow` (default) | Wraps component HTML in `<template shadowrootmode="open">` |
-| `--dom=light` | Renders component content as direct children of the host element |
+An unwrapped component receives a generated open Shadow root by default. In a
+`dom: "light"` build it renders as direct children of its host. A component
+whose sole top-level element is a bare `<template>` explicitly renders as Light
+and is unwrapped, even under the Shadow fallback. A sole
+`<template shadowrootmode="open">` remains Shadow in either mode. Templates with
+attributes and policy wrappers do not select a mode. Closed roots and invalid
+values or placement are build errors; `<slot>` is rejected only for effective
+Light components.
 
 The runtime auto-detects which mode was used at hydration time:
 - If a `shadowRoot` already exists → shadow DOM SSR path
 - If `childNodes` exist but no shadow root → light DOM SSR path
 - If neither → client-created path (uses `meta.sd` to decide)
 
-Light DOM is useful for simpler styling (CSS inheritance works naturally) and
-better search-engine indexing.  Shadow DOM provides style encapsulation.
+Light components use authored/global ordinary CSS in the owning CSS tree.
+Shadow components keep native Shadow scoping. `:host`, `:host-context`, and
+`::slotted` fail in effective Light CSS.
+The Link, Style, and Module delivery strategies all support both modes.
+
+In a Light build, add open wrappers to slot, native-encapsulation, or CSS-heavy
+frequently restyled components.
 
 ---
 
@@ -323,6 +331,8 @@ The asset graph keeps entry-owned templates external, leaves single-root
 dependencies inline, and emits dependencies shared by multiple roots once as
 flat dynamic chunks. Component assets cannot be combined with `<route>`. Load
 the normal entry bundle first so external prerequisites are registered.
+Current assets require version 3 and an atomically validated
+`componentStyles` catalog; any other version is rejected as unsupported.
 
 The compiler records final Link stylesheet filenames in the protocol. For
 Shadow builds, the handler emits that finite manifest as inert JSON in the
@@ -690,7 +700,6 @@ interface TemplateMeta {
   r?: [collection, itemVar, blockIdx, slot][]; // Repeat blocks
   eg?: [event, [[handler, argSpecs, targetIndex, usesEvent?]]][]; // Events
   b?: TemplateBlockMeta[];             // Nested block metadata
-  sa?: string;                         // Adopted stylesheet specifier
   sd?: 1;                              // Shadow DOM flag for client-created
   re?: [event, handler, argSpecs][];    // Root-level events
   tr?: string[];                       // Template state roots
@@ -856,7 +865,7 @@ The framework supports three CSS delivery strategies:
 | Strategy | How it works |
 |----------|-------------|
 | **Link** | `<link>` tag baked into `meta.h`; the first client-created shadow instance authorizes shared constructable sheets through native loading, then warm instances adopt them before paint |
-| **Inline** | `<style>` tag baked into `meta.h` — no external request |
+| **Style** | `<style>` tag baked into `meta.h` — no external request |
 | **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
 
 Link promotion is progressive enhancement. Registration performs a bounded
@@ -886,7 +895,7 @@ the pending mount, while a synchronous reconnect preserves it. A link error
 is reported, leaves the browser's native links in place, releases the temporary
 guard, and completes deferred hydration. The component may be unstyled after a
 definitive stylesheet failure, but it remains visible and usable. SSR hydration,
-Inline, Module, and Light DOM behavior are unchanged.
+Style, Module, and authored/global Light DOM behavior are unchanged.
 
 ### Intent-time Link preloading for component assets
 

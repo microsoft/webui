@@ -317,9 +317,11 @@ onThemeChanged(): void {
 ```
 
 ```html
-<div ?data-dark="{{theme == 'dark'}}">
-  <slot></slot>
-</div>
+<template shadowrootmode="open">
+  <div ?data-dark="{{theme == 'dark'}}">
+    <slot></slot>
+  </div>
+</template>
 ```
 
 ```css
@@ -371,43 +373,63 @@ This is roughly 15 KB - the handler renders faster, the network transfer is smal
 
 ## Light DOM vs Shadow DOM
 
-WebUI defaults to Shadow DOM for style encapsulation, but Light DOM is available when performance is the priority.
+Shadow is the default fallback for unwrapped component content. Build with
+`--dom light` to make unwrapped components Light with authored/global CSS in
+their owning CSS tree. Selectors and template elements receive no compiler
+ownership markers; normal CSS cascade and inheritance apply across Light
+components. Use deliberate
+tag/class names, `@layer`, and custom properties when composition needs
+predictable ordering.
+
+A sole bare top-level `<template>` is an explicit Light-mode wrapper even in a
+`--dom shadow` build; WebUI removes the wrapper before rendering. A template
+with attributes, a `w-render`/`w-hydrate` policy wrapper, or a nested template
+does not select a mode. Use `<template shadowrootmode="open">` for explicit
+Shadow DOM.
+
+`:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
+and fail with `unsupported-light-css` in Light components. Use an ordinary
+selector such as the component tag, or keep that component Shadow. Raw
+`{{{html}}}` bindings do not change the CSS behavior.
 
 ### Performance Comparison
 
-| Metric | Shadow DOM | Light DOM | Improvement |
-|--------|-----------|-----------|-------------|
-| First Contentful Paint | Baseline | 26% faster | Fewer shadow roots to process |
-| Layout Operations | Baseline | 60% fewer | No shadow boundary recalculations |
+Light generally reduces ShadowRoot/stylesheet-object count and improves
+bundling, SSR throughput, and document completion. Shadow supplies a native CSS
+tree boundary and can be faster when large repeated components recalculate
+styles frequently. Choose based on workload rather than assuming either mode is
+always faster.
 | Memory per Component | Baseline | Lower | No shadow root overhead |
 
 ### When to Use Each
 
-**Shadow DOM** (default):
+**Light DOM** (`--dom light`, unwrapped templates):
 
-- Components with styles that must not leak or be affected by the page
+- Mostly static or moderately styled application composition
+- Components that benefit from normal inheritance and a flatter DOM
+- Components that benefit from shared bundled CSS
+
+**Shadow DOM**:
+
+- Components that use native `<slot>` composition
 - Third-party components embedded in unknown host pages
-- Design system components where style isolation is a requirement
+- Components that specifically require a native Shadow boundary
+- CSS-heavy, highly repeated components with frequent class/attribute changes
 
-**Light DOM**:
+### Authoring Shadow DOM
 
-- High-component-count pages (tables with hundreds of rows, long lists)
-- Performance-critical rendering paths where FCP matters
-- Pages where global CSS is acceptable and preferred
+Shadow is the default. In a `--dom light` build, wrap a component that should
+remain Shadow in the sole top-level element:
 
-### Enabling Light DOM
-
-```bash
-webui build ./src --out ./dist --dom=light
+```html
+<template shadowrootmode="open">
+  <slot></slot>
+</template>
 ```
 
-In Rust handler configuration, use `DomStrategy::Light`.
-
-<webui-blockquote appearance="tip" title="Tip" icon="💡">
-
-Start with Shadow DOM (the default). Switch individual components or pages to Light DOM only when profiling shows a measurable benefit.
-
-</webui-blockquote>
+Only `open` is supported. A closed root or invalid wrapper placement/value is a
+build error. Native `<slot>` is valid in effective Shadow components and fails
+in effective Light components.
 
 ## Summary
 
@@ -419,4 +441,6 @@ Start with Shadow DOM (the default). Switch individual components or pages to Li
 | Check `.length` for empty arrays | Server and client disagree on bare `[]`; `.length` of `0` is falsy on both |
 | Return route-scoped state | Smaller payloads, faster rendering |
 | Prefer declarative bindings over imperative DOM manipulation | Template bindings are reactive and SSR-compatible |
-| Use Light DOM for performance-critical pages | Measurably faster FCP and fewer layout operations |
+| Use `--dom light` only when its composition/network wins fit the app | Avoids trading native CSS isolation for the wrong workload |
+| Author an open wrapper for Shadow islands in a Light build | Keeps slots, encapsulation, and CSS-heavy components tree-local |
+| Put native `<slot>` only in an effective Shadow component | Native slots do not work in Light DOM |

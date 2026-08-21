@@ -6,7 +6,11 @@
  * The server-provided chain remains authoritative for route content.
  */
 
-import { getRouteMeta, ROUTE_SELECTOR } from './route-element.js';
+import {
+  getRouteMeta,
+  mountedRouteComponent,
+  ROUTE_SELECTOR,
+} from './route-element.js';
 import type { RouteChainEntry } from './cache.js';
 
 export interface RouteBoundary {
@@ -134,7 +138,7 @@ function findBestBoundaryRoute(
   let root: Element | ShadowRoot = document.body;
   if (parent) {
     if (!parent.el) return null;
-    const component = parent.compEl ?? parent.el.querySelector(parent.component);
+    const component = parent.compEl ?? mountedRouteComponent(parent.el, parent.component);
     if (!component) return null;
     root = (component as HTMLElement).shadowRoot ?? component;
   }

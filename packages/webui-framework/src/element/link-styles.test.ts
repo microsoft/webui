@@ -147,4 +147,54 @@ describe('Link stylesheet scanning', () => {
       restoreGlobal('document', previousDocument);
     }
   });
+
+  test('does not duplicate an SSR stylesheet preload', () => {
+    class MockCssStyleSheet {
+      replaceSync(): void {}
+    }
+    class MockShadowRoot {}
+    Object.defineProperty(MockShadowRoot.prototype, 'adoptedStyleSheets', {
+      value: [],
+      configurable: true,
+      writable: true,
+    });
+
+    const previousCssStyleSheet = setGlobal('CSSStyleSheet', MockCssStyleSheet);
+    const previousShadowRoot = setGlobal('ShadowRoot', MockShadowRoot);
+    const previousDocument = setGlobal('document', {
+      baseURI: 'https://example.test/app/',
+      createElement() {
+        return {
+          as: '',
+          crossOrigin: '',
+          href: '',
+          integrity: '',
+          onerror: null,
+          onload: null,
+          referrerPolicy: '',
+          rel: '',
+          remove() {},
+        };
+      },
+      head: {
+        querySelectorAll() {
+          return [{ href: 'https://example.test/dashboard.css' }];
+        },
+        appendChild() {
+          assert.fail('an existing SSR preload should be reused');
+        },
+      },
+    });
+
+    try {
+      assert.equal(
+        preloadComponentAssetStyles(['/dashboard.css']),
+        undefined,
+      );
+    } finally {
+      restoreGlobal('CSSStyleSheet', previousCssStyleSheet);
+      restoreGlobal('ShadowRoot', previousShadowRoot);
+      restoreGlobal('document', previousDocument);
+    }
+  });
 });

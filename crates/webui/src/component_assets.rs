@@ -39,9 +39,12 @@ pub struct ComponentAssetGraph {
 }
 
 impl ComponentAssetGraph {
-    pub(crate) fn retain_entry_protocol(&mut self, protocol: &mut WebUIProtocol) {
+    pub(crate) fn retain_entry_protocol(
+        &mut self,
+        protocol: &mut WebUIProtocol,
+    ) -> Result<(), WebUIError> {
         if self.files.is_empty() {
-            return;
+            return Ok(());
         }
         protocol.component_asset_style_preloads = std::mem::take(&mut self.style_preloads);
         protocol
@@ -50,6 +53,64 @@ impl ComponentAssetGraph {
         protocol
             .components
             .retain(|name, _| self.entry_components.binary_search(name).is_ok());
+        let fragments = &protocol.fragments;
+        protocol
+            .style_closures
+            .retain(|name, _| fragments.contains_key(name));
+        let components = &protocol.components;
+        for closure in protocol.style_closures.values_mut() {
+            closure
+                .component_tags
+                .retain(|name| components.contains_key(name));
+        }
+        Self::retain_referenced_style_chunks(protocol)
+    }
+
+    fn retain_referenced_style_chunks(protocol: &mut WebUIProtocol) -> Result<(), WebUIError> {
+        if protocol.style_chunks.is_empty() {
+            return Ok(());
+        }
+
+        let mut retained = vec![false; protocol.style_chunks.len()];
+        for closure in protocol.style_closures.values() {
+            for &index in &closure.style_chunks {
+                if let Some(slot) = retained.get_mut(index as usize) {
+                    *slot = true;
+                }
+            }
+        }
+
+        let old_chunks = std::mem::take(&mut protocol.style_chunks);
+        let mut remap = vec![u32::MAX; old_chunks.len()];
+        protocol
+            .style_chunks
+            .reserve(retained.iter().filter(|keep| **keep).count());
+        for (old_index, (chunk, keep)) in old_chunks.into_iter().zip(retained).enumerate() {
+            if !keep {
+                continue;
+            }
+            remap[old_index] = u32::try_from(protocol.style_chunks.len()).map_err(|_| {
+                WebUIError::InvalidBuildOptions(
+                    "component asset style chunk count exceeds the protocol u32 index limit"
+                        .to_string(),
+                )
+            })?;
+            protocol.style_chunks.push(chunk);
+        }
+
+        for closure in protocol.style_closures.values_mut() {
+            closure.style_chunks.retain(|index| {
+                remap
+                    .get(*index as usize)
+                    .is_some_and(|mapped| *mapped != u32::MAX)
+            });
+            for index in &mut closure.style_chunks {
+                if let Some(mapped) = remap.get(*index as usize) {
+                    *index = *mapped;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -155,4 +216,214 @@ fn validate_unique_asset_file_names(files: &[ComponentAssetFile]) -> Result<(), 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use webui_protocol::{ComponentData, ComponentStyleClosure, FragmentList, StyleChunk};
+
+    #[test]
+    fn retain_entry_protocol_prunes_style_closure_roots_and_resources() {
+        let mut protocol = WebUIProtocol::default();
+        for name in ["index.html", "kept-card", "removed-card"] {
+            protocol
+                .fragments
+                .insert(name.to_string(), FragmentList::default());
+        }
+        for name in ["kept-card", "removed-card"] {
+            protocol
+                .components
+                .insert(name.to_string(), ComponentData::default());
+        }
+        protocol.style_closures.insert(
+            "index.html".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["kept-card".to_string(), "removed-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_closures.insert(
+            "removed-card".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["removed-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        let mut graph = ComponentAssetGraph {
+            files: vec![ComponentAssetFile {
+                name: "root.js".to_string(),
+                content: String::new(),
+            }],
+            metafile: None,
+            style_preloads: Vec::new(),
+            entry_fragments: vec!["index.html".to_string(), "kept-card".to_string()],
+            entry_components: vec!["kept-card".to_string()],
+        };
+
+        graph
+            .retain_entry_protocol(&mut protocol)
+            .expect("retain entry protocol");
+
+        assert_eq!(
+            protocol.style_closures["index.html"].component_tags,
+            ["kept-card"]
+        );
+        assert!(!protocol.style_closures.contains_key("removed-card"));
+    }
+
+    #[test]
+    fn retain_entry_protocol_prunes_and_remaps_style_chunks() {
+        let mut protocol = WebUIProtocol::default();
+        for name in ["index.html", "kept-card", "removed-card"] {
+            protocol
+                .fragments
+                .insert(name.to_string(), FragmentList::default());
+        }
+        for name in ["kept-card", "removed-card"] {
+            protocol
+                .components
+                .insert(name.to_string(), ComponentData::default());
+        }
+        protocol.style_chunks = vec![
+            StyleChunk {
+                name: "removed".to_string(),
+                css: ".removed{}".to_string(),
+                component_tags: vec!["removed-card".to_string()],
+                ..Default::default()
+            },
+            StyleChunk {
+                name: "kept".to_string(),
+                css: ".kept{}".to_string(),
+                component_tags: vec!["kept-card".to_string()],
+                ..Default::default()
+            },
+        ];
+        protocol.style_closures.insert(
+            "index.html".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["kept-card".to_string()],
+                style_chunks: vec![1],
+            },
+        );
+        protocol.style_closures.insert(
+            "removed-card".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["removed-card".to_string()],
+                style_chunks: vec![0],
+            },
+        );
+        let mut graph = ComponentAssetGraph {
+            files: vec![ComponentAssetFile {
+                name: "removed-card.js".to_string(),
+                content: String::new(),
+            }],
+            metafile: None,
+            style_preloads: Vec::new(),
+            entry_fragments: vec!["index.html".to_string(), "kept-card".to_string()],
+            entry_components: vec!["kept-card".to_string()],
+        };
+
+        graph
+            .retain_entry_protocol(&mut protocol)
+            .expect("retain entry protocol");
+
+        assert_eq!(protocol.style_chunks.len(), 1);
+        assert_eq!(protocol.style_chunks[0].name, "kept");
+        assert_eq!(protocol.style_closures["index.html"].style_chunks, [0]);
+    }
+
+    #[test]
+    fn component_asset_rejects_missing_style_closure_metadata() {
+        let mut protocol = WebUIProtocol::default();
+        protocol
+            .fragments
+            .insert("index.html".to_string(), FragmentList::default());
+        protocol.fragments.insert(
+            "legacy-card".to_string(),
+            FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::raw("<p>Legacy</p>")],
+            },
+        );
+        protocol.components.insert(
+            "legacy-card".to_string(),
+            ComponentData {
+                template_json: r#"{"h":"<p>Legacy</p>"}"#.to_string(),
+                css: ".legacy{display:block}".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let error = render_component_assets(
+            &protocol,
+            "index.html",
+            &["legacy-card".to_string()],
+            "[name].[ext]",
+            false,
+        )
+        .expect_err("current component assets require style closure metadata");
+        assert!(error
+            .to_string()
+            .contains("requires missing style closure metadata"));
+    }
+
+    #[test]
+    fn component_asset_serializes_closures_only_for_owned_components() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Style);
+        protocol.fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::component("entry-card")],
+            },
+        );
+        protocol
+            .fragments
+            .insert("entry-card".to_string(), FragmentList::default());
+        protocol.fragments.insert(
+            "deferred-card".to_string(),
+            FragmentList {
+                fragments: vec![webui_protocol::WebUIFragment::component("entry-card")],
+            },
+        );
+        for tag in ["entry-card", "deferred-card"] {
+            protocol.components.insert(
+                tag.to_string(),
+                ComponentData {
+                    template_json: r#"{"h":"<div></div>"}"#.to_string(),
+                    css: format!(".{tag}{{display:block}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.style_closures.insert(
+            "entry-card".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["entry-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_closures.insert(
+            "deferred-card".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["deferred-card".to_string(), "entry-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+
+        let graph = render_component_assets(
+            &protocol,
+            "index.html",
+            &["deferred-card".to_string()],
+            "[name].[ext]",
+            false,
+        )
+        .expect("render component asset");
+        let asset = graph.files.first().expect("deferred root asset");
+
+        assert!(asset
+            .content
+            .contains(r#""closures":{"deferred-card":["deferred-card","entry-card"]}"#));
+        assert!(!asset.content.contains(r#""entry-card":["entry-card"]"#));
+    }
 }

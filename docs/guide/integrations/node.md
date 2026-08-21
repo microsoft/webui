@@ -161,7 +161,8 @@ render immediately and propagate to the caller.
 | `appDir` | `string` | - | Path to app folder |
 | `entry` | `string` | `"index.html"` | Entry file |
 | `css` | `"link" \| "style" \| "module"` | `"link"` | CSS delivery strategy |
-| `dom` | `"shadow" \| "light"` | `"shadow"` | DOM strategy for component rendering |
+| `dom` | `"shadow" \| "light"` | `"shadow"` | Fallback for unwrapped components; Light builds retain authored Shadow islands |
+| `cssBundle` | `boolean` | `false` | Merge component stylesheets into shared chunks. Composes with `css`; rejected with `css: "module"` |
 | `plugin` | `string` | - | Parser plugin name (see [Plugins](/guide/concepts/plugins/) for the available identifiers) |
 | `components` | `string[]` | - | External component sources |
 | `componentAssetRoots` | `string[]` | - | Root component tags emitted as static `.webui.js` ESM assets |
@@ -172,6 +173,11 @@ render immediately and propagate to the caller.
 | `cssPublicBase` | `string` | - | Public URL/path prefix for Link-mode CSS hrefs |
 | `legalComments` | `"inline" \| "none"` | `"inline"` | Preserve legal CSS comments inline, or strip all comments |
 | `theme` | `string` | - | Design token theme JSON path or npm package name. Missing required CSS tokens fail the build (literal `var()` fallbacks are exempt) |
+
+Unwrapped components default to generated open Shadow roots. Set `dom: "light"`
+to make them global Light DOM; authored sole open Shadow roots remain Shadow.
+Light CSS uses ordinary selectors, and `:host`, `:host-context`, and
+`::slotted` fail with `unsupported-light-css`.
 
 ```js
 const result = build({

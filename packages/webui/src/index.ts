@@ -16,8 +16,19 @@ export interface BuildOptions {
   entry?: string;
   /** CSS delivery strategy: "link" (default), "style", or "module". */
   css?: "link" | "style" | "module";
-  /** DOM strategy for component rendering: "shadow" (default) or "light". */
+  /** Fallback DOM strategy for unwrapped components: "shadow" (default) or "light". */
   dom?: "shadow" | "light";
+  /**
+   * Merge component stylesheets into shared bundled chunks.
+   *
+   * Composes with `css`: bundling decides how stylesheets are grouped, `css`
+   * decides how they reach the page. Stylesheets reached from more than one CSS
+   * tree are split into their own chunk so they are downloaded and cached once.
+   *
+   * Rejected with `css: "module"`, which already inlines every stylesheet as a
+   * data URI.
+   */
+  cssBundle?: boolean;
   /** Parser plugin name. */
   plugin?: string;
   /** Additional component sources (npm packages or local paths). */
@@ -96,6 +107,22 @@ export interface ProtocolOptions {
  */
 export type BoundaryMode = "final" | "updatable";
 
+export type ComponentStyleResource = (
+  | { kind: "link"; href: string }
+  | { kind: "style"; css: string }
+  | { kind: "module"; specifier: string; css: string }
+) & {
+  /** Component resource IDs whose rules this bundled resource covers. */
+  members?: string[];
+};
+
+export interface ComponentStyles {
+  version: 1;
+  strategy: "link" | "style" | "module";
+  resources: Record<string, ComponentStyleResource>;
+  closures: Record<string, string[]>;
+}
+
 /** Per-response settings for a host-driven streaming session. */
 export interface StreamOptions {
   /** Fragment ID to start rendering from (default: "index.html"). */
@@ -112,8 +139,8 @@ export interface StreamOptions {
 
 /** Response from `renderComponentTemplates()` for on-demand component loading. */
 export interface ComponentTemplatesResponse {
-  /** Module CSS `<style>` strings for the requested components. */
-  templateStyles: string[];
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** JSON-safe component template metadata keyed by tag name. */
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
@@ -130,6 +157,8 @@ export interface PartialResponse {
   templates: Record<string, unknown>;
   /** JavaScript condition closure arrays keyed by tag name. */
   templateFunctions?: Record<string, string>;
+  /** Versioned component style definitions and ordered closures. */
+  componentStyles: ComponentStyles;
   /** Updated hex bitmask of loaded component templates. */
   inventory: string;
   /** The request path. */
@@ -151,6 +180,8 @@ interface NativeAddon {
     appDir: string;
     entry?: string;
     css?: string;
+    dom?: string;
+    cssBundle?: boolean;
     plugin?: string;
     components?: string[];
     componentAssetRoots?: string[];

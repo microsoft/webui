@@ -94,6 +94,8 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     component_attrs: HashMap<String, Value>,
     route_base: Cow<'a, str>,
     rendered_components: HashSet<String>,
+    document_style_resources: HashSet<String>,
+    shadow_style_roots: Vec<crate::ShadowStyleRoot>,
     plugin: Option<Box<dyn HandlerPlugin>>,
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     head_end_emitted: bool,
@@ -101,6 +103,9 @@ pub struct StreamingResponse<'a, W: FlushWriter + ?Sized> {
     component_asset_styles_emitted: bool,
     body_end_emitted: bool,
     route_chain_index: usize,
+    route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
+    route_document_style_targets: Vec<bool>,
+    reachable_components: Option<Vec<String>>,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
     streaming: StreamingRenderState<'a>,
     json_scratch: Vec<u8>,
@@ -138,6 +143,8 @@ pub(super) struct ParkedResponse {
     component_attrs: HashMap<String, Value>,
     route_base: Box<str>,
     rendered_components: HashSet<String>,
+    document_style_resources: HashSet<String>,
+    shadow_style_roots: Vec<crate::ShadowStyleRoot>,
     plugin: Option<Box<dyn HandlerPlugin>>,
     route_children: Vec<webui_protocol::WebUiFragmentRoute>,
     head_end_emitted: bool,
@@ -145,6 +152,9 @@ pub(super) struct ParkedResponse {
     component_asset_styles_emitted: bool,
     body_end_emitted: bool,
     route_chain_index: usize,
+    route_chain: Option<Vec<crate::route_handler::RouteChainEntry>>,
+    route_document_style_targets: Vec<bool>,
+    reachable_components: Option<Vec<String>>,
     entry_route: Option<(String, crate::route_matcher::RouteMatch)>,
     streaming: StreamingProgress,
     json_scratch: Vec<u8>,
@@ -167,6 +177,8 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_attrs: self.component_attrs,
             route_base: self.route_base.into_owned().into_boxed_str(),
             rendered_components: self.rendered_components,
+            document_style_resources: self.document_style_resources,
+            shadow_style_roots: self.shadow_style_roots,
             plugin: self.plugin,
             route_children: self.route_children,
             head_end_emitted: self.head_end_emitted,
@@ -174,6 +186,9 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_asset_styles_emitted: self.component_asset_styles_emitted,
             body_end_emitted: self.body_end_emitted,
             route_chain_index: self.route_chain_index,
+            route_chain: self.route_chain,
+            route_document_style_targets: self.route_document_style_targets,
+            reachable_components: self.reachable_components,
             entry_route: self.entry_route,
             streaming: self.streaming.into_progress(),
             json_scratch: self.json_scratch,
@@ -223,6 +238,8 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_attrs: parked.component_attrs,
             route_base: Cow::Owned(parked.route_base.into_string()),
             rendered_components: parked.rendered_components,
+            document_style_resources: parked.document_style_resources,
+            shadow_style_roots: parked.shadow_style_roots,
             plugin: parked.plugin,
             route_children: parked.route_children,
             head_end_emitted: parked.head_end_emitted,
@@ -230,6 +247,9 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             component_asset_styles_emitted: parked.component_asset_styles_emitted,
             body_end_emitted: parked.body_end_emitted,
             route_chain_index: parked.route_chain_index,
+            route_chain: parked.route_chain,
+            route_document_style_targets: parked.route_document_style_targets,
+            reachable_components: parked.reachable_components,
             entry_route: parked.entry_route,
             streaming: StreamingRenderState::from_progress(
                 parked.streaming,
@@ -254,6 +274,7 @@ impl WebUIHandler {
         options: &RenderOptions<'a>,
         writer: &'a mut W,
     ) -> Result<StreamingResponse<'a, W>> {
+        protocol.ensure_style_metadata()?;
         let document = protocol.protocol();
         let fragments = document
             .fragments
@@ -269,6 +290,7 @@ impl WebUIHandler {
             )?),
         };
         let component_count = protocol.component_index().len();
+        let style_resource_count = protocol.style_resource_index().len();
         let entry_route = crate::route_renderer::find_best_route_match(
             &fragments.fragments,
             options.request_path,
@@ -295,6 +317,8 @@ impl WebUIHandler {
             component_attrs: HashMap::new(),
             route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
+            document_style_resources: HashSet::new(),
+            shadow_style_roots: Vec::new(),
             plugin: self.plugin_factory.map(|factory| factory()),
             route_children: Vec::new(),
             head_end_emitted: false,
@@ -302,9 +326,12 @@ impl WebUIHandler {
             component_asset_styles_emitted: false,
             body_end_emitted: false,
             route_chain_index: 0,
+            route_chain: None,
+            route_document_style_targets: Vec::new(),
+            reachable_components: None,
             entry_route,
             streaming: StreamingRenderState::from_progress(
-                StreamingProgress::new(component_count),
+                StreamingProgress::new(component_count, style_resource_count),
                 protocol.component_reachability(),
             ),
             json_scratch: Vec::new(),
@@ -563,6 +590,9 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             entry_id: self.entry_id,
             nonce: self.nonce,
             component_index: self.protocol.component_index(),
+            style_resource_index: self.protocol.style_resource_index(),
+            style_chunk_index: self.protocol.protocol().style_chunk_index(),
+            css_strategy: self.protocol.css_strategy(),
             head_inject: self.head_inject,
             body_inject: self.body_inject,
             state_inject: crate::StateInject::resolve(state),
@@ -572,9 +602,14 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
             body_end_emitted: self.body_end_emitted,
             route_index: self.protocol.route_index(),
             route_chain_index: self.route_chain_index,
+            route_chain: std::mem::take(&mut self.route_chain),
+            route_document_style_targets: std::mem::take(&mut self.route_document_style_targets),
+            reachable_components: std::mem::take(&mut self.reachable_components),
             streaming: Some(&mut self.streaming),
             json_scratch: std::mem::take(&mut self.json_scratch),
             scope_pool: std::mem::take(&mut self.scope_pool),
+            document_style_resources: std::mem::take(&mut self.document_style_resources),
+            shadow_style_roots: std::mem::take(&mut self.shadow_style_roots),
         };
 
         let result = operation(self.handler, &mut context);
@@ -589,8 +624,19 @@ impl<'a, W: FlushWriter + ?Sized> StreamingResponse<'a, W> {
         self.component_asset_styles_emitted = context.component_asset_styles_emitted;
         self.body_end_emitted = context.body_end_emitted;
         self.route_chain_index = context.route_chain_index;
+        self.route_chain = std::mem::take(&mut context.route_chain);
+        self.route_document_style_targets =
+            std::mem::take(&mut context.route_document_style_targets);
+        self.reachable_components = std::mem::take(&mut context.reachable_components);
         self.json_scratch = std::mem::take(&mut context.json_scratch);
         self.scope_pool = std::mem::take(&mut context.scope_pool);
+        if !context.shadow_style_roots.is_empty() {
+            return Err(HandlerError::Invariant(
+                "a Shadow CSS tree escaped its component instance".to_string(),
+            ));
+        }
+        self.document_style_resources = std::mem::take(&mut context.document_style_resources);
+        self.shadow_style_roots = std::mem::take(&mut context.shadow_style_roots);
         result
     }
 }
