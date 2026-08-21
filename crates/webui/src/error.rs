@@ -18,9 +18,28 @@ pub enum WebUIError {
         source: std::io::Error,
     },
 
-    /// Component registration failure.
-    #[error("Component registration error: {0}")]
-    ComponentRegistration(String),
+    /// Component registration failure while reading, transforming, or
+    /// inserting an authored component source.
+    ///
+    /// `context` names what was being registered (an app directory or a
+    /// discovered source). The underlying [`ParserError`] is preserved as a
+    /// structured `#[source]` rather than being flattened to a string, so a
+    /// build-time authoring mistake surfaced by a plugin's
+    /// component-source transform (for example an invalid `<f-template>`)
+    /// reaches the CLI as [`ParserError::Template`] with its stable diagnostic
+    /// `code`, source location, snippet, and `help` intact — the same
+    /// structured path already used by [`WebUIError::Parse`].
+    ///
+    /// [`ParserError`]: webui_parser::ParserError
+    /// [`ParserError::Template`]: webui_parser::ParserError::Template
+    #[error("{context}")]
+    ComponentRegistration {
+        /// What was being registered (path or discovered source).
+        context: String,
+        /// The underlying registration error, structurally preserved.
+        #[source]
+        source: webui_parser::ParserError,
+    },
 
     /// Component discovery failure (npm packages or local paths).
     #[error("Component discovery error: {0}")]

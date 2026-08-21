@@ -10,10 +10,12 @@ const F_WHEN_NAME: &str = "f-when";
 /// Validate a FAST directive's attributes and capture its `value` expression in
 /// a single attribute walk.
 ///
-/// Rejects any `f-*` attribute (directives take only `value`) and extracts the
-/// inner expression from the required `value="{{…}}"` attribute. Errors on an
-/// `f-*` attribute take precedence over value validation, matching a prior
-/// full attribute scan followed by value extraction.
+/// Directives accept only the `value="{{…}}"` attribute. Any other attribute —
+/// whether a framework `f-*` attribute or an ordinary one such as `id`, `class`,
+/// or `data-*` — is rejected at its own source offset before value validation,
+/// so it is never silently dropped. The first offending attribute in source
+/// order is reported. Otherwise the inner expression is extracted from the
+/// required `value="{{…}}"` attribute.
 pub(super) fn parse_directive<'a>(
     tag: &Tag<'a>,
     kind: DirectiveKind,
@@ -21,17 +23,30 @@ pub(super) fn parse_directive<'a>(
 ) -> Result<&'a str, ConvertError<'a>> {
     let mut value: Option<(Option<&'a str>, usize)> = None;
     for attr in tag.attrs() {
-        if attr.name.starts_with("f-") {
-            return Err(ConvertError::new(
-                ConvertErrorKind::UnsupportedFAttribute {
-                    attribute: attr.name,
-                },
-                tag_offset + attr.raw_range.start,
-            ));
+        if attr.name == "value" {
+            if value.is_none() {
+                value = Some((attr.value, attr.raw_range.start));
+            }
+            continue;
         }
-        if value.is_none() && attr.name == "value" {
-            value = Some((attr.value, attr.raw_range.start));
-        }
+        // A directive takes only `value`. Reject every other attribute at its
+        // own offset: `f-*` attributes are unsupported FAST syntax, and any
+        // ordinary attribute (`id`, `class`, `data-*`, …) is not part of the
+        // FAST declarative directive grammar and must not be silently dropped.
+        let error_kind = if attr.name.starts_with("f-") {
+            ConvertErrorKind::UnsupportedFAttribute {
+                attribute: attr.name,
+            }
+        } else {
+            ConvertErrorKind::UnexpectedDirectiveAttribute {
+                tag: kind.tag_name(),
+                attribute: attr.name,
+            }
+        };
+        return Err(ConvertError::new(
+            error_kind,
+            tag_offset + attr.raw_range.start,
+        ));
     }
 
     let Some((value, value_raw_start)) = value else {

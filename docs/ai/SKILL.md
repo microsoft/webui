@@ -1165,6 +1165,20 @@ x error: invalid <for> each expression [invalid-for-each]
 Full flag tables, exit codes, and the error-code list:
 [CLI Reference](/guide/cli/).
 
+**FAST authored templates.** With `--plugin=fast-v3` (or the deprecated `fast`
+/ `fast-v2`), a component file authored as one `<f-template name="...">`
+wrapping a single inner `<template>` is recognized: a non-empty `name` sets the
+component tag (else the filename is kept), `<f-repeat>`/`<f-when>` convert to
+`<for>`/`<if>` for SSR, client-only bindings (`@event`, `:property`, `f-ref`,
+`f-slotted`, `f-children`) are counted for hydration, and the authored inner
+`<template>` is retained verbatim for the client artifact. A directive takes
+only `value`; any other directive attribute, a stray FAST closing tag, a
+meaningful sibling around the inner `<template>`, or malformed FAST syntax fails
+the build with `invalid-fast-template` (multiple wrappers use
+`unsupported-multiple-f-templates`). Without a FAST plugin, `<f-template>`
+markup is inert and passes through unchanged. See
+[Plugins](/guide/concepts/plugins/).
+
 ```json
 {
   "scripts": {

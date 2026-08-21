@@ -1410,7 +1410,10 @@ unchanged, exactly like any other component.
 
 The shared FAST transform scans the authored source for an `<f-template>`. A
 source that has one must contain exactly one `<f-template>` with exactly one
-inner `<template>`. A present, non-empty `name` becomes the registered
+inner `<template>` as its only meaningful child — only whitespace and comments
+may surround that inner `<template>`, and a meaningful sibling around it (text
+or another element) returns `invalid-fast-template` rather than being silently
+dropped from the SSR view. A present, non-empty `name` becomes the registered
 component tag and overrides the filename-derived tag. If `name` is absent or
 trims to empty, registration keeps the filename-derived tag. Multiple
 `<f-template>` elements return `unsupported-multiple-f-templates`; multiple
@@ -1443,8 +1446,15 @@ parser view returned as `TransformedComponentSource::parser_content`:
   `{{expression}}` bindings and `?boolean` bindings remain available to the
   WebUI parser; ordinary attributes are not treated as additional FAST
   declarative syntax.
+- A FAST directive (`<f-when>`/`<f-repeat>`) accepts only its `value`
+  attribute. Any other attribute — a framework `f-*` attribute or an ordinary
+  one such as `id`, `class`, or `data-*` — returns `invalid-fast-template` at
+  that attribute's offset, so it is never silently discarded.
 - Unsupported `f-*` elements or attributes and malformed directive expressions
-  return structured authoring diagnostics. WebUI claims support only for the
+  return structured authoring diagnostics. A stray FAST closing tag — a
+  `</f-when>`/`</f-repeat>` with no matching opening directive, or an
+  unsupported `</f-*>` element — is likewise rejected at its own offset instead
+  of leaking into the WebUI parser view. WebUI claims support only for the
   FAST constructs described here. Stable codes are
   `unsupported-multiple-f-templates` for multiple wrappers,
   `invalid-fast-template` for unsupported or malformed FAST declarative syntax,
@@ -1454,10 +1464,14 @@ parser view returned as `TransformedComponentSource::parser_content`:
   absent from the SSR view while the hydration binding count still reflects
   them. No parser-core marker or FAST-named branch is involved.
 
-The transform separately returns the authored `<f-template>` body as
-`TransformedComponentSource::artifact_content`, including its inner template
-and client-only bindings, rather than deriving it from the converted parser
-view. The FAST plugin wraps that retained source in the resolved
+The transform separately returns the authored inner `<template>` (with its
+client-only bindings) as `TransformedComponentSource::artifact_content`, rather
+than deriving it from the converted parser view. Retaining exactly the inner
+`<template>` — not the whole `<f-template>` body — keeps the artifact anchored
+to an element that always begins with `<template`, so it can never be
+accidentally re-wrapped in a synthetic outer `<template>` (which would strand
+the authored template, and its bindings, as inert content of a declarative
+shadow root). The FAST plugin wraps that retained source in the resolved
 `<f-template name="...">` for insertion. The artifact is normalized rather than
 preserved byte-for-byte: it passes through the same generic component-template
 processing as any other component, including wrapper normalization, selected

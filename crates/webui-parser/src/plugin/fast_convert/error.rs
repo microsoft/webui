@@ -47,6 +47,10 @@ impl fmt::Display for ConvertError<'_> {
                 f,
                 "template validation error: '<f-template>' must be the only top-level authored content in the file"
             ),
+            ConvertErrorKind::ContentAroundInnerTemplate => write!(
+                f,
+                "template validation error: '<f-template>' may only contain a single inner '<template>' element; surrounding markup is not supported"
+            ),
             ConvertErrorKind::UnclosedElement { tag } => write!(
                 f,
                 "unclosed element '<{tag}>': no matching '</{tag}>' closing tag was found"
@@ -63,6 +67,10 @@ impl fmt::Display for ConvertError<'_> {
                 "directive '<{tag}>' has invalid value '{}': expected 'value=\"{{{{…}}}}\"'",
                 value
             ),
+            ConvertErrorKind::UnexpectedDirectiveAttribute { tag, attribute } => write!(
+                f,
+                "directive '<{tag}>' does not support the '{attribute}' attribute; only 'value' is allowed"
+            ),
             ConvertErrorKind::ConditionQuoteConflict { value } => write!(
                 f,
                 "f-when condition '{value}' mixes single and double quotes, which cannot be represented in a generated '<if condition>' attribute"
@@ -77,6 +85,10 @@ impl fmt::Display for ConvertError<'_> {
             ConvertErrorKind::UnsupportedFElement { tag } => {
                 write!(f, "unsupported f-* element '<{tag}>'")
             }
+            ConvertErrorKind::UnexpectedClosingDirective { tag } => write!(
+                f,
+                "unexpected closing '</{tag}>': no matching opening '<{tag}>' was found"
+            ),
         }
     }
 }
@@ -84,16 +96,43 @@ impl fmt::Display for ConvertError<'_> {
 /// FAST conversion error categories used to select stable WebUI diagnostics.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConvertErrorKind<'a> {
-    MultipleFTemplates { count: usize },
+    MultipleFTemplates {
+        count: usize,
+    },
     MissingInnerTemplate,
-    MultipleInnerTemplates { count: usize },
+    MultipleInnerTemplates {
+        count: usize,
+    },
     ContentOutsideTemplate,
-    UnclosedElement { tag: &'a str },
+    ContentAroundInnerTemplate,
+    UnclosedElement {
+        tag: &'a str,
+    },
     UnclosedTag,
-    MissingValueAttribute { tag: &'static str },
-    InvalidDirectiveValue { tag: &'static str, value: &'a str },
-    ConditionQuoteConflict { value: &'a str },
-    InvalidRepeatExpression { expr: &'a str },
-    UnsupportedFAttribute { attribute: &'a str },
-    UnsupportedFElement { tag: &'a str },
+    MissingValueAttribute {
+        tag: &'static str,
+    },
+    InvalidDirectiveValue {
+        tag: &'static str,
+        value: &'a str,
+    },
+    UnexpectedDirectiveAttribute {
+        tag: &'static str,
+        attribute: &'a str,
+    },
+    ConditionQuoteConflict {
+        value: &'a str,
+    },
+    InvalidRepeatExpression {
+        expr: &'a str,
+    },
+    UnsupportedFAttribute {
+        attribute: &'a str,
+    },
+    UnsupportedFElement {
+        tag: &'a str,
+    },
+    UnexpectedClosingDirective {
+        tag: &'static str,
+    },
 }

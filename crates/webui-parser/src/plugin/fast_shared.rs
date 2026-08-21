@@ -137,8 +137,8 @@ pub(crate) fn transform_component_source(
         return Ok(ComponentSourceResult::Unchanged);
     }
 
-    let Some(converted) =
-        convert_template(html_content).map_err(|error| converter_error(html_content, &error))?
+    let Some(converted) = convert_template(html_content)
+        .map_err(|error| converter_error(html_content, source.tag_name, &error))?
     else {
         return Ok(ComponentSourceResult::Unchanged);
     };
@@ -174,12 +174,18 @@ fn contains_f_template_name(haystack: &[u8]) -> bool {
 }
 
 /// Build a [`Diagnostic`] error from a converter failure.
+///
+/// `tag_name` is the filename-derived component tag; it is attached as the
+/// diagnostic's owning component so the structured `--> {component}:{line}:{col}`
+/// location survives all the way to `webui build --format json`, even though the
+/// authored `<f-template name>` may not have been resolved before the failure.
 #[cold]
 #[inline(never)]
-fn converter_error(source: &str, error: &ConvertError<'_>) -> ParserError {
+fn converter_error(source: &str, tag_name: &str, error: &ConvertError<'_>) -> ParserError {
     if matches!(error.kind(), ConvertErrorKind::MultipleFTemplates { .. }) {
         return Diagnostic::error("multiple <f-template> elements are not supported")
             .code(codes::UNSUPPORTED_MULTIPLE_F_TEMPLATES)
+            .component(tag_name)
             .at_offset(source, error.offset())
             .snippet("<f-template>")
             .help(
@@ -193,12 +199,18 @@ fn converter_error(source: &str, error: &ConvertError<'_>) -> ParserError {
         | ConvertErrorKind::MultipleInnerTemplates { .. } => {
             "keep exactly one inner <template> element inside <f-template>"
         }
+        ConvertErrorKind::ContentAroundInnerTemplate => {
+            "keep only a single inner <template> inside <f-template> (surrounding content may only be whitespace or comments)"
+        }
         ConvertErrorKind::ContentOutsideTemplate => {
             "keep <f-template> as the only top-level authored content (outside content may only be whitespace or comments)"
         }
         ConvertErrorKind::MissingValueAttribute { .. }
         | ConvertErrorKind::InvalidDirectiveValue { .. } => {
             "add the required value=\"{{expression}}\" attribute to the FAST directive"
+        }
+        ConvertErrorKind::UnexpectedDirectiveAttribute { .. } => {
+            "FAST directives (<f-when>/<f-repeat>) accept only a value=\"{{expression}}\" attribute; remove the others"
         }
         ConvertErrorKind::ConditionQuoteConflict { .. } => {
             "rewrite the f-when condition to use a single quote style (only single or only double quotes)"
@@ -212,6 +224,9 @@ fn converter_error(source: &str, error: &ConvertError<'_>) -> ParserError {
         ConvertErrorKind::UnsupportedFAttribute { .. }
         | ConvertErrorKind::UnsupportedFElement { .. } => {
             "remove the unsupported FAST construct or replace it with supported declarative syntax"
+        }
+        ConvertErrorKind::UnexpectedClosingDirective { .. } => {
+            "remove the stray closing tag or add its matching opening FAST directive"
         }
         ConvertErrorKind::MultipleFTemplates { .. } => {
             "keep only one <f-template> per component file"
@@ -229,6 +244,7 @@ fn converter_error(source: &str, error: &ConvertError<'_>) -> ParserError {
 
     Diagnostic::error(format!("invalid FAST template: {error}"))
         .code(code)
+        .component(tag_name)
         .at_offset(source, error.offset())
         .snippet(converter_error_snippet(error.kind()))
         .help(help)
@@ -243,12 +259,20 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
         | ConvertErrorKind::MissingInnerTemplate
         | ConvertErrorKind::MultipleInnerTemplates { .. }
         | ConvertErrorKind::ContentOutsideTemplate => "<f-template>".to_string(),
+        ConvertErrorKind::ContentAroundInnerTemplate => "<template>".to_string(),
         ConvertErrorKind::UnclosedElement { tag }
         | ConvertErrorKind::MissingValueAttribute { tag }
         | ConvertErrorKind::InvalidDirectiveValue { tag, .. }
         | ConvertErrorKind::UnsupportedFElement { tag } => {
             let mut snippet = String::with_capacity(tag.len() + 2);
             snippet.push('<');
+            snippet.push_str(tag);
+            snippet.push('>');
+            snippet
+        }
+        ConvertErrorKind::UnexpectedClosingDirective { tag } => {
+            let mut snippet = String::with_capacity(tag.len() + 3);
+            snippet.push_str("</");
             snippet.push_str(tag);
             snippet.push('>');
             snippet
@@ -261,7 +285,8 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
             snippet
         }
         ConvertErrorKind::ConditionQuoteConflict { value } => value.to_string(),
-        ConvertErrorKind::UnsupportedFAttribute { attribute } => attribute.to_string(),
+        ConvertErrorKind::UnsupportedFAttribute { attribute }
+        | ConvertErrorKind::UnexpectedDirectiveAttribute { attribute, .. } => attribute.to_string(),
         ConvertErrorKind::UnclosedTag => "<".to_string(),
     }
 }
@@ -334,8 +359,12 @@ mod tests {
     }
 
     #[test]
-    fn parser_extracts_inner_template_while_artifact_keeps_wrapper_body() {
-        let html = r#"<f-template name="named-card">before<template><span>{{label}}</span></template>after</f-template>"#;
+    fn artifact_is_the_authored_inner_template_not_the_wrapper_body() {
+        // The artifact retains exactly the inner <template> (with its
+        // client-only bindings), so it always begins with `<template` and can
+        // never be re-wrapped in a synthetic <template>. Comments may surround
+        // the inner template but are inert and excluded from the artifact.
+        let html = r#"<f-template name="named-card"><!-- lead --><template><button @click="{save()}">{{label}}</button></template><!-- tail --></f-template>"#;
         let ComponentSourceResult::Transformed(result) =
             transform("file-card", html).expect("transform")
         else {
@@ -344,12 +373,41 @@ mod tests {
 
         assert_eq!(
             result.parser_content,
-            "<template><span>{{label}}</span></template>"
+            r#"<template><button @click="{save()}">{{label}}</button></template>"#
+        );
+        let artifact = result.artifact_content.as_deref().expect("artifact");
+        assert!(
+            artifact.starts_with("<template"),
+            "artifact must begin with the inner <template>: {artifact:?}"
         );
         assert_eq!(
-            result.artifact_content.as_deref(),
-            Some("before<template><span>{{label}}</span></template>after")
+            artifact,
+            r#"<template><button @click="{save()}">{{label}}</button></template>"#
         );
+    }
+
+    #[test]
+    fn meaningful_siblings_inside_f_template_are_rejected() {
+        // Content inside <f-template> but around the inner <template> would be
+        // silently dropped from the SSR view; reject it instead of preserving
+        // it only in the client artifact. Covers a leading sibling, a trailing
+        // sibling, and a sibling element.
+        for html in [
+            r#"<f-template name="named-card">before<template><span>{{label}}</span></template></f-template>"#,
+            r#"<f-template name="named-card"><template><span>{{label}}</span></template>after</f-template>"#,
+            r#"<f-template name="named-card"><aside>x</aside><template><span>{{label}}</span></template></f-template>"#,
+        ] {
+            let err = transform("file-card", html)
+                .expect_err("meaningful siblings around the inner template should error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected template diagnostic");
+            };
+            assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+            assert_eq!(diag.component_name(), Some("file-card"));
+            assert!(diag
+                .help_text()
+                .is_some_and(|help| help.contains("single inner <template>")));
+        }
     }
 
     #[test]
@@ -884,5 +942,126 @@ mod tests {
                 Some("close the reported FAST template element or opening tag")
             );
         }
+    }
+
+    #[test]
+    fn meaningful_content_after_f_template_is_a_diagnostic() {
+        // Explicit after-sibling coverage: meaningful content following
+        // </f-template> is rejected the same as content before it.
+        let err = transform(
+            "invalid-card",
+            r#"<f-template name="invalid-card"><template><span>{{label}}</span></template></f-template><div>after</div>"#,
+        )
+        .expect_err("trailing top-level content should error");
+
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.component_name(), Some("invalid-card"));
+        assert_eq!(
+            diag.help_text(),
+            Some(
+                "keep <f-template> as the only top-level authored content (outside content may only be whitespace or comments)"
+            )
+        );
+    }
+
+    #[test]
+    fn ordinary_attributes_on_directives_are_rejected() {
+        // A FAST directive accepts only `value`; ordinary attributes such as
+        // `id`, `class`, and `data-*` must not be silently dropped. Covers both
+        // <f-when> and <f-repeat>, and the valid single-`value` counterpart.
+        for (attr, offending) in [
+            (r#"id="x""#, "id"),
+            (r#"class="c""#, "class"),
+            (r#"data-role="btn""#, "data-role"),
+        ] {
+            for directive in ["f-when", "f-repeat"] {
+                let value = if directive == "f-repeat" {
+                    "{{item in items}}"
+                } else {
+                    "{{visible}}"
+                };
+                let html = format!(
+                    r#"<f-template name="attr-card"><template><{directive} {attr} value="{value}"><span>{{{{label}}}}</span></{directive}></template></f-template>"#
+                );
+                let err = transform("attr-card", &html)
+                    .expect_err("ordinary directive attribute should error");
+                let ParserError::Template(diag) = err else {
+                    panic!("expected template diagnostic");
+                };
+                assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+                assert_eq!(diag.component_name(), Some("attr-card"));
+                assert_eq!(diag.snippet_text(), Some(offending));
+                assert!(diag
+                    .to_string()
+                    .contains(&format!("does not support the '{offending}' attribute")));
+            }
+        }
+    }
+
+    #[test]
+    fn directive_with_only_a_value_attribute_is_accepted() {
+        let result = transformed(
+            "attr-card",
+            r#"<f-template name="attr-card"><template><f-when value="{{visible}}"><f-repeat value="{{item in items}}"><span>{{item.label}}</span></f-repeat></f-when></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><if condition="visible"><for each="item in items"><span>{{item.label}}</span></for></if></template>"#
+        );
+    }
+
+    #[test]
+    fn orphan_and_unsupported_closing_f_tags_are_rejected() {
+        // Stray FAST closing tags must not leak into the WebUI parser view.
+        // A directive close with no matching open and an unsupported `</f-*>`
+        // element both report `invalid-fast-template` at the closing offset.
+        for (html, snippet) in [
+            (
+                r#"<f-template name="orphan-card"><template><span>{{label}}</span></f-when></template></f-template>"#,
+                "</f-when>",
+            ),
+            (
+                r#"<f-template name="orphan-card"><template><span>{{label}}</span></f-repeat></template></f-template>"#,
+                "</f-repeat>",
+            ),
+            (
+                r#"<f-template name="orphan-card"><template><div></f-foo></div></template></f-template>"#,
+                "<f-foo>",
+            ),
+        ] {
+            let err =
+                transform("orphan-card", html).expect_err("stray closing f-* tag should error");
+            let ParserError::Template(diag) = err else {
+                panic!("expected template diagnostic");
+            };
+            assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+            assert_eq!(diag.component_name(), Some("orphan-card"));
+            assert_eq!(diag.snippet_text(), Some(snippet));
+        }
+    }
+
+    #[test]
+    fn converter_diagnostics_carry_the_filename_component_for_json_output() {
+        // Every FAST conversion diagnostic names the filename-derived component
+        // so `webui build --format json` reports `--> file:line:col`, even when
+        // the authored `<f-template name>` was never resolved.
+        let err = transform(
+            "file-card",
+            "<f-template name=\"file-card\">\n  <template>\n    <f-choose></f-choose>\n  </template>\n</f-template>",
+        )
+        .expect_err("unsupported FAST element should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.component_name(), Some("file-card"));
+        assert_eq!(diag.position_line_column(), Some((3, 5)));
+        assert_eq!(
+            diag.location().as_deref(),
+            Some("--> file-card:3:5"),
+            "structured location must survive as `--> file:line:col`"
+        );
     }
 }
