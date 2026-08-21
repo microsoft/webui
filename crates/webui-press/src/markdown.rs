@@ -333,7 +333,7 @@ pub fn render_markdown(
                 && !has_base_path_prefix(&link.url, base_prefix)
             {
                 // Prepend base_path to absolute internal links
-                link.url = format!("{base_prefix}{}", &link.url);
+                link.url = format!("{base_prefix}{}", link.url);
             } else if let Some(resolved) =
                 resolve_relative_link(base_path, link_base_url, &link.url)
             {

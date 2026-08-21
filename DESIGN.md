@@ -2111,9 +2111,14 @@ contract rather than introduce a parallel one.
    removed on activation, rejection, or abandonment. An element without it
    mounts normally even while a streaming response is still open.
 10. **Definitions and waiters are metadata-gated by tag name.** The browser
-    snapshots `observedAttributes` during `customElements.define()`, so a
-    streaming `.define(tag)` request waits until that tag's template metadata is
-    registered. Undefined custom elements then share one
+    snapshots `observedAttributes` during `customElements.define()`, so any
+    `.define(tag)` request whose compiled template metadata has not yet
+    registered waits until it arrives — not only during streaming. Ordinary
+    (non-streaming) WebUI Router partial navigation can eagerly import an
+    authored nested component whose `define(tag)` call runs before the
+    router registers that route's metadata; deferring there too keeps
+    `observedAttributes` complete instead of permanently missing
+    template-only attributes. Undefined custom elements then share one
     `customElements.whenDefined` reaction per tag with a bounded root set,
     never one promise closure per root instance.
 11. **Undefined parents are activation barriers.** If an outer streamed root is
