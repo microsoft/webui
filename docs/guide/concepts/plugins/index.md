@@ -135,9 +135,11 @@ converted and passes through like any other HTML:
 `<f-template name="named-card">` registers the component as `named-card` instead
 of deriving `file-card` from the filename. If `name` is absent or contains only
 whitespace, WebUI keeps the filename-derived tag. The wrapper must contain
-exactly one inner `<template>`. Multiple inner templates and unsupported FAST
-syntax fail the build with an authoring error. Multiple `<f-template>` elements
-are not currently supported and have a dedicated authoring diagnostic.
+exactly one inner `<template>` as its only meaningful child: only whitespace and
+comments may surround it. A meaningful sibling around the inner `<template>`,
+multiple inner templates, and unsupported FAST syntax all fail the build with an
+authoring error rather than being silently dropped. Multiple `<f-template>`
+elements are not currently supported and have a dedicated authoring diagnostic.
 
 WebUI uses two views of this source:
 
@@ -151,13 +153,19 @@ WebUI uses two views of this source:
   bodies is copied verbatim, never treated as a FAST wrapper or directive. An
   absent or empty authored name continues to use the
   filename-derived component tag. Unsupported `f-*` constructs fail conversion
-  instead of being silently accepted. The FAST plugins' `classify_attribute`
+  instead of being silently accepted. A FAST directive accepts only its
+  `value` attribute; any other attribute (an `f-*` attribute or an ordinary one
+  such as `id`, `class`, or `data-*`) and any stray FAST closing tag are
+  rejected at their own offset. The FAST plugins' `classify_attribute`
   skips `@event`, `:property`, `f-ref`, `f-slotted`, and `f-children` and counts
   each as a binding, so hydration binding indexes stay aligned without any
   parser-core marker.
-- **Client artifact view:** WebUI retains the authored `<f-template>` body,
-  including its inner template and client bindings, and emits it inside the
-  resolved `<f-template>` rather than regenerating it from the SSR view. The
+- **Client artifact view:** WebUI retains the authored inner `<template>`, with
+  its client bindings, and emits it inside the resolved `<f-template>` rather
+  than regenerating it from the SSR view. Anchoring the artifact to the inner
+  `<template>` (not the whole `<f-template>` body) means it always begins with
+  `<template` and can never be accidentally re-wrapped in a synthetic outer
+  `<template>`. The
   artifact is normalized and still receives normal wrapper handling, legal
   comment processing, and CSS injection for the selected strategy. Plugins that
   return `None` from

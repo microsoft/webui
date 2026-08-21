@@ -83,6 +83,13 @@ fn template_diagnostic(err: &anyhow::Error) -> Option<&Diagnostic> {
                 source: ParserError::Template(diag),
                 ..
             }) => Some(&**diag),
+            // Component-source transforms (e.g. FAST `<f-template>`) surface
+            // authoring mistakes during registration; the structured
+            // diagnostic is preserved through `ComponentRegistration`'s source.
+            Some(WebUIError::ComponentRegistration {
+                source: ParserError::Template(diag),
+                ..
+            }) => Some(&**diag),
             Some(WebUIError::ComponentAssets(diag) | WebUIError::Projection(diag)) => Some(&**diag),
             _ => None,
         })
@@ -301,6 +308,23 @@ mod tests {
         .into()
     }
 
+    fn registration_template_error() -> anyhow::Error {
+        // A FAST `<f-template>` authoring mistake surfaced by the component
+        // registry's source transform, carried structurally (not flattened to
+        // a string) through `ComponentRegistration`.
+        let diag = Diagnostic::error("invalid FAST template: unsupported f-* element '<f-choose>'")
+            .code("invalid-fast-template")
+            .component("file-card")
+            .position(3, 5)
+            .snippet("<f-choose>")
+            .help("remove the unsupported FAST construct or replace it with supported declarative syntax");
+        WebUIError::ComponentRegistration {
+            context: "Failed to register components from ./src".to_owned(),
+            source: ParserError::Template(Box::new(diag)),
+        }
+        .into()
+    }
+
     #[test]
     fn build_error_message_is_plain_for_browser() {
         // The browser receives `message` via live-reload and logs it with
@@ -374,6 +398,51 @@ mod tests {
         assert!(value["chain"].is_array());
         // The serialized object never carries ANSI escapes.
         assert!(!value.to_string().contains('\u{1b}'));
+    }
+
+    #[test]
+    fn error_json_extracts_registration_template_diagnostic() {
+        // A component-registration authoring mistake must surface its full
+        // structured diagnostic in `--format json` (code/file/line/column/
+        // snippet/help), not a flattened string — the same shape as a parse
+        // error — and never leak ANSI escapes.
+        let prev = console::colors_enabled();
+        console::set_colors_enabled(true);
+        let value = error_json(&registration_template_error());
+        console::set_colors_enabled(prev);
+
+        assert_eq!(value["severity"], "error");
+        assert_eq!(value["code"], "invalid-fast-template");
+        assert_eq!(value["file"], "file-card");
+        assert_eq!(value["line"], 3);
+        assert_eq!(value["column"], 5);
+        assert_eq!(value["snippet"], "<f-choose>");
+        assert!(value["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("invalid FAST template")));
+        assert!(value["help"]
+            .as_str()
+            .is_some_and(|h| h.contains("unsupported FAST construct")));
+        assert!(value["chain"].is_array());
+        assert!(!value.to_string().contains('\u{1b}'));
+    }
+
+    #[test]
+    fn build_error_rendering_for_registration_diagnostic_is_plain_and_located() {
+        // The dev-server/browser rendering path also extracts the structured
+        // diagnostic from a registration error, so the color-free browser
+        // message keeps its rustc-style `--> file:line:col` location.
+        let prev = console::colors_enabled();
+        console::set_colors_enabled(true);
+        let (_display, message) = build_error_renderings(&registration_template_error());
+        console::set_colors_enabled(prev);
+
+        assert!(
+            !message.contains('\u{1b}'),
+            "browser message must be ANSI-free: {message:?}"
+        );
+        assert!(message.contains("--> file-card:3:5"));
+        assert!(message.contains("[invalid-fast-template]"));
     }
 
     #[test]

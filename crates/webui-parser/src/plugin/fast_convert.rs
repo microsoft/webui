@@ -24,6 +24,10 @@ const INNER_TEMPLATE_NAME: &str = "template";
 /// Converted parser and artifact views for one authored `<f-template>`.
 pub(super) struct ConvertedTemplate<'a> {
     pub(super) name: Option<&'a str>,
+    /// Byte range of the authored inner `<template>` element (including its
+    /// opening and closing tags) within the source. Retained verbatim as the
+    /// client artifact, so it always begins with `<template` and is never
+    /// re-wrapped in a synthetic `<template>`.
     pub(super) artifact: Range<usize>,
     pub(super) parser_content: String,
 }
@@ -82,8 +86,8 @@ pub(super) fn convert_template(
             offset,
         ));
     }
-    let artifact = f_template_end..f_template_close;
-    let inner_templates = scan_named_open_tags(source, artifact.clone(), INNER_TEMPLATE_NAME);
+    let body = f_template_end..f_template_close;
+    let inner_templates = scan_named_open_tags(source, body.clone(), INNER_TEMPLATE_NAME);
     let Some(inner_start) = inner_templates.first else {
         return Err(ConvertError::new(
             ConvertErrorKind::MissingInnerTemplate,
@@ -99,7 +103,7 @@ pub(super) fn convert_template(
         ));
     }
 
-    let inner_template = parse_tag(&source[inner_start..artifact.end]).ok_or_else(|| {
+    let inner_template = parse_tag(&source[inner_start..body.end]).ok_or_else(|| {
         ConvertError::new(
             ConvertErrorKind::UnclosedElement {
                 tag: INNER_TEMPLATE_NAME,
@@ -116,19 +120,31 @@ pub(super) fn convert_template(
             inner_start,
         ));
     }
-    let (_, inner_close_end) = find_matching_end_skip_raw_text(
-        &source[..artifact.end],
-        inner_template.name,
-        inner_open_end,
-    )
-    .ok_or_else(|| {
-        ConvertError::new(
-            ConvertErrorKind::UnclosedElement {
-                tag: inner_template.name,
-            },
-            inner_start,
-        )
-    })?;
+    let (_, inner_close_end) =
+        find_matching_end_skip_raw_text(&source[..body.end], inner_template.name, inner_open_end)
+            .ok_or_else(|| {
+            ConvertError::new(
+                ConvertErrorKind::UnclosedElement {
+                    tag: inner_template.name,
+                },
+                inner_start,
+            )
+        })?;
+
+    // The inner `<template>` is the sole supported content of `<f-template>`.
+    // Reject meaningful siblings around it (before `inner_start` or after
+    // `inner_close_end`) so they are never silently dropped from the SSR view
+    // while surviving in the client artifact — only whitespace and comments may
+    // surround it. This also keeps the artifact anchored to the inner
+    // `<template>` so it can never be re-wrapped in an outer `<template>`.
+    if let Some(offset) = first_non_whitespace_non_comment(source, body.start..inner_start)
+        .or_else(|| first_non_whitespace_non_comment(source, inner_close_end..body.end))
+    {
+        return Err(ConvertError::new(
+            ConvertErrorKind::ContentAroundInnerTemplate,
+            offset,
+        ));
+    }
 
     let parser_content = convert_segment(source, inner_start..inner_close_end)?;
     let name = attr_ignore_ascii_case(&f_template, "name")
@@ -137,7 +153,9 @@ pub(super) fn convert_template(
 
     Ok(Some(ConvertedTemplate {
         name,
-        artifact,
+        // Retain exactly the authored inner `<template>` (with its client-only
+        // bindings) as the artifact, not the whole `<f-template>` body.
+        artifact: inner_start..inner_close_end,
         parser_content,
     }))
 }
@@ -249,7 +267,7 @@ fn convert_segment<'a>(source: &'a str, range: Range<usize>) -> Result<String, C
         let end = start + tag.close + 1;
         let raw = &source[start..end];
         if tag.closing {
-            convert_closing_tag(&tag, raw, &mut state)?;
+            convert_closing_tag(&tag, raw, start, &mut state)?;
         } else {
             convert_opening_tag(&tag, raw, start, &mut state)?;
         }
@@ -292,9 +310,20 @@ fn convert_opening_tag<'a>(
 fn convert_closing_tag<'a>(
     tag: &Tag<'a>,
     raw: &'a str,
+    start: usize,
     state: &mut ConvertState,
 ) -> Result<(), ConvertError<'a>> {
     let Some(kind) = DirectiveKind::from_tag_name(tag.name) else {
+        // An unsupported `f-*` closing tag (`</f-foo>`, or a stray
+        // `</f-template>`) has no supported opening form and must not leak into
+        // the SSR view; reject it at its own offset, mirroring the unsupported
+        // opening-element rejection. Ordinary closing tags pass through.
+        if tag.name.starts_with("f-") {
+            return Err(ConvertError::new(
+                ConvertErrorKind::UnsupportedFElement { tag: tag.name },
+                start,
+            ));
+        }
         state.output.push_str(raw);
         return Ok(());
     };
@@ -315,8 +344,15 @@ fn convert_closing_tag<'a>(
         }
     }
 
-    state.output.push_str(raw);
-    Ok(())
+    // No matching opening directive anywhere on the stack: a stray
+    // `</f-when>`/`</f-repeat>` is malformed FAST and must be rejected at its
+    // own offset rather than copied verbatim into the WebUI parser view.
+    Err(ConvertError::new(
+        ConvertErrorKind::UnexpectedClosingDirective {
+            tag: kind.tag_name(),
+        },
+        start,
+    ))
 }
 
 fn convert_directive<'a>(
