@@ -141,19 +141,18 @@ pub(crate) enum Backend {
     /// `cargo xwin build`, cross-compiles the two Windows MSVC targets using
     /// an embedded MSVC-compatible toolchain (headers, import libs, CRT).
     CargoXwin,
-    /// `cargo zigbuild`, cross-compiles the two Apple Darwin targets using
-    /// Zig as the C/Obj-C cross linker.
+    /// `cargo zigbuild`, cross-compiles Apple Darwin targets using Zig as the
+    /// C/Obj-C cross linker.
     CargoZigbuild,
 }
 
 impl Backend {
-    /// The `cargo` subcommand inserted before `build`, e.g. `cargo xwin
-    /// build`. `None` for plain `cargo build`.
-    fn subcommand(self) -> Option<&'static str> {
+    /// Cargo arguments that select the backend's build command.
+    fn build_command(self) -> &'static [&'static str] {
         match self {
-            Backend::Cargo => None,
-            Backend::CargoXwin => Some("xwin"),
-            Backend::CargoZigbuild => Some("zigbuild"),
+            Backend::Cargo => &["build"],
+            Backend::CargoXwin => &["xwin", "build"],
+            Backend::CargoZigbuild => &["zigbuild"],
         }
     }
 }
@@ -744,10 +743,14 @@ fn python_interpreter() -> String {
 /// interpreter makes maturin match the host interpreter against the target
 /// architecture and skip it, which breaks every cross build.
 ///
-/// `backend` adds the maturin flag for the cross toolchain it maps to
-/// (`--xwin` for `CargoXwin`, `--zig` for `CargoZigbuild`); `Backend::Cargo`
-/// adds nothing, since that is either a native build or a Linux target,
-/// where the `manylinux` container's own cross toolchain applies instead.
+/// `backend` adds the maturin flag for the cross toolchain it maps to.
+/// `CargoZigbuild` gets maturin's own `--zig` flag; `Backend::Cargo` adds
+/// nothing, since that is either a native build or a Linux target, where the
+/// `manylinux` container's own cross toolchain applies instead. `CargoXwin`
+/// also adds nothing here: unlike `--zig`, maturin has no built-in `--xwin`
+/// flag (passing one is a clap error), so Windows MSVC cross builds instead
+/// export `cargo-xwin`'s own linker/SDK environment onto the `maturin`
+/// process; see [`cargo_xwin_env`].
 fn maturin_build_args<'a>(
     manifest: &'a str,
     triple: &'a str,
@@ -772,12 +775,52 @@ fn maturin_build_args<'a>(
     if triple.ends_with("-linux-gnu") {
         args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
     }
-    match backend {
-        Backend::Cargo => {}
-        Backend::CargoXwin => args.push("--xwin"),
-        Backend::CargoZigbuild => args.push("--zig"),
+    if backend == Backend::CargoZigbuild {
+        args.push("--zig");
     }
     args
+}
+
+/// The cross-compilation environment variables `cargo xwin build` would set
+/// for `triple` (the MSVC linker, `CC`/`CXX`/`AR`, and the downloaded CRT/SDK
+/// include and lib paths), obtained via `cargo xwin env` instead of
+/// duplicating cargo-xwin's toolchain/SDK resolution here.
+///
+/// maturin invokes `cargo` itself to build the extension module; it has no
+/// `--xwin` flag to ask it to route that invocation through cargo-xwin
+/// (unlike its `--zig` flag for cargo-zigbuild). Exporting the same
+/// environment cargo-xwin uses onto the `maturin` process makes its internal
+/// `cargo build` cross-link against the MSVC target exactly like the
+/// `cargo xwin build` step that stages the native binaries.
+fn cargo_xwin_env(triple: &str) -> Result<Vec<(String, String)>, String> {
+    let output = build_command("cargo", &["xwin", "env", "--target", triple])
+        .output()
+        .map_err(|e| format!("failed to run cargo xwin env: {e}"))?;
+    if !output.status.success() {
+        let mut msg = String::from_utf8_lossy(&output.stderr).into_owned();
+        if msg.is_empty() {
+            msg = format!("exit code {}", output.status.code().unwrap_or(1));
+        }
+        return Err(format!("cargo xwin env failed for {triple}: {msg}"));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_cargo_xwin_env(&stdout))
+}
+
+/// Parse `cargo xwin env`'s `export KEY="VALUE";` lines into key/value pairs.
+/// Split out from [`cargo_xwin_env`] so the parsing logic is unit-testable
+/// without actually invoking `cargo xwin`.
+fn parse_cargo_xwin_env(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("export ")?;
+            let rest = rest.strip_suffix(';').unwrap_or(rest);
+            let (key, value) = rest.split_once('=')?;
+            let value = value.trim_matches('"');
+            Some((key.to_string(), value.to_string()))
+        })
+        .collect()
 }
 
 fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<String, String> {
@@ -804,9 +847,24 @@ fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<Strin
     let manifest_arg = manifest_path.to_string_lossy().into_owned();
     let out_arg = out_dir.to_string_lossy().into_owned();
     let maturin_args = maturin_build_args(&manifest_arg, triple, &out_arg, backend);
-    let env = macos_deployment_target_env(triple);
 
-    run_command_quiet_with_env(&interpreter, &maturin_args, root, env.as_slice())
+    // `CargoZigbuild` reaches its cross toolchain through maturin's own
+    // `--zig` flag, so only `MACOSX_DEPLOYMENT_TARGET` needs exporting.
+    // `CargoXwin` has no equivalent maturin flag: export cargo-xwin's own
+    // linker/SDK environment (see `cargo_xwin_env`) so maturin's internal
+    // `cargo build` cross-links the same way the native binaries did.
+    let mut env: Vec<(String, String)> = macos_deployment_target_env(triple)
+        .map(|(key, value)| vec![(key.to_string(), value.to_string())])
+        .unwrap_or_default();
+    if backend == Backend::CargoXwin {
+        env.extend(cargo_xwin_env(triple)?);
+    }
+    let env_refs: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+
+    run_command_quiet_with_env(&interpreter, &maturin_args, root, &env_refs)
         .map_err(|e| format!("maturin build failed: {e}"))?;
 
     let expected = format!(
@@ -920,10 +978,7 @@ pub(crate) fn native_build_args<'a>(
     backend: Backend,
 ) -> Result<Vec<&'a str>, String> {
     let mut args = Vec::with_capacity(14);
-    if let Some(subcommand) = backend.subcommand() {
-        args.push(subcommand);
-    }
-    args.push("build");
+    args.extend_from_slice(backend.build_command());
     match profile {
         "release" => args.push("--release"),
         "debug" => {}
@@ -2460,7 +2515,8 @@ mod tests {
 
         let zigbuild = native_build_args("aarch64-apple-darwin", "release", Backend::CargoZigbuild)
             .expect("zigbuild backend should be supported");
-        assert_eq!(&zigbuild[..2], &["zigbuild", "build"]);
+        assert_eq!(zigbuild[0], "zigbuild");
+        assert_ne!(zigbuild.get(1), Some(&"build"));
 
         // Every backend still builds the same three native packages.
         for args in [&cargo, &xwin, &zigbuild] {
@@ -2534,10 +2590,10 @@ mod tests {
     }
 
     #[test]
-    fn backend_subcommand_matches_expected_cargo_plugin() {
-        assert_eq!(Backend::Cargo.subcommand(), None);
-        assert_eq!(Backend::CargoXwin.subcommand(), Some("xwin"));
-        assert_eq!(Backend::CargoZigbuild.subcommand(), Some("zigbuild"));
+    fn backend_build_command_matches_cargo_plugin_contract() {
+        assert_eq!(Backend::Cargo.build_command(), &["build"]);
+        assert_eq!(Backend::CargoXwin.build_command(), &["xwin", "build"]);
+        assert_eq!(Backend::CargoZigbuild.build_command(), &["zigbuild"]);
     }
 
     #[test]
@@ -2551,13 +2607,16 @@ mod tests {
         assert!(!cargo.contains(&"--xwin"));
         assert!(!cargo.contains(&"--zig"));
 
+        // maturin has no `--xwin` flag (unlike `--zig`): passing one is a
+        // clap error. The `CargoXwin` backend instead exports cargo-xwin's
+        // environment onto the maturin process; see `cargo_xwin_env`.
         let xwin = maturin_build_args(
             "Cargo.toml",
             "x86_64-pc-windows-msvc",
             "out",
             Backend::CargoXwin,
         );
-        assert!(xwin.contains(&"--xwin"));
+        assert!(!xwin.contains(&"--xwin"));
         assert!(!xwin.contains(&"--zig"));
 
         let zigbuild = maturin_build_args(
@@ -2568,6 +2627,34 @@ mod tests {
         );
         assert!(zigbuild.contains(&"--zig"));
         assert!(!zigbuild.contains(&"--xwin"));
+    }
+
+    #[test]
+    fn parse_cargo_xwin_env_extracts_exported_pairs() {
+        let output = "export CC_x86_64_pc_windows_msvc=\"clang-cl\";\n\
+                       export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=\"lld-link\";\n\
+                       \n\
+                       not an export line\n";
+        let vars = parse_cargo_xwin_env(output);
+        assert_eq!(
+            vars,
+            vec![
+                (
+                    "CC_x86_64_pc_windows_msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER".to_string(),
+                    "lld-link".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_cargo_xwin_env_ignores_blank_and_malformed_lines() {
+        assert!(parse_cargo_xwin_env("").is_empty());
+        assert!(parse_cargo_xwin_env("export NO_VALUE;\n").is_empty());
     }
 
     #[test]
