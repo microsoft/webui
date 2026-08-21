@@ -69,19 +69,24 @@ Common commands:
 | `cargo xtask build` | Build the workspace and examples |
 | `cargo xtask dev <app>` | Run an example app in development mode |
 | `cargo xtask bench <target>` | Run benchmarks |
-| `cargo xtask build-windows-local` | Manually build and stage Windows MSVC artifacts on macOS |
+| `cargo xtask build-windows-local` | Manually build and stage Windows MSVC artifacts on Linux or macOS |
 
-### Manual Windows builds on macOS
+### Manual Windows cross-builds
 
 `cargo xtask build-windows-local` is a local-only helper for producing Windows
-x64 and ARM64 release bits from macOS. It does not run in CI and does not
-install tools automatically.
+x64 and ARM64 release bits from Linux or macOS. It does not install tools
+automatically.
 
-Install the build prerequisites once:
+Install LLVM, LLD, and the pinned cargo-xwin release once:
 
 ```bash
+# Ubuntu/Debian
+sudo apt-get install clang lld llvm
+
+# macOS
 brew install llvm lld
-cargo install cargo-xwin --version 0.23.0
+
+cargo install --locked cargo-xwin --version 0.23.0
 rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
 ```
 
@@ -103,6 +108,35 @@ The command stages artifacts into `publish/native/`, `packages/webui-win32-*`,
 and `dotnet/runtimes/win-*/native/`. `cargo-xwin` downloads Microsoft Windows
 SDK and CRT assets; using it requires accepting the Microsoft SDK license terms
 referenced by cargo-xwin.
+
+### Manual macOS cross-builds on Linux
+
+macOS release artifacts build through cargo-zigbuild with a legally obtained
+Apple SDK. Install Zig 0.13.0, cargo-zigbuild, maturin, and both Rust targets:
+
+```bash
+zig version # must print 0.13.0
+cargo install --locked cargo-zigbuild --version 0.23.0
+python3.11 -m pip install "maturin==1.14.1"
+rustup target add x86_64-apple-darwin aarch64-apple-darwin
+```
+
+Point `SDKROOT` at the extracted SDK and retain the release contract's minimum
+deployment version for each architecture:
+
+```bash
+export SDKROOT=/absolute/path/to/MacOSX.sdk
+
+MACOSX_DEPLOYMENT_TARGET=10.12 \
+  cargo xtask publish-build --target x86_64-apple-darwin
+
+MACOSX_DEPLOYMENT_TARGET=11.0 \
+  cargo xtask publish-build --target aarch64-apple-darwin
+```
+
+The command stages the CLI, Node addon, FFI library, and abi3 Python wheel.
+Apple SDK contents are licensed inputs: do not commit, publish, or expose them
+to untrusted builds.
 
 For a quick local sanity check of the x64 CLI artifact, install Wine Stable:
 

@@ -50,7 +50,7 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # ── Phase 2: Build (Linux + macOS + Windows) ────────────────────────
+  # ── Phase 2: Build (Linux + macOS) / cross-build (Windows) ─────────
   build-linux:
     name: Build (Linux)
     runs-on: ubuntu-latest
@@ -69,13 +69,57 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
 
-  build-windows:
-    name: Build (Windows)
-    runs-on: windows-latest
+  # Windows release artifacts build on Linux with the same cargo-xwin path
+  # used by Azure release production. One invocation stages the CLI, FFI,
+  # Node addon, and abi3 Python wheel for each architecture.
+  windows-cross:
+    name: Windows cross-build (${{ matrix.platform.label }})
+    runs-on: ubuntu-latest
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - label: x64
+            target: x86_64-pc-windows-msvc
+            platform_tag: win_amd64
+          - label: ARM64
+            target: aarch64-pc-windows-msvc
+            platform_tag: win_arm64
+    env:
+      WINDOWS_STAGE: target/windows-stage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+          rust-targets: ${{ matrix.platform.target }}
+          shared-cache-key: windows-cross-${{ matrix.platform.target }}
+
+      - name: Install cargo-xwin and pin its LLVM toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 lld-18 llvm-18
+          sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang-cl
+          sudo ln -sf /usr/bin/lld-link-18 /usr/local/bin/lld-link
+          sudo ln -sf /usr/bin/llvm-lib-18 /usr/local/bin/llvm-lib
+          cargo install --locked cargo-xwin --version 0.23.0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Build native artifacts and abi3 wheel
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "maturin==1.14.1"
+          mkdir -p "$XWIN_CACHE_DIR"
+          cargo xtask publish-build --target ${{ matrix.platform.target }} \
+            --output "$WINDOWS_STAGE"
+        env:
+          XWIN_ACCEPT_LICENSE: '1'
+          XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin-cache
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:
@@ -193,10 +237,9 @@ jobs:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
 
   # ── Phase 2: Python wheels ─────────────────────────────────────────
-  # Build every wheel in the release contract. The x64 wheels feed python-test
-  # below; the ARM64 wheels are cross-compiled exactly as the release pipeline
-  # cross-compiles them, so an ARM64 build break surfaces on the PR that causes
-  # it. They are never installed here - that needs ARM64 hardware.
+  # Build Linux and macOS wheels here. Windows wheels are built by windows-cross
+  # through the same Linux-hosted path as release production. The x64 wheels
+  # feed python-test below; ARM64 wheels are build-validated but not installed.
   python-wheel:
     name: Python wheel (${{ matrix.platform.label }})
     runs-on: ${{ matrix.platform.os }}
@@ -216,11 +259,6 @@ jobs:
             target: x86_64-apple-darwin
             platform_tag: macosx_10_12_x86_64
             artifact: python-wheel-macos-x64
-          - label: Windows x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform_tag: win_amd64
-            artifact: python-wheel-windows-x64
           - label: Linux ARM64
             os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
@@ -231,11 +269,6 @@ jobs:
             os: macos-latest-large
             target: aarch64-apple-darwin
             platform_tag: macosx_11_0_arm64
-            artifact: ''
-          - label: Windows ARM64
-            os: windows-latest
-            target: aarch64-pc-windows-msvc
-            platform_tag: win_arm64
             artifact: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -253,8 +286,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      # abi3 needs no target interpreter and `generate-import-lib` synthesizes
-      # the Windows ARM64 import library, so every target cross-compiles here.
+      # abi3 needs no target interpreter, so both macOS architectures can build
+      # from the hosted macOS runner without architecture-specific Python.
       - name: Build wheel
         if: runner.os != 'Linux'
         shell: bash
@@ -292,8 +325,8 @@ jobs:
 
   # ── Phase 3: Python tests (after wheels) ───────────────────────────
   # One abi3 wheel must serve every supported interpreter, so the Linux wheel is
-  # installed on each CPython. macOS and Windows only re-verify that the wheel
-  # loads on its platform, which 3.11 already proves.
+  # installed on each CPython. macOS re-verifies that the x64 wheel loads on its
+  # platform; the ARM64 wheel is build-validated in the matrix above.
   python-test:
     name: Python test (${{ matrix.platform.label }} / CPython ${{ matrix.python }})
     runs-on: ${{ matrix.platform.os }}
@@ -311,11 +344,6 @@ jobs:
               label: macOS x64
               os: macos-latest-large
               artifact: python-wheel-macos-x64
-            python: '3.11'
-          - platform:
-              label: Windows x64
-              os: windows-latest
-              artifact: python-wheel-windows-x64
             python: '3.11'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -413,7 +441,7 @@ jobs:
       - test
       - build-linux
       - build-macos
-      - build-windows
+      - windows-cross
       - e2e
       - wasm
       - docs

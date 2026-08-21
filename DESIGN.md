@@ -5369,7 +5369,39 @@ Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each s
 
 `dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, the SPDX `MIT` license expression with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and can also be queued manually. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. Export is mode-aware, so the second run adds `publish/python/` without disturbing the natives the first run staged. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Its `PrepareRelease` stage selects an untagged stable workspace version. Production build and CD runs require the release build source to be `refs/heads/main`; other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. `BuildArtifacts` runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. The assembly job merges those six outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only`, because that directory contains versioned release archives rather than incremental build inputs. The packer generates WASM, npm, crate, NuGet, Python, and standalone artifacts and validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Its `SignArtifacts` stage restores the build outputs with Azure artifact tasks and runs ESRP signing. For production runs, `TagRelease` creates or verifies the annotated Git tag. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 61 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+Azure release automation uses `.ado/pipelines/azure-pipelines-build.yml` and
+`.ado/pipelines/azure-pipelines-cd.yml`. `Web UI - CD Build` triggers on `main`
+and can also be queued manually. All six target legs build in one Linux-hosted
+matrix job. Linux natives build on the host and Linux wheels build in
+digest-pinned `manylinux2014` cross images. Windows targets use pinned
+`cargo-xwin` plus LLVM/LLD, while macOS targets use pinned `cargo-zigbuild` and
+Zig.
+
+macOS legs require a legally obtained Apple SDK uploaded as the
+`WebUI-MacOSX-SDK.tar.xz` Azure secure file. Its expected digest comes from the
+required `WEBUI_APPLE_SDK_SHA256` pipeline/library variable. The pipeline
+validates the digest, extracts exactly one contained `*.sdk` below
+`Agent.TempDirectory`, sets `SDKROOT` and the target-specific
+`MACOSX_DEPLOYMENT_TARGET` (10.12 for x64, 11.0 for ARM64), and removes the SDK
+after the leg. SDK contents are never cached or published; the digest participates
+in the macOS Cargo cache key. The pinned Zig archive is also checksum-verified.
+
+Each target leg runs `cargo xtask publish-build`, producing the CLI, FFI library,
+Node addon, and Python wheel for that target. The Linux-only pipeline treats
+successful cross-linking, staging, and package assembly as its target validation;
+it does not inspect binary headers or execute Windows/macOS artifacts. Runtime
+qualification remains a separate release step on matching hardware.
+
+The assembly job merges all six outputs, restores its Cargo, target, and pnpm
+caches, and runs `cargo xtask publish-stage --pack-only`. The packer validates
+the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python
+wheel, 1 Python sdist, and 20 standalone asset contract. Completion on `main`
+triggers the unscheduled 1ES Official `Web UI - CD` pipeline, whose main and SDL
+source-analysis pools are Linux. It signs artifacts, creates or verifies the
+annotated release tag, publishes npm and Rust crates, and creates the GitHub
+Release. Python artifacts are attached to GitHub rather than published to PyPI;
+NuGet publication remains manual. Validation mode permits existing-version
+artifact rebuilds while omitting tags and external publication.
 
 ### Python Distribution
 

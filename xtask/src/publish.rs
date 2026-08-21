@@ -13,7 +13,7 @@
 //! - `publish/standalone/` — legacy direct-download native and WASM assets
 //! - `publish/python/`  — pre-staged wheels plus the generated source distribution
 
-use crate::util::{build_command, run_command, run_command_quiet};
+use crate::util::{build_command, run_command_quiet};
 use crate::version;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -33,6 +33,11 @@ struct PlatformEntry {
     platform_suffix: &'static str,
     /// Exact platform tag emitted by the pinned maturin build for this target.
     python_platform_tag: &'static str,
+    /// `MACOSX_DEPLOYMENT_TARGET` to pin when cross-compiling this target with
+    /// `cargo zigbuild` / `maturin --zig`, so the embedded minimum OS version
+    /// matches `python_platform_tag` regardless of toolchain defaults.
+    /// `None` for non-Darwin targets, which never use that backend.
+    macos_deployment_target: Option<&'static str>,
 }
 
 const PLATFORMS: &[PlatformEntry] = &[
@@ -45,6 +50,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         cli_binary: "webui",
         platform_suffix: "linux-x64",
         python_platform_tag: "manylinux_2_17_x86_64.manylinux2014_x86_64",
+        macos_deployment_target: None,
     },
     PlatformEntry {
         triple: "aarch64-unknown-linux-gnu",
@@ -55,6 +61,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         cli_binary: "webui",
         platform_suffix: "linux-arm64",
         python_platform_tag: "manylinux_2_17_aarch64.manylinux2014_aarch64",
+        macos_deployment_target: None,
     },
     PlatformEntry {
         triple: "x86_64-pc-windows-msvc",
@@ -65,6 +72,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         cli_binary: "webui.exe",
         platform_suffix: "win32-x64",
         python_platform_tag: "win_amd64",
+        macos_deployment_target: None,
     },
     PlatformEntry {
         triple: "aarch64-pc-windows-msvc",
@@ -75,6 +83,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         cli_binary: "webui.exe",
         platform_suffix: "win32-arm64",
         python_platform_tag: "win_arm64",
+        macos_deployment_target: None,
     },
     PlatformEntry {
         triple: "x86_64-apple-darwin",
@@ -85,6 +94,7 @@ const PLATFORMS: &[PlatformEntry] = &[
         cli_binary: "webui",
         platform_suffix: "darwin-x64",
         python_platform_tag: "macosx_10_12_x86_64",
+        macos_deployment_target: Some("10.12"),
     },
     PlatformEntry {
         triple: "aarch64-apple-darwin",
@@ -95,8 +105,96 @@ const PLATFORMS: &[PlatformEntry] = &[
         cli_binary: "webui",
         platform_suffix: "darwin-arm64",
         python_platform_tag: "macosx_11_0_arm64",
+        macos_deployment_target: Some("11.0"),
     },
 ];
+
+// ── Cross-compilation backend selection ─────────────────────────────────
+
+/// Host operating system running `publish-build`, distinct from the target
+/// triple being built.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostOs {
+    Linux,
+    MacOs,
+    Windows,
+    Other,
+}
+
+fn current_host_os() -> HostOs {
+    if cfg!(target_os = "linux") {
+        HostOs::Linux
+    } else if cfg!(target_os = "macos") {
+        HostOs::MacOs
+    } else if cfg!(target_os = "windows") {
+        HostOs::Windows
+    } else {
+        HostOs::Other
+    }
+}
+
+/// Cargo wrapper used to build a target triple's native artifacts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Backend {
+    /// Plain `cargo build`, for a host's own target and for Linux targets.
+    Cargo,
+    /// `cargo xwin build`, cross-compiles the two Windows MSVC targets using
+    /// an embedded MSVC-compatible toolchain (headers, import libs, CRT).
+    CargoXwin,
+    /// `cargo zigbuild`, cross-compiles the two Apple Darwin targets using
+    /// Zig as the C/Obj-C cross linker.
+    CargoZigbuild,
+}
+
+impl Backend {
+    /// The `cargo` subcommand inserted before `build`, e.g. `cargo xwin
+    /// build`. `None` for plain `cargo build`.
+    fn subcommand(self) -> Option<&'static str> {
+        match self {
+            Backend::Cargo => None,
+            Backend::CargoXwin => Some("xwin"),
+            Backend::CargoZigbuild => Some("zigbuild"),
+        }
+    }
+}
+
+/// Choose the cargo backend for building `triple` on `host`.
+///
+/// Linux is the primary cross-compilation host: it builds its own Linux
+/// targets with native `cargo build`, reaches Windows MSVC through `cargo
+/// xwin build`, and reaches Apple Darwin through `cargo zigbuild`. A host
+/// building its own native target family — a macOS runner building
+/// `*-apple-darwin`, or a Windows runner building `*-pc-windows-msvc` —
+/// always uses plain `cargo build` there instead, since no cross toolchain
+/// is required. This mirrors the existing `build-windows-local` behavior
+/// (macOS host, Windows MSVC target, `cargo-xwin`) as one case of the same
+/// rule, so both entry points can share it.
+fn select_backend_for_host(host: HostOs, triple: &str) -> Backend {
+    match host {
+        HostOs::MacOs if triple.ends_with("-apple-darwin") => Backend::Cargo,
+        HostOs::Windows if triple.ends_with("-pc-windows-msvc") => Backend::Cargo,
+        _ if triple.ends_with("-linux-gnu") => Backend::Cargo,
+        _ if triple.ends_with("-pc-windows-msvc") => Backend::CargoXwin,
+        _ if triple.ends_with("-apple-darwin") => Backend::CargoZigbuild,
+        _ => Backend::Cargo,
+    }
+}
+
+pub(crate) fn select_backend(triple: &str) -> Backend {
+    select_backend_for_host(current_host_os(), triple)
+}
+
+/// The `MACOSX_DEPLOYMENT_TARGET` env value to pin for `triple`, when
+/// cross-compiling with `cargo zigbuild` (native build) or `maturin --zig`
+/// (Python wheel). Both call sites derive the same value from `PLATFORMS`,
+/// so the two build paths cannot drift apart. `None` for non-Darwin targets.
+fn macos_deployment_target_env(triple: &str) -> Option<(&'static str, &'static str)> {
+    PLATFORMS
+        .iter()
+        .find(|platform| platform.triple == triple)
+        .and_then(|platform| platform.macos_deployment_target)
+        .map(|version| ("MACOSX_DEPLOYMENT_TARGET", version))
+}
 
 /// Subdirectories created inside `publish/`.
 const PUBLISH_SUBDIRS: &[&str] = &[
@@ -645,7 +743,17 @@ fn python_interpreter() -> String {
 /// the ABI tag from the feature and the platform tag from `--target`. Naming an
 /// interpreter makes maturin match the host interpreter against the target
 /// architecture and skip it, which breaks every cross build.
-fn maturin_build_args<'a>(manifest: &'a str, triple: &'a str, out: &'a str) -> Vec<&'a str> {
+///
+/// `backend` adds the maturin flag for the cross toolchain it maps to
+/// (`--xwin` for `CargoXwin`, `--zig` for `CargoZigbuild`); `Backend::Cargo`
+/// adds nothing, since that is either a native build or a Linux target,
+/// where the `manylinux` container's own cross toolchain applies instead.
+fn maturin_build_args<'a>(
+    manifest: &'a str,
+    triple: &'a str,
+    out: &'a str,
+    backend: Backend,
+) -> Vec<&'a str> {
     let mut args = vec![
         "-m",
         "maturin",
@@ -663,6 +771,11 @@ fn maturin_build_args<'a>(manifest: &'a str, triple: &'a str, out: &'a str) -> V
     // every other target derives its platform tag from the triple alone.
     if triple.ends_with("-linux-gnu") {
         args.extend_from_slice(&["--compatibility", "manylinux_2_17"]);
+    }
+    match backend {
+        Backend::Cargo => {}
+        Backend::CargoXwin => args.push("--xwin"),
+        Backend::CargoZigbuild => args.push("--zig"),
     }
     args
 }
@@ -684,12 +797,16 @@ fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<Strin
         ));
     }
 
+    let backend = select_backend(triple);
+    preflight_backend(backend)?;
+
     let interpreter = python_interpreter();
     let manifest_arg = manifest_path.to_string_lossy().into_owned();
     let out_arg = out_dir.to_string_lossy().into_owned();
-    let maturin_args = maturin_build_args(&manifest_arg, triple, &out_arg);
+    let maturin_args = maturin_build_args(&manifest_arg, triple, &out_arg, backend);
+    let env = macos_deployment_target_env(triple);
 
-    run_command_quiet(&interpreter, &maturin_args, Some(root))
+    run_command_quiet_with_env(&interpreter, &maturin_args, root, env.as_slice())
         .map_err(|e| format!("maturin build failed: {e}"))?;
 
     let expected = format!(
@@ -784,12 +901,28 @@ fn set_build_mode(current: BuildMode, requested: BuildMode) -> Result<BuildMode,
 }
 
 fn build_native_target(root: &Path, triple: &str, profile: &str) -> Result<(), String> {
-    let args = native_build_args(triple, profile)?;
-    run_command("cargo", &args, Some(root))
+    let backend = select_backend(triple);
+    preflight_backend(backend)?;
+
+    let args = native_build_args(triple, profile, backend)?;
+    let env = macos_deployment_target_env(triple);
+    run_command_with_env("cargo", &args, root, env.as_slice())
 }
 
-fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>, String> {
-    let mut args = Vec::with_capacity(13);
+/// Assemble the `cargo build` arguments for one target, prefixed with the
+/// backend's cargo subcommand (e.g. `xwin`, `zigbuild`) when it needs one.
+///
+/// `pub(crate)` so `windows_local::build_target` can share it for the
+/// `CargoXwin` backend instead of duplicating the argument list.
+pub(crate) fn native_build_args<'a>(
+    triple: &'a str,
+    profile: &str,
+    backend: Backend,
+) -> Result<Vec<&'a str>, String> {
+    let mut args = Vec::with_capacity(14);
+    if let Some(subcommand) = backend.subcommand() {
+        args.push(subcommand);
+    }
     args.push("build");
     match profile {
         "release" => args.push("--release"),
@@ -807,6 +940,251 @@ fn native_build_args<'a>(triple: &'a str, profile: &str) -> Result<Vec<&'a str>,
         "microsoft-webui-node",
     ]);
     Ok(args)
+}
+
+/// Actionable preflight checks for the backend chosen for a target, so a
+/// missing or mis-pinned cross toolchain fails immediately with install
+/// guidance instead of a confusing linker error partway through the build.
+/// Reuses `build-windows-local`'s cargo-xwin/LLVM checks rather than
+/// duplicating them, since both entry points depend on the same toolchain.
+fn preflight_backend(backend: Backend) -> Result<(), String> {
+    match backend {
+        Backend::Cargo => Ok(()),
+        Backend::CargoXwin => {
+            crate::windows_local::ensure_cargo_xwin()?;
+            crate::windows_local::ensure_llvm_tools()
+        }
+        Backend::CargoZigbuild => {
+            ensure_cargo_zigbuild()?;
+            ensure_zig()?;
+            ensure_sdkroot_for_zigbuild(current_host_os())
+        }
+    }
+}
+
+/// Pinned `cargo-zigbuild` version, matching the `cargo-xwin` pin in
+/// `windows_local.rs` so both cross toolchains stay reproducible.
+const CARGO_ZIGBUILD_VERSION: &str = "0.23.0";
+
+fn ensure_cargo_zigbuild() -> Result<(), String> {
+    match installed_cargo_zigbuild_version()? {
+        Some(found) if found == CARGO_ZIGBUILD_VERSION => Ok(()),
+        Some(found) => Err(format!(
+            "cargo-zigbuild {CARGO_ZIGBUILD_VERSION} is required, found {found}.\n  help: install the pinned version with: cargo install cargo-zigbuild --version {CARGO_ZIGBUILD_VERSION} --locked"
+        )),
+        None => Err(format!(
+            "cargo-zigbuild {CARGO_ZIGBUILD_VERSION} is required but was not found on PATH.\n  help: install it with: cargo install cargo-zigbuild --version {CARGO_ZIGBUILD_VERSION} --locked"
+        )),
+    }
+}
+
+fn installed_cargo_zigbuild_version() -> Result<Option<String>, String> {
+    let output = match std::process::Command::new("cargo-zigbuild")
+        .arg("--version")
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to run cargo-zigbuild --version: {error}")),
+    };
+
+    if !output.status.success() {
+        return Err(format!(
+            "cargo-zigbuild --version failed with {}",
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(cargo_zigbuild_version(&stdout).map(str::to_string))
+}
+
+fn cargo_zigbuild_version(output: &str) -> Option<&str> {
+    let mut parts = output.split_whitespace();
+    if parts.next() == Some("cargo-zigbuild") {
+        return parts.next();
+    }
+    None
+}
+
+/// Pinned Zig version, matching the Azure release pipeline's toolchain pin
+/// so `cargo zigbuild`'s cross-linking behavior stays reproducible between
+/// a Linux developer machine and CI.
+const ZIG_VERSION: &str = "0.13.0";
+
+/// Environment variable naming an alternate `zig` executable, for machines
+/// where the pinned Zig isn't the one on `PATH` (e.g. a version manager or
+/// a toolchain cache directory). Mirrors `cargo-zigbuild`'s own lookup.
+const CARGO_ZIGBUILD_ZIG_PATH_VAR: &str = "CARGO_ZIGBUILD_ZIG_PATH";
+
+/// Resolve which `zig` executable to check/run: a non-empty
+/// `CARGO_ZIGBUILD_ZIG_PATH` override, or the default `zig` on `PATH`.
+///
+/// Pure and independent of `std::env` so it can be unit-tested with mock
+/// inputs; `zig_executable` below is the real entry point that reads the
+/// actual environment variable.
+fn resolve_zig_executable(env_value: Option<&str>) -> &str {
+    match env_value {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => "zig",
+    }
+}
+
+fn zig_executable() -> String {
+    let value = std::env::var(CARGO_ZIGBUILD_ZIG_PATH_VAR).ok();
+    resolve_zig_executable(value.as_deref()).to_string()
+}
+
+/// Verify Zig is on the resolved executable path and matches [`ZIG_VERSION`].
+///
+/// `cargo zigbuild` shells out to `zig cc`/`zig c++` as its cross linker, so
+/// a missing or mismatched Zig produces confusing link-time errors rather
+/// than an actionable message; this fails fast with install guidance instead.
+fn ensure_zig() -> Result<(), String> {
+    let executable = zig_executable();
+    match installed_zig_version(&executable)? {
+        Some(found) if found == ZIG_VERSION => Ok(()),
+        Some(found) => Err(format!(
+            "Zig {ZIG_VERSION} is required for cargo zigbuild (matching the Azure release pipeline's pin), found {found} via {executable}.\n  help: install Zig {ZIG_VERSION} from https://ziglang.org/download/, or set {CARGO_ZIGBUILD_ZIG_PATH_VAR} to a Zig {ZIG_VERSION} binary"
+        )),
+        None => Err(format!(
+            "Zig {ZIG_VERSION} is required for cargo zigbuild but {executable} was not found.\n  help: install Zig {ZIG_VERSION} from https://ziglang.org/download/, or set {CARGO_ZIGBUILD_ZIG_PATH_VAR} to a Zig {ZIG_VERSION} binary"
+        )),
+    }
+}
+
+fn installed_zig_version(executable: &str) -> Result<Option<String>, String> {
+    let output = match std::process::Command::new(executable)
+        .arg("version")
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("failed to run {executable} version: {error}")),
+    };
+
+    if !output.status.success() {
+        return Err(format!(
+            "{executable} version failed with {}",
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(zig_version(&stdout).map(str::to_string))
+}
+
+/// Parse `zig version` output, which — unlike `cargo-xwin`/`cargo-zigbuild`
+/// `--version` — prints only the bare version number (e.g. `0.13.0`), with
+/// no leading binary name to strip. Pure so it can be unit-tested directly.
+fn zig_version(output: &str) -> Option<&str> {
+    output.lines().next()?.split_whitespace().next()
+}
+
+/// Pure SDKROOT validation for the `CargoZigbuild` backend, so tests can
+/// exercise every case (missing, empty, non-directory, valid) with mock
+/// inputs instead of mutating the real process environment — `std::env`
+/// mutation is unsafe and races across tests that run in parallel.
+///
+/// Unlike a native macOS toolchain, `cargo zigbuild` neither vendors nor
+/// lazily downloads an Apple SDK: without a real `SDKROOT`, it silently
+/// links against Zig's minimal libc/libSystem stubs instead of failing.
+/// Public PRs validate with a direct `cargo check`/`cargo build`, so
+/// `publish-build` must fail loudly here rather than let that happen.
+/// xtask itself never downloads an SDK; trusted CI sets `SDKROOT` to a
+/// vendored one explicitly. Native macOS hosts don't reach this backend
+/// (see `select_backend_for_host`), so the check only gates the actual
+/// cross case.
+fn validate_sdkroot(
+    host: HostOs,
+    backend: Backend,
+    sdkroot: Option<&str>,
+    is_directory: impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    if backend != Backend::CargoZigbuild || host == HostOs::MacOs {
+        return Ok(());
+    }
+
+    match sdkroot {
+        None => Err(
+            "SDKROOT is required to cross-compile Apple targets with cargo zigbuild from a non-macOS host.\n  help: set SDKROOT to an extracted macOS SDK directory, e.g. SDKROOT=/opt/MacOSX14.sdk"
+                .to_string(),
+        ),
+        Some(path) if path.trim().is_empty() => Err(
+            "SDKROOT is set but empty; cargo zigbuild requires it to point at a real macOS SDK directory".to_string(),
+        ),
+        Some(path) if !is_directory(path) => Err(format!(
+            "SDKROOT={path} does not name an existing directory.\n  help: point SDKROOT at an extracted macOS SDK directory"
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
+fn ensure_sdkroot_for_zigbuild(host: HostOs) -> Result<(), String> {
+    let sdkroot = std::env::var("SDKROOT").ok();
+    validate_sdkroot(host, Backend::CargoZigbuild, sdkroot.as_deref(), |path| {
+        Path::new(path).is_dir()
+    })
+}
+
+/// Like [`crate::util::run_command`], but also sets extra environment
+/// variables (e.g. `MACOSX_DEPLOYMENT_TARGET` for the `cargo zigbuild`
+/// backend; see `macos_deployment_target_env`). Every other backend passes
+/// an empty slice and behaves exactly like `run_command`.
+fn run_command_with_env(
+    cmd: &str,
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+) -> Result<(), String> {
+    let mut command = build_command(cmd, args);
+    command.current_dir(cwd);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+
+    match command.status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("exit code {}", status.code().unwrap_or(1))),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Like [`crate::util::run_command_quiet`], but also sets extra environment
+/// variables. Used for the `maturin --zig` backend; see
+/// `run_command_with_env`.
+fn run_command_quiet_with_env(
+    cmd: &str,
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+) -> Result<(), String> {
+    use std::process::Stdio;
+
+    let mut command = build_command(cmd, args);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.current_dir(cwd);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+
+    match command.output() {
+        Ok(output) if output.status.success() => Ok(()),
+        Ok(output) => {
+            let mut msg = String::new();
+            if let Ok(s) = String::from_utf8(output.stdout) {
+                msg.push_str(&s);
+            }
+            if let Ok(s) = String::from_utf8(output.stderr) {
+                msg.push_str(&s);
+            }
+            if msg.is_empty() {
+                msg = format!("exit code {}", output.status.code().unwrap_or(1));
+            }
+            Err(msg)
+        }
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// Copy this target's freshly built artifacts into an external output root.
@@ -1959,7 +2337,7 @@ mod tests {
     #[test]
     fn maturin_build_args_never_name_an_interpreter() {
         for platform in PLATFORMS {
-            let args = maturin_build_args("Cargo.toml", platform.triple, "out");
+            let args = maturin_build_args("Cargo.toml", platform.triple, "out", Backend::Cargo);
 
             assert!(
                 !args.contains(&"--interpreter"),
@@ -2054,7 +2432,7 @@ mod tests {
 
     #[test]
     fn native_build_args_map_debug_to_cargo_dev_profile() {
-        let args = native_build_args("x86_64-unknown-linux-gnu", "debug")
+        let args = native_build_args("x86_64-unknown-linux-gnu", "debug", Backend::Cargo)
             .expect("debug profile should be supported");
 
         assert_eq!(args[0], "build");
@@ -2064,10 +2442,280 @@ mod tests {
 
     #[test]
     fn native_build_args_map_release_to_release_flag() {
-        let args = native_build_args("x86_64-unknown-linux-gnu", "release")
+        let args = native_build_args("x86_64-unknown-linux-gnu", "release", Backend::Cargo)
             .expect("release profile should be supported");
 
         assert!(args.contains(&"--release"));
+    }
+
+    #[test]
+    fn native_build_args_prefix_backend_subcommand() {
+        let cargo = native_build_args("x86_64-unknown-linux-gnu", "release", Backend::Cargo)
+            .expect("cargo backend should be supported");
+        assert_eq!(cargo[0], "build");
+
+        let xwin = native_build_args("x86_64-pc-windows-msvc", "release", Backend::CargoXwin)
+            .expect("xwin backend should be supported");
+        assert_eq!(&xwin[..2], &["xwin", "build"]);
+
+        let zigbuild = native_build_args("aarch64-apple-darwin", "release", Backend::CargoZigbuild)
+            .expect("zigbuild backend should be supported");
+        assert_eq!(&zigbuild[..2], &["zigbuild", "build"]);
+
+        // Every backend still builds the same three native packages.
+        for args in [&cargo, &xwin, &zigbuild] {
+            assert!(args.contains(&"microsoft-webui-cli"));
+            assert!(args.contains(&"microsoft-webui-ffi"));
+            assert!(args.contains(&"microsoft-webui-node"));
+        }
+    }
+
+    #[test]
+    fn select_backend_for_host_uses_native_cargo_for_each_host_family() {
+        for platform in PLATFORMS {
+            let backend = select_backend_for_host(HostOs::Linux, platform.triple);
+            let expected = if platform.triple.ends_with("-linux-gnu") {
+                Backend::Cargo
+            } else if platform.triple.ends_with("-pc-windows-msvc") {
+                Backend::CargoXwin
+            } else {
+                Backend::CargoZigbuild
+            };
+            assert_eq!(
+                backend, expected,
+                "Linux host backend mismatch for {}",
+                platform.triple
+            );
+        }
+    }
+
+    #[test]
+    fn select_backend_for_host_linux_accepts_every_platform_entry() {
+        // A Linux host must have a defined (non-panicking) backend for all
+        // six release targets: this is the primary cross-compilation host.
+        for platform in PLATFORMS {
+            let backend = select_backend_for_host(HostOs::Linux, platform.triple);
+            assert_ne!(
+                format!("{backend:?}"),
+                "",
+                "Linux host should accept {}",
+                platform.triple
+            );
+        }
+    }
+
+    #[test]
+    fn select_backend_for_host_macos_builds_its_own_darwin_targets_natively() {
+        assert_eq!(
+            select_backend_for_host(HostOs::MacOs, "x86_64-apple-darwin"),
+            Backend::Cargo
+        );
+        assert_eq!(
+            select_backend_for_host(HostOs::MacOs, "aarch64-apple-darwin"),
+            Backend::Cargo
+        );
+        // macOS still needs cargo-xwin to reach Windows MSVC.
+        assert_eq!(
+            select_backend_for_host(HostOs::MacOs, "x86_64-pc-windows-msvc"),
+            Backend::CargoXwin
+        );
+    }
+
+    #[test]
+    fn select_backend_for_host_windows_builds_its_own_msvc_targets_natively() {
+        assert_eq!(
+            select_backend_for_host(HostOs::Windows, "x86_64-pc-windows-msvc"),
+            Backend::Cargo
+        );
+        assert_eq!(
+            select_backend_for_host(HostOs::Windows, "aarch64-pc-windows-msvc"),
+            Backend::Cargo
+        );
+    }
+
+    #[test]
+    fn backend_subcommand_matches_expected_cargo_plugin() {
+        assert_eq!(Backend::Cargo.subcommand(), None);
+        assert_eq!(Backend::CargoXwin.subcommand(), Some("xwin"));
+        assert_eq!(Backend::CargoZigbuild.subcommand(), Some("zigbuild"));
+    }
+
+    #[test]
+    fn maturin_build_args_add_backend_flag_only_for_cross_toolchains() {
+        let cargo = maturin_build_args(
+            "Cargo.toml",
+            "x86_64-unknown-linux-gnu",
+            "out",
+            Backend::Cargo,
+        );
+        assert!(!cargo.contains(&"--xwin"));
+        assert!(!cargo.contains(&"--zig"));
+
+        let xwin = maturin_build_args(
+            "Cargo.toml",
+            "x86_64-pc-windows-msvc",
+            "out",
+            Backend::CargoXwin,
+        );
+        assert!(xwin.contains(&"--xwin"));
+        assert!(!xwin.contains(&"--zig"));
+
+        let zigbuild = maturin_build_args(
+            "Cargo.toml",
+            "aarch64-apple-darwin",
+            "out",
+            Backend::CargoZigbuild,
+        );
+        assert!(zigbuild.contains(&"--zig"));
+        assert!(!zigbuild.contains(&"--xwin"));
+    }
+
+    #[test]
+    fn maturin_build_args_preserve_abi3_target_output_and_manylinux() {
+        for platform in PLATFORMS {
+            let backend = select_backend_for_host(HostOs::Linux, platform.triple);
+            let args = maturin_build_args("Cargo.toml", platform.triple, "out", backend);
+
+            // abi3: no --interpreter is ever pinned (see maturin_build_args docs).
+            assert!(!args.contains(&"--interpreter"));
+            assert!(args.contains(&"--target"));
+            assert!(args.contains(&platform.triple));
+            assert!(args.contains(&"--out"));
+            assert!(args.contains(&"out"));
+            assert_eq!(
+                args.contains(&"manylinux_2_17"),
+                platform.triple.ends_with("-linux-gnu")
+            );
+        }
+    }
+
+    #[test]
+    fn macos_deployment_target_env_matches_platform_metadata() {
+        assert_eq!(
+            macos_deployment_target_env("x86_64-apple-darwin"),
+            Some(("MACOSX_DEPLOYMENT_TARGET", "10.12"))
+        );
+        assert_eq!(
+            macos_deployment_target_env("aarch64-apple-darwin"),
+            Some(("MACOSX_DEPLOYMENT_TARGET", "11.0"))
+        );
+        assert_eq!(
+            macos_deployment_target_env("x86_64-unknown-linux-gnu"),
+            None
+        );
+        assert_eq!(macos_deployment_target_env("unknown-target"), None);
+    }
+
+    #[test]
+    fn cargo_zigbuild_version_parses_expected_output() {
+        assert_eq!(
+            cargo_zigbuild_version("cargo-zigbuild 0.23.0\n"),
+            Some(CARGO_ZIGBUILD_VERSION)
+        );
+        assert_eq!(cargo_zigbuild_version("cargo 1.93.0\n"), None);
+    }
+
+    #[test]
+    fn ensure_cargo_zigbuild_error_mentions_pinned_version_when_missing() {
+        // `cargo-zigbuild` is not expected to be on PATH in the test
+        // environment, so this exercises the "not found" branch's message.
+        if crate::util::which_exists("cargo-zigbuild") {
+            return;
+        }
+
+        let error = ensure_cargo_zigbuild().expect_err("cargo-zigbuild should be missing in CI");
+        assert!(error.contains(CARGO_ZIGBUILD_VERSION));
+        assert!(error.contains("cargo install cargo-zigbuild"));
+    }
+
+    #[test]
+    fn resolve_zig_executable_prefers_non_empty_override() {
+        assert_eq!(
+            resolve_zig_executable(Some("/opt/zig-0.13.0/zig")),
+            "/opt/zig-0.13.0/zig"
+        );
+    }
+
+    #[test]
+    fn resolve_zig_executable_falls_back_to_default_when_unset_or_blank() {
+        assert_eq!(resolve_zig_executable(None), "zig");
+        assert_eq!(resolve_zig_executable(Some("")), "zig");
+        assert_eq!(resolve_zig_executable(Some("   ")), "zig");
+    }
+
+    #[test]
+    fn zig_version_parses_bare_version_number() {
+        assert_eq!(zig_version("0.13.0\n"), Some(ZIG_VERSION));
+        assert_eq!(zig_version("0.13.0"), Some("0.13.0"));
+        assert_eq!(zig_version(""), None);
+        assert_eq!(zig_version("\n"), None);
+    }
+
+    #[test]
+    fn ensure_zig_error_mentions_pinned_version_and_override_var_when_missing() {
+        // Zig is not expected to be on PATH in the test environment, so
+        // this exercises the "not found" branch's message.
+        if crate::util::which_exists("zig") {
+            return;
+        }
+
+        let error = ensure_zig().expect_err("zig should be missing in CI");
+        assert!(error.contains(ZIG_VERSION));
+        assert!(error.contains(CARGO_ZIGBUILD_ZIG_PATH_VAR));
+    }
+
+    #[test]
+    fn validate_sdkroot_requires_sdkroot_for_zigbuild_on_non_macos_hosts() {
+        let error = validate_sdkroot(HostOs::Linux, Backend::CargoZigbuild, None, |_| true)
+            .expect_err("missing SDKROOT should fail");
+        assert!(error.contains("SDKROOT"));
+        assert!(error.contains("cargo zigbuild"));
+    }
+
+    #[test]
+    fn validate_sdkroot_rejects_empty_value() {
+        let error = validate_sdkroot(HostOs::Linux, Backend::CargoZigbuild, Some("   "), |_| true)
+            .expect_err("empty SDKROOT should fail");
+        assert!(error.contains("SDKROOT"));
+    }
+
+    #[test]
+    fn validate_sdkroot_rejects_nonexistent_directory() {
+        let error = validate_sdkroot(
+            HostOs::Linux,
+            Backend::CargoZigbuild,
+            Some("/does/not/exist.sdk"),
+            |_| false,
+        )
+        .expect_err("a SDKROOT that is not a real directory should fail");
+        assert!(error.contains("/does/not/exist.sdk"));
+        assert!(error.contains("existing directory"));
+    }
+
+    #[test]
+    fn validate_sdkroot_accepts_a_real_directory() {
+        validate_sdkroot(
+            HostOs::Linux,
+            Backend::CargoZigbuild,
+            Some("/opt/MacOSX14.sdk"),
+            |_| true,
+        )
+        .expect("an existing SDKROOT directory should pass");
+    }
+
+    #[test]
+    fn validate_sdkroot_skips_check_on_macos_host_and_non_zigbuild_backends() {
+        // Native macOS hosts never reach the CargoZigbuild backend (see
+        // select_backend_for_host), so the check is a no-op there even
+        // without SDKROOT.
+        validate_sdkroot(HostOs::MacOs, Backend::CargoZigbuild, None, |_| false)
+            .expect("macOS host should skip the SDKROOT check");
+
+        // Only the CargoZigbuild backend needs an Apple SDK.
+        validate_sdkroot(HostOs::Linux, Backend::Cargo, None, |_| false)
+            .expect("Cargo backend should not require SDKROOT");
+        validate_sdkroot(HostOs::Linux, Backend::CargoXwin, None, |_| false)
+            .expect("CargoXwin backend should not require SDKROOT");
     }
 
     #[test]
@@ -2081,6 +2729,7 @@ mod tests {
             cli_binary: "webui",
             platform_suffix: "darwin-arm64",
             python_platform_tag: "macosx_11_0_arm64",
+            macos_deployment_target: Some("11.0"),
         };
         assert_eq!(native_binary_name(&p), "webui-darwin-arm64");
     }
@@ -2096,6 +2745,7 @@ mod tests {
             cli_binary: "webui.exe",
             platform_suffix: "win32-x64",
             python_platform_tag: "win_amd64",
+            macos_deployment_target: None,
         };
         assert_eq!(native_binary_name(&p), "webui-win32-x64.exe");
     }
