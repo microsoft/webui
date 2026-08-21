@@ -23,6 +23,11 @@ export const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
  * dispatcher and *does* attach styles, but only when the framework bridge was
  * absent — which is why {@link templateRegistrationDetail} still reads them.
  */
+export interface TemplateRegistrationDetail {
+  templates?: Record<string, TemplateMeta>;
+  componentStyles?: unknown;
+  waitUntil?: (promise: PromiseLike<unknown>) => void;
+}
 export function dispatchTemplatesRegistered(
   templates: Record<string, TemplateMeta>,
 ): void {
@@ -43,10 +48,12 @@ export function dispatchTemplatesRegistered(
 export function templateRegistrationDetail(event: Event): {
   templates?: Record<string, TemplateMeta>;
   componentStyles?: unknown;
+  waitUntil?: (promise: PromiseLike<unknown>) => void;
 } | undefined {
   const detail = (event as CustomEvent<{
     templates?: unknown;
     componentStyles?: unknown;
+    waitUntil?: unknown;
   }>).detail;
   if (!detail || typeof detail !== 'object') return undefined;
   const templates = detail.templates;
@@ -55,6 +62,11 @@ export function templateRegistrationDetail(event: Event): {
       ? templates as Record<string, TemplateMeta>
       : undefined,
     componentStyles: detail.componentStyles,
+    waitUntil: typeof detail.waitUntil === 'function'
+      ? detail.waitUntil as (promise: PromiseLike<unknown>) => void
+      : undefined,
   };
-  return payload.templates || payload.componentStyles ? payload : undefined;
+  return payload.templates || payload.componentStyles !== undefined || payload.waitUntil
+    ? payload
+    : undefined;
 }

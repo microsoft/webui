@@ -51,9 +51,14 @@ import {
   prepareComponentStyles,
   registerComponentStyles,
   registerPreparedComponentStyles,
+  requireComponentStyles,
   validateComponentStylesRegistration,
   type ComponentStyles,
 } from './element/styles.js';
+import {
+  prepareComponentStyleLinks,
+  prepareRegisteredLinkStyles,
+} from './element/link-styles.js';
 
 import type {
   CompiledCondition,
@@ -112,8 +117,11 @@ function acceptTemplateData(
 }
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  window.__webuiRegisterComponentStyles = (value: unknown): void => {
-    registerComponentStyles(value);
+  window.__webuiRegisterComponentStyles = (value: unknown): Promise<void> | undefined => {
+    const styles = requireComponentStyles(value);
+    validateComponentStylesRegistration(styles);
+    registerPreparedComponentStyles(styles);
+    return prepareComponentStyleLinks(styles);
   };
   if (window.__webui?.componentStyles) {
     registerComponentStyles(window.__webui.componentStyles);
@@ -125,6 +133,8 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
       ? undefined
       : prepareComponentStyles(detail.componentStyles);
     acceptTemplateData(detail.templates, undefined, styles);
+    const ready = prepareRegisteredLinkStyles(detail.templates);
+    if (ready) detail.waitUntil?.(ready);
   });
 }
 
@@ -135,20 +145,14 @@ declare global {
     templateFns?: Record<string, CompiledConditionFn[]>;
     componentAssetStyles?: Record<string, readonly string[]>;
     templateHostExclusions?: Set<string>;
+    componentStyles?: ComponentStyles;
     [key: string]: unknown;
   }
 
   interface Window {
     /** Consolidated SSR metadata loaded from `#webui-data` or partial responses. */
-    __webui?: {
-      state?: Record<string, unknown>;
-      templates?: Record<string, TemplateMeta>;
-      templateFns?: Record<string, CompiledConditionFn[]>;
-      templateHostExclusions?: Set<string>;
-      componentStyles?: ComponentStyles;
-      [key: string]: unknown;
-    };
-    __webuiRegisterComponentStyles?: (value: unknown) => void;
+    __webui?: WebUIRuntimeGlobal;
+    __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
   }
 }
 
@@ -259,6 +263,7 @@ function loadWebUIDataBlock(): void {
     const componentAssetStyles = window.__webui?.componentAssetStyles;
     const parsed = JSON.parse(text) as NonNullable<Window['__webui']>;
     if (templateFns) parsed.templateFns = templateFns;
+    if (componentAssetStyles) parsed.componentAssetStyles = componentAssetStyles;
     // Publish before registering styles. A malformed `componentStyles` throws,
     // and doing it the other way round loses the templates and state that
     // parsed fine — then re-parses the whole block on the next lookup, because

@@ -887,15 +887,53 @@ The framework supports three CSS delivery strategies:
 
 | Strategy | How it works |
 |----------|-------------|
-| **Link** | Installs an external stylesheet resource |
-| **Style** | Installs compiled CSS in a `<style>` element with no external request |
-| **Module** | Uses an SSR style fallback, then imports and adopts a shared `CSSStyleSheet` when supported |
+| **Link** | `<link>` tag baked into `meta.h`; the first client-created shadow instance authorizes shared constructable sheets through native loading, then warm instances adopt them before paint |
+| **Style** | `<style>` tag baked into `meta.h` — no external request |
+| **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
 
-The compiler publishes resources and cascade-ordered closures. The framework
-installs each resource once per Document or ShadowRoot, including resources
-arriving through partial navigation, streaming, and version-3 component assets.
-Shadow roots are closure cut points. CSS module stylesheets are cached so each
-component instance adopts the same parsed sheet without re-parsing CSS.
+Link promotion is progressive enhancement. Registration performs a bounded
+`<link rel="preload" as="style">` using the stylesheet's CORS, integrity, and
+referrer-policy attributes, so the native stylesheet link can reuse the same
+style-destination request. Preload bytes are never applied directly, and a
+preload cannot inspect response MIME type; the first client instance's native
+link remains authoritative for CSP, MIME, integrity, CORS, redirects, and
+service workers. The framework releases the instance's paint guard as soon as
+every original link loads, before constructing the shared ordered set from
+native CSSOM. It then adopts that set before existing sheets with one assignment
+and shares it with later instances. Promoted links remain disabled in place so
+reconnect hydration retains the compiled element indexes. Classes with an authored
+`hydratedCallback()` still take the guarded native path on warm mounts, allowing
+lifecycle-added `<style>` elements to preserve native cascade order. If
+construction is unsupported, native CSSOM or
+unredirected, non-service-worker timing is unavailable, or `@import`, unsafe URL
+syntax, link attributes, bindings, compiled events, or authored DOM `<style>`
+cascade semantics cannot be preserved, the original links remain. An anonymous
+first-layer shadow guard prevents component CSS from overriding the loading
+gate and cancels host transitions before hiding. When CSP blocks that guard,
+non-style content, `$ready`, and `hydratedCallback()` remain deferred; current
+reactive state is reconciled before append. If that reconciliation changes a
+request-affecting bound link value, the framework waits for the replacement
+native load before append. Disconnecting permanently cancels
+the pending mount, while a synchronous reconnect preserves it. A link error
+is reported, leaves the browser's native links in place, releases the temporary
+guard, and completes deferred hydration. The component may be unstyled after a
+definitive stylesheet failure, but it remains visible and usable. SSR hydration,
+Style, Module, and authored/global Light DOM behavior are unchanged.
+
+### Intent-time Link preloading for component assets
+
+In a Shadow build, call `assets.preload(tag)` from pointer, focus, or other
+intent handling. The framework reads the compiler-owned head manifest, so
+application code never derives or hardcodes content-hashed CSS names. Link
+styles begin before the root asset executes, and later template registration
+reuses the same style-destination request. Repeated intent is deduplicated. An
+intent that never mounts the component may still produce the browser's standard
+unused-preload warning. Light builds load component-asset CSS as document
+stylesheets at the structural head boundary instead.
+
+CSS module stylesheets are cached so each component instance adopts the same
+parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the
+stylesheet specifier for a component.
 
 ---
 

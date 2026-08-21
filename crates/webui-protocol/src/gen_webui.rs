@@ -122,17 +122,9 @@ pub struct WebUiProtocol {
     /// Empty when no component opts into lazy rendering.
     #[prost(string, tag = "9")]
     pub component_render_css: ::prost::alloc::string::String,
-    /// Build-generated eager metadata for static component asset roots.
-    ///
-    /// Entries are sorted by root tag. Builds without component assets omit the
-    /// field from the wire.
-    #[prost(message, repeated, tag = "10")]
-    pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
-        ComponentAssetStylePreload,
-    >,
     /// Ordered, deduplicated component style resource tags for each Document or
     /// component-root CSS tree entry point.
-    #[prost(map = "string, message", tag = "9")]
+    #[prost(map = "string, message", tag = "10")]
     pub style_closures: ::std::collections::HashMap<
         ::prost::alloc::string::String,
         ComponentStyleClosure,
@@ -141,8 +133,16 @@ pub struct WebUiProtocol {
     /// enabled CSS bundling, in which case every component that owns a style
     /// resource belongs to exactly one chunk and handlers deliver chunks instead
     /// of individual component resources.
-    #[prost(message, repeated, tag = "10")]
+    #[prost(message, repeated, tag = "11")]
     pub style_chunks: ::prost::alloc::vec::Vec<StyleChunk>,
+    /// Build-generated eager metadata for static component asset roots.
+    ///
+    /// Entries are sorted by root tag. Builds without component assets omit the
+    /// field from the wire.
+    #[prost(message, repeated, tag = "12")]
+    pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
+        ComponentAssetStylePreload,
+    >,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -543,6 +543,37 @@ impl CssStrategy {
             "CSS_STRATEGY_LINK" => Some(Self::Link),
             "CSS_STRATEGY_STYLE" => Some(Self::Style),
             "CSS_STRATEGY_MODULE" => Some(Self::Module),
+            _ => None,
+        }
+    }
+}
+/// Which end of an inline boundary tape a fragment marks.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum BoundaryPhase {
+    /// Opens a boundary body. Carries the full declaration metadata.
+    Start = 0,
+    /// Closes the body opened by the matching start in the same record. Only
+    /// declaration_id is meaningful.
+    End = 1,
+}
+impl BoundaryPhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Start => "BOUNDARY_PHASE_START",
+            Self::End => "BOUNDARY_PHASE_END",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "BOUNDARY_PHASE_START" => Some(Self::Start),
+            "BOUNDARY_PHASE_END" => Some(Self::End),
             _ => None,
         }
     }

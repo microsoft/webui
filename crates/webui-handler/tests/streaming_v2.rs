@@ -26,7 +26,18 @@ fn parsed_protocol_data(entry: &str, components: &[(&str, &str)]) -> WebUIProtoc
             .unwrap();
     }
     parser.parse("index.html", entry).unwrap();
-    WebUIProtocol::new(parser.into_fragment_records())
+    let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+    for (tag, _) in components {
+        protocol.components.insert(
+            (*tag).to_string(),
+            ComponentData {
+                uses_shadow_dom: true,
+                ..Default::default()
+            },
+        );
+    }
+    protocol.populate_style_closures(&["index.html"]);
+    protocol
 }
 
 fn new_session(protocol: Arc<Protocol>, path: &str) -> StreamingSession {
@@ -516,6 +527,7 @@ fn selected_route_component_hydration_keys_survive_frozen_state() {
         ComponentData {
             hydration_mode: StateProjectionMode::Keys as i32,
             hydration_keys: vec!["selectedHydration".to_string()],
+            uses_shadow_dom: true,
             ..Default::default()
         },
     );
@@ -524,6 +536,7 @@ fn selected_route_component_hydration_keys_survive_frozen_state() {
         ComponentData {
             hydration_mode: StateProjectionMode::Keys as i32,
             hydration_keys: vec!["inactiveHydration".to_string()],
+            uses_shadow_dom: true,
             ..Default::default()
         },
     );
@@ -562,6 +575,7 @@ fn route_component_all_projection_keeps_full_state_for_resume() {
         "route-page".to_string(),
         ComponentData {
             hydration_mode: StateProjectionMode::All as i32,
+            uses_shadow_dom: true,
             ..Default::default()
         },
     );

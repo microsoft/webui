@@ -19,7 +19,7 @@
  *   <!--/wN-->  raw HTML binding end
  */
 
-import { isComponentStyleMarker } from './styles.js';
+import { isComponentStyleResourceMarker } from './styles.js';
 
 // Marker data constants matching the handler plugin output.
 export const MARKER_REPEAT_START = 'wr';
@@ -272,7 +272,7 @@ export function buildSSRIndex(
         // contains it, so counting it would pair every following template
         // element with its predecessor's node. `findByOrdinal` skips it for
         // the same reason.
-        if (!isComponentStyleMarker(s as Element)) break;
+        if (!isComponentStyleResourceMarker(s as Element)) break;
       }
       s = s.nextSibling;
     }
@@ -352,7 +352,7 @@ export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): 
       }
     }
     const isStyleResource = child.nodeType === 1 &&
-      isComponentStyleMarker(child as Element);
+      isComponentStyleResourceMarker(child as Element);
     if (child.nodeType === nodeType && !isStyleResource) {
       if (count === ordinal) return child;
       count++;

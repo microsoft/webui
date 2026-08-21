@@ -123,6 +123,30 @@ export interface ComponentStyles {
   closures: Record<string, string[]>;
 }
 
+/** A runtime-discovered boundary occurrence waiting to be resumed. */
+export interface BoundaryDescriptor {
+  /** Gapless response-local occurrence ID passed to `resume()` and `update()`. */
+  instanceId: number;
+  /** Stable build-local ID for the authored boundary declaration. */
+  declarationId: number;
+  /** Entry or component template that owns the declaration. */
+  owner: string;
+  /** Free-form authored boundary name. */
+  name: string;
+  /** Evaluated boundary key, preserving its authored JSON type. */
+  key?: string | number;
+}
+
+/** Bytes and continuation state produced by a streaming session step. */
+export interface StreamStep {
+  /** Complete bytes produced by this semantic step. */
+  bytes: Buffer;
+  /** Whether the document tail and terminal record have been emitted. */
+  done: boolean;
+  /** Runtime occurrence waiting for `resume()`, present only at a boundary. */
+  boundary?: BoundaryDescriptor;
+}
+
 /** Per-response settings for a host-driven streaming session. */
 export interface StreamOptions {
   /** Fragment ID to start rendering from (default: "index.html"). */

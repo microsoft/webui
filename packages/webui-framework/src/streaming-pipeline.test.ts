@@ -534,7 +534,9 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
       sequence,
       terminal === 1 ? 4 : 0,
       terminal === 1 ? 0 : sequence,
-      terminal === 1 ? bootstrap : currentCheckpointPayload(bootstrap),
+      terminal === 1
+        ? bootstrap
+        : currentCheckpointPayload({ declarationId: sequence, ...bootstrap }),
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -550,9 +552,11 @@ function buildMarkerless(sequence: number, terminal: number, bootstrap: object):
     text: JSON.stringify([
       2,
       sequence,
-      terminal === 1 ? 3 : 0,
+      terminal === 1 ? 4 : 0,
       0,
-      terminal === 1 ? bootstrap : currentCheckpointPayload(bootstrap),
+      terminal === 1
+        ? bootstrap
+        : currentCheckpointPayload({ declarationId: 0, ...bootstrap }),
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -577,7 +581,7 @@ function buildUpdatableBoundary(
       recordSequence,
       1,
       boundaryId,
-      currentCheckpointPayload(bootstrap),
+      currentCheckpointPayload({ declarationId: boundaryId, ...bootstrap }),
     ]),
   });
   const sentinel = element('webui-hydrate');
@@ -614,7 +618,13 @@ function buildSpanCompletion(
   const end = comment(`/ws:${spanId}`);
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([2, recordSequence, 3, spanId, bootstrap]),
+    text: JSON.stringify([
+      2,
+      recordSequence,
+      3,
+      spanId,
+      currentCheckpointPayload(bootstrap),
+    ]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -691,11 +701,11 @@ function buildSpanScenario(
       boundarySequence,
       options.updatable ? 1 : 0,
       0,
-      {
+      currentCheckpointPayload({
         declarationId: 9,
         enclosingSpanInstanceId: spanId,
         state: { scope: 'child' },
-      },
+      }),
     ]),
   });
   const boundarySentinel = element('webui-hydrate');
@@ -726,7 +736,7 @@ function buildSpanScenario(
       spanSequence,
       3,
       spanId,
-      { state: { scope: 'parent' } },
+      currentCheckpointPayload({ state: { scope: 'parent' } }),
     ]),
   });
   const spanSentinel = element('webui-hydrate');
@@ -1681,7 +1691,10 @@ describe('streaming coordinator pipeline', () => {
   test('a missing start marker halts and cleans the end marker + payload', async () => {
     // End marker present but no matching start marker: reject + clean.
     const end = comment('/wb:0');
-    const scriptEl = element('script', { attrs: { 'data-webui-boundary': '' }, text: JSON.stringify([2, 0, 0, 0, {}]) });
+    const scriptEl = element('script', {
+      attrs: { 'data-webui-boundary': '' },
+      text: JSON.stringify([2, 0, 0, 0, { declarationId: 0 }]),
+    });
     const sentinel = element('webui-hydrate');
     const root = body();
     link(root, [end, scriptEl, sentinel]);
@@ -1802,7 +1815,7 @@ describe('streaming coordinator pipeline', () => {
         0,
         3,
         1,
-        { state: { scope: 'inner' } },
+        currentCheckpointPayload({ state: { scope: 'inner' } }),
       ]),
     });
     const innerSentinel = element('webui-hydrate');
@@ -1823,7 +1836,7 @@ describe('streaming coordinator pipeline', () => {
         1,
         3,
         0,
-        { state: { scope: 'outer' } },
+        currentCheckpointPayload({ state: { scope: 'outer' } }),
       ]),
     });
     const outerSentinel = element('webui-hydrate');
@@ -2296,11 +2309,11 @@ describe('streaming coordinator pipeline', () => {
         0,
         0,
         0,
-        {
+        currentCheckpointPayload({
           declarationId: 12,
           enclosingSpanInstanceId: 1,
           state: { scope: 'child' },
-        },
+        }),
       ]),
     });
     const boundarySentinel = element('webui-hydrate');
@@ -2321,7 +2334,7 @@ describe('streaming coordinator pipeline', () => {
         1,
         3,
         1,
-        { state: { scope: 'inner' } },
+        currentCheckpointPayload({ state: { scope: 'inner' } }),
       ]),
     });
     const innerSentinel = element('webui-hydrate');
@@ -2342,7 +2355,7 @@ describe('streaming coordinator pipeline', () => {
         2,
         3,
         0,
-        { state: { scope: 'outer' } },
+        currentCheckpointPayload({ state: { scope: 'outer' } }),
       ]),
     });
     const outerSentinel = element('webui-hydrate');

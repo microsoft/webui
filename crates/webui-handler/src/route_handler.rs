@@ -20,10 +20,32 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, OnceLock, RwLock};
 use webui_protocol::{
-    web_ui_fragment::Fragment, CssStrategy, DomStrategy, StateProjectionMode, WebUIFragmentRoute,
-    WebUIProtocol,
+    web_ui_fragment::Fragment, ComponentAssetStylePreload, CssStrategy, StateProjectionMode,
+    WebUIFragmentRoute, WebUIProtocol,
 };
 
+fn partition_component_asset_style_preloads(
+    protocol: &WebUIProtocol,
+    preloads: &[ComponentAssetStylePreload],
+) -> (
+    Vec<ComponentAssetStylePreload>,
+    Vec<ComponentAssetStylePreload>,
+) {
+    let mut shadow = Vec::new();
+    let mut light = Vec::new();
+    for preload in preloads {
+        if protocol
+            .components
+            .get(&preload.root)
+            .is_some_and(|component| !component.uses_shadow_dom)
+        {
+            light.push(preload.clone());
+        } else {
+            shadow.push(preload.clone());
+        }
+    }
+    (shadow, light)
+}
 use crate::streaming::PreparedContinuationStatePlan;
 
 // ── Protocol Index ──────────────────────────────────────────────────────
@@ -41,6 +63,8 @@ pub struct Protocol {
     protocol: WebUIProtocol,
     style_metadata_error: Option<String>,
     css_strategy: webui_protocol::CssStrategy,
+    component_asset_style_manifest: std::result::Result<String, String>,
+    component_asset_style_links: String,
     component_index: HashMap<String, u32>,
     style_resource_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
@@ -83,10 +107,26 @@ impl Protocol {
     }
 
     fn new_with_style_metadata(
-        protocol: WebUIProtocol,
+        mut protocol: WebUIProtocol,
         style_metadata_error: Option<String>,
     ) -> Self {
         let css_strategy = protocol.css_strategy();
+        let component_asset_style_preloads =
+            std::mem::take(&mut protocol.component_asset_style_preloads);
+        let (shadow_preloads, light_preloads) =
+            partition_component_asset_style_preloads(&protocol, &component_asset_style_preloads);
+        let component_asset_style_links = if css_strategy == CssStrategy::Link {
+            crate::serialize_component_asset_style_links(&light_preloads)
+        } else {
+            String::new()
+        };
+        let component_asset_style_manifest = if css_strategy == CssStrategy::Link {
+            crate::serialize_component_asset_style_manifest(&shadow_preloads).map_err(|error| {
+                format!("failed to serialize component asset style metadata: {error}")
+            })
+        } else {
+            Ok(String::new())
+        };
         let component_index = build_component_index(&protocol);
         let style_resource_index = build_style_resource_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
@@ -106,6 +146,8 @@ impl Protocol {
             protocol,
             style_metadata_error,
             css_strategy,
+            component_asset_style_manifest,
+            component_asset_style_links,
             component_index,
             style_resource_index,
             component_reachability: OnceLock::new(),
@@ -130,6 +172,17 @@ impl Protocol {
 
     pub(crate) fn css_strategy(&self) -> webui_protocol::CssStrategy {
         self.css_strategy
+    }
+
+    pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
+        match &self.component_asset_style_manifest {
+            Ok(manifest) => Ok(manifest),
+            Err(message) => Err(HandlerError::Rendering(message.clone())),
+        }
+    }
+
+    pub(crate) fn component_asset_style_links(&self) -> &str {
+        &self.component_asset_style_links
     }
 
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
@@ -2918,17 +2971,17 @@ pub(crate) fn collect_route_chain_plan(
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
-                    stack.push(QueuedFragment {
+                    stack.push(RouteChainWork {
                         id: for_loop.fragment_id.clone(),
-                        inventoryable: false,
                         route_base: queued.route_base.clone(),
+                        targets_document: queued.targets_document,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
-                    stack.push(QueuedFragment {
+                    stack.push(RouteChainWork {
                         id: if_cond.fragment_id.clone(),
-                        inventoryable: false,
                         route_base: queued.route_base.clone(),
+                        targets_document: queued.targets_document,
                     });
                 }
 
@@ -3225,7 +3278,16 @@ mod tests {
     #[test]
     fn protocol_precomputes_deduplicated_light_component_asset_styles() {
         let mut protocol = WebUIProtocol::default();
-        protocol.dom_strategy = DomStrategy::Light as i32;
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for root in ["lazy-panel", "secondary-panel"] {
+            protocol.components.insert(
+                root.to_string(),
+                webui_protocol::ComponentData {
+                    uses_shadow_dom: false,
+                    ..Default::default()
+                },
+            );
+        }
         protocol.component_asset_style_preloads = vec![
             webui_protocol::ComponentAssetStylePreload {
                 root: "lazy-panel".to_string(),
@@ -4408,12 +4470,14 @@ mod tests {
                 "index.html".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::component("legacy-page")],
+                    contains_boundary: false,
                 },
             ),
             (
                 "legacy-page".to_string(),
                 FragmentList {
                     fragments: vec![WebUIFragment::raw("<p>Legacy</p>")],
+                    contains_boundary: false,
                 },
             ),
         ]);
@@ -4623,6 +4687,7 @@ mod tests {
                 tag.to_string(),
                 FragmentList {
                     fragments: Vec::new(),
+                    contains_boundary: false,
                 },
             );
             protocol.components.insert(

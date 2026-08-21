@@ -286,7 +286,7 @@ pub(super) fn mark_streaming_style_resource_sent(
 mod tests {
     use super::*;
     use crate::route_handler::Protocol;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use webui_protocol::{FragmentList, WebUIProtocol};
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
         );
 
         let mut streaming = StreamingRenderState::from_progress(
-            super::super::state::StreamingProgress::new(component_index.len()),
+            super::super::state::StreamingProgress::new(component_index.len(), 0),
             protocol.component_reachability(),
         );
         let state = serde_json::Value::Object(serde_json::Map::new());
@@ -418,6 +418,9 @@ mod tests {
             entry_id: "index.html",
             nonce: None,
             component_index,
+            style_resource_index: protocol.style_resource_index(),
+            style_chunk_index: protocol.protocol().style_chunk_index(),
+            css_strategy: protocol.css_strategy(),
             head_inject: None,
             body_inject: None,
             state_inject: crate::StateInject::resolve(&state),
@@ -427,9 +430,14 @@ mod tests {
             body_end_emitted: false,
             route_index: protocol.route_index(),
             route_chain_index: 0,
+            route_chain: None,
+            route_document_style_targets: Vec::new(),
+            reachable_components: None,
             streaming: Some(&mut streaming),
             json_scratch: Vec::new(),
             scope_pool: Vec::new(),
+            document_style_resources: HashSet::new(),
+            shadow_style_roots: Vec::new(),
         };
 
         record_checkpoint_tag(&mut context, "route-shell");

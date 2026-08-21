@@ -777,6 +777,7 @@ mod tests {
                     WebUIFragment::raw_text_signal("tokens", true),
                     WebUIFragment::raw("}</style>"),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);

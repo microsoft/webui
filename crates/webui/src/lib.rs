@@ -727,6 +727,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .or_default()
             .uses_shadow_dom = uses_shadow_dom;
     }
+    protocol.component_render_css = component_render_css;
 
     // Process component CSS in a single pass: retain compiled Style/Module CSS,
     // set Link-strategy css_href, and collect external CSS files.
@@ -3711,11 +3712,11 @@ mod tests {
             ("index.html", "<card-a>A</card-a>"),
             (
                 "card-a.html",
-                r#"<template w-render="lazy" w-reserve-block-size="10px"><slot></slot></template>"#,
+                r#"<template w-render="lazy" w-reserve-block-size="10px"><div>a</div></template>"#,
             ),
             (
                 "card-b.html",
-                r#"<template w-render="lazy" w-reserve-block-size="20px"><slot></slot></template>"#,
+                r#"<template w-render="lazy" w-reserve-block-size="20px"><div>b</div></template>"#,
             ),
         ]);
         let result = build(default_options(app.path())).unwrap();

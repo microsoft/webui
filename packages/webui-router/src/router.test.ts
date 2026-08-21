@@ -672,7 +672,13 @@ describe('WebUIRouter', () => {
       let capturedSignal: AbortSignal | undefined;
       (globalThis as any).fetch = (_url: string, opts?: RequestInit) => {
         capturedSignal = opts?.signal as AbortSignal | undefined;
-        return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }) };
+        return new Promise((_resolve, reject) => {
+          capturedSignal?.addEventListener(
+            'abort',
+            () => reject(capturedSignal?.reason),
+            { once: true },
+          );
+        });
       };
 
       try {
@@ -709,6 +715,7 @@ describe('WebUIRouter', () => {
             templates: {
               'abort-test': { h: '<div></div>' },
             },
+            componentStyles: emptyComponentStyles(),
             path: '/',
             chain: [],
             inventory: 'ff',
@@ -740,7 +747,8 @@ describe('WebUIRouter', () => {
     test('fetchPartial works normally without signal', async () => {
       const origFetch = (globalThis as any).fetch;
       (globalThis as any).fetch = async (_url: string, opts?: RequestInit) => {
-        assert.equal(opts?.signal, undefined, 'signal should be undefined');
+        assert.ok(opts?.signal, 'bounded fetch should always receive a timeout signal');
+        assert.equal(opts.signal.aborted, false);
         return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ state: {}, templates: {}, componentStyles: emptyComponentStyles(), path: '/', chain: [] }) };
       };
 
@@ -828,7 +836,7 @@ describe('WebUIRouter', () => {
           const body = new ReadableStream<Uint8Array>({
             start(controller) {
               controller.enqueue(encoder.encode(
-                '{"chain":[],"templates":{},"path":"/first"}\n',
+                '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/first"}\n',
               ));
               firstSignal?.addEventListener(
                 'abort',
@@ -842,7 +850,7 @@ describe('WebUIRouter', () => {
           });
         }
         return new Response(
-          '{"chain":[],"templates":{},"path":"/second"}',
+          '{"chain":[],"templates":{},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"path":"/second"}',
           { headers: { 'content-type': 'application/json' } },
         );
       };

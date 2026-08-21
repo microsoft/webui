@@ -396,7 +396,7 @@ jobs:
             "$streaming_output/committed.json" \
             "$streaming_output/generated.json" \
             "crates/webui-python/tests/fixtures/streaming_protocol.bin"
-          cmp "crates/webui-python/tests/fixtures/greeting-card.css" \
+         cmp "crates/webui-python/tests/fixtures/greeting-card.css" \
             "$output/greeting-card.css"
 
   # ── Gate: one stable required check ────────────────────────────────

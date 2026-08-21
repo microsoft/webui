@@ -223,9 +223,7 @@ struct OpenSpan {
 enum Frame {
     EnterFragment(u32),
     Fragment(FragmentFrame),
-    ComponentEnd {
-        saved_local_vars: HashMap<String, Value>,
-    },
+    ComponentEnd(ComponentEndFrame),
     IfEnd {
         slot: u32,
     },
@@ -242,6 +240,12 @@ enum Frame {
         saved_route_children: Vec<WebUiFragmentRoute>,
     },
     Outlet(OutletFrame),
+}
+
+struct ComponentEndFrame {
+    saved_local_vars: HashMap<String, Value>,
+    component_slot: u32,
+    owns_css_tree: bool,
 }
 
 struct FragmentFrame {
@@ -421,9 +425,7 @@ impl ContinuationVm {
                         return Ok(status);
                     }
                 }
-                Frame::ComponentEnd { saved_local_vars } => {
-                    self.end_component(saved_local_vars, context)?;
-                }
+                Frame::ComponentEnd(frame) => self.end_component(frame, protocol, context)?,
                 Frame::IfEnd { slot } => {
                     if let Some(plugin) = context.plugin.as_mut() {
                         let fragment_id = protocol
@@ -711,6 +713,12 @@ impl ContinuationVm {
                 .rendered_components
                 .insert(component.fragment_id.clone());
         }
+        let slot = fragment_slot(protocol, &component.fragment_id)?;
+        let owns_css_tree =
+            WebUIHandler::component_owns_css_tree(&component.fragment_id, protocol.protocol());
+        if owns_css_tree {
+            WebUIHandler::push_shadow_style_root(&component.fragment_id, context)?;
+        }
         let saved_local_vars = std::mem::take(&mut context.local_vars);
         let saved_component_attrs = std::mem::replace(
             &mut context.component_attrs,
@@ -720,23 +728,33 @@ impl ContinuationVm {
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.push_scope();
         }
-        self.push(Frame::ComponentEnd { saved_local_vars })?;
-        let slot = fragment_slot(protocol, &component.fragment_id)?;
+        self.push(Frame::ComponentEnd(ComponentEndFrame {
+            saved_local_vars,
+            component_slot: slot,
+            owns_css_tree,
+        }))?;
         self.push(Frame::EnterFragment(slot))?;
         Ok(())
     }
 
     fn end_component(
         &mut self,
-        saved_local_vars: HashMap<String, Value>,
+        frame: ComponentEndFrame,
+        protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.pop_scope();
         }
-        let used_locals = std::mem::replace(&mut context.local_vars, saved_local_vars);
+        let used_locals = std::mem::replace(&mut context.local_vars, frame.saved_local_vars);
         crate::recycle_scope_map(&mut context.scope_pool, used_locals);
         context.component_attrs.clear();
+        if frame.owns_css_tree {
+            let component = protocol
+                .fragment_id(frame.component_slot)
+                .ok_or_else(|| unknown_fragment_slot_error(frame.component_slot))?;
+            WebUIHandler::pop_shadow_style_root(component, context)?;
+        }
         Ok(())
     }
 

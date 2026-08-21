@@ -67,8 +67,12 @@ use crate::comment_policy;
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
-use crate::html_parser::{find_matching_end, find_tag_close, parse_tag, style_element_bounds};
+use crate::html_parser::{
+    find_comment_close, find_declaration_close, find_element_end, find_matching_end,
+    find_tag_close, is_void_element, leading_content, parse_tag, style_element_bounds,
+};
 use crate::{ConditionParser, Result};
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
 use std::ops::Range;
@@ -83,11 +87,13 @@ struct TrackedComponent {
     root_event_source: String,
     client_module: ClientModule,
     uses_shadow_dom: bool,
+    render_policy: ComponentRenderPolicy,
 }
 
 struct TrackedClientContext {
     client_module: ClientModule,
     uses_shadow_dom: bool,
+    render_policy: ComponentRenderPolicy,
 }
 
 /// Authored client-module ownership.
@@ -213,23 +219,25 @@ impl WebUIParserPlugin {
         root_event_source: &str,
         client: TrackedClientContext,
     ) {
+        let template_html = Self::strip_boundary_directive_tags(template_html);
         if let Some(component) = self.components.iter_mut().find(|c| c.tag_name == tag_name) {
             component.template_html.clear();
-            component.template_html.push_str(template_html);
+            component.template_html.push_str(&template_html);
             component.root_event_source.clear();
             component.root_event_source.push_str(root_event_source);
             component.client_module = client.client_module;
             component.uses_shadow_dom = client.uses_shadow_dom;
+            component.render_policy = client.render_policy;
             return;
         }
         self.components.push(TrackedComponent {
             tag_name: tag_name.to_string(),
-            template_html: template_html.to_string(),
+            template_html: template_html.into_owned(),
             root_event_source: root_event_source.to_string(),
             client_module: client.client_module,
             uses_shadow_dom: client.uses_shadow_dom,
+            render_policy: client.render_policy,
         });
-        Ok(())
     }
 
     #[cfg(test)]
@@ -250,6 +258,111 @@ impl WebUIParserPlugin {
             },
         )
     }
+
+    fn strip_boundary_directive_tags(template: &str) -> Cow<'_, str> {
+        if !template.contains("<boundary") && !template.contains("</boundary") {
+            return Cow::Borrowed(template);
+        }
+
+        let mut output: Option<String> = None;
+        let mut copied_until = 0usize;
+        let mut index = 0usize;
+        while index < template.len() {
+            let Some(relative) = template[index..].find('<') else {
+                break;
+            };
+            index += relative;
+            let remaining = &template[index..];
+
+            if remaining.starts_with("<!--") {
+                index += find_comment_close(remaining).unwrap_or(remaining.len());
+                continue;
+            }
+            if remaining.starts_with("<!") {
+                index += find_declaration_close(remaining).unwrap_or(remaining.len());
+                continue;
+            }
+
+            let Some(tag) = parse_tag(remaining) else {
+                let Some(close) = find_tag_close(remaining) else {
+                    break;
+                };
+                index += close + 1;
+                continue;
+            };
+            let tag_end = index + tag.close + 1;
+
+            let is_boundary = if tag.closing {
+                remaining.starts_with("</boundary")
+            } else {
+                remaining.starts_with("<boundary")
+            };
+            if is_boundary && tag.name == "boundary" {
+                let output = output.get_or_insert_with(|| String::with_capacity(template.len()));
+                output.push_str(&template[copied_until..index]);
+                copied_until = tag_end;
+                index = tag_end;
+                continue;
+            }
+
+            if !tag.closing && !tag.self_closing && is_raw_text_or_rcdata_element(tag.name) {
+                index += raw_text_element_end(remaining, tag.name, tag.close + 1);
+            } else {
+                index = tag_end;
+            }
+        }
+
+        let Some(mut output) = output else {
+            return Cow::Borrowed(template);
+        };
+        output.push_str(&template[copied_until..]);
+        Cow::Owned(output)
+    }
+}
+
+#[inline]
+fn is_raw_text_or_rcdata_element(tag_name: &str) -> bool {
+    // Reuse the parser's canonical raw/RCDATA scope set. Style has a separate
+    // parser path, while template content remains traversable markup here.
+    tag_name.eq_ignore_ascii_case("style")
+        || (!tag_name.eq_ignore_ascii_case("template")
+            && crate::boundary_parent_scope(tag_name).is_some())
+}
+
+fn raw_text_element_end(source: &str, tag_name: &str, mut cursor: usize) -> usize {
+    if tag_name.eq_ignore_ascii_case("plaintext") {
+        return source.len();
+    }
+
+    while cursor < source.len() {
+        let Some(relative) = source[cursor..].find('<') else {
+            break;
+        };
+        cursor += relative;
+        if let Some(close_len) = raw_text_closing_tag_len(&source[cursor..], tag_name) {
+            return cursor + close_len;
+        }
+        cursor += 1;
+    }
+    source.len()
+}
+
+#[inline]
+fn raw_text_closing_tag_len(input: &str, tag_name: &str) -> Option<usize> {
+    let name_end = 2 + tag_name.len();
+    if !input.as_bytes().starts_with(b"</")
+        || !input.get(2..name_end)?.eq_ignore_ascii_case(tag_name)
+    {
+        return None;
+    }
+
+    let delimiter = *input.as_bytes().get(name_end)?;
+    if !delimiter.is_ascii_whitespace() && delimiter != b'/' && delimiter != b'>' {
+        return None;
+    }
+
+    let tag = parse_tag(input)?;
+    (tag.closing && tag.name.eq_ignore_ascii_case(tag_name)).then_some(tag.close + 1)
 }
 
 impl Default for WebUIParserPlugin {
@@ -289,6 +402,7 @@ impl ParserPlugin for WebUIParserPlugin {
             TrackedClientContext {
                 client_module: ClientModule::from_component(component),
                 uses_shadow_dom: context.uses_shadow_dom,
+                render_policy: parse_component_render_policy(tag_name, &component.html_content)?,
             },
         );
         Ok(())
@@ -2412,6 +2526,7 @@ fn is_inside_tag(input: &str, pos: usize) -> bool {
 
 /// Return the body of a complete open declarative Shadow DOM template.
 fn shadow_template_body(html: &str) -> Option<&str> {
+    let (html, _) = leading_content(html);
     let tag = parse_tag(html)?;
     if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
         return None;
@@ -3329,6 +3444,7 @@ fn parse_attr_parts(value: &str) -> Option<Vec<CompiledAttrPart>> {
 /// These become "root events" (`re` array) attached to the host element
 /// rather than to an element inside the shadow DOM.
 fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>> {
+    let (html, _) = leading_content(html);
     let Some(root) = parse_tag(html) else {
         return Ok(Vec::new());
     };

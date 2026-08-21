@@ -115,7 +115,7 @@ function findRouteElement(
     if (
       child.tagName === 'WEBUI-ROUTE' &&
       child.getAttribute('component') === entry.component &&
-      child.getAttribute('path') === (entry.path || null)
+      child.getAttribute('path') === entry.path
     ) {
       return child as HTMLElement;
     }

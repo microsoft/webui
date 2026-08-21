@@ -40,10 +40,18 @@ pub struct WebUIProtocol {
     pub css_strategy: CssStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Ordered modulepreload hrefs for critical shared JavaScript chunks.
+    pub module_preloads: Vec<String>,
+    /// Deterministic document-level CSS for build-authored component rendering
+    /// policies. Empty when no component uses `w-render="lazy"`.
+    pub component_render_css: String,
     /// Ordered component style resources for each CSS-tree entry point.
     pub style_closures: HashMap<String, ComponentStyleClosure>,
     /// Bundled stylesheet chunks, empty unless the build enabled `css_bundle`.
     pub style_chunks: Vec<StyleChunk>,
+    /// Deterministic Link stylesheet metadata for component asset roots.
+    /// Empty when the build does not emit component assets.
+    pub component_asset_style_preloads: Vec<ComponentAssetStylePreload>,
 }
 
 pub struct ComponentStyleClosure {
@@ -64,6 +72,12 @@ pub struct StyleChunk {
     pub css_href: String,
     /// Merged component tags, in cascade order.
     pub component_tags: Vec<String>,
+}
+
+/// Link stylesheet metadata for one static component asset root.
+pub struct ComponentAssetStylePreload {
+    pub root: String,
+    pub style_hrefs: Vec<String>,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -1531,13 +1545,23 @@ pub enum CssStrategy {
 - **Link** (default): Stores an external `.css` href for each component with CSS.
   Output filenames use `[name]`, `[hash]`, and `[ext]`, default to
   `[name].[ext]`, and may use a public base URL.
+  Static component-asset roots retain their final Link hrefs in
+  `component_asset_style_preloads`. Shadow builds publish this finite metadata
+  so `assets.preload(tag)` can begin stylesheet requests beside the lazy root
+  module; Light builds emit the same hrefs as deduplicated document stylesheets
+  because their CSS is global. Client-created Shadow components use bounded
+  `<link rel="preload" as="style">` requests with matching link attributes, and
+  the first native stylesheet link remains authoritative for CSP, MIME,
+  integrity, CORS, redirects, and service workers.
 - **Style**: Stores compiled CSS bytes for delivery in `<style>` elements. No
   separate CSS files are written.
 - **Module**: Stores the same compiled bytes and a component specifier. SSR
   provides an immediately usable style fallback, while the browser can import
   one shared CSS module and adopt its `CSSStyleSheet` into each target CSS tree.
   No separate CSS files are written. Module loading requires CSS Module Scripts
-  support.
+  support. Partial navigation carries newly needed module import-map entries
+  with the template payload; the router applies the request nonce before
+  appending them to `<head>`.
 
 All three strategies use the ordered component style closures below. CSS
 strategy changes delivery, not component discovery, Shadow ownership, authored
@@ -1662,6 +1686,7 @@ registration creates each nonce-bearing import-map definition once per
 Document before publishing templates. SSR resource markers seed that
 definition set. The SSR style fallback remains until module adoption succeeds;
 failed asynchronous module installs remain retryable.
+
 
 Constructable Link promotion is a progressive enhancement. Unsupported
 browsers, inaccessible native CSSOM, ambiguous, redirected, or
@@ -2222,15 +2247,15 @@ update hot paths still call the function directly.
 
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
-| `h`   | `string`                          | Marker-free static component HTML for client-created DOM |
-| `tx`  | `[slot, parts][]`                 | Client text runs inserted at precompiled slots     |
+| `h`   | `string`                          | Marker-free static HTML for client-created DOM, including baked-in `<link>` / `<style>` nodes for link/style CSS strategies |
+| `tx`  | `[slot, parts, raw?][]`           | Client text runs inserted at precompiled slots; `raw = 1` identifies unescaped HTML ranges |
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
 | `ag`  | `[elementIndex, start, count][]`  | Attribute-target groups for `a[]`                  |
 | `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
 | `r`   | `[collection, itemVar, blockIndex, slot, keyPath?][]` | Repeat blocks; `keyPath` is relative to the item variable |
 | `eg`  | `[event, [[handler, argSpecs, targetIndex, usesEvent?]]][]` | Body events grouped by event name |
 | `b`   | `TemplateBlockMeta[]`             | Nested compiled block table referenced by `c` / `r` |
-| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to `this.shadowRoot ?? this` |
+| `re`  | `[event, handler, argSpecs][]`    | Root events, attached to the host element; observe host-targeted events plus anything bubbling to the host (`composed` is required only to cross a shadow boundary) |
 | `tr`  | `string[]`                        | Component-level state roots referenced by the template, excluding repeat item variables |
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
@@ -2399,10 +2424,12 @@ whitespace remain inside the implied parent, matching the browser tree used for
 SSR hydration and client locator resolution.
 
 Component policies are visible to the Rust build because they live on the root
-component `<template>`, not on a TypeScript class. Under `DomStrategy::Shadow`
-that authored wrapper becomes the declarative shadow-root template after its
-build-only policy attributes are removed. Under `DomStrategy::Light` the
-wrapper is unwrapped. `w-render="lazy"` requires one non-negative CSS
+component `<template>`, not on a TypeScript class. A component that authors
+`<template shadowrootmode="open">` keeps that wrapper as its declarative
+shadow-root template after its build-only policy attributes are removed. Every
+other component is Light, so the policy wrapper is unwrapped and the policy
+reaches the host through `WebUIProtocol.component_render_css`.
+`w-render="lazy"` requires one non-negative CSS
 length in `w-reserve-block-size`; the parser accepts absolute,
 font-relative, viewport, and container-query length units, and rejects
 percentages, negative values, CSS functions, keywords, duplicates, missing
@@ -2441,12 +2468,10 @@ activity-row:not([w-render="eager"]) {
 The document rule covers document and Light DOM instances. In a component
 stylesheet, the qualified `:host(...)` selector covers a Shadow DOM component
 without matching an unrelated enclosing host. The tag selector also covers a
-Light DOM instance nested in an authored shadow root when that stylesheet is
-delivered into the root, as it is with `CssStrategy::Style`. Link and Module
-stylesheets for a `DomStrategy::Light` build remain document-scoped and do not
-cross an authored shadow boundary; that existing mixed-mode configuration must
-use Style delivery or include the containment rule in the authored shadow-root
-stylesheet. Both generated rules are build-time output, and `w-render="eager"`
+Light DOM instance nested in an authored shadow root: the precomputed style
+closure delivers that stylesheet into the containing root under every CSS
+strategy, so the containment rule follows the component across the boundary.
+Both generated rules are build-time output, and `w-render="eager"`
 disables both.
 
 Repeat identity is positional by default. At runtime, the existing block at
@@ -2606,8 +2631,8 @@ contract rather than introduce a parallel one.
 2. **Typed records and exactly one empty terminal.** The five-element envelope
    is `[version, record_sequence, kind, target, payload]`. `kind` is `0` for a
    final boundary checkpoint, `1` for an updatable boundary checkpoint, `2`
-   for a state update, and `3` for the terminal. Every response ends with
-   exactly one markerless `[2, sequence, 3, 0, {}]` after all scriptless tail
+   for a state update, and `4` for the terminal. Every response ends with
+   exactly one markerless `[2, sequence, 4, 0, {}]` after all scriptless tail
    bytes. A record arriving after it is corruption: it is rejected, its
    scaffolding released, and the stream is halted without disturbing the
    successful completion the terminal record already drove. The empty terminal
@@ -2698,9 +2723,14 @@ contract rather than introduce a parallel one.
     for fatal cleanup when the malformed stream no longer exposes a complete
     marker range.
 14. **Post-hydration author code runs exactly once.** `hydratedCallback()` runs
-    synchronously after the first successful ordinary hydration, client mount,
-    streamed activation, or dormant static-host wake. Its latch is set before
-    author code runs, so reconnects and exceptions never retry it.
+    synchronously with the first successful ordinary hydration, client mount,
+    streamed activation, or dormant static-host wake. A Link-mode client mount
+    whose CSP blocks the prepaint guard remains resource-deferred until its
+    native styles load. Reactive writes made during that interval are reconciled
+    against the staging instance immediately before detached content is
+    appended; the callback runs only after the live container is installed.
+    Its latch is set before author code runs, so reconnects and exceptions never
+    retry it.
 15. **Updates never rehydrate.** A state update calls the existing reactive
     `setState()` path on each target root. It does not rerun
     `$activateDeferredSSR()`, template wiring, or `hydratedCallback()`. If the
@@ -2823,7 +2853,15 @@ runtime element that does not exist. `<boundary>` cannot collide with a
 component either: WebUI components are discovered from hyphenated filenames, so
 no component can ever be named `boundary`.
 
-### Author-facing syntax
+### Compilation and author syntax
+
+`<boundary>` is a bare compile-time directive. The parser erases its tags and
+brackets its body with a `WebUIFragmentBoundary` start/end pair emitted inline
+in the owner's record. It is valid in an entry or reusable component and may be
+reached through conditions, outlets, and route content. A boundary may enclose
+a boundary-free `<for>`. Component templates strip directive tags from their
+browser template HTML, while the server fragment graph retains the typed
+declaration.
 
 ```html
 <!-- index.html -->
@@ -2898,7 +2936,18 @@ produce:
 <search-box data-ws data-ws-enclosing="0">...</search-box>
 <!--/wb:0-->
 <script type="application/json" data-webui-boundary>
-  [2,0,1,0,{"inventory":"01","state":{"count":0},"templates":{...}}]
+  [2,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0,"state":{},"templates":{}}]
+</script>
+<webui-hydrate></webui-hydrate>
+...ntp-page tail...
+</ntp-page>
+<!--/ws:0-->
+<script type="application/json" data-webui-boundary>
+  [2,1,3,0,{"state":{},"templates":{}}]
+</script>
+<webui-hydrate></webui-hydrate>
+<script type="application/json" data-webui-boundary>
+  [2,2,4,0,{}]
 </script>
 <webui-hydrate></webui-hydrate>
 ```
@@ -2946,11 +2995,11 @@ produce:
   updatable checkpoint. The coordinator removes every payload and sentinel
   after processing and removes checkpoint markers after hydration commits.
 - At `body_end`, the handler writes any host-provided body injection and then
-  emits one empty markerless `[2,next_sequence,3,0,{}]` terminal record. The
+  emits one empty markerless `[2,next_sequence,4,0,{}]` terminal record. The
   terminal flush also commits preceding native/scriptless tail bytes, but those
   bytes never manufacture another state or template projection. A static
   streaming document with no boundaries therefore emits exactly
-  `[2,0,3,0,{}]`. Streaming mode does **not** also emit a page-wide
+  `[2,0,4,0,{}]`. Streaming mode does **not** also emit a page-wide
   `#webui-data` block. Boundary checkpoints share the existing `WebUiBootstrap`
   and `write_selected_state` paths, so there is no second state-selection
   implementation. A request-local key scratch vector is cleared and reused
@@ -2967,6 +3016,32 @@ produce:
   rendering ignores namespaced raw structural signals; ordinary element and
   fragment rendering is identical in both modes. Boundary emission is gated on
   session mode and reuses the existing per-signal dedup pattern.
+- Every browser record is the five-element tuple
+  `[2, sequence, kind, target, payload]`.
+- Kinds are `0` final checkpoint, `1` updatable checkpoint, `2` state update,
+  `3` generated span completion, and `4` terminal.
+- A checkpoint target is `BoundaryInstanceId`; a span-completion target is
+  `SpanInstanceId`. They are separate response-local namespaces. Update targets
+  reuse the committed boundary instance ID. Terminal target is zero.
+- `<!--wb:N-->` and `<!--/wb:N-->` delimit occurrence `N`.
+  `<!--ws:N-->` and `<!--/ws:N-->` delimit generated component span `N`.
+- `data-ws` marks a deferred component root. `data-ws-span="N"` identifies the
+  unfinished host for span `N`. `data-ws-enclosing="N"` permits an early child
+  root to bypass exactly that nearest unfinished ancestor.
+- Boundary payloads include `declarationId`, optional
+  `enclosingSpanInstanceId`, projected `state`, and additive template,
+  inventory, route, nonce, CSS, and style deltas as needed. Span completion
+  payloads use the same bootstrap fields except declaration identity.
+- State updates are markerless `[2, sequence, 2, instanceId, patch]` records.
+  They carry no templates and insert no application markup.
+- Exactly one markerless `[2, sequence, 4, 0, {}]` terminal follows the final
+  tail bytes. A boundary-free streaming render emits the terminal from
+  `start`.
+- Each record script is followed by one generated `<webui-hydrate>` sentinel.
+  The coordinator removes scripts, sentinels, range markers, and compiler
+  attributes when they are no longer needed.
+- `<meta name="webui-streaming" content="1">` is emitted at `head_start`.
+  Streaming mode does not emit a page-wide `#webui-data` block.
 
 ### Initialization ordering
 
@@ -3098,8 +3173,10 @@ CSS delivery strategy is selected once per build and is not boundary-local.
    bookkeeping deltas are appended with deduplication; component-style
    resources and closures are registered only on first delivery.
 5. Hydrates outer roots before descendants. After each successful first
-   hydration or mount, `hydratedCallback()` runs synchronously exactly once;
-   reconnects and callback exceptions do not retry it.
+   hydration or mount, `hydratedCallback()` runs synchronously with completion
+   exactly once; a CSP-deferred Link mount completes only after its native styles
+   load and detached content is appended. Reconnects and callback exceptions do
+   not retry it.
 6. Removes the payload, sentinel, markers, and `data-ws` identities and releases
    parsed arrays before dispatching diagnostics or completion.
 
@@ -3109,6 +3186,11 @@ listener is created. `webui:hydration-complete` fires only after the
 terminal record and zero pending boundaries. Truncated or malformed streams
 abort that completion gate and release discoverable generated scaffolding within
 the configured bounds.
+Hydration runs through one document-scoped FIFO pump, never directly from the
+sentinel upgrade callback. `webui:hydration-complete` fires only after the
+terminal record, all queued records, definition waiters, ancestor barriers, and
+generated spans settle successfully. `hydratedCallback()` is latched before
+author code runs and is never retried after reconnect or exception.
 
 #### Commit observability
 

@@ -49,6 +49,7 @@ import {
   fetchComponentTemplates,
   notifyTemplatesRegistered,
   registerInitialTemplatesAndStyles,
+  waitForTemplateReadiness,
 } from './templates.js';
 import type {
   StreamingContext,
@@ -317,7 +318,11 @@ export class WebUIRouter {
       const inv = window.__webui!.inventory!;
       const endpoint = this.config.templateEndpoint ?? '/_webui/templates';
       const fetchPromise = fetchComponentTemplates(
-        missing, inv, endpoint, window.__webui!.nonce!,
+        missing,
+        inv,
+        endpoint,
+        window.__webui!.nonce!,
+        this.cssSet,
         (inv) => this.updateInventory(inv),
       ).finally(() => {
         for (const tag of missing) this.loadPromises.delete(tag);
@@ -565,28 +570,12 @@ export class WebUIRouter {
     const headers: Record<string, string> = { 'Accept': 'application/x-ndjson, application/json' };
     if (window.__webui!.inventory) headers['X-WebUI-Inventory'] = window.__webui!.inventory!;
 
-    const resp = await fetch(fullPath, { headers, signal });
-    if (!resp.ok) return null;
-
-    const contentType = resp.headers.get('content-type') ?? '';
-
-    if (!contentType.includes('json') && !contentType.includes('ndjson')) {
-      if (speculative || signal?.aborted) return null;
-      this.navigateDocument(requestPath);
-      return null;
-    }
-
-    if (contentType.includes('ndjson') && resp.body) {
-      const { readStreamingPartial } = await import('./streaming.js');
-      return readStreamingPartial(resp, requestPath, this.streamingContext(), signal);
-    }
-
-    const data = await resp.json() as PartialResponse & { inventory?: string };
-    if (signal?.aborted) return null;
-    registerTemplatesAndStyles(
-      data,
-      window.__webui!.nonce!,
-      (inv) => this.updateInventory(inv),
+    const requestController = new AbortController();
+    if (!speculative) this.abortPartialRequests();
+    this.partialControllers.add(requestController);
+    const timeout = setTimeout(
+      () => requestController.abort(new DOMException('Partial response timed out', 'TimeoutError')),
+      PARTIAL_FETCH_TIMEOUT_MS,
     );
     const requestSignal = signal
       ? AbortSignal.any([signal, requestController.signal])
@@ -623,7 +612,7 @@ export class WebUIRouter {
       const stylesReady = registerTemplatesAndStyles(
         data,
         window.__webui!.nonce!,
-        this.stylesSet,
+        this.cssSet,
         (inv) => this.updateInventory(inv),
       );
       injectCssLinks(data, this.cssSet);

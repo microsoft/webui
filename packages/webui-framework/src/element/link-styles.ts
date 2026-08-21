@@ -7,6 +7,7 @@ import {
   type TemplateStylesheetDescriptor,
 } from '../template-content.js';
 import type { TemplateBlockMeta, TemplateMeta } from '../template-types.js';
+import type { ComponentStyles } from './styles.js';
 
 interface LinkStyleFailure {
   readonly href: string;
@@ -85,11 +86,32 @@ export function prepareRegisteredLinkStyles(
   return pending ? Promise.all(pending).then(ignorePromiseResults) : undefined;
 }
 
+/** Prepare every Link-mode component stylesheet in a registered catalog. */
+export function prepareComponentStyleLinks(
+  styles: ComponentStyles,
+): Promise<void> | undefined {
+  if (styles.strategy !== 'link') return undefined;
+  const ids = Object.keys(styles.resources);
+  if (ids.length === 0) return undefined;
+  const hrefs: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < ids.length; i++) {
+    const resource = styles.resources[ids[i]];
+    if (resource.kind !== 'link' || seen.has(resource.href)) continue;
+    seen.add(resource.href);
+    hrefs.push(resource.href);
+  }
+  return preloadComponentAssetStyles(hrefs);
+}
+
 /** Start compiler-owned component asset styles before importing the root module. */
-export function preloadComponentAssetStyles(hrefs: readonly string[]): void {
-  if (hrefs.length === 0 || !supportsConstructableStylesheets()) return;
+export function preloadComponentAssetStyles(
+  hrefs: readonly string[],
+): Promise<void> | undefined {
+  if (hrefs.length === 0 || !supportsConstructableStylesheets()) return undefined;
 
   const preloads = (speculativeStylesheetPreloads ??= new Map());
+  let pending: Promise<LinkStyleFailure | undefined>[] | undefined;
   for (let i = 0; i < hrefs.length; i++) {
     if (hrefs[i].length === 0) continue;
     const href = resolveHref(hrefs[i]);
@@ -112,10 +134,12 @@ export function preloadComponentAssetStyles(hrefs: readonly string[]): void {
       startedAt,
     };
     preloads.set(href, preload);
+    (pending ??= []).push(preload.ready);
     preload.cleanupTimer = setTimeout(() => {
       releaseStylesheetPreload(link);
     }, SPECULATIVE_PRELOAD_TTL_MS);
   }
+  return pending ? Promise.all(pending).then(ignorePromiseResults) : undefined;
 }
 
 /**

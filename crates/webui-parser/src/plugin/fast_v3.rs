@@ -279,7 +279,7 @@ pub(super) fn build_f_template(
             }
             output.push_str(&trimmed[close_pos + 1..]);
         } else {
-            output.push_str(&trimmed);
+            output.push_str(trimmed);
         }
     } else {
         output.push_str("<template");
@@ -292,7 +292,7 @@ pub(super) fn build_f_template(
         if let Some(injection) = css_injection {
             output.push_str(injection);
         }
-        output.push_str(&trimmed);
+        output.push_str(trimmed);
         output.push_str("</template>");
     }
 

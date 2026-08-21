@@ -117,6 +117,7 @@ export async function readStreamingPartial(
   const stylesReady = registerTemplatesAndStyles(
     chunk1,
     ctx.nonce,
+    ctx.injectedCss,
     ctx.updateInventory,
   );
   injectCssLinks(chunk1, ctx.injectedCss);

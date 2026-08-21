@@ -319,7 +319,12 @@ initially false conditions or empty repeats. Unrelated later boundaries remain
 excluded. Template metadata is sent only when first reachable, inventory still
 tracks only rendered SSR roots, and repeated instances receive checkpoint-local
 state without duplicate metadata. The final terminal envelope is always
-`[2,nextSequence,3,0,{}]`; its flush also commits preceding static tail bytes.
+`[2,nextSequence,4,0,{}]`; its flush also commits preceding static tail bytes.
+
+At `start`, WebUI freezes only projected top-level keys required to continue,
+plus lexical locals and route/component scope. Resume state overlays that frozen
+parent surface. Resolution order is lexical locals, resume state, then frozen
+parent state.
 
 When a boundary occurs inside a reusable component, WebUI emits a generated
 span for the unfinished parent. The early child checkpoint can hydrate across

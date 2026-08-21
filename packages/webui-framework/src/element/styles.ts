@@ -39,6 +39,35 @@ interface SsrStyleMarkerState {
 }
 
 /**
+ * Stylesheet management for WebUI components.
+ *
+ * Three CSS strategies are supported:
+ *
+ * - **Link**: The first client shadow mount authorizes external CSS through its
+ *   native links, then promotes their CSSOM into shared constructable sheets.
+ *   Warm mounts adopt those sheets synchronously; guarded native links remain
+ *   the compatibility and failure path.
+ *
+ * - **Style**: Inline `<style>` tags inside each shadow template.
+ *
+ * - **Module**: Uses CSS Modules registered via Import Maps. During SSR, the
+ *   handler emits a `<script type="importmap">{"imports":{"<tag>":"data:text/css,..."}}</script>`
+ *   in each rendered component's light DOM. The browser registers the
+ *   stylesheet globally under `<tag>` and automatically adopts it via
+ *   `shadowrootadoptedstylesheets` on declarative shadow roots.
+ *
+ *   During SPA navigation, the router appends new importmap script tags to
+ *   `<head>` via `templateStyles[]`. The framework uses
+ *   `import(specifier, { with: { type: "css" } })` to retrieve the browser's
+ *   registered CSSStyleSheet and adopts it onto the shadow root. This is a
+ *   direct hash-map lookup in the browser's module registry - no DOM queries,
+ *   no manual CSSStyleSheet construction.
+ *
+ * For light DOM components (no shadow root), Module mode injects a `<style>`
+ * element in `<head>`, deduplicated by `headInjected`.
+ */
+
+/**
  * Cached anchor elements for one CSS tree's direct resource markers.
  *
  * `count` is the `childElementCount` observed when `markers` was last known to
@@ -346,6 +375,14 @@ export function isComponentStyleMarker(element: Element): boolean {
   const strategy = element.getAttribute('data-webui-strategy');
   return (element.localName === 'link' && strategy === 'link') ||
     (element.localName === 'style' && (strategy === 'style' || strategy === 'module'));
+}
+
+/** Whether an element is any compiler-owned style resource marker. */
+export function isComponentStyleResourceMarker(element: Element): boolean {
+  if (isComponentStyleMarker(element)) return true;
+  return element.localName === 'script' &&
+    element.getAttribute('type') === 'importmap' &&
+    element.getAttribute('data-webui-resource') !== null;
 }
 
 function scanSsrMarkerElements(

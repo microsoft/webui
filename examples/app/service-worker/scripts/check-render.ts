@@ -57,8 +57,10 @@ while (!step.done) {
     html += decoder.decode(step.bytes);
     continue;
   }
-  if (!html.includes('<style data-webui-resource="')) {
-    throw new Error(`Rendered ${sanitized.entry} did not include component CSS`);
+  const boundary = step.boundary;
+  const payload = payloads.get(boundary.name);
+  if (!payload || boundary.owner !== "index.html") {
+    throw new Error(`Unexpected boundary ${boundary.owner}/${boundary.name}`);
   }
   if (payload.entry !== `${boundary.name}-panel`) {
     throw new Error(`Boundary ${boundary.name} received state for ${payload.entry}`);
@@ -68,6 +70,9 @@ while (!step.done) {
     JSON.stringify(payload.state),
   ) as WasmStreamStep;
   html += decoder.decode(step.bytes);
+  if (!html.includes('<style data-webui-resource="')) {
+    throw new Error(`Rendered boundary ${boundary.name} did not include component CSS`);
+  }
 }
 
 for (const name of apiFiles) {

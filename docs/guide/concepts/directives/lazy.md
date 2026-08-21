@@ -59,9 +59,10 @@ Only these exact, case-sensitive values are recognized.
 
 ## Build and Runtime Behavior
 
-The policy wrapper is build-only. WebUI strips the policy attributes, turns the
-wrapper into the declarative shadow root for `--dom=shadow`, and unwraps it for
-`--dom=light`.
+The policy wrapper is build-only. WebUI strips the policy attributes. A
+component that authors `<template shadowrootmode="open">` keeps that wrapper as
+its declarative shadow root; every other component is Light, so the wrapper is
+unwrapped and its content renders directly in the host.
 
 For the full policy, the build emits one deterministic, nonce-aware
 `<style data-webui-render-policy>` in the document head. This lets

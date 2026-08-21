@@ -40,7 +40,7 @@ pub struct ComponentAssetGraph {
 
 impl ComponentAssetGraph {
     pub(crate) fn retain_entry_protocol(
-        &self,
+        &mut self,
         protocol: &mut WebUIProtocol,
     ) -> Result<(), WebUIError> {
         if self.files.is_empty() {
@@ -250,12 +250,13 @@ mod tests {
                 style_chunks: Vec::new(),
             },
         );
-        let graph = ComponentAssetGraph {
+        let mut graph = ComponentAssetGraph {
             files: vec![ComponentAssetFile {
                 name: "root.js".to_string(),
                 content: String::new(),
             }],
             metafile: None,
+            style_preloads: Vec::new(),
             entry_fragments: vec!["index.html".to_string(), "kept-card".to_string()],
             entry_components: vec!["kept-card".to_string()],
         };
@@ -312,12 +313,13 @@ mod tests {
                 style_chunks: vec![0],
             },
         );
-        let graph = ComponentAssetGraph {
+        let mut graph = ComponentAssetGraph {
             files: vec![ComponentAssetFile {
                 name: "removed-card.js".to_string(),
                 content: String::new(),
             }],
             metafile: None,
+            style_preloads: Vec::new(),
             entry_fragments: vec!["index.html".to_string(), "kept-card".to_string()],
             entry_components: vec!["kept-card".to_string()],
         };
@@ -341,6 +343,7 @@ mod tests {
             "legacy-card".to_string(),
             FragmentList {
                 fragments: vec![webui_protocol::WebUIFragment::raw("<p>Legacy</p>")],
+                contains_boundary: false,
             },
         );
         protocol.components.insert(
@@ -373,6 +376,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![webui_protocol::WebUIFragment::component("entry-card")],
+                contains_boundary: false,
             },
         );
         protocol
@@ -382,6 +386,7 @@ mod tests {
             "deferred-card".to_string(),
             FragmentList {
                 fragments: vec![webui_protocol::WebUIFragment::component("entry-card")],
+                contains_boundary: false,
             },
         );
         for tag in ["entry-card", "deferred-card"] {

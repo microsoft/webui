@@ -519,10 +519,28 @@ export class TemplateElement extends HTMLElement {
     }
     this.$meta = meta;
     if (!this.$shouldActivateOnBoundaryCommit()) {
+      // A static host never activates, so this is the only chance to install
+      // its styles.
       this.$installStyles(meta);
       return ACTIVATION_STATIC_HOST_OPT_OUT;
     }
-    this.$activateDeferredSSR(state);
+    const ancestor = this.$nearestHydrationBarrier(bypassAncestor);
+    if (ancestor) {
+      this.$deferredByAncestor = true;
+      this.$ancestorBoundaryState = state;
+      this.$hasAncestorBoundaryState = true;
+      this.$registerWithHydrationBarrier(ancestor);
+      return ACTIVATION_ANCESTOR_BARRIER;
+    }
+    // A root re-activated after its barrier lifted must not keep the stale
+    // registration; the boundary state it carried is superseded by `state`.
+    if (this.$deferredByAncestor) this.$clearAncestorDeferral();
+    this.$activatingDeferredSSR = true;
+    try {
+      this.$activateDeferredSSR(state);
+    } finally {
+      this.$activatingDeferredSSR = false;
+    }
     return ACTIVATION_ACTIVATED;
   }
 
@@ -742,11 +760,24 @@ export class TemplateElement extends HTMLElement {
     // Install them after root selection but before the hydration deferral.
     this.$installStyles(meta);
 
-    if (isSSR && !forceSSR && this.$shouldDeferSSRHydration()) {
-      this.$meta = meta;
-      this.$deferredSSR = true;
-      this.$ready = true;
-      return;
+    if (isSSR && !forceSSR && !reconnecting) {
+      const ancestor = this.$nearestHydrationBarrier();
+      if (ancestor) {
+        this.$meta = meta;
+        this.$deferredSSR = true;
+        this.$deferredByAncestor = true;
+        this.$ready = true;
+        this.$primeSSRStateForDeferral();
+        this.$registerWithHydrationBarrier(ancestor);
+        return;
+      }
+      if (this.$shouldDeferSSRHydration(meta)) {
+        this.$meta = meta;
+        this.$deferredSSR = true;
+        this.$ready = true;
+        this.$didDeferSSRHydration();
+        return;
+      }
     }
 
     let deferredHydrationFinish = false;

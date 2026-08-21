@@ -233,54 +233,44 @@ impl WebUIHandler {
             };
             mark_streaming_style_resource_sent(streaming_state(context)?, index)?;
         }
-        context
-            .writer
-            .write("<script type=\"application/json\" data-webui-boundary")?;
-        if let Some(nonce) = context.nonce {
-            context.writer.write(" nonce=\"")?;
-            context.writer.write(nonce)?;
-            context.writer.write("\"")?;
-        }
-        context.writer.write(">[2,")?;
-        write_usize(context.writer, record_sequence)?;
-        context.writer.write(",")?;
-        write_usize(
-            context.writer,
-            if updatable {
-                RECORD_KIND_UPDATABLE_CHECKPOINT
-            } else {
-                RECORD_KIND_FINAL_CHECKPOINT
-            },
-        )?;
-        context.writer.write(",")?;
-        write_usize(context.writer, boundary_id)?;
-        context.writer.write(",")?;
+        write_record_open(context, record.kind(), record.target())?;
+        let (declaration_id, enclosing_span_instance_id) = match record {
+            RangeRecord::Boundary {
+                declaration_id,
+                enclosing_span_instance_id,
+                ..
+            } => (Some(declaration_id), enclosing_span_instance_id),
+            RangeRecord::Span { .. } => (None, None),
+        };
+        let state_selection = if requires_full_state {
+            StateSelection::Full
+        } else {
+            StateSelection::KeyIds(HydrationKeySelection {
+                ids: &state_key_ids,
+                index: checkpoint_reachability,
+            })
+        };
         let inventory = context
             .streaming
             .as_ref()
             .map_or("", |streaming| streaming.inventory_hex.as_str());
-        {
-            let state_selection = if requires_full_state {
-                StateSelection::Full
-            } else {
-                StateSelection::BorrowedKeys(&state_key_scratch)
-            };
-            write_webui_bootstrap(
-                context.writer,
-                &mut context.json_scratch,
-                WebUiBootstrap {
-                    state: context.state,
-                    state_selection,
-                    chain: &chain,
-                    inventory,
-                    nonce: context.nonce,
-                    css_hrefs: &css_hrefs,
-                    style_specs: &style_specs,
-                    component_styles: &component_styles,
-                    templates: payloads,
-                },
-            )?;
-        }
+        write_webui_bootstrap(
+            context.writer,
+            &mut context.json_scratch,
+            WebUiBootstrap {
+                declaration_id,
+                enclosing_span_instance_id,
+                state: context.state,
+                state_selection,
+                chain: &chain,
+                inventory,
+                nonce: context.nonce,
+                css_hrefs: &css_hrefs,
+                style_specs: &style_specs,
+                component_styles: &component_styles,
+                templates: payloads,
+            },
+        )?;
         context.writer.write("]</script>")?;
 
         if let Some(importmap) =
@@ -352,19 +342,7 @@ impl WebUIHandler {
         write_record_header(context.writer, record_sequence, RECORD_KIND_TERMINAL, 0)?;
         context
             .writer
-            .write("<script type=\"application/json\" data-webui-boundary")?;
-        if let Some(nonce) = context.nonce {
-            context.writer.write(" nonce=\"")?;
-            context.writer.write(nonce)?;
-            context.writer.write("\"")?;
-        }
-        context.writer.write(">[2,")?;
-        write_usize(context.writer, record_sequence)?;
-        context.writer.write(",")?;
-        write_usize(context.writer, RECORD_KIND_TERMINAL)?;
-        context
-            .writer
-            .write(",0,{}]</script><webui-hydrate></webui-hydrate>")?;
+            .write("{}]</script><webui-hydrate></webui-hydrate>")?;
         flush_streaming_transport(context)
     }
 
@@ -389,27 +367,8 @@ impl WebUIHandler {
             return Err(super::error::boundary_not_updatable_error(boundary_id));
         };
 
-        context
-            .writer
-            .write("<script type=\"application/json\" data-webui-boundary")?;
-        if let Some(nonce) = context.nonce {
-            context.writer.write(" nonce=\"")?;
-            context.writer.write(nonce)?;
-            context.writer.write("\"")?;
-        }
-        context.writer.write(">[2,")?;
-        write_usize(context.writer, record_sequence)?;
-        context.writer.write(",")?;
-        write_usize(context.writer, RECORD_KIND_STATE_UPDATE)?;
-        context.writer.write(",")?;
-        write_usize(context.writer, boundary_id)?;
-        context.writer.write(",")?;
-        let selection = if plan.requires_full_state {
-            StateSelection::Full
-        } else {
-            StateSelection::Keys(plan.keys.iter().map(Box::as_ref).collect())
-        };
-        write_selected_state(
+        write_script_open(context)?;
+        write_record_header(
             context.writer,
             record_sequence,
             RECORD_KIND_STATE_UPDATE,

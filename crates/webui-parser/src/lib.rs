@@ -3403,6 +3403,11 @@ impl HtmlParser {
                 .insert(element.name().to_string(), dom_analysis);
         }
 
+        self.flush_raw_buffer(fragments);
+        fragments.push(structural_signal(format!(
+            "streaming_span_start:{}",
+            element.name()
+        )));
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
 
@@ -3436,8 +3441,8 @@ impl HtmlParser {
         if let Some((html_content, css_content)) = template_source {
             let built = self.build_component_templates(
                 element.name(),
-                &component_data.html_content,
-                component_data.css_content.as_deref(),
+                &html_content,
+                css_content.as_deref(),
                 self.plugin.is_some(),
             )?;
 
@@ -4433,6 +4438,7 @@ impl HtmlParser {
                 html,
                 adopted_specifier,
                 dom_analysis,
+                policy_wrapper,
             )?)
         } else {
             None
@@ -4503,15 +4509,21 @@ impl HtmlParser {
                 adopted_specifier,
             },
             dom_analysis,
-            false,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: false,
+                policy_wrapper: false,
+            },
         )
     }
 
-    fn process_component_artifact_template_for_dom(
+    /// Serializes the SSR template for a component that may author a
+    /// `w-render`/`w-hydrate` policy on its `<template>` wrapper.
+    fn process_component_policy_template_for_dom(
         &mut self,
         html: &str,
         adopted_specifier: Option<&str>,
         dom_analysis: ComponentDomAnalysis,
+        policy_wrapper: bool,
     ) -> Result<String> {
         self.process_component_template_with_mode(
             html,
@@ -4520,7 +4532,31 @@ impl HtmlParser {
                 adopted_specifier,
             },
             dom_analysis,
-            true,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: false,
+                policy_wrapper,
+            },
+        )
+    }
+
+    fn process_component_artifact_template_for_dom(
+        &mut self,
+        html: &str,
+        adopted_specifier: Option<&str>,
+        dom_analysis: ComponentDomAnalysis,
+        policy_wrapper: bool,
+    ) -> Result<String> {
+        self.process_component_template_with_mode(
+            html,
+            ComponentStyleInjection {
+                css_snippet: None,
+                adopted_specifier,
+            },
+            dom_analysis,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: true,
+                policy_wrapper,
+            },
         )
     }
 
@@ -4529,13 +4565,14 @@ impl HtmlParser {
         html: &str,
         style: ComponentStyleInjection<'_>,
         dom_analysis: ComponentDomAnalysis,
-        preserve_runtime_attrs: bool,
+        mode: ComponentTemplateMode,
     ) -> Result<String> {
-        let trimmed = html.trim();
+        let trimmed_end = html.trim_end();
+        let (trimmed, content_start) = html::leading_content(trimmed_end);
         let snippet = style.css_snippet.unwrap_or_default();
 
         let processed = if let Some((root_start, root_end)) = dom_analysis.authored_shadow_root {
-            let trim_start = html.len() - html.trim_start().len();
+            let trim_start = content_start;
             let trim_end = html.trim_end().len();
             if root_start < trim_start || root_end > trim_end || root_start >= root_end {
                 return Err(ParserError::Html(
@@ -4543,11 +4580,9 @@ impl HtmlParser {
                 ));
             }
             let root = &html[root_start..root_end];
-            let base = if preserve_runtime_attrs {
-                root.to_string()
-            } else {
-                self.strip_runtime_attrs_from_template(root)
-            };
+            // Compiler-owned policy attributes are stripped from both views;
+            // runtime attributes survive only in the captured client template.
+            let base = self.strip_template_build_attrs(root, mode.preserve_runtime_attrs);
             let with_adopted = Self::append_adopted_attr_if_missing(base, style.adopted_specifier);
             let root = Self::inject_css_snippet_into_template(with_adopted, snippet);
             let mut result =
@@ -7456,6 +7491,45 @@ mod tests {
     }
 
     #[test]
+    fn raw_bindings_in_html_text_contexts_do_not_own_html_ranges() {
+        for element in ["title", "textarea", "script", "xmp"] {
+            let html = format!("<{element}>{{{{{{value}}}}}}</{element}>");
+            let (fragments, _) = parse_and_get_fragments(&html);
+            let signal = fragments
+                .iter()
+                .find_map(|fragment| match fragment.fragment.as_ref() {
+                    Some(Fragment::Signal(signal)) if signal.value == "value" => Some(signal),
+                    _ => None,
+                });
+            let signal = signal
+                .unwrap_or_else(|| panic!("expected raw signal inside <{element}>: {fragments:?}"));
+            assert!(
+                signal.raw,
+                "<{element}> should preserve raw brace semantics"
+            );
+            assert!(
+                signal.raw_text_context,
+                "<{element}> should suppress HTML ownership markers"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_bindings_in_template_content_own_html_ranges() {
+        let (fragments, _) = parse_and_get_fragments("<template>{{{value}}}</template>");
+        let signal = fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Signal(signal)) if signal.value == "value" => Some(signal),
+                _ => None,
+            });
+        let signal =
+            signal.unwrap_or_else(|| panic!("expected raw signal inside template: {fragments:?}"));
+        assert!(signal.raw);
+        assert!(!signal.raw_text_context);
+    }
+
+    #[test]
     fn test_css_strategy_external_defers_link_to_server_closure() {
         let mut parser = HtmlParser::new();
         parser
@@ -8004,14 +8078,8 @@ mod tests {
                 ),
                 "<template shadowrootmode=\"open\">\n  <h1>Hello</h1>\n</template>",
             ),
-            (
-                format!("{COMMENT}\n<h1>Hello</h1>"),
-                "<template shadowrootmode=\"open\"><h1>Hello</h1></template>",
-            ),
-            (
-                format!("{COMMENT}\nHello"),
-                "<template shadowrootmode=\"open\">Hello</template>",
-            ),
+            (format!("{COMMENT}\n<h1>Hello</h1>"), "<h1>Hello</h1>"),
+            (format!("{COMMENT}\nHello"), "Hello"),
         ];
 
         for (input, expected) in fixtures {
@@ -8024,7 +8092,10 @@ mod tests {
     }
 
     #[test]
-    fn component_policy_wrapper_uses_selected_dom_strategy_and_is_build_only() {
+    fn component_policy_wrapper_is_build_only_and_unwrapped_for_light() {
+        // A policy wrapper is authored on a plain `<template>`; the policy is
+        // applied to the host through generated CSS, so the wrapper must not
+        // survive into a Light template.
         let html = r#"<template w-hydrate="lazy"><div>hi</div></template>"#;
         let mut light = HtmlParser::with_options(DomStrategy::Light);
         let light_built = light
@@ -8673,11 +8744,90 @@ mod tests {
     }
 
     #[test]
-    fn boundary_inside_reusable_component_template_errors() {
-        // The boundary lives inside the component's own `.html` template, not
-        // the entry template — disallowed even though the entry's usage of
-        // `<my-widget>` looks unremarkable.
+    fn boundary_under_if_inside_for_is_rejected() {
         let mut parser = HtmlParser::new();
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><if condition="item.ready"><boundary name="x" key="{{item.id}}"><p>x</p></boundary></if></for></body>"#,
+            )
+            .expect_err("a boundary behind a runtime branch in a repeat must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+    }
+
+    #[test]
+    fn component_boundary_used_inside_for_is_rejected() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "row-item",
+                r#"<boundary name="row-ready"><span>{{label}}</span></boundary>"#,
+                None,
+                true,
+            ))
+            .expect("register");
+        let err = parser
+            .parse(
+                "index.html",
+                r#"<body><for each="item in items"><row-item></row-item></for></body>"#,
+            )
+            .expect_err("a component-local boundary reached from a repeat must error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected ParserError::Template, got {err:?}");
+        };
+        assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+        // The diagnostic names both ends of the chain: the repeat that would
+        // execute it and the template that declares it.
+        assert!(diag.to_string().contains("row-ready"), "{diag}");
+        assert_eq!(diag.component_name(), Some("index.html"));
+        assert!(diag.to_string().contains("item in items"), "{diag}");
+    }
+
+    #[test]
+    fn transitive_repeat_boundary_diagnostic_uses_lowest_repeat_site() {
+        for _ in 0..20 {
+            let mut parser = HtmlParser::new();
+            for (tag, template) in [
+                (
+                    "left-list",
+                    r#"<for each="a in xs"><row-card></row-card></for>"#,
+                ),
+                (
+                    "right-list",
+                    r#"<for each="b in ys"><row-card></row-card></for>"#,
+                ),
+                (
+                    "row-card",
+                    r#"<boundary name="row-ready"><p>row</p></boundary>"#,
+                ),
+            ] {
+                parser
+                    .component_registry
+                    .register_component(ComponentRegistration::new(tag, template, None, true))
+                    .expect("register");
+            }
+            let err = parser
+                .parse(
+                    "index.html",
+                    r#"<body><left-list></left-list><right-list></right-list></body>"#,
+                )
+                .expect_err("both repeats reach the same boundary declaration");
+            let ParserError::Template(diag) = err else {
+                panic!("expected ParserError::Template, got {err:?}");
+            };
+            assert_eq!(diag.error_code(), Some(codes::BOUNDARY_IN_REPEAT));
+            assert_eq!(diag.component_name(), Some("left-list"));
+            assert!(diag.to_string().contains("a in xs"), "{diag}");
+        }
+    }
+
+    #[test]
+    fn route_boundary_reached_from_for_is_rejected() {
+        let mut parser = HtmlParser::with_options(DomStrategy::Light);
         parser
             .component_registry
             .register_component(ComponentRegistration::new(

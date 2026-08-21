@@ -28,16 +28,47 @@ export function registerTemplatesAndStyles(
   data: {
     templates?: Record<string, unknown>;
     templateFunctions?: Record<string, string>;
-    componentStyles: ComponentStyles;
+    componentStyles?: ComponentStyles;
     inventory?: string;
   },
   nonce: string,
   updateInventory: (inv: string) => void,
-): void {
-  const componentStyles = validateComponentStyles(data.componentStyles);
+): Promise<void> | undefined;
+export function registerTemplatesAndStyles(
+  data: {
+    templates?: Record<string, unknown>;
+    templateFunctions?: Record<string, string>;
+    componentStyles?: ComponentStyles;
+    inventory?: string;
+  },
+  nonce: string,
+  injectedStyles: Set<string>,
+  updateInventory: (inv: string) => void,
+): Promise<void> | undefined;
+export function registerTemplatesAndStyles(
+  data: {
+    templates?: Record<string, unknown>;
+    templateFunctions?: Record<string, string>;
+    componentStyles?: ComponentStyles;
+    inventory?: string;
+  },
+  nonce: string,
+  injectedStylesOrUpdate: Set<string> | ((inv: string) => void),
+  maybeUpdateInventory?: (inv: string) => void,
+): Promise<void> | undefined {
+  const injectedStyles = injectedStylesOrUpdate instanceof Set
+    ? injectedStylesOrUpdate
+    : new Set<string>();
+  const updateInventory = typeof injectedStylesOrUpdate === 'function'
+    ? injectedStylesOrUpdate
+    : maybeUpdateInventory ?? (() => {});
+  const componentStyles = data.componentStyles
+    ? validateComponentStyles(data.componentStyles)
+    : undefined;
   validateTemplatePayload(data.templates);
-  const stylesRegisteredByFramework = registerComponentStyleCatalog(componentStyles);
-
+  const styleRegistration = componentStyles
+    ? registerComponentStyleCatalog(componentStyles)
+    : undefined;
   if (data.inventory) {
     updateInventory(data.inventory);
   }
@@ -103,10 +134,13 @@ export function registerTemplatesAndStyles(
 
   // The bridge already accepted this exact payload. Only fallback listeners
   // need styles included with the template announcement.
-  notifyTemplatesRegistered(
+  const readiness = notifyTemplatesRegistered(
     registeredTemplates,
-    stylesRegisteredByFramework ? undefined : componentStyles,
+    styleRegistration?.bridged ? undefined : componentStyles,
   );
+  if (!styleRegistration?.ready) return readiness;
+  if (!readiness) return styleRegistration.ready;
+  return Promise.all([styleRegistration.ready, readiness]).then(IGNORE_READINESS_RESULTS);
 }
 
 /** Register initial bootstrap styles before announcing already-published templates. */
@@ -116,18 +150,20 @@ export function registerInitialTemplatesAndStyles(
 ): void {
   const styles = validateComponentStyles(componentStyles);
   validateTemplatePayload(templates);
-  const stylesRegisteredByFramework = registerComponentStyleCatalog(styles);
+  const styleRegistration = registerComponentStyleCatalog(styles);
   notifyTemplatesRegistered(
     templates,
-    stylesRegisteredByFramework ? undefined : styles,
+    styleRegistration.bridged ? undefined : styles,
   );
 }
 
-function registerComponentStyleCatalog(componentStyles: ComponentStyles): boolean {
+function registerComponentStyleCatalog(componentStyles: ComponentStyles): {
+  bridged: boolean;
+  ready?: Promise<void>;
+} {
   const register = window.__webuiRegisterComponentStyles;
   if (register) {
-    register(componentStyles);
-    return true;
+    return { bridged: true, ready: register(componentStyles) };
   }
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
@@ -135,7 +171,7 @@ function registerComponentStyleCatalog(componentStyles: ComponentStyles): boolea
     w.__webui.componentStyles,
     componentStyles,
   );
-  return false;
+  return { bridged: false };
 }
 
 function mergeFallbackComponentStyles(
@@ -264,7 +300,8 @@ export async function fetchComponentTemplates(
   inventoryHex: string,
   templateEndpoint: string,
   nonce: string,
-  updateInventory: (inv: string) => void,
+  injectedStylesOrUpdate: Set<string> | ((inv: string) => void),
+  maybeUpdateInventory?: (inv: string) => void,
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
   const resp = await fetch(url);
@@ -274,14 +311,22 @@ export async function fetchComponentTemplates(
   const data = await resp.json();
 
   // Register using the same pipeline as partial navigation
-  registerTemplatesAndStyles(data, nonce, updateInventory);
+  const ready = injectedStylesOrUpdate instanceof Set
+    ? registerTemplatesAndStyles(
+      data,
+      nonce,
+      injectedStylesOrUpdate,
+      maybeUpdateInventory ?? (() => {}),
+    )
+    : registerTemplatesAndStyles(data, nonce, injectedStylesOrUpdate);
+  if (ready) await ready;
 }
 
 /** Announce newly registered WebUI templates. */
 export function notifyTemplatesRegistered(
   templates: Record<string, unknown> | undefined,
   componentStyles?: ComponentStyles,
-): void {
+): Promise<void> | undefined {
   if (
     !templates ||
     typeof window === 'undefined' ||
@@ -291,9 +336,26 @@ export function notifyTemplatesRegistered(
     return undefined;
   }
 
-  window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
-    detail: { templates, componentStyles },
-  }));
+  let pending: PromiseLike<unknown>[] | undefined;
+  let accepting = true;
+  const waitUntil = (promise: PromiseLike<unknown>): void => {
+    if (!accepting) {
+      throw new Error(
+        '[Router] webui:templates-registered waitUntil() must be called during event dispatch.',
+      );
+    }
+    (pending ??= []).push(promise);
+  };
+  try {
+    window.dispatchEvent(new CustomEvent(TEMPLATES_REGISTERED_EVENT, {
+      detail: { templates, componentStyles, waitUntil },
+    }));
+  } finally {
+    accepting = false;
+  }
+  return pending
+    ? Promise.all(pending).then(IGNORE_READINESS_RESULTS)
+    : undefined;
 }
 
 function validateComponentStyles(value: unknown): ComponentStyles {

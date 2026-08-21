@@ -23,12 +23,18 @@ import {
   type ComponentStyleResource,
   type ComponentStyles,
 } from '../element/styles.js';
+import {
+  prepareComponentStyleLinks,
+  prepareRegisteredLinkStyles,
+} from '../element/link-styles.js';
+import type { ComponentAssetSource } from './manifest.js';
 
 const assetModulePromises = new Map<string, Promise<unknown>>();
 
 interface PreparedComponentAsset {
   asset: ComponentAsset;
   componentStyles: ComponentStyles;
+  linkStyles?: Promise<void>;
 }
 
 /** Import, validate, and atomically register one component asset graph. */
@@ -73,6 +79,14 @@ async function registerRootAsset(
     registerComponentResources(chunks[i]);
   }
   registerComponentResources(root);
+  let pendingStyles: Promise<void>[] | undefined;
+  for (let i = 0; i < chunks.length; i++) {
+    const ready = chunks[i].linkStyles;
+    if (!ready) continue;
+    (pendingStyles ??= []).push(ready);
+  }
+  if (root.linkStyles) (pendingStyles ??= []).push(root.linkStyles);
+  if (pendingStyles) await Promise.all(pendingStyles);
   for (let i = 0; i < chunks.length; i++) {
     registerComponentTemplates(chunks[i]);
   }
@@ -129,9 +143,18 @@ function prepareComponentPayload(asset: ComponentAsset): PreparedComponentAsset 
   // validating and deep-copying the same payload a second time.
   const componentStyles = prepareAssetComponentStyles(asset.componentStyles);
   prepareAssetTemplateData(asset.templates, asset.templateFunctions);
+  const templateLinkStyles = prepareRegisteredLinkStyles(asset.templates);
+  const componentStyleLinks = prepareComponentStyleLinks(componentStyles);
+  let linkStyles = templateLinkStyles;
+  if (templateLinkStyles && componentStyleLinks) {
+    linkStyles = Promise.all([templateLinkStyles, componentStyleLinks]).then(() => {});
+  } else {
+    linkStyles = templateLinkStyles ?? componentStyleLinks;
+  }
   return {
     asset,
     componentStyles,
+    linkStyles,
   };
 }
 
