@@ -93,7 +93,15 @@ export function preloadComponentAssetStyles(hrefs: readonly string[]): void {
   for (let i = 0; i < hrefs.length; i++) {
     if (hrefs[i].length === 0) continue;
     const href = resolveHref(hrefs[i]);
-    if (preloads.has(href)) continue;
+    const existing = preloads.get(href);
+    if (existing) {
+      (pending ??= []).push(existing.ready);
+      continue;
+    }
+    // SSR emits equivalent document preloads before the client registry is
+    // initialized. Reusing them avoids a second request when the router
+    // announces the initial component catalog.
+    if (hasDocumentStylesheetPreload(href)) continue;
 
     const link = createStylesheetPreload(href);
     const startedAt = performanceNow();
@@ -108,6 +116,110 @@ export function preloadComponentAssetStyles(hrefs: readonly string[]): void {
       releaseStylesheetPreload(link);
     }, SPECULATIVE_PRELOAD_TTL_MS);
   }
+}
+
+/**
+ * Promote compiler-owned component links after their native loads complete.
+ *
+ * Component style links are installed before a client template is wired, so
+ * they cannot use the staging-root path below. Keep the host guarded while
+ * the cache-warmed native links become readable, then adopt their CSSOM and
+ * disable the links just like template-owned styles.
+ */
+export function installComponentLinkStyles(
+  host: HTMLElement,
+  root: ShadowRoot,
+  links: readonly HTMLLinkElement[],
+): void {
+  if (links.length === 0 || !supportsConstructableStylesheets()) return;
+
+  const mountStartedAt = performanceNow();
+  let timingStartedAt = mountStartedAt;
+  const preloads: SpeculativeStylesheetPreload[] = [];
+  const pendingPreloads: Promise<LinkStyleFailure | undefined>[] = [];
+  for (let i = 0; i < links.length; i++) {
+    const speculative = speculativeStylesheetPreloads?.get(resolveHref(links[i].href));
+    if (!speculative) continue;
+    speculative.claimed = true;
+    preloads.push(speculative);
+    pendingPreloads.push(speculative.ready);
+    timingStartedAt = Math.min(timingStartedAt, speculative.startedAt);
+  }
+
+  const guard = installGuard(host, root);
+  const settled = new Uint8Array(links.length);
+  const loadHandlers = new Array<() => void>(links.length);
+  const errorHandlers = new Array<() => void>(links.length);
+  let remaining = 0;
+  let cancelled = false;
+
+  const releasePreloads = (): void => {
+    for (let i = 0; i < preloads.length; i++) {
+      releaseStylesheetPreload(preloads[i].link);
+    }
+  };
+  const cleanup = (): void => {
+    for (let i = 0; i < links.length; i++) {
+      const onLoad = loadHandlers[i];
+      const onError = errorHandlers[i];
+      if (onLoad) links[i].removeEventListener('load', onLoad);
+      if (onError) links[i].removeEventListener('error', onError);
+    }
+    releasePreloads();
+  };
+  const fail = (): void => {
+    if (cancelled) return;
+    cancelled = true;
+    cleanup();
+    guard.release();
+  };
+  const finish = (): void => {
+    if (cancelled || remaining !== 0) return;
+    void Promise.all(pendingPreloads).then(results => {
+      if (cancelled || results.some(result => result !== undefined)) {
+        fail();
+        return;
+      }
+      const sheets = constructComponentStylesheets(links, timingStartedAt);
+      if (!sheets || !adoptPreparedSheets(root, sheets)) {
+        fail();
+        return;
+      }
+      deactivatePromotedLinks(links);
+      cancelled = true;
+      cleanup();
+      guard.release();
+    });
+  };
+  const settle = (index: number): void => {
+    if (cancelled || settled[index] !== 0) return;
+    settled[index] = 1;
+    remaining -= 1;
+    const onLoad = loadHandlers[index];
+    const onError = errorHandlers[index];
+    if (onLoad) links[index].removeEventListener('load', onLoad);
+    if (onError) links[index].removeEventListener('error', onError);
+    finish();
+  };
+
+  for (let i = 0; i < links.length; i++) {
+    if (!requiresNativeLoad(links[i])) {
+      settled[i] = 1;
+      continue;
+    }
+    if (links[i].sheet) {
+      settled[i] = 1;
+      continue;
+    }
+    remaining += 1;
+    const onLoad = (): void => settle(i);
+    const onError = (): void => fail();
+    loadHandlers[i] = onLoad;
+    errorHandlers[i] = onError;
+    links[i].addEventListener('load', onLoad, { once: true });
+    links[i].addEventListener('error', onError, { once: true });
+  }
+  if (remaining === 0) finish();
 }
 
 /** Return whether a template can create a stylesheet link after bindings run. */
@@ -582,6 +694,18 @@ function releaseStylesheetPreload(preload: HTMLLinkElement): void {
   preload.remove();
 }
 
+function hasDocumentStylesheetPreload(href: string): boolean {
+  const head = document.head;
+  if (typeof head.querySelectorAll !== 'function') return false;
+  const candidates = head.querySelectorAll<HTMLLinkElement>(
+    'link[rel="preload"][as="style"]',
+  );
+  for (let i = 0; i < candidates.length; i++) {
+    if (resolveHref(candidates[i].href) === href) return true;
+  }
+  return false;
+}
+
 function hasDefaultPreloadAttributes(
   descriptor: TemplateStylesheetDescriptor,
 ): boolean {
@@ -736,6 +860,25 @@ function constructNativeStylesheets(
     if (descriptors[i].media) options.media = descriptors[i].media;
     try {
       const sheet = new CSSStyleSheet(options);
+      sheet.replaceSync(cssText);
+      sheets[i] = sheet;
+    } catch {
+      return undefined;
+    }
+  }
+  return sheets;
+}
+
+function constructComponentStylesheets(
+  links: readonly HTMLLinkElement[],
+  mountStartedAt: number,
+): CSSStyleSheet[] | undefined {
+  const sheets = new Array<CSSStyleSheet>(links.length);
+  for (let i = 0; i < links.length; i++) {
+    const cssText = readNativeStylesheet(links[i], mountStartedAt);
+    if (cssText === undefined) return undefined;
+    try {
+      const sheet = new CSSStyleSheet({ baseURL: links[i].href });
       sheet.replaceSync(cssText);
       sheets[i] = sheet;
     } catch {

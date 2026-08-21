@@ -880,7 +880,7 @@ export class TemplateElement extends HTMLElement {
         ? containingRoot as ShadowRoot
         : this.ownerDocument;
     claimSsrComponentStyles(this, styleTarget);
-    const installation = installComponentStyles(this.localName, styleTarget);
+    const installation = installComponentStyles(this.localName, styleTarget, this);
     if (installation) {
       void installation.catch((error) => {
         console.error(error);

@@ -1901,7 +1901,7 @@ mod tests {
         assert!(
             result.component_asset_files[0]
                 .content
-                .contains(r#""a-card":{"kind":"link","href":new URL("#),
+                .contains(r#""a-card":{"kind":"link","href":"a-card.css"}"#),
             "a deferred CSS tree needs the exact external component resource even when the entry Document uses a bundle: {}",
             result.component_asset_files[0].content
         );
@@ -2679,6 +2679,10 @@ mod tests {
         assert!(lazy.contains(r#""version":3"#));
         assert!(lazy.contains(r#""kind":"root""#));
         assert!(lazy.contains(r#""externalComponents":["entry-badge"]"#));
+        assert!(lazy.contains(r#""entry-badge":{"kind":"link","href":"entry-badge.css"}"#));
+        assert!(!lazy.contains(
+            r#""entry-badge":{"kind":"link","href":new URL("entry-badge.css",import.meta.url).href}"#
+        ));
         assert!(lazy
             .contains(r#""href":new URL("./chunk-shared-detail.webui.js",import.meta.url).href"#));
         assert!(lazy.contains(r#"import("./chunk-shared-detail.webui.js")"#));
