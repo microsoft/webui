@@ -669,12 +669,12 @@ impl Step {
         run: || {
             // Use the dev profile (not the default bench profile) for the
             // criterion `--test` smoke run. The bench profile inherits the
-            // release profile's `lto = true, codegen-units = 1`, which spends
-            // ~40s compiling the full graph just to assert criterion's
+            // release profile's `lto = "thin", codegen-units = 1`, which still
+            // compiles the full optimized graph just to assert criterion's
             // `--test` entry point runs once. The dev profile reuses the
             // already-built unit-test artifacts and finishes in seconds. Real
             // benchmark measurements (via `cargo xtask bench`) continue to
-            // use the unchanged bench profile so their numbers stay accurate.
+            // use the release-derived bench profile so their numbers stay accurate.
             run_command_quiet(
                 "cargo",
                 &[

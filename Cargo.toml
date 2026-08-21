@@ -111,7 +111,7 @@ unnecessary_box_returns = "deny"
 unsafe_code = "deny"
 
 [profile.release]
-lto = true
+lto = "thin"
 codegen-units = 1
 panic = "abort"
 strip = true
