@@ -306,6 +306,40 @@ pub trait ParserPlugin {
         None
     }
 
+    /// Whether the plugin classifies client-only bindings authored directly on
+    /// a component's root `<template>` element.
+    ///
+    /// FAST authors host-element event/property/boolean bindings on the root
+    /// `<template>` (e.g. `<template @click="{…}">`). They never render into
+    /// SSR, but they must be counted so server hydration markers stay aligned
+    /// with the client template's binding order. When this returns `true`, the
+    /// SSR view keeps those attributes so the parser classifies them through
+    /// [`Self::classify_attribute`] (skipping them from output while counting
+    /// them) instead of the pre-parse strip dropping them uncounted. Plugins
+    /// that do not own such bindings (WebUI, and the no-plugin path) return
+    /// `false`, preserving the zero-overhead strip fast path.
+    fn classifies_root_template_bindings(&self) -> bool {
+        false
+    }
+
+    /// Whether the plugin's client runtime parses the component `<template>`
+    /// body for `{`/`}` bindings, and therefore requires Style-strategy
+    /// `<style>` blocks to trail every brace-bearing binding.
+    ///
+    /// FAST's declarative `TemplateParser` scans the client `<f-template>` body
+    /// for brace bindings. A raw CSS rule block (`selector { … }`), especially
+    /// with nested at-rules like `@media`, leaves the outer `}` unbalanced in
+    /// FAST's naive brace scan; when the next real binding (`f-ref="{…}"`) sits
+    /// after `</style>`, that stray `}` corrupts the binding and FAST emits an
+    /// extra factory, shifting the whole hydration walk. Emitting the `<style>`
+    /// after the body keeps every binding ahead of the CSS braces. Styles apply
+    /// regardless of position in the shadow root. WebUI-native and the
+    /// no-plugin path return `false`, preserving the authored `{{styles}}`
+    /// position.
+    fn styles_trail_template_body(&self) -> bool {
+        false
+    }
+
     /// Decide how a framework-owned attribute should be handled.
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
 

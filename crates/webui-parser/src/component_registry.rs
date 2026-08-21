@@ -208,24 +208,27 @@ impl ComponentRegistry {
                     continue;
                 }
                 // Only process HTML files
-                if path.extension().is_some_and(|ext| ext == "html") {
-                    // Check for a component name (must contain a hyphen)
-                    if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
-                        if filename.contains('-') {
-                            // Find associated CSS file
-                            let css_path = path.with_extension("css");
-                            // Register the component (key is the file name without extension)
-                            self.register_component_from_paths(
-                                path,
-                                if css_path.exists() {
-                                    Some(&css_path)
-                                } else {
-                                    None
-                                },
-                            )?;
-                        }
-                    }
+                if !path.extension().is_some_and(|ext| ext == "html") {
+                    continue;
                 }
+                let Some(filename) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                // A filename-derived custom-element name (hyphenated stem) is
+                // discoverable directly. Otherwise a plugin source transform
+                // (e.g. FAST's `<f-template name>`) may still resolve a registry
+                // name from the authored source, so admit the file only when a
+                // transform is installed to claim it. With neither, keep the
+                // zero-overhead fast path that ignores non-custom-element files
+                // without reading them.
+                if !filename.contains('-') && self.source_transform.is_none() {
+                    continue;
+                }
+                let css_path = path.with_extension("css");
+                let css_path = css_path.exists().then_some(css_path);
+                // Discovery ignores a non-custom-element file the transform does
+                // not claim, rather than failing the build over it.
+                self.register_component_from_paths_inner(path, css_path.as_deref(), true)?;
             }
         }
         Ok(self)
@@ -238,8 +241,26 @@ impl ComponentRegistry {
         html_path: P,
         css_path: Option<Q>,
     ) -> Result<()> {
-        let html_path = html_path.as_ref();
+        let css_path = css_path.as_ref().map(AsRef::as_ref);
+        self.register_component_from_paths_inner(html_path.as_ref(), css_path, false)
+    }
 
+    /// Register a component from HTML/CSS paths, optionally skipping a file that
+    /// no source transform claims.
+    ///
+    /// When `allow_skip_unresolved` is set (recursive discovery), a file whose
+    /// source transform returns [`ComponentSourceResult::Unchanged`] and whose
+    /// stem is not itself a custom-element name is silently ignored rather than
+    /// rejected: it is not a component in the plugin's dialect. Explicit
+    /// registration passes `false`, keeping the strict "must contain a hyphen"
+    /// contract for an unresolved name.
+    #[cfg(feature = "fs")]
+    fn register_component_from_paths_inner(
+        &mut self,
+        html_path: &Path,
+        css_path: Option<&Path>,
+        allow_skip_unresolved: bool,
+    ) -> Result<()> {
         // Extract component name from file name (without extension)
         let tag_name = html_path
             .file_stem()
@@ -253,13 +274,21 @@ impl ComponentRegistry {
         })?;
         let resolved = match self.resolve_component_source(tag_name, &html_content)? {
             Some(transformed) => transformed,
-            // Preserve the filename-derived tag and reuse the already-owned file
-            // contents as the parser view without a second allocation.
-            None => TransformedComponentSource {
-                tag_name: tag_name.to_string(),
-                parser_content: html_content,
-                artifact_content: None,
-            },
+            None => {
+                // No transform claimed the file. During discovery, a stem that
+                // is not itself a custom-element name means this is not a
+                // component in the active plugin's dialect, so ignore it.
+                if allow_skip_unresolved && !tag_name.contains('-') {
+                    return Ok(());
+                }
+                // Preserve the filename-derived tag and reuse the already-owned
+                // file contents as the parser view without a second allocation.
+                TransformedComponentSource {
+                    tag_name: tag_name.to_string(),
+                    parser_content: html_content,
+                    artifact_content: None,
+                }
+            }
         };
         Self::validate_component_name(&resolved.tag_name)?;
 
@@ -273,7 +302,7 @@ impl ComponentRegistry {
 
         // Read CSS content and extract definitions/fallback requirements if available
         let (css_content, css_definitions, css_fallback_chains) = if let Some(css_path) = css_path {
-            let css_path = css_path.as_ref();
+            let css_path: &Path = css_path.as_ref();
             if css_path.exists() {
                 let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
                     context: format!("Failed to read CSS file: {}", css_path.display()),
@@ -594,6 +623,133 @@ mod tests {
         assert_eq!(
             registry.component_artifact_source("renamed-card"),
             Some("<template><span>artifact</span></template>")
+        );
+    }
+
+    #[cfg(feature = "fs")]
+    fn fast_transform() -> Option<crate::plugin::ComponentSourceTransform> {
+        use crate::plugin::{fast_v2::FastV2ParserPlugin, ParserPlugin};
+        FastV2ParserPlugin::new().component_source_transform()
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn discovery_registers_verbatim_fast_filename_via_transform() {
+        // Fluent's committed filenames are `<component>.template.html`, whose
+        // stem (`button.template`) is not itself a custom-element name. With a
+        // FAST source transform installed, discovery still registers it under
+        // the authored `<f-template name>`.
+        let mut fs = TestFileSystem::new();
+        let html = fs.add_file(
+            "components/button.template.html",
+            r#"<f-template name="fluent-button" shadowrootmode="open"><template @click="{clickHandler($e)}"><slot></slot></template></f-template>"#,
+        );
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(fast_transform());
+        registry
+            .register_from_paths(&[html.parent().expect("dir")])
+            .expect("discover");
+        assert!(registry.contains("fluent-button"));
+        assert!(!registry.contains("button.template"));
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn discovery_ignores_verbatim_fast_filename_without_transform() {
+        // No plugin / the `webui` plugin installs no transform, so a
+        // non-custom-element filename is ignored exactly as before — the FAST
+        // `<f-template>` source is inert and never registered.
+        let mut fs = TestFileSystem::new();
+        let html = fs.add_file(
+            "components/button.template.html",
+            r#"<f-template name="fluent-button"><template><slot></slot></template></f-template>"#,
+        );
+        let mut registry = ComponentRegistry::new();
+        registry
+            .register_from_paths(&[html.parent().expect("dir")])
+            .expect("discover");
+        assert!(!registry.contains("fluent-button"));
+        assert!(registry.get_all().next().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn discovery_ignores_non_component_file_the_transform_does_not_claim() {
+        // A non-custom-element filename whose source has no `<f-template>` is
+        // not a FAST component; discovery ignores it rather than failing the
+        // build over a non-hyphen name.
+        let mut fs = TestFileSystem::new();
+        let html = fs.add_file("components/partial.template.html", "<p>plain fragment</p>");
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(fast_transform());
+        registry
+            .register_from_paths(&[html.parent().expect("dir")])
+            .expect("discover");
+        assert!(registry.get_all().next().is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn discovery_still_registers_hyphen_stem_without_f_template() {
+        // A hyphenated stem is a custom-element name on its own: even with a
+        // transform installed, a plain (non-`<f-template>`) source registers
+        // under the filename, unchanged from the no-transform path.
+        let mut fs = TestFileSystem::new();
+        let html = fs.add_file(
+            "components/my-card.html",
+            "<template><slot></slot></template>",
+        );
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(fast_transform());
+        registry
+            .register_from_paths(&[html.parent().expect("dir")])
+            .expect("discover");
+        assert!(registry.contains("my-card"));
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn discovery_rejects_invalid_authored_name() {
+        // A resolved `<f-template name>` that is not a valid custom-element name
+        // is rejected rather than silently skipped.
+        let mut fs = TestFileSystem::new();
+        let html = fs.add_file(
+            "components/widget.template.html",
+            r#"<f-template name="notcustom"><template><slot></slot></template></f-template>"#,
+        );
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(fast_transform());
+        let err = registry
+            .register_from_paths(&[html.parent().expect("dir")])
+            .expect_err("invalid authored name should error");
+        assert!(
+            matches!(err, ParserError::Component(ref msg) if msg.contains("must contain a hyphen")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fs")]
+    fn discovery_rejects_authored_name_collision() {
+        // Two files whose `<f-template name>` resolve to the same tag collide,
+        // exactly like two identically named component files.
+        let mut fs = TestFileSystem::new();
+        let first = fs.add_file(
+            "a/button.template.html",
+            r#"<f-template name="fluent-button"><template><slot></slot></template></f-template>"#,
+        );
+        let second = fs.add_file(
+            "b/toggle-button.template.html",
+            r#"<f-template name="fluent-button"><template><slot></slot></template></f-template>"#,
+        );
+        let mut registry = ComponentRegistry::new();
+        registry.set_component_source_transform(fast_transform());
+        let err = registry
+            .register_from_paths(&[first.parent().expect("dir"), second.parent().expect("dir")])
+            .expect_err("colliding authored names should error");
+        assert!(
+            matches!(err, ParserError::Component(ref msg) if msg.contains("already registered")),
+            "unexpected error: {err:?}"
         );
     }
 

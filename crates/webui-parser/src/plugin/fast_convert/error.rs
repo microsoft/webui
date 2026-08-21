@@ -71,6 +71,10 @@ impl fmt::Display for ConvertError<'_> {
                 f,
                 "directive '<{tag}>' does not support the '{attribute}' attribute; only 'value' is allowed"
             ),
+            ConvertErrorKind::UnsupportedWrapperAttribute { attribute } => write!(
+                f,
+                "'<f-template>' does not support the '{attribute}' attribute; only 'name' and 'shadowroot*' shadow options are allowed"
+            ),
             ConvertErrorKind::ConditionQuoteConflict { value } => write!(
                 f,
                 "f-when condition '{value}' mixes single and double quotes, which cannot be represented in a generated '<if condition>' attribute"
@@ -118,6 +122,9 @@ pub(crate) enum ConvertErrorKind<'a> {
     },
     UnexpectedDirectiveAttribute {
         tag: &'static str,
+        attribute: &'a str,
+    },
+    UnsupportedWrapperAttribute {
         attribute: &'a str,
     },
     ConditionQuoteConflict {

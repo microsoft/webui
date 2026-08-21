@@ -13,11 +13,9 @@
 //! hook; the parser core never references FAST.
 
 use super::fast_convert::{convert_template, ConvertError, ConvertErrorKind, F_TEMPLATE_NAME};
-use super::{
-    AttributeAction, ComponentSource, ComponentSourceResult, ComponentTemplateArtifact,
-    TransformedComponentSource,
-};
+use super::{AttributeAction, ComponentSource, ComponentSourceResult, TransformedComponentSource};
 use crate::diagnostic::{codes, Diagnostic};
+use crate::html_parser::{leading_content, parse_tag};
 use crate::{ParserError, Result};
 use webui_protocol::FastElementData;
 
@@ -61,56 +59,149 @@ pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// One component tracked during parsing for later `<f-template>` generation.
-struct TrackedComponent {
-    tag_name: String,
-    template_html: String,
-}
-
-/// Component tracking shared by the FAST parser plugins.
+/// Whether an inner-`<template>` attribute is a declarative-shadow-root option
+/// that belongs on the `<f-template>` wrapper rather than the inner template.
 ///
-/// Records each component's processed template once (deduplicated by tag name)
-/// and, on completion, renders artifacts through a version-specific
-/// `<f-template>` generator supplied by the owning plugin. The generator stays
-/// in `fast_v2`/`fast_v3` so FAST 2 and FAST 3 keep independent output.
-pub(crate) struct FastComponentTracker {
-    components: Vec<TrackedComponent>,
+/// The FAST runtime reads shadow-root-creation options (`shadowrootmode`,
+/// `shadowrootdelegatesfocus`, …) from the `<f-template>` wrapper, so the client
+/// artifact generator hoists them there. WebUI's CSS-module delivery attribute
+/// `shadowrootadoptedstylesheets` is not a shadow-root-creation option and stays
+/// on the inner template.
+#[inline]
+pub(crate) fn is_hoisted_shadow_attr(name: &str) -> bool {
+    const PREFIX: &[u8] = b"shadowroot";
+    name.len() >= PREFIX.len()
+        && name.as_bytes()[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+        && !name.eq_ignore_ascii_case("shadowrootadoptedstylesheets")
 }
 
-impl FastComponentTracker {
-    /// Create an empty tracker.
-    pub(crate) fn new() -> Self {
-        Self {
-            components: Vec::new(),
+/// Collect the declarative-shadow-root options to hoist from a processed
+/// component template's leading inner `<template>` onto the `<f-template>`
+/// wrapper, as a ` name="value"`/bare ` name` string (empty when there are
+/// none). The inner-template stripper removes the same attributes, so the
+/// hoisted options are never duplicated across the wrapper and inner template.
+pub(crate) fn hoisted_shadow_options(processed_template: &str) -> String {
+    let (trimmed, _) = leading_content(processed_template);
+    let Some(tag) = parse_tag(trimmed) else {
+        return String::new();
+    };
+    if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
+        return String::new();
+    }
+    let mut options = String::new();
+    for attr in tag.attrs() {
+        if is_hoisted_shadow_attr(attr.name) {
+            options.push(' ');
+            options.push_str(attr.raw);
         }
     }
+    options
+}
 
-    /// Track a component's processed template, ignoring repeat registrations of
-    /// the same tag (a component may be used by several parent templates).
-    pub(crate) fn register(&mut self, tag_name: &str, processed_template: &str) {
-        if self.components.iter().any(|c| c.tag_name == tag_name) {
+/// Strip declarative-shadow-root options hoisted onto the `<f-template>`
+/// wrapper (`shadowrootmode`, `shadowrootdelegatesfocus`, …) from an inner
+/// `<template ...>` opening tag, keeping every other attribute (including
+/// WebUI's `shadowrootadoptedstylesheets`). Returns `Some(bytes_consumed)`
+/// when `tag_str` opens with a `<template` tag, or `None` when it does not
+/// (nothing is written to `result` in that case).
+///
+/// Shared by every FAST plugin version's `convert_btr_to_fast` pass so the
+/// inner-template side can never drift from [`is_hoisted_shadow_attr`] (the
+/// hoisting predicate used by [`hoisted_shadow_options`]): each version used
+/// to reimplement this scan gated on a literal `"shadowrootmode"` substring
+/// check, so a `shadowroot*` option without `shadowrootmode` (e.g.
+/// `shadowrootdelegatesfocus` alone) was hoisted onto the wrapper but never
+/// removed from the inner template, duplicating it there.
+///
+/// The common case — a `<template>` tag with no hoisted shadow-root option at
+/// all — returns `None` after a single allocation-free pass over the parsed
+/// attributes, so ordinary component templates never pay for a rebuild.
+pub(crate) fn strip_hoisted_shadow_options(tag_str: &str, result: &mut String) -> Option<usize> {
+    let tag = parse_tag(tag_str)?;
+    if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
+        return None;
+    }
+
+    // Fast guard: bail without allocating or rebuilding the tag when none of
+    // its attributes need hoisting.
+    if !tag.attrs().any(|attr| is_hoisted_shadow_attr(attr.name)) {
+        return None;
+    }
+
+    let bytes = tag_str.as_bytes();
+    let mut cursor = 0usize;
+    for attr in tag.attrs() {
+        if !is_hoisted_shadow_attr(attr.name) {
+            continue;
+        }
+        let mut removal_start = attr.raw_range.start;
+        while removal_start > cursor && bytes[removal_start - 1].is_ascii_whitespace() {
+            removal_start -= 1;
+        }
+        let segment = &tag_str[cursor..removal_start];
+        if segment
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>' && *byte != b'/')
+            && result
+                .as_bytes()
+                .last()
+                .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'<')
+        {
+            result.push(' ');
+        }
+        result.push_str(segment);
+        cursor = attr.raw_range.end;
+    }
+    let suffix = &tag_str[cursor..=tag.close];
+    if suffix
+        .as_bytes()
+        .first()
+        .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'>' && *byte != b'/')
+        && result
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| !byte.is_ascii_whitespace() && *byte != b'<')
+    {
+        result.push(' ');
+    }
+    result.push_str(suffix);
+    Some(tag.close + 1)
+}
+
+/// Push a component `<template>` body plus its optional CSS injection into
+/// `output`.
+///
+/// FAST's declarative `TemplateParser` scans the client `<f-template>` body for
+/// `{`/`}` bindings. Raw CSS rule blocks (`selector { … }`), especially with
+/// nested at-rules like `@media`, leave an unbalanced `}` in that naive scan
+/// that corrupts the next real binding after `</style>`. When `at_end` is set
+/// (the Style CSS strategy) the injection therefore trails the body, right
+/// before the final `</template>`, keeping every binding ahead of the CSS
+/// braces; styles apply regardless of shadow-root position. Link injections
+/// carry no braces, so they stay at the opening (`at_end == false`). Falls back
+/// to opening-position injection when no closing tag is present so styles are
+/// never silently dropped.
+pub(crate) fn push_body_with_css_injection(
+    output: &mut String,
+    body: &str,
+    injection: Option<&str>,
+    at_end: bool,
+) {
+    let Some(injection) = injection else {
+        output.push_str(body);
+        return;
+    };
+    if at_end {
+        if let Some(close_start) = body.rfind("</template>") {
+            output.push_str(&body[..close_start]);
+            output.push_str(injection);
+            output.push_str(&body[close_start..]);
             return;
         }
-        self.components.push(TrackedComponent {
-            tag_name: tag_name.to_string(),
-            template_html: processed_template.to_string(),
-        });
     }
-
-    /// Render one [`ComponentTemplateArtifact`] per tracked component using the
-    /// plugin's version-specific `<f-template>` generator.
-    pub(crate) fn artifacts(
-        &self,
-        generate: fn(&str, &str) -> String,
-    ) -> Vec<ComponentTemplateArtifact> {
-        self.components
-            .iter()
-            .map(|comp| {
-                let template = generate(&comp.tag_name, &comp.template_html);
-                ComponentTemplateArtifact::template(comp.tag_name.clone(), template, true)
-            })
-            .collect()
-    }
+    output.push_str(injection);
+    output.push_str(body);
 }
 
 /// Component-source transform for FAST authored templates.
@@ -144,13 +235,12 @@ pub(crate) fn transform_component_source(
     };
 
     let resolved_tag = converted.name.unwrap_or(source.tag_name).to_string();
-    let artifact_content = html_content[converted.artifact].trim().to_string();
 
     Ok(ComponentSourceResult::Transformed(
         TransformedComponentSource {
             tag_name: resolved_tag,
             parser_content: converted.parser_content,
-            artifact_content: Some(artifact_content),
+            artifact_content: Some(converted.artifact_content),
         },
     ))
 }
@@ -211,6 +301,9 @@ fn converter_error(source: &str, tag_name: &str, error: &ConvertError<'_>) -> Pa
         }
         ConvertErrorKind::UnexpectedDirectiveAttribute { .. } => {
             "FAST directives (<f-when>/<f-repeat>) accept only a value=\"{{expression}}\" attribute; remove the others"
+        }
+        ConvertErrorKind::UnsupportedWrapperAttribute { .. } => {
+            "the <f-template> wrapper accepts only 'name' and 'shadowroot*' shadow options (e.g. shadowrootmode, shadowrootdelegatesfocus); remove the other attribute"
         }
         ConvertErrorKind::ConditionQuoteConflict { .. } => {
             "rewrite the f-when condition to use a single quote style (only single or only double quotes)"
@@ -287,6 +380,7 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
         ConvertErrorKind::ConditionQuoteConflict { value } => value.to_string(),
         ConvertErrorKind::UnsupportedFAttribute { attribute }
         | ConvertErrorKind::UnexpectedDirectiveAttribute { attribute, .. } => attribute.to_string(),
+        ConvertErrorKind::UnsupportedWrapperAttribute { attribute } => attribute.to_string(),
         ConvertErrorKind::UnclosedTag => "<".to_string(),
     }
 }
@@ -295,6 +389,111 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
 mod tests {
     #![allow(clippy::disallowed_methods)]
     use super::*;
+
+    // --- is_hoisted_shadow_attr / hoisted_shadow_options / strip_hoisted_shadow_options ---
+    //
+    // These three are the hoist/strip pair the FAST v2/v3 client-artifact
+    // generators rely on to move declarative-shadow-root options from the
+    // inner `<template>` onto the `<f-template>` wrapper without ever
+    // duplicating one. Covering them here (once, for the shared predicate and
+    // both shared functions) is what keeps fast_v2.rs and fast_v3.rs from
+    // silently reintroducing separate, divergent implementations.
+
+    #[test]
+    fn is_hoisted_shadow_attr_matches_every_shadowroot_option_except_adoptedstylesheets() {
+        assert!(is_hoisted_shadow_attr("shadowrootmode"));
+        assert!(is_hoisted_shadow_attr("shadowrootdelegatesfocus"));
+        assert!(is_hoisted_shadow_attr("shadowrootclonable"));
+        assert!(is_hoisted_shadow_attr("shadowrootserializable"));
+        // Case-insensitive, matching HTML attribute-name semantics.
+        assert!(is_hoisted_shadow_attr("ShadowRootMode"));
+        assert!(!is_hoisted_shadow_attr("shadowrootadoptedstylesheets"));
+        assert!(!is_hoisted_shadow_attr("SHADOWROOTADOPTEDSTYLESHEETS"));
+        assert!(!is_hoisted_shadow_attr("shadow"));
+        assert!(!is_hoisted_shadow_attr("@click"));
+    }
+
+    fn strip(tag_str: &str) -> (Option<usize>, String) {
+        let mut result = String::new();
+        let consumed = strip_hoisted_shadow_options(tag_str, &mut result);
+        (consumed, result)
+    }
+
+    #[test]
+    fn strip_no_shadow_attrs_is_a_no_op_fast_path() {
+        // No `shadowroot*` attribute at all: bail without writing to `result`.
+        let (consumed, result) = strip(r#"<template @click="{onClick(e)}"><div></div>"#);
+        assert_eq!(consumed, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn strip_non_template_tag_returns_none() {
+        let (consumed, result) = strip(r#"<div shadowrootmode="open"></div>"#);
+        assert_eq!(consumed, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn strip_mode_only_existing_path() {
+        let (consumed, result) = strip(r#"<template shadowrootmode="open">"#);
+        assert!(consumed.is_some());
+        assert_eq!(result, r#"<template>"#);
+    }
+
+    #[test]
+    fn strip_delegatesfocus_only_without_mode() {
+        // Regression: a `shadowroot*` option other than `shadowrootmode` must
+        // still be stripped, since `hoisted_shadow_options` hoists it too.
+        let (consumed, result) = strip(r#"<template shadowrootdelegatesfocus>"#);
+        assert!(consumed.is_some());
+        assert_eq!(result, r#"<template>"#);
+    }
+
+    #[test]
+    fn strip_clonable_and_serializable_only() {
+        let (consumed, result) = strip(r#"<template shadowrootclonable shadowrootserializable>"#);
+        assert!(consumed.is_some());
+        assert_eq!(result, r#"<template>"#);
+    }
+
+    #[test]
+    fn strip_adoptedstylesheets_only_is_kept_not_hoisted() {
+        // `shadowrootadoptedstylesheets` is excluded by `is_hoisted_shadow_attr`,
+        // so this tag carries no hoisted option at all and the fast guard bails
+        // without allocating or rebuilding the tag; callers keep the tag
+        // unchanged via the ordinary (non-shadow) code path.
+        let (consumed, result) = strip(r#"<template shadowrootadoptedstylesheets="my-comp">"#);
+        assert_eq!(consumed, None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn strip_mixed_attrs_removes_only_hoisted_ones_exactly_once() {
+        let input = concat!(
+            r#"<template shadowrootmode="open" shadowrootdelegatesfocus "#,
+            r#"shadowrootclonable shadowrootserializable "#,
+            r#"shadowrootadoptedstylesheets="my-comp" @click="{onClick(e)}">"#,
+        );
+        let (consumed, result) = strip(input);
+        assert!(consumed.is_some());
+        assert_eq!(
+            result,
+            r#"<template shadowrootadoptedstylesheets="my-comp" @click="{onClick(e)}">"#
+        );
+        for hoisted in [
+            "shadowrootmode",
+            "shadowrootdelegatesfocus",
+            "shadowrootclonable",
+            "shadowrootserializable",
+        ] {
+            assert_eq!(
+                result.matches(hoisted).count(),
+                0,
+                "{hoisted} must not remain on the inner template: {result}"
+            );
+        }
+    }
 
     fn transform(tag: &str, html: &str) -> Result<ComponentSourceResult> {
         transform_component_source(ComponentSource {
@@ -576,6 +775,111 @@ mod tests {
             result.parser_content,
             r#"<template><!-- <f-when value="{{ignored}}"> --><div f-ref="{root}" f-children="{children}" f-slotted="{slotted}">{{label}}</div></template>"#
         );
+    }
+
+    #[test]
+    fn generator_styles_marker_is_removed_from_parser_and_artifact() {
+        // The `{{styles}}` marker that `generate-templates` injects immediately
+        // after the inner <template> opening is a build placeholder, not
+        // component state: WebUI removes it (its CSS strategy injects styles at
+        // the same position) so it is not rendered as a `styles` text signal or
+        // counted as a hydration binding on either the server or client.
+        let html = concat!(
+            r#"<f-template name="fluent-button" shadowrootmode="open">"#,
+            "<template @click=\"{clickHandler($e)}\">\n    {{styles}}\n    ",
+            r#"<slot name="start" f-ref="{start}"></slot></template></f-template>"#,
+        );
+        let ComponentSourceResult::Transformed(result) =
+            transform("button.template", html).expect("transform")
+        else {
+            panic!("expected a transformed FAST source");
+        };
+        assert_eq!(result.tag_name, "fluent-button");
+        assert!(
+            !result.parser_content.contains("{{styles}}"),
+            "parser view must not retain the generator marker: {}",
+            result.parser_content
+        );
+        assert!(
+            !result
+                .artifact_content
+                .as_deref()
+                .expect("artifact")
+                .contains("{{styles}}"),
+            "client artifact must not retain the generator marker",
+        );
+    }
+
+    #[test]
+    fn legitimate_styles_binding_outside_generator_position_is_preserved() {
+        // A `{{styles}}` interpolation that is not the leading generator marker
+        // (here inside a child element) is a real binding and must survive.
+        let result = transformed(
+            "file-card",
+            r#"<f-template name="styled-card"><template><span>{{styles}}</span></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><span>{{styles}}</span></template>"#
+        );
+    }
+
+    #[test]
+    fn wrapper_shadow_options_are_baked_onto_inner_template() {
+        // shadowrootmode and shadowrootdelegatesfocus live on the outer
+        // <f-template> wrapper; the converter moves them onto the inner
+        // <template> (the WebUI declarative shadow root) in both the SSR view
+        // and the client artifact, matching `fTemplateToWebui`.
+        let result = transformed(
+            "field.template",
+            concat!(
+                r#"<f-template name="fluent-field" shadowrootmode="open" shadowrootdelegatesfocus>"#,
+                r#"<template @click="{clickHandler($e)}"><slot></slot></template></f-template>"#,
+            ),
+        );
+        assert_eq!(result.tag_name, "fluent-field");
+        assert_eq!(
+            result.parser_content,
+            r#"<template shadowrootmode="open" shadowrootdelegatesfocus @click="{clickHandler($e)}"><slot></slot></template>"#
+        );
+        assert_eq!(
+            result.artifact_content.as_deref(),
+            Some(
+                r#"<template shadowrootmode="open" shadowrootdelegatesfocus @click="{clickHandler($e)}"><slot></slot></template>"#
+            )
+        );
+    }
+
+    #[test]
+    fn wrapper_without_shadow_options_leaves_inner_template_unchanged() {
+        let result = transformed(
+            "file-card",
+            r#"<f-template name="plain-card"><template><span>{{label}}</span></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><span>{{label}}</span></template>"#
+        );
+    }
+
+    #[test]
+    fn unknown_wrapper_attribute_is_rejected() {
+        // A non-name, non-shadowroot* attribute on the wrapper is unsupported;
+        // rejecting it avoids silently dropping it from SSR while it survives in
+        // the client artifact.
+        let err = transform(
+            "file-card",
+            r#"<f-template name="fluent-button" class="danger"><template><slot></slot></template></f-template>"#,
+        )
+        .expect_err("unknown wrapper attribute should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.snippet_text(), Some("class"));
+        assert!(diag
+            .to_string()
+            .contains("does not support the 'class' attribute"));
     }
 
     #[test]

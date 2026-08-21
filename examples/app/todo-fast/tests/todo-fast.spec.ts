@@ -22,7 +22,7 @@ async function readInitialHtml(page: Page): Promise<string> {
 }
 
 function fastTemplate(html: string, name: string): string {
-  const start = html.indexOf(`<f-template name="${name}">`);
+  const start = html.indexOf(`<f-template name="${name}"`);
   expect(start, `expected ${name} f-template`).toBeGreaterThanOrEqual(0);
   const end = html.indexOf('</f-template>', start);
   expect(end, `expected ${name} closing f-template`).toBeGreaterThan(start);
@@ -52,6 +52,8 @@ test.describe('SSR rendering', () => {
     const itemTemplate = fastTemplate(html, 'todo-item');
 
     expect(html).not.toContain('shadowrootadoptedstylesheets');
+    expect(appTemplate).toContain('shadowrootmode="open"');
+    expect(itemTemplate).toContain('shadowrootmode="open"');
     expect(appTemplate).toContain('@toggle-item="{onToggleItem($e)}"');
     expect(appTemplate).toContain('@delete-item="{onDeleteItem($e)}"');
     expect(itemTemplate).toContain('@click="{onClick($e)}"');

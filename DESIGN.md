@@ -1899,7 +1899,9 @@ pub struct ComponentTemplateContext<'a> {
 - **Element completion**: `finish_element` runs with the final binding count after all attrs are processed; returned bytes are emitted as a `Plugin` fragment
 - **Component registration**: `register_component_template` receives the plugin-facing component template HTML after HTML/CSS comment stripping plus a required `ComponentTemplateContext`. Authored root `<template>` attributes are preserved for plugins; the SSR/internal parse view may strip runtime-only attributes so rendered HTML stays clean. The component's client-ownership marker distinguishes authored from scriptless templates; Rust does not inspect JavaScript/TypeScript semantics.
 - **Style delivery**: `ComponentTemplateContext` carries `uses_shadow_dom` plus the resolved `style` delivery — a neutral statement of fact, never a request. The parser injects nothing into any template. WebUI ignores `style` because the handler installs its precomputed closures; FAST reads it and keeps an inline `<link>`/`<style>` inside the Shadow template its runtime uses to build roots. `style` is reported only for components that effectively use a Shadow root. FAST 2/3 reject effective Light components with `fast-light-dom-unsupported` because their artifact contract defaults client-created elements to Shadow roots; silently accepting the build would make client structure diverge from Light SSR. Light CSS is Document-owned and its host selector cannot match from inside a runtime-created root. SSR output is style-free either way.
-- **Component-source transform**: `component_source_transform` returns an optional stateless function pointer, `for<'a> fn(ComponentSource<'a>) -> Result<ComponentSourceResult>`. The component registry calls it once per component — after reading the authored HTML but before name validation, duplicate checking, CSS processing, or insertion. `Unchanged` stores the filename-derived tag and HTML verbatim; `Transformed` may replace the registry key and supplies the HTML the WebUI parser consumes, plus an optional distinct source retained for the plugin's client artifact. The default returns `None`, so a component's filename-derived tag and HTML are stored unchanged and any plugin-specific markup in the source is inert. This is the sole extension point for a plugin that owns an alternate authored-template dialect; see "Built-in FAST parser plugins" below for the concrete FAST implementation.
+- **Component-source transform**: `component_source_transform` returns an optional stateless function pointer, `for<'a> fn(ComponentSource<'a>) -> Result<ComponentSourceResult>`. The component registry calls it once per component — after reading the authored HTML but before name validation, duplicate checking, CSS processing, or insertion. `Unchanged` stores the filename-derived tag and HTML verbatim; `Transformed` may replace the registry key and supplies the HTML the WebUI parser consumes, plus an optional distinct source retained for the plugin's client artifact. The default returns `None`, so a component's filename-derived tag and HTML are stored unchanged and any plugin-specific markup in the source is inert. Because a transform can resolve the registry key from the authored source, recursive discovery (`register_from_paths`) also admits an HTML file whose stem is not itself a custom-element name (no hyphen) **when a transform is installed**, so a plugin dialect such as FAST's `<f-template name>` can name a component whose filename cannot. Such a file is only registered when the transform resolves a valid name; a file the transform does not claim (returns `Unchanged`) and whose stem is not a custom-element name is ignored, exactly as when no transform is installed. With no transform, non-custom-element filenames keep the zero-overhead skip. This is the sole extension point for a plugin that owns an alternate authored-template dialect; see "Built-in FAST parser plugins" below for the concrete FAST implementation.
+- **Root-template binding classification**: `classifies_root_template_bindings` (default `false`) reports whether the plugin owns client-only bindings authored directly on a component's root `<template>`. When `true`, the SSR view keeps those attributes so the parser classifies them through `classify_attribute` (skipping them from output while counting them as `finish_element` bindings), instead of the pre-parse strip dropping them uncounted. FAST returns `true`; WebUI and the no-plugin path return `false` and keep the strip fast path.
+- **Trailing Style-strategy `<style>`**: `styles_trail_template_body` (default `false`) reports whether the plugin's client runtime parses the component `<template>` body for `{`/`}` bindings and therefore needs `CssStrategy::Style` `<style>` blocks emitted after the body (before `</template>`) instead of immediately inside the opening tag. FAST's declarative `TemplateParser` scans the client `<f-template>` body for brace bindings; a raw CSS rule block (`selector { … }`), especially with nested at-rules like `@media`, otherwise leaves the outer `}` unbalanced in FAST's naive brace scan and corrupts the next real binding after `</style>`, emitting a phantom factory that shifts hydration. Trailing the `<style>` keeps every binding ahead of the CSS braces; styles apply regardless of shadow-root position and reach both SSR-hydrated and client-created instances. Both FAST plugins return `true` (they share the same declarative runtime); this repositions only the inert `<style>` node and touches neither the FAST 2 nor FAST 3 hydration-marker contract. WebUI and the no-plugin path return `false`, keeping the authored `{{styles}}` position. Applies only to `CssStrategy::Style`; `Link`/`Module` carry no CSS braces into the body and are unchanged.
 - **Artifact extraction**: `into_artifacts` returns post-parse outputs such as client component templates without `Any` downcasts. It is **fallible**: template-authoring mistakes found while compiling component templates (an invalid `@event` handler or a non-braced `w-ref`) surface as `ParserError::Template` instead of panicking, so every host (CLI, Node, FFI, WASM) can handle them.
 
 **Selecting parser plugins**
@@ -1946,6 +1948,34 @@ bodies (`<script>`, `<style>`, and the other HTML raw-text elements) as opaque:
 markup-shaped text inside them is copied verbatim and never interpreted as an
 `<f-template>`, inner `<template>`, or FAST directive.
 
+The `<f-template>` wrapper carries only its `name` and declarative-shadow-root
+options — any attribute whose name begins with `shadowroot` (`shadowrootmode`,
+`shadowrootdelegatesfocus`, …). Any other wrapper attribute returns
+`invalid-fast-template` at its own offset rather than being silently discarded.
+The shadow-root options are moved onto the inner `<template>` element (the WebUI
+declarative shadow root) in both the parser view and the retained artifact,
+matching the reference `@microsoft/fast-test-harness` WebUI template output. In a
+`DomStrategy::Shadow` build the SSR `<template>` therefore activates a
+declarative shadow root with the authored `shadowrootmode` (default `open`) and
+`shadowrootdelegatesfocus`, and the FAST client hydration runtime reads the same
+options back off the regenerated `<f-template>` wrapper, where the artifact
+generator hoists them (leaving the inner client `<template>` free of
+shadow-root-creation options). Authored shadow options are preserved verbatim in
+both `DomStrategy::Shadow` and `DomStrategy::Light`, consistent with WebUI's
+contract that a dev-authored `<template>` is never rewritten; `--dom` governs
+only whether WebUI wraps a *dev-omitted* template, not the options a FAST
+component authored.
+
+`@microsoft/fast-test-harness`'s `generate-templates` emits a `{{styles}}`
+placeholder immediately after the inner `<template>` opening. It is a build-time
+style-injection marker the harness replaces with a `<link rel="stylesheet">` (or
+strips) before hydration — not component state. WebUI removes that exact marker
+from that generated position (allowing generator whitespace) in both the parser
+view and the artifact, so it is neither rendered as a `styles` text signal nor
+counted as a hydration binding, and lets the selected CSS strategy inject the
+real `<style>`/`<link>`/adopted-stylesheet at the same position. A legitimate
+`{{styles}}` interpolation elsewhere in the template is left untouched.
+
 For build-time SSR parsing, WebUI internally adapts supported FAST declarative
 constructs into the WebUI parser view. The adapted inner template becomes the
 parser view returned as `TransformedComponentSource::parser_content`:
@@ -1980,7 +2010,13 @@ parser view returned as `TransformedComponentSource::parser_content`:
 - The FAST plugins' `classify_attribute` skips `@event`, `:property`, `f-ref`,
   `f-slotted`, and `f-children` and counts each as a binding, so they are
   absent from the SSR view while the hydration binding count still reflects
-  them. No parser-core marker or FAST-named branch is involved.
+  them. No parser-core marker or FAST-named branch is involved. FAST idiomatically
+  authors host-element bindings directly on the root `<template>` (e.g.
+  `<template @click="{…}">`); because the FAST plugins return `true` from
+  `classifies_root_template_bindings`, those root bindings flow through the same
+  `classify_attribute`/`finish_element` count as any other element, so the
+  server emits a `FastElementData` binding count for the root that keeps the
+  client hydration markers aligned with the client template's binding order.
 
 The transform separately returns the authored inner `<template>` (with its
 client-only bindings) as `TransformedComponentSource::artifact_content`, rather
