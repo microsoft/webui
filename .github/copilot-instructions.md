@@ -220,7 +220,7 @@ The workspace ships with an aggressive release profile (`Cargo.toml`):
 
 ```toml
 [profile.release]
-lto = "thin"          # Thin link-time optimization
+lto = true            # Full link-time optimization
 codegen-units = 1     # Maximum optimization (slower compile)
 panic = "abort"       # No unwinding - smaller binary, but panics terminate immediately
 strip = true          # Strip debug symbols
@@ -228,7 +228,7 @@ strip = true          # Strip debug symbols
 
 - **`panic = "abort"` means panics kill the process instantly** - reinforcing why `unwrap`/`expect` are banned in library code.
 - Always validate performance claims in `--release` mode. Debug builds are not representative.
-- Be aware that Thin LTO + single codegen unit still makes release builds slower. Use `cargo test` (debug) for iteration, `cargo build --release` for final validation.
+- Be aware that LTO + single codegen unit makes release builds slow. Use `cargo test` (debug) for iteration, `cargo build --release` for final validation.
 
 ---
 
