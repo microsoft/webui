@@ -121,6 +121,7 @@ stages:
     llvmAptVersion: '18'
     cargoZigbuildVersion: '0.23.0'
     zigVersion: '0.13.0'
+    rustToolchain: '1.98'
     # Official SHA-256 of https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz.
     # Update this alongside zigVersion if the pin is ever bumped.
     zigSha256: 'd45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea'
@@ -221,17 +222,17 @@ stages:
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)" | Cargo.lock'
+        key: 'cargo-home | "$(Agent.OS)" | "$(rustToolchain)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)"
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)"
+          cargo-home | "$(Agent.OS)" | "$(rustToolchain)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)"
+          cargo-home | "$(Agent.OS)" | "$(rustToolchain)" | "$(targetTriple)" | "$(backend)"
         path: $(CARGO_CACHE_HOME)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)" | Cargo.lock'
+        key: 'cargo-target | "$(Agent.OS)" | "$(rustToolchain)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)"
+          cargo-target | "$(Agent.OS)" | "$(rustToolchain)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)"
         path: $(Build.SourcesDirectory)/target
     - task: DownloadSecureFile@1
       name: appleSdkSecureFile
@@ -276,7 +277,18 @@ stages:
           sdk_extract_dir="$AGENT_TEMP_DIRECTORY/apple-sdk"
           rm -rf "$sdk_extract_dir"
           mkdir -p "$sdk_extract_dir"
-          tar -xf "$SECURE_FILE_PATH" -C "$sdk_extract_dir"
+          python3.11 - "$SECURE_FILE_PATH" "$sdk_extract_dir" <<'PY'
+          import pathlib
+          import sys
+          import tarfile
+
+          archive = pathlib.Path(sys.argv[1])
+          destination = pathlib.Path(sys.argv[2])
+          if not hasattr(tarfile, "data_filter"):
+              raise RuntimeError("Python tarfile.data_filter is required for safe SDK extraction")
+          with tarfile.open(archive) as sdk_archive:
+              sdk_archive.extractall(destination, filter=tarfile.data_filter)
+          PY
 
           mapfile -t sdk_dirs < <(find "$sdk_extract_dir" -maxdepth 2 -type d -name '*.sdk')
           if [[ ${#sdk_dirs[@]} -ne 1 ]]; then
@@ -325,11 +337,11 @@ stages:
             sudo apt-get install -y -q gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
           fi
-          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$TARGET_TRIPLE"
 
           # Natives build on the host, but the wheel must link an old glibc, so
           # the container step below runs the same command with --python-only.
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --native-only \
@@ -338,6 +350,7 @@ stages:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         INSTALL_ARM64_LINKER: $(installArm64Linker)
+        RUSTUP_TOOLCHAIN: $(rustToolchain)
         TARGET_TRIPLE: $(targetTriple)
     - task: Bash@3
       displayName: Build Python wheel ($(targetTriple)) in manylinux container
@@ -379,9 +392,10 @@ stages:
           : "${LLVM_APT_VERSION:?LLVM_APT_VERSION is required}"
 
           sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler "clang-${LLVM_APT_VERSION}" "lld-${LLVM_APT_VERSION}"
+          sudo apt-get install -y -q protobuf-compiler "clang-${LLVM_APT_VERSION}" "lld-${LLVM_APT_VERSION}" "llvm-${LLVM_APT_VERSION}"
           sudo ln -sf "/usr/bin/clang-${LLVM_APT_VERSION}" /usr/local/bin/clang-cl
           sudo ln -sf "/usr/bin/lld-link-${LLVM_APT_VERSION}" /usr/local/bin/lld-link
+          sudo ln -sf "/usr/bin/llvm-lib-${LLVM_APT_VERSION}" /usr/local/bin/llvm-lib
           export CARGO_HOME="$CARGO_CACHE_HOME"
           export PATH="$CARGO_HOME/bin:/usr/local/bin:$PATH"
 
@@ -389,10 +403,12 @@ stages:
           if [[ "$installed_xwin_version" != "cargo-xwin ${CARGO_XWIN_VERSION}" ]]; then
             cargo install cargo-xwin --locked --version "$CARGO_XWIN_VERSION"
           fi
-          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$TARGET_TRIPLE"
 
           # publish-build's full (non --native-only) run also builds the
-          # Python wheel through maturin, cross-compiled with its --xwin flag.
+          # Python wheel through maturin. maturin has no built-in `--xwin`
+          # flag, so `xtask` exports cargo-xwin's own linker/SDK environment
+          # (from `cargo xwin env`) onto the maturin process instead.
           python3.11 -m pip install --upgrade "maturin==1.14.1"
 
           # cargo-xwin downloads the Windows SDK/CRT itself once the license is
@@ -402,7 +418,7 @@ stages:
           export XWIN_CACHE_DIR="$CARGO_CACHE_HOME/xwin-cache"
           mkdir -p "$XWIN_CACHE_DIR"
 
-          cargo +1.93 xtask publish-build \
+          cargo xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -411,6 +427,8 @@ stages:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         CARGO_XWIN_VERSION: $(cargoXwinVersion)
         LLVM_APT_VERSION: $(llvmAptVersion)
+        RUSTUP_TOOLCHAIN: $(rustToolchain)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
         TARGET_TRIPLE: $(targetTriple)
     - task: Bash@3
       displayName: Build and stage $(targetTriple) (macOS via cargo-zigbuild)
@@ -459,13 +477,13 @@ stages:
           if [[ "$installed_zigbuild_version" != "cargo-zigbuild ${CARGO_ZIGBUILD_VERSION}" ]]; then
             cargo install cargo-zigbuild --locked --version "$CARGO_ZIGBUILD_VERSION"
           fi
-          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --target "$TARGET_TRIPLE"
 
           # publish-build's full (non --native-only) run also builds the
           # Python wheel through maturin, cross-compiled with its --zig flag.
           python3.11 -m pip install --upgrade "maturin==1.14.1"
 
-          cargo +1.93 xtask publish-build \
+          cargo xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
@@ -475,7 +493,9 @@ stages:
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         CARGO_ZIGBUILD_VERSION: $(cargoZigbuildVersion)
         MACOSX_DEPLOYMENT_TARGET: $(macosDeploymentTarget)
+        RUSTUP_TOOLCHAIN: $(rustToolchain)
         SDKROOT: $(appleSdkRoot)
+        SOURCE_DATE_EPOCH: $(sourceDateEpoch)
         TARGET_TRIPLE: $(targetTriple)
         ZIG_VERSION: $(zigVersion)
         ZIG_SHA256: $(zigSha256)
@@ -588,7 +608,7 @@ stages:
           : "${SOURCE_DATE_EPOCH:?SOURCE_DATE_EPOCH is required}"
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
-          rustup toolchain install 1.93 --profile minimal
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
           # Needed for the `cargo xtask publish-stage --pack-only` sdist step
@@ -597,7 +617,7 @@ stages:
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
           trap 'rm -rf target/package' EXIT
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage --pack-only --profile release
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo xtask publish-stage --pack-only --profile release
           python crates/webui-python/tests/validate_artifacts.py \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
@@ -609,6 +629,7 @@ stages:
       env:
         PNPM_STORE_PATH: $(PNPM_STORE_PATH)
         RELEASE_VERSION: $(releaseVersion)
+        RUSTUP_TOOLCHAIN: $(rustToolchain)
         SOURCE_DATE_EPOCH: $(sourceDateEpoch)
     - task: Bash@3
       displayName: Write release metadata
