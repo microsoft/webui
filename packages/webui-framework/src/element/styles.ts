@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import { installComponentLinkStyles } from './link-styles.js';
+
 // `__WEBUI_DEV__` is a compile-time constant a bundler folds to a literal, so
 // the `if (DEV)` diagnostics below become dead code in production builds. See
 // the longer note in `template-element.ts`; the flag is declared module-locally
@@ -492,7 +494,7 @@ function appendResource(
   id: string,
   resource: ComponentStyleResource,
   before?: Element,
-): void {
+): Element {
   const document = owningDocument(target);
   const parent: ParentNode = isDocument(target) ? target.head : target;
   if (resource.kind === 'link') {
@@ -503,7 +505,7 @@ function appendResource(
     link.setAttribute('data-webui-strategy', 'link');
     parent.insertBefore(link, before ?? null);
     noteMarkerInserted(target, id, link);
-    return;
+    return link;
   }
   if (resource.kind === 'style') {
     const style = document.createElement('style');
@@ -514,7 +516,7 @@ function appendResource(
     style.setAttribute('data-webui-strategy', 'style');
     parent.insertBefore(style, before ?? null);
     noteMarkerInserted(target, id, style);
-    return;
+    return style;
   }
   throw new Error(`[WebUI] Module resource "${id}" cannot be installed as an element.`);
 }
@@ -600,13 +602,17 @@ function installElementRange(
   start: number,
   end: number,
   before?: Element,
+  linkElements?: HTMLLinkElement[],
 ): void {
   for (let i = start; i < end; i++) {
     const id = closure[i];
     if (targetInstalled.has(id)) continue;
     const resource = catalog.resources.get(id);
     if (!resource || resource.kind === 'module') continue;
-    appendResource(target, id, resource, before);
+    const element = appendResource(target, id, resource, before);
+    if (linkElements && resource.kind === 'link') {
+      linkElements.push(element as HTMLLinkElement);
+    }
     markResourceInstalled(targetInstalled, id, resource);
   }
 }
@@ -653,6 +659,7 @@ function installElements(
   targetInstalled: Set<string>,
   markers: Map<string, Element> | undefined,
   rootId: string,
+  linkElements?: HTMLLinkElement[],
 ): void {
   // Existing markers delimit ranges that can be inserted in closure order
   // without searching the target again for every resource.
@@ -671,6 +678,7 @@ function installElements(
         i + 1,
         segmentEnd,
         before,
+        linkElements,
       );
       const resource = catalog.resources.get(closure[i]);
       if (resource && resource.kind !== 'module') {
@@ -688,6 +696,7 @@ function installElements(
     0,
     segmentEnd,
     before,
+    linkElements,
   );
 }
 
@@ -824,6 +833,7 @@ async function finishModuleLoads(
 export function installComponentStyles(
   rootId: string,
   target: StyleTarget,
+  host?: HTMLElement,
 ): Promise<void> | undefined {
   const catalog = catalogFor(owningDocument(target));
   const closure = catalog.closures.get(rootId);
@@ -861,6 +871,7 @@ export function installComponentStyles(
   }
 
   if (hasElementWork) {
+    const linkElements: HTMLLinkElement[] = [];
     installElements(
       target,
       catalog,
@@ -868,7 +879,11 @@ export function installComponentStyles(
       targetInstalled,
       directResourceMarkers(target, catalog),
       rootId,
+      linkElements,
     );
+    if (host && !isDocument(target)) {
+      installComponentLinkStyles(host, target, linkElements);
+    }
   }
 
   let moduleIds: string[] | undefined;
