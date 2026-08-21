@@ -10,8 +10,6 @@ import {
 } from './streaming-dom.js';
 import type { HydrationRange } from './streaming-dom.js';
 
-/** Maximum unfinished component hosts retained by one response. */
-export const MAX_OPEN_SPANS = 128;
 /** Maximum runtime component ancestry crossed by one early boundary. */
 export const MAX_SPAN_NESTING = 32;
 
@@ -25,6 +23,15 @@ interface OpenSpan {
   openChildren: number;
 }
 
+/**
+ * Unfinished component hosts, keyed by SpanInstanceId.
+ *
+ * This is the *current* ancestor chain, not a growing pool: a span is only ever
+ * registered as part of one boundary's spanning ancestry, and the server opens
+ * and closes spans as a strict stack, so an entry is dropped by `completeSpan`
+ * before any span outside that chain can register. `MAX_SPAN_NESTING` bounds
+ * the chain — and therefore this map — on the one walk that fills it.
+ */
 const openSpans = new Map<number, OpenSpan>();
 // Reused by the single-record pump while it validates one ancestor chain.
 const hostScratch: Element[] = [];
@@ -148,9 +155,6 @@ function registerSpan(
   }
   if (id !== nextExpectedSpanInstanceId) {
     return `expected span instance ${nextExpectedSpanInstanceId}, received ${id}`;
-  }
-  if (openSpans.size >= MAX_OPEN_SPANS) {
-    return `open component span count exceeds ${MAX_OPEN_SPANS}`;
   }
   const marker = host.previousSibling;
   if (

@@ -25,12 +25,17 @@ use crate::{
 
 /// Maximum continuation frames retained by one response.
 pub const MAX_CONTINUATION_DEPTH: usize = 256;
-/// Maximum unfinished component spans retained by one response.
-pub const MAX_OPEN_SPANS: usize = 128;
 /// Maximum nested unfinished component spans.
 pub const MAX_SPAN_NESTING: usize = 32;
 /// Maximum runtime boundary occurrences in one response.
 pub const MAX_BOUNDARY_OCCURRENCES: usize = 512;
+/// Maximum runtime boundary occurrences one response may commit as
+/// [`BoundaryMode::Updatable`].
+///
+/// Mirrors the browser coordinator's retained-boundary cap: the client refuses
+/// to retain a 129th updatable occurrence, so the server refuses to emit one
+/// rather than stream a checkpoint the page would fail on.
+pub(crate) const MAX_UPDATABLE_OCCURRENCES: usize = 128;
 /// Maximum keyed runtime occurrences tracked for uniqueness.
 pub const MAX_KEYED_INSTANCES: usize = 512;
 /// Maximum top-level state keys retained by a continuation snapshot.
@@ -209,6 +214,11 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     /// The bytes written by this call are exactly the occurrence's own record —
     /// no parent or tail bytes follow it — so the host can release the
     /// occurrence the moment it resolves. Call [`Self::advance`] next.
+    ///
+    /// [`BoundaryMode::Updatable`] is refused once the response has committed
+    /// as many updatable occurrences as the browser retains. The refusal is
+    /// raised before any byte or state moves, so the same occurrence stays
+    /// pending and can be committed with [`BoundaryMode::Final`] instead.
     pub fn resume(
         &mut self,
         instance_id: BoundaryInstanceId,
@@ -378,6 +388,7 @@ impl SessionCore {
     ) -> Result<StreamStatus> {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
+        self.vm.validate_resume_mode(mode)?;
         if self.requires_full_state {
             overlay_full_state(&mut self.frozen_state, state);
         } else {
@@ -411,6 +422,7 @@ impl SessionCore {
     ) -> Result<StreamStatus> {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
+        self.vm.validate_resume_mode(mode)?;
         self.run_step(call, StepGoal::NextBoundary, Some((instance_id, mode)))
     }
 
@@ -649,6 +661,28 @@ mod tests {
     }
 
     impl FlushWriter for TestSink {
+        fn flush(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A sink whose bytes stay readable while the response holds it, so a test
+    /// can prove a refused step wrote nothing.
+    #[derive(Clone, Default)]
+    struct SharedSink(std::rc::Rc<std::cell::RefCell<String>>);
+
+    impl ResponseWriter for SharedSink {
+        fn write(&mut self, content: &str) -> Result<()> {
+            self.0.borrow_mut().push_str(content);
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    impl FlushWriter for SharedSink {
         fn flush(&mut self) -> Result<()> {
             Ok(())
         }
@@ -995,6 +1029,174 @@ mod tests {
             sink.output.matches(",2,0,{").count(),
             4,
             "each update emits exactly one typed state-update record"
+        );
+        Ok(())
+    }
+
+    /// Drive `count` occurrences to completion in `mode`, returning the status
+    /// the response stopped on.
+    fn commit_occurrences<W: FlushWriter + ?Sized>(
+        response: &mut StreamingResponse<'_, W>,
+        status: StreamStatus,
+        state: &Value,
+        count: usize,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus> {
+        let mut status = status;
+        for committed in 0..count {
+            let Some(boundary) = status.boundary.as_ref() else {
+                panic!("occurrence {committed} must suspend before it can commit");
+            };
+            let instance_id = boundary.instance_id;
+            response.resume(instance_id, state, mode)?;
+            status = response.advance()?;
+        }
+        Ok(status)
+    }
+
+    #[test]
+    fn updatable_commits_stop_at_the_browser_retention_cap() -> Result<()> {
+        // The browser retains every updatable occurrence for the life of the
+        // response and refuses the one past its cap, so the server refuses to
+        // emit that checkpoint at all. The refusal lands before a byte is
+        // written and before the caller's state reaches the snapshot, leaving
+        // the same occurrence pending so the host can commit it as final.
+        let protocol = boundary_protocol(MAX_UPDATABLE_OCCURRENCES + 1, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let state = test_json!({ "count": 1, "title": "retained" });
+        let render_options = options();
+        let mut sink = SharedSink::default();
+        let written = SharedSink::clone(&sink).0;
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let status = response.start(&state)?;
+        let status = commit_occurrences(
+            &mut response,
+            status,
+            &state,
+            MAX_UPDATABLE_OCCURRENCES,
+            BoundaryMode::Updatable,
+        )?;
+
+        let Some(boundary) = status.boundary.as_ref() else {
+            panic!("the occurrence past the cap must suspend like any other");
+        };
+        let instance_id = boundary.instance_id;
+        let bytes_before = written.borrow().len();
+        let refused = test_json!({ "count": 2, "title": "refused" });
+        let rejected = response.resume(instance_id, &refused, BoundaryMode::Updatable);
+        match rejected {
+            Err(HandlerError::StreamingBoundary(error)) => {
+                assert_eq!(error.signal, "resume");
+                assert!(
+                    error.reason.contains("BoundaryMode::Final"),
+                    "the refusal must name the recovery: {}",
+                    error.reason
+                );
+            }
+            _ => panic!("committing past the cap must fail with a typed boundary error"),
+        }
+        assert_eq!(
+            written.borrow().len(),
+            bytes_before,
+            "a refused commit must not write a byte"
+        );
+        assert_eq!(
+            response.core.frozen_state.get("title"),
+            Some(&Value::String("retained".to_string())),
+            "a refused commit must not merge its state into the snapshot"
+        );
+
+        // The occurrence is untouched, so the same ID commits as final.
+        let status = response.resume(instance_id, &state, BoundaryMode::Final)?;
+        assert!(
+            status.boundary.is_none() && !status.done,
+            "the retried commit stops at its own checkpoint"
+        );
+        assert!(
+            written.borrow().len() > bytes_before,
+            "the retry writes its checkpoint"
+        );
+        assert!(
+            response.advance()?.done,
+            "the response still reaches its terminal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn final_commits_do_not_consume_the_updatable_cap() -> Result<()> {
+        // Only occurrences the browser retains count against the cap: a final
+        // boundary releases its roots at hydration, so a response may commit
+        // any number of them and still use its full updatable budget.
+        let protocol = boundary_protocol(MAX_UPDATABLE_OCCURRENCES + 2, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let state = test_json!({ "count": 1, "title": "mixed" });
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let status = response.start(&state)?;
+        let status = commit_occurrences(&mut response, status, &state, 2, BoundaryMode::Final)?;
+        let status = commit_occurrences(
+            &mut response,
+            status,
+            &state,
+            MAX_UPDATABLE_OCCURRENCES,
+            BoundaryMode::Updatable,
+        )?;
+        assert!(
+            status.done && response.is_done(),
+            "final commits must leave the whole updatable budget available"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn owned_sessions_enforce_the_same_updatable_cap() -> Result<()> {
+        // The owned session shares the borrowed session's continuation, so the
+        // cap, the refusal, and the final-mode retry behave identically.
+        let protocol = Arc::new(boundary_protocol(
+            MAX_UPDATABLE_OCCURRENCES + 1,
+            StateProjectionMode::Keys,
+        ));
+        let mut session = crate::streaming::StreamingSession::new(
+            Arc::new(WebUIHandler::new()),
+            protocol,
+            crate::streaming::SessionOptions::new("index.html", "/"),
+        )?;
+        let state = test_json!({ "count": 1, "title": "owned" });
+
+        let mut step = session.start(&state)?;
+        for committed in 0..MAX_UPDATABLE_OCCURRENCES {
+            let Some(boundary) = step.boundary.as_ref() else {
+                panic!("occurrence {committed} must suspend before it can commit");
+            };
+            let instance_id = boundary.instance_id;
+            session.resume(instance_id, &state, BoundaryMode::Updatable)?;
+            step = session.advance()?;
+        }
+
+        let Some(boundary) = step.boundary.as_ref() else {
+            panic!("the occurrence past the cap must suspend like any other");
+        };
+        let instance_id = boundary.instance_id;
+        assert!(
+            session
+                .resume(instance_id, &state, BoundaryMode::Updatable)
+                .is_err(),
+            "an owned session refuses the occurrence past the cap"
+        );
+        let step = session.resume(instance_id, &state, BoundaryMode::Final)?;
+        assert!(
+            !step.bytes.is_empty(),
+            "the retried commit still delivers its checkpoint bytes"
+        );
+        assert!(
+            session.advance()?.done,
+            "the owned response still reaches its terminal"
         );
         Ok(())
     }

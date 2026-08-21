@@ -66,7 +66,11 @@ Commit an occurrence as `BoundaryMode::Updatable` to call
 `update(instance_id, patch)` later, including between its `resume` and the
 following `advance`. Updates are projected state records and do not insert
 markup. Component-local occurrences use generated parent spans so an early child
-can hydrate before the parent tail.
+can hydrate before the parent tail. One response may commit at most 128
+updatable occurrences, matching what the browser retains; a `resume` past that
+is refused before any byte is written, so the same pending occurrence can be
+committed as `BoundaryMode::Final` instead. Final occurrences release their
+roots at hydration and never count against the cap.
 
 A `<boundary>` may not appear inside a `<for>` repeat body (directly or through
 a component, `<if>`, route, or outlet): the build rejects it with

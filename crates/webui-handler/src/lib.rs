@@ -46,8 +46,7 @@ use streaming::{
 pub use streaming::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, BufferSink, SessionOptions,
     SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession,
-    MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_OPEN_SPANS,
-    MAX_SPAN_NESTING,
+    MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
 };
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};

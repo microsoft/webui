@@ -135,6 +135,11 @@ impl StreamingSession {
     ///
     /// The returned bytes hold that occurrence's record and nothing that
     /// follows it. Call [`Self::advance`] for the parent bytes.
+    ///
+    /// [`BoundaryMode::Updatable`] is refused once the response has committed
+    /// as many updatable occurrences as the browser retains. The refusal
+    /// produces no bytes and leaves the occurrence pending, so it can be
+    /// committed with [`BoundaryMode::Final`] instead.
     pub fn resume(
         &mut self,
         instance_id: BoundaryInstanceId,

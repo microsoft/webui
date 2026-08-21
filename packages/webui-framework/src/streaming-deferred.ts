@@ -20,25 +20,34 @@ import {
   streamingErrorMessage,
 } from './streaming-dom.js';
 import {
+  ACTIVATION_ACTIVATED,
+  ACTIVATION_ANCESTOR_BARRIER,
+  ACTIVATION_MISSING_TEMPLATE,
+  ACTIVATION_STATIC_HOST_OPT_OUT,
   PENDING_ROOT_CONNECTED,
   STREAMED_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
 import { applyStateUpdate } from './streaming-state.js';
 
-const ACTIVATION_ACTIVATED = 1;
-const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
-export const ACTIVATION_MISSING_TEMPLATE = 3;
-const ACTIVATION_ANCESTOR_BARRIER = 4;
-export const ELEMENT_IGNORED = 0;
-export const ELEMENT_DEFERRED = 4;
-export const ELEMENT_LIMIT_FAILURE = 5;
-const ELEMENT_ACTIVATED_FROM_PENDING = 6;
-const ELEMENT_BARRIER_LIMIT_FAILURE = 7;
+// Coordinator-internal walk results, deliberately in a decade disjoint from the
+// shared `ACTIVATION_*` outcomes (1..4) declared in `streaming-mode.ts`. Both
+// spaces travel through the same `number`, so overlapping them once made an
+// ancestor barrier indistinguishable from a definition-deferred element.
+export const ELEMENT_IGNORED = 10;
+export const ELEMENT_DEFERRED = 11;
+export const ELEMENT_LIMIT_FAILURE = 12;
+export const ELEMENT_ACTIVATED_FROM_PENDING = 13;
+export const ELEMENT_BARRIER_LIMIT_FAILURE = 14;
+/** A hook returned something outside the shared activation contract. */
+export const ELEMENT_INVALID_OUTCOME = 15;
 export const MAX_PENDING_UNDEFINED_ROOTS = 50_000;
 export const MAX_PENDING_BARRIER_ROOTS = 50_000;
 
 type BoundaryActivatable = Element & {
+  // Typed as `number`, not `ActivationOutcome`: the hook may belong to a
+  // foreign element that never saw this contract, so the value is validated
+  // once in `invokeActivationHook` instead of being trusted by the type.
   [STREAMING_BOUNDARY_ACTIVATE]?: (
     state?: Record<string, unknown>,
     bypassAncestor?: Element,
@@ -83,6 +92,14 @@ const pendingBarrierRoots = new Set<Element>();
 let pendingUndefinedRoots = 0;
 let activationGeneration = 0;
 let failureHandler: ((reason: string) => void) | null = null;
+/**
+ * The offending value behind the most recent `ELEMENT_INVALID_OUTCOME`.
+ *
+ * A scalar rather than a carried payload so the rejection costs no allocation
+ * on a path the coordinator takes for every marked root. Every caller reads it
+ * in the same turn it observes the result, before any further hook can run.
+ */
+let invalidActivationOutcome: unknown;
 
 const PENDING_RECORD = Symbol();
 
@@ -147,6 +164,20 @@ function tagOf(el: Element): string {
 
 function missingTemplateReason(tag: string): string {
   return `template metadata missing while activating <${tag}>`;
+}
+
+/**
+ * Report a hook that answered outside the shared activation contract.
+ *
+ * Kept distinct from `missingTemplateReason` on purpose: folding an
+ * unrecognized code into "missing template" sends every reader looking for
+ * absent metadata when the real defect is a hook returning a code this
+ * coordinator cannot decode.
+ */
+function invalidOutcomeReason(tag: string): string {
+  return `<${tag}> returned an unrecognized streaming activation outcome ${
+    String(invalidActivationOutcome)
+  }`;
 }
 
 function barrierLimitReason(): string {
@@ -262,7 +293,8 @@ function activatePendingBarrierRoot(el: Element): number {
   try {
     const outcome = resumeRetainedRoot(el, record, updates);
     if (outcome === ACTIVATION_ANCESTOR_BARRIER) return ELEMENT_DEFERRED;
-    return outcome === ACTIVATION_MISSING_TEMPLATE
+    return outcome === ACTIVATION_MISSING_TEMPLATE ||
+        outcome === ELEMENT_INVALID_OUTCOME
       ? outcome
       : ELEMENT_ACTIVATED_FROM_PENDING;
   } finally {
@@ -304,6 +336,9 @@ function resumeBarrierRoot(this: Element): void {
     if (outcome === ACTIVATION_MISSING_TEMPLATE) {
       abandonDeferredTree(this);
       fail(missingTemplateReason(tagOf(this)));
+    } else if (outcome === ELEMENT_INVALID_OUTCOME) {
+      abandonDeferredTree(this);
+      fail(invalidOutcomeReason(tagOf(this)));
     }
   } catch (error) {
     abandonDeferredDescendants(this);
@@ -375,6 +410,11 @@ function activatePendingRoot(
     if (outcome === ACTIVATION_MISSING_TEMPLATE) {
       abandonDeferredTree(el);
       fail(missingTemplateReason(tag));
+      return;
+    }
+    if (outcome === ELEMENT_INVALID_OUTCOME) {
+      abandonDeferredTree(el);
+      fail(invalidOutcomeReason(tag));
       return;
     }
     if (outcome === ACTIVATION_ANCESTOR_BARRIER) {
@@ -469,6 +509,9 @@ export function activateDeferredTree(
           const outcome = activateMarkedElement(el, state, updates, bypass);
           if (outcome === ACTIVATION_MISSING_TEMPLATE) {
             return missingTemplateReason(tagOf(el));
+          }
+          if (outcome === ELEMENT_INVALID_OUTCOME) {
+            return invalidOutcomeReason(tagOf(el));
           }
           if (outcome === ELEMENT_LIMIT_FAILURE) {
             return `pending undefined root count exceeds ${MAX_PENDING_UNDEFINED_ROOTS}`;
@@ -596,15 +639,23 @@ function invokeActivationHook(
     removeStreamingAttributes(el);
     throw error;
   }
-  if (outcome === ACTIVATION_ANCESTOR_BARRIER) return outcome;
+  // Only a genuinely finished root gives up its markers. A barrier still owns
+  // its root, and a root that could not hydrate keeps them for fatal cleanup.
   if (
-    outcome !== ACTIVATION_ACTIVATED &&
-    outcome !== ACTIVATION_STATIC_HOST_OPT_OUT
+    outcome === ACTIVATION_ACTIVATED ||
+    outcome === ACTIVATION_STATIC_HOST_OPT_OUT
   ) {
-    return ACTIVATION_MISSING_TEMPLATE;
+    removeStreamingAttributes(el);
+    return outcome;
   }
-  removeStreamingAttributes(el);
-  return outcome;
+  if (
+    outcome === ACTIVATION_ANCESTOR_BARRIER ||
+    outcome === ACTIVATION_MISSING_TEMPLATE
+  ) {
+    return outcome;
+  }
+  invalidActivationOutcome = outcome;
+  return ELEMENT_INVALID_OUTCOME;
 }
 
 /** Reset retained activation state and invalidate uncancellable waiters. */

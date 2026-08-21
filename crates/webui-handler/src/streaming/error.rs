@@ -113,12 +113,11 @@ pub(super) fn boundary_limit_error(limit: usize) -> HandlerError {
 
 #[cold]
 #[inline(never)]
-pub(super) fn span_limit_error(limit: usize) -> HandlerError {
+pub(super) fn span_id_overflow_error() -> HandlerError {
     streaming_boundary_error(
         "component span",
-        &format!(
-            "open component span count exceeds {limit}; reduce boundary-bearing component nesting"
-        ),
+        "component span IDs exhausted the response-local 32-bit range; split the page into \
+         several responses or reduce boundary-bearing component hosts",
     )
 }
 
@@ -128,6 +127,19 @@ pub(super) fn span_nesting_error(limit: usize) -> HandlerError {
     streaming_boundary_error(
         "component span",
         &format!("component span nesting exceeds {limit}; flatten boundary-bearing components"),
+    )
+}
+
+#[cold]
+#[inline(never)]
+pub(super) fn updatable_limit_error(limit: usize) -> HandlerError {
+    streaming_boundary_error(
+        "resume",
+        &format!(
+            "this response already committed {limit} updatable boundary occurrences, the most the \
+             browser retains; resume this occurrence with BoundaryMode::Final, or split the page \
+             so fewer occurrences need later updates"
+        ),
     )
 }
 

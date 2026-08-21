@@ -58,11 +58,16 @@ import type {
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
+  ACTIVATION_ACTIVATED,
+  ACTIVATION_ANCESTOR_BARRIER,
+  ACTIVATION_MISSING_TEMPLATE,
+  ACTIVATION_STATIC_HOST_OPT_OUT,
   isStreamingHydrationMode,
   PENDING_ROOT_CONNECTED,
   STREAMED_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
+import type { ActivationOutcome } from './streaming-mode.js';
 import {
   createRepeatKeyState,
   seedHydratedRepeatKeys,
@@ -186,10 +191,6 @@ const EMPTY_SET: Set<string> = Object.freeze(new Set<string>()) as Set<string>;
 const WEBUI_SET_STATE_KEY = Symbol.for('microsoft.webui.setStateKey');
 /** Branded fatal-stream cleanup hook, invoked before `data-ws` is removed. */
 const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
-const ACTIVATION_ACTIVATED = 1;
-const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
-const ACTIVATION_MISSING_TEMPLATE = 3;
-const ACTIVATION_ANCESTOR_BARRIER = 4;
 
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
@@ -418,12 +419,16 @@ export class TemplateElement extends HTMLElement {
 
   /**
    * Internal hook invoked by the streaming coordinator (`streaming.ts`) once
-   * a boundary containing this element has committed. Returns a numeric outcome
-   * so the allocation-sensitive coordinator can distinguish activation, an
-   * intentional static-host opt-out, and missing metadata without per-root
-   * result objects. The optional `state` is this element's boundary-local SSR
-   * state, handed straight through to hydration instead of via the global
-   * `window.__webui.state` handoff.
+   * a boundary containing this element has committed. Returns one of the
+   * shared `ActivationOutcome` codes (`streaming-mode.ts`) so the
+   * allocation-sensitive coordinator can distinguish activation, an
+   * intentional static-host opt-out, missing metadata, and an unfinished
+   * ancestor without per-root result objects. The union is the contract: a
+   * code this method invents but the coordinator cannot decode is a compile
+   * error here, and a runtime one on the coordinator side. The optional
+   * `state` is this element's boundary-local SSR state, handed straight
+   * through to hydration instead of via the global `window.__webui.state`
+   * handoff.
    *
    * `bypassAncestor`, when supplied, is one already-resolved ancestor element
    * this root may skip exactly once while looking for its hydration barrier.
@@ -435,7 +440,7 @@ export class TemplateElement extends HTMLElement {
   [STREAMING_BOUNDARY_ACTIVATE](
     state?: Record<string, unknown>,
     bypassAncestor?: Element,
-  ): number {
+  ): ActivationOutcome {
     // `customElements.upgrade()` installs this class on detached roots without
     // invoking connectedCallback(). Preserve the same marker-driven dormant
     // state those roots would have entered while connected before activation.

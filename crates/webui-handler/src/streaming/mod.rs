@@ -31,7 +31,7 @@ pub(crate) use root::{
 pub use session::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, SpanInstanceId,
     StreamStatus, StreamingResponse, MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH,
-    MAX_KEYED_INSTANCES, MAX_OPEN_SPANS, MAX_SPAN_NESTING,
+    MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
 };
 pub(crate) use state::StreamingRenderState;
 pub(crate) use vm::PreparedContinuationStatePlan;

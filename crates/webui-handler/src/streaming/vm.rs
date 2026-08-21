@@ -18,13 +18,13 @@ use super::checkpoint::RangeRecord;
 use super::error::{
     boundary_in_repeat_error, boundary_limit_error, boundary_order_error, continuation_limit_error,
     duplicate_boundary_key_error, invalid_boundary_key_error, keyed_instance_limit_error,
-    malformed_span_signal_error, span_limit_error, span_nesting_error,
+    malformed_span_signal_error, span_id_overflow_error, span_nesting_error, updatable_limit_error,
 };
 use super::root::ComponentHostOrigin;
 use super::session::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, SpanInstanceId,
     StreamStatus, MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES,
-    MAX_OPEN_SPANS, MAX_SPAN_NESTING,
+    MAX_SPAN_NESTING, MAX_UPDATABLE_OCCURRENCES,
 };
 use super::state::{increment_streaming_record_sequence, protocol_fragment, RecordCapture};
 use super::{
@@ -102,6 +102,13 @@ pub(crate) struct ContinuationVm {
     keyed_instances: HashMap<u32, HashSet<BoundaryKey>>,
     keyed_instance_count: usize,
     committed_modes: Vec<BoundaryMode>,
+    /// Occurrences already committed as [`BoundaryMode::Updatable`].
+    ///
+    /// The browser retains every updatable occurrence for the life of the
+    /// response, so the cap is a running total rather than a live count.
+    /// Keeping it as a counter makes the pre-commit check one integer compare
+    /// instead of a scan of every mode already committed.
+    updatable_count: usize,
     component_count: usize,
     pending_span_candidate: Option<Box<str>>,
     /// Repeats currently being walked by this step.
@@ -302,6 +309,7 @@ impl ContinuationVm {
             keyed_instances: HashMap::new(),
             keyed_instance_count: 0,
             committed_modes: Vec::new(),
+            updatable_count: 0,
             component_count: protocol.component_index().len(),
             pending_span_candidate: None,
             open_repeats: 0,
@@ -320,6 +328,19 @@ impl ContinuationVm {
                 "resume",
                 "the supplied instance ID is stale or does not match the pending occurrence",
             ));
+        }
+        Ok(())
+    }
+
+    /// Reject an `Updatable` commit the browser could not retain.
+    ///
+    /// Checked before the resume writes a byte or takes the pending
+    /// occurrence, so a rejected attempt leaves the response exactly as it was
+    /// and the host can commit the same occurrence as
+    /// [`BoundaryMode::Final`] instead.
+    pub(crate) fn validate_resume_mode(&self, mode: BoundaryMode) -> Result<()> {
+        if mode == BoundaryMode::Updatable && self.updatable_count >= MAX_UPDATABLE_OCCURRENCES {
+            return Err(updatable_limit_error(MAX_UPDATABLE_OCCURRENCES));
         }
         Ok(())
     }
@@ -986,6 +1007,11 @@ impl ContinuationVm {
                 "committed boundary IDs are not gapless".to_string(),
             ));
         }
+        // Counted here, not at resume: only an occurrence whose checkpoint
+        // actually reached the client consumes the browser's retention budget.
+        if active.mode == BoundaryMode::Updatable {
+            self.updatable_count = self.updatable_count.saturating_add(1);
+        }
         self.committed_modes.push(active.mode);
         Ok(())
     }
@@ -1012,9 +1038,6 @@ impl ContinuationVm {
                 "component span start is missing its tag",
             ));
         }
-        if self.open_spans.len() >= MAX_OPEN_SPANS {
-            return Err(span_limit_error(MAX_OPEN_SPANS));
-        }
         if self.open_spans.len() >= MAX_SPAN_NESTING {
             return Err(span_nesting_error(MAX_SPAN_NESTING));
         }
@@ -1022,7 +1045,7 @@ impl ContinuationVm {
         self.next_span_id = self
             .next_span_id
             .checked_add(1)
-            .ok_or_else(|| span_limit_error(MAX_OPEN_SPANS))?;
+            .ok_or_else(span_id_overflow_error)?;
         if write_marker {
             super::write_range_marker(context.writer, "<!--ws:", id.raw())?;
         }

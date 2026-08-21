@@ -24,38 +24,16 @@ pub(crate) fn record_checkpoint_tag(
     let Some(&index) = context.component_index.get(fragment_id) else {
         return;
     };
-    let route_dependent = context.streaming.as_ref().is_some_and(|streaming| {
-        streaming.component_reachability.is_route_dependent(index) == Some(true)
-    });
-    let route_base = route_dependent.then(|| context.route_base.as_ref().into());
-    let Some(streaming) = context.streaming.as_mut() else {
+    // Borrowed for the whole capture: the base is only ever compared against
+    // what the checkpoint already holds, so the owned copy is created inside
+    // the miss path rather than once per rendered tag.
+    let route_base: &str = context.route_base.as_ref();
+    let Some(streaming) = context.streaming.as_deref_mut() else {
         return;
     };
-    if let Some(route_base) = route_base {
-        let route_base: Box<str> = route_base;
-        let already_recorded = streaming.checkpoint_walk_roots.iter().any(|(root, base)| {
-            *root == index
-                && base
-                    .as_ref()
-                    .is_some_and(|base| base.as_ref() == route_base.as_ref())
-        });
-        if !already_recorded {
-            if streaming.checkpoint_walk_roots.is_empty() {
-                streaming
-                    .checkpoint_walk_roots
-                    .reserve(streaming.checkpoint_tags.len() + 1);
-                streaming.checkpoint_walk_roots.extend(
-                    streaming
-                        .checkpoint_tags
-                        .iter()
-                        .copied()
-                        .map(|root| (root, None)),
-                );
-            }
-            streaming
-                .checkpoint_walk_roots
-                .push((index, Some(route_base)));
-        }
+    let route_dependent = streaming.component_reachability.is_route_dependent(index) == Some(true);
+    if route_dependent {
+        record_route_dependent_root(streaming, index, route_base);
     }
     let byte_index = (index / 8) as usize;
     let bit = 1u8 << (index % 8);
@@ -72,6 +50,44 @@ pub(crate) fn record_checkpoint_tag(
     if streaming.component_reachability.requires_expansion(index) != Some(false) {
         streaming.checkpoint_needs_expansion = true;
     }
+}
+
+/// Capture one route-dependent root under the base it rendered against.
+///
+/// A route-dependent component reaches a different surface per route base, so
+/// the capture keeps `(component, base)` pairs rather than the bare index the
+/// bitset holds. Membership is decided against the borrowed base — one slice
+/// compare per already-captured entry — so the owned base is built only for a
+/// pair the checkpoint has not seen, instead of once per rendered tag.
+fn record_route_dependent_root(
+    streaming: &mut StreamingRenderState<'_>,
+    index: u32,
+    route_base: &str,
+) {
+    if streaming
+        .checkpoint_walk_roots
+        .iter()
+        .any(|(root, base)| *root == index && base.as_deref() == Some(route_base))
+    {
+        return;
+    }
+    // The first route-dependent root promotes the plain bitset capture into
+    // base-carrying pairs, so every tag already recorded is carried over.
+    if streaming.checkpoint_walk_roots.is_empty() {
+        streaming
+            .checkpoint_walk_roots
+            .reserve(streaming.checkpoint_tags.len() + 1);
+        streaming.checkpoint_walk_roots.extend(
+            streaming
+                .checkpoint_tags
+                .iter()
+                .copied()
+                .map(|root| (root, None)),
+        );
+    }
+    streaming
+        .checkpoint_walk_roots
+        .push((index, Some(route_base.into())));
 }
 
 /// Commit the exact rendered tags to the cumulative DOM inventory and encode
@@ -301,5 +317,174 @@ mod tests {
             streaming.checkpoint_tags.capacity() >= capacity,
             "checkpoint tag buffer capacity must be reused, not reallocated"
         );
+    }
+
+    /// A sink for capture-only tests: recording a tag never writes a byte.
+    struct NullSink;
+
+    impl crate::ResponseWriter for NullSink {
+        fn write(&mut self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Component index and heap address of the first captured walk root's
+    /// owned base, so a repeat can prove the retained base was neither
+    /// duplicated nor rebuilt.
+    fn first_captured_base(streaming: &StreamingRenderState<'_>) -> Option<(u32, usize)> {
+        streaming
+            .checkpoint_walk_roots
+            .first()
+            .and_then(|(root, base)| base.as_ref().map(|base| (*root, base.as_ptr().addr())))
+    }
+
+    #[test]
+    fn repeated_route_dependent_capture_keeps_one_owned_base() -> Result<()> {
+        // A route-dependent component rendered repeatedly under the same base
+        // is one capture entry, and that entry keeps the very allocation it was
+        // first captured with: membership is decided against the borrowed base,
+        // so a repeat builds no owned base it would immediately drop. A genuine
+        // new base still captures a second root, because the request-aware walk
+        // must visit the component once per base it rendered under.
+        let protocol = Protocol::new(WebUIProtocol::new(HashMap::from([
+            (
+                "route-shell".to_string(),
+                FragmentList {
+                    fragments: vec![webui_protocol::WebUIFragment::route(
+                        "details",
+                        "detail-page",
+                    )],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "detail-page".to_string(),
+                FragmentList {
+                    fragments: vec![webui_protocol::WebUIFragment::raw("<p>detail</p>")],
+                    contains_boundary: false,
+                },
+            ),
+        ])));
+        let component_index = protocol.component_index();
+        let Some(&shell) = component_index.get("route-shell") else {
+            panic!("the route-bearing component must be indexed");
+        };
+        assert_eq!(
+            protocol.component_reachability().is_route_dependent(shell),
+            Some(true),
+            "a component that hosts a route is route dependent"
+        );
+
+        let mut streaming = StreamingRenderState::from_progress(
+            super::super::state::StreamingProgress::new(component_index.len()),
+            protocol.component_reachability(),
+        );
+        let state = serde_json::Value::Object(serde_json::Map::new());
+        let mut writer = NullSink;
+        let mut context = WebUIProcessContext {
+            protocol: protocol.protocol(),
+            component_asset_style_manifest: protocol.component_asset_style_manifest()?,
+            component_asset_style_links: protocol.component_asset_style_links(),
+            state: &state,
+            writer: &mut writer,
+            local_vars: HashMap::new(),
+            component_attrs: HashMap::new(),
+            request_path: "/account/details",
+            route_base: std::borrow::Cow::Borrowed("/account"),
+            rendered_components: std::collections::HashSet::new(),
+            plugin: None,
+            route_children: Vec::new(),
+            entry_id: "index.html",
+            nonce: None,
+            component_index,
+            head_inject: None,
+            body_inject: None,
+            state_inject: crate::StateInject::resolve(&state),
+            head_end_emitted: false,
+            body_start_emitted: false,
+            component_asset_styles_emitted: false,
+            body_end_emitted: false,
+            route_index: protocol.route_index(),
+            route_chain_index: 0,
+            streaming: Some(&mut streaming),
+            json_scratch: Vec::new(),
+            scope_pool: Vec::new(),
+        };
+
+        record_checkpoint_tag(&mut context, "route-shell");
+        let Some(state_after_first) = context.streaming.as_deref() else {
+            panic!("the capture must retain its streaming state");
+        };
+        let captured = first_captured_base(state_after_first);
+        assert_eq!(
+            state_after_first.checkpoint_walk_roots.len(),
+            1,
+            "the first render of a route-dependent component captures one root"
+        );
+        assert!(
+            captured.is_some(),
+            "the root retains the base it rendered at"
+        );
+        let capture_buffer = (
+            state_after_first.checkpoint_walk_roots.capacity(),
+            state_after_first.checkpoint_walk_roots.as_ptr().addr(),
+        );
+
+        record_checkpoint_tag(&mut context, "route-shell");
+        let Some(state_after_repeat) = context.streaming.as_deref() else {
+            panic!("the capture must retain its streaming state");
+        };
+        assert_eq!(
+            (
+                state_after_repeat.checkpoint_walk_roots.capacity(),
+                state_after_repeat.checkpoint_walk_roots.as_ptr().addr(),
+            ),
+            capture_buffer,
+            "a repeat must touch neither the capture buffer nor its capacity"
+        );
+        assert_eq!(
+            state_after_repeat.checkpoint_walk_roots.len(),
+            1,
+            "the same component under the same base must not capture a second root"
+        );
+        assert_eq!(
+            first_captured_base(state_after_repeat),
+            captured,
+            "the retained base must be the original allocation, not a rebuilt copy"
+        );
+        assert_eq!(
+            state_after_repeat.checkpoint_tags,
+            vec![shell],
+            "the component-index bitset still records the tag exactly once"
+        );
+
+        context.route_base = std::borrow::Cow::Borrowed("/other");
+        record_checkpoint_tag(&mut context, "route-shell");
+        let Some(state_after_rebase) = context.streaming.as_deref() else {
+            panic!("the capture must retain its streaming state");
+        };
+        assert_eq!(
+            state_after_rebase.checkpoint_walk_roots.len(),
+            2,
+            "a genuinely new base captures the component a second time"
+        );
+        assert_eq!(
+            first_captured_base(state_after_rebase),
+            captured,
+            "capturing a new base must not disturb the base already retained"
+        );
+        assert_eq!(
+            state_after_rebase.checkpoint_walk_roots[1]
+                .1
+                .as_deref()
+                .map(str::to_string),
+            Some("/other".to_string()),
+            "the second root carries the base it rendered under"
+        );
+        Ok(())
     }
 }

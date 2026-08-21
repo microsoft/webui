@@ -68,8 +68,8 @@ use crate::component_policy::{parse_component_render_policy, ComponentRenderPoli
 use crate::component_registry::Component;
 use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{
-    find_element_end, find_tag_close, is_void_element, leading_content, parse_tag,
-    style_element_bounds,
+    find_comment_close, find_declaration_close, find_element_end, find_tag_close, is_void_element,
+    leading_content, parse_tag, style_element_bounds,
 };
 use crate::{ConditionParser, DomStrategy, ParserOptions, Result};
 use std::borrow::Cow;
@@ -241,26 +241,105 @@ impl WebUIParserPlugin {
             return Cow::Borrowed(template);
         }
 
-        let mut output = String::with_capacity(template.len());
+        let mut output: Option<String> = None;
+        let mut copied_until = 0usize;
         let mut index = 0usize;
         while index < template.len() {
-            let remaining = &template[index..];
-            if remaining.starts_with('<') {
-                if let Some(tag) = parse_tag(remaining) {
-                    if tag.name == "boundary" {
-                        index += tag.close + 1;
-                        continue;
-                    }
-                }
-            }
-            let Some(ch) = remaining.chars().next() else {
+            let Some(relative) = template[index..].find('<') else {
                 break;
             };
-            output.push(ch);
-            index += ch.len_utf8();
+            index += relative;
+            let remaining = &template[index..];
+
+            if remaining.starts_with("<!--") {
+                index += find_comment_close(remaining).unwrap_or(remaining.len());
+                continue;
+            }
+            if remaining.starts_with("<!") {
+                index += find_declaration_close(remaining).unwrap_or(remaining.len());
+                continue;
+            }
+
+            let Some(tag) = parse_tag(remaining) else {
+                let Some(close) = find_tag_close(remaining) else {
+                    break;
+                };
+                index += close + 1;
+                continue;
+            };
+            let tag_end = index + tag.close + 1;
+
+            let is_boundary = if tag.closing {
+                remaining.starts_with("</boundary")
+            } else {
+                remaining.starts_with("<boundary")
+            };
+            if is_boundary && tag.name == "boundary" {
+                let output = output.get_or_insert_with(|| String::with_capacity(template.len()));
+                output.push_str(&template[copied_until..index]);
+                copied_until = tag_end;
+                index = tag_end;
+                continue;
+            }
+
+            if !tag.closing && !tag.self_closing && is_raw_text_or_rcdata_element(tag.name) {
+                index += raw_text_element_end(remaining, tag.name, tag.close + 1);
+            } else {
+                index = tag_end;
+            }
         }
+
+        let Some(mut output) = output else {
+            return Cow::Borrowed(template);
+        };
+        output.push_str(&template[copied_until..]);
         Cow::Owned(output)
     }
+}
+
+#[inline]
+fn is_raw_text_or_rcdata_element(tag_name: &str) -> bool {
+    // Reuse the parser's canonical raw/RCDATA scope set. Style has a separate
+    // parser path, while template content remains traversable markup here.
+    tag_name.eq_ignore_ascii_case("style")
+        || (!tag_name.eq_ignore_ascii_case("template")
+            && crate::boundary_parent_scope(tag_name).is_some())
+}
+
+fn raw_text_element_end(source: &str, tag_name: &str, mut cursor: usize) -> usize {
+    if tag_name.eq_ignore_ascii_case("plaintext") {
+        return source.len();
+    }
+
+    while cursor < source.len() {
+        let Some(relative) = source[cursor..].find('<') else {
+            break;
+        };
+        cursor += relative;
+        if let Some(close_len) = raw_text_closing_tag_len(&source[cursor..], tag_name) {
+            return cursor + close_len;
+        }
+        cursor += 1;
+    }
+    source.len()
+}
+
+#[inline]
+fn raw_text_closing_tag_len(input: &str, tag_name: &str) -> Option<usize> {
+    let name_end = 2 + tag_name.len();
+    if !input.as_bytes().starts_with(b"</")
+        || !input.get(2..name_end)?.eq_ignore_ascii_case(tag_name)
+    {
+        return None;
+    }
+
+    let delimiter = *input.as_bytes().get(name_end)?;
+    if !delimiter.is_ascii_whitespace() && delimiter != b'/' && delimiter != b'>' {
+        return None;
+    }
+
+    let tag = parse_tag(input)?;
+    (tag.closing && tag.name.eq_ignore_ascii_case(tag_name)).then_some(tag.close + 1)
 }
 
 impl Default for WebUIParserPlugin {
@@ -3375,6 +3454,95 @@ mod tests {
         let metadata = generate_compiled_template("my-card", &stripped);
         assert!(!metadata.contains("<boundary"));
         assert!(!metadata.contains("</boundary>"));
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_style_content_strings() {
+        let source = r#"<style>.card::before { content: "<boundary name='css'>literal</boundary>"; }</style>"#;
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_script_strings() {
+        let source =
+            r#"<script>const marker = '<boundary name="script">literal</boundary>';</script>"#;
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_quoted_attribute_values() {
+        let source = r#"<div data-double="<boundary name='double' data-end='>'></boundary>" data-single='<boundary name="single" data-end=">"></boundary>'></div>"#;
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_parser_raw_text_and_rcdata() {
+        let source = concat!(
+            "<textarea><boundary name=\"textarea\">literal</boundary></textarea>",
+            "<title><boundary name=\"title\">literal</boundary></title>",
+            "<xmp><boundary name=\"xmp\">literal</boundary></xmp>",
+            "<iframe><boundary name=\"iframe\">literal</boundary></iframe>",
+            "<noembed><boundary name=\"noembed\">literal</boundary></noembed>",
+            "<noframes><boundary name=\"noframes\">literal</boundary></noframes>",
+            "<noscript><boundary name=\"noscript\">literal</boundary></noscript>",
+            "<plaintext><boundary name=\"plaintext\">literal</boundary></plaintext>",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn boundary_directive_tags_preserve_comments_and_near_matches() {
+        let source = concat!(
+            "<!-- <boundary name=\"comment\">literal</boundary> -->",
+            "<p>&lt;boundary&gt; is text</p>",
+            "<boundary-ish>near match</boundary-ish>",
+            "<Boundary>case-sensitive near match</Boundary>",
+            "< boundary>spaced near match</ boundary>",
+            "<boundary",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert!(matches!(&stripped, Cow::Borrowed(_)));
+        assert_eq!(stripped, source);
+    }
+
+    #[test]
+    fn component_metadata_boundary_directive_tags_erase_real_wrapper_only() {
+        let source = concat!(
+            "<template shadowrootmode=\"open\">",
+            "<boundary name=\"ready\">",
+            r#"<style>.x::before { content: "<boundary>style</boundary>"; }</style>"#,
+            r#"<script>const marker = '<boundary>script</boundary>';</script>"#,
+            r#"<div data-marker="<boundary>attribute</boundary>">child</div>"#,
+            "</boundary>",
+            "</template>",
+        );
+        let expected = concat!(
+            "<template shadowrootmode=\"open\">",
+            r#"<style>.x::before { content: "<boundary>style</boundary>"; }</style>"#,
+            r#"<script>const marker = '<boundary>script</boundary>';</script>"#,
+            r#"<div data-marker="<boundary>attribute</boundary>">child</div>"#,
+            "</template>",
+        );
+        let stripped = WebUIParserPlugin::strip_boundary_directive_tags(source);
+
+        assert_eq!(stripped, expected);
+        let metadata = generate_compiled_template("my-card", &stripped);
+        assert_eq!(metadata.matches("<boundary>").count(), 3);
+        assert_eq!(metadata.matches("</boundary>").count(), 3);
+        assert!(!metadata.contains("ready"));
     }
 
     /// Test helper: compile a template and unwrap. The vast majority of tests

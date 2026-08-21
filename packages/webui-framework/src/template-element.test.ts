@@ -77,7 +77,13 @@ Object.defineProperty(globalThis, 'customElements', {
 
 const { TemplateElement } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
-const { resetStreamingModeForTests } = await import('./streaming-mode.js');
+const {
+  ACTIVATION_ACTIVATED,
+  ACTIVATION_ANCESTOR_BARRIER,
+  ACTIVATION_MISSING_TEMPLATE,
+  ACTIVATION_STATIC_HOST_OPT_OUT,
+  resetStreamingModeForTests,
+} = await import('./streaming-mode.js');
 const {
   beginStreamingGate,
   markBoundaryPending,
@@ -231,7 +237,7 @@ describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral
       received = { status: 'ready' };
       assert.equal(
         raw[STREAMING_BOUNDARY_ACTIVATE](received),
-        1,
+        ACTIVATION_ACTIVATED,
       );
       raw.removeAttribute('data-ws');
     };
@@ -430,7 +436,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
         { child: true },
         parent as unknown as Element,
       ),
-      1,
+      ACTIVATION_ACTIVATED,
     );
     assert.equal(childRaw.$deferredSSR, false);
   });
@@ -475,7 +481,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
         { child: true },
         unrelated as unknown as Element,
       ),
-      4,
+      ACTIVATION_ANCESTOR_BARRIER,
     );
     assert.equal(childRaw.$deferredSSR, true);
   });
@@ -530,7 +536,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
         { child: true },
         inner as unknown as Element,
       ),
-      4,
+      ACTIVATION_ANCESTOR_BARRIER,
     );
     assert.equal(childRaw.$deferredSSR, true);
   });
@@ -555,7 +561,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     raw.setAttribute('data-ws', '');
     el.connectedCallback();
 
-    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), 3);
+    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), ACTIVATION_MISSING_TEMPLATE);
     assert.equal(raw.$deferredSSR, true);
 
     raw[STREAMING_BOUNDARY_ABANDON]();
@@ -590,7 +596,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     raw.setAttribute('data-ws', '');
     el.connectedCallback();
 
-    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), 2);
+    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), ACTIVATION_STATIC_HOST_OPT_OUT);
     assert.ok(raw.$meta, 'boundary commit caches metadata without mounting');
     el.setState({ message: 'wake' });
     assert.equal(activationMeta, raw.$meta, 'the later state write can activate from cached metadata');

@@ -158,7 +158,7 @@ function element(tagName: string, spec: ElementSpec = {}): FakeElement {
       const outcome = spec.hook!(state, bypassAncestor);
       return typeof outcome === 'number'
         ? outcome
-        : spec.activationOutcome ?? 1;
+        : spec.activationOutcome ?? ACTIVATION_ACTIVATED;
     };
   }
   if (spec.abandon) node[ABANDON] = spec.abandon;
@@ -308,7 +308,7 @@ function defineTag(
   tag: string,
   supportsDetachedResume = true,
   hook: (state?: Record<string, unknown>) => void = () => {},
-  outcome = 1,
+  outcome: number = ACTIVATION_ACTIVATED,
 ): void {
   class DefinedElement {}
   if (supportsDetachedResume) {
@@ -372,6 +372,19 @@ const {
   pendingBarrierRootCountForTests: __pendingBarrierRootCountForTests,
 } = await import('./streaming-coordinator.js');
 
+/**
+ * The shared activation-outcome contract (`streaming-mode.ts`).
+ *
+ * Fake hooks below return these instead of bare numbers so a renumbering
+ * cannot leave the tests asserting a code the coordinator no longer speaks.
+ */
+const {
+  ACTIVATION_ACTIVATED,
+  ACTIVATION_ANCESTOR_BARRIER,
+  ACTIVATION_MISSING_TEMPLATE,
+  ACTIVATION_STATIC_HOST_OPT_OUT,
+} = await import('./streaming-mode.js');
+
 const {
   beginStreamingGate,
   __resetLifecycleForTests,
@@ -407,6 +420,38 @@ function webuiGlobal(): Record<string, unknown> {
 /** Mark tags as already-defined so their roots activate synchronously. */
 function predefine(...tags: string[]): void {
   for (const tag of tags) definedTags.set(tag, class {});
+}
+
+/**
+ * Collect the coordinator's fatal-failure log instead of silencing it.
+ *
+ * A halt is only correct if it names the right defect, so these tests assert on
+ * the reason text rather than on the halt flag alone.
+ */
+function captureErrors(): {
+  readonly messages: string[];
+  restore(): void;
+} {
+  const messages: string[] = [];
+  const previous = console.error;
+  console.error = (...args: unknown[]): void => {
+    messages.push(args.map((arg) => String(arg)).join(' '));
+  };
+  return {
+    messages,
+    restore(): void {
+      console.error = previous;
+    },
+  };
+}
+
+function assertLogged(messages: readonly string[], fragment: string): void {
+  assert.ok(
+    messages.some((message) => message.includes(fragment)),
+    `expected a failure mentioning "${fragment}", got: ${
+      messages.join(' | ') || '(nothing logged)'
+    }`,
+  );
 }
 
 /** Patches queued for late activation accumulate in a null-prototype object
@@ -1295,7 +1340,7 @@ describe('streaming coordinator pipeline', () => {
     // and the immediate commit path already writes to it.
     const staticHost = element('static-panel', {
       hook() {},
-      activationOutcome: 2,
+      activationOutcome: ACTIVATION_STATIC_HOST_OPT_OUT,
       setState(state) {
         updates.push(state);
       },
@@ -1711,9 +1756,9 @@ describe('streaming coordinator pipeline', () => {
     let outerActive = false;
     const inner = element('zero-inner-host', {
       hook() {
-        if (!outerActive) return 4;
+        if (!outerActive) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('inner');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     const outer = element('zero-outer-host', {
@@ -1837,9 +1882,9 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('later-span-child', {
       hook(_state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     parent = element('later-span-parent', {
@@ -1881,10 +1926,10 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('early-child', {
       hook(state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
         childStates.push(state);
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     parent = element('spanning-parent', {
@@ -1935,9 +1980,9 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('mismatch-child', {
       hook(_state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     parent = element('mismatch-parent', {
@@ -1951,9 +1996,9 @@ describe('streaming coordinator pipeline', () => {
     });
     const unmarked = element('unmarked-child', {
       hook() {
-        if (!parentActive) return 4;
+        if (!parentActive) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('unmarked');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     unmarked.setAttribute('data-ws', '');
@@ -1992,15 +2037,15 @@ describe('streaming coordinator pipeline', () => {
     const nested = element('barrier-nested-root', {
       hook() {
         order.push('nested');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     nested.setAttribute('data-ws', '');
     const child = element('barrier-outer-root', {
       hook() {
-        if (!parentActive) return 4;
+        if (!parentActive) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
       children: [nested],
     });
@@ -2046,9 +2091,9 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('updatable-early-child', {
       hook(state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         activations.push(state);
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
       setState(state) {
         updates.push(state);
@@ -2095,9 +2140,9 @@ describe('streaming coordinator pipeline', () => {
     child = element('late-early-child', {
       hook(state, bypassAncestor) {
         bypasses.push(bypassAncestor);
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         childActivations.push(state);
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
       setState(state) {
         childUpdates.push(state);
@@ -2160,9 +2205,9 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('light-span-child', {
       hook(_state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     parent = element('light-span-parent', {
@@ -2195,17 +2240,17 @@ describe('streaming coordinator pipeline', () => {
     child = element('nested-span-child', {
       hook(_state, bypassAncestor) {
         const bypassesInner = bypassAncestor === inner;
-        if ((!innerActive && !bypassesInner) || !outerActive) return 4;
+        if ((!innerActive && !bypassesInner) || !outerActive) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     inner = element('nested-inner-parent', {
       hook() {
-        if (!outerActive) return 4;
+        if (!outerActive) return ACTIVATION_ANCESTOR_BARRIER;
         innerActive = true;
         order.push('inner');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     const outer = element('nested-outer-parent', {
@@ -2319,9 +2364,9 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('shadow-span-child', {
       hook(_state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
         order.push('child');
-        return 1;
+        return ACTIVATION_ACTIVATED;
       },
     });
     parent = element('shadow-span-parent', {
@@ -2352,8 +2397,8 @@ describe('streaming coordinator pipeline', () => {
     let child!: FakeElement;
     child = element('truncated-span-child', {
       hook(_state, bypassAncestor) {
-        if (!parentActive && bypassAncestor !== parent) return 4;
-        return 1;
+        if (!parentActive && bypassAncestor !== parent) return ACTIVATION_ANCESTOR_BARRIER;
+        return ACTIVATION_ACTIVATED;
       },
     });
     parent = element('truncated-span-parent', {
@@ -3228,7 +3273,7 @@ describe('streaming coordinator pipeline', () => {
   test('an explicit missing-template activation outcome halts without completion', async () => {
     const root = element('my-missing-meta', {
       attrs: { 'data-ws': '' },
-      activationOutcome: 3,
+      activationOutcome: ACTIVATION_MISSING_TEMPLATE,
       hook() {},
     });
     const b = buildBoundary(0, 0, [root], { state: {} });
@@ -3284,7 +3329,7 @@ describe('streaming coordinator pipeline', () => {
     let called = false;
     const host = element('my-optout', {
       attrs: { 'data-ws': '' },
-      activationOutcome: 2,
+      activationOutcome: ACTIVATION_STATIC_HOST_OPT_OUT,
       hook() {
         called = true; // opts out: records the call but performs no activation
       },
@@ -3299,5 +3344,228 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__isHaltedForTests(), false);
     assert.equal(hasWs(host), false, 'data-ws stripped from a committed opt-out root');
     assert.equal(host.parentNode, b.root, 'the opt-out root is retained');
+  });
+
+  // ── Shared activation-outcome contract (`streaming-mode.ts`) ─────────
+
+  test('every shared activation outcome drives its own coordinator behavior', async () => {
+    interface OutcomeCase {
+      readonly label: string;
+      readonly outcome: number;
+      readonly halts: boolean;
+      readonly keepsMarker: boolean;
+      readonly retainedBehindBarrier: number;
+    }
+    // One table so a new outcome cannot be added to `streaming-mode.ts` with
+    // only one of the two sides taught how to handle it.
+    const cases: readonly OutcomeCase[] = [
+      {
+        label: 'activated',
+        outcome: ACTIVATION_ACTIVATED,
+        halts: false,
+        keepsMarker: false,
+        retainedBehindBarrier: 0,
+      },
+      {
+        label: 'static-host opt-out',
+        outcome: ACTIVATION_STATIC_HOST_OPT_OUT,
+        halts: false,
+        keepsMarker: false,
+        retainedBehindBarrier: 0,
+      },
+      {
+        label: 'missing template',
+        outcome: ACTIVATION_MISSING_TEMPLATE,
+        halts: true,
+        keepsMarker: false,
+        retainedBehindBarrier: 0,
+      },
+      {
+        label: 'ancestor barrier',
+        outcome: ACTIVATION_ANCESTOR_BARRIER,
+        halts: false,
+        keepsMarker: true,
+        retainedBehindBarrier: 1,
+      },
+    ];
+
+    for (const [index, spec] of cases.entries()) {
+      // A halting case would reject every later boundary, so each case gets the
+      // same fresh coordinator `beforeEach` hands the other tests.
+      __resetStreamingCoordinatorForTests();
+      __resetLifecycleForTests();
+      beginStreamingGate();
+
+      const tag = `outcome-case-${index}`;
+      let invoked = 0;
+      const root = element(tag, {
+        attrs: { 'data-ws': '' },
+        activationOutcome: spec.outcome,
+        hook() {
+          invoked++;
+        },
+      });
+      const b = buildBoundary(0, 0, [root], { state: {} });
+      predefine(tag);
+
+      const previousError = console.error;
+      console.error = () => {};
+      try {
+        enqueue(b.sentinel);
+        await flush();
+      } finally {
+        console.error = previousError;
+      }
+
+      assert.equal(invoked, 1, `${spec.label}: the hook runs exactly once`);
+      assert.equal(
+        __isHaltedForTests(),
+        spec.halts,
+        `${spec.label}: only an undecodable root may halt the stream`,
+      );
+      assert.equal(
+        hasWs(root),
+        spec.keepsMarker,
+        `${spec.label}: a root still owned by a barrier keeps its marker`,
+      );
+      assert.equal(
+        __pendingBarrierRootCountForTests(),
+        spec.retainedBehindBarrier,
+        `${spec.label}: only an ancestor barrier retains the root`,
+      );
+      assert.equal(
+        __pendingTagWaiterCountForTests(),
+        0,
+        `${spec.label}: an already-defined tag never opens a definition waiter`,
+      );
+    }
+  });
+
+  test('an ancestor barrier is retained separately from a definition deferral', async () => {
+    // Both outcomes stop the walk from descending, and both once shared the
+    // value 4. The two retention sets are what tell them apart.
+    const barrier = element('shared-code-barrier', {
+      attrs: { 'data-ws': '' },
+      activationOutcome: ACTIVATION_ANCESTOR_BARRIER,
+      hook() {},
+    });
+    const undefinedRoot = element('shared-code-undefined', {
+      attrs: { 'data-ws': '' },
+      hook() {},
+    });
+    const b = buildBoundary(0, 0, [barrier, undefinedRoot], { state: {} });
+    predefine('shared-code-barrier');
+
+    enqueue(b.sentinel);
+    await flush();
+
+    assert.equal(__isHaltedForTests(), false);
+    assert.equal(
+      __pendingBarrierRootCountForTests(),
+      1,
+      'the barrier root is held by the barrier set, not by a tag waiter',
+    );
+    assert.equal(
+      __pendingTagWaiterCountForTests(),
+      1,
+      'the undefined root is held by a tag waiter, not by the barrier set',
+    );
+    assert.equal(__pendingUndefinedRootCountForTests(), 1);
+    assert.equal(hasWs(barrier), true, 'a barrier still owns its root');
+    assert.equal(hasWs(undefinedRoot), true, 'an undefined root stays dormant');
+  });
+
+  test('an unrecognized activation outcome fails closed with its own reason', async () => {
+    const root = element('my-bogus-outcome', {
+      attrs: { 'data-ws': '' },
+      activationOutcome: 99,
+      hook() {},
+    });
+    const b = buildBoundary(0, 0, [root], { state: {} });
+    predefine('my-bogus-outcome');
+
+    const logged = captureErrors();
+    try {
+      enqueue(b.sentinel);
+      await flush();
+    } finally {
+      logged.restore();
+    }
+
+    assert.equal(
+      __isHaltedForTests(),
+      true,
+      'an outcome the coordinator cannot decode must not be silently absorbed',
+    );
+    assertLogged(logged.messages, 'unrecognized streaming activation outcome 99');
+    assert.equal(
+      logged.messages.some((m) => m.includes('template metadata missing')),
+      false,
+      'an unknown outcome must not masquerade as missing metadata',
+    );
+    assert.equal(hasWs(root), false, 'fatal cleanup strips the marker');
+    assert.equal(__getLifecycleStateForTests().completed, false);
+  });
+
+  test('an unrecognized outcome from a late definition resume fails closed', async () => {
+    const root = element('my-late-bogus', {
+      activationOutcome: 42,
+      hook() {},
+    });
+    const b = buildBoundary(0, 0, [root], { state: {} });
+
+    enqueue(b.sentinel);
+    await flush();
+    assert.equal(__pendingTagWaiterCountForTests(), 1, 'the undefined tag defers first');
+    assert.equal(__isHaltedForTests(), false);
+
+    const logged = captureErrors();
+    try {
+      defineTag('my-late-bogus');
+      await flush();
+    } finally {
+      logged.restore();
+    }
+
+    assert.equal(__isHaltedForTests(), true);
+    assertLogged(logged.messages, 'unrecognized streaming activation outcome 42');
+    assert.equal(hasWs(root), false, 'the abandoned root loses its marker');
+    assert.equal(__getLifecycleStateForTests().completed, false);
+  });
+
+  test('an unrecognized outcome from a barrier release fails closed', async () => {
+    let parentActive = false;
+    const child = element('barrier-bogus-child', {
+      hook() {
+        return parentActive ? 77 : ACTIVATION_ANCESTOR_BARRIER;
+      },
+    });
+    const parent = element('barrier-bogus-parent', {
+      hook() {
+        parentActive = true;
+      },
+    });
+    // `enclosingMarker: 1` mismatches span 0, so the child has no bypass and is
+    // genuinely retained until the span completes.
+    const scenario = buildSpanScenario(parent, child, { enclosingMarker: 1 });
+    predefine('barrier-bogus-child', 'barrier-bogus-parent');
+
+    enqueue(scenario.boundarySentinel);
+    await flush();
+    assert.equal(__pendingBarrierRootCountForTests(), 1);
+    assert.equal(__isHaltedForTests(), false);
+
+    const logged = captureErrors();
+    try {
+      enqueue(scenario.spanSentinel);
+      await flush();
+    } finally {
+      logged.restore();
+    }
+
+    assert.equal(__isHaltedForTests(), true);
+    assertLogged(logged.messages, 'unrecognized streaming activation outcome 77');
+    assert.equal(__pendingBarrierRootCountForTests(), 0, 'the retained root is released');
+    assert.equal(hasStreamingAttrs(child), false, 'fatal cleanup strips its markers');
   });
 });

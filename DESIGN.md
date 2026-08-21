@@ -2539,9 +2539,9 @@ wire correctness.
 ### Limits, errors, and malformed input
 
 - Server limits are 256 continuation frames, 512 runtime boundary occurrences,
-  512 keyed occurrences, 128 open generated spans, 32 nested generated spans,
+  512 keyed occurrences, 128 updatable occurrences, 32 nested generated spans,
   and 1,024 frozen top-level state keys.
-- Browser limits are 512 queued records, 128 updatable boundaries, 50,000
+- Browser limits are 512 queued records, 128 updatable occurrences, 50,000
   retained update roots, 50,000 pending undefined roots, 50,000 pending
   ancestor-barrier roots, 10,000 elements per checkpoint, 50,000 marker-scan
   nodes, and an eight-element payload-script lookback.
