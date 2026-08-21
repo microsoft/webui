@@ -50,7 +50,7 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-  # ── Phase 2: Build (Linux + macOS + Windows) ────────────────────────
+  # ── Phase 2: Build (Linux) ──────────────────────────────────────────
   build-linux:
     name: Build (Linux)
     runs-on: ubuntu-latest
@@ -61,21 +61,101 @@ jobs:
         with:
           shared-cache-key: ubuntu-build
 
-  build-macos:
-    name: Build (macOS)
-    runs-on: macos-latest-large
+  # ── Phase 2: macOS check (SDK-free, on a Linux runner) ─────────────
+  # There is no macOS runner in this pipeline. `cargo check` never invokes a
+  # linker, so it can prove the release crates still type-check for both
+  # Apple targets without an Apple SDK or a native macOS host. This is not a
+  # substitute for a real macOS build/link: the release pipeline now fully
+  # cross-links both Apple targets on its own trusted Linux-hosted jobs, via
+  # cargo-zigbuild plus a secure, out-of-band Apple SDK unavailable to PR CI.
+  # `platform_tag` isn't consumed by `cargo check` itself; it's restated here
+  # only so `validate_release_targets.py` sees all six release-contract
+  # platform tags accounted for in this file.
+  macos-check:
+    name: macOS check (${{ matrix.platform.label }})
+    runs-on: ubuntu-latest
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - label: x64
+            target: x86_64-apple-darwin
+            platform_tag: macosx_10_12_x86_64
+          - label: ARM64
+            target: aarch64-apple-darwin
+            platform_tag: macosx_11_0_arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+          rust-targets: ${{ matrix.platform.target }}
+          shared-cache-key: macos-check-${{ matrix.platform.target }}
 
-  build-windows:
-    name: Build (Windows)
-    runs-on: windows-latest
+      - name: Check release crates
+        run: |
+          cargo check --target ${{ matrix.platform.target }} \
+            -p microsoft-webui-cli \
+            -p microsoft-webui-ffi \
+            -p microsoft-webui-node \
+            -p microsoft-webui-python
+
+  # ── Phase 2: Windows cross-build (from Linux, via cargo-xwin) ──────
+  # There is no Windows runner in this pipeline either. `cargo xtask
+  # publish-build` is host-aware: for a Windows MSVC target on a non-Windows
+  # host it selects the cargo-xwin backend for the native CLI/FFI/Node
+  # artifacts and passes maturin `--xwin` for the abi3 wheel, so one call
+  # stages everything. This mirrors the same cargo-xwin cross-compilation
+  # contract the release pipeline's Linux-hosted Windows legs use, pinned to
+  # the same cargo-xwin/LLVM versions.
+  windows-cross:
+    name: Windows cross-build (${{ matrix.platform.label }})
+    runs-on: ubuntu-latest
     needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - label: x64
+            target: x86_64-pc-windows-msvc
+            platform_tag: win_amd64
+          - label: ARM64
+            target: aarch64-pc-windows-msvc
+            platform_tag: win_arm64
+    env:
+      WINDOWS_STAGE: target/windows-stage
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+        with:
+          skip-build: 'true'
+          rust-targets: ${{ matrix.platform.target }}
+          shared-cache-key: windows-cross-${{ matrix.platform.target }}
+
+      - name: Install cargo-xwin and pin its LLVM toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang-18 lld-18
+          sudo ln -sf /usr/bin/clang-18 /usr/local/bin/clang-cl
+          sudo ln -sf /usr/bin/lld-link-18 /usr/local/bin/lld-link
+          cargo install --locked cargo-xwin --version 0.23.0
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Build native artifacts and abi3 wheel (cargo xtask publish-build)
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade "maturin==1.14.1"
+          mkdir -p "$XWIN_CACHE_DIR"
+          cargo xtask publish-build --target ${{ matrix.platform.target }} \
+            --output "$WINDOWS_STAGE"
+        env:
+          XWIN_ACCEPT_LICENSE: '1'
+          XWIN_CACHE_DIR: ${{ github.workspace }}/target/xwin-cache
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:
@@ -192,79 +272,42 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
 
-  # ── Phase 2: Python wheels ─────────────────────────────────────────
-  # Build every wheel in the release contract. The x64 wheels feed python-test
-  # below; the ARM64 wheels are cross-compiled exactly as the release pipeline
-  # cross-compiles them, so an ARM64 build break surfaces on the PR that causes
-  # it. They are never installed here - that needs ARM64 hardware.
+  # ── Phase 2: Python wheels (Linux) ──────────────────────────────────
+  # Build the Linux wheels in the release contract. The x64 wheel feeds
+  # python-test below; the ARM64 wheel is cross-compiled exactly as the
+  # release pipeline cross-compiles it, so an ARM64 build break surfaces on
+  # the PR that causes it. It is never installed here - that needs ARM64
+  # hardware. Windows and macOS wheels are covered by windows-cross and
+  # macos-check instead: neither has a runtime test here, since non-Linux
+  # runtime tests are intentionally out of scope for this pipeline.
   python-wheel:
     name: Python wheel (${{ matrix.platform.label }})
-    runs-on: ${{ matrix.platform.os }}
+    runs-on: ubuntu-latest
     needs: lint
     strategy:
       fail-fast: false
       matrix:
         platform:
           - label: Linux x64
-            os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
             image: messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d
             artifact: python-wheel-linux-x64
-          - label: macOS x64
-            os: macos-latest-large
-            target: x86_64-apple-darwin
-            platform_tag: macosx_10_12_x86_64
-            artifact: python-wheel-macos-x64
-          - label: Windows x64
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform_tag: win_amd64
-            artifact: python-wheel-windows-x64
           - label: Linux ARM64
-            os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             platform_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
             image: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
             artifact: ''
-          - label: macOS ARM64
-            os: macos-latest-large
-            target: aarch64-apple-darwin
-            platform_tag: macosx_11_0_arm64
-            artifact: ''
-          - label: Windows ARM64
-            os: windows-latest
-            target: aarch64-pc-windows-msvc
-            platform_tag: win_arm64
-            artifact: ''
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Linux wheels build entirely inside the pinned manylinux image, so the
-      # host toolchain is only needed for the targets built natively here.
-      - uses: ./.github/actions/build
-        if: runner.os != 'Linux'
-        with:
-          skip-build: 'true'
-          rust-targets: ${{ matrix.platform.target }}
-          shared-cache-key: python-${{ matrix.platform.target }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
 
-      # abi3 needs no target interpreter and `generate-import-lib` synthesizes
-      # the Windows ARM64 import library, so every target cross-compiles here.
-      - name: Build wheel
-        if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade "maturin==1.14.1"
-          cargo xtask publish-build --target "${{ matrix.platform.target }}" --python-only
-
+      # Linux wheels build entirely inside the pinned manylinux image, so no
+      # host Rust toolchain setup is needed here.
       - name: Build manylinux wheel
-        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -290,33 +333,18 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # ── Phase 3: Python tests (after wheels) ───────────────────────────
-  # One abi3 wheel must serve every supported interpreter, so the Linux wheel is
-  # installed on each CPython. macOS and Windows only re-verify that the wheel
-  # loads on its platform, which 3.11 already proves.
+  # ── Phase 3: Python tests (Linux, after wheels) ────────────────────
+  # One abi3 wheel must serve every supported interpreter, so the Linux x64
+  # wheel is installed on each CPython. This is the only runtime test of the
+  # wheel in this pipeline - Windows and macOS are cross-built/checked only.
   python-test:
-    name: Python test (${{ matrix.platform.label }} / CPython ${{ matrix.python }})
-    runs-on: ${{ matrix.platform.os }}
+    name: Python test (Linux x64 / CPython ${{ matrix.python }})
+    runs-on: ubuntu-latest
     needs: python-wheel
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - label: Linux x64
-            os: ubuntu-latest
-            artifact: python-wheel-linux-x64
         python: ['3.11', '3.12', '3.13', '3.14']
-        include:
-          - platform:
-              label: macOS x64
-              os: macos-latest-large
-              artifact: python-wheel-macos-x64
-            python: '3.11'
-          - platform:
-              label: Windows x64
-              os: windows-latest
-              artifact: python-wheel-windows-x64
-            python: '3.11'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -326,7 +354,7 @@ jobs:
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ matrix.platform.artifact }}
+          name: python-wheel-linux-x64
           path: publish/python
 
       - name: Install the built wheel and test it
@@ -338,7 +366,7 @@ jobs:
           python -m pytest crates/webui-python/tests -q
 
       - name: Validate lint, strict typing, and stubs
-        if: runner.os == 'Linux' && matrix.python == '3.11'
+        if: matrix.python == '3.11'
         working-directory: crates/webui-python
         run: |
           python -m pip install --upgrade "mypy>=1.19,<2" "ruff>=0.15,<1"
@@ -396,8 +424,8 @@ jobs:
       - lint
       - test
       - build-linux
-      - build-macos
-      - build-windows
+      - macos-check
+      - windows-cross
       - e2e
       - wasm
       - docs
