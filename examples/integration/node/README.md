@@ -62,14 +62,27 @@ they produced rather than writing them anywhere. Your server keeps the socket:
 
 ```js
 const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
-const status = session.boundary('job-status');   // resolve names once
 
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-await write(res, session.writeShell(baseState));
-await write(res, session.writeBoundary(status, statusState, 'updatable'));
-// ... later, on the same response:
-await write(res, session.update(status, { jobState: 'succeeded' }));
-res.end(session.finish({}));
+let step = session.start(baseState);
+await write(res, step.bytes);
+
+const status = step.boundary; // runtime descriptor discovered by start()
+step = session.resume(status.instanceId, statusState, 'updatable');
+await write(res, step.bytes);
+// The checkpoint is committed, but parent bytes have not advanced yet.
+await write(res, session.update(status.instanceId, { jobState: 'succeeded' }));
+
+while (!step.done) {
+  const boundary = step.boundary;
+  if (boundary) {
+    step = session.resume(boundary.instanceId, await stateFor(boundary));
+  } else {
+    step = session.advance();
+  }
+  await write(res, step.bytes);
+}
+res.end();
 
 async function write(res, chunk) {
   if (res.write(chunk)) return;
@@ -99,18 +112,30 @@ client to see the chunk timing:
 
 ```
 status 200 at   7 ms
-chunk 1  627B at    8 ms   shell (<head> ships before any work finishes)
-chunk 2  670B at    8 ms   job-status boundary, committed as updatable
-chunk 3  875B at  418 ms   log batch 1
-chunk 4  687B at  823 ms   log batch 2
-chunk 5  156B at  918 ms   update -> job-status, on this same response
-chunk 6  626B at 1229 ms   log batch 3
-chunk 7  128B at 1230 ms   terminal record
+start              <head> ships and job-status is discovered
+resume             commit job-status only, as updatable
+update             patch job-status before advancing its parent
+advance            write parent bytes and discover log batch 1
+resume / advance   commit log batch 1, then discover log batch 2
+resume / advance   commit log batch 2, then discover log batch 3
+resume / advance   commit log batch 3, then write the tail and terminal
 ```
 
-Chunk 5 is the interesting one: the slow job finishes *after* its boundary was
+The update is the interesting one: the slow job finishes *after* its boundary was
 already committed and hydrated, so the server patches it with a 156-byte state
 record instead of forcing a client-side fetch or replacing DOM.
+
+The host never resolves authored names before `start()`. Every runtime
+descriptor comes from the preceding `StreamStep`, which also covers boundaries
+discovered through routes, conditions, or component templates. A
+boundary-bearing subtree under `<for>` fails with `boundary-in-repeat`; a whole
+`<for>` may sit inside one boundary.
+
+The state machine has no ambiguous unfinished step: a descriptor means
+`resume`, neither a descriptor nor `done` means `advance`, and `done` means
+complete. Boundary-only `resume` makes each checkpoint independently writable.
+`advance` carries the following parent or tail bytes, so no sibling boundary is
+needed.
 
 ### Scope
 
@@ -119,6 +144,6 @@ updates, and backpressure. Its components are scriptless, so hydration comes
 from the framework's streaming entry loaded straight from
 `@microsoft/webui-framework`, with no bundler step.
 
-For the full picture — interactive islands, boundary-carried module loading,
-`modulepreload` scheduling, and the measured performance story — see
+For the full picture - interactive islands, boundary-carried module loading,
+`modulepreload` scheduling, and the measured performance story - see
 [`examples/app/streaming`](../../app/streaming/README.md).

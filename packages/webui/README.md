@@ -165,23 +165,34 @@ protocol.renderStream(state, (chunk) => {
 
 ### `protocol.streamResponse(options?): StreamingSession`
 
-Opens a progressive streaming session for an entry that declares `<boundary>`
-directives. Unlike `renderStream`, the session **returns** each chunk, so your
-server keeps the socket, the write order, and the backpressure contract.
+Opens a runtime-discovered progressive session. Unlike `renderStream`, each
+session call returns bytes so your server keeps the socket and backpressure.
 
 ```js
-import { once } from 'node:events';
-
-const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
-const status = session.boundary('job-status');   // resolve names once
+const session = protocol.streamResponse({
+  entry: 'index.html',
+  requestPath: '/',
+});
 
 res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-await write(res, session.writeShell(baseState));
-await write(res, session.writeBoundary(status, statusState, 'updatable'));
+let step = session.start(initialState);
+await write(res, step.bytes);
 
-// Patches an already-hydrated island on this same response.
-await write(res, session.update(status, { jobState: 'succeeded' }));
-res.end(session.finish({}));
+while (!step.done) {
+  const boundary = step.boundary;
+  if (boundary) {
+    const state = await loadBoundaryState(
+      boundary.owner,
+      boundary.name,
+      boundary.key,
+    );
+    step = session.resume(boundary.instanceId, state, 'final');
+  } else {
+    step = session.advance();
+  }
+  await write(res, step.bytes);
+}
+res.end();
 
 async function write(res, chunk) {
   if (res.write(chunk)) return;
@@ -204,17 +215,19 @@ async function write(res, chunk) {
 
 | Member | Returns | Description |
 |--------|---------|-------------|
-| `boundary(name)` | `number` | Integer handle for an authored boundary name |
-| `boundaryCount` | `number` | Boundaries declared by the entry |
-| `finished` | `boolean` | Whether `finish()` has been called |
-| `writeShell(state)` | `Buffer` | Document prefix through the first semantic flush |
-| `writeBoundary(id, state, mode?)` | `Buffer` | One boundary's markup and checkpoint (`'final'` \| `'updatable'`) |
-| `update(id, state)` | `Buffer` | Projected state patch to an updatable boundary |
-| `finish(state)` | `Buffer` | Tail checkpoint, terminal record, and document suffix |
+| `start(state)` | `StreamStep` | Bytes through the first occurrence or terminal |
+| `resume(instanceId, state, mode?)` | `StreamStep` | Only the pending occurrence's bytes through its checkpoint (`'final'` \| `'updatable'`) |
+| `advance()` | `StreamStep` | Following parent bytes through the next occurrence or terminal |
+| `update(instanceId, patch)` | `Buffer` | Projected state for a committed updatable occurrence |
 
-Ordering is enforced. A rejected call throws and leaves the session usable, so
-invalid state does not cost you the response. Sessions are independent — hold
-one per in-flight request.
+`StreamStep` contains `bytes`, `done`, and optional
+`{ instanceId, declarationId, owner, name, key }`. A descriptor requires
+`resume`; no descriptor with `done: false` requires `advance`; `done: true`
+means complete. `resume` is boundary-only, while `advance` carries following
+parent or tail bytes. No sibling boundary workaround is required. The completed
+step already contains tail and terminal bytes. Updates are valid between
+`resume` and `advance`, insert no markup, and never rerun hydration. Sessions
+are single-driver and independent; hold one per request.
 
 ### `inspect(protocol: Buffer): string`
 

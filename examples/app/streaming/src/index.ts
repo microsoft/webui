@@ -4,9 +4,8 @@
 /**
  * Streaming priority-hydration entry point.
  *
- * The server streams `index.html` as priority-ordered `<boundary>`
- * chunks, using the Progressive Streaming Hydration contract from
- * DESIGN.md ("Progressive Streaming Hydration"):
+ * The entry renders one `<streaming-page>` whose component template suspends
+ * at priority-ordered runtime boundaries:
  *
  * 1. The weather boundary commits first. It carries no server data, so it is
  *    the cheapest checkpoint on the page — `weather-panel` hydrates while the
@@ -15,7 +14,7 @@
  * 2. The composer boundary (`message-composer`) commits next and must be
  *    interactive before `DOMContentLoaded`, while the response is still open.
  * 3. Three feed boundaries commit afterward, each with its own `feed-item`
- *    islands, hydrating independently and in order as their chunks arrive.
+ *    islands, before the parent page component emits its tail and completes.
  *
  * The component modules import `@microsoft/webui-framework`, which no longer
  * installs the streaming coordinator on its own. This entry imports

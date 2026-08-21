@@ -154,12 +154,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -207,12 +209,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 
@@ -257,12 +261,14 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("my-page")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "my-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<p>page</p>")],
+                contains_boundary: false,
             },
         );
 

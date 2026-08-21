@@ -2,10 +2,18 @@
 // Licensed under the MIT license.
 
 import {
+  BOUNDARY_SCRIPT_ATTR,
+  BOUNDARY_START_PREFIX,
   firstNodeWithin,
+  isRangeEndMarker,
   MAX_MARKER_SCAN_NODES,
+  nextAfterSubtreeWithin,
   nextWithinRoot,
   safeRemoveAttribute,
+  safeRemove,
+  SPAN_START_PREFIX,
+  STREAMING_ENCLOSING_SPAN_ATTR,
+  STREAMING_SPAN_HOST_ATTR,
   streamingErrorMessage,
 } from './streaming-dom.js';
 import { STREAMED_HOST_ATTR } from './streaming-mode.js';
@@ -14,16 +22,30 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for(
   'microsoft.webui.boundaryAbandon',
 );
 
+/**
+ * Every compiler-owned attribute one streamed root can still be carrying.
+ *
+ * Listed once so the abandon check and the post-activation strip cannot drift
+ * apart, and so a future marker costs one array entry instead of two more
+ * call sites.
+ */
+const STREAMING_ROOT_ATTRS = [
+  STREAMED_HOST_ATTR,
+  STREAMING_SPAN_HOST_ATTR,
+  STREAMING_ENCLOSING_SPAN_ATTR,
+] as const;
+
 type BoundaryAbandonable = Element & {
   [STREAMING_BOUNDARY_ABANDON]?: () => void;
 };
 
 /** Clear both coordinator and element-owned streaming state from one root. */
 export function abandonDeferredElement(el: Element): void {
+  const marked = hasStreamingAttribute(el);
   try {
-    if (!el.hasAttribute(STREAMED_HOST_ATTR)) return;
+    if (!marked) return;
   } catch {
-    safeRemoveAttribute(el, STREAMED_HOST_ATTR);
+    removeStreamingAttributes(el);
     return;
   }
   try {
@@ -38,7 +60,21 @@ export function abandonDeferredElement(el: Element): void {
       }>: ${streamingErrorMessage(error)}`,
     );
   } finally {
-    safeRemoveAttribute(el, STREAMED_HOST_ATTR);
+    removeStreamingAttributes(el);
+  }
+}
+
+function hasStreamingAttribute(el: Element): boolean {
+  for (let i = 0; i < STREAMING_ROOT_ATTRS.length; i++) {
+    if (el.hasAttribute(STREAMING_ROOT_ATTRS[i])) return true;
+  }
+  return false;
+}
+
+/** Strip every compiler-owned streaming marker from one finished root. */
+export function removeStreamingAttributes(el: Element): void {
+  for (let i = 0; i < STREAMING_ROOT_ATTRS.length; i++) {
+    safeRemoveAttribute(el, STREAMING_ROOT_ATTRS[i]);
   }
 }
 
@@ -74,7 +110,14 @@ function abandonDeferredNodes(
   }
 }
 
-/** Bounded failure-only sweep for roots preceding a missing sentinel. */
+/**
+ * Bounded failure-only sweep for roots preceding a missing sentinel.
+ *
+ * One walk, not two: the shared `abandonStreamingNodes` scan handles the
+ * document element in a real browser and each shadow root reached by the
+ * `getElementsByTagName('*')` fallback that a documentElement-less document
+ * (only reachable outside a parsed HTML document) falls back to.
+ */
 export function abandonDeferredDocumentRoots(): void {
   if (
     typeof document === 'undefined' ||
@@ -83,24 +126,55 @@ export function abandonDeferredDocumentRoots(): void {
     return;
   }
 
+  const documentRoot = document.documentElement;
+  if (documentRoot) {
+    abandonStreamingNodes(documentRoot.firstChild, documentRoot);
+    abandonDeferredElement(documentRoot);
+    return;
+  }
+
   const elements = document.getElementsByTagName('*');
-  let visited = 0;
-  for (
-    let i = 0;
-    i < elements.length && visited < MAX_MARKER_SCAN_NODES;
-    i++
-  ) {
+  const limit = elements.length < MAX_MARKER_SCAN_NODES
+    ? elements.length
+    : MAX_MARKER_SCAN_NODES;
+  for (let i = 0; i < limit; i++) {
     const el = elements[i];
-    visited++;
     abandonDeferredElement(el);
     const shadowRoot = el.shadowRoot;
-    let node: Node | null = shadowRoot?.firstChild ?? null;
-    while (node && visited < MAX_MARKER_SCAN_NODES) {
-      visited++;
-      if (node.nodeType === 1 /* ELEMENT_NODE */) {
-        abandonDeferredElement(node as Element);
-      }
-      node = nextWithinRoot(node, shadowRoot!);
-    }
+    if (shadowRoot) abandonStreamingNodes(shadowRoot.firstChild, shadowRoot);
   }
+}
+
+/** Strip streamed roots, generated scaffolding, and markers from one tree. */
+function abandonStreamingNodes(first: Node | null, root: Node): void {
+  let node = first;
+  let visited = 0;
+  while (node && visited < MAX_MARKER_SCAN_NODES) {
+    visited++;
+    if (node.nodeType === 8 /* COMMENT_NODE */) {
+      const next = nextWithinRoot(node, root);
+      if (isStreamingMarker((node as Comment).data)) safeRemove(node);
+      node = next;
+      continue;
+    }
+    if (node.nodeType === 1 /* ELEMENT_NODE */) {
+      const el = node as Element;
+      const scaffold = el.tagName === 'WEBUI-HYDRATE' ||
+        el.hasAttribute(BOUNDARY_SCRIPT_ATTR);
+      const next = scaffold
+        ? nextAfterSubtreeWithin(node, root)
+        : nextWithinRoot(node, root);
+      abandonDeferredElement(el);
+      if (scaffold) safeRemove(el);
+      node = next;
+      continue;
+    }
+    node = nextWithinRoot(node, root);
+  }
+}
+
+function isStreamingMarker(data: string): boolean {
+  return data.startsWith(BOUNDARY_START_PREFIX) ||
+    data.startsWith(SPAN_START_PREFIX) ||
+    isRangeEndMarker(data);
 }

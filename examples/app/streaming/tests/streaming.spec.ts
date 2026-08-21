@@ -8,8 +8,9 @@ import { test, expect, type Page } from '@playwright/test';
  * composer / weather / feed priority ordering, built on the boundary
  * contract in DESIGN.md ("Progressive Streaming Hydration").
  *
- * Checkpoint boundary IDs follow document order. Response record sequence
- * numbers also include state updates and the terminal record:
+ * Runtime boundary IDs follow discovery order inside `<streaming-page>`.
+ * Response record sequences also include state updates, the page component's
+ * span completion, and the terminal record:
  *
  * | Boundary ID | Boundary      | Delivery                            |
  * | ----------- | ------------- | ----------------------------------- |
@@ -20,8 +21,8 @@ import { test, expect, type Page } from '@playwright/test';
  * | 4           | feed batch 3  | jittered 500-1000ms                  |
  *
  * In the full controlled release, the weather state update consumes response
- * sequence 3 between feed batch 1 and feed batch 2; the terminal record follows
- * the final checkpoint.
+ * sequence 3 between feed batch 1 and feed batch 2. The page span completion
+ * follows the final checkpoint, then the terminal closes the response.
  *
  * The Node API (`server/src/pacing.ts`) paces only the gaps that precede feed
  * batches, bounded by `--feed-delay-min-ms` / `--feed-delay-max-ms`, so
@@ -37,7 +38,7 @@ import { test, expect, type Page } from '@playwright/test';
 interface BoundaryEvent {
   sequence: number;
   terminal: boolean;
-  kind: 'checkpoint' | 'update' | 'terminal';
+  kind: 'checkpoint' | 'span' | 'update' | 'terminal';
   t: number;
 }
 
@@ -145,10 +146,12 @@ test.describe('streaming priority hydration', () => {
     // still open at this point too — DOMContentLoaded needs the whole
     // (still-paced) response to finish parsing.
     expect(await page.evaluate(() => window.__dclFired)).toBe(false);
+    await expect(page.getByTestId('page-tail')).toHaveCount(0);
 
     await release(page, session, 'all');
     await page.waitForLoadState('domcontentloaded');
     expect(await page.evaluate(() => window.__dclFired)).toBe(true);
+    await expect(page.getByTestId('page-tail')).toBeVisible();
   });
 
   test('feed batch 1 hydrates and is interactive before batch 2 is delivered', async ({ page }) => {
@@ -179,6 +182,7 @@ test.describe('streaming priority hydration', () => {
     const events = await boundaryEvents(page);
     const sequences = events.map((e) => e.sequence);
     expect(events.filter((event) => event.kind === 'checkpoint')).toHaveLength(5);
+    expect(events.filter((event) => event.kind === 'span')).toHaveLength(1);
     expect(events.filter((event) => event.kind === 'update')).toHaveLength(1);
     for (let i = 1; i < sequences.length; i++) {
       expect(sequences[i]).toBeGreaterThan(sequences[i - 1]);
@@ -368,30 +372,43 @@ test.describe('streaming priority hydration', () => {
     await page.waitForFunction(() => window.__hydrationCompleteFired);
 
     const leftovers = await page.evaluate(() => {
-      const scripts = document.querySelectorAll('script[data-webui-boundary]').length;
-      const sentinels = document.querySelectorAll('webui-hydrate').length;
+      const pageRoot = document.querySelector('streaming-page')?.shadowRoot;
+      const roots: ParentNode[] = pageRoot ? [document, pageRoot] : [document];
+      const scripts = roots.reduce(
+        (count, root) => count + root.querySelectorAll('script[data-webui-boundary]').length,
+        0,
+      );
+      const sentinels = roots.reduce(
+        (count, root) => count + root.querySelectorAll('webui-hydrate').length,
+        0,
+      );
       // `<if>` conditions compile to an inline `templateFns` script emitted
       // between each payload and its sentinel. Those are boundary
       // scaffolding too, so a non-zero count means
       // `removeBoundaryScaffolding` missed them. The weather island's own
       // loader also lives in <body>, inside its boundary, so it is excluded
       // by src — teardown must not treat authored content as scaffolding.
-      const bodyScripts = Array.from(document.body.querySelectorAll('script')).filter(
+      const bodyScripts = Array.from(pageRoot?.querySelectorAll('script') ?? []).filter(
         (script) => !script.src.endsWith('/weather-panel.js'),
       ).length;
 
-      const walker = document.createTreeWalker(document.documentElement, NodeFilter.SHOW_COMMENT);
       let markers = 0;
-      let node: Node | null;
-      while ((node = walker.nextNode())) {
-        if (/^\/?wb:\d+$/.test((node as Comment).data)) markers++;
+      const markerRoots: Node[] = pageRoot
+        ? [document.documentElement, pageRoot]
+        : [document.documentElement];
+      for (const root of markerRoots) {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_COMMENT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          if (/^\/?w[bs]:\d+$/.test((node as Comment).data)) markers++;
+        }
       }
 
       // The island loader is authored markup, not scaffolding: it must
       // survive the teardown that removes everything else above.
-      const islandLoaders = document.querySelectorAll(
+      const islandLoaders = pageRoot?.querySelectorAll(
         'script[src$="/weather-panel.js"]',
-      ).length;
+      ).length ?? 0;
 
       return { scripts, sentinels, markers, bodyScripts, islandLoaders };
     });
@@ -615,4 +632,3 @@ test.describe('streaming reload recovery', () => {
     expect(errors, 'the degraded page produced errors').toEqual([]);
   });
 });
-

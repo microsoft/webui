@@ -3,7 +3,7 @@
   "delayMs": 160,
   "state": {
     "label": "Public API: /api/metrics.json",
-    "title": "Chunks render as async state resolves",
+    "title": "Concurrent fetches feed an ordered cursor",
     "metrics": [
       {
         "value": "1",

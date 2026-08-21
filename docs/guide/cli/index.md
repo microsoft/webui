@@ -299,21 +299,40 @@ For progressive HTML, the server sends
 backend can return a versioned NDJSON control stream:
 
 ```text
-{"type":"shell","version":1,"state":{"feedBatch1":[]}}
-{"type":"boundary","name":"weather-shell","mode":"updatable"}
-{"type":"boundary","name":"composer-ready"}
-{"type":"update","name":"weather-shell","state":{"status":"ready"}}
-{"type":"finish"}
+{"type":"start","version":2,"state":{"query":""}}
+{"type":"resume","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":""},"mode":"updatable"}
+{"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
 ```
 
-The CLI keeps the compiled protocol and browser transport. Boundary names
-resolve once to integer handles, a capacity-one command channel preserves
-backpressure, and each record is capped at 2,000,000 bytes. Omitted boundary or
-finish state reuses the shell state. Before HTTP 200, initial shell chunks are
-staged without copying up to a 4,000,000-byte limit; larger shells return an
-error. Dropping the browser response cancels the backend stream. The backend
-must honor its HTTP writer's backpressure signal and cap concurrent streams.
-Returning JSON retains the ordinary buffered behavior. See
+`start` appears once. It renders until the first runtime occurrence or terminal.
+Each `resume.boundary` must match the descriptor currently returned by WebUI
+using `owner`, `name`, and `key`; omit `key` only when that descriptor has none.
+An optional `declarationId` can tighten the match. Resume `state` is passed to
+that occurrence and `mode` is `final` by default or `updatable`.
+`update.boundary` uses the same identity to target one previously committed
+updatable occurrence and requires object-valued `state`.
+
+The control stream has no `advance` record because the CLI drives that core
+operation:
+
+| Core step state | CLI action |
+|---|---|
+| descriptor present | Wait for the matching `resume` control and call core `resume` |
+| no descriptor and not done | Call core `advance` |
+| done | Complete the browser response |
+
+Core `resume` emits only the pending occurrence through its checkpoint. Core
+`advance` emits the following parent or tail bytes through the next descriptor
+or terminal. After the backend sends the resume for the final descriptor and
+closes its NDJSON body, the CLI's final `advance` emits the terminal. There is
+no separate end command.
+
+The CLI owns response-local instance IDs and the browser transport. A
+capacity-one command channel preserves backpressure, and each record is capped
+at 2,000,000 bytes. Before HTTP 200, bytes from `start` are staged without
+copying up to a 4,000,000-byte limit. Dropping the browser response cancels the
+backend stream. The backend must honor its HTTP writer's backpressure signal and
+cap concurrent streams. Returning JSON retains ordinary buffered behavior. See
 [`<boundary>`](/guide/concepts/directives/boundary) and
 `examples/app/streaming`.
 
@@ -323,7 +342,7 @@ cap, `webui serve` logs one warning and still renders the page from fallback
 state. A refused request never started a stream, so it degrades the same way an
 unreachable backend does instead of replacing your app with the upstream error
 body. A failure that occurs *after* the stream is live still fails the response,
-because boundaries already sent to the browser cannot be rewound.
+because bytes already sent to the browser cannot be rewound.
 
 After generated assets and `--servedir` files miss, route fallback is based on
 the `Accept` header. Requests that explicitly accept `text/html` or

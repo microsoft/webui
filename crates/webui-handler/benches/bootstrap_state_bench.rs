@@ -193,12 +193,14 @@ fn build_partial_protocol(
         "index.html".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::route("/", "benchmark-page")],
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "benchmark-page".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>Benchmark</p>")],
+            contains_boundary: false,
         },
     );
     let mut protocol = WebUIProtocol::new(fragments);
@@ -255,18 +257,22 @@ fn build_routed_protocol() -> WebUIProtocol {
                 structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
+
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "dashboard-page".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>Dashboard</p>")],
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "contacts-page".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>Contacts</p>")],
+            contains_boundary: false,
         },
     );
 
@@ -316,12 +322,14 @@ fn build_bootstrap_protocol(
                 structural_fragment("body_end"),
                 WebUIFragment::raw("</body></html>"),
             ],
+            contains_boundary: false,
         },
     );
     fragments.insert(
         "bench-component".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<p>ready</p>")],
+            contains_boundary: false,
         },
     );
     let mut protocol = WebUIProtocol::new(fragments);

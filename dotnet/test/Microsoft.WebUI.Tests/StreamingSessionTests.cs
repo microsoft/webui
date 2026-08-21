@@ -10,6 +10,9 @@ namespace Microsoft.WebUI.Tests;
 
 public class StreamingSessionTests
 {
+    private const string StreamingState =
+        """{"show":true,"stringKey":"alpha\u0000omega","numberKey":7,"firstLabel":"first","secondLabel":"second"}""";
+
     private static byte[] StreamingProtocolBytes() =>
         File.ReadAllBytes(Path.Combine(
             AppContext.BaseDirectory,
@@ -20,159 +23,207 @@ public class StreamingSessionTests
     private static string Text(byte[] chunk) => Encoding.UTF8.GetString(chunk);
 
     [Fact]
-    public void Session_ReturnsOneChunkPerCallAndReassemblesTheDocument()
+    public void Session_StartResumeUpdateAndAdvanceExposeTypedDescriptorsAndComplete()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
         using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
 
-        Assert.Equal(2u, session.BoundaryCount);
+        StreamingStep first = session.Start(StreamingState);
+        Assert.False(first.Done);
+        BoundaryDescriptor firstBoundary = Assert.IsType<BoundaryDescriptor>(first.Boundary);
+        Assert.Equal(0u, firstBoundary.InstanceId);
+        Assert.Equal("index.html", firstBoundary.Owner);
+        Assert.Equal("string-row", firstBoundary.Name);
+        Assert.Equal(BoundaryKeyType.String, firstBoundary.Key.Type);
+        Assert.Equal("alpha\0omega", firstBoundary.Key.StringValue);
+        Assert.Null(firstBoundary.Key.NumberValue);
 
-        uint first = session.Boundary("first");
-        uint second = session.Boundary("second");
-        Assert.Equal(0u, first);
-        Assert.Equal(1u, second);
+        StreamingStep firstCommit = session.Resume(
+            firstBoundary.InstanceId,
+            StreamingState,
+            BoundaryMode.Updatable);
+        Assert.False(firstCommit.Done);
+        Assert.Null(firstCommit.Boundary);
+        string firstCommitText = Text(firstCommit.Bytes);
+        Assert.Contains("label=\"first\"", firstCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("between-boundaries", firstCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("label=\"second\"", firstCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("always-complete", firstCommitText, StringComparison.Ordinal);
 
-        byte[][] chunks =
-        [
-            session.WriteShell("{}"),
-            session.WriteBoundary(first, "{\"firstLabel\":\"alpha\"}", BoundaryMode.Updatable),
-            session.Update(first, "{\"firstLabel\":\"alpha-2\"}"),
-            session.WriteBoundary(second, "{\"secondLabel\":\"beta\"}"),
-            session.Finish(),
-        ];
+        byte[] update = session.Update(firstBoundary.InstanceId, """{"firstLabel":"updated"}""");
+        Assert.NotEmpty(update);
+        Assert.Contains(@"""firstLabel"":""updated""", Text(update), StringComparison.Ordinal);
 
-        Assert.True(session.IsFinished);
+        StreamingStep second = session.Advance();
+        Assert.False(second.Done);
+        BoundaryDescriptor secondBoundary = Assert.IsType<BoundaryDescriptor>(second.Boundary);
+        Assert.Equal(1u, secondBoundary.InstanceId);
+        Assert.NotEqual(firstBoundary.DeclarationId, secondBoundary.DeclarationId);
+        Assert.Equal("number-row", secondBoundary.Name);
+        Assert.Equal(BoundaryKeyType.Number, secondBoundary.Key.Type);
+        Assert.Null(secondBoundary.Key.StringValue);
+        Assert.Equal(7.0, secondBoundary.Key.NumberValue);
+        string secondDiscoveryText = Text(second.Bytes);
+        Assert.Contains("between-boundaries", secondDiscoveryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("label=\"second\"", secondDiscoveryText, StringComparison.Ordinal);
+        Assert.DoesNotContain("always-complete", secondDiscoveryText, StringComparison.Ordinal);
 
-        var document = new StringBuilder();
-        foreach (byte[] chunk in chunks)
-        {
-            Assert.NotEmpty(chunk);
-            document.Append(Text(chunk));
-        }
+        StreamingStep secondCommit = session.Resume(
+            secondBoundary.InstanceId,
+            StreamingState,
+            BoundaryMode.Final);
+        Assert.False(secondCommit.Done);
+        Assert.Null(secondCommit.Boundary);
+        string secondCommitText = Text(secondCommit.Bytes);
+        Assert.Contains("label=\"second\"", secondCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("always-complete", secondCommitText, StringComparison.Ordinal);
+        Assert.DoesNotContain("</html>", secondCommitText, StringComparison.OrdinalIgnoreCase);
 
-        string html = document.ToString();
-        Assert.StartsWith("<!DOCTYPE html>", html, StringComparison.OrdinalIgnoreCase);
-        Assert.EndsWith("</html>", html.TrimEnd());
-        Assert.Contains("alpha", html, StringComparison.Ordinal);
-        Assert.Contains("alpha-2", html, StringComparison.Ordinal);
-        Assert.Contains("beta", html, StringComparison.Ordinal);
+        StreamingStep done = session.Advance();
+        Assert.True(done.Done);
+        Assert.Null(done.Boundary);
+        Assert.Contains("always-complete", Text(done.Bytes), StringComparison.Ordinal);
 
-        // Each boundary is rendered exactly once, no matter how many chunks it took.
-        Assert.Equal(2, CountOccurrences(html, "<stream-item"));
+        string document =
+            Text(first.Bytes) +
+            firstCommitText +
+            Text(update) +
+            secondDiscoveryText +
+            secondCommitText +
+            Text(done.Bytes);
+        Assert.StartsWith("<!DOCTYPE html>", document, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("first", document, StringComparison.Ordinal);
+        Assert.Contains("second", document, StringComparison.Ordinal);
+        Assert.Contains("</html>", document, StringComparison.Ordinal);
+        Assert.Equal(2, CountOccurrences(document, "<stream-item"));
     }
 
     [Fact]
-    public void Session_UnknownBoundaryName_ThrowsWithSuggestions()
+    public void Session_BoundaryFreeStateCompletesFromStart()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
         using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
 
-        var error = Assert.Throws<WebUIException>(() => session.Boundary("frist"));
-        Assert.Contains("frist", error.Message, StringComparison.Ordinal);
-        Assert.Contains("first", error.Message, StringComparison.Ordinal);
+        StreamingStep step = session.Start("""{"show":false}""");
+
+        Assert.True(step.Done);
+        Assert.Null(step.Boundary);
+        Assert.Contains("always-complete", Text(step.Bytes), StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Session_OutOfOrderBoundary_Throws()
+    public void Session_OutOfOrderCallsThrowAndLeavePendingBoundaryUsable()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
         using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
 
-        uint second = session.Boundary("second");
-        session.WriteShell("{}");
+        StreamingStep first = session.Start(StreamingState);
+        BoundaryDescriptor boundary = Assert.IsType<BoundaryDescriptor>(first.Boundary);
+
+        WebUIException advanceError = Assert.Throws<WebUIException>(() => session.Advance());
+        Assert.Contains("no committed boundary", advanceError.Message, StringComparison.OrdinalIgnoreCase);
+
+        WebUIException error = Assert.Throws<WebUIException>(() =>
+            session.Resume(99, StreamingState));
+        Assert.Contains("stale", error.Message, StringComparison.OrdinalIgnoreCase);
+
+        StreamingStep commit = session.Resume(boundary.InstanceId, StreamingState);
+        Assert.False(commit.Done);
+        Assert.Null(commit.Boundary);
+        StreamingStep second = session.Advance();
+        Assert.NotNull(second.Boundary);
+    }
+
+    [Fact]
+    public void Session_UpdateToFinalBoundaryThrows()
+    {
+        using var protocol = new Protocol(StreamingProtocolBytes());
+        using var handler = new WebUIHandler("webui");
+        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
+
+        BoundaryDescriptor first = Assert.IsType<BoundaryDescriptor>(
+            session.Start(StreamingState).Boundary);
+        StreamingStep firstCommit = session.Resume(first.InstanceId, StreamingState);
+        Assert.False(firstCommit.Done);
+        Assert.Null(firstCommit.Boundary);
 
         Assert.Throws<WebUIException>(() =>
-            session.WriteBoundary(second, "{\"secondLabel\":\"beta\"}"));
+            session.Update(first.InstanceId, """{"label":"ignored"}"""));
+
+        StreamingStep secondStep = session.Advance();
+        BoundaryDescriptor second = Assert.IsType<BoundaryDescriptor>(secondStep.Boundary);
+        StreamingStep secondCommit = session.Resume(second.InstanceId, StreamingState);
+        Assert.False(secondCommit.Done);
+        Assert.Null(secondCommit.Boundary);
+        Assert.True(session.Advance().Done);
     }
 
     [Fact]
-    public void Session_UpdateToFinalBoundary_Throws()
+    public void Session_InvalidJsonThrowsAndSessionCanRetry()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
         using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
 
-        uint first = session.Boundary("first");
-        session.WriteShell("{}");
-        session.WriteBoundary(first, "{\"firstLabel\":\"alpha\"}");
+        Assert.Throws<WebUIException>(() => session.Start("not json"));
+        Assert.NotNull(session.Start(StreamingState).Boundary);
+    }
 
+    [Fact]
+    public void Session_NullJsonArgumentsThrow()
+    {
+        using var protocol = new Protocol(StreamingProtocolBytes());
+        using var handler = new WebUIHandler("webui");
+        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
+
+        Assert.Throws<ArgumentNullException>(() => session.Start(null!));
+        BoundaryDescriptor first = Assert.IsType<BoundaryDescriptor>(
+            session.Start(StreamingState).Boundary);
+        Assert.Throws<ArgumentNullException>(() =>
+            session.Resume(first.InstanceId, null!));
+        Assert.Throws<ArgumentNullException>(() =>
+            session.Update(first.InstanceId, null!));
+    }
+
+    [Fact]
+    public void Session_InvalidBoundaryModeThrows()
+    {
+        using var protocol = new Protocol(StreamingProtocolBytes());
+        using var handler = new WebUIHandler("webui");
+        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
+
+        BoundaryDescriptor first = Assert.IsType<BoundaryDescriptor>(
+            session.Start(StreamingState).Boundary);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            session.Resume(first.InstanceId, StreamingState, (BoundaryMode)99));
+    }
+
+    [Fact]
+    public void Session_CallAfterDoneThrows()
+    {
+        using var protocol = new Protocol(StreamingProtocolBytes());
+        using var handler = new WebUIHandler("webui");
+        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
+
+        BoundaryDescriptor first = Assert.IsType<BoundaryDescriptor>(
+            session.Start(StreamingState).Boundary);
+        StreamingStep firstCommit = session.Resume(first.InstanceId, StreamingState);
+        Assert.False(firstCommit.Done);
+        Assert.Null(firstCommit.Boundary);
+        BoundaryDescriptor second = Assert.IsType<BoundaryDescriptor>(
+            session.Advance().Boundary);
+        StreamingStep secondCommit = session.Resume(second.InstanceId, StreamingState);
+        Assert.False(secondCommit.Done);
+        Assert.Null(secondCommit.Boundary);
+        Assert.True(session.Advance().Done);
+
+        Assert.Throws<WebUIException>(() => session.Start(StreamingState));
         Assert.Throws<WebUIException>(() =>
-            session.Update(first, "{\"firstLabel\":\"alpha-2\"}"));
-    }
-
-    [Fact]
-    public void Session_CallAfterFinish_Throws()
-    {
-        using var protocol = new Protocol(StreamingProtocolBytes());
-        using var handler = new WebUIHandler("webui");
-        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
-
-        uint first = session.Boundary("first");
-        uint second = session.Boundary("second");
-        session.WriteShell("{}");
-        session.WriteBoundary(first, "{\"firstLabel\":\"alpha\"}");
-        session.WriteBoundary(second, "{\"secondLabel\":\"beta\"}");
-        session.Finish();
-
-        Assert.Throws<WebUIException>(() => session.Finish());
-        Assert.Throws<WebUIException>(() =>
-            session.WriteBoundary(second, "{\"secondLabel\":\"gamma\"}"));
-    }
-
-    [Fact]
-    public void Session_InvalidStateJson_Throws()
-    {
-        using var protocol = new Protocol(StreamingProtocolBytes());
-        using var handler = new WebUIHandler("webui");
-        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
-
-        Assert.Throws<WebUIException>(() => session.WriteShell("not json"));
-    }
-
-    [Fact]
-    public void Session_StaysUsableAfterARejectedCall()
-    {
-        using var protocol = new Protocol(StreamingProtocolBytes());
-        using var handler = new WebUIHandler("webui");
-        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
-
-        uint first = session.Boundary("first");
-        uint second = session.Boundary("second");
-
-        Assert.Throws<WebUIException>(() => session.Boundary("missing"));
-
-        session.WriteShell("{}");
-        session.WriteBoundary(first, "{\"firstLabel\":\"alpha\"}");
-        session.WriteBoundary(second, "{\"secondLabel\":\"beta\"}");
-        byte[] tail = session.Finish();
-
-        Assert.NotEmpty(tail);
-        Assert.True(session.IsFinished);
-    }
-
-    [Fact]
-    public void Session_OutOfOrderFinish_LeavesSessionUsable()
-    {
-        using var protocol = new Protocol(StreamingProtocolBytes());
-        using var handler = new WebUIHandler("webui");
-        using StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
-
-        uint first = session.Boundary("first");
-        uint second = session.Boundary("second");
-
-        session.WriteShell("{}");
-        session.WriteBoundary(first, "{\"firstLabel\":\"alpha\"}");
-
-        // Rejected before any byte is written, so the open response survives.
-        Assert.Throws<WebUIException>(() => session.Finish());
-        Assert.False(session.IsFinished);
-
-        session.WriteBoundary(second, "{\"secondLabel\":\"beta\"}");
-        Assert.NotEmpty(session.Finish());
-        Assert.True(session.IsFinished);
+            session.Resume(second.InstanceId, StreamingState));
+        Assert.Throws<WebUIException>(() => session.Advance());
     }
 
     [Fact]
@@ -183,33 +234,49 @@ public class StreamingSessionTests
         using StreamingSession a = handler.StreamResponse(protocol, "index.html", "/");
         using StreamingSession b = handler.StreamResponse(protocol, "index.html", "/");
 
-        uint firstA = a.Boundary("first");
-        uint firstB = b.Boundary("first");
+        BoundaryDescriptor firstA = Assert.IsType<BoundaryDescriptor>(
+            a.Start(StreamingState).Boundary);
+        string stateB = StreamingState.Replace(
+            @"""first""",
+            @"""from-b""",
+            StringComparison.Ordinal);
+        BoundaryDescriptor firstB = Assert.IsType<BoundaryDescriptor>(
+            b.Start(stateB).Boundary);
 
-        a.WriteShell("{}");
-        b.WriteShell("{}");
+        string chunkA = Text(a.Resume(firstA.InstanceId, StreamingState).Bytes);
+        string chunkB = Text(b.Resume(firstB.InstanceId, stateB).Bytes);
 
-        string chunkA = Text(a.WriteBoundary(firstA, "{\"firstLabel\":\"from-a\"}"));
-        string chunkB = Text(b.WriteBoundary(firstB, "{\"firstLabel\":\"from-b\"}"));
-
-        Assert.Contains("from-a", chunkA, StringComparison.Ordinal);
+        Assert.Contains("first", chunkA, StringComparison.Ordinal);
         Assert.DoesNotContain("from-b", chunkA, StringComparison.Ordinal);
         Assert.Contains("from-b", chunkB, StringComparison.Ordinal);
-        Assert.DoesNotContain("from-a", chunkB, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Session_UseAfterDispose_ThrowsObjectDisposedException()
+    public void Session_EagerStepCopySurvivesSessionDisposal()
+    {
+        using var protocol = new Protocol(StreamingProtocolBytes());
+        using var handler = new WebUIHandler("webui");
+        StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
+
+        StreamingStep step = session.Start(StreamingState);
+        session.Dispose();
+
+        Assert.NotEmpty(step.Bytes);
+        Assert.Equal("alpha\0omega", step.Boundary?.Key.StringValue);
+    }
+
+    [Fact]
+    public void Session_UseAfterDisposeThrowsObjectDisposedException()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
         StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
         session.Dispose();
-        session.Dispose(); // Idempotent.
+        session.Dispose();
 
-        Assert.Throws<ObjectDisposedException>(() => session.WriteShell("{}"));
-        Assert.Throws<ObjectDisposedException>(() => session.Boundary("first"));
-        Assert.Throws<ObjectDisposedException>(() => session.BoundaryCount);
+        Assert.Throws<ObjectDisposedException>(() => session.Start(StreamingState));
+        Assert.Throws<ObjectDisposedException>(() => session.Advance());
+        Assert.Throws<ObjectDisposedException>(() => session.Update(0, "{}"));
     }
 
     [Fact]
@@ -218,12 +285,12 @@ public class StreamingSessionTests
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");
         StreamingSession session = handler.StreamResponse(protocol, "index.html", "/");
-        session.WriteShell("{}");
+        session.Start(StreamingState);
         session.Dispose();
     }
 
     [Fact]
-    public void StreamResponse_WithDisposedHandler_ThrowsObjectDisposedException()
+    public void StreamResponse_WithDisposedHandlerThrowsObjectDisposedException()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         var handler = new WebUIHandler("webui");
@@ -234,7 +301,7 @@ public class StreamingSessionTests
     }
 
     [Fact]
-    public void StreamResponse_WithDisposedProtocol_ThrowsObjectDisposedException()
+    public void StreamResponse_WithDisposedProtocolThrowsObjectDisposedException()
     {
         var protocol = new Protocol(StreamingProtocolBytes());
         protocol.Dispose();
@@ -245,7 +312,7 @@ public class StreamingSessionTests
     }
 
     [Fact]
-    public void StreamResponse_WithUnknownEntry_Throws()
+    public void StreamResponse_WithUnknownEntryThrows()
     {
         using var protocol = new Protocol(StreamingProtocolBytes());
         using var handler = new WebUIHandler("webui");

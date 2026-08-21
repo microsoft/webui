@@ -25,9 +25,42 @@ serialization. Use `render_text()` only when an application specifically needs
 a Python string.
 
 `render_component_templates()` accepts either one component tag as a string or
-an iterable of tags. Streaming calls require state explicitly, including
-`finish(final_state)`, so the document tail cannot accidentally render against
-an empty state.
+an iterable of tags.
+
+Host-driven streaming discovers runtime occurrences instead of resolving
+compile-time names:
+
+```python
+from microsoft_webui import BoundaryMode
+
+session = renderer.stream_response()
+step = session.start({"title": "Home", "items": [{"id": 7}]})
+while not step.done:
+    boundary = step.boundary
+    send(step.bytes)
+    if boundary is not None:
+        step = session.resume(
+            boundary.instance_id,
+            {"title": "Home"},
+            mode=BoundaryMode.FINAL,
+        )
+    else:
+        step = session.advance()
+send(step.bytes)
+```
+
+`start()`, `resume()`, and `advance()` return immutable `StreamStep` values
+containing the bytes produced by that call, a `done` flag, and an optional
+`BoundaryDescriptor`. A descriptor means call `resume()`; no descriptor with
+`done == False` means call `advance()`; `done == True` means complete.
+`resume()` returns only the pending occurrence through its checkpoint, while
+`advance()` returns following parent or tail bytes. No sibling boundary
+workaround is required.
+
+Optional boundary keys are Python strings, integers, or floats. They are
+required only when one component-owned declaration is reached from multiple
+static callsites in one entry traversal. `update(instance_id, patch)` returns
+the update record as `bytes` and is valid between `resume()` and `advance()`.
 
 The first release targets regular CPython 3.11+ builds on Windows, macOS, and
 manylinux, on x64 and ARM64. PyPy, free-threaded CPython, and Alpine/musllinux

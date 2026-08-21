@@ -41,10 +41,44 @@ pub fn build_importmap_tag(specifier: &str, css: &str, nonce: Option<&str>) -> S
         out.push_str(n);
         out.push('"');
     }
+
     out.push('>');
     out.push_str(&body);
     out.push_str("</script>");
     out
+}
+
+/// Build one import map containing every supplied CSS module.
+///
+/// Streaming checkpoints use one element so the payload script remains within
+/// the browser coordinator's bounded sentinel lookback even when several
+/// reachable-but-not-yet-rendered components first become available together.
+pub(crate) fn build_importmap_tag_batch(
+    modules: &[(&str, &str)],
+    nonce: Option<&str>,
+) -> Option<String> {
+    if modules.is_empty() {
+        return None;
+    }
+    let mut imports = serde_json::Map::with_capacity(modules.len());
+    for &(specifier, css) in modules {
+        imports.insert(specifier.to_owned(), Value::String(build_data_uri(css)));
+    }
+    let mut root = serde_json::Map::with_capacity(1);
+    root.insert("imports".into(), Value::Object(imports));
+    let body = Value::Object(root).to_string();
+    let cap = 40 + body.len() + nonce.map_or(0, |value| value.len() + 9);
+    let mut out = String::with_capacity(cap);
+    out.push_str("<script type=\"importmap\"");
+    if let Some(value) = nonce {
+        out.push_str(" nonce=\"");
+        out.push_str(value);
+        out.push('"');
+    }
+    out.push('>');
+    out.push_str(&body);
+    out.push_str("</script>");
+    Some(out)
 }
 
 fn build_data_uri(css: &str) -> String {
@@ -125,6 +159,16 @@ mod tests {
     fn empty_css_produces_empty_data_uri() {
         let tag = build_importmap_tag("empty", "", None);
         assert!(tag.contains(r#""empty":"data:text/css,""#));
+    }
+
+    #[test]
+    fn batch_importmap_uses_one_script_for_multiple_modules() {
+        let modules = [("a-card", "a{}"), ("b-card", "b{}")];
+        let tag = build_importmap_tag_batch(&modules, Some("nonce")).unwrap();
+        assert_eq!(tag.matches("<script").count(), 1);
+        assert!(tag.contains(r#""a-card":"data:text/css,a{}""#));
+        assert!(tag.contains(r#""b-card":"data:text/css,b{}""#));
+        assert!(tag.contains(r#"nonce="nonce""#));
     }
 
     #[test]

@@ -194,30 +194,34 @@ Each layer of the architecture contributes to the overall performance profile:
   build deterministic indices once at startup rather than repeating that work
   per request.
 
-- **Streaming output with explicit checkpoints.** The Rust
-  `webui::streaming::StreamingWriter` coalesces writes into chunks and uses a
-  bounded `tokio::mpsc` channel for backpressure. A shared `ChunkPool` can
-  recycle buffers across requests, and a configurable flush deadline bounds
-  how long a render thread waits on a slow consumer. With
-  `WebUIHandler::render_streaming`, authored `<boundary>` checkpoints
-  request a semantic transport flush and can hydrate in document order before
-  the response completes. Each checkpoint emits state and newly needed metadata
-  only for the local component surface reachable from its rendered roots,
-  including initially hidden descendants; inventory still records only actual
-  SSR roots. The runtime protocol lazily indexes route-free component
-  dependencies once, on its first streaming render; ordinary rendering never
-  allocates this index. Checkpoints reuse an integer DFS stack, and leaf-only
-  boundaries need no graph walk. Request-local buffers retain capacity for
-  reuse. The separately imported streaming coordinator passes this ephemeral
-  state directly to components and removes checkpoint scaffolding after commit.
-  `webui serve --api-port` can translate a capacity-one, versioned backend
-  control stream into the same Rust session, preserving browser-to-backend
-  backpressure without exposing a callback-heavy Node renderer session.
+- **Runtime-discovered streaming.** The continuation VM walks only the selected
+  entry, component, condition, and route path. It is iterative and keeps bounded
+  frames, projected parent keys, lexical locals, static-occurrence keys, and
+  generated component spans instead of cloning full state for every boundary or
+  prebuilding a request plan. A repeat body cannot reach a boundary, so each
+  `<for>` finishes inside its current step and no repeat iterator survives a
+  host call. Full-state fallback snapshots once per response;
+  `render_streaming` reuses that snapshot for every occurrence. Boundary-free
+  fragment records are skipped through a build-time `contains_boundary` bit.
+  Capture and projection scratch buffers retain capacity across checkpoints.
+- **Bounded browser activation.** Each checkpoint or generated span completion
+  walks one root-local marker range, including open shadow roots, and removes
+  its scaffolding after commit. Final occurrences retain no root list.
+  Updatable occurrences retain only successfully activated roots until
+  terminal. The valid path has no `MutationObserver`, polling loop, or
+  document-wide selector; only fatal cleanup may perform one bounded sweep.
+- **Host-owned backpressure.** `StreamingWriter` uses a bounded `tokio::mpsc`
+  channel, reusable `ChunkPool`, and configurable flush deadline. Owned
+  `StreamingSession` calls return one byte chunk for `start`, `resume`,
+  `advance`, or `update`, so Node, WASM, Python, C, and .NET hosts write through
+  their native backpressure APIs. A boundary-only `resume` can flush immediately;
+  `advance` carries the following parent and tail bytes. `webui serve
+  --api-port` uses a capacity-one version-2 control channel over the same
+  session.
   Hosts must also bound concurrent blocking renders before calling
   `spawn_blocking`; channel backpressure bounds bytes after a task starts, not
   the runtime's queued blocking-task count. Reject saturation before spawning
-  (for example, with `Semaphore::try_acquire_owned`) so retained request state
-  stays bounded.
+  so retained request state stays bounded.
   Intermediaries can still buffer the response, so production deployments must
   configure and verify their full delivery path.
 
@@ -228,6 +232,39 @@ Each layer of the architecture contributes to the overall performance profile:
 - **Targeted updates.** On the client side, path-indexed binding updates touch
   only the affected DOM nodes - not entire subtrees. This keeps hydration and
   reactive updates fast even in large documents.
+
+### Progressive streaming cost profile
+
+The progressive path discovers runtime occurrences, preserves continuation
+state, and completes generated component spans. A fixed entry-boundary
+benchmark provides a lower-feature baseline for these interleaved release-mode
+measurements:
+
+| Boundaries | Fixed model | Runtime-discovered model |
+|-----------:|------------:|-------------------------:|
+| 1 | 2.20 us | 2.57 us |
+| 3 | 4.25 us | 4.58 us |
+| 10 | 9.95 us | 11.05 us |
+| 100 | 76.1 us | 98.3 us |
+
+The ordinary renderer remains effectively unchanged in the same comparison
+(732 ns versus 741 ns). A separate large-state benchmark verifies that frozen
+state is projected once per response: optimization reduced an eight-boundary
+render from 354.6 us to 114.1 us.
+
+The optional browser coordinator is also measured independently from the
+always-shipped framework entry:
+
+| Production bundle | Minified | Gzip |
+|-------------------|---------:|-----:|
+| Ordinary framework entry | 60,528 bytes | 18,993 bytes |
+| Streaming-only increment | 16,652 bytes | 5,928 bytes |
+
+The hydration matrix enforces absolute ordinary and incremental limits with
+4-5% headroom, so moving optional streaming code into the default entry cannot
+hide behind subtraction. These figures are workload and machine specific; use
+`examples/integration/streaming-browser-bench` and
+`streaming_hydration_bench` for changes to either hot path.
 
 ## Light DOM vs Shadow DOM
 

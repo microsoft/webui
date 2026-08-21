@@ -70,8 +70,37 @@ Features:
 - HMR polling at `/hmr` when `--watch` is enabled
 - API proxy when `--api-port` is set. Backends may return JSON state or a
   versioned, newline-delimited `application/x-webui-stream` control response;
-  the CLI retains the Rust renderer, caps precommit shell staging at 4,000,000
+  the CLI retains the Rust renderer, caps precommit output staging at 4,000,000
   bytes, and cancels the backend when the browser disconnects.
+
+The control response uses version 2 and exactly three command types:
+
+```json
+{"type":"start","version":2,"state":{"title":"Initial state"}}
+{"type":"resume","boundary":{"owner":"index.html","name":"hero"},"mode":"updatable","state":{}}
+{"type":"update","boundary":{"owner":"index.html","name":"hero"},"state":{"status":"ready"}}
+```
+
+`start` is first and supplies the initial object state. Each `resume` must echo
+the pending runtime descriptor's `owner`, `name`, and optional string-or-number
+`key`; `declarationId` may also be supplied for validation. The CLI retains
+committed descriptors, so `update` uses the same target without a reverse
+acknowledgement channel. Ambiguous unkeyed update targets are rejected.
+
+The CLI drives the Rust step machine as follows:
+
+| Rust step state | CLI action |
+|---|---|
+| descriptor present | Wait for the matching backend `resume`, then call `resume` |
+| no descriptor and not done | Call `advance` internally |
+| done | Complete the browser response |
+
+Rust `resume` emits only the pending boundary through its checkpoint. The
+following internal `advance` emits parent or tail bytes through the next
+descriptor or terminal. The backend does not send an `advance` control record.
+It closes its NDJSON body after sending the resume for the final descriptor;
+the CLI's final `advance` completes the response. There is no terminal control
+command.
 
 ### `webui inspect`
 

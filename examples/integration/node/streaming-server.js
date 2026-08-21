@@ -84,20 +84,12 @@ async function handleRequest(request, response) {
 /**
  * Render one progressive response, one chunk per call.
  *
- * Ordering is enforced by the session, so the shape below is the contract:
- * shell first, then every boundary in declaration order, updates only to
- * boundaries committed as `updatable`, and `finish()` last.
+ * `start()` discovers the first runtime occurrence. `resume()` commits only
+ * that occurrence, and `advance()` writes the following parent bytes while
+ * discovering the next descriptor, so runtime paths need no name table.
  */
 async function streamPage(response) {
   const session = protocol.streamResponse({ entry: "index.html", requestPath: "/" });
-
-  // Names are authored strings; resolve them once, outside the write loop.
-  const jobStatus = session.boundary("job-status");
-  const logBatches = [
-    session.boundary("log-batch-1"),
-    session.boundary("log-batch-2"),
-    session.boundary("log-batch-3"),
-  ];
 
   response.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
@@ -106,15 +98,17 @@ async function streamPage(response) {
     "X-Accel-Buffering": "no",
   });
 
-  // The shell carries the state the document prefix needs; each boundary below
-  // carries only its own.
-  await write(response, session.writeShell({ jobState: "running", jobDetail: "" }));
+  let step = session.start({ jobState: "running", jobDetail: "" });
+  await write(response, step.bytes);
 
   // Committed before its data exists, so nothing waits on the slow job.
-  await write(
-    response,
-    session.writeBoundary(jobStatus, { jobState: "running", jobDetail: "starting" }, "updatable"),
+  const jobStatus = pendingBoundary(step, "job-status");
+  step = session.resume(
+    jobStatus.instanceId,
+    { jobState: "running", jobDetail: "starting" },
+    "updatable",
   );
+  await write(response, step.bytes);
 
   // Started, not awaited: the job races the log batches below.
   const job = runSlowJob(options.jobDelayMs);
@@ -128,7 +122,7 @@ async function streamPage(response) {
       if (ready !== "batch") {
         // The job won: patch the already-committed boundary on this same
         // response. No second request, no DOM replacement, no re-hydration.
-        await write(response, session.update(jobStatus, ready));
+        await write(response, session.update(jobStatus.instanceId, ready));
         jobPending = false;
         await batch;
       }
@@ -136,17 +130,38 @@ async function streamPage(response) {
       await batch;
     }
 
-    await write(
-      response,
-      session.writeBoundary(logBatches[index], { [`batch${index + 1}`]: LOG_BATCHES[index] }),
+    if (index === LOG_BATCHES.length - 1 && jobPending) {
+      await write(response, session.update(jobStatus.instanceId, await job));
+      jobPending = false;
+    }
+    step = session.advance();
+    await write(response, step.bytes);
+    const boundary = pendingBoundary(step, `log-batch-${index + 1}`);
+    step = session.resume(boundary.instanceId, {
+      [`batch${index + 1}`]: LOG_BATCHES[index],
+    });
+    await write(response, step.bytes);
+  }
+
+  step = session.advance();
+  await write(response, step.bytes);
+  if (!step.done) {
+    throw new Error("streaming session did not complete after advancing the final log batch");
+  }
+  response.end();
+}
+
+function pendingBoundary(step, expectedName) {
+  const boundary = step.boundary;
+  if (step.done || !boundary) {
+    throw new Error(`expected pending boundary ${expectedName}, but the stream is done`);
+  }
+  if (boundary.owner !== "index.html" || boundary.name !== expectedName) {
+    throw new Error(
+      `expected index.html/${expectedName}, received ${boundary.owner}/${boundary.name}`,
     );
   }
-
-  if (jobPending) {
-    await write(response, session.update(jobStatus, await job));
-  }
-
-  response.end(session.finish({}));
+  return boundary;
 }
 
 /**
@@ -227,7 +242,7 @@ function reportFailure(response, error) {
   if (response.destroyed) {
     return;
   }
-  // Once the shell is on the wire the status line is already committed, so a
+  // Once start bytes are on the wire the status line is already committed, so a
   // late failure can only be signalled by dropping the connection.
   if (response.headersSent) {
     response.destroy();

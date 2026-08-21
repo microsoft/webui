@@ -77,7 +77,13 @@ Object.defineProperty(globalThis, 'customElements', {
 
 const { TemplateElement } = await import('./template-element.js');
 const { registerTemplateData } = await import('./template.js');
-const { resetStreamingModeForTests } = await import('./streaming-mode.js');
+const {
+  ACTIVATION_ACTIVATED,
+  ACTIVATION_ANCESTOR_BARRIER,
+  ACTIVATION_MISSING_TEMPLATE,
+  ACTIVATION_STATIC_HOST_OPT_OUT,
+  resetStreamingModeForTests,
+} = await import('./streaming-mode.js');
 const {
   beginStreamingGate,
   markBoundaryPending,
@@ -89,6 +95,7 @@ const {
 /** The activation hook the streaming coordinator invokes on a committed boundary. */
 const STREAMING_BOUNDARY_ACTIVATE = Symbol.for('microsoft.webui.boundaryActivate');
 const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon');
+const PENDING_ROOT_CONNECTED = Symbol.for('microsoft.webui.pendingRootConnected');
 
 /** Register template metadata for a tag exactly like `registerTemplateData()`. */
 function registerTemplate(tag: string): void {
@@ -197,6 +204,53 @@ describe('TemplateElement.connectedCallback — streamed-host (data-ws) deferral
     } finally {
       console.warn = previousWarn;
     }
+  });
+
+  test('lets a pending-definition resume own activation without replaying ordinary bootstrap state', () => {
+    const tag = 'test-pending-resume-widget';
+    registerTemplate(tag);
+    let ordinaryDeferrals = 0;
+    let received: Record<string, unknown> | undefined;
+
+    class PendingResumeElement extends TemplateElement {
+      protected override $didDeferSSRHydration(): void {
+        ordinaryDeferrals++;
+      }
+    }
+
+    const el = new PendingResumeElement();
+    const raw = el as unknown as {
+      tagName: string;
+      $deferredSSR: boolean;
+      $hydrated: boolean;
+      setAttribute(name: string, value: string): void;
+      removeAttribute(name: string): void;
+      [PENDING_ROOT_CONNECTED]?: () => void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+      ): number;
+    };
+    raw.tagName = tag;
+    raw.$hydrated = true;
+    raw.setAttribute('data-ws', '');
+    raw[PENDING_ROOT_CONNECTED] = () => {
+      received = { status: 'ready' };
+      assert.equal(
+        raw[STREAMING_BOUNDARY_ACTIVATE](received),
+        ACTIVATION_ACTIVATED,
+      );
+      raw.removeAttribute('data-ws');
+    };
+
+    el.connectedCallback();
+
+    assert.deepEqual(received, { status: 'ready' });
+    assert.equal(raw.$deferredSSR, false);
+    assert.equal(
+      ordinaryDeferrals,
+      0,
+      'ordinary deferral would replay older page bootstrap state after the queued update',
+    );
   });
 
   test('warns for an UNMARKED client-created element with missing metadata (no silent defer)', () => {
@@ -343,6 +397,150 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     assert.deepEqual(received, { detached: true });
   });
 
+  test('a coordinator-resolved bypass ancestor is skipped exactly once', () => {
+    const parentTag = 'test-spanning-parent';
+    const childTag = 'test-early-span-child';
+    registerTemplate(parentTag);
+    registerTemplate(childTag);
+
+    const parent = new TemplateElement();
+    const parentRaw = parent as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+    };
+    parentRaw.tagName = parentTag;
+    parentRaw.parentElement = null;
+    parentRaw.$deferredSSR = true;
+
+    const child = new TemplateElement();
+    const childRaw = child as unknown as {
+      tagName: string;
+      parentElement: Element;
+      $deferredSSR: boolean;
+      $hydrated: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+        bypassAncestor?: Element,
+      ): number;
+    };
+    childRaw.tagName = childTag;
+    childRaw.parentElement = parent as unknown as Element;
+    childRaw.setAttribute('data-ws', '');
+    child.connectedCallback();
+    childRaw.$hydrated = true;
+
+    assert.equal(
+      childRaw[STREAMING_BOUNDARY_ACTIVATE](
+        { child: true },
+        parent as unknown as Element,
+      ),
+      ACTIVATION_ACTIVATED,
+    );
+    assert.equal(childRaw.$deferredSSR, false);
+  });
+
+  test('an unrelated bypass ancestor preserves the parent-first barrier', () => {
+    const parentTag = 'test-mismatch-span-parent';
+    const childTag = 'test-mismatch-span-child';
+    registerTemplate(parentTag);
+    registerTemplate(childTag);
+
+    const parent = new TemplateElement();
+    const parentRaw = parent as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+    };
+    parentRaw.tagName = parentTag;
+    parentRaw.parentElement = null;
+    parentRaw.$deferredSSR = true;
+
+    const unrelated = new TemplateElement();
+    (unrelated as unknown as { tagName: string }).tagName = parentTag;
+
+    const child = new TemplateElement();
+    const childRaw = child as unknown as {
+      tagName: string;
+      parentElement: Element;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+        bypassAncestor?: Element,
+      ): number;
+    };
+    childRaw.tagName = childTag;
+    childRaw.parentElement = parent as unknown as Element;
+    childRaw.setAttribute('data-ws', '');
+    child.connectedCallback();
+
+    assert.equal(
+      childRaw[STREAMING_BOUNDARY_ACTIVATE](
+        { child: true },
+        unrelated as unknown as Element,
+      ),
+      ACTIVATION_ANCESTOR_BARRIER,
+    );
+    assert.equal(childRaw.$deferredSSR, true);
+  });
+
+  test('only one barrier is bypassed when barriers nest', () => {
+    const outerTag = 'test-nested-bypass-outer';
+    const innerTag = 'test-nested-bypass-inner';
+    const childTag = 'test-nested-bypass-child';
+    registerTemplate(outerTag);
+    registerTemplate(innerTag);
+    registerTemplate(childTag);
+
+    const outer = new TemplateElement();
+    const outerRaw = outer as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+    };
+    outerRaw.tagName = outerTag;
+    outerRaw.parentElement = null;
+    outerRaw.$deferredSSR = true;
+
+    const inner = new TemplateElement();
+    const innerRaw = inner as unknown as {
+      tagName: string;
+      parentElement: Element | null;
+      $deferredSSR: boolean;
+    };
+    innerRaw.tagName = innerTag;
+    innerRaw.parentElement = outer as unknown as Element;
+    innerRaw.$deferredSSR = true;
+
+    const child = new TemplateElement();
+    const childRaw = child as unknown as {
+      tagName: string;
+      parentElement: Element;
+      $deferredSSR: boolean;
+      setAttribute(name: string, value: string): void;
+      [STREAMING_BOUNDARY_ACTIVATE](
+        state?: Record<string, unknown>,
+        bypassAncestor?: Element,
+      ): number;
+    };
+    childRaw.tagName = childTag;
+    childRaw.parentElement = inner as unknown as Element;
+    childRaw.setAttribute('data-ws', '');
+    child.connectedCallback();
+
+    // `inner` is stepped over, but `outer` is still an unfinished barrier.
+    assert.equal(
+      childRaw[STREAMING_BOUNDARY_ACTIVATE](
+        { child: true },
+        inner as unknown as Element,
+      ),
+      ACTIVATION_ANCESTOR_BARRIER,
+    );
+    assert.equal(childRaw.$deferredSSR, true);
+  });
+
   test('authored components do not globally defer unmarked SSR-shaped light DOM', () => {
     const el = new TemplateElement() as unknown as {
       $shouldDeferSSRHydration(): boolean;
@@ -363,7 +561,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     raw.setAttribute('data-ws', '');
     el.connectedCallback();
 
-    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), 3);
+    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), ACTIVATION_MISSING_TEMPLATE);
     assert.equal(raw.$deferredSSR, true);
 
     raw[STREAMING_BOUNDARY_ABANDON]();
@@ -398,7 +596,7 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     raw.setAttribute('data-ws', '');
     el.connectedCallback();
 
-    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), 2);
+    assert.equal(raw[STREAMING_BOUNDARY_ACTIVATE](), ACTIVATION_STATIC_HOST_OPT_OUT);
     assert.ok(raw.$meta, 'boundary commit caches metadata without mounting');
     el.setState({ message: 'wake' });
     assert.equal(activationMeta, raw.$meta, 'the later state write can activate from cached metadata');

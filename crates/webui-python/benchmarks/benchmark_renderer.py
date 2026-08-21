@@ -19,13 +19,28 @@ if TYPE_CHECKING:
 FIXTURES = Path(__file__).parents[1] / "tests" / "fixtures"
 PROTOCOL_PATH = FIXTURES / "protocol.bin"
 PROTOCOL_BYTES = PROTOCOL_PATH.read_bytes()
+STREAMING_PROTOCOL_BYTES = (FIXTURES / "streaming_protocol.bin").read_bytes()
 STATE = {"title": "Benchmark", "name": "Ada", "status": "ready"}
+STREAMING_STATE = {
+    **STATE,
+    "show": True,
+    "integerKey": 1,
+    "floatKey": 2.5,
+    "stringKey": "last",
+    "summary": "All ready",
+}
 STATE_BYTES = json.dumps(STATE, separators=(",", ":")).encode()
+STREAMING_STATE_BYTES = json.dumps(STREAMING_STATE, separators=(",", ":")).encode()
 
 
 @pytest.fixture(scope="module")
 def renderer() -> Renderer:
     return Renderer(PROTOCOL_BYTES, plugin=Plugin.WEBUI)
+
+
+@pytest.fixture(scope="module")
+def streaming_renderer() -> Renderer:
+    return Renderer(STREAMING_PROTOCOL_BYTES, plugin=Plugin.WEBUI)
 
 
 @pytest.fixture(scope="module")
@@ -80,26 +95,31 @@ def test_render_component_templates(benchmark: Any, renderer: Renderer) -> None:
 
 def _stream_once(renderer: Renderer) -> bytes:
     session = renderer.stream_response()
-    greeting = session.boundary("greeting")
-    status = session.boundary("status")
-    return b"".join(
-        (
-            session.write_shell(STATE_BYTES),
-            session.write_boundary(
-                greeting,
-                STATE_BYTES,
-                mode=BoundaryMode.UPDATABLE,
-            ),
-            session.update(greeting, STATE_BYTES),
-            session.write_boundary(status, STATE_BYTES),
-            session.finish(STATE_BYTES),
+    chunks: list[bytes] = []
+    step = session.start(STREAMING_STATE_BYTES)
+    first = True
+    while not step.done:
+        chunks.append(step.bytes)
+        boundary = step.boundary
+        assert boundary is not None
+        mode = BoundaryMode.UPDATABLE if first else BoundaryMode.FINAL
+        committed = session.resume(
+            boundary.instance_id,
+            STREAMING_STATE_BYTES,
+            mode=mode,
         )
-    )
+        chunks.append(committed.bytes)
+        if first:
+            chunks.append(session.update(boundary.instance_id, STREAMING_STATE_BYTES))
+            first = False
+        step = session.advance()
+    chunks.append(step.bytes)
+    return b"".join(chunks)
 
 
-def test_streaming_session(benchmark: Any, renderer: Renderer) -> None:
+def test_streaming_session(benchmark: Any, streaming_renderer: Renderer) -> None:
     benchmark.group = "streaming"
-    benchmark(_stream_once, renderer)
+    benchmark(_stream_once, streaming_renderer)
 
 
 @pytest.mark.parametrize("workers", [1, 2, 4])

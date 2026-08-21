@@ -42,6 +42,7 @@ mod tests {
                     WebUIFragment::raw("Hello"),
                     WebUIFragment::signal("name", false),
                 ],
+                contains_boundary: false,
             },
         );
         let protocol = WebUIProtocol::new(fragments);

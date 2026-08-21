@@ -6,7 +6,7 @@ Pick the handler that matches your stack:
 
 - [**Rust**](./rust), High-performance native rendering with the Rust programming language
 - [**Node**](./node), Buffered and streaming SSR via a native addon built with napi-rs for Node, Bun, and Deno
-- [**.NET**](/guide/installation#net), Managed `Microsoft.WebUI` NuGet bindings with transitive native runtime packages
+- [**.NET**](./dotnet), Managed `Microsoft.WebUI` NuGet bindings with progressive ASP.NET streaming
 - [**Python**](./python), Native `microsoft-webui` package (PyO3) with buffered, partial, and host-driven streaming rendering
 - [**Electron**](./electron), Desktop apps via Electron with custom `webui://` protocol
 - [**WebAssembly**](./wasm), Split parser, handler, and combined browser bundles

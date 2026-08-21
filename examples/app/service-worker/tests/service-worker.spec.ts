@@ -22,13 +22,13 @@ test('streams WebUI-rendered chunks from a service worker', async ({ page }) => 
 
   await expect(page.getByRole('heading', { name: 'WebUI rendered in a service worker' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Serverless HTML without an app server' })).toBeVisible();
-  await expect(page.getByText('Chunks render as async state resolves')).toBeVisible();
+  await expect(page.getByText('Concurrent fetches feed an ordered cursor')).toBeVisible();
   await expect(page.getByText('Streaming timeline')).toBeVisible();
   await expect(page.locator('.error-card')).toHaveCount(0);
 
   const headings = await page.locator('.card h1, .card h2').allTextContents();
   const shell = headings.indexOf('WebUI rendered in a service worker');
-  const metrics = headings.indexOf('Chunks render as async state resolves');
+  const metrics = headings.indexOf('Concurrent fetches feed an ordered cursor');
   const hero = headings.indexOf('Serverless HTML without an app server');
   const activity = headings.indexOf('Streaming timeline');
 
@@ -36,12 +36,12 @@ test('streams WebUI-rendered chunks from a service worker', async ({ page }) => 
   const chunkOrder = await page.locator('.stream-chunk').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-chunk')),
   );
-  expect(chunkOrder).toEqual(['shell', 'metrics', 'hero', 'activity']);
+  expect(chunkOrder).toEqual(['shell', 'hero', 'metrics', 'activity']);
 
   expect(shell).toBeGreaterThan(-1);
-  expect(metrics).toBeGreaterThan(shell);
-  expect(hero).toBeGreaterThan(metrics);
-  expect(activity).toBeGreaterThan(hero);
+  expect(hero).toBeGreaterThan(shell);
+  expect(metrics).toBeGreaterThan(hero);
+  expect(activity).toBeGreaterThan(metrics);
 
   await expect(page.locator('style')).toHaveCount(5);
   const themeCss = await page.locator('style').first().evaluate((node) => node.textContent ?? '');

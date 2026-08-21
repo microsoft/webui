@@ -46,7 +46,7 @@ deterministic indices, and binds the plugin once.
 |--------|-------------|
 | `render(stateJson, options?)` | Return complete rendered HTML as a string |
 | `renderStream(stateJson, onChunk, options?)` | Invoke callbacks coalesced around a 16 KiB target |
-| `streamResponse(options?)` | Open a progressive [`StreamingSession`](#streamingsession) returning one `Uint8Array` per call |
+| `streamResponse(entry, requestPath, options?)` | Open a progressive [`StreamingSession`](#streamingsession) returning one `Uint8Array` per call |
 | `renderPartial(stateJson, entry, requestPath, inventoryHex)` | Return a complete JSON partial response with active-route projected state |
 | `renderComponentTemplates(componentTags, inventoryHex)` | Return requested template payloads and updated inventory |
 | `tokens()` | Return CSS token names in build order |
@@ -57,19 +57,34 @@ For a complete static/CDN service worker example using this callback to write a
 
 ### `StreamingSession`
 
-When the entry declares [`<boundary>` directives](/guide/concepts/directives/boundary),
-`streamResponse()` opens a session that returns bytes instead of writing them,
-which maps directly onto a `ReadableStream` controller in a service worker:
+`streamResponse()` opens a runtime-discovered session that maps directly onto a
+`ReadableStream` controller:
 
 ```js
-const session = protocol.streamResponse({ entry: 'index.html', requestPath: '/' });
-const rows = session.boundary('rows');
+const session = protocol.streamResponse('index.html', '/');
 
 const body = new ReadableStream({
   async start(controller) {
-    controller.enqueue(session.writeShell(baseState));
-    controller.enqueue(session.writeBoundary(rows, await loadRows()));
-    controller.enqueue(session.finish({}));
+    let step = session.start(JSON.stringify(initialState));
+    controller.enqueue(step.bytes);
+    while (!step.done) {
+      const boundary = step.boundary;
+      if (boundary) {
+        const state = await loadBoundaryState(
+          boundary.owner,
+          boundary.name,
+          boundary.key,
+        );
+        step = session.resume(
+          boundary.instanceId,
+          JSON.stringify(state),
+          'final',
+        );
+      } else {
+        step = session.advance();
+      }
+      controller.enqueue(step.bytes);
+    }
     controller.close();
   },
 });
@@ -77,15 +92,19 @@ const body = new ReadableStream({
 
 | Member | Description |
 |--------|-------------|
-| `boundary(name)` | Resolve an authored boundary name to its integer handle |
-| `boundaryCount` / `finished` | Declared boundary count; whether `finish()` ran |
-| `writeShell(state)` | Document prefix through the first semantic flush |
-| `writeBoundary(id, state, mode?)` | One boundary's markup and checkpoint (`"final"` or `"updatable"`) |
-| `update(id, state)` | Projected state patch to an updatable boundary |
-| `finish(state)` | Tail checkpoint, terminal record, and document suffix |
+| `start(stateJson)` | Return `{ bytes, done, boundary? }` through the first occurrence or terminal |
+| `resume(instanceId, stateJson, mode?)` | Return only the pending occurrence's bytes through its checkpoint |
+| `advance()` | Return following parent bytes through the next occurrence or terminal |
+| `update(instanceId, patchJson)` | Return projected state bytes for an updatable occurrence |
 
-The API and its ordering rules are identical on Node, C, and C#, so the same
-server logic ports between them unchanged.
+Descriptors contain `instanceId`, `declarationId`, `owner`, `name`, and an
+optional string or numeric `key`. A descriptor means `resume`; no descriptor
+with `done: false` means `advance`; `done: true` means complete. `resume`
+returns only the occurrence and checkpoint so it can be enqueued immediately.
+`advance` returns the following parent or tail bytes, with no sibling boundary
+workaround required. An update is valid between `resume` and `advance`. The
+final step's `Uint8Array` includes tail and terminal bytes. The contract is
+identical on Node, Python, C, and .NET.
 
 ## Parser-only API
 

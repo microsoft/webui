@@ -114,6 +114,43 @@ use webui_handler::plugin::webui::WebUIHydrationPlugin;
 let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
 ```
 
+### Progressive Responses
+
+For host-paced `<boundary>` rendering, drive the four-state session directly:
+
+```rust
+use webui::{BoundaryMode, RenderOptions};
+
+let options = RenderOptions::new("index.html", "/");
+let mut response =
+    handler.stream_response(&protocol, &options, &mut writer)?;
+let mut step = response.start(&initial_state)?;
+
+while !step.done {
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state =
+                load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            response.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        None => response.advance()?,
+    };
+}
+```
+
+| Method | Result |
+|---|---|
+| `start(state)` | Shell bytes through the first descriptor or terminal |
+| `resume(instance_id, state, mode)` | Only the pending occurrence through its checkpoint |
+| `advance()` | Following parent bytes through the next descriptor or terminal |
+| `update(instance_id, patch)` | Projected state for an updatable occurrence |
+
+A descriptor means call `resume`; no descriptor with `done == false` means call
+`advance`; `done == true` means complete. Boundary-only `resume` makes a
+checkpoint independently flushable. `advance` writes following parent or tail
+bytes, so no sibling boundary is needed. An update is valid between `resume` and
+`advance`.
+
 ### Inspect
 
 ```rust

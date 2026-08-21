@@ -2,11 +2,14 @@
 // Licensed under the MIT license.
 
 import { registerTemplateData } from './template.js';
-import type { BoundaryBootstrap } from './streaming-protocol.js';
+import type {
+  BoundaryBootstrap,
+  SpanCompletionPayload,
+} from './streaming-protocol.js';
 
 /** Register template data and merge response-scoped checkpoint metadata. */
 export function applyBoundaryBootstrap(
-  bootstrap: BoundaryBootstrap,
+  bootstrap: BoundaryBootstrap | SpanCompletionPayload,
 ): void {
   if (bootstrap.templates) registerTemplateData(bootstrap.templates);
 
@@ -17,7 +20,12 @@ export function applyBoundaryBootstrap(
     const key = keys[i];
     // Templates are merged by registerTemplateData; boundary state remains
     // ephemeral and is handed directly to roots by the activation walk.
-    if (key === 'templates' || key === 'state') continue;
+    if (
+      key === 'templates' ||
+      key === 'state' ||
+      key === 'declarationId' ||
+      key === 'enclosingSpanInstanceId'
+    ) continue;
     if (key === 'inventory') {
       w.__webui.inventory = mergeInventory(
         w.__webui.inventory,

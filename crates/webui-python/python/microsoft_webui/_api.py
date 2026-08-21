@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, TypeAlias
 
@@ -31,6 +32,26 @@ class BoundaryMode(StrEnum):
 
     FINAL = "final"
     UPDATABLE = "updatable"
+
+
+@dataclass(frozen=True, slots=True)
+class BoundaryDescriptor:
+    """One runtime boundary occurrence discovered during streaming."""
+
+    instance_id: int
+    declaration_id: int
+    owner: str
+    name: str
+    key: str | int | float | None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamStep:
+    """Immutable bytes and continuation state produced by one streaming call."""
+
+    bytes: bytes
+    done: bool
+    boundary: BoundaryDescriptor | None = None
 
 
 def _plugin_value(plugin: Plugin | str | None) -> str | None:
@@ -182,50 +203,61 @@ class Renderer:
 
 
 class StreamingSession:
-    """A mutable, host-driven progressive HTML response."""
+    """A mutable, single-driver progressive HTML response.
+
+    Each call returns immutable output while the session retains its continuation.
+    """
 
     __slots__ = ("_inner",)
 
     def __init__(self, inner: _native._StreamingSession) -> None:
         self._inner = inner
 
-    def boundary(self, name: str) -> int:
-        """Resolve an authored boundary name once and reuse its integer ID."""
-        return self._inner.boundary(name)
+    def start(self, state: StateInput) -> StreamStep:
+        """Render until the first runtime boundary occurrence or completion."""
+        return _stream_step(self._inner.start(_state_json(state)))
 
-    @property
-    def boundary_count(self) -> int:
-        """Number of compile-time boundaries in the entry."""
-        return self._inner.boundary_count
-
-    @property
-    def finished(self) -> bool:
-        """Whether the terminal record has been emitted."""
-        return self._inner.finished
-
-    def write_shell(self, state: StateInput) -> bytes:
-        """Render everything before the first boundary."""
-        return self._inner.write_shell(_state_json(state))
-
-    def write_boundary(
+    def resume(
         self,
-        boundary: int,
+        instance_id: int,
         state: StateInput,
         *,
         mode: BoundaryMode | str = BoundaryMode.FINAL,
-    ) -> bytes:
-        """Render and commit the next boundary in declaration order."""
+    ) -> StreamStep:
+        """Commit only the pending occurrence through its checkpoint."""
         parsed_mode = BoundaryMode(mode)
-        return self._inner.write_boundary(
-            _state_json(state),
-            boundary,
-            parsed_mode is BoundaryMode.UPDATABLE,
+        return _stream_step(
+            self._inner.resume(
+                _state_json(state),
+                instance_id,
+                parsed_mode is BoundaryMode.UPDATABLE,
+            )
         )
 
-    def update(self, boundary: int, state: StateInput) -> bytes:
-        """Push a projected state patch to an updatable boundary."""
-        return self._inner.update(_state_json(state), boundary)
+    def advance(self) -> StreamStep:
+        """Render parent bytes until the next occurrence or completion."""
+        return _stream_step(self._inner.advance())
 
-    def finish(self, state: StateInput) -> bytes:
-        """Render the document tail and terminal record from the final state."""
-        return self._inner.finish(_state_json(state))
+    def update(self, instance_id: int, patch: StateInput) -> bytes:
+        """Push a projected state patch to an updatable occurrence."""
+        return self._inner.update(_state_json(patch), instance_id)
+
+
+def _stream_step(value: _native._StreamStep) -> StreamStep:
+    boundary = value["boundary"]
+    descriptor = (
+        None
+        if boundary is None
+        else BoundaryDescriptor(
+            instance_id=boundary["instance_id"],
+            declaration_id=boundary["declaration_id"],
+            owner=boundary["owner"],
+            name=boundary["name"],
+            key=boundary["key"],
+        )
+    )
+    return StreamStep(
+        bytes=value["bytes"],
+        done=value["done"],
+        boundary=descriptor,
+    )

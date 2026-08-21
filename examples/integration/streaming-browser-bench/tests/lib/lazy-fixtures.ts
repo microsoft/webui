@@ -36,15 +36,15 @@ const TODO_TEMPLATE = {
   h: '<article><input type="checkbox"><span></span><small></small><strong></strong><time></time><button type="button">Toggle</button><button type="button">Delete</button></article>',
   tr: ['title', 'description', 'priority', 'due'],
   tx: [
-    [[[0, 1], 0], [['title']]],
-    [[[0, 2], 0], [['description']]],
-    [[[0, 3], 0], [['priority']]],
-    [[[0, 4], 0], [['due']]],
+    [[3, 0], [['title']]],
+    [[4, 0], [['description']]],
+    [[5, 0], [['priority']]],
+    [[6, 0], [['due']]],
   ],
   eg: [
     ['click', [
-      ['toggle', [], [0, 5]],
-      ['remove', [], [0, 6]],
+      ['toggle', [], 7],
+      ['remove', [], 8],
     ]],
   ],
 } as const;

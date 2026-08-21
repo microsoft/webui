@@ -51,6 +51,47 @@ The response is a JSON string — pipe it directly to the HTTP response. No dese
 payload for on-demand component loading. `protocol.Tokens()` returns CSS token
 names in build order.
 
+## Progressive Streaming
+
+`WebUIHandler.StreamResponse` returns one host-owned, single-driver session:
+
+```csharp
+using var session = handler.StreamResponse(protocol, "index.html", "/");
+StreamingStep step = session.Start(initialStateJson);
+
+while (true)
+{
+    await response.Body.WriteAsync(step.Bytes);
+    await response.Body.FlushAsync();
+    if (step.Done) break;
+
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadBoundaryStateAsync(boundary);
+        step = session.Resume(
+            boundary.InstanceId,
+            state,
+            BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
+}
+```
+
+| Member | Result |
+|---|---|
+| `Start(stateJson)` | Shell bytes through the first descriptor or terminal |
+| `Resume(instanceId, stateJson, mode)` | Only the pending occurrence's bytes through its checkpoint |
+| `Advance()` | Following parent bytes through the next descriptor or terminal |
+| `Update(instanceId, patchJson)` | Projected state bytes for an updatable occurrence |
+
+A descriptor requires `Resume`; no descriptor with `Done == false` requires
+`Advance`; `Done == true` means complete. `Resume` is boundary-only and
+`Advance` carries following parent or tail bytes, so no sibling boundary is
+needed. `Update` is valid between an occurrence's `Resume` and `Advance`.
+
 ## Installation
 
 ```bash

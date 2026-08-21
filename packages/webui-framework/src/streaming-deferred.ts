@@ -8,6 +8,7 @@ import {
 import {
   abandonDeferredDescendants,
   abandonDeferredElement,
+  removeStreamingAttributes,
 } from './streaming-cleanup.js';
 import {
   firstNodeWithin,
@@ -15,43 +16,92 @@ import {
   MAX_MARKER_SCAN_NODES,
   nextAfterSubtreeWithin,
   nextWithinRoot,
-  safeRemoveAttribute,
+  STREAMING_ENCLOSING_SPAN_ATTR,
   streamingErrorMessage,
 } from './streaming-dom.js';
 import {
+  ACTIVATION_ACTIVATED,
+  ACTIVATION_ANCESTOR_BARRIER,
+  ACTIVATION_MISSING_TEMPLATE,
+  ACTIVATION_STATIC_HOST_OPT_OUT,
   PENDING_ROOT_CONNECTED,
   STREAMED_HOST_ATTR,
   STREAMING_BOUNDARY_ACTIVATE,
 } from './streaming-mode.js';
 import { applyStateUpdate } from './streaming-state.js';
 
-const ACTIVATION_ACTIVATED = 1;
-const ACTIVATION_STATIC_HOST_OPT_OUT = 2;
-export const ACTIVATION_MISSING_TEMPLATE = 3;
-export const ELEMENT_IGNORED = 0;
-export const ELEMENT_DEFERRED = 4;
-export const ELEMENT_LIMIT_FAILURE = 5;
+// Coordinator-internal walk results, deliberately in a decade disjoint from the
+// shared `ACTIVATION_*` outcomes (1..4) declared in `streaming-mode.ts`. Both
+// spaces travel through the same `number`, so overlapping them once made an
+// ancestor barrier indistinguishable from a definition-deferred element.
+export const ELEMENT_IGNORED = 10;
+export const ELEMENT_DEFERRED = 11;
+export const ELEMENT_LIMIT_FAILURE = 12;
+export const ELEMENT_ACTIVATED_FROM_PENDING = 13;
+export const ELEMENT_BARRIER_LIMIT_FAILURE = 14;
+/** A hook returned something outside the shared activation contract. */
+export const ELEMENT_INVALID_OUTCOME = 15;
 export const MAX_PENDING_UNDEFINED_ROOTS = 50_000;
+export const MAX_PENDING_BARRIER_ROOTS = 50_000;
 
 type BoundaryActivatable = Element & {
+  // Typed as `number`, not `ActivationOutcome`: the hook may belong to a
+  // foreign element that never saw this contract, so the value is validated
+  // once in `invokeActivationHook` instead of being trusted by the type.
   [STREAMING_BOUNDARY_ACTIVATE]?: (
     state?: Record<string, unknown>,
+    bypassAncestor?: Element,
   ) => number;
 };
+
+/**
+ * The one unfinished component host an early boundary's marked roots may skip.
+ *
+ * Allocated once per boundary that declares an enclosing span, never per root.
+ * `id` is the canonical decimal SpanInstanceId the compiler wrote onto both the
+ * host (`data-ws-span`) and the entitled early roots (`data-ws-enclosing`);
+ * `host` is the element that attribute already resolved to. Matching here and
+ * handing the element itself to the activation hook is what keeps every span
+ * attribute name out of the always-shipped bundle.
+ */
+export interface SpanBypass {
+  readonly id: string;
+  readonly host: Element;
+}
 
 interface PendingTagWaiter {
   readonly generation: number;
   readonly roots: Set<Element>;
 }
 
+/**
+ * Everything one deferred root must replay when it finally activates.
+ *
+ * Held as a single symbol-keyed record rather than three parallel properties:
+ * one hidden-class transition per retained root instead of three, one delete
+ * instead of three, and no absent-vs-`undefined` sentinels.
+ */
+interface PendingRootRecord {
+  readonly state: Record<string, unknown> | undefined;
+  readonly updates: PendingBoundaryUpdates | undefined;
+  readonly bypass: SpanBypass | undefined;
+}
+
 const pendingTagWaiters = new Map<string, PendingTagWaiter>();
+const pendingBarrierRoots = new Set<Element>();
 let pendingUndefinedRoots = 0;
 let activationGeneration = 0;
 let failureHandler: ((reason: string) => void) | null = null;
+/**
+ * The offending value behind the most recent `ELEMENT_INVALID_OUTCOME`.
+ *
+ * A scalar rather than a carried payload so the rejection costs no allocation
+ * on a path the coordinator takes for every marked root. Every caller reads it
+ * in the same turn it observes the result, before any further hook can run.
+ */
+let invalidActivationOutcome: unknown;
 
-const PENDING_BOUNDARY_STATE = Symbol();
-const PENDING_BOUNDARY_UPDATES = Symbol();
-const NO_BOUNDARY_STATE: unique symbol = Symbol();
+const PENDING_RECORD = Symbol();
 
 /** One boundary-owned shallow patch shared by every deferred root. */
 export interface PendingBoundaryUpdates {
@@ -62,6 +112,12 @@ export interface PendingBoundaryUpdates {
    * absence means "finished with", not "activated".
    */
   readonly roots: Element[];
+  /**
+   * True while the response can still address this target. A successful
+   * terminal clears it but may leave `patch` alive until already-pending roots
+   * replay that last committed state. Fatal cleanup clears both.
+   */
+  active: boolean;
   /**
    * Marked roots seen by the checkpoint scan, including ones still deferred or
    * destined to fail. Bounds retention pessimistically so a boundary cannot
@@ -74,6 +130,8 @@ export interface PendingBoundaryUpdates {
 
 export interface DeferredActivationOptions {
   updates?: PendingBoundaryUpdates;
+  /** Span barrier this boundary's compiler-marked early roots may bypass. */
+  bypass?: SpanBypass;
   /**
    * Set only by the checkpoint scan, which owns the boundary's retention
    * budget. A late activation re-walks a subtree the scan already counted, so
@@ -100,6 +158,32 @@ function fail(reason: string): void {
   failureHandler(reason);
 }
 
+function tagOf(el: Element): string {
+  return el.tagName.toLowerCase();
+}
+
+function missingTemplateReason(tag: string): string {
+  return `template metadata missing while activating <${tag}>`;
+}
+
+/**
+ * Report a hook that answered outside the shared activation contract.
+ *
+ * Kept distinct from `missingTemplateReason` on purpose: folding an
+ * unrecognized code into "missing template" sends every reader looking for
+ * absent metadata when the real defect is a hook returning a code this
+ * coordinator cannot decode.
+ */
+function invalidOutcomeReason(tag: string): string {
+  return `<${tag}> returned an unrecognized streaming activation outcome ${
+    String(invalidActivationOutcome)
+  }`;
+}
+
+function barrierLimitReason(): string {
+  return `pending ancestor-barrier root count exceeds ${MAX_PENDING_BARRIER_ROOTS}`;
+}
+
 /**
  * Deliver a replayed patch, halting when the target cannot accept one.
  *
@@ -115,9 +199,22 @@ function requireStateUpdate(
   patch: Record<string, unknown>,
 ): void {
   if (applyStateUpdate(el, patch)) return;
-  fail(
-    `<${el.tagName.toLowerCase()}> activated without a setState() method`,
-  );
+  fail(`<${tagOf(el)}> activated without a setState() method`);
+}
+
+/** Join one activated root to its boundary and replay any collapsed patch. */
+function joinBoundaryUpdates(
+  el: Element,
+  updates: PendingBoundaryUpdates,
+): void {
+  // Joining only on a known-good outcome is what keeps a failed or ignored
+  // element out of the update set for the life of the page.
+  if (updates.active) updates.roots.push(el);
+  // Replayed rather than merged into hydration state: `$hydrate` wires
+  // bindings against the server's bytes without evaluating them, so seeding a
+  // post-render value first would bind the old branch while the element
+  // believed it held the new one.
+  if (updates.patch) requireStateUpdate(el, updates.patch);
 }
 
 /**
@@ -131,19 +228,33 @@ function activateMarkedElement(
   el: Element,
   state: Record<string, unknown> | undefined,
   updates?: PendingBoundaryUpdates,
+  bypass?: SpanBypass,
 ): number {
-  const tag = el.tagName.toLowerCase();
+  const tag = tagOf(el);
   if (tag.indexOf('-') === -1) return ELEMENT_IGNORED;
 
-  if (customElements.get(tag)) return invokeActivationHook(el, state);
-  if (
-    !hasPendingState(el) &&
-    pendingUndefinedRoots >= MAX_PENDING_UNDEFINED_ROOTS
-  ) {
-    return ELEMENT_LIMIT_FAILURE;
+  if (customElements.get(tag)) {
+    if (pendingBarrierRoots.has(el)) {
+      return activatePendingBarrierRoot(el);
+    }
+    // A definition waiter still owns this root until its shared reaction runs.
+    // Consuming its state here would leave the waiter count and lifecycle stuck.
+    if (hasPendingRecord(el)) return ELEMENT_DEFERRED;
+    const outcome = invokeActivationHook(el, state, bypass);
+    if (outcome !== ACTIVATION_ANCESTOR_BARRIER) return outcome;
+    if (pendingBarrierRoots.size >= MAX_PENDING_BARRIER_ROOTS) {
+      return ELEMENT_BARRIER_LIMIT_FAILURE;
+    }
+    deferBehindBarrier(el, state, updates, bypass);
+    return ELEMENT_DEFERRED;
   }
 
-  stashPendingState(el, state, updates);
+  if (!hasPendingRecord(el)) {
+    if (pendingUndefinedRoots >= MAX_PENDING_UNDEFINED_ROOTS) {
+      return ELEMENT_LIMIT_FAILURE;
+    }
+    stashPendingRecord(el, state, updates, bypass);
+  }
   let waiter = pendingTagWaiters.get(tag);
   if (!waiter) {
     waiter = { generation: activationGeneration, roots: new Set() };
@@ -160,6 +271,79 @@ function activateMarkedElement(
   }
   (el as PendingRoot)[PENDING_ROOT_CONNECTED] = resumePendingRoot;
   return ELEMENT_DEFERRED;
+}
+
+/** Retain one root whose hook reported an unfinished ancestor barrier. */
+function deferBehindBarrier(
+  el: Element,
+  state: Record<string, unknown> | undefined,
+  updates: PendingBoundaryUpdates | undefined,
+  bypass: SpanBypass | undefined,
+): void {
+  stashPendingRecord(el, state, updates, bypass);
+  pendingBarrierRoots.add(el);
+  (el as PendingRoot)[PENDING_ROOT_CONNECTED] = resumeBarrierRoot;
+}
+
+function activatePendingBarrierRoot(el: Element): number {
+  if (!pendingBarrierRoots.delete(el)) return ELEMENT_IGNORED;
+  delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
+  const record = takePendingRecord(el);
+  const updates = releaseUpdates(record);
+  try {
+    const outcome = resumeRetainedRoot(el, record, updates);
+    if (outcome === ACTIVATION_ANCESTOR_BARRIER) return ELEMENT_DEFERRED;
+    return outcome === ACTIVATION_MISSING_TEMPLATE ||
+        outcome === ELEMENT_INVALID_OUTCOME
+      ? outcome
+      : ELEMENT_ACTIVATED_FROM_PENDING;
+  } finally {
+    if (updates?.pendingRoots === 0) updates.patch = undefined;
+  }
+}
+
+/**
+ * Re-run one retained root's activation and hand back the raw outcome.
+ *
+ * Shared by both retention reasons — an undefined tag and an unfinished
+ * ancestor barrier — because they differ only in the bookkeeping around the
+ * call. A root still behind a barrier is re-retained here so neither caller
+ * can forget to, and an activated root joins its boundary parent-first,
+ * before any descendant walk.
+ */
+function resumeRetainedRoot(
+  el: Element,
+  record: PendingRootRecord | undefined,
+  updates: PendingBoundaryUpdates | undefined,
+): number {
+  const outcome = invokeActivationHook(el, record?.state, record?.bypass);
+  if (outcome === ACTIVATION_ANCESTOR_BARRIER) {
+    deferBehindBarrier(el, record?.state, updates, record?.bypass);
+  } else if (
+    updates &&
+    (outcome === ACTIVATION_ACTIVATED ||
+      outcome === ACTIVATION_STATIC_HOST_OPT_OUT)
+  ) {
+    joinBoundaryUpdates(el, updates);
+  }
+  return outcome;
+}
+
+/** Resume coordinator-owned activation when a component barrier releases. */
+function resumeBarrierRoot(this: Element): void {
+  try {
+    const outcome = activatePendingBarrierRoot(this);
+    if (outcome === ACTIVATION_MISSING_TEMPLATE) {
+      abandonDeferredTree(this);
+      fail(missingTemplateReason(tagOf(this)));
+    } else if (outcome === ELEMENT_INVALID_OUTCOME) {
+      abandonDeferredTree(this);
+      fail(invalidOutcomeReason(tagOf(this)));
+    }
+  } catch (error) {
+    abandonDeferredDescendants(this);
+    reportActivationFailure(tagOf(this), error);
+  }
 }
 
 function onTagDefined(tag: string, generation: number): void {
@@ -196,7 +380,7 @@ function onTagDefined(tag: string, generation: number): void {
 
 /** Shared reconnect seam for roots that were undefined at checkpoint time. */
 function resumePendingRoot(this: Element): void {
-  const tag = this.tagName.toLowerCase();
+  const tag = tagOf(this);
   const waiter = pendingTagWaiters.get(tag);
   if (
     !waiter ||
@@ -217,30 +401,36 @@ function activatePendingRoot(
   if (!waiter.roots.delete(el)) return;
   pendingUndefinedRoots--;
   delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
-  let updates: PendingBoundaryUpdates | undefined;
+  const record = takePendingRecord(el);
+  const updates = releaseUpdates(record);
+  const state = record?.state;
+  const bypass = record?.bypass;
   try {
-    updates = takePendingUpdates(el);
-    const state = takePendingState(el);
-    const outcome = invokeActivationHook(el, state);
+    const outcome = resumeRetainedRoot(el, record, updates);
     if (outcome === ACTIVATION_MISSING_TEMPLATE) {
-      abandonDeferredDescendants(el);
-      abandonDeferredElement(el);
-      fail(`template metadata missing while activating <${tag}>`);
+      abandonDeferredTree(el);
+      fail(missingTemplateReason(tag));
       return;
     }
-    // Parent first, and before the descendant walk: this root's own patch may
-    // tear down the branch its retained descendants live in, and activating a
-    // root inside an already-discarded branch is worse than never reaching it.
-    if (updates) {
-      updates.roots.push(el);
-      if (updates.patch) requireStateUpdate(el, updates.patch);
+    if (outcome === ELEMENT_INVALID_OUTCOME) {
+      abandonDeferredTree(el);
+      fail(invalidOutcomeReason(tag));
+      return;
+    }
+    if (outcome === ACTIVATION_ANCESTOR_BARRIER) {
+      // Re-retained by `resumeRetainedRoot`; only the budget is enforced here.
+      if (pendingBarrierRoots.size > MAX_PENDING_BARRIER_ROOTS) {
+        abandonDeferredTree(el);
+        fail(barrierLimitReason());
+      }
+      return;
     }
     const failure = activateDeferredTree(
       firstNodeWithin(el),
       el,
       null,
       state,
-      updates ? { updates } : undefined,
+      updates || bypass ? { updates, bypass } : undefined,
     );
     if (failure) fail(failure);
   } catch (error) {
@@ -274,6 +464,7 @@ export function activateDeferredTree(
   // Hoisted out of the walk: these are read once per node otherwise, and this
   // loop runs over every node of every boundary.
   const updates = options?.updates;
+  const bypass = options?.bypass;
   const countRetention =
     options?.countRetention === true && updates !== undefined;
   let node = first;
@@ -315,14 +506,18 @@ export function activateDeferredTree(
       if (marked) {
         const el = node as Element;
         try {
-          const outcome = activateMarkedElement(el, state, updates);
+          const outcome = activateMarkedElement(el, state, updates, bypass);
           if (outcome === ACTIVATION_MISSING_TEMPLATE) {
-            return `template metadata missing while activating <${
-              el.tagName.toLowerCase()
-            }>`;
+            return missingTemplateReason(tagOf(el));
+          }
+          if (outcome === ELEMENT_INVALID_OUTCOME) {
+            return invalidOutcomeReason(tagOf(el));
           }
           if (outcome === ELEMENT_LIMIT_FAILURE) {
             return `pending undefined root count exceeds ${MAX_PENDING_UNDEFINED_ROOTS}`;
+          }
+          if (outcome === ELEMENT_BARRIER_LIMIT_FAILURE) {
+            return barrierLimitReason();
           }
           if (outcome === ELEMENT_DEFERRED) {
             resumeAfterDeferred = nextAfterSubtreeWithin(node, root);
@@ -332,19 +527,10 @@ export function activateDeferredTree(
             (outcome === ACTIVATION_ACTIVATED ||
               outcome === ACTIVATION_STATIC_HOST_OPT_OUT)
           ) {
-            // Joining here, on a known-good outcome, is what keeps a failed or
-            // ignored element out of the update set for the life of the page.
-            updates.roots.push(el);
-            // Replayed rather than merged into hydration state: `$hydrate` wires
-            // bindings against the server's bytes without evaluating them, so
-            // seeding a post-render value first would bind the old branch while
-            // the element believed it held the new one.
-            if (updates.patch) {
-              requireStateUpdate(el, updates.patch);
-            }
+            joinBoundaryUpdates(el, updates);
           }
         } catch (error) {
-          reportActivationFailure(el.tagName.toLowerCase(), error);
+          reportActivationFailure(tagOf(el), error);
         }
       }
     }
@@ -363,91 +549,113 @@ function reportActivationFailure(tag: string, error: unknown): void {
   );
 }
 
-/** Balance and clear every pending undefined-tag waiter exactly once. */
-export function abandonPendingWaiters(): void {
-  if (pendingTagWaiters.size === 0) {
-    pendingUndefinedRoots = 0;
-    return;
-  }
-  for (const waiter of pendingTagWaiters.values()) {
-    for (const el of waiter.roots) clearPendingRoot(el);
-    settleLateActivation();
-  }
-  pendingTagWaiters.clear();
-  pendingUndefinedRoots = 0;
-}
-
-function clearPendingRoot(el: Element): void {
-  if (hasPendingState(el)) takePendingState(el);
-  takePendingUpdates(el);
-  delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
+/** Release one failed root together with the subtree it was gating. */
+function abandonDeferredTree(el: Element): void {
   abandonDeferredDescendants(el);
   abandonDeferredElement(el);
 }
 
-function stashPendingState(
+/** Balance and clear every pending undefined-tag waiter exactly once. */
+export function abandonPendingWaiters(): void {
+  if (pendingBarrierRoots.size !== 0) {
+    for (const el of pendingBarrierRoots) clearPendingRoot(el);
+    pendingBarrierRoots.clear();
+  }
+  if (pendingTagWaiters.size !== 0) {
+    for (const waiter of pendingTagWaiters.values()) {
+      for (const el of waiter.roots) clearPendingRoot(el);
+      settleLateActivation();
+    }
+    pendingTagWaiters.clear();
+  }
+  pendingUndefinedRoots = 0;
+}
+
+function clearPendingRoot(el: Element): void {
+  releaseUpdates(takePendingRecord(el));
+  delete (el as PendingRoot)[PENDING_ROOT_CONNECTED];
+  abandonDeferredTree(el);
+}
+
+function stashPendingRecord(
   el: Element,
   state: Record<string, unknown> | undefined,
-  updates?: PendingBoundaryUpdates,
+  updates: PendingBoundaryUpdates | undefined,
+  bypass: SpanBypass | undefined,
 ): void {
-  const store = el as unknown as Record<symbol, unknown>;
-  store[PENDING_BOUNDARY_STATE] =
-    state === undefined ? NO_BOUNDARY_STATE : state;
-  if (updates) {
-    store[PENDING_BOUNDARY_UPDATES] = updates;
-    updates.pendingRoots++;
-  }
+  (el as unknown as Record<symbol, PendingRootRecord>)[PENDING_RECORD] = {
+    state,
+    updates,
+    bypass,
+  };
+  if (updates) updates.pendingRoots++;
 }
 
-function hasPendingState(el: Element): boolean {
-  return Object.prototype.hasOwnProperty.call(
-    el,
-    PENDING_BOUNDARY_STATE,
-  );
+function hasPendingRecord(el: Element): boolean {
+  return Object.prototype.hasOwnProperty.call(el, PENDING_RECORD);
 }
 
-function takePendingState(
-  el: Element,
-): Record<string, unknown> | undefined {
-  const store = el as unknown as Record<symbol, unknown>;
-  const stored = store[PENDING_BOUNDARY_STATE];
-  delete store[PENDING_BOUNDARY_STATE];
-  return stored === NO_BOUNDARY_STATE
-    ? undefined
-    : (stored as Record<string, unknown> | undefined);
+function takePendingRecord(el: Element): PendingRootRecord | undefined {
+  const store = el as unknown as Record<symbol, PendingRootRecord | undefined>;
+  const record = store[PENDING_RECORD];
+  delete store[PENDING_RECORD];
+  return record;
 }
 
-function takePendingUpdates(el: Element): PendingBoundaryUpdates | undefined {
-  const store = el as unknown as Record<symbol, unknown>;
-  const updates = store[PENDING_BOUNDARY_UPDATES] as
-    | PendingBoundaryUpdates
-    | undefined;
-  delete store[PENDING_BOUNDARY_UPDATES];
-  if (updates) updates.pendingRoots--;
-  return updates;
+/**
+ * Balance one taken record against its boundary's pending-root accounting.
+ *
+ * Returns the boundary only while it can still receive this root: a terminal
+ * that already dropped both the live set and the collapsed patch leaves
+ * nothing to join or replay.
+ */
+function releaseUpdates(
+  record: PendingRootRecord | undefined,
+): PendingBoundaryUpdates | undefined {
+  const updates = record?.updates;
+  if (!updates) return undefined;
+  updates.pendingRoots--;
+  return updates.active || updates.patch !== undefined ? updates : undefined;
 }
 
 function invokeActivationHook(
   el: Element,
   state: Record<string, unknown> | undefined,
+  bypass: SpanBypass | undefined,
 ): number {
   const hook = (el as BoundaryActivatable)[STREAMING_BOUNDARY_ACTIVATE];
   if (typeof hook !== 'function') return ACTIVATION_MISSING_TEMPLATE;
+  // The compiler entitles a specific set of early roots to skip the enclosing
+  // span host, so the attribute is matched here and the resolved element is
+  // handed over. One read, and only for a boundary that declares a span.
+  const bypassAncestor = bypass !== undefined &&
+      el.getAttribute(STREAMING_ENCLOSING_SPAN_ATTR) === bypass.id
+    ? bypass.host
+    : undefined;
   let outcome: number;
   try {
-    outcome = hook.call(el, state);
+    outcome = hook.call(el, state, bypassAncestor);
   } catch (error) {
-    safeRemoveAttribute(el, STREAMED_HOST_ATTR);
+    removeStreamingAttributes(el);
     throw error;
   }
+  // Only a genuinely finished root gives up its markers. A barrier still owns
+  // its root, and a root that could not hydrate keeps them for fatal cleanup.
   if (
-    outcome !== ACTIVATION_ACTIVATED &&
-    outcome !== ACTIVATION_STATIC_HOST_OPT_OUT
+    outcome === ACTIVATION_ACTIVATED ||
+    outcome === ACTIVATION_STATIC_HOST_OPT_OUT
   ) {
-    return ACTIVATION_MISSING_TEMPLATE;
+    removeStreamingAttributes(el);
+    return outcome;
   }
-  safeRemoveAttribute(el, STREAMED_HOST_ATTR);
-  return outcome;
+  if (
+    outcome === ACTIVATION_ANCESTOR_BARRIER ||
+    outcome === ACTIVATION_MISSING_TEMPLATE
+  ) {
+    return outcome;
+  }
+  invalidActivationOutcome = outcome;
+  return ELEMENT_INVALID_OUTCOME;
 }
 
 /** Reset retained activation state and invalidate uncancellable waiters. */
@@ -464,6 +672,10 @@ export function pendingUndefinedRootCountForTests(): number {
   return pendingUndefinedRoots;
 }
 
+export function pendingBarrierRootCountForTests(): number {
+  return pendingBarrierRoots.size;
+}
+
 export function elementHasPendingStateForTests(el: Element): boolean {
-  return hasPendingState(el);
+  return hasPendingRecord(el);
 }

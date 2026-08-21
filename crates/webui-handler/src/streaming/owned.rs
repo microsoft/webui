@@ -1,43 +1,35 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Host-owned streaming sessions for bindings that cannot hold a Rust borrow.
-//!
-//! [`StreamingResponse`](super::StreamingResponse) borrows its handler,
-//! protocol, options, and transport for the life of one response. That is the
-//! right shape for a Rust host, which keeps the response on its own stack, but
-//! it cannot cross a foreign-function boundary: a Node class instance, a C
-//! opaque pointer, or a .NET `SafeHandle` must stay alive between calls that
-//! Rust never sees.
-//!
-//! [`StreamingSession`] closes that gap without self-referential storage. It
-//! retains the handler and protocol behind `Arc`, parks the response's owned
-//! progress between calls, and rebuilds the borrowed half for the duration of
-//! each call. Nothing borrowed ever spans a call boundary, so this is ordinary
-//! safe Rust.
-//!
-//! It also inverts transport ownership. Each method returns the bytes it
-//! produced instead of writing them, so the host writes to its own socket and
-//! applies its own backpressure — the thing a push-based chunk callback cannot
-//! express.
+//! Host-owned progressive sessions with pull-based byte delivery.
 
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::session::{BoundaryId, BoundaryMode, ParkedResponse};
-use super::StreamingResponse;
+use super::session::{
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryMode, SessionCall, SessionCore, StreamStatus,
+};
+use super::StreamingSink;
 use crate::route_handler::Protocol;
 use crate::{FlushWriter, RenderOptions, ResponseWriter, Result, WebUIHandler};
 
-/// Collects response bytes for a host that owns its own transport.
+/// Reusable byte sink for host-owned sessions.
 ///
-/// `flush` is deliberately a no-op: a semantic flush means "these bytes are
-/// complete and may be sent", and for an encoder that is exactly the point at
-/// which the method returns them to the host.
+/// Records where the streaming transport flushed so a session can prove each
+/// returned step ends on a real flush boundary rather than silently merging a
+/// checkpoint with the bytes that follow it.
 #[derive(Default)]
 pub struct BufferSink {
     bytes: Vec<u8>,
+    last_flush: usize,
+}
+
+impl BufferSink {
+    fn reset(&mut self) {
+        self.bytes.clear();
+        self.last_flush = 0;
+    }
 }
 
 impl ResponseWriter for BufferSink {
@@ -53,27 +45,28 @@ impl ResponseWriter for BufferSink {
 
 impl FlushWriter for BufferSink {
     fn flush(&mut self) -> Result<()> {
+        self.last_flush = self.bytes.len();
         Ok(())
     }
 }
 
-/// Owned per-response configuration, so a session outlives its caller's strings.
+/// Owned per-response configuration.
 #[derive(Clone, Debug)]
 pub struct SessionOptions {
     /// Entry fragment to render.
     pub entry_id: String,
     /// Request path used for route matching.
     pub request_path: String,
-    /// Optional CSP nonce for generated inline `<script>` tags.
+    /// Optional CSP nonce.
     pub nonce: Option<String>,
-    /// Optional HTML injected at the structural `head_end` boundary.
+    /// Optional trusted HTML injected at head_end.
     pub head_inject: Option<String>,
-    /// Optional HTML injected at the structural `body_end` boundary.
+    /// Optional trusted HTML injected at body_end.
     pub body_inject: Option<String>,
 }
 
 impl SessionOptions {
-    /// Create options for an entry fragment and request path.
+    /// Create options for an entry and request path.
     #[must_use]
     pub fn new(entry_id: impl Into<String>, request_path: impl Into<String>) -> Self {
         Self {
@@ -86,208 +79,181 @@ impl SessionOptions {
     }
 }
 
-/// A progressive HTML response a foreign host drives one call at a time.
+/// Bytes and continuation state returned by one owned semantic step.
 ///
-/// Every method returns the bytes that call produced. The host writes them to
-/// its transport and decides when to continue, so backpressure and interleaved
-/// async work stay under host control.
+/// The bytes are one semantic write segment ending on a transport flush
+/// boundary: the shell prefix, exactly one committed occurrence, the parent
+/// bytes between two occurrences, or the tail plus terminal. A host writes them
+/// with a single `write` + `flush`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamStep {
+    /// Complete bytes produced by this call.
+    pub bytes: Vec<u8>,
+    /// Next runtime occurrence waiting for resume.
+    pub boundary: Option<BoundaryDescriptor>,
+    /// True after terminal emission.
+    pub done: bool,
+}
+
+/// A progressive response owned independently of any Rust borrow.
 ///
-/// Ordering rules match [`StreamingResponse`]: the shell first, then each
-/// boundary exactly once in declaration order, updates only after the target
-/// boundary commits, and `finish` last. Violations return an actionable error
-/// rather than corrupting the stream, and any render or transport failure
-/// permanently poisons the session because bytes may already have been sent.
+/// Exposes the same step machine as [`super::StreamingResponse`]:
+/// [`Self::start`] writes the shell prefix, [`Self::resume`] writes exactly one
+/// occurrence through its checkpoint, and [`Self::advance`] writes the parent
+/// bytes that follow it.
 pub struct StreamingSession {
     handler: Arc<WebUIHandler>,
     protocol: Arc<Protocol>,
     options: SessionOptions,
-    /// `None` only while a call is in flight, or once `finish` consumed the
-    /// response either successfully or fatally.
-    parked: Option<ParkedResponse>,
+    core: SessionCore,
     sink: BufferSink,
-    boundary_count: usize,
-    /// Set only when a terminal record actually reached the transport.
-    finished: bool,
 }
 
 impl StreamingSession {
-    /// Start a host-driven progressive response.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the entry is missing or its compiled streaming
-    /// structure is malformed.
+    /// Create an unstarted owned session.
     pub fn new(
         handler: Arc<WebUIHandler>,
         protocol: Arc<Protocol>,
         options: SessionOptions,
     ) -> Result<Self> {
-        let mut sink = BufferSink::default();
-        let (parked, boundary_count) = {
-            let render_options = render_options(&options);
-            let response = handler.stream_response(&protocol, &render_options, &mut sink)?;
-            let boundary_count = response.boundary_count();
-            (response.park(), boundary_count)
-        };
+        let core = SessionCore::new(&handler, &protocol, &options.entry_id)?;
         Ok(Self {
             handler,
             protocol,
             options,
-            parked: Some(parked),
-            sink,
-            boundary_count,
-            finished: false,
+            core,
+            sink: BufferSink::default(),
         })
     }
 
-    /// Resolve a free-form authored boundary name to an integer handle.
-    ///
-    /// Resolve once and reuse the handle; hot calls never hash a name.
-    ///
-    /// # Errors
-    ///
-    /// Returns an actionable error listing valid names when the entry does not
-    /// declare `name`.
-    pub fn boundary(&self, name: &str) -> Result<BoundaryId> {
-        let names = self
-            .protocol
-            .streaming_boundary_names(&self.options.entry_id);
-        names
-            .iter()
-            .position(|candidate| candidate == name)
-            .ok_or_else(|| super::error::unknown_boundary_name_error(name, names))
-            .and_then(BoundaryId::from_index)
+    /// Render until the first runtime boundary occurrence or terminal.
+    pub fn start(&mut self, state: &Value) -> Result<StreamStep> {
+        self.step(|core, call| core.start(call, state))
     }
 
-    /// Number of compile-time boundaries in this entry.
-    #[must_use]
-    pub fn boundary_count(&self) -> usize {
-        self.boundary_count
-    }
-
-    /// Whether the response has emitted its terminal record.
+    /// Commit the pending occurrence through its checkpoint, then stop.
     ///
-    /// Stays `false` after a rejected or failed `finish`, because no terminal
-    /// record reached the transport in either case.
-    #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.finished
-    }
-
-    /// Render the document prefix before the first boundary.
+    /// The returned bytes hold that occurrence's record and nothing that
+    /// follows it. Call [`Self::advance`] for the parent bytes.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when called out of order or when rendering fails.
-    pub fn write_shell(&mut self, state: &Value) -> Result<Vec<u8>> {
-        self.run(|response| response.write_shell(state))
-    }
-
-    /// Render and commit the next compile-time boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when boundaries are written out of declaration order or
-    /// when rendering fails.
-    pub fn write_boundary(
+    /// [`BoundaryMode::Updatable`] is refused once the response has committed
+    /// as many updatable occurrences as the browser retains. The refusal
+    /// produces no bytes and leaves the occurrence pending, so it can be
+    /// committed with [`BoundaryMode::Final`] instead.
+    pub fn resume(
         &mut self,
-        boundary: BoundaryId,
+        instance_id: BoundaryInstanceId,
         state: &Value,
         mode: BoundaryMode,
-    ) -> Result<Vec<u8>> {
-        self.run(|response| response.write_boundary(boundary, state, mode))
+    ) -> Result<StreamStep> {
+        self.step(|core, call| core.resume(call, instance_id, state, mode))
     }
 
-    /// Push a projected state patch to an already committed updatable boundary.
+    /// Write the ordinary parent bytes that follow a committed occurrence.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when the boundary has not committed, was committed as
-    /// final, or when `state` is not a JSON object.
-    pub fn update(&mut self, boundary: BoundaryId, state: &Value) -> Result<Vec<u8>> {
-        self.run(|response| response.update(boundary, state))
+    /// Valid only after [`Self::resume`].
+    pub fn advance(&mut self) -> Result<StreamStep> {
+        self.step(SessionCore::advance)
     }
 
-    /// Render the document tail and emit the terminal record.
+    /// Emit an update for one committed updatable runtime occurrence.
     ///
-    /// The session is finished afterwards and every later call fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when boundaries remain uncommitted or rendering fails.
-    pub fn finish(&mut self, state: &Value) -> Result<Vec<u8>> {
-        let parked = self.take_parked("finish")?;
-        let result = {
-            let Self {
-                handler,
-                protocol,
-                options,
-                sink,
-                parked: slot,
-                ..
-            } = self;
-            let render_options = render_options(options);
-            match StreamingResponse::unpark(parked, handler, protocol, &render_options, sink) {
-                // Ordering violations are rejected before any byte is written,
-                // so park the response again and let the host commit what is
-                // still outstanding instead of losing the open response.
-                Ok(response) => match response.ensure_finishable() {
-                    Ok(()) => response.finish(state),
-                    Err(error) => {
-                        *slot = Some(response.park());
-                        Err(error)
-                    }
-                },
-                Err(error) => Err(error),
-            }
+    /// Valid between [`Self::resume`] and [`Self::advance`], so a host can
+    /// revise the occurrence it just committed while the response stays open.
+    pub fn update(&mut self, instance_id: BoundaryInstanceId, patch: &Value) -> Result<Vec<u8>> {
+        self.sink.reset();
+        let options = render_options(&self.options);
+        let mut sink = StreamingSink {
+            transport: &mut self.sink,
+            component_opening: None,
+            written: 0,
+            flushed: 0,
         };
+        let result = self.core.update(
+            SessionCall {
+                handler: &self.handler,
+                protocol: &self.protocol,
+                options: &options,
+                writer: &mut sink,
+            },
+            instance_id,
+            patch,
+        );
         match result {
             Ok(()) => {
-                self.finished = true;
+                verify_flush_boundary(&self.sink)?;
                 Ok(std::mem::take(&mut self.sink.bytes))
             }
             Err(error) => {
-                self.sink.bytes = Vec::new();
+                self.sink.reset();
                 Err(error)
             }
         }
     }
 
-    fn take_parked(&mut self, operation: &str) -> Result<ParkedResponse> {
-        if let Some(parked) = self.parked.take() {
-            return Ok(parked);
-        }
-        let reason = if self.finished {
-            "the streaming response has already finished"
-        } else {
-            "the streaming response failed while emitting its terminal record and \
-             cannot continue; bytes may already have been sent"
-        };
-        Err(super::error::boundary_order_error(operation, reason))
+    /// Whether terminal emission completed.
+    #[must_use]
+    pub fn is_done(&self) -> bool {
+        self.core.done
     }
 
-    /// Rebuild the borrowed response, run one operation, and park it again.
-    fn run(
+    fn step(
         &mut self,
-        operation: impl FnOnce(&mut StreamingResponse<'_, BufferSink>) -> Result<()>,
-    ) -> Result<Vec<u8>> {
-        let parked = self.take_parked("streaming operation")?;
-        let Self {
-            handler,
-            protocol,
-            options,
-            sink,
-            parked: slot,
-            ..
-        } = self;
-        let render_options = render_options(options);
-        let mut response =
-            StreamingResponse::unpark(parked, handler, protocol, &render_options, sink)?;
-        let result = operation(&mut response);
-        *slot = Some(response.park());
-        result?;
-        Ok(std::mem::take(&mut self.sink.bytes))
+        operation: impl FnOnce(&mut SessionCore, SessionCall<'_, '_>) -> Result<StreamStatus>,
+    ) -> Result<StreamStep> {
+        self.sink.reset();
+        let options = render_options(&self.options);
+        let mut sink = StreamingSink {
+            transport: &mut self.sink,
+            component_opening: None,
+            written: 0,
+            flushed: 0,
+        };
+        let status = operation(
+            &mut self.core,
+            SessionCall {
+                handler: &self.handler,
+                protocol: &self.protocol,
+                options: &options,
+                writer: &mut sink,
+            },
+        );
+        match status {
+            Ok(status) => {
+                verify_flush_boundary(&self.sink)?;
+                Ok(StreamStep {
+                    bytes: std::mem::take(&mut self.sink.bytes),
+                    boundary: status.boundary,
+                    done: status.done,
+                })
+            }
+            Err(error) => {
+                self.sink.reset();
+                Err(error)
+            }
+        }
     }
+}
+
+/// Reject a step whose buffered bytes extend past the last transport flush.
+///
+/// A host-owned session hands the caller a byte buffer instead of a live
+/// transport, so a step that produced bytes after its checkpoint flushed would
+/// silently merge two semantic segments into one host write. The check is one
+/// integer compare per step.
+fn verify_flush_boundary(sink: &BufferSink) -> Result<()> {
+    if sink.last_flush == sink.bytes.len() {
+        return Ok(());
+    }
+    Err(unflushed_step_error())
+}
+
+#[cold]
+#[inline(never)]
+fn unflushed_step_error() -> crate::HandlerError {
+    crate::HandlerError::Invariant(
+        "a streaming step buffered bytes past its last flush boundary".to_string(),
+    )
 }
 
 fn render_options(options: &SessionOptions) -> RenderOptions<'_> {
@@ -304,8 +270,11 @@ fn render_options(options: &SessionOptions) -> RenderOptions<'_> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::StreamingSession;
-    use crate::WebUIHandler;
+    use serde_json::Value;
+
+    use super::{BufferSink, SessionOptions, StreamingSession};
+    use crate::route_handler::Protocol;
+    use crate::{BoundaryMode, FlushWriter, ResponseWriter, WebUIHandler};
 
     #[test]
     fn owned_streaming_session_supports_synchronized_hosts() {
@@ -315,5 +284,62 @@ mod tests {
         assert_send::<StreamingSession>();
         assert_send_sync::<Mutex<StreamingSession>>();
         assert_send_sync::<Arc<WebUIHandler>>();
+    }
+
+    #[test]
+    fn buffer_sink_tracks_the_transport_flush_boundary() {
+        // The invariant every owned step is checked against: bytes written
+        // after the last flush would merge two semantic segments into one host
+        // write.
+        let mut sink = BufferSink::default();
+        sink.write("checkpoint").expect("write");
+        sink.flush().expect("flush");
+        assert!(super::verify_flush_boundary(&sink).is_ok());
+        sink.write("tail").expect("write");
+        assert!(super::verify_flush_boundary(&sink).is_err());
+        sink.reset();
+        assert!(super::verify_flush_boundary(&sink).is_ok());
+    }
+
+    #[test]
+    fn every_owned_step_ends_on_a_flush_boundary() {
+        let mut parser = webui_parser::HtmlParser::new();
+        parser
+            .parse(
+                "index.html",
+                concat!(
+                    "<html><head></head><body>",
+                    r#"<boundary name="first"><p>1</p></boundary>"#,
+                    "<hr>",
+                    r#"<boundary name="second"><p>2</p></boundary>"#,
+                    "<footer>tail</footer></body></html>",
+                ),
+            )
+            .expect("parse");
+        let protocol = Arc::new(Protocol::new(webui_protocol::WebUIProtocol::new(
+            parser.into_fragment_records(),
+        )));
+        let mut session = StreamingSession::new(
+            Arc::new(WebUIHandler::new()),
+            protocol,
+            SessionOptions::new("index.html", "/"),
+        )
+        .expect("session");
+
+        let state = Value::Object(serde_json::Map::new());
+        let mut step = session.start(&state).expect("start");
+        let mut steps = 1usize;
+        while !step.done {
+            step = match step.boundary.as_ref() {
+                Some(boundary) => session
+                    .resume(boundary.instance_id, &state, BoundaryMode::Final)
+                    .expect("resume"),
+                None => session.advance().expect("advance"),
+            };
+            steps += 1;
+        }
+        // start, commit, advance, commit, advance.
+        assert_eq!(steps, 5);
+        assert!(session.is_done());
     }
 }

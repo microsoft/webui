@@ -16,6 +16,7 @@ import microsoft_webui
 import pytest
 import validate_release_targets
 from microsoft_webui import (
+    BoundaryDescriptor,
     BoundaryMode,
     Plugin,
     ProtocolError,
@@ -24,6 +25,7 @@ from microsoft_webui import (
     StateError,
     StreamingError,
     StreamingSession,
+    StreamStep,
     WebUIError,
 )
 
@@ -35,6 +37,7 @@ def _raise_state_error() -> NoReturn:
 def test_public_surface_and_version() -> None:
     assert microsoft_webui.__version__ == importlib.metadata.version("microsoft-webui")
     assert set(microsoft_webui.__all__) == {
+        "BoundaryDescriptor",
         "BoundaryMode",
         "Plugin",
         "ProtocolError",
@@ -42,6 +45,7 @@ def test_public_surface_and_version() -> None:
         "Renderer",
         "StateError",
         "StateInput",
+        "StreamStep",
         "StreamingError",
         "StreamingSession",
         "WebUIError",
@@ -52,6 +56,8 @@ def test_public_surface_and_version() -> None:
     assert issubclass(RenderError, WebUIError)
     assert issubclass(StreamingError, WebUIError)
     assert Renderer is not None
+    assert BoundaryDescriptor is not None
+    assert StreamStep is not None
     assert StreamingSession is not None
 
 

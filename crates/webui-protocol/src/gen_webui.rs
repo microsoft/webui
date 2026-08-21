@@ -121,14 +121,6 @@ pub struct WebUiProtocol {
     /// them verbatim with no per-request work.
     #[prost(string, repeated, tag = "7")]
     pub module_preloads: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// Free-form <boundary name> values keyed by entry fragment and stored in
-    /// declaration order. Hosts resolve a name once to its zero-based BoundaryId;
-    /// names never reach the rendered HTML response.
-    #[prost(map = "string, message", tag = "8")]
-    pub streaming_boundaries: ::std::collections::HashMap<
-        ::prost::alloc::string::String,
-        StreamingBoundaryList,
-    >,
     /// Build-generated document-level rules for component rendering policies.
     /// Empty when no component opts into lazy rendering.
     #[prost(string, tag = "9")]
@@ -142,25 +134,23 @@ pub struct WebUiProtocol {
         ComponentAssetStylePreload,
     >,
 }
-/// Ordered compile-time boundary names for one entry fragment.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct StreamingBoundaryList {
-    #[prost(string, repeated, tag = "1")]
-    pub names: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-}
 /// A list of fragments (needed because protobuf maps cannot have repeated values directly).
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FragmentList {
     #[prost(message, repeated, tag = "1")]
     pub fragments: ::prost::alloc::vec::Vec<WebUiFragment>,
+    /// True when this record directly or transitively reaches a boundary
+    /// declaration. Computed once at build time so handlers never graph-walk a
+    /// request merely to decide whether rendering can suspend.
+    #[prost(bool, tag = "2")]
+    pub contains_boundary: bool,
 }
 /// A single fragment — one of several types.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct WebUiFragment {
-    #[prost(oneof = "web_ui_fragment::Fragment", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "web_ui_fragment::Fragment", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub fragment: ::core::option::Option<web_ui_fragment::Fragment>,
 }
 /// Nested message and enum types in `WebUIFragment`.
@@ -186,7 +176,44 @@ pub mod web_ui_fragment {
         Route(super::WebUiFragmentRoute),
         #[prost(message, tag = "9")]
         Outlet(super::WebUiFragmentOutlet),
+        #[prost(message, tag = "10")]
+        Boundary(super::WebUiFragmentBoundary),
     }
+}
+/// Compile-time streaming boundary declaration, written as an inline tape.
+///
+/// A declaration emits a start marker and an end marker into its owner's
+/// fragment record, with the body fragments in between. Ordinary rendering
+/// therefore walks the body without any extra record lookup, and streaming
+/// suspends and resumes inside the record it is already traversing.
+///
+/// A declaration can produce multiple response-local occurrences through
+/// components, conditions, loops, and routes. Runtime occurrence IDs are
+/// therefore assigned later by the handler and are not stored here.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WebUiFragmentBoundary {
+    /// Stable build-local declaration identity. Shared by the start/end pair.
+    #[prost(uint32, tag = "1")]
+    pub declaration_id: u32,
+    /// Entry or reusable component template that authored this declaration.
+    #[prost(string, tag = "2")]
+    pub owner_fragment_id: ::prost::alloc::string::String,
+    /// Free-form authored name, unique only within owner_fragment_id.
+    #[prost(string, tag = "3")]
+    pub name: ::prost::alloc::string::String,
+    /// Optional authored key expression preserved verbatim for handler evaluation.
+    #[prost(string, optional, tag = "4")]
+    pub key: ::core::option::Option<::prost::alloc::string::String>,
+    /// Conservative graph result: this declaration may produce multiple runtime
+    /// occurrences through repeated component callsites. A `<for>` repeat can no
+    /// longer contribute: the build rejects every boundary a repeat body reaches
+    /// (`boundary-in-repeat`), because a repeat iteration cannot suspend.
+    #[prost(bool, tag = "6")]
+    pub may_repeat: bool,
+    /// Whether this fragment opens or closes the declaration's body.
+    #[prost(enumeration = "BoundaryPhase", tag = "7")]
+    pub phase: i32,
 }
 /// Declarative route definition linking a URL path template to a component.
 /// Nested routes are expressed via repeated children.
@@ -227,6 +254,11 @@ pub struct WebUiFragmentRoute {
     /// Validated at build time — build fails if the component does not exist.
     #[prost(string, tag = "10")]
     pub error_component: ::prost::alloc::string::String,
+    /// Optional runtime content authored directly inside this route. The record
+    /// contains typed boundary references and is rendered only for this route
+    /// path; nested route declarations remain in children.
+    #[prost(string, tag = "11")]
+    pub content_fragment_id: ::prost::alloc::string::String,
 }
 /// Outlet placeholder — marks where matched child route content renders.
 /// Components use this to indicate where nested route children are rendered.
@@ -490,6 +522,37 @@ impl DomStrategy {
         match value {
             "DOM_STRATEGY_SHADOW" => Some(Self::Shadow),
             "DOM_STRATEGY_LIGHT" => Some(Self::Light),
+            _ => None,
+        }
+    }
+}
+/// Which end of an inline boundary tape a fragment marks.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum BoundaryPhase {
+    /// Opens a boundary body. Carries the full declaration metadata.
+    Start = 0,
+    /// Closes the body opened by the matching start in the same record. Only
+    /// declaration_id is meaningful.
+    End = 1,
+}
+impl BoundaryPhase {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Start => "BOUNDARY_PHASE_START",
+            Self::End => "BOUNDARY_PHASE_END",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "BOUNDARY_PHASE_START" => Some(Self::Start),
+            "BOUNDARY_PHASE_END" => Some(Self::End),
             _ => None,
         }
     }

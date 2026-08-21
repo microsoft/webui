@@ -72,23 +72,28 @@ roots (1500) and the **same** total projected state value bytes (24 KiB of
 `label` values); only the boundary count (and marker layout) changes. "Projected
 state value bytes" counts the streamed `label` values a real app would ship, and
 deliberately excludes unavoidable per-boundary protocol/property overhead (the
-`[1,seq,kind,target,{...}]` envelope framing, the first-boundary `templates` block,
-and the tiny fixed `note` property) - that overhead is inherent to having more
-boundaries, not equal work to hold constant. It is projected-state value bytes,
-not total wire bytes.
+v2 `[2,recordSequence,kind,target,{...}]` envelope framing, required
+`declarationId`, the first-boundary `templates` block, and the tiny fixed `note`
+property) - that overhead is inherent to having more boundaries, not equal work
+to hold constant. It is projected-state value bytes, not total wire bytes.
 
-Each streamed boundary is real wire format - `<!--wb:N-->` markers + SSR roots
-carrying `data-ws` + an inert `[data-webui-boundary]` JSON script + a
+Each streamed boundary uses the v2 browser contract - `<!--wb:N-->` markers + SSR
+roots carrying `data-ws` + an inert `[data-webui-boundary]` JSON script + a
 `<webui-hydrate>` sentinel - appended one at a time, with the driver spinning the
 coordinator's microtask pump until that boundary's scaffolding is removed (a
-deterministic "committed + cleaned" signal) before the next, then a terminal
-envelope. Consecutive chunks enter through separate `MessageChannel` tasks,
-matching browser response-chunk scheduling without the nested timer clamp that
-would add synthetic delay at 100 boundaries. The control uses the real inert
-`#webui-data` bootstrap (present in the base document so the framework's lazy
-loader latches on the real block); only its SSR roots are inserted at run time
-(after the baseline heap sample) so its empty->populated peak-heap transition
-matches the streaming arms.
+deterministic "committed + cleaned" signal) before the next, then a kind-4
+terminal envelope. Final/updatable checkpoints use kinds 0/1, state updates use
+kind 2, and kind 3 is reserved for generated span completion (unused by these flat
+entry-boundary scenarios). Every checkpoint bootstrap carries a deterministic
+`declarationId`; flat entry boundaries omit `enclosingSpanInstanceId`. Runtime
+boundary instance IDs and record sequences are gapless, and updates target the
+committed boundary instance ID. Consecutive chunks enter through separate
+`MessageChannel` tasks, matching browser response-chunk scheduling without the
+nested timer clamp that would add synthetic delay at 100 boundaries. The control
+uses the real inert `#webui-data` bootstrap (present in the base document so the
+framework's lazy loader latches on the real block); only its SSR roots are
+inserted at run time (after the baseline heap sample) so its empty->populated
+peak-heap transition matches the streaming arms.
 
 Coverage includes flat and deeply nested marker ranges (one root at each
 successive `<div>` depth) and the boundary-before-definition race (the class
@@ -136,11 +141,31 @@ root proven hydrated** (successful-hydration count and reactive `setState`-probe
 count both equal 1500), zero residual scaffolding (scripts, sentinels, `wb:`
 comments, `[data-ws]`), no globally-published streamed state
 (`window.__webui.state` stays unset), the ordinary bundle contains no coordinator
-tokens (`webui-hydrate` / `data-webui-boundary`), measured component CPU is
-non-zero, distinct boundary-local states reach only their own real activation
-hooks, and the streaming entry adds no more than 10.625 KiB minified / 3.75 KiB
-gzip. Esbuild output is deterministic and the cap retains under 4% headroom, so
-further growth still fails.
+tokens (`webui-hydrate`, `data-webui-boundary`, the `data-ws-span` /
+`data-ws-enclosing` compiler span attributes, or open-span registry code),
+measured component CPU is non-zero, distinct boundary-local states reach only
+their own real activation hooks, and four absolute bundle-byte caps hold.
+
+The byte caps come in two kinds, and both are required:
+
+| Cap | Bytes | Measured | Headroom |
+|---|---|---|---|
+| ordinary minified | 63,500 | 60,528 | 4.7% |
+| ordinary gzip | 19,850 | 18,993 | 4.3% |
+| streaming incremental minified | 17,400 | 16,652 | 4.3% |
+| streaming incremental gzip | 6,190 | 5,928 | 4.2% |
+
+The **ordinary** caps are absolute because they bound what a *non-streaming* app
+downloads. The incremental caps alone cannot: they subtract the ordinary bundle,
+so bytes added to the always-shipped entry cancel out of them entirely. Component
+spans are the concrete case — the compiler attribute names and open-span registry
+live only in the opt-in coordinator, and `TemplateElement` receives an
+already-resolved bypass ancestor element it compares by identity.
+
+Esbuild output is deterministic, so ~4-5% headroom absorbs a minifier or
+toolchain nudge while still failing on real growth. The spec logs measured bytes
+and remaining headroom on every run; update the recorded numbers and the caps
+together, never a cap alone.
 
 Opt-in via `WEBUI_STREAMING_HYDRATION_ENFORCE=1` (noisy, off by default), each
 printing its effective cap:

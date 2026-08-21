@@ -1,11 +1,11 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT license.
 
-"""Compare two `webui inspect` JSON dumps semantically.
+"""Compare two ``webui inspect`` JSON dumps semantically.
 
-The committed `protocol.bin` fixture is a build output, so CI rebuilds it and
-checks for drift. Bytes cannot be compared directly because protobuf map field
-ordering is not stable, so compare the decoded JSON instead.
+Committed protocol fixtures are build outputs, so CI rebuilds them and checks
+for drift. Bytes cannot be compared directly because protobuf map field ordering
+is not stable, so compare the decoded JSON instead.
 """
 
 from __future__ import annotations
@@ -15,11 +15,20 @@ import json
 import sys
 from pathlib import Path
 
+DEFAULT_FIXTURE = Path("crates/webui-python/tests/fixtures/protocol.bin")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("committed", type=Path)
     parser.add_argument("generated", type=Path)
+    parser.add_argument(
+        "fixture",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_FIXTURE,
+        help="committed binary to name when the semantic comparison fails",
+    )
     args = parser.parse_args()
 
     try:
@@ -31,8 +40,7 @@ def main() -> int:
 
     if committed != generated:
         print(
-            "error: the Python protocol fixture is stale; regenerate "
-            "crates/webui-python/tests/fixtures/protocol.bin",
+            f"error: the Python protocol fixture is stale; regenerate {args.fixture}",
             file=sys.stderr,
         )
         return 1

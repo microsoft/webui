@@ -125,10 +125,6 @@ message WebUIProtocol {
   // The compiler resolves and sorts these at build time so the handler writes
   // them verbatim with no per-request work.
   repeated string module_preloads = 7;
-  // Free-form <boundary name> values keyed by entry fragment and stored in
-  // declaration order. Hosts resolve a name once to its zero-based BoundaryId;
-  // names never reach the rendered HTML response.
-  map<string, StreamingBoundaryList> streaming_boundaries = 8;
   // Build-generated document-level rules for component rendering policies.
   // Empty when no component opts into lazy rendering.
   string component_render_css = 9;
@@ -139,14 +135,13 @@ message WebUIProtocol {
   repeated ComponentAssetStylePreload component_asset_style_preloads = 10;
 }
 
-// Ordered compile-time boundary names for one entry fragment.
-message StreamingBoundaryList {
-  repeated string names = 1;
-}
-
 // A list of fragments (needed because protobuf maps cannot have repeated values directly).
 message FragmentList {
   repeated WebUIFragment fragments = 1;
+  // True when this record directly or transitively reaches a boundary
+  // declaration. Computed once at build time so handlers never graph-walk a
+  // request merely to decide whether rendering can suspend.
+  bool contains_boundary = 2;
 }
 
 // A single fragment — one of several types.
@@ -161,7 +156,49 @@ message WebUIFragment {
     WebUIFragmentPlugin plugin = 7;
     WebUIFragmentRoute route = 8;
     WebUIFragmentOutlet outlet = 9;
+    WebUIFragmentBoundary boundary = 10;
   }
+}
+
+// Which end of an inline boundary tape a fragment marks.
+enum BoundaryPhase {
+  // Opens a boundary body. Carries the full declaration metadata.
+  BOUNDARY_PHASE_START = 0;
+  // Closes the body opened by the matching start in the same record. Only
+  // declaration_id is meaningful.
+  BOUNDARY_PHASE_END = 1;
+}
+
+// Compile-time streaming boundary declaration, written as an inline tape.
+//
+// A declaration emits a start marker and an end marker into its owner's
+// fragment record, with the body fragments in between. Ordinary rendering
+// therefore walks the body without any extra record lookup, and streaming
+// suspends and resumes inside the record it is already traversing.
+//
+// A declaration can produce multiple response-local occurrences through
+// components, conditions, loops, and routes. Runtime occurrence IDs are
+// therefore assigned later by the handler and are not stored here.
+message WebUIFragmentBoundary {
+  // Stable build-local declaration identity. Shared by the start/end pair.
+  uint32 declaration_id = 1;
+  // Entry or reusable component template that authored this declaration.
+  string owner_fragment_id = 2;
+  // Free-form authored name, unique only within owner_fragment_id.
+  string name = 3;
+  // Optional authored key expression preserved verbatim for handler evaluation.
+  optional string key = 4;
+  // Field 5 previously held the separately parsed boundary body record. Bodies
+  // are now inline between the start and end markers.
+  reserved 5;
+  reserved "fragment_id";
+  // Conservative graph result: this declaration may produce multiple runtime
+  // occurrences through repeated component callsites. A `<for>` repeat can no
+  // longer contribute: the build rejects every boundary a repeat body reaches
+  // (`boundary-in-repeat`), because a repeat iteration cannot suspend.
+  bool may_repeat = 6;
+  // Whether this fragment opens or closes the declaration's body.
+  BoundaryPhase phase = 7;
 }
 
 // Declarative route definition linking a URL path template to a component.
@@ -191,6 +228,10 @@ message WebUIFragmentRoute {
   // Component tag name for the error boundary UI (e.g. "error-page").
   // Validated at build time — build fails if the component does not exist.
   string error_component = 10;
+  // Optional runtime content authored directly inside this route. The record
+  // contains typed boundary references and is rendered only for this route
+  // path; nested route declarations remain in children.
+  string content_fragment_id = 11;
 }
 
 // Outlet placeholder — marks where matched child route content renders.

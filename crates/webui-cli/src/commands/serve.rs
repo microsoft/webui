@@ -1595,12 +1595,14 @@ mod tests {
                     keep_alive: false,
                     ..Default::default()
                 })],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "docs-page".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<main>docs</main>")],
+                contains_boundary: false,
             },
         );
         Arc::new(Protocol::new(WebUIProtocol::with_tokens(
@@ -1951,6 +1953,7 @@ mod tests {
             "index.html".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-app")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
@@ -1973,36 +1976,42 @@ mod tests {
                         ..Default::default()
                     }),
                 ],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-category-nav".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<nav></nav>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-page-search".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-grid")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-grid".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div></div>")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-page-product".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::component("mp-product-detail")],
+                contains_boundary: false,
             },
         );
         fragments.insert(
             "mp-product-detail".to_string(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<article></article>")],
+                contains_boundary: false,
             },
         );
 
@@ -2122,6 +2131,7 @@ mod tests {
                 fragments: vec![WebUIFragment::raw(
                     "<html><body><main>fallback rendered</main></body></html>",
                 )],
+                contains_boundary: false,
             },
         );
         let protocol = Arc::new(Protocol::new(WebUIProtocol::with_tokens(

@@ -22,6 +22,7 @@ fn build_protocol(component_count: usize) -> Vec<u8> {
         "index.html".to_string(),
         FragmentList {
             fragments: vec![WebUIFragment::raw("<main>ready</main>")],
+            contains_boundary: false,
         },
     );
 
@@ -34,6 +35,7 @@ fn build_protocol(component_count: usize) -> Vec<u8> {
             name.clone(),
             FragmentList {
                 fragments: vec![WebUIFragment::raw("<div>component</div>")],
+                contains_boundary: false,
             },
         );
         protocol.components.insert(

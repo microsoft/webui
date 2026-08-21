@@ -29,7 +29,7 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{Buffer, Function};
+use napi::bindgen_prelude::{Buffer, Either, Function};
 use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
@@ -37,8 +37,9 @@ use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    BoundaryId, BoundaryMode, HandlerError, Protocol as HandlerProtocol, RenderOptions,
-    ResponseWriter, SessionOptions, StreamingSession as HandlerStreamingSession, WebUIHandler,
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError,
+    Protocol as HandlerProtocol, RenderOptions, ResponseWriter, SessionOptions,
+    StreamStep as HandlerStreamStep, StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 #[cfg(test)]
 use webui_protocol::WebUIProtocol;
@@ -372,99 +373,139 @@ pub struct JsStreamOptions {
     pub body_inject: Option<String>,
 }
 
-/// A progressive HTML response driven one chunk at a time from Node.
+/// A progressive HTML response driven one semantic step at a time from Node.
 ///
-/// Every method returns the bytes it produced. Write them to the response and
-/// await `drain` whenever `write()` returns `false`; the session holds no
-/// transport and never blocks on one.
+/// `start()`, `resume()`, and `advance()` return bytes, completion state, and
+/// the next runtime boundary occurrence (if any). Boundary keys retain their
+/// authored JSON type: strings are JavaScript strings and finite numbers are
+/// JavaScript numbers.
 ///
 /// ```js
 /// const session = protocol.streamResponse('index.html', '/');
-/// const weather = session.boundary('weather-shell');
-/// res.write(session.writeShell(shellState));
-/// res.write(session.writeBoundary(weather, weatherState, 'updatable'));
-/// res.write(session.update(weather, forecast));
-/// res.end(session.finish(tailState));
+/// let step = session.start(JSON.stringify(shellState));
+/// res.write(step.bytes);
+/// while (!step.done) {
+///   const { instanceId, name, key } = step.boundary;
+///   const state = await loadBoundary(name, key);
+///   step = session.resume(instanceId, JSON.stringify(state), 'updatable');
+///   res.write(step.bytes);
+///   step = session.advance();
+///   res.write(step.bytes);
+/// }
 /// ```
 #[napi]
 pub struct StreamingSession {
     inner: HandlerStreamingSession,
 }
 
+/// Runtime boundary occurrence returned by a streaming step.
+#[napi(object)]
+pub struct JsBoundaryDescriptor {
+    /// Gapless response-local occurrence ID passed to `resume()` and `update()`.
+    pub instance_id: u32,
+    /// Stable compiler declaration ID.
+    pub declaration_id: u32,
+    /// Entry or component template that owns this declaration.
+    pub owner: String,
+    /// Free-form authored boundary name.
+    pub name: String,
+    /// Evaluated boundary key, preserving string-versus-number identity.
+    pub key: Option<Either<String, f64>>,
+}
+
+/// Bytes and continuation state returned by one streaming session step.
+#[napi(object)]
+pub struct JsStreamStep {
+    /// Complete bytes produced by this semantic step.
+    pub bytes: Buffer,
+    /// Whether the terminal record was emitted.
+    pub done: bool,
+    /// Next runtime boundary occurrence waiting for `resume()`.
+    pub boundary: Option<JsBoundaryDescriptor>,
+}
+
 #[napi]
 impl StreamingSession {
-    /// Resolve an authored boundary name to a stable integer handle.
-    ///
-    /// Resolve once outside the write loop; the handle costs nothing to reuse.
+    /// Render until the first runtime boundary occurrence or terminal.
     #[napi]
-    pub fn boundary(&self, name: String) -> napi::Result<u32> {
-        self.inner
-            .boundary(&name)
-            .map(BoundaryId::raw)
-            .map_err(streaming_error)
-    }
-
-    /// Number of compile-time boundaries declared by this entry.
-    #[napi(getter)]
-    pub fn boundary_count(&self) -> u32 {
-        // Boundary counts are bounded by the compiled entry, so this cannot
-        // exceed u32 in any protocol the build can produce.
-        u32::try_from(self.inner.boundary_count()).unwrap_or(u32::MAX)
-    }
-
-    /// Whether the terminal record has been written.
-    #[napi(getter)]
-    pub fn finished(&self) -> bool {
-        self.inner.is_finished()
-    }
-
-    /// Render everything before the first boundary.
-    #[napi]
-    pub fn write_shell(&mut self, state_json: String) -> napi::Result<Buffer> {
+    pub fn start(&mut self, state_json: String) -> napi::Result<JsStreamStep> {
         let state = parse_state_json(&state_json)?;
         self.inner
-            .write_shell(&state)
-            .map(Buffer::from)
+            .start(&state)
+            .and_then(stream_step)
             .map_err(streaming_error)
     }
 
-    /// Render and commit the next boundary in declaration order.
+    /// Commit the pending occurrence through its checkpoint, then stop.
     ///
     /// `mode` is `"final"` (default) or `"updatable"`. Only updatable
     /// boundaries accept later `update()` calls.
     #[napi]
-    pub fn write_boundary(
+    pub fn resume(
         &mut self,
-        boundary: u32,
+        instance_id: u32,
         state_json: String,
         mode: Option<String>,
-    ) -> napi::Result<Buffer> {
+    ) -> napi::Result<JsStreamStep> {
         let state = parse_state_json(&state_json)?;
         let mode = parse_boundary_mode(mode.as_deref())?;
         self.inner
-            .write_boundary(BoundaryId::from_raw(boundary), &state, mode)
-            .map(Buffer::from)
+            .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
+            .and_then(stream_step)
+            .map_err(streaming_error)
+    }
+
+    /// Write the parent bytes after the committed occurrence.
+    ///
+    /// Valid only after `resume()`. Returns the next boundary occurrence or
+    /// completes the document tail.
+    #[napi]
+    pub fn advance(&mut self) -> napi::Result<JsStreamStep> {
+        self.inner
+            .advance()
+            .and_then(stream_step)
             .map_err(streaming_error)
     }
 
     /// Push a projected state patch to a committed updatable boundary.
     #[napi]
-    pub fn update(&mut self, boundary: u32, state_json: String) -> napi::Result<Buffer> {
-        let state = parse_state_json(&state_json)?;
+    pub fn update(&mut self, instance_id: u32, patch_json: String) -> napi::Result<Buffer> {
+        let patch = parse_state_json(&patch_json)?;
         self.inner
-            .update(BoundaryId::from_raw(boundary), &state)
+            .update(BoundaryInstanceId::from_raw(instance_id), &patch)
             .map(Buffer::from)
             .map_err(streaming_error)
     }
+}
 
-    /// Render the document tail and emit the terminal record.
-    #[napi]
-    pub fn finish(&mut self, state_json: String) -> napi::Result<Buffer> {
-        let state = parse_state_json(&state_json)?;
-        self.inner
-            .finish(&state)
-            .map(Buffer::from)
-            .map_err(streaming_error)
+fn stream_step(step: HandlerStreamStep) -> webui_handler::Result<JsStreamStep> {
+    Ok(JsStreamStep {
+        bytes: Buffer::from(step.bytes),
+        done: step.done,
+        boundary: step.boundary.map(boundary_descriptor).transpose()?,
+    })
+}
+
+fn boundary_descriptor(
+    boundary: BoundaryDescriptor,
+) -> webui_handler::Result<JsBoundaryDescriptor> {
+    Ok(JsBoundaryDescriptor {
+        instance_id: boundary.instance_id.raw(),
+        declaration_id: boundary.declaration_id,
+        owner: boundary.owner.to_string(),
+        name: boundary.name.to_string(),
+        key: boundary.key.map(boundary_key).transpose()?,
+    })
+}
+
+fn boundary_key(key: BoundaryKey) -> webui_handler::Result<Either<String, f64>> {
+    match key {
+        BoundaryKey::String(value) => Ok(Either::A(value)),
+        BoundaryKey::Number(value) => value.as_f64().map(Either::B).ok_or_else(|| {
+            HandlerError::Invariant(
+                "boundary key cannot be represented as a JavaScript number".into(),
+            )
+        }),
     }
 }
 
@@ -717,6 +758,189 @@ mod tests {
     }
 
     #[test]
+    fn streaming_steps_preserve_key_types_and_checkpoint_segments() {
+        let proto = build_protocol(concat!(
+            "<html><head></head><body>",
+            r#"<boundary name="first" key="{{firstId}}"><p>{{firstLabel}}</p></boundary>"#,
+            "<span>between</span>",
+            r#"<boundary name="second" key="{{secondId}}"><p>{{secondLabel}}</p></boundary>"#,
+            "<footer>tail</footer>",
+            "</body></html>",
+        ));
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
+        let mut session = protocol
+            .stream_response("index.html".to_string(), "/".to_string(), None)
+            .expect("session should open");
+        let state = r#"{"firstId":"alpha","firstLabel":"a","secondId":20,"secondLabel":"b"}"#;
+
+        let first = session
+            .start(state.to_string())
+            .expect("start should discover first boundary");
+        assert!(!first.done);
+        assert!(!first.bytes.is_empty());
+        let first_boundary = first.boundary.expect("first boundary should be returned");
+        assert_eq!(first_boundary.instance_id, 0);
+        assert_eq!(first_boundary.declaration_id, 0);
+        assert_eq!(first_boundary.owner, "index.html");
+        assert_eq!(first_boundary.name, "first");
+        assert!(matches!(
+            first_boundary.key,
+            Some(Either::A(value)) if value == "alpha"
+        ));
+
+        let resumed = session
+            .resume(
+                first_boundary.instance_id,
+                state.to_string(),
+                Some("final".to_string()),
+            )
+            .expect("resume should commit first boundary");
+        assert!(!resumed.done);
+        assert!(resumed.boundary.is_none());
+        let resumed_text =
+            std::str::from_utf8(&resumed.bytes).expect("resume output should be UTF-8");
+        assert!(resumed_text.contains(">a<"));
+        assert!(!resumed_text.contains("between"));
+
+        let next = session
+            .advance()
+            .expect("advance should discover second boundary");
+        assert!(!next.done);
+        let next_text = std::str::from_utf8(&next.bytes).expect("advance output should be UTF-8");
+        assert!(next_text.contains("between"));
+        assert!(!next_text.contains(">b<"));
+        let second_boundary = next.boundary.expect("second boundary should be returned");
+        assert_eq!(second_boundary.instance_id, 1);
+        assert_eq!(second_boundary.declaration_id, 1);
+        assert_eq!(second_boundary.name, "second");
+        assert!(matches!(
+            second_boundary.key,
+            Some(Either::B(value)) if value == 20.0
+        ));
+
+        let resumed = session
+            .resume(second_boundary.instance_id, state.to_string(), None)
+            .expect("resume should commit second boundary");
+        assert!(!resumed.done);
+        assert!(resumed.boundary.is_none());
+        let resumed_text =
+            std::str::from_utf8(&resumed.bytes).expect("resume output should be UTF-8");
+        assert!(resumed_text.contains(">b<"));
+        assert!(!resumed_text.contains("tail"));
+
+        let done = session.advance().expect("final advance should complete");
+        assert!(done.done);
+        assert!(done.boundary.is_none());
+        assert!(std::str::from_utf8(&done.bytes)
+            .expect("advance output should be UTF-8")
+            .contains("tail"));
+    }
+
+    #[test]
+    fn streaming_update_returns_buffer_for_updatable_occurrence() {
+        let proto = build_protocol(concat!(
+            "<html><head></head><body>",
+            r#"<boundary name="first"><p>{{count}}</p></boundary>"#,
+            r#"<boundary name="second"><p>done</p></boundary>"#,
+            "</body></html>",
+        ));
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
+        let mut session = protocol
+            .stream_response("index.html".to_string(), "/".to_string(), None)
+            .expect("session should open");
+        let first = session
+            .start(r#"{"count":1}"#.to_string())
+            .expect("start should discover first boundary")
+            .boundary
+            .expect("first boundary should be returned");
+        let resumed = session
+            .resume(
+                first.instance_id,
+                r#"{"count":1}"#.to_string(),
+                Some("updatable".to_string()),
+            )
+            .expect("resume should commit updatable boundary");
+        assert!(!resumed.done);
+        assert!(resumed.boundary.is_none());
+
+        let update = session
+            .update(first.instance_id, r#"{"count":2}"#.to_string())
+            .expect("update should render");
+        assert!(!update.is_empty());
+        let update_text = std::str::from_utf8(&update).expect("update should be UTF-8");
+        assert!(update_text.contains(r#""count":2"#));
+
+        let second = session
+            .advance()
+            .expect("advance should discover second boundary")
+            .boundary
+            .expect("second boundary should be returned");
+        let resumed = session
+            .resume(second.instance_id, "{}".to_string(), None)
+            .expect("second resume should commit boundary");
+        assert!(!resumed.done);
+        assert!(resumed.boundary.is_none());
+        let done = session.advance().expect("final advance should complete");
+        assert!(done.done);
+    }
+
+    #[test]
+    fn streaming_advance_rejects_out_of_order_calls() {
+        let proto = build_protocol(concat!(
+            "<html><head></head><body>",
+            r#"<boundary name="first"><p>first</p></boundary>"#,
+            "</body></html>",
+        ));
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
+        let mut session = protocol
+            .stream_response("index.html".to_string(), "/".to_string(), None)
+            .expect("session should open");
+
+        let before_start = session
+            .advance()
+            .err()
+            .expect("advance before start should fail");
+        assert!(before_start
+            .to_string()
+            .contains("start must be called before this operation"));
+
+        let start = session
+            .start("{}".to_string())
+            .expect("start should succeed");
+        let before_resume = session
+            .advance()
+            .err()
+            .expect("advance before resume should fail");
+        assert!(before_resume
+            .to_string()
+            .contains("there is no committed boundary to advance past"));
+
+        let boundary = start.boundary.expect("first boundary should be returned");
+        session
+            .resume(boundary.instance_id, "{}".to_string(), None)
+            .expect("resume should still succeed after rejected advance");
+        assert!(session.advance().expect("advance should complete").done);
+    }
+
+    #[test]
+    fn streaming_start_returns_done_for_boundary_free_document() {
+        let proto = build_protocol("<html><head></head><body><p>done</p></body></html>");
+        let protocol = Protocol::new(Buffer::from(proto), None).expect("protocol should load");
+        let mut session = protocol
+            .stream_response("index.html".to_string(), "/".to_string(), None)
+            .expect("session should open");
+
+        let step = session
+            .start("{}".to_string())
+            .expect("boundary-free start should complete");
+        assert!(step.done);
+        assert!(step.boundary.is_none());
+        assert!(std::str::from_utf8(&step.bytes)
+            .expect("output should be UTF-8")
+            .contains("<p>done</p>"));
+    }
+
+    #[test]
     fn test_for_loop() {
         let proto = build_protocol("<ul><for each=\"item in items\"><li>{{item}}</li></for></ul>");
         let result = render_to_string(&proto, r#"{"items": ["a", "b", "c"]}"#);
@@ -793,6 +1017,7 @@ mod tests {
             "client-card".to_string(),
             webui_protocol::FragmentList {
                 fragments: vec![webui_protocol::WebUIFragment::raw("<p>client</p>")],
+                contains_boundary: false,
             },
         );
         protocol

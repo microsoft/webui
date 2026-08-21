@@ -27,8 +27,8 @@ use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    BoundaryId, BoundaryMode, Protocol, RenderOptions, ResponseWriter, SessionOptions,
-    StreamingSession, WebUIHandler,
+    BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, Protocol, RenderOptions,
+    ResponseWriter, SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
 
 /// Opaque C handle for a loaded WebUI protocol.
@@ -658,21 +658,55 @@ pub unsafe extern "C" fn webui_protocol_tokens(
 #[allow(non_camel_case_types)]
 pub type webui_streaming_session_t = c_void;
 
+/// Opaque owned result from one streaming start, resume, or advance call.
+#[allow(non_camel_case_types)]
+pub type webui_streaming_step_t = c_void;
+
+/// C-safe boundary mode value accepted by [`webui_streaming_session_resume`].
+#[allow(non_camel_case_types)]
+pub type webui_boundary_mode_t = u32;
+
+/// Commit the boundary once and release its boundary-local roots.
+pub const WEBUI_BOUNDARY_MODE_FINAL: webui_boundary_mode_t = 0;
+
+/// Retain live roots until terminal so updates may target the boundary.
+pub const WEBUI_BOUNDARY_MODE_UPDATABLE: webui_boundary_mode_t = 1;
+
+/// C-safe boundary key discriminator returned by
+/// [`webui_streaming_step_boundary_key_type`].
+#[allow(non_camel_case_types)]
+pub type webui_boundary_key_type_t = u32;
+
+/// The boundary declaration has no runtime key.
+pub const WEBUI_BOUNDARY_KEY_NONE: webui_boundary_key_type_t = 0;
+
+/// The boundary key is a UTF-8 string.
+pub const WEBUI_BOUNDARY_KEY_STRING: webui_boundary_key_type_t = 1;
+
+/// The boundary key is a finite JSON number.
+pub const WEBUI_BOUNDARY_KEY_NUMBER: webui_boundary_key_type_t = 2;
+
 /// Owns one progressive response between host calls.
 struct StreamingSessionContext {
     session: StreamingSession,
 }
 
+/// Owns one result and every pointer borrowed from it.
+struct StreamingStepContext {
+    step: StreamStep,
+}
+
 /// Open a host-driven progressive response for a streaming entry.
 ///
 /// Unlike [`webui_handler_render`], which produces the whole document in one
-/// call, the returned session hands back one chunk per call so the host owns
-/// the socket, the write order, and backpressure. Any nonce previously set
-/// with [`webui_handler_set_nonce`] is captured for the life of the session.
+/// call, the returned session advances through [`webui_streaming_session_start`],
+/// [`webui_streaming_session_resume`], and [`webui_streaming_session_advance`]
+/// so the host owns the socket, write order, and backpressure. Any nonce
+/// previously set with
+/// [`webui_handler_set_nonce`] is captured for the life of the session.
 ///
 /// Returns `NULL` on error; call [`webui_last_error`] for details. The handle
-/// must be released with [`webui_streaming_session_destroy`] even after
-/// [`webui_streaming_session_finish`] succeeds.
+/// must be released with [`webui_streaming_session_destroy`].
 ///
 /// # Thread Safety
 ///
@@ -754,301 +788,666 @@ pub unsafe extern "C" fn webui_streaming_session_create(
 pub unsafe extern "C" fn webui_streaming_session_destroy(
     session_ptr: *mut webui_streaming_session_t,
 ) {
-    if !session_ptr.is_null() {
+    clear_last_error();
+    if session_ptr.is_null() {
+        return;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // SAFETY: The caller guarantees this pointer came from
         // `webui_streaming_session_create` and has not already been destroyed.
-        let _ = unsafe { Box::from_raw(session_ptr as *mut StreamingSessionContext) };
+        drop(unsafe { Box::from_raw(session_ptr as *mut StreamingSessionContext) });
+    }));
+    if result.is_err() {
+        set_last_error("panic in webui_streaming_session_destroy");
     }
 }
 
-/// Resolve an authored boundary name to a stable integer handle.
+/// Render until the first runtime boundary occurrence or terminal completion.
 ///
-/// Resolve once outside the write loop and reuse the handle; the write calls
-/// never hash a name.
-///
-/// Returns `true` on success and writes the handle to `out_boundary`. On
-/// failure returns `false` and leaves `out_boundary` untouched; call
-/// [`webui_last_error`] for the valid names and a suggestion.
+/// The returned owned step must be released with
+/// [`webui_streaming_step_destroy`]. A `NULL` return indicates an error
+/// available through [`webui_last_error`].
 ///
 /// # Safety
 ///
-/// * `session_ptr` must be a live session handle.
-/// * `name` must be non-null, null-terminated UTF-8.
-/// * `out_boundary` must be non-null and writable.
+/// * `session_ptr` must be a live session handle with no concurrent operation.
+/// * `state_json` must be non-null, null-terminated UTF-8 and remain readable
+///   for this call.
 #[no_mangle]
-pub unsafe extern "C" fn webui_streaming_session_boundary(
-    session_ptr: *const webui_streaming_session_t,
-    name: *const c_char,
-    out_boundary: *mut u32,
-) -> bool {
+pub unsafe extern "C" fn webui_streaming_session_start(
+    session_ptr: *mut webui_streaming_session_t,
+    state_json: *const c_char,
+) -> *mut webui_streaming_step_t {
     clear_last_error();
-
-    match std::panic::catch_unwind(|| {
-        if session_ptr.is_null() || name.is_null() || out_boundary.is_null() {
-            set_last_error("one or more required arguments are null");
-            return false;
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if session_ptr.is_null() || state_json.is_null() {
+            set_last_error("session_ptr and state_json must not be null");
+            return std::ptr::null_mut();
         }
-
-        // SAFETY: The caller guarantees the session handle is live.
-        let context = unsafe { &*(session_ptr as *const StreamingSessionContext) };
-        // SAFETY: The caller guarantees `name` is valid and terminated.
-        let Some(name) = (unsafe { utf8_arg(name, "name") }) else {
-            return false;
+        // SAFETY: The caller guarantees exclusive access to a live session.
+        let context = unsafe { &mut *(session_ptr as *mut StreamingSessionContext) };
+        // SAFETY: The caller guarantees the string is readable and terminated.
+        let Some(state) = (unsafe { streaming_json_arg(state_json, "state_json") }) else {
+            return std::ptr::null_mut();
         };
-
-        match context.session.boundary(name) {
-            Ok(boundary) => {
-                // SAFETY: The caller guarantees `out_boundary` is writable.
-                unsafe { *out_boundary = boundary.raw() };
-                true
-            }
+        match context.session.start(&state) {
+            Ok(step) => owned_streaming_step(step),
             Err(error) => {
                 set_last_error(error.to_string());
-                false
+                std::ptr::null_mut()
             }
         }
-    }) {
-        Ok(ok) => ok,
+    })) {
+        Ok(step) => step,
         Err(_) => {
-            set_last_error("panic in webui_streaming_session_boundary");
-            false
+            set_last_error("panic in webui_streaming_session_start");
+            std::ptr::null_mut()
         }
     }
 }
 
-/// Return the number of compile-time boundaries declared by this entry.
+/// Commit the pending occurrence through its checkpoint and stop.
 ///
-/// Returns `0` for a `NULL` handle.
-///
-/// # Safety
-///
-/// `session_ptr` must be a live session handle, or `NULL`.
-#[no_mangle]
-pub unsafe extern "C" fn webui_streaming_session_boundary_count(
-    session_ptr: *const webui_streaming_session_t,
-) -> u32 {
-    if session_ptr.is_null() {
-        return 0;
-    }
-    // SAFETY: The caller guarantees the session handle is live.
-    let context = unsafe { &*(session_ptr as *const StreamingSessionContext) };
-    u32::try_from(context.session.boundary_count()).unwrap_or(u32::MAX)
-}
-
-/// Report whether the terminal record has been written.
-///
-/// Returns `true` for a `NULL` handle, because a session that does not exist
-/// can never accept another call.
+/// `mode` must be [`WEBUI_BOUNDARY_MODE_FINAL`] or
+/// [`WEBUI_BOUNDARY_MODE_UPDATABLE`]. The returned owned step must be released
+/// with [`webui_streaming_step_destroy`]. A `NULL` return indicates an error
+/// available through [`webui_last_error`].
 ///
 /// # Safety
 ///
-/// `session_ptr` must be a live session handle, or `NULL`.
+/// * `session_ptr` must be a live session handle with no concurrent operation.
+/// * `state_json` must be non-null, null-terminated UTF-8 and remain readable
+///   for this call.
 #[no_mangle]
-pub unsafe extern "C" fn webui_streaming_session_is_finished(
-    session_ptr: *const webui_streaming_session_t,
-) -> bool {
-    if session_ptr.is_null() {
-        return true;
-    }
-    // SAFETY: The caller guarantees the session handle is live.
-    let context = unsafe { &*(session_ptr as *const StreamingSessionContext) };
-    context.session.is_finished()
-}
-
-/// Render everything before the first boundary.
-///
-/// Returns a NUL-terminated UTF-8 chunk that must be freed with
-/// [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
-/// the byte length excluding the terminator, so hosts writing to a socket do
-/// not need `strlen`.
-///
-/// # Safety
-///
-/// * `session_ptr` must be a live session handle.
-/// * `state_json` must be non-null, null-terminated UTF-8.
-/// * `out_len` must be writable, or `NULL`.
-#[no_mangle]
-pub unsafe extern "C" fn webui_streaming_session_write_shell(
+pub unsafe extern "C" fn webui_streaming_session_resume(
     session_ptr: *mut webui_streaming_session_t,
+    instance_id: u32,
     state_json: *const c_char,
-    out_len: *mut usize,
-) -> *mut c_char {
-    // SAFETY: Forwarded verbatim; this helper repeats every check.
-    unsafe {
-        streaming_chunk_call(
-            session_ptr,
-            state_json,
-            out_len,
-            "webui_streaming_session_write_shell",
-            |session, state| session.write_shell(state),
-        )
+    mode: webui_boundary_mode_t,
+) -> *mut webui_streaming_step_t {
+    clear_last_error();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if session_ptr.is_null() || state_json.is_null() {
+            set_last_error("session_ptr and state_json must not be null");
+            return std::ptr::null_mut();
+        }
+        let Some(mode) = streaming_boundary_mode(mode) else {
+            return std::ptr::null_mut();
+        };
+        // SAFETY: The caller guarantees exclusive access to a live session.
+        let context = unsafe { &mut *(session_ptr as *mut StreamingSessionContext) };
+        // SAFETY: The caller guarantees the string is readable and terminated.
+        let Some(state) = (unsafe { streaming_json_arg(state_json, "state_json") }) else {
+            return std::ptr::null_mut();
+        };
+        match context
+            .session
+            .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
+        {
+            Ok(step) => owned_streaming_step(step),
+            Err(error) => {
+                set_last_error(error.to_string());
+                std::ptr::null_mut()
+            }
+        }
+    })) {
+        Ok(step) => step,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_session_resume");
+            std::ptr::null_mut()
+        }
     }
 }
 
-/// Render and commit the next boundary in declaration order.
+/// Advance through parent bytes to the next occurrence or terminal completion.
 ///
-/// Pass `updatable = true` only for boundaries you intend to patch later with
-/// [`webui_streaming_session_update`]; an updatable boundary retains its roots
-/// and projection until the terminal record.
-///
-/// Returns a NUL-terminated UTF-8 chunk that must be freed with
-/// [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
-/// the byte length excluding the terminator.
+/// This call is valid only after [`webui_streaming_session_resume`] commits the
+/// pending occurrence. The returned owned step follows the same ownership rules
+/// as start and resume and must be released with [`webui_streaming_step_destroy`].
+/// A `NULL` return indicates an error available through [`webui_last_error`].
 ///
 /// # Safety
 ///
-/// * `session_ptr` must be a live session handle.
-/// * `state_json` must be non-null, null-terminated UTF-8.
-/// * `out_len` must be writable, or `NULL`.
+/// `session_ptr` must be a live session handle with no concurrent operation.
 #[no_mangle]
-pub unsafe extern "C" fn webui_streaming_session_write_boundary(
+pub unsafe extern "C" fn webui_streaming_session_advance(
     session_ptr: *mut webui_streaming_session_t,
-    boundary: u32,
-    state_json: *const c_char,
-    updatable: bool,
-    out_len: *mut usize,
-) -> *mut c_char {
-    let mode = if updatable {
-        BoundaryMode::Updatable
-    } else {
-        BoundaryMode::Final
-    };
-    // SAFETY: Forwarded verbatim; this helper repeats every check.
-    unsafe {
-        streaming_chunk_call(
-            session_ptr,
-            state_json,
-            out_len,
-            "webui_streaming_session_write_boundary",
-            |session, state| session.write_boundary(BoundaryId::from_raw(boundary), state, mode),
-        )
+) -> *mut webui_streaming_step_t {
+    clear_last_error();
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if session_ptr.is_null() {
+            set_last_error("session_ptr must not be null");
+            return std::ptr::null_mut();
+        }
+        // SAFETY: The caller guarantees exclusive access to a live session.
+        let context = unsafe { &mut *(session_ptr as *mut StreamingSessionContext) };
+        match context.session.advance() {
+            Ok(step) => owned_streaming_step(step),
+            Err(error) => {
+                set_last_error(error.to_string());
+                std::ptr::null_mut()
+            }
+        }
+    })) {
+        Ok(step) => step,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_session_advance");
+            std::ptr::null_mut()
+        }
     }
 }
 
-/// Push a projected state patch to a committed updatable boundary.
+/// Emit a projected state patch for a committed updatable occurrence.
 ///
-/// Returns a NUL-terminated UTF-8 chunk that must be freed with
-/// [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
-/// the byte length excluding the terminator.
+/// Returns allocated bytes that must be freed with [`webui_free`]. On success,
+/// `out_len` receives the authoritative byte length excluding the allocation's
+/// trailing NUL. On failure, `NULL` is returned and `out_len` is untouched.
+/// Call [`webui_last_error`] for details.
 ///
 /// # Safety
 ///
-/// * `session_ptr` must be a live session handle.
-/// * `state_json` must be non-null, null-terminated UTF-8.
-/// * `out_len` must be writable, or `NULL`.
+/// * `session_ptr` must be a live session handle with no concurrent operation.
+/// * `patch_json` must be non-null, null-terminated UTF-8 and remain readable
+///   for this call.
+/// * `out_len` must be non-null and writable.
 #[no_mangle]
 pub unsafe extern "C" fn webui_streaming_session_update(
     session_ptr: *mut webui_streaming_session_t,
-    boundary: u32,
-    state_json: *const c_char,
+    instance_id: u32,
+    patch_json: *const c_char,
     out_len: *mut usize,
-) -> *mut c_char {
-    // SAFETY: Forwarded verbatim; this helper repeats every check.
-    unsafe {
-        streaming_chunk_call(
-            session_ptr,
-            state_json,
-            out_len,
-            "webui_streaming_session_update",
-            |session, state| session.update(BoundaryId::from_raw(boundary), state),
-        )
-    }
-}
-
-/// Render the document tail and emit the terminal record.
-///
-/// Every later call fails. The handle must still be released with
-/// [`webui_streaming_session_destroy`].
-///
-/// Returns a NUL-terminated UTF-8 chunk that must be freed with
-/// [`webui_free`], or `NULL` on error. When `out_len` is non-null it receives
-/// the byte length excluding the terminator.
-///
-/// # Safety
-///
-/// * `session_ptr` must be a live session handle.
-/// * `state_json` must be non-null, null-terminated UTF-8.
-/// * `out_len` must be writable, or `NULL`.
-#[no_mangle]
-pub unsafe extern "C" fn webui_streaming_session_finish(
-    session_ptr: *mut webui_streaming_session_t,
-    state_json: *const c_char,
-    out_len: *mut usize,
-) -> *mut c_char {
-    // SAFETY: Forwarded verbatim; this helper repeats every check.
-    unsafe {
-        streaming_chunk_call(
-            session_ptr,
-            state_json,
-            out_len,
-            "webui_streaming_session_finish",
-            |session, state| session.finish(state),
-        )
-    }
-}
-
-/// Shared body for every chunk-producing session call.
-///
-/// # Safety
-///
-/// Pointers must satisfy the contract documented on the calling function.
-unsafe fn streaming_chunk_call(
-    session_ptr: *mut webui_streaming_session_t,
-    state_json: *const c_char,
-    out_len: *mut usize,
-    operation: &str,
-    render: impl FnOnce(&mut StreamingSession, &Value) -> webui_handler::Result<Vec<u8>>,
 ) -> *mut c_char {
     clear_last_error();
-
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        if session_ptr.is_null() || state_json.is_null() {
-            set_last_error("one or more required arguments are null");
+        if session_ptr.is_null() || patch_json.is_null() || out_len.is_null() {
+            set_last_error("session_ptr, patch_json, and out_len must not be null");
             return std::ptr::null_mut();
         }
-
-        // SAFETY: The caller guarantees exclusive access to a live session.
+        // SAFETY: The caller guarantees exclusive access to the live session.
         let context = unsafe { &mut *(session_ptr as *mut StreamingSessionContext) };
-        // SAFETY: The caller guarantees `state_json` is valid and terminated.
-        let Some(state_str) = (unsafe { utf8_arg(state_json, "state_json") }) else {
+        // SAFETY: The caller guarantees the string is readable and terminated.
+        let Some(patch) = (unsafe { streaming_json_arg(patch_json, "patch_json") }) else {
             return std::ptr::null_mut();
         };
-
-        let state: Value = match serde_json::from_str(state_str) {
-            Ok(value) => value,
-            Err(error) => {
-                set_last_error(format!("failed to parse state JSON: {error}"));
-                return std::ptr::null_mut();
-            }
-        };
-
-        let bytes = match render(&mut context.session, &state) {
+        let bytes = match context
+            .session
+            .update(BoundaryInstanceId::from_raw(instance_id), &patch)
+        {
             Ok(bytes) => bytes,
             Err(error) => {
                 set_last_error(error.to_string());
                 return std::ptr::null_mut();
             }
         };
-
         let length = bytes.len();
         match CString::new(bytes) {
             Ok(chunk) => {
-                if !out_len.is_null() {
-                    // SAFETY: The caller guarantees `out_len` is writable.
-                    unsafe { *out_len = length };
-                }
+                // SAFETY: The caller guarantees `out_len` is writable.
+                unsafe { *out_len = length };
                 chunk.into_raw()
             }
             Err(error) => {
-                set_last_error(format!("chunk contains interior NUL byte: {error}"));
+                set_last_error(format!(
+                    "streaming update contains an interior NUL byte: {error}"
+                ));
                 std::ptr::null_mut()
             }
         }
     })) {
-        Ok(ptr) => ptr,
+        Ok(bytes) => bytes,
         Err(_) => {
-            set_last_error(format!("panic in {operation}"));
+            set_last_error("panic in webui_streaming_session_update");
             std::ptr::null_mut()
+        }
+    }
+}
+
+/// Release an owned streaming step.
+///
+/// Destroying a step invalidates its byte pointer and all descriptor string
+/// pointers previously returned by step accessors.
+///
+/// # Safety
+///
+/// `step_ptr` must be a pointer returned by
+/// [`webui_streaming_session_start`], [`webui_streaming_session_resume`], or
+/// [`webui_streaming_session_advance`], or `NULL` for a no-op. A non-null
+/// pointer must not be used after this call.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_destroy(step_ptr: *mut webui_streaming_step_t) {
+    clear_last_error();
+    if step_ptr.is_null() {
+        return;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: The caller guarantees this is one live owned step.
+        drop(unsafe { Box::from_raw(step_ptr as *mut StreamingStepContext) });
+    }));
+    if result.is_err() {
+        set_last_error("panic in webui_streaming_step_destroy");
+    }
+}
+
+/// Borrow the bytes produced by this step and write their length to `out_len`.
+///
+/// The returned pointer is borrowed from `step_ptr`, is not NUL-terminated,
+/// and remains valid only until [`webui_streaming_step_destroy`]. It may be
+/// read for exactly `out_len` bytes. Returns `NULL` on error.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_len` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_bytes(
+    step_ptr: *const webui_streaming_step_t,
+    out_len: *mut usize,
+) -> *const u8 {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_len.is_null() {
+            set_last_error("step_ptr and out_len must not be null");
+            return std::ptr::null();
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        // SAFETY: The caller guarantees `out_len` is writable.
+        unsafe { *out_len = context.step.bytes.len() };
+        context.step.bytes.as_ptr()
+    }) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_bytes");
+            std::ptr::null()
+        }
+    }
+}
+
+/// Observe whether this step emitted the terminal record.
+///
+/// A valid non-terminal step returns `false` with no last error. A null handle
+/// returns `false` and sets [`webui_last_error`].
+///
+/// # Safety
+///
+/// `step_ptr` must be a live step handle with no concurrent destroy.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_done(
+    step_ptr: *const webui_streaming_step_t,
+) -> bool {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() {
+            set_last_error("step_ptr is null");
+            return false;
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        unsafe { (*(step_ptr as *const StreamingStepContext)).step.done }
+    }) {
+        Ok(done) => done,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_done");
+            false
+        }
+    }
+}
+
+/// Observe whether this step carries a pending boundary descriptor.
+///
+/// A valid boundary-free step returns `false` with no last error. A null handle
+/// returns `false` and sets [`webui_last_error`].
+///
+/// # Safety
+///
+/// `step_ptr` must be a live step handle with no concurrent destroy.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_has_boundary(
+    step_ptr: *const webui_streaming_step_t,
+) -> bool {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() {
+            set_last_error("step_ptr is null");
+            return false;
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        unsafe {
+            (*(step_ptr as *const StreamingStepContext))
+                .step
+                .boundary
+                .is_some()
+        }
+    }) {
+        Ok(has_boundary) => has_boundary,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_has_boundary");
+            false
+        }
+    }
+}
+
+/// Read the pending boundary's response-local instance ID.
+///
+/// Returns `false` and leaves `out_instance_id` untouched when the step has no
+/// boundary or an argument is invalid.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_instance_id` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_instance_id(
+    step_ptr: *const webui_streaming_step_t,
+    out_instance_id: *mut u32,
+) -> bool {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_instance_id.is_null() {
+            set_last_error("step_ptr and out_instance_id must not be null");
+            return false;
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return false;
+        };
+        // SAFETY: The caller guarantees `out_instance_id` is writable.
+        unsafe { *out_instance_id = boundary.instance_id.raw() };
+        true
+    }) {
+        Ok(ok) => ok,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_instance_id");
+            false
+        }
+    }
+}
+
+/// Read the pending boundary's stable compiler declaration ID.
+///
+/// Returns `false` and leaves `out_declaration_id` untouched when the step has
+/// no boundary or an argument is invalid.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_declaration_id` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_declaration_id(
+    step_ptr: *const webui_streaming_step_t,
+    out_declaration_id: *mut u32,
+) -> bool {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_declaration_id.is_null() {
+            set_last_error("step_ptr and out_declaration_id must not be null");
+            return false;
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return false;
+        };
+        // SAFETY: The caller guarantees `out_declaration_id` is writable.
+        unsafe { *out_declaration_id = boundary.declaration_id };
+        true
+    }) {
+        Ok(ok) => ok,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_declaration_id");
+            false
+        }
+    }
+}
+
+/// Borrow the pending boundary owner's UTF-8 bytes.
+///
+/// The returned string pointer is not NUL-terminated. It is borrowed from the
+/// step and remains valid only until [`webui_streaming_step_destroy`]. Read it
+/// for exactly the byte length written to `out_len`. Returns `NULL` on error.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_len` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_owner(
+    step_ptr: *const webui_streaming_step_t,
+    out_len: *mut usize,
+) -> *const c_char {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_len.is_null() {
+            set_last_error("step_ptr and out_len must not be null");
+            return std::ptr::null();
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return std::ptr::null();
+        };
+        // SAFETY: The caller guarantees `out_len` is writable.
+        unsafe { *out_len = boundary.owner.len() };
+        boundary.owner.as_ptr().cast()
+    }) {
+        Ok(owner) => owner,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_owner");
+            std::ptr::null()
+        }
+    }
+}
+
+/// Borrow the pending boundary name's UTF-8 bytes.
+///
+/// The returned string pointer is not NUL-terminated. It is borrowed from the
+/// step and remains valid only until [`webui_streaming_step_destroy`]. Read it
+/// for exactly the byte length written to `out_len`. Returns `NULL` on error.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_len` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_name(
+    step_ptr: *const webui_streaming_step_t,
+    out_len: *mut usize,
+) -> *const c_char {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_len.is_null() {
+            set_last_error("step_ptr and out_len must not be null");
+            return std::ptr::null();
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return std::ptr::null();
+        };
+        // SAFETY: The caller guarantees `out_len` is writable.
+        unsafe { *out_len = boundary.name.len() };
+        boundary.name.as_ptr().cast()
+    }) {
+        Ok(name) => name,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_name");
+            std::ptr::null()
+        }
+    }
+}
+
+/// Read the pending boundary key discriminator.
+///
+/// On success, writes exactly one of [`WEBUI_BOUNDARY_KEY_NONE`],
+/// [`WEBUI_BOUNDARY_KEY_STRING`], or [`WEBUI_BOUNDARY_KEY_NUMBER`]. Returns
+/// `false` and leaves `out_key_type` untouched on error.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_key_type` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_key_type(
+    step_ptr: *const webui_streaming_step_t,
+    out_key_type: *mut webui_boundary_key_type_t,
+) -> bool {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_key_type.is_null() {
+            set_last_error("step_ptr and out_key_type must not be null");
+            return false;
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return false;
+        };
+        let key_type = match boundary.key {
+            None => WEBUI_BOUNDARY_KEY_NONE,
+            Some(BoundaryKey::String(_)) => WEBUI_BOUNDARY_KEY_STRING,
+            Some(BoundaryKey::Number(_)) => WEBUI_BOUNDARY_KEY_NUMBER,
+        };
+        // SAFETY: The caller guarantees `out_key_type` is writable.
+        unsafe { *out_key_type = key_type };
+        true
+    }) {
+        Ok(ok) => ok,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_key_type");
+            false
+        }
+    }
+}
+
+/// Borrow the pending boundary's string key as UTF-8 bytes.
+///
+/// The returned string pointer is not NUL-terminated. It is borrowed from the
+/// step and remains valid only until [`webui_streaming_step_destroy`]. Read it
+/// for exactly the byte length written to `out_len`. A non-string key returns
+/// `NULL`, leaves `out_len` untouched, and sets [`webui_last_error`].
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_len` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_key_string(
+    step_ptr: *const webui_streaming_step_t,
+    out_len: *mut usize,
+) -> *const c_char {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_len.is_null() {
+            set_last_error("step_ptr and out_len must not be null");
+            return std::ptr::null();
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return std::ptr::null();
+        };
+        let Some(BoundaryKey::String(value)) = boundary.key.as_ref() else {
+            set_last_error("pending boundary key is not a string");
+            return std::ptr::null();
+        };
+        // SAFETY: The caller guarantees `out_len` is writable.
+        unsafe { *out_len = value.len() };
+        value.as_ptr().cast()
+    }) {
+        Ok(value) => value,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_key_string");
+            std::ptr::null()
+        }
+    }
+}
+
+/// Read the pending boundary's numeric key.
+///
+/// Returns `false`, leaves `out_value` untouched, and sets
+/// [`webui_last_error`] when the key is absent or is a string.
+///
+/// # Safety
+///
+/// * `step_ptr` must be a live step handle with no concurrent destroy.
+/// * `out_value` must be non-null and writable.
+#[no_mangle]
+pub unsafe extern "C" fn webui_streaming_step_boundary_key_number(
+    step_ptr: *const webui_streaming_step_t,
+    out_value: *mut f64,
+) -> bool {
+    clear_last_error();
+    match std::panic::catch_unwind(|| {
+        if step_ptr.is_null() || out_value.is_null() {
+            set_last_error("step_ptr and out_value must not be null");
+            return false;
+        }
+        // SAFETY: The caller guarantees a live step handle.
+        let context = unsafe { &*(step_ptr as *const StreamingStepContext) };
+        let Some(boundary) = streaming_step_boundary(context) else {
+            return false;
+        };
+        let Some(BoundaryKey::Number(value)) = boundary.key.as_ref() else {
+            set_last_error("pending boundary key is not a number");
+            return false;
+        };
+        let Some(value) = value.as_f64() else {
+            set_last_error("pending boundary key cannot be represented as a finite number");
+            return false;
+        };
+        // SAFETY: The caller guarantees `out_value` is writable.
+        unsafe { *out_value = value };
+        true
+    }) {
+        Ok(ok) => ok,
+        Err(_) => {
+            set_last_error("panic in webui_streaming_step_boundary_key_number");
+            false
+        }
+    }
+}
+
+fn owned_streaming_step(step: StreamStep) -> *mut webui_streaming_step_t {
+    Box::into_raw(Box::new(StreamingStepContext { step })) as *mut webui_streaming_step_t
+}
+
+fn streaming_step_boundary(context: &StreamingStepContext) -> Option<&BoundaryDescriptor> {
+    match context.step.boundary.as_ref() {
+        Some(boundary) => Some(boundary),
+        None => {
+            set_last_error("streaming step has no pending boundary");
+            None
+        }
+    }
+}
+
+fn streaming_boundary_mode(mode: webui_boundary_mode_t) -> Option<BoundaryMode> {
+    match mode {
+        WEBUI_BOUNDARY_MODE_FINAL => Some(BoundaryMode::Final),
+        WEBUI_BOUNDARY_MODE_UPDATABLE => Some(BoundaryMode::Updatable),
+        _ => {
+            set_last_error(format!(
+                "invalid boundary mode {mode}; expected WEBUI_BOUNDARY_MODE_FINAL (0) \
+                 or WEBUI_BOUNDARY_MODE_UPDATABLE (1)"
+            ));
+            None
+        }
+    }
+}
+
+/// Parse one required JSON string argument.
+///
+/// # Safety
+///
+/// `value` must be non-null, null-terminated, and readable for this call.
+unsafe fn streaming_json_arg(value: *const c_char, name: &str) -> Option<Value> {
+    // SAFETY: The caller guarantees the string pointer is valid and terminated.
+    let text = unsafe { utf8_arg(value, name) }?;
+    match serde_json::from_str(text) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            set_last_error(format!("failed to parse {name}: {error}"));
+            None
         }
     }
 }

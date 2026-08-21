@@ -1,0 +1,78 @@
+
+∑
+if-1Æ
+(R&
+index.htmlgreeting"{{integerKey}}
+
+
+<p class="greeting">Hello, 
+"
+name
+	
+
+!</p>
+R8
+1
+/
+-<p id="greeting-tail">Greeting committed.</p>
+&R$
+index.htmlstatus"{{floatKey}}
+
+
+<p id="status">
+
+"
+status
+
+
+</p>
+R8
+-
++
+)<p id="status-tail">Status committed.</p>
+(R&
+index.htmlsummary"{{stringKey}}
+
+
+<p id="summary">
+"	
+summary
+
+
+</p>
+R8
+(
+&
+$<footer>Streaming complete.</footer>
+ú
+
+index.htmlç
+)
+'
+%<!DOCTYPE html><html lang="en"><head>
+"
+}}}webui:head_start
+"
+ 
+<meta charset="UTF-8"/><title>
+	"
+title
+
+
+
+</title>
+"
+}}}webui:head_end
+
+
+</head><body>
+"
+}}}webui:body_start
+*
+"
+showif-1
+"
+}}}webui:body_end
+
+
+</body></html>

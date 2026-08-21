@@ -166,7 +166,11 @@
             "link": "/guide/integrations/electron"
           },
           {
-            "text": "C / C# / FFI",
+            "text": ".NET",
+            "link": "/guide/integrations/dotnet"
+          },
+          {
+            "text": "C / FFI",
             "link": "/guide/integrations/ffi"
           },
           {

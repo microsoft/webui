@@ -1,0 +1,46 @@
+<header>
+  <h1>Streaming Home</h1>
+  <!--
+    This component-local boundary commits immediately as updatable, so slow
+    forecast work cannot hold back the composer or the rest of this parent.
+  -->
+  <boundary name="weather-shell">
+    <!--
+      The island's code ships with the island, not with the critical bundle.
+      Loading it inside the boundary keeps it out of modulepreload hints and
+      lets the coordinator activate it whenever the late definition arrives.
+    -->
+    <script type="module" async src="./weather-panel.js"></script>
+    <weather-panel status="loading"></weather-panel>
+  </boundary>
+</header>
+
+<main>
+  <boundary name="composer-ready">
+    <message-composer draft="" posted=""></message-composer>
+  </boundary>
+
+  <section aria-label="Feed">
+    <boundary name="feed-batch-1">
+      <for each="post in feedBatch1">
+        <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
+      </for>
+    </boundary>
+
+    <boundary name="feed-batch-2">
+      <for each="post in feedBatch2">
+        <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
+      </for>
+    </boundary>
+
+    <boundary name="feed-batch-3">
+      <for each="post in feedBatch3">
+        <feed-item post-id="{{post.postId}}" author="{{post.author}}" text="{{post.text}}" like-count="{{post.likeCount}}"></feed-item>
+      </for>
+    </boundary>
+  </section>
+</main>
+
+<footer data-testid="page-tail">
+  The parent component tail arrives only after its interactive children.
+</footer>

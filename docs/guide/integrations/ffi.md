@@ -206,30 +206,51 @@ erase the startup-only performance model.
 ### Progressive streaming sessions
 
 A streaming session lets a C host render one response in chunks it writes
-itself. Every chunk function returns a heap byte pointer plus its length; WebUI
-never touches your socket, so backpressure and cancellation stay yours.
+itself. Start, resume, and advance return owned step handles with borrowed byte
+slices; update returns an owned byte buffer. WebUI never touches your socket,
+so backpressure and cancellation stay yours.
 
 ```c
 webui_streaming_session_t *session = webui_streaming_session_create(
     handler, protocol, "index.html", "/");
 
-uint32_t rows = 0;
-if (!webui_streaming_session_boundary(session, "rows", &rows)) {
-    fprintf(stderr, "%s\n", webui_last_error());  /* lists the valid names */
-}
-
-size_t len = 0;
-uint8_t *chunk = webui_streaming_session_write_shell(session, "{}", &len);
-if (chunk == NULL) {
+webui_streaming_step_t *step =
+    webui_streaming_session_start(session, initial_state_json);
+if (step == NULL) {
     fprintf(stderr, "%s\n", webui_last_error());
-} else {
-    send_all(socket, chunk, len);
-    webui_free(chunk);
 }
 
-/* ... write_boundary / update ... then: */
-chunk = webui_streaming_session_finish(session, "{}", &len);
-/* send + free */
+while (step != NULL) {
+    uintptr_t bytes_len = 0;
+    const uint8_t *bytes = webui_streaming_step_bytes(step, &bytes_len);
+    send_all(socket, bytes, bytes_len);
+    if (webui_streaming_step_done(step)) {
+        webui_streaming_step_destroy(step);
+        break;
+    }
+
+    if (webui_streaming_step_has_boundary(step)) {
+        /* Copies owner, name, typed key, and IDs from the step accessors. */
+        struct app_boundary target = copy_boundary_descriptor(step);
+        webui_streaming_step_destroy(step);
+
+        const char *state_json = load_state(&target);
+        step = webui_streaming_session_resume(
+            session,
+            target.instance_id,
+            state_json,
+            WEBUI_BOUNDARY_MODE_FINAL);
+        free_boundary_descriptor(&target);
+    } else {
+        webui_streaming_step_destroy(step);
+        step = webui_streaming_session_advance(session);
+    }
+    if (step == NULL) {
+        fprintf(stderr, "%s\n", webui_last_error());
+        break;
+    }
+}
+
 webui_streaming_session_destroy(session);
 ```
 
@@ -237,23 +258,31 @@ webui_streaming_session_destroy(session);
 |----------|--------|
 | `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Session handle, or `NULL`. Inherits the handler's nonce (set with `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json`, not through this call. |
 | `webui_streaming_session_destroy(session)` | Releases the session. `NULL` is a safe no-op. |
-| `webui_streaming_session_boundary(session, name, out_id)` | `true` plus the integer handle, or `false` and an error listing the valid names |
-| `webui_streaming_session_boundary_count(session)` | Boundaries declared by the entry |
-| `webui_streaming_session_is_finished(session)` | Whether the terminal record was written |
-| `webui_streaming_session_write_shell(session, state_json, out_len)` | Document prefix through the first semantic flush |
-| `webui_streaming_session_write_boundary(session, id, state_json, mode, out_len)` | One boundary's markup and checkpoint. `mode` is `0` final, `1` updatable. |
-| `webui_streaming_session_update(session, id, state_json, out_len)` | Projected state patch for an updatable boundary |
-| `webui_streaming_session_finish(session, state_json, out_len)` | Tail checkpoint, terminal record, and document suffix |
+| `webui_streaming_session_start(session, state_json)` | Owned step through the first runtime occurrence or terminal, or `NULL` |
+| `webui_streaming_session_resume(session, instance_id, state_json, mode)` | Owned step containing only the pending occurrence through its checkpoint |
+| `webui_streaming_session_advance(session)` | Owned step containing following parent bytes through the next occurrence or terminal |
+| `webui_streaming_session_update(session, instance_id, patch_json, out_len)` | Projected state bytes for a committed updatable occurrence |
+| `webui_streaming_step_bytes(step, out_len)` | Borrow binary-safe step bytes until destroy |
+| `webui_streaming_step_done(step)` / `webui_streaming_step_has_boundary(step)` | Read completion and descriptor presence |
+| `webui_streaming_step_boundary_*` | Read IDs, owner/name slices, key type, and typed key |
+| `webui_streaming_step_destroy(step)` | Release the opaque step and all borrowed pointers |
 
-**Chunks are binary-safe.** Always use `*out_len`. Chunks are **not**
-NUL-terminated, and a checkpoint payload may legitimately contain a zero byte.
-Free every non-`NULL` chunk with `webui_free`.
+`webui_streaming_step_t` is opaque. Step bytes, owner, name, and string keys are
+borrowed slices with explicit lengths and are not NUL-terminated. Key type is
+none, string, or number; numeric keys are returned as `double`. Copy any
+descriptor values needed after destroying the step. Free update bytes with
+`webui_free`.
+
+If a step has a descriptor, call `resume`. If it has neither a descriptor nor
+`done`, call `advance`. If `done` is true, the response is complete. `resume`
+is boundary-only so the host can send that checkpoint immediately; `advance`
+renders the following parent or document-tail bytes. No sibling boundary is
+needed. An update may be emitted between `resume` and `advance`.
 
 The session clones its own references to the handler and protocol, so you may
-destroy them in any order. A rejected call returns `NULL` but leaves the session
-usable, so bad state input does not cost you the response. See
+destroy them in any order. Drive a session from one thread at a time. See
 [Streaming Boundaries](/guide/concepts/directives/boundary) for the authoring
-side and the ordering rules.
+and occurrence rules.
 
 ## Error Handling
 
@@ -287,7 +316,8 @@ Two rules to remember:
 |---|---|---|
 | `webui_handler_render` | Caller | `webui_free(ptr)` |
 | Partial, component-template, and token strings | Caller | `webui_free(ptr)` |
-| Streaming session chunks | Caller | `webui_free(ptr)` |
+| Streaming update bytes | Caller | `webui_free(ptr)` |
+| Streaming step handle and borrowed fields | Caller | `webui_streaming_step_destroy(step)` |
 | `webui_last_error` | Library (do **not** free) | Replaced on next call |
 | `webui_handler_create` | Caller | `webui_handler_destroy(ptr)` |
 | `webui_handler_create_with_plugin` | Caller | `webui_handler_destroy(ptr)` |
@@ -462,19 +492,32 @@ progressive response without touching the native ABI:
 
 ```csharp
 using var session = handler.StreamResponse(protocol, "index.html", "/");
-uint rows = session.Boundary("rows");
-
 Response.ContentType = "text/html; charset=utf-8";
-await Response.Body.WriteAsync(session.WriteShell("{}"));
-await Response.Body.FlushAsync();
+StreamingStep step = session.Start(initialState);
+while (true)
+{
+    await Response.Body.WriteAsync(step.Bytes);
+    await Response.Body.FlushAsync();
+    if (step.Done) break;
 
-await Response.Body.WriteAsync(session.WriteBoundary(rows, await LoadRowsAsync()));
-await Response.Body.WriteAsync(session.Finish("{}"));
+    if (step.Boundary is BoundaryDescriptor boundary)
+    {
+        string state = await LoadStateAsync(
+            boundary.Owner,
+            boundary.Name,
+            boundary.Key);
+        step = session.Resume(boundary.InstanceId, state, BoundaryMode.Final);
+    }
+    else
+    {
+        step = session.Advance();
+    }
+}
 ```
 
 Each call returns a `byte[]`, so `HttpResponse.Body` keeps its own write and
 flush semantics. Failures throw `WebUIException` carrying the same diagnostic
-`webui_last_error()` would report.
+`webui_last_error()` would report. See the [.NET integration](./dotnet).
 
 ## Other Languages
 

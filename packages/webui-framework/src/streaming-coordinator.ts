@@ -26,40 +26,55 @@ import {
   abandonPendingWaiters,
   configureStreamingFailureHandler,
   elementHasPendingStateForTests,
+  pendingBarrierRootCountForTests,
   pendingTagWaiterCountForTests,
   pendingUndefinedRootCountForTests,
   resetDeferredActivationForTests,
 } from './streaming-deferred.js';
-import type { PendingBoundaryUpdates } from './streaming-deferred.js';
+import type { PendingBoundaryUpdates, SpanBypass } from './streaming-deferred.js';
 import {
   findBoundaryScript,
-  findEndMarkerByPrefix,
-  findStartMarkerByPrefix,
+  findRangeEndMarkerByPrefix,
+  findRangeStartMarkerByPrefix,
+  markerlessRecordViolation,
   removeBoundaryScaffolding,
   resolveBoundaryRange,
+  resolveSpanRange,
   streamingErrorMessage,
 } from './streaming-dom.js';
 import type { HydrationRange } from './streaming-dom.js';
 import {
   parseBoundaryEnvelope,
+  RECORD_KIND_FINAL_CHECKPOINT,
+  RECORD_KIND_SPAN_COMPLETION,
   RECORD_KIND_STATE_UPDATE,
   RECORD_KIND_TERMINAL,
   RECORD_KIND_UPDATABLE_CHECKPOINT,
 } from './streaming-protocol.js';
-import type { BoundaryBootstrap } from './streaming-protocol.js';
+import type {
+  BoundaryBootstrap,
+  SpanCompletionPayload,
+} from './streaming-protocol.js';
 import { applyStateUpdate } from './streaming-state.js';
+import {
+  abandonOpenSpans,
+  completeSpan,
+  hasOpenSpans,
+  openSpanCountForTests,
+  prepareSpanCompletion,
+  registerEnclosingSpans,
+  spanHostFor,
+} from './streaming-spans.js';
 
 const MAX_QUEUED_BOUNDARIES = 512;
 const MAX_UPDATABLE_BOUNDARIES = 128;
 const MAX_RETAINED_UPDATE_ROOTS = 50_000;
 const BOUNDARY_HYDRATED_EVENT = 'webui:boundary-hydrated';
-/** `performance.mark()` label prefix. The suffix is the compile-time boundary
- *  ID — its declaration index — so a mark resolves back to the authored
- *  `<boundary name>` through the build manifest without any name string ever
- *  reaching the wire (rule 18). */
+/** `performance.mark()` prefix; suffixes are runtime BoundaryInstanceIds. */
 const BOUNDARY_MARK_PREFIX = 'webui:boundary:';
 const UPDATE_MARK_SUFFIX = ':update';
 const TERMINAL_MARK = 'webui:streaming:terminal';
+const SPAN_MARK_PREFIX = 'webui:span:';
 
 /** Captured once: marks and the slice clock must not re-resolve per commit. */
 const perf = (globalThis as { performance?: Performance }).performance;
@@ -71,7 +86,7 @@ let pumpScheduled = false;
 let slicedDrainActive = false;
 let halted = false;
 let nextExpectedRecordSequence = 0;
-let nextExpectedBoundaryId = 0;
+let nextExpectedBoundaryInstanceId = 0;
 let terminalCommitted = false;
 let pendingTerminalSequence: number | null = null;
 let terminalValidationScheduled = false;
@@ -201,6 +216,7 @@ function fail(reason: string): void {
   // successful completion event while their failure cleanup drains.
   abortStreamingGate();
   abandonPendingWaiters();
+  abandonOpenSpans();
   clearUpdatableBoundaries();
   settlePendingTerminal(false);
   for (let i = queueHead; i < queue.length; i++) {
@@ -221,8 +237,8 @@ function discardRejectedBoundary(sentinel: Element): void {
   let endMarker: Comment | null = null;
   let startMarker: Comment | null = null;
   if (scriptEl) {
-    endMarker = findEndMarkerByPrefix(scriptEl);
-    if (endMarker) startMarker = findStartMarkerByPrefix(endMarker);
+    endMarker = findRangeEndMarkerByPrefix(scriptEl);
+    if (endMarker) startMarker = findRangeStartMarkerByPrefix(endMarker);
   }
   if (startMarker && endMarker) {
     abandonDeferredRange(startMarker, endMarker);
@@ -268,7 +284,28 @@ function processSentinel(sentinel: Element): void {
     return;
   }
 
-  if (kind === RECORD_KIND_STATE_UPDATE) {
+  if (kind === RECORD_KIND_STATE_UPDATE || kind === RECORD_KIND_TERMINAL) {
+    const terminal = kind === RECORD_KIND_TERMINAL;
+    const violation = markerlessRecordViolation(
+      scriptEl,
+      terminal ? 'terminal' : 'state update',
+    );
+    if (violation) {
+      failBoundary(sentinel, violation);
+      return;
+    }
+    if (terminal) {
+      if (hasOpenSpans()) {
+        failBoundary(
+          sentinel,
+          'terminal record arrived before every component span completed',
+        );
+        return;
+      }
+      nextExpectedRecordSequence++;
+      commitTerminal(sequence, sentinel, scriptEl);
+      return;
+    }
     const boundary = updatableBoundaries.get(target);
     if (!boundary) {
       failBoundary(
@@ -289,46 +326,51 @@ function processSentinel(sentinel: Element): void {
     return;
   }
 
-  if (kind === RECORD_KIND_TERMINAL) {
-    const resolved = resolveBoundaryRange(scriptEl, 0, true);
+  if (kind === RECORD_KIND_SPAN_COMPLETION) {
+    const resolved = resolveSpanRange(scriptEl, target);
     if (!resolved.ok) {
-      failBoundary(sentinel, resolved.reason);
+      failRangeResolution(sentinel, scriptEl, resolved);
       return;
     }
     nextExpectedRecordSequence++;
-    commitTerminal(sequence, sentinel, scriptEl);
-    return;
-  }
-
-  if (target !== nextExpectedBoundaryId) {
-    failBoundary(
+    commitRecord(
+      true,
+      payload as SpanCompletionPayload,
+      resolved.range,
+      sequence,
+      target,
+      false,
       sentinel,
-      `expected boundary ID ${nextExpectedBoundaryId}, received ${target}`,
+      scriptEl,
     );
     return;
   }
-  const resolved = resolveBoundaryRange(scriptEl, target, false);
+
+  if (
+    kind !== RECORD_KIND_FINAL_CHECKPOINT &&
+    kind !== RECORD_KIND_UPDATABLE_CHECKPOINT
+  ) {
+    failBoundary(sentinel, `unsupported streaming record kind ${kind}`);
+    return;
+  }
+
+  if (target !== nextExpectedBoundaryInstanceId) {
+    failBoundary(
+      sentinel,
+      `expected boundary instance ${nextExpectedBoundaryInstanceId}, received ${target}`,
+    );
+    return;
+  }
+  const resolved = resolveBoundaryRange(scriptEl, target);
   if (!resolved.ok) {
-    if (resolved.truncated) {
-      if (resolved.start) {
-        abandonDeferredRange(resolved.start, scriptEl);
-      }
-      removeBoundaryScaffolding(
-        sentinel,
-        scriptEl,
-        resolved.start,
-        null,
-      );
-      fail(resolved.reason);
-    } else {
-      failBoundary(sentinel, resolved.reason);
-    }
+    failRangeResolution(sentinel, scriptEl, resolved);
     return;
   }
 
   nextExpectedRecordSequence++;
-  nextExpectedBoundaryId++;
-  commitCheckpoint(
+  nextExpectedBoundaryInstanceId++;
+  commitRecord(
+    false,
     payload as BoundaryBootstrap,
     resolved.range,
     sequence,
@@ -339,8 +381,19 @@ function processSentinel(sentinel: Element): void {
   );
 }
 
-function commitCheckpoint(
-  bootstrap: BoundaryBootstrap,
+/**
+ * Run one range-hydrating record inside the shared commit shell.
+ *
+ * Checkpoints and span completions differ only in what they hydrate; the
+ * lifecycle accounting, failure policy, scaffold removal, and commit
+ * notification are identical, so they are written once here. The body is
+ * selected by a numeric op rather than a callback so a commit still allocates
+ * nothing, and both the mark and the failure message are built only on the
+ * path that actually needs them.
+ */
+function commitRecord(
+  span: boolean,
+  payload: BoundaryBootstrap | SpanCompletionPayload,
   range: HydrationRange,
   sequence: number,
   target: number,
@@ -351,31 +404,23 @@ function commitCheckpoint(
   markBoundaryPending();
   let committed = false;
   try {
-    applyBoundaryBootstrap(bootstrap);
-    if (range.start && range.end) {
-      const boundary: UpdatableBoundary | undefined = updatable
-        ? { roots: [], retained: 0, pendingRoots: 0 }
-        : undefined;
-      activateRootsBetween(
-        range.start,
-        range.end,
-        bootstrap.state,
-        boundary,
+    if (span) {
+      hydrateSpanCompletion(payload as SpanCompletionPayload, range, target);
+    } else {
+      hydrateCheckpoint(
+        payload as BoundaryBootstrap,
+        range,
+        target,
+        updatable,
       );
-      if (boundary) retainUpdatableBoundary(target, boundary);
-    } else if (updatable) {
-      retainUpdatableBoundary(target, {
-        roots: [],
-        retained: 0,
-        pendingRoots: 0,
-      });
     }
     committed = true;
   } catch (error) {
+    const detail = streamingErrorMessage(error);
     fail(
-      `error committing boundary ${sequence}: ${
-        streamingErrorMessage(error)
-      }`,
+      span
+        ? `error completing span ${target}: ${detail}`
+        : `error committing boundary ${sequence}: ${detail}`,
     );
   } finally {
     removeBoundaryScaffolding(
@@ -385,10 +430,88 @@ function commitCheckpoint(
       range.end,
     );
     if (committed) {
-      notifyCommit(`${BOUNDARY_MARK_PREFIX}${target}`, sequence, 'checkpoint');
+      notifyCommit(
+        `${span ? SPAN_MARK_PREFIX : BOUNDARY_MARK_PREFIX}${target}`,
+        sequence,
+        span ? 'span' : 'checkpoint',
+      );
     }
     markBoundaryCommitted(false);
   }
+}
+
+function hydrateCheckpoint(
+  bootstrap: BoundaryBootstrap,
+  range: HydrationRange,
+  target: number,
+  updatable: boolean,
+): void {
+  let bypass: SpanBypass | undefined;
+  const enclosing = bootstrap.enclosingSpanInstanceId;
+  if (enclosing !== undefined && range.start?.parentNode) {
+    const invalid = registerEnclosingSpans(range.start.parentNode, enclosing);
+    if (invalid) throw new Error(invalid);
+    // Resolved once per boundary, never per root: the activation walk compares
+    // this element by identity, so `TemplateElement` never sees a span
+    // attribute name and the always-shipped bundle never carries one.
+    const host = spanHostFor(enclosing);
+    if (host) bypass = { id: String(enclosing), host };
+  }
+  applyBoundaryBootstrap(bootstrap);
+  if (range.start && range.end) {
+    const boundary: UpdatableBoundary | undefined = updatable
+      ? newUpdatableBoundary()
+      : undefined;
+    activateRootsBetween(
+      range.start,
+      range.end,
+      bootstrap.state,
+      boundary,
+      bypass,
+    );
+    if (boundary) retainUpdatableBoundary(target, boundary);
+  } else if (updatable) {
+    retainUpdatableBoundary(target, newUpdatableBoundary());
+  }
+}
+
+function newUpdatableBoundary(): UpdatableBoundary {
+  return { roots: [], active: true, retained: 0, pendingRoots: 0 };
+}
+
+function hydrateSpanCompletion(
+  payload: SpanCompletionPayload,
+  range: HydrationRange,
+  target: number,
+): void {
+  const invalid = prepareSpanCompletion(target, range);
+  if (invalid) throw new Error(invalid);
+  applyBoundaryBootstrap(payload);
+  // `prepareSpanCompletion` already rejected a markerless range.
+  activateRootsBetween(range.start!, range.end!, payload.state);
+  completeSpan(target);
+}
+
+function failRangeResolution(
+  sentinel: Element,
+  scriptEl: Element,
+  resolved: Exclude<
+    ReturnType<typeof resolveBoundaryRange>,
+    { readonly ok: true }
+  >,
+): void {
+  if (!resolved.truncated) {
+    failBoundary(sentinel, resolved.reason);
+    return;
+  }
+  if (resolved.start) abandonDeferredRange(resolved.start, scriptEl);
+  removeBoundaryScaffolding(
+    sentinel,
+    scriptEl,
+    resolved.start,
+    null,
+  );
+  fail(resolved.reason);
 }
 
 function retainUpdatableBoundary(
@@ -466,11 +589,18 @@ function commitTerminal(
   removeBoundaryScaffolding(sentinel, scriptEl, null, null);
   terminalCommitted = true;
   pendingTerminalSequence = sequence;
-  clearUpdatableBoundaries();
+  clearUpdatableBoundaries(true);
   scheduleTerminalValidation();
 }
 
-function clearUpdatableBoundaries(): void {
+function clearUpdatableBoundaries(preservePendingPatches = false): void {
+  for (const boundary of updatableBoundaries.values()) {
+    boundary.active = false;
+    boundary.roots.length = 0;
+    if (!preservePendingPatches || boundary.pendingRoots === 0) {
+      boundary.patch = undefined;
+    }
+  }
   updatableBoundaries.clear();
   retainedUpdateRoots = 0;
 }
@@ -570,6 +700,7 @@ function onDomContentLoaded(generation: number): void {
 /** Reset coordinator singletons and invalidate queued promise reactions. */
 export function resetStreamingCoordinatorStateForTests(): void {
   resetDeferredActivationForTests();
+  abandonOpenSpans();
   settlePendingTerminal(false);
   clearUpdatableBoundaries();
   coordinatorGeneration++;
@@ -579,7 +710,7 @@ export function resetStreamingCoordinatorStateForTests(): void {
   slicedDrainActive = false;
   halted = false;
   nextExpectedRecordSequence = 0;
-  nextExpectedBoundaryId = 0;
+  nextExpectedBoundaryInstanceId = 0;
   terminalCommitted = false;
   pendingTerminalSequence = null;
   terminalValidationScheduled = false;
@@ -595,6 +726,8 @@ export function streamingRetentionStateForTests(): readonly [number, number] {
 
 export {
   elementHasPendingStateForTests,
+  openSpanCountForTests,
+  pendingBarrierRootCountForTests,
   pendingTagWaiterCountForTests,
   pendingUndefinedRootCountForTests,
 };

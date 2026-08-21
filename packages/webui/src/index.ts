@@ -96,6 +96,30 @@ export interface ProtocolOptions {
  */
 export type BoundaryMode = "final" | "updatable";
 
+/** A runtime-discovered boundary occurrence waiting to be resumed. */
+export interface BoundaryDescriptor {
+  /** Gapless response-local occurrence ID passed to `resume()` and `update()`. */
+  instanceId: number;
+  /** Stable build-local ID for the authored boundary declaration. */
+  declarationId: number;
+  /** Entry or component template that owns the declaration. */
+  owner: string;
+  /** Free-form authored boundary name. */
+  name: string;
+  /** Evaluated boundary key, preserving its authored JSON type. */
+  key?: string | number;
+}
+
+/** Bytes and continuation state produced by a streaming session step. */
+export interface StreamStep {
+  /** Complete bytes produced by this semantic step. */
+  bytes: Buffer;
+  /** Whether the document tail and terminal record have been emitted. */
+  done: boolean;
+  /** Runtime occurrence waiting for `resume()`, present only at a boundary. */
+  boundary?: BoundaryDescriptor;
+}
+
 /** Per-response settings for a host-driven streaming session. */
 export interface StreamOptions {
   /** Fragment ID to start rendering from (default: "index.html"). */
@@ -189,13 +213,24 @@ interface NativeProtocol {
 }
 
 interface NativeStreamingSession {
-  readonly boundaryCount: number;
-  readonly finished: boolean;
-  boundary(name: string): number;
-  writeShell(stateJson: string): Buffer;
-  writeBoundary(boundary: number, stateJson: string, mode?: BoundaryMode): Buffer;
-  update(boundary: number, stateJson: string): Buffer;
-  finish(stateJson: string): Buffer;
+  start(stateJson: string): NativeStreamStep;
+  resume(instanceId: number, stateJson: string, mode?: BoundaryMode): NativeStreamStep;
+  advance(): NativeStreamStep;
+  update(instanceId: number, patchJson: string): Buffer;
+}
+
+interface NativeBoundaryDescriptor {
+  instanceId: number;
+  declarationId: number;
+  owner: string;
+  name: string;
+  key?: string | number | null;
+}
+
+interface NativeStreamStep {
+  bytes: Buffer;
+  done: boolean;
+  boundary?: NativeBoundaryDescriptor | null;
 }
 
 let addon: NativeAddon | undefined;
@@ -359,24 +394,25 @@ export class Protocol {
  * caller decides when they reach the socket and can await `drain` between
  * chunks. The session holds no transport and never blocks on one.
  *
- * Ordering is enforced: the shell first, then each boundary exactly once in
- * declaration order, `update()` only after its boundary commits as
- * `updatable`, and `finish()` last. A violation throws before any byte is
- * produced.
+ * `start()` discovers the first runtime occurrence. Each `resume()` commits
+ * only the pending occurrence. An optional `update()` may follow for an
+ * `updatable` occurrence, then `advance()` discovers the next occurrence or
+ * returns the document tail and terminal record.
  *
  * ```js
  * const session = protocol.streamResponse({ requestPath: req.url });
- * const weather = session.boundary("weather-shell");
+ * let step = session.start(shellState);
+ * res.write(step.bytes);
  *
- * res.write(session.writeShell(shellState));
- * res.write(session.writeBoundary(weather, weatherShell, "updatable"));
- *
- * const forecast = await forecastReady;
- * if (!res.write(session.update(weather, forecast))) {
- *   await once(res, "drain");
+ * while (!step.done) {
+ *   const boundary = step.boundary;
+ *   const state = await loadBoundary(boundary.owner, boundary.name, boundary.key);
+ *   step = session.resume(boundary.instanceId, state);
+ *   res.write(step.bytes);
+ *   step = session.advance();
+ *   res.write(step.bytes);
  * }
- *
- * res.end(session.finish({}));
+ * res.end();
  * ```
  */
 export class StreamingSession {
@@ -387,49 +423,56 @@ export class StreamingSession {
     this.#native = native;
   }
 
-  /** Number of compile-time boundaries declared by this entry. */
-  get boundaryCount(): number {
-    return this.#native.boundaryCount;
+  /** Render until the first runtime boundary occurrence or terminal. */
+  start(state: object | string): StreamStep {
+    return toStreamStep(this.#native.start(toStateJson(state)));
   }
 
-  /** Whether the terminal record has been written. */
-  get finished(): boolean {
-    return this.#native.finished;
-  }
-
-  /**
-   * Resolve an authored boundary name to a stable integer handle.
-   *
-   * Resolve once outside the write loop; reusing the handle costs nothing.
-   * An unknown name throws with the valid names and a suggestion.
-   */
-  boundary(name: string): number {
-    return this.#native.boundary(name);
-  }
-
-  /** Render everything before the first boundary. */
-  writeShell(state: object | string): Buffer {
-    return this.#native.writeShell(toStateJson(state));
-  }
-
-  /** Render and commit the next boundary in declaration order. */
-  writeBoundary(
-    boundary: number,
+  /** Commit the pending occurrence through its checkpoint, then stop. */
+  resume(
+    instanceId: number,
     state: object | string,
     mode: BoundaryMode = "final",
-  ): Buffer {
-    return this.#native.writeBoundary(boundary, toStateJson(state), mode);
+  ): StreamStep {
+    return toStreamStep(this.#native.resume(instanceId, toStateJson(state), mode));
   }
 
-  /** Push a projected state patch to a committed `updatable` boundary. */
-  update(boundary: number, state: object | string): Buffer {
-    return this.#native.update(boundary, toStateJson(state));
+  /** Write following parent bytes and discover the next boundary or terminal. */
+  advance(): StreamStep {
+    return toStreamStep(this.#native.advance());
   }
 
-  /** Render the document tail and emit the terminal record. */
-  finish(state: object | string = {}): Buffer {
-    return this.#native.finish(toStateJson(state));
+  /** Push a projected state patch to a committed `updatable` occurrence. */
+  update(instanceId: number, patch: object | string): Buffer {
+    return this.#native.update(instanceId, toStateJson(patch));
   }
+}
+
+function toStreamStep(step: NativeStreamStep): StreamStep {
+  const boundary = step.boundary;
+  if (!boundary) {
+    return { bytes: step.bytes, done: step.done };
+  }
+  return {
+    bytes: step.bytes,
+    done: step.done,
+    boundary: toBoundaryDescriptor(boundary),
+  };
+}
+
+function toBoundaryDescriptor(
+  boundary: NativeBoundaryDescriptor,
+): BoundaryDescriptor {
+  const descriptor: BoundaryDescriptor = {
+    instanceId: boundary.instanceId,
+    declarationId: boundary.declarationId,
+    owner: boundary.owner,
+    name: boundary.name,
+  };
+  if (boundary.key !== undefined && boundary.key !== null) {
+    descriptor.key = boundary.key;
+  }
+  return descriptor;
 }
 
 function toStateJson(state: object | string): string {

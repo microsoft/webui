@@ -217,33 +217,72 @@ HttpResponse::Ok()
 
 ### Host-driven boundaries and state updates
 
-`stream_response` returns a synchronous response session. Resolve authored names
-once, then use integer handles for every write:
+`stream_response` returns a synchronous session that discovers runtime
+occurrences as it renders:
 
 ```rust
 use webui::{BoundaryMode, RenderOptions, WebUIHandler};
 
 let options = RenderOptions::new("index.html", "/");
 let mut response = handler.stream_response(&protocol, &options, &mut writer)?;
-let weather = response.boundary("weather-shell")?;
-let composer = response.boundary("composer-ready")?;
-let feed_1 = response.boundary("feed-batch-1")?;
+let mut step = response.start(&initial_state)?;
 
-response.write_shell(&page_state)?;
-response.write_boundary(weather, &loading_weather, BoundaryMode::Updatable)?;
-response.write_boundary(composer, &composer_state, BoundaryMode::Final)?;
-
-// Await or receive backend work between these synchronous calls.
-response.update(weather, &ready_weather)?;
-response.write_boundary(feed_1, &feed_state, BoundaryMode::Final)?;
-response.finish(&tail_state)?;
+while !step.done {
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state = load_state(
+                &boundary.owner,
+                &boundary.name,
+                boundary.key.as_ref(),
+            )?;
+            response.resume(
+                boundary.instance_id,
+                &state,
+                BoundaryMode::Final,
+            )?
+        }
+        None => response.advance()?,
+    };
+}
 ```
 
-Boundary HTML must be written once in declaration order. `update` can be called
-between any two boundary writes, but only for a committed `Updatable` boundary.
-It applies the same compiled state projection as that boundary's initial
-checkpoint, requires a JSON object, emits no marker range, and flushes
-immediately. `finish` requires all compiled boundaries to be committed.
+`start` writes the shell prefix through the first descriptor, or completes
+immediately when the selected path has none. `resume` must use the currently
+pending `BoundaryInstanceId` and writes only that occurrence through its
+checkpoint. Its result normally has no descriptor and `done == false`.
+`advance` writes the following parent or shell bytes until the next descriptor
+or terminal. This boundary-only resume lets the host flush an early component
+child independently; no sibling boundary is needed to separate it from the
+parent tail.
+
+The status states are exact: a descriptor requires `resume`; no descriptor with
+`done == false` requires `advance`; `done == true` completes the response. The
+completed status has no descriptor, and the writer already contains the tail
+and terminal.
+
+`WebUIHandler::render_streaming` uses one state value for the complete response:
+it projects and freezes that value once, then resumes each occurrence directly
+against the same snapshot. The lower-level `stream_response` API keeps the
+public `resume` overlay because hosts may supply newly resolved state for each
+occurrence.
+
+Every descriptor contains `instance_id`, `declaration_id`, `owner`, `name`, and
+an optional string or numeric `key`. A component-owned declaration reached from
+multiple static callsites in one entry traversal requires a key, and
+simultaneously live keys must be unique. A boundary-bearing subtree under
+`<for>` is rejected with `boundary-in-repeat`; a complete `<for>` may instead be
+inside one boundary.
+
+To send later state, resume the occurrence as `BoundaryMode::Updatable`, retain
+its instance ID, then call:
+
+```rust
+response.update(search_instance, &json!({ "query": "webui" }))?;
+```
+
+`update` accepts an object patch, emits a projected markerless state record, and
+flushes immediately. It is valid between the occurrence's `resume` and
+`advance`, inserts no markup, and does not rerun hydration.
 
 The session borrows each state value only for its call. It does not await,
 allocate a task, or synchronize concurrent callers. An async server should use a
@@ -259,12 +298,11 @@ pub trait FlushWriter: ResponseWriter {
 ```
 
 `render_streaming` and `stream_response` accept a `FlushWriter`;
-`StreamingWriter` implements that trait. Each explicit boundary is completed,
-followed by its hydration checkpoint and a semantic flush. At `body_end`, any
-native or scriptless tail HTML is followed by one empty markerless terminal
-record and one final flush. The terminal record never repeats state or template
-metadata. The normal `render` method still accepts any `ResponseWriter` and does
-not progressively hydrate authored boundaries.
+`StreamingWriter` implements that trait. `resume` flushes immediately after the
+occurrence's hydration checkpoint. The matching `advance` separately flushes
+the following parent bytes through the next descriptor or terminal. Generated
+component span completions, state updates, and terminal records also flush. The
+normal `render` method still accepts any `ResponseWriter`.
 
 The entry template must load its application module with an early
 `<script type="module" async>` in `<head>`, before boundary content. See
@@ -275,17 +313,16 @@ authoring and lifecycle contract. That application entry must import
 `@microsoft/webui-framework/streaming.js` before component registration
 modules. The default framework entry does not include the streaming coordinator.
 
-Each checkpoint carries state and templates for the component surface reachable
-from roots rendered since the previous checkpoint, including descendants behind
-initially false conditions or empty repeats. Unrelated later boundaries remain
-excluded. Template metadata is sent only when first reachable, inventory still
-tracks only rendered SSR roots, and repeated instances receive checkpoint-local
-state without duplicate metadata. The final terminal envelope is always
-`[1,nextSequence,3,0,{}]`; its flush also commits preceding static tail bytes.
+At `start`, WebUI freezes only projected top-level keys required to continue,
+plus lexical locals and route/component scope. Resume state overlays that frozen
+parent surface. Resolution order is lexical locals, resume state, then frozen
+parent state.
 
-Host-driven sessions are currently Rust-only. Node and WASM `renderStream`
-callbacks are synchronous whole-render APIs without writable backpressure, and
-the C ABI returns buffered strings. They do not expose this session contract.
+When a boundary occurs inside a reusable component, WebUI emits a generated
+span for the unfinished parent. The early child checkpoint can hydrate across
+light or open shadow DOM before the parent tail. A later span-completion record
+activates the parent exactly once. The terminal envelope is
+`[2,nextSequence,4,0,{}]`.
 
 The bounded channel limits bytes retained by a running render, but it does not
 bound how many requests can queue in Tokio's blocking pool. Acquire a
@@ -435,21 +472,20 @@ component.
 
 | API | Description |
 |---|---|
-| `WebUIHandler::stream_response(protocol, options, writer)` | Starts one progressive response session |
-| `StreamingResponse::boundary(name)` | Resolves a compiled name once to `BoundaryId` |
-| `StreamingResponse::boundary_count()` | Returns the fixed compile-time boundary count |
-| `StreamingResponse::write_shell(state)` | Renders and flushes the document prefix |
-| `StreamingResponse::write_boundary(id, state, mode)` | Commits the next authored boundary as `Final` or `Updatable` |
-| `StreamingResponse::update(id, state)` | Sends projected object state to a committed updatable boundary |
-| `StreamingResponse::finish(state)` | Renders the tail, emits terminal, and ends the writer |
+| `WebUIHandler::stream_response(protocol, options, writer)` | Create one progressive response session |
+| `StreamingResponse::start(state)` | Render and flush through the first runtime occurrence or terminal |
+| `StreamingResponse::resume(instance_id, state, mode)` | Render and flush only the pending occurrence through its checkpoint |
+| `StreamingResponse::advance()` | Render following parent bytes through the next occurrence or terminal |
+| `StreamingResponse::update(instance_id, patch)` | Send projected object state to a committed updatable occurrence |
+| `StreamingResponse::is_done()` | Report whether terminal and writer end completed |
 
 `StreamingResponse` borrows a `ResponseWriter` for the life of the response,
 which is the cheapest shape when the transport lives in the same process and the
 same language.
 
-When you would rather own the bytes — for example to feed a channel, a test
+When you would rather own the bytes - for example to feed a channel, a test
 harness, or a transport whose writer cannot be borrowed for that long —
-`StreamingSession` offers the same six operations and returns a `Vec<u8>` per
+`StreamingSession` offers the same four operations and returns a `Vec<u8>` per
 call instead:
 
 ```rust
@@ -458,11 +494,21 @@ let mut session = StreamingSession::new(
     Arc::clone(&protocol),
     SessionOptions::new("index.html", "/"),
 )?;
-let rows = session.boundary("rows")?;
-
-sink.send(session.write_shell(&shell_state)?)?;
-sink.send(session.write_boundary(rows, &rows_state, BoundaryMode::Final)?)?;
-sink.send(session.finish(&tail_state)?)?;
+let mut step = session.start(&initial_state)?;
+loop {
+    sink.send(std::mem::take(&mut step.bytes))?;
+    if step.done {
+        break;
+    }
+    step = match step.boundary.as_ref() {
+        Some(boundary) => {
+            let state =
+                load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
+            session.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+        }
+        None => session.advance()?,
+    };
+}
 ```
 
 The session holds its own `Arc` clones, so it may outlive the bindings you

@@ -91,6 +91,7 @@ async function renderPage(
       testSession,
       signal: abort.signal,
     });
+    response.end();
   } catch (error) {
     if (!abort.signal.aborted) {
       const message = error instanceof Error ? error.message : String(error);

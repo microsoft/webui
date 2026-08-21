@@ -11,9 +11,11 @@ The browser loads only static assets:
 - a service worker that streams the navigation response
 
 No application server is required. The service worker fetches public API state,
-constructs one `webui_wasm_handler.Protocol`, renders matching fragments with
-`Protocol.renderStream()`, and enqueues each section into a `ReadableStream` as
-soon as that API response resolves.
+constructs one `webui_wasm_handler.Protocol`, opens a
+`Protocol.streamResponse()` session, and enqueues every `start()`, `resume()`,
+and `advance()` step into a `ReadableStream`. API fetches run concurrently,
+while each resume uses the runtime descriptor returned by the previous
+descriptor-bearing `StreamStep`.
 
 Because the example renders public API data, the service worker validates URL
 fields before calling the handler. Keep that boundary in copied code so
@@ -77,9 +79,9 @@ pnpm --filter service-worker-example test
 ```
 
 The Playwright smoke test verifies that the page is controlled by the service
-worker, renders all WebUI chunks, and receives the chunks in async completion
-order rather than source order. Each chunk is wrapped with a `data-chunk`
-marker so the stream order is visible and easy to assert.
+worker, renders all WebUI chunks, and commits them in the cursor's authored
+order while their API fetches overlap. Each chunk is wrapped with a
+`data-chunk` marker so the stream order is visible and easy to assert.
 
 ## Why this matters
 
@@ -88,9 +90,15 @@ from public APIs. The serverless edge path can be:
 
 1. CDN serves static files.
 2. Browser service worker loads `protocol.bin`.
-3. Public APIs return JSON state.
-4. WebUI WASM handler renders HTML chunks locally.
-5. The service worker streams the response to the page.
+3. Public APIs return JSON state concurrently.
+4. `start()` returns the first pending boundary descriptor.
+5. The worker calls `resume()` for a descriptor, `advance()` for a step with
+   neither a descriptor nor `done`, and stops when `done` is true.
+
+`resume()` enqueues only the resolved occurrence through its checkpoint.
+`advance()` enqueues following parent or tail bytes through the next descriptor
+or terminal. The final `advance()` emits the terminal, and no sibling boundary
+is needed to split a checkpoint from its parent tail.
 
 ## Source layout
 

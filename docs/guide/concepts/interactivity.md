@@ -653,8 +653,8 @@ Follow these rules to stay correct:
 
 On a normal buffered page or client-created mount,
 `super.connectedCallback()` hydrates synchronously. A progressive streaming host
-can connect while its `data-ws` boundary is incomplete, however, so the same call
-returns while hydration is still deferred. `hydratedCallback()` is the
+can connect while its checkpoint or generated parent span is incomplete, so the
+same call returns while hydration is still deferred. `hydratedCallback()` is the
 cross-mode lifecycle: WebUI invokes it synchronously exactly once after the
 first successful hydration or mount. Its once-latch is set before author code,
 so reconnecting the element or throwing from the callback does not retry it.
@@ -664,7 +664,7 @@ non-async ES module script or a classic `defer` script. If a classic script
 blocks parsing, place it after every SSR instance it may upgrade. An opt-in
 [progressive streaming page](/guide/concepts/hydration#progressive-streaming-hydration)
 instead loads an early async module and gates each component until its complete
-streaming boundary commits.
+streaming occurrence or generated span commits.
 
 Descendants must not structurally mutate a containing WebUI component's SSR
 subtree before that component hydrates. Inserting, removing, or reordering nodes

@@ -6,11 +6,15 @@
     <script type="module" async src="./index.js"></script>
   </head>
   <body>
-    <boundary name="first">
-      <stream-item label="{{firstLabel}}"></stream-item>
-    </boundary>
-    <boundary name="second">
-      <stream-item label="{{secondLabel}}"></stream-item>
-    </boundary>
+    <if condition="show">
+      <boundary name="string-row" key="{{stringKey}}">
+        <stream-item label="{{firstLabel}}"></stream-item>
+      </boundary>
+      <p>between-boundaries</p>
+      <boundary name="number-row" key="{{numberKey}}">
+        <stream-item label="{{secondLabel}}"></stream-item>
+      </boundary>
+    </if>
+    <p>always-complete</p>
   </body>
 </html>

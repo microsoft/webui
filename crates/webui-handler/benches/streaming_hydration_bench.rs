@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+#![allow(clippy::disallowed_methods)]
+
 //! Progressive streaming hydration benchmark.
 //!
 //! Compares legacy one-shot [`WebUIHandler::render`] with
@@ -22,10 +24,11 @@ use webui_handler::{
 };
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
-use webui_protocol::StreamingBoundaryList;
 use webui_protocol::{ComponentData, InitialStateStrategy, StateProjectionMode, WebUIProtocol};
 
 const BOUNDARY_COUNTS: &[usize] = &[1, 3, 10, 100];
+const LARGE_STATE_BOUNDARIES: &[usize] = &[1, 8];
+const LARGE_STATE_ROWS: usize = 128;
 const WRITER_CAPACITY: usize = 32 * 1024;
 const ENTRY_ID: &str = "index.html";
 const REQUEST_PATH: &str = "/";
@@ -136,16 +139,6 @@ fn parser_protocol(boundaries: usize) -> Protocol {
 
     let mut document = WebUIProtocol::new(parser.into_fragment_records());
     document.initial_state_strategy = InitialStateStrategy::Components as i32;
-    if boundaries > 0 {
-        document.streaming_boundaries.insert(
-            ENTRY_ID.to_string(),
-            StreamingBoundaryList {
-                names: (0..boundaries)
-                    .map(|index| format!("boundary-{index}"))
-                    .collect(),
-            },
-        );
-    }
     // Attach the benchmark's known component surface after parsing so the timed
     // protocol carries a deterministic hydration payload without depending on
     // the plugin's artifact pipeline.
@@ -211,10 +204,18 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         legacy.flushes.is_empty(),
         "legacy rendering must not request streaming flushes"
     );
+    // Every boundary commits a checkpoint that flushes, plus the terminal
+    // record. A semantic step that returns without producing bytes since the
+    // checkpoint (adjacent boundaries) collapses into the checkpoint flush, so
+    // only steps that actually emit a prefix add one.
     assert_eq!(
         streaming.flushes.len(),
-        boundaries + 1,
-        "each explicit boundary and the terminal record must flush once"
+        boundaries + 2,
+        "each checkpoint flushes, plus the shell prefix and the terminal"
+    );
+    assert!(
+        streaming.flushes.windows(2).all(|pair| pair[0] < pair[1]),
+        "every flush must release bytes that the previous flush did not"
     );
     assert_eq!(
         occurrences(&streaming.output, "data-webui-boundary"),
@@ -278,31 +279,26 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         assert!(
             streaming
                 .output
-                .contains(&format!("[1,{sequence},0,{sequence},")),
+                .contains(&format!("[2,{sequence},0,{sequence},")),
             "streaming output is missing boundary {sequence} envelope"
         );
     }
 
     assert!(
-        streaming.flushes.windows(2).all(|pair| pair[0] < pair[1]),
-        "flush positions must advance in document order"
-    );
-    assert!(
         streaming
             .output
-            .contains(&format!("[1,{boundaries},3,0,{{}}]")),
+            .contains(&format!("[2,{boundaries},4,0,{{}}]")),
         "streaming output is missing the terminal envelope"
-    );
-    // The empty terminal record is always the last envelope and never carries a
-    // bootstrap, regardless of native or scriptless tail bytes.
-    // Every envelope (each boundary commit plus the terminal) opens with the
-    // boundary sentinel prefix, so the prefix count equals boundaries + 1.
+    ); // The empty terminal record is always the last envelope and never carries a
+       // bootstrap, regardless of native or scriptless tail bytes.
+       // Every envelope (each boundary commit plus the terminal) opens with the
+       // boundary sentinel prefix, so the prefix count equals boundaries + 1.
     assert_eq!(
-        occurrences(&streaming.output, "data-webui-boundary>[1,"),
+        occurrences(&streaming.output, "data-webui-boundary>[2,"),
         boundaries + 1,
         "each envelope opens with the boundary sentinel prefix"
     );
-    if let Some(terminal) = streaming.output.find(&format!("[1,{boundaries},3,0,{{}}]")) {
+    if let Some(terminal) = streaming.output.find(&format!("[2,{boundaries},4,0,{{}}]")) {
         if boundaries > 0 {
             match streaming
                 .output
@@ -393,40 +389,54 @@ fn render_state_updates(
         Ok(response) => response,
         Err(error) => panic!("starting streaming response failed: {error}"),
     };
-    let boundary = match response.boundary("boundary-0") {
-        Ok(boundary) => boundary,
-        Err(error) => panic!("resolving benchmark boundary failed: {error}"),
+    let first = match response.start(state) {
+        Ok(status) => status.boundary,
+        Err(error) => panic!("writing benchmark shell failed: {error}"),
     };
-    if let Err(error) = response.write_shell(state) {
-        panic!("writing benchmark shell failed: {error}");
-    }
-    if let Err(error) = response.write_boundary(boundary, state, BoundaryMode::Updatable) {
+    let Some(first) = first else {
+        panic!("benchmark response did not discover its first boundary");
+    };
+    if let Err(error) = response.resume(first.instance_id, state, BoundaryMode::Updatable) {
         panic!("writing benchmark boundary failed: {error}");
     }
+    // Updates land between the commit and the parent bytes that follow it, so
+    // the benchmark exercises the live-occurrence window a host actually uses.
     for _ in 0..updates {
-        if let Err(error) = response.update(boundary, state) {
+        if let Err(error) = response.update(first.instance_id, state) {
             panic!("writing benchmark state update failed: {error}");
         }
     }
-    if let Err(error) = response.finish(state) {
-        panic!("finishing benchmark response failed: {error}");
+    let second = match response.advance() {
+        Ok(status) => status.boundary,
+        Err(error) => panic!("advancing past the benchmark boundary failed: {error}"),
+    };
+    let Some(second) = second else {
+        panic!("benchmark response completed before its second boundary");
+    };
+    if let Err(error) = response.resume(second.instance_id, state, BoundaryMode::Final) {
+        panic!("writing the second benchmark boundary failed: {error}");
+    }
+    match response.advance() {
+        Ok(status) if status.done => {}
+        Ok(_) => panic!("benchmark response did not complete"),
+        Err(error) => panic!("finishing benchmark response failed: {error}"),
     }
 }
 
 fn verify_state_updates(updates: usize) -> (Protocol, usize, usize) {
-    let protocol = parser_protocol(1);
+    let protocol = parser_protocol(2);
     let handler = hydration_handler();
     let state = benchmark_state();
-    let mut writer = BenchWriter::new(updates + 3);
+    let mut writer = BenchWriter::new(updates + 4);
     render_state_updates(&handler, &protocol, &state, updates, &mut writer);
 
     assert_eq!(
         writer.flushes.len(),
-        updates + 3,
-        "shell, checkpoint, updates, and terminal must flush independently",
+        updates + 4,
+        "shell prefix, two checkpoints, every update, and the terminal flush independently",
     );
     assert_eq!(
-        occurrences(&writer.output, ",2,0,"),
+        occurrences(&writer.output, ",2,0,{"),
         updates,
         "each update needs one typed state-update record",
     );
@@ -545,6 +555,106 @@ fn bench_streaming_hydration(c: &mut Criterion) {
         );
     }
     update_group.finish();
+
+    bench_large_state_boundaries(c);
+}
+
+/// Time a full-state continuation across several boundaries.
+///
+/// A protocol whose reachable component projects `ALL` forces the response to
+/// retain the caller's whole state for the life of the response. The per-
+/// boundary cost must stay flat in the size of that state: the snapshot is
+/// taken once when the response starts, not re-merged at every occurrence.
+fn bench_large_state_boundaries(c: &mut Criterion) {
+    let state = large_state(LARGE_STATE_ROWS);
+    let mut group = c.benchmark_group("streaming_large_state");
+    for boundaries in LARGE_STATE_BOUNDARIES.iter().copied() {
+        let protocol = full_state_protocol(boundaries);
+        let handler = hydration_handler();
+        let mut writer = BenchWriter::new(boundaries + 2);
+        render_streaming(&handler, &protocol, &state, &mut writer);
+        let bytes = writer.output.len();
+        assert_eq!(
+            occurrences(&writer.output, "data-webui-boundary"),
+            boundaries + 1,
+            "each boundary plus the terminal needs one envelope"
+        );
+        println!(
+            "streaming_large_state boundaries={boundaries}: rows={LARGE_STATE_ROWS}, output_bytes={bytes}"
+        );
+
+        group.throughput(Throughput::Bytes(bytes as u64));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(boundaries),
+            &protocol,
+            |b, protocol| {
+                let handler = hydration_handler();
+                let mut writer = BenchWriter::new(boundaries + 2);
+                b.iter(|| {
+                    writer.reset();
+                    render_streaming(
+                        &handler,
+                        black_box(protocol),
+                        black_box(&state),
+                        &mut writer,
+                    );
+                    black_box(writer.output.len());
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Build the same authored page as [`parser_protocol`] with an island whose
+/// compiled hydration surface is `ALL`, which is what forces the continuation
+/// to retain full state.
+fn full_state_protocol(boundaries: usize) -> Protocol {
+    let entry_html = entry_html(boundaries);
+    let mut parser =
+        HtmlParser::with_plugin_options(Box::new(WebUIParserPlugin::new()), CssStrategy::Style);
+    if let Err(error) = parser
+        .component_registry_mut()
+        .register_component(ComponentRegistration {
+            tag_name: ISLAND_TAG,
+            html_content: "<button>{{title}}</button>",
+            css_content: None,
+            is_client_owned: false,
+        })
+    {
+        panic!("registering <bench-island> failed: {error}");
+    }
+    if let Err(error) = parser.parse(ENTRY_ID, &entry_html) {
+        panic!("parsing benchmark entry failed: {error}");
+    }
+    let mut document = WebUIProtocol::new(parser.into_fragment_records());
+    document.initial_state_strategy = InitialStateStrategy::Components as i32;
+    document.components.insert(
+        ISLAND_TAG.to_string(),
+        ComponentData {
+            template_json: r#"{"h":"<button></button>","th":1}"#.to_string(),
+            hydration_mode: StateProjectionMode::All as i32,
+            ..Default::default()
+        },
+    );
+    Protocol::new(document)
+}
+
+/// A state whose payload makes a per-boundary copy unmistakable.
+fn large_state(rows: usize) -> Value {
+    let mut items = Vec::with_capacity(rows);
+    for row in 0..rows {
+        items.push(json!({
+            "id": row,
+            "label": format!("row-{row}"),
+            "tags": ["alpha", "beta", "gamma"],
+        }));
+    }
+    json!({
+        "count": 42,
+        "title": "Hydration benchmark",
+        "rows": items,
+    })
 }
 
 criterion_group!(benches, bench_streaming_hydration);
