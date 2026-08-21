@@ -198,7 +198,7 @@ export function prepareAssetTemplateData(
 }
 
 /**
- * Hold an authored custom-element definition until streamed metadata arrives.
+ * Hold an authored custom-element definition until compiled metadata arrives.
  *
  * Internal to the framework package; the public registration surface remains
  * `TemplateElement.define()`.
