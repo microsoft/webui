@@ -70,6 +70,35 @@ test('early streaming definition waits for metadata and native observedAttribute
   });
 });
 
+test('ordinary Router definition waits for metadata and renders template-only attributes', async ({ page }) => {
+  await page.goto('/client-runtime/router.html');
+
+  expect(await page.evaluate(() => customElements.get('test-runtime-life') === undefined)).toBe(true);
+
+  const result = await page.evaluate(() => {
+    window.registerClientRuntimeTemplates();
+    const ctor = customElements.get('test-runtime-life');
+    const el = document.createElement('test-runtime-life') as TestRuntimeLife;
+    el.setAttribute('label', 'ready');
+    document.body.appendChild(el);
+    return {
+      authoredWon: ctor === window.TestRuntimeLife,
+      observed: (ctor as CustomElementConstructor & {
+        observedAttributes?: readonly string[];
+      } | undefined)?.observedAttributes,
+      changes: el.attributeChanges,
+      text: (el.shadowRoot ?? el).querySelector('span')?.textContent,
+    };
+  });
+
+  expect(result).toEqual({
+    authoredWon: true,
+    observed: ['label'],
+    changes: ['label'],
+    text: 'ready',
+  });
+});
+
 test('streamed activation fires once, including detached late definition', async ({ page }) => {
   await page.goto('/client-runtime/streaming.html');
 

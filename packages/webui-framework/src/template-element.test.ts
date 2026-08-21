@@ -76,6 +76,7 @@ Object.defineProperty(globalThis, 'customElements', {
 });
 
 const { TemplateElement } = await import('./template-element.js');
+const { registerTemplateData } = await import('./template.js');
 const { resetStreamingModeForTests } = await import('./streaming-mode.js');
 const {
   beginStreamingGate,
@@ -593,6 +594,102 @@ describe('TemplateElement — streamed-host activation ownership', () => {
     assert.ok(raw.$meta, 'boundary commit caches metadata without mounting');
     el.setState({ message: 'wake' });
     assert.equal(activationMeta, raw.$meta, 'the later state write can activate from cached metadata');
+  });
+});
+
+describe('TemplateElement.define — ordinary (non-streaming) authored definition', () => {
+  test('defers an eagerly authored define() until later-registered metadata completes it, even outside streaming mode', () => {
+    // Ordinary WebUI Router partial navigation eagerly imports an authored
+    // nested component module — which calls the compiler-emitted
+    // `MyComponent.define(tag)` at top level — *before* the router has
+    // registered that route's compiled template metadata. Native
+    // `customElements.define()` snapshots `observedAttributes` at call time,
+    // so defining now (as the old streaming-only guard did) would forever
+    // miss template-only attributes like `title` below.
+    const documentFake = document as unknown as {
+      querySelector(selector: string): unknown;
+    };
+    const previousQuerySelector = documentFake.querySelector;
+    documentFake.querySelector = () => null; // no streaming meta tag present
+    resetStreamingModeForTests();
+
+    const customElementsFake = customElements as unknown as {
+      get(name: string): CustomElementConstructor | undefined;
+      define?(name: string, ctor: CustomElementConstructor): void;
+    };
+    const previousGet = customElementsFake.get;
+    const previousDefine = customElementsFake.define;
+    const registry = new Map<string, CustomElementConstructor>();
+    customElementsFake.get = (name: string) => registry.get(name);
+    customElementsFake.define = (name: string, ctor: CustomElementConstructor) => {
+      registry.set(name, ctor);
+    };
+
+    const tag = `test-router-nested-widget-${Date.now()}`;
+
+    try {
+      // No `@attr`/`@observable` for `title` — a template-only binding
+      // entirely owned by compiled metadata (`tr`/`ta`).
+      class AuthoredNestedWidget extends TemplateElement {}
+      const AuthoredNestedWidgetCtor = AuthoredNestedWidget as unknown as {
+        define(tagName: string): void;
+      };
+
+      AuthoredNestedWidgetCtor.define(tag);
+
+      assert.equal(
+        customElements.get(tag),
+        undefined,
+        'must stay pending — an ordinary (non-streaming) page must not define an incomplete observer surface either',
+      );
+
+      // A second eager define() call for the same still-pending tag must
+      // preserve the existing duplicate-definition diagnostic.
+      assert.throws(
+        () => AuthoredNestedWidgetCtor.define(tag),
+        /already pending definition/,
+      );
+
+      // The router registers this route's compiled template metadata once
+      // its partial navigation response resolves.
+      registerTemplateData({
+        [tag]: {
+          h: '<div><span></span></div>',
+          tr: ['title'],
+          ta: ['title'],
+        },
+      });
+
+      const ctor = customElements.get(tag) as (CustomElementConstructor & {
+        observedAttributes?: string[];
+      }) | undefined;
+      assert.ok(ctor, 'the deferred definition must complete once metadata registers');
+      assert.deepEqual(
+        ctor!.observedAttributes,
+        ['title'],
+        'observedAttributes must include the template-derived attribute the browser would otherwise have missed',
+      );
+
+      const el = new (ctor as CustomElementConstructor)() as unknown as {
+        attributeChangedCallback(name: string, oldValue: string | null, newValue: string | null): void;
+        $templateState: Record<string, unknown> | null;
+      };
+
+      // A client-created host now carries `title` in `observedAttributes`,
+      // so the browser calls `attributeChangedCallback` for it.
+      el.attributeChangedCallback('title', null, 'Hello from router nav');
+
+      assert.equal(
+        el.$templateState?.title,
+        'Hello from router nav',
+        'the template-only binding must receive and update from the client-created host attribute',
+      );
+    } finally {
+      documentFake.querySelector = previousQuerySelector;
+      resetStreamingModeForTests();
+      customElementsFake.get = previousGet;
+      customElementsFake.define = previousDefine;
+    }
   });
 });
 

@@ -1,0 +1,58 @@
+<nav class="nav-links" aria-label="Primary navigation">
+  <for each="link in navigation">
+    <a
+      href="{{link.link}}"
+      class="nav-link"
+      ?active="{{link.section == section}}"
+      @click="{onNavigate(link.fullLayout, e)}"
+    >{{link.text}}</a>
+  </for>
+  <docs-search></docs-search>
+  <docs-theme-toggle></docs-theme-toggle>
+  <button
+    class="mobile-menu-btn"
+    type="button"
+    aria-label="Open navigation"
+    aria-controls="mobile-navigation"
+    aria-expanded="{{open}}"
+    @click="{openMenu()}"
+  ><span aria-hidden="true">☰</span></button>
+</nav>
+
+<dialog
+  class="mobile-navigation"
+  id="mobile-navigation"
+  aria-labelledby="mobile-navigation-title"
+  w-ref="{dialog}"
+  @click="{onDialogClick(e)}"
+  @close="{onDialogClose()}"
+>
+  <div class="mobile-navigation-panel">
+    <div class="mobile-navigation-header">
+      <strong id="mobile-navigation-title">Browse WebUI</strong>
+      <button
+        class="mobile-navigation-close"
+        type="button"
+        aria-label="Close navigation"
+        @click="{closeMenu()}"
+      ><span aria-hidden="true">×</span></button>
+    </div>
+    <nav class="mobile-primary-nav" aria-label="Primary navigation">
+      <for each="link in navigation">
+        <a
+          href="{{link.link}}"
+          ?active="{{link.section == section}}"
+          @click="{onNavigate(link.fullLayout, e)}"
+        >{{link.text}}</a>
+      </for>
+    </nav>
+    <if condition="!home">
+      <div class="mobile-section-nav">
+        <docs-sidebar-navigation
+          variant="mobile"
+          :sections="{{sections}}"
+        ></docs-sidebar-navigation>
+      </div>
+    </if>
+  </div>
+</dialog>

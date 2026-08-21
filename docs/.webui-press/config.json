@@ -75,7 +75,7 @@
         ]
       },
       {
-        "title": "Core Concepts",
+        "title": "Core Foundations",
         "items": [
           {
             "text": "How It Works",
@@ -122,7 +122,12 @@
           {
             "text": "Interactivity",
             "link": "/guide/concepts/interactivity"
-          },
+          }
+        ]
+      },
+      {
+        "title": "Application Architecture",
+        "items": [
           {
             "text": "State Management",
             "link": "/guide/concepts/state-management"
@@ -270,32 +275,32 @@
     ],
     "features": [
       {
-        "icon": "⚡",
+        "icon": "↯",
         "title": "Compiled, not interpreted",
         "description": "Templates and Web Components compile at build time into a binary Protocol Buffer. The server's hot path is just filling holes and streaming bytes. No template parsing, no AST walking, no interpretation at runtime."
       },
       {
-        "icon": "🌐",
+        "icon": "◎",
         "title": "Render from any language",
         "description": "SSR has historically been a Node.js privilege. WebUI changes that. Stream pages from Rust, Go, Python, C#, Bun, Deno, Node.js, or WASM running at the edge or in the browser. The protocol is just bytes; any runtime that can read bytes and write strings can serve a site."
       },
       {
-        "icon": "🔄",
+        "icon": "⇄",
         "title": "Isomorphic anywhere",
         "description": "Same Web Components can render on a fast native server, at the edge, or in a service worker. Cache the compiled UI on a CDN, stream dynamic state through the lightweight handler, then hydrate against the existing DOM. Isomorphic apps without making Node.js the rendering boundary."
       },
       {
-        "icon": "🧩",
+        "icon": "◇",
         "title": "webui-framework",
         "description": "A tiny client runtime for Web Components, tuned for rendering speed and low memory. Built on Declarative Shadow DOM and native browser APIs. No virtual DOM, no proprietary component model, no JSX."
       },
       {
-        "icon": "🧭",
+        "icon": "↗",
         "title": "webui-router",
         "description": "Routes declared in HTML and compiled at build time. The server matches every navigation and returns the route chain as JSON; the client diffs against the current chain and remounts only the level that changed. Tagged caching and invalidation graphs are validated by the compiler, not configured at runtime."
       },
       {
-        "icon": "📰",
+        "icon": "▤",
         "title": "webui-press",
         "description": "A blazing-fast static site generator powered by the framework itself. Compiles markdown and components in parallel into a fully static site. Perfect for GitHub Pages, CDNs, and anywhere that just serves files. (You are reading a site built with it.)"
       }

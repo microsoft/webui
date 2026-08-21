@@ -10,6 +10,9 @@ import {
 const templates: Record<string, TemplateMeta> = {
   'test-runtime-life': {
     h: '<span></span>',
+    tx: [
+      [[1, 0], [['label']]],
+    ],
     tr: ['label'],
     ta: ['label'],
     th: 1,
@@ -58,10 +61,11 @@ function registerTemplates(): void {
 }
 
 const streaming = !!document.querySelector('meta[name="webui-streaming"][content="1"]');
-// Ordinary pages define immediately; streaming pages hold this definition
-// until the same metadata registration used by the authored components.
+const routerLate = !!document.querySelector('meta[name="webui-router-late"][content="1"]');
+// Ordinary pages publish metadata synchronously; streaming and Router-late
+// pages hold definitions until that same metadata registration arrives.
 TestRuntimeImmediate.define('test-runtime-immediate');
-if (!streaming) {
+if (!streaming && !routerLate) {
   registerTemplates();
 }
 

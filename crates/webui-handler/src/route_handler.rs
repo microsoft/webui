@@ -1574,12 +1574,9 @@ fn walk_route_children(
     let mut current = children;
     let mut base = route_base.to_string();
 
-    loop {
-        let Some((idx, ref rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-        else {
-            break;
-        };
+    while let Some((idx, ref rm)) =
+        select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
+    {
         let matched = &current[idx];
         if matched.fragment_id.is_empty() {
             break;
@@ -1770,11 +1767,7 @@ fn collect_params_from_children(
     let mut current = children;
     let mut base = route_base.to_string();
 
-    loop {
-        let Some((idx, rm)) = select_best_child_route(current, request_path, &base, route_index)
-        else {
-            break;
-        };
+    while let Some((idx, rm)) = select_best_child_route(current, request_path, &base, route_index) {
         all_params.extend(rm.params);
         let matched = &current[idx];
         if matched.children.is_empty() {
@@ -1991,12 +1984,9 @@ fn walk_children_for_inventory_and_chain(
     let mut current = children;
     let mut base = route_base.to_string();
 
-    loop {
-        let Some((idx, ref rm)) =
-            select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-        else {
-            break;
-        };
+    while let Some((idx, ref rm)) =
+        select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
+    {
         let matched = &current[idx];
         if matched.fragment_id.is_empty() {
             break;

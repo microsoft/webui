@@ -251,44 +251,28 @@ extends:
         jobs:
         - job: PublishGitHub
           displayName: Publish GitHub Release
+          templateContext:
+            type: releaseJob
+            isProduction: true
+            inputs:
+            - input: pipelineArtifact
+              artifactName: unsigned_npm_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
+            - input: pipelineArtifact
+              artifactName: unsigned_crate_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
+            - input: pipelineArtifact
+              artifactName: unsigned_python_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_python
+            - input: pipelineArtifact
+              artifactName: signed_nuget_packages
+              targetPath: $(Build.ArtifactStagingDirectory)/publish_artifacts_nuget
+            - input: pipelineArtifact
+              artifactName: standalone_release_assets
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
           steps:
           - checkout: self
             clean: true
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download npm packages
-            inputs:
-              buildType: current
-              artifactName: unsigned_npm_packages
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download crate packages
-            inputs:
-              buildType: current
-              artifactName: unsigned_crate_packages
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download Python packages
-            inputs:
-              buildType: current
-              artifactName: unsigned_python_packages
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_python
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download signed NuGet packages
-            inputs:
-              buildType: current
-              artifactName: signed_nuget_packages
-              targetPath: $(Build.ArtifactStagingDirectory)/publish_artifacts_nuget
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download standalone release assets
-            inputs:
-              buildType: current
-              artifactName: standalone_release_assets
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
 
           - task: GitHubRelease@1
             displayName: Create GitHub Release
@@ -318,32 +302,32 @@ extends:
 
         - job: PublishNpm
           displayName: Publish npm packages
+          templateContext:
+            type: releaseJob
+            isProduction: true
+            inputs:
+            - input: pipelineArtifact
+              artifactName: unsigned_npm_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
           steps:
           - checkout: self
             clean: true
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download npm packages
-            inputs:
-              buildType: current
-              artifactName: unsigned_npm_packages
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
 
           # The template skips package types whose artifact directory is absent.
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines
 
         - job: PublishCrates
           displayName: Publish Rust crates
+          templateContext:
+            type: releaseJob
+            isProduction: true
+            inputs:
+            - input: pipelineArtifact
+              artifactName: unsigned_crate_packages
+              targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
           steps:
           - checkout: self
             clean: true
-
-          - task: DownloadPipelineArtifact@2
-            displayName: Download crate packages
-            inputs:
-              buildType: current
-              artifactName: unsigned_crate_packages
-              targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
 
           # The template skips package types whose artifact directory is absent.
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines

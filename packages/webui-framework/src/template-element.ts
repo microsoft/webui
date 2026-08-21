@@ -521,10 +521,17 @@ export class TemplateElement extends HTMLElement {
   static define(tagName: string): void {
     const ctor = this as TemplateObservedConstructor;
     const meta = getTemplate(tagName);
-    if (!meta && isStreamingHydrationMode()) {
+    if (!meta) {
       // Metadata supplies template-derived observed attributes. The browser
-      // snapshots that list at native define() time, so a streamed page must
-      // wait rather than permanently define an incomplete observer surface.
+      // snapshots that list at native define() time, so any page must wait
+      // rather than permanently define an incomplete observer surface —
+      // not only a streamed one. Ordinary (non-streaming) WebUI Router
+      // partial navigation can register a route's template metadata after
+      // an eagerly imported authored nested component module has already
+      // run its top-level `define()` call; deferring here lets that later
+      // registration (`registerTemplateData()`) complete the definition
+      // with the full attribute list instead of leaving it stuck with only
+      // the host's own compiled attributes.
       deferTemplateDefinition(tagName, ctor, () => {
         defineTemplateConstructor(ctor, tagName, getTemplate(tagName));
       });

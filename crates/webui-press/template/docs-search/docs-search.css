@@ -3,10 +3,12 @@
 }
 
 .trigger {
+  box-sizing: border-box;
+  height: var(--docs-header-control-height, 36px);
   background: none;
   border: 1px solid var(--docs-color-border);
   border-radius: var(--docs-radius-m);
-  padding: var(--docs-space-xs) var(--docs-space-m);
+  padding: 0 var(--docs-space-m);
   cursor: pointer;
   color: var(--docs-color-text-3);
   font-size: var(--docs-font-size-s);
@@ -35,6 +37,20 @@ kbd {
   border-radius: 3px;
   border: 1px solid var(--docs-color-border);
   font-family: var(--docs-font-sans);
+}
+
+@media (max-width: 520px) {
+  .trigger {
+    width: 44px;
+    height: 44px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .label,
+  kbd {
+    display: none;
+  }
 }
 
 dialog {
@@ -123,6 +139,7 @@ input::placeholder {
 
 .result-title .result-segment {
   font-size: var(--docs-font-size-m);
+  white-space: pre-wrap;
 }
 
 .result-title code.result-segment {
