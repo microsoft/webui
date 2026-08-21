@@ -118,7 +118,9 @@ jobs:
   # There is no Windows runner in this pipeline either. `cargo xtask
   # publish-build` is host-aware: for a Windows MSVC target on a non-Windows
   # host it selects the cargo-xwin backend for the native CLI/FFI/Node
-  # artifacts and passes maturin `--xwin` for the abi3 wheel, so one call
+  # artifacts, then builds the abi3 wheel by running `maturin build` with
+  # `cargo-xwin`'s own linker/SDK environment (from `cargo xwin env`)
+  # exported onto it — maturin has no built-in `--xwin` flag — so one call
   # stages everything. This mirrors the same cargo-xwin cross-compilation
   # contract the release pipeline's Linux-hosted Windows legs use, pinned to
   # the same cargo-xwin/LLVM versions.

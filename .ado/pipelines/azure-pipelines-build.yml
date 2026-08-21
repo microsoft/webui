@@ -387,7 +387,9 @@ stages:
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
           # publish-build's full (non --native-only) run also builds the
-          # Python wheel through maturin, cross-compiled with its --xwin flag.
+          # Python wheel through maturin. maturin has no built-in `--xwin`
+          # flag, so `xtask` exports cargo-xwin's own linker/SDK environment
+          # (from `cargo xwin env`) onto the maturin process instead.
           python3.11 -m pip install --upgrade "maturin==1.14.1"
 
           # cargo-xwin downloads the Windows SDK/CRT itself once the license is
