@@ -21,14 +21,28 @@ use std::ops::Range;
 pub(super) const F_TEMPLATE_NAME: &str = "f-template";
 const INNER_TEMPLATE_NAME: &str = "template";
 
+/// FAST test-harness style-injection placeholder emitted by
+/// `@microsoft/fast-test-harness`'s `generate-templates` immediately after the
+/// inner `<template>` opening. It is a build-time marker the harness replaces
+/// with a `<link rel="stylesheet">` (or strips) before hydration — not
+/// component state — so WebUI removes it and lets its own CSS strategy inject
+/// styles at the same position.
+const STYLES_MARKER: &str = "{{styles}}";
+
+/// Case-insensitive prefix that marks a declarative-shadow-root option
+/// (`shadowrootmode`, `shadowrootdelegatesfocus`, …) on the `<f-template>`
+/// wrapper.
+const SHADOW_ROOT_ATTR_PREFIX: &[u8] = b"shadowroot";
+
 /// Converted parser and artifact views for one authored `<f-template>`.
 pub(super) struct ConvertedTemplate<'a> {
     pub(super) name: Option<&'a str>,
-    /// Byte range of the authored inner `<template>` element (including its
-    /// opening and closing tags) within the source. Retained verbatim as the
-    /// client artifact, so it always begins with `<template` and is never
-    /// re-wrapped in a synthetic `<template>`.
-    pub(super) artifact: Range<usize>,
+    /// Authored inner `<template>` element (including its opening and closing
+    /// tags) retained as the client artifact, with the wrapper's shadow-root
+    /// options baked onto its opening tag and the generator `{{styles}}` marker
+    /// removed. It always begins with `<template`, so it is never re-wrapped in
+    /// a synthetic `<template>`.
+    pub(super) artifact_content: String,
     pub(super) parser_content: String,
 }
 
@@ -146,30 +160,106 @@ pub(super) fn convert_template(
         ));
     }
 
-    let parser_content = convert_segment(source, inner_start..inner_close_end)?;
-    let name = attr_ignore_ascii_case(&f_template, "name")
-        .map(str::trim)
-        .filter(|name| !name.is_empty());
+    // Resolve the wrapper's `name` and declarative-shadow-root options in a
+    // single attribute walk, rejecting any other wrapper attribute rather than
+    // silently discarding it.
+    let (name, shadow_options) = resolve_wrapper_attrs(&f_template, f_template_start)?;
+
+    // The wrapper's shadow-root options belong on the inner `<template>` (the
+    // WebUI declarative shadow root), and the generator `{{styles}}` marker is
+    // removed so WebUI's own CSS strategy supplies styles at that position.
+    // Both the SSR parser view and the retained client artifact receive the
+    // same rewrite so their binding order stays aligned.
+    let converted = convert_segment(source, inner_start..inner_close_end)?;
+    let parser_content = rewrite_inner_template(&converted, &shadow_options).unwrap_or(converted);
+    let artifact_source = &source[inner_start..inner_close_end];
+    let artifact_content = rewrite_inner_template(artifact_source, &shadow_options)
+        .unwrap_or_else(|| artifact_source.to_string());
 
     Ok(Some(ConvertedTemplate {
         name,
-        // Retain exactly the authored inner `<template>` (with its client-only
-        // bindings) as the artifact, not the whole `<f-template>` body.
-        artifact: inner_start..inner_close_end,
+        artifact_content,
         parser_content,
     }))
 }
 
-/// Case-insensitive attribute lookup scoped to FAST wrapper resolution.
+/// Resolve the `<f-template>` wrapper's `name` and declarative-shadow-root
+/// options in one attribute walk.
 ///
-/// FAST `<f-template>` wrappers are recognized ASCII-case-insensitively, so
-/// their `name` attribute must be resolved the same way (`<F-TEMPLATE NAME=…>`).
-/// This stays inside the FAST plugin subtree; the generic [`Tag::attr`] remains
-/// case-sensitive for WebUI directives.
-fn attr_ignore_ascii_case<'a>(tag: &Tag<'a>, name: &str) -> Option<&'a str> {
-    tag.attrs()
-        .find(|attr| attr.name.eq_ignore_ascii_case(name))
-        .and_then(|attr| attr.value)
+/// The wrapper is matched ASCII-case-insensitively, so its attributes are too.
+/// `name` overrides the filename-derived tag. Any attribute whose name begins
+/// with `shadowroot` (`shadowrootmode`, `shadowrootdelegatesfocus`, …) is a
+/// declarative-shadow-root option and is collected verbatim (as ` name="value"`
+/// or bare ` name`) to bake onto the inner `<template>`. Any other wrapper
+/// attribute is unsupported and rejected at its own offset so it is never
+/// silently dropped from SSR while surviving in the client artifact.
+fn resolve_wrapper_attrs<'a>(
+    tag: &Tag<'a>,
+    wrapper_start: usize,
+) -> Result<(Option<&'a str>, String), ConvertError<'a>> {
+    let mut name = None;
+    let mut shadow_options = String::new();
+    for attr in tag.attrs() {
+        if attr.name.eq_ignore_ascii_case("name") {
+            name = attr.value.map(str::trim).filter(|value| !value.is_empty());
+        } else if is_shadow_root_attr(attr.name) {
+            shadow_options.push(' ');
+            shadow_options.push_str(attr.raw);
+        } else {
+            return Err(ConvertError::new(
+                ConvertErrorKind::UnsupportedWrapperAttribute {
+                    attribute: attr.name,
+                },
+                wrapper_start + attr.raw_range.start,
+            ));
+        }
+    }
+    Ok((name, shadow_options))
+}
+
+/// Whether `name` is a declarative-shadow-root option (`shadowroot*`).
+#[inline]
+fn is_shadow_root_attr(name: &str) -> bool {
+    name.len() >= SHADOW_ROOT_ATTR_PREFIX.len()
+        && name.as_bytes()[..SHADOW_ROOT_ATTR_PREFIX.len()]
+            .eq_ignore_ascii_case(SHADOW_ROOT_ATTR_PREFIX)
+}
+
+/// Bake `shadow_options` onto the inner `<template>` opening and strip a
+/// generator `{{styles}}` marker that sits immediately after that opening tag
+/// (only whitespace may precede it). Returns `None` when neither change
+/// applies, so the caller can reuse the input without allocating.
+///
+/// `shadow_options` is inserted right after `<template` (before the template's
+/// own attributes), matching the authoritative `fTemplateToWebui` output. Only
+/// the leading `{{styles}}` is removed; a legitimate `{{styles}}` binding
+/// elsewhere in the template is left untouched.
+fn rewrite_inner_template(inner: &str, shadow_options: &str) -> Option<String> {
+    let tag = parse_tag(inner)?;
+    if !tag.name.eq_ignore_ascii_case(INNER_TEMPLATE_NAME) {
+        return None;
+    }
+    let name_end = 1 + tag.name.len();
+    let open_end = tag.close + 1;
+    let after_open = &inner[open_end..];
+    let leading_ws = after_open.len() - after_open.trim_start().len();
+    let marker_present = after_open[leading_ws..].starts_with(STYLES_MARKER);
+
+    if shadow_options.is_empty() && !marker_present {
+        return None;
+    }
+
+    let mut out = String::with_capacity(inner.len() + shadow_options.len());
+    out.push_str(&inner[..name_end]);
+    out.push_str(shadow_options);
+    out.push_str(&inner[name_end..open_end]);
+    if marker_present {
+        out.push_str(&after_open[..leading_ws]);
+        out.push_str(&after_open[leading_ws + STYLES_MARKER.len()..]);
+    } else {
+        out.push_str(after_open);
+    }
+    Some(out)
 }
 
 fn first_non_whitespace_non_comment(source: &str, range: Range<usize>) -> Option<usize> {

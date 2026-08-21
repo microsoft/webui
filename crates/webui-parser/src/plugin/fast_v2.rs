@@ -71,6 +71,14 @@ impl ParserPlugin for FastV2ParserPlugin {
         Some(super::fast_shared::transform_component_source)
     }
 
+    fn classifies_root_template_bindings(&self) -> bool {
+        true
+    }
+
+    fn styles_trail_template_body(&self) -> bool {
+        true
+    }
+
     fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
         super::fast_shared::classify_attribute(attr_name)
     }
@@ -113,7 +121,14 @@ fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) 
     let mut output = String::with_capacity(256);
     output.push_str("<f-template name=\"");
     output.push_str(tag_name);
-    output.push_str("\">\n");
+    output.push('"');
+    // Hoist declarative-shadow-root options (shadowrootmode,
+    // shadowrootdelegatesfocus, …) from the inner <template> onto the
+    // <f-template> wrapper, where the FAST runtime reads them.
+    output.push_str(&super::fast_shared::hoisted_shadow_options(
+        processed_template,
+    ));
+    output.push_str(">\n");
 
     let converted = convert_btr_to_fast(processed_template);
     let trimmed = minify_inter_tag_whitespace(converted.trim());
@@ -142,7 +157,9 @@ pub fn generate_f_template_with_css_options(
     let mut output = String::with_capacity(256);
     output.push_str("<f-template name=\"");
     output.push_str(tag_name);
-    output.push_str("\">\n");
+    output.push('"');
+    output.push_str(&super::fast_shared::hoisted_shadow_options(html_content));
+    output.push_str(">\n");
 
     let converted = convert_btr_to_fast(html_content);
     let trimmed = minify_inter_tag_whitespace(converted.trim());
@@ -168,6 +185,10 @@ pub fn generate_f_template_with_css_options(
         CssStrategy::Module => None,
     };
 
+    // FAST's declarative TemplateParser scans the client `<f-template>` body for
+    // `{`/`}` bindings, so the Style-strategy `<style>` trails the body (past
+    // every binding) to keep raw CSS braces from shifting hydration alignment.
+    let styles_at_end = css_strategy == CssStrategy::Style;
     if trimmed.starts_with("<template") {
         if let Some(close_pos) = find_tag_close(trimmed) {
             // Dev owns the wrapper — preserve attributes verbatim.
@@ -176,10 +197,12 @@ pub fn generate_f_template_with_css_options(
             // either the dev wrote it or the build already failed.
             output.push_str(&trimmed[..close_pos]);
             output.push('>');
-            if let Some(ref injection) = css_injection {
-                output.push_str(injection);
-            }
-            output.push_str(&trimmed[close_pos + 1..]);
+            super::fast_shared::push_body_with_css_injection(
+                &mut output,
+                &trimmed[close_pos + 1..],
+                css_injection.as_deref(),
+                styles_at_end,
+            );
         } else {
             output.push_str(trimmed);
         }
@@ -191,10 +214,17 @@ pub fn generate_f_template_with_css_options(
             output.push('"');
         }
         output.push('>');
-        if let Some(ref injection) = css_injection {
-            output.push_str(injection);
+        match (css_injection.as_deref(), styles_at_end) {
+            (Some(injection), true) => {
+                output.push_str(trimmed);
+                output.push_str(injection);
+            }
+            (Some(injection), false) => {
+                output.push_str(injection);
+                output.push_str(trimmed);
+            }
+            (None, _) => output.push_str(trimmed),
         }
-        output.push_str(trimmed);
         output.push_str("</template>");
     }
 
@@ -210,9 +240,11 @@ pub fn generate_f_template_with_css_options(
 /// - `<for each="EXPR">` → `<f-repeat value="{{EXPR}}">`
 /// - `</for>` → `</f-repeat>`
 /// - `{{expr}}` inside `:attr` complex attribute values → `{expr}`
-/// - Strips `shadowrootmode` attributes from `<template>` tags
-///   (in f-template context, shadowrootmode must be removed to prevent
-///   the browser from auto-activating it as a declarative shadow root)
+/// - Strips declarative-shadow-root options hoisted onto the `<f-template>`
+///   wrapper (`shadowrootmode`, `shadowrootdelegatesfocus`, …) from
+///   `<template>` tags (in f-template context, they must be removed to
+///   prevent the browser from auto-activating a duplicate declarative
+///   shadow root and to avoid duplicating the hoisted option)
 fn convert_btr_to_fast(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -288,7 +320,9 @@ fn try_convert_tag(input: &str, pos: usize, result: &mut String) -> Option<usize
     if remaining.starts_with("<") {
         // Strip shadowrootmode from <template> tags
         if starts_with_tag_name(remaining, "template") {
-            if let Some(consumed) = strip_shadowrootmode(remaining, result) {
+            if let Some(consumed) =
+                super::fast_shared::strip_hoisted_shadow_options(remaining, result)
+            {
                 return Some(consumed);
             }
         }
@@ -556,82 +590,6 @@ fn minify_inter_tag_whitespace(input: &str) -> String {
     }
 
     result
-}
-
-/// Strip `shadowrootmode` attribute from a `<template ...>` opening tag.
-/// Returns `Some(bytes_consumed)` if a `<template` tag was found and processed.
-fn strip_shadowrootmode(tag_str: &str, result: &mut String) -> Option<usize> {
-    // Find the closing '>' outside of quoted attribute values
-    let close = find_tag_close(tag_str)?;
-    let tag_content = &tag_str[..=close];
-
-    // Only process if this tag contains shadowrootmode
-    if !tag_content.contains("shadowrootmode") {
-        return None;
-    }
-
-    // Rebuild the tag without the shadowrootmode attribute
-    result.push_str("<template");
-    let attr_start = "<template".len();
-    let inner = &tag_content[attr_start..close];
-
-    // Scan through the attributes, skipping shadowrootmode
-    let inner_bytes = inner.as_bytes();
-    let inner_len = inner_bytes.len();
-    let mut j = 0;
-    while j < inner_len {
-        // Skip whitespace
-        if is_whitespace(inner_bytes[j]) {
-            j += 1;
-            continue;
-        }
-
-        // Find the end of this attribute (name="value" or just name)
-        let attr_begin = j;
-        // Find '=' or whitespace or end
-        while j < inner_len && inner_bytes[j] != b'=' && !is_whitespace(inner_bytes[j]) {
-            j += 1;
-        }
-        let attr_name = &inner[attr_begin..j];
-
-        // If there's a '=', consume the value
-        let mut attr_end = j;
-        if j < inner_len && inner_bytes[j] == b'=' {
-            j += 1; // skip '='
-            if j < inner_len && inner_bytes[j] == b'"' {
-                j += 1; // skip opening quote
-                while j < inner_len && inner_bytes[j] != b'"' {
-                    j += 1;
-                }
-                if j < inner_len {
-                    j += 1; // skip closing quote
-                }
-            } else {
-                // Unquoted value
-                while j < inner_len && !is_whitespace(inner_bytes[j]) {
-                    j += 1;
-                }
-            }
-            attr_end = j;
-        }
-
-        // Skip the shadowrootmode attribute entirely
-        if attr_name == "shadowrootmode" {
-            continue;
-        }
-
-        // Keep this attribute
-        result.push(' ');
-        result.push_str(&inner[attr_begin..attr_end]);
-    }
-
-    if tag_content.ends_with("/>") {
-        result.push_str("/>");
-    } else {
-        result.push('>');
-    }
-
-    Some(close + 1)
 }
 
 #[cfg(test)]
@@ -1172,12 +1130,151 @@ mod tests {
         let name = &templates[0].tag_name;
         let html = &templates[0].template;
         assert_eq!(name, "my-comp");
-        // f-template content should NOT have shadowrootmode
-        assert!(!html.contains("shadowrootmode"));
+        // shadowrootmode is hoisted onto the <f-template> wrapper (where the
+        // FAST runtime reads it), not left on the inner <template>.
+        assert!(html.contains(r#"<f-template name="my-comp" shadowrootmode="open">"#));
+        assert!(!html.contains("<template shadowrootmode"));
         // But should keep @click (framework attr kept in f-template mode)
         assert!(html.contains("@click"));
         // Should have the converted content
         assert!(html.contains("{{title}}"));
+    }
+
+    #[test]
+    fn shadow_options_hoisted_from_inner_template_to_f_template_wrapper() {
+        // The converter bakes the wrapper's shadow-root options onto the inner
+        // <template>; the client artifact generator hoists them back onto the
+        // <f-template> wrapper (where the FAST runtime reads them), strips them
+        // from the inner <template>, and keeps WebUI's CSS-module
+        // shadowrootadoptedstylesheets on the inner template.
+        let processed = concat!(
+            r#"<template shadowrootmode="open" shadowrootdelegatesfocus "#,
+            r#"shadowrootadoptedstylesheets="fluent-field" @click="{clickHandler($e)}">"#,
+            r#"<slot></slot></template>"#,
+        );
+        let html = generate_f_template_from_processed("fluent-field", processed);
+        assert!(
+            html.contains(
+                r#"<f-template name="fluent-field" shadowrootmode="open" shadowrootdelegatesfocus>"#
+            ),
+            "wrapper must carry hoisted shadow options: {html}"
+        );
+        // The inner <template> keeps its bindings and the adopted-stylesheets
+        // CSS delivery, but not the hoisted shadow-root options.
+        assert!(html.contains(r#"@click="{clickHandler($e)}""#));
+        assert!(html.contains(r#"shadowrootadoptedstylesheets="fluent-field""#));
+        assert!(
+            !html.contains("<template shadowrootmode"),
+            "inner <template> must not keep shadowrootmode: {html}"
+        );
+        assert!(
+            !html.contains("<template shadowrootdelegatesfocus")
+                && !html.contains(" shadowrootdelegatesfocus shadowrootadopted"),
+            "inner <template> must not keep shadowrootdelegatesfocus: {html}"
+        );
+    }
+
+    #[test]
+    fn delegatesfocus_only_without_mode_is_hoisted_and_stripped() {
+        // Regression for the duplication bug: `shadowrootdelegatesfocus` alone
+        // (no `shadowrootmode`) must still be hoisted onto the wrapper and
+        // removed from the inner <template>, not only when `shadowrootmode`
+        // happens to be present too.
+        let processed = r#"<template shadowrootdelegatesfocus><slot></slot></template>"#;
+        let html = generate_f_template_from_processed("fluent-field", processed);
+        assert_eq!(
+            html.matches("shadowrootdelegatesfocus").count(),
+            1,
+            "shadowrootdelegatesfocus must appear exactly once (hoisted, not duplicated): {html}"
+        );
+        assert!(
+            html.contains(r#"<f-template name="fluent-field" shadowrootdelegatesfocus>"#),
+            "wrapper must carry the hoisted option: {html}"
+        );
+        assert!(
+            !html.contains("<template shadowrootdelegatesfocus"),
+            "inner <template> must not keep shadowrootdelegatesfocus: {html}"
+        );
+    }
+
+    #[test]
+    fn clonable_and_serializable_only_are_hoisted_and_stripped() {
+        let processed =
+            r#"<template shadowrootclonable shadowrootserializable><slot></slot></template>"#;
+        let html = generate_f_template_from_processed("fluent-field", processed);
+        for attr in ["shadowrootclonable", "shadowrootserializable"] {
+            assert_eq!(
+                html.matches(attr).count(),
+                1,
+                "{attr} must appear exactly once (hoisted, not duplicated): {html}"
+            );
+        }
+        assert!(
+            html.contains(
+                r#"<f-template name="fluent-field" shadowrootclonable shadowrootserializable>"#
+            ),
+            "wrapper must carry both hoisted options: {html}"
+        );
+        assert!(
+            !html.contains("<template shadowrootclonable")
+                && !html.contains("<template shadowrootserializable"),
+            "inner <template> must not keep either hoisted option: {html}"
+        );
+    }
+
+    #[test]
+    fn adoptedstylesheets_only_is_neither_hoisted_nor_stripped() {
+        let processed =
+            r#"<template shadowrootadoptedstylesheets="fluent-field"><slot></slot></template>"#;
+        let html = generate_f_template_from_processed("fluent-field", processed);
+        assert!(
+            html.contains("<f-template name=\"fluent-field\">"),
+            "shadowrootadoptedstylesheets is not a shadow-root-creation option and must stay off the wrapper: {html}"
+        );
+        assert!(
+            html.contains(r#"<template shadowrootadoptedstylesheets="fluent-field">"#),
+            "inner <template> must keep shadowrootadoptedstylesheets: {html}"
+        );
+    }
+
+    #[test]
+    fn mixed_shadow_options_each_appear_exactly_once_and_never_on_inner() {
+        // Every `shadowroot*` option (mode, delegatesfocus, clonable,
+        // serializable) plus WebUI's own shadowrootadoptedstylesheets and an
+        // ordinary binding, all on the same inner <template>. Each hoisted
+        // option must land on the wrapper exactly once and never duplicate
+        // onto the inner template; shadowrootadoptedstylesheets and the
+        // binding must stay on the inner template.
+        let processed = concat!(
+            r#"<template shadowrootmode="open" shadowrootdelegatesfocus shadowrootclonable "#,
+            r#"shadowrootserializable shadowrootadoptedstylesheets="fluent-field" "#,
+            r#"@click="{clickHandler($e)}"><slot></slot></template>"#,
+        );
+        let html = generate_f_template_from_processed("fluent-field", processed);
+        assert!(
+            html.contains(
+                r#"<f-template name="fluent-field" shadowrootmode="open" shadowrootdelegatesfocus shadowrootclonable shadowrootserializable>"#
+            ),
+            "wrapper must carry every hoisted option exactly once, in order: {html}"
+        );
+        assert!(
+            html.contains(
+                r#"<template shadowrootadoptedstylesheets="fluent-field" @click="{clickHandler($e)}">"#
+            ),
+            "inner <template> must keep shadowrootadoptedstylesheets and the binding, and nothing hoisted: {html}"
+        );
+        for attr in [
+            "shadowrootmode",
+            "shadowrootdelegatesfocus",
+            "shadowrootclonable",
+            "shadowrootserializable",
+        ] {
+            assert_eq!(
+                html.matches(attr).count(),
+                1,
+                "{attr} must appear exactly once across the wrapper and inner template: {html}"
+            );
+        }
     }
 
     #[test]
@@ -1304,8 +1401,12 @@ mod tests {
             "Shadow f-template should contain <f-repeat>, got: {result}"
         );
         assert!(
-            !result.contains("shadowrootmode"),
-            "Shadow f-template should strip shadowrootmode, got: {result}"
+            result.contains(r#"<f-template name="my-shadow" shadowrootmode="open">"#),
+            "shadowrootmode should be hoisted onto the <f-template> wrapper, got: {result}"
+        );
+        assert!(
+            !result.contains("<template shadowrootmode"),
+            "inner <template> should not keep shadowrootmode, got: {result}"
         );
         assert!(
             !result.contains("<if "),

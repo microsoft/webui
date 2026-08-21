@@ -603,6 +603,12 @@ struct BuiltComponentTemplate {
 struct ComponentTemplateMode {
     preserve_runtime_attrs: bool,
     policy_wrapper: bool,
+    /// Emit the Style-strategy `<style>` after the template body (before the
+    /// closing `</template>`) instead of immediately inside the opening tag.
+    /// Set for plugins whose client runtime scans the template body for
+    /// `{`/`}` bindings (FAST) so raw CSS rule blocks never shift binding
+    /// alignment. See [`crate::plugin::ParserPlugin::styles_trail_template_body`].
+    styles_at_end: bool,
 }
 
 impl BuiltComponentTemplate {
@@ -3225,18 +3231,47 @@ impl HtmlParser {
             None
         };
         let policy_wrapper = parse_component_render_policy(tag_name, html)?.is_authored();
-        let ssr = self.process_component_policy_template(
+        // When the active plugin owns client-only bindings on the root
+        // `<template>` (FAST), keep them in the SSR view so the parser
+        // classifies and counts them for hydration-marker alignment instead of
+        // the pre-parse strip dropping them uncounted. WebUI and the no-plugin
+        // path keep the strip fast path.
+        let preserve_root_bindings = self
+            .plugin
+            .as_ref()
+            .is_some_and(|plugin| plugin.classifies_root_template_bindings());
+        // Trail the Style-strategy `<style>` after the template body only when
+        // the active plugin's client runtime parses that body for `{`/`}`
+        // bindings (FAST). Link/Module carry no CSS braces into the body, so
+        // their placement is unchanged and other strategies keep the authored
+        // `{{styles}}` position.
+        let styles_at_end = matches!(self.options.css_strategy, CssStrategy::Style)
+            && self
+                .plugin
+                .as_ref()
+                .is_some_and(|plugin| plugin.styles_trail_template_body());
+        let ssr = self.process_component_template_with_mode(
             html,
             css_injection.as_deref(),
             adopted_specifier,
-            policy_wrapper,
+            ComponentTemplateMode {
+                preserve_runtime_attrs: preserve_root_bindings,
+                policy_wrapper,
+                styles_at_end,
+            },
         )?;
         let artifact = match artifact_source {
-            Some(source) => Some(self.process_component_artifact_template(
+            Some(source) => Some(self.process_component_template_with_mode(
                 source,
                 css_injection.as_deref(),
                 adopted_specifier,
-                policy_wrapper,
+                ComponentTemplateMode {
+                    // Client artifacts preserve runtime-only attributes
+                    // (`@event`, `:bind`, `?cond`) for the plugin runtime.
+                    preserve_runtime_attrs: true,
+                    policy_wrapper,
+                    styles_at_end,
+                },
             )?),
             None => None,
         };
@@ -3255,7 +3290,9 @@ impl HtmlParser {
     ///   protocol metadata and never appear in HTML output. Plugin-facing
     ///   artifacts preserve them. If a CSS snippet is supplied, it is injected
     ///   immediately inside the opening tag (before the dev's children) so
-    ///   styles still apply. For `CssStrategy::Module`, the parser appends
+    ///   styles still apply — unless [`ComponentTemplateMode::styles_at_end`]
+    ///   is set, in which case the `<style>` trails the body (before
+    ///   `</template>`). For `CssStrategy::Module`, the parser appends
     ///   `shadowrootadoptedstylesheets="<tag>"` when it is missing.
     ///
     /// - **Dev omitted `<template>`:**
@@ -3275,41 +3312,14 @@ impl HtmlParser {
         css_snippet: Option<&str>,
         adopted_specifier: Option<&str>,
     ) -> Result<String> {
-        self.process_component_policy_template(html, css_snippet, adopted_specifier, false)
-    }
-
-    fn process_component_policy_template(
-        &mut self,
-        html: &str,
-        css_snippet: Option<&str>,
-        adopted_specifier: Option<&str>,
-        policy_wrapper: bool,
-    ) -> Result<String> {
         self.process_component_template_with_mode(
             html,
             css_snippet,
             adopted_specifier,
             ComponentTemplateMode {
                 preserve_runtime_attrs: false,
-                policy_wrapper,
-            },
-        )
-    }
-
-    fn process_component_artifact_template(
-        &mut self,
-        html: &str,
-        css_snippet: Option<&str>,
-        adopted_specifier: Option<&str>,
-        policy_wrapper: bool,
-    ) -> Result<String> {
-        self.process_component_template_with_mode(
-            html,
-            css_snippet,
-            adopted_specifier,
-            ComponentTemplateMode {
-                preserve_runtime_attrs: true,
-                policy_wrapper,
+                policy_wrapper: false,
+                styles_at_end: false,
             },
         )
     }
@@ -3337,7 +3347,8 @@ impl HtmlParser {
                 base
             };
             let with_adopted = Self::append_adopted_attr_if_missing(with_shadow, adopted_specifier);
-            let injected = Self::inject_css_snippet_into_template(with_adopted, snippet);
+            let injected =
+                Self::inject_css_snippet_into_template(with_adopted, snippet, mode.styles_at_end);
             if mode.policy_wrapper
                 && matches!(self.options.dom_strategy, DomStrategy::Light)
                 && !authored_shadow
@@ -3362,8 +3373,13 @@ impl HtmlParser {
                         Self::push_adopted_attr(&mut result, adopted);
                     }
                     result.push('>');
-                    result.push_str(snippet);
-                    result.push_str(trimmed);
+                    if mode.styles_at_end {
+                        result.push_str(trimmed);
+                        result.push_str(snippet);
+                    } else {
+                        result.push_str(snippet);
+                        result.push_str(trimmed);
+                    }
                     result.push_str("</template>");
                     result
                 }
@@ -3372,6 +3388,8 @@ impl HtmlParser {
                         trimmed.to_string()
                     } else {
                         let mut result = String::with_capacity(snippet.len() + trimmed.len());
+                        // Light DOM has no `<template>` to trail; styles apply
+                        // globally, so keep the snippet ahead of the content.
                         result.push_str(snippet);
                         result.push_str(trimmed);
                         result
@@ -3383,9 +3401,25 @@ impl HtmlParser {
         self.strip_template_comments(processed)
     }
 
-    fn inject_css_snippet_into_template(html: String, snippet: &str) -> String {
+    fn inject_css_snippet_into_template(html: String, snippet: &str, at_end: bool) -> String {
         if snippet.is_empty() {
             return html;
+        }
+
+        // Trail the snippet after the template body (before the closing
+        // `</template>`) so a client runtime that scans the body for `{`/`}`
+        // bindings (FAST's declarative TemplateParser) never mistakes raw CSS
+        // rule blocks for bindings. Styles apply regardless of shadow-root
+        // position. Falls back to opening-tag injection when no closing tag is
+        // present so styles are never silently dropped.
+        if at_end {
+            if let Some(close_start) = html.rfind("</template>") {
+                let mut result = String::with_capacity(html.len() + snippet.len());
+                result.push_str(&html[..close_start]);
+                result.push_str(snippet);
+                result.push_str(&html[close_start..]);
+                return result;
+            }
         }
 
         match html::find_tag_close(&html) {
@@ -4073,9 +4107,12 @@ mod tests {
             records,
             "named-card",
             [
-                raw("<template><style>.root { color: red; }</style>"),
+                // FAST plugins trail the Style-strategy `<style>` after the
+                // template body (before `</template>`) so raw CSS braces can
+                // never be misread as client bindings by FAST's TemplateParser.
+                raw("<template>"),
                 if_cond("if-1"),
-                raw("</template>"),
+                raw("<style>.root { color: red; }</style></template>"),
             ]
         );
         assert_stream!(records, "if-1", [for_loop("item", "items", "for-1"),]);
@@ -4133,6 +4170,138 @@ mod tests {
     #[test]
     fn fast_v3_plugin_uses_authored_f_template_source() {
         assert_f_template_component_source(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+    }
+
+    /// The Style CSS strategy trails the `<style>` after the FAST component
+    /// body (before `</template>`) in both the SSR view and the client
+    /// `<f-template>` artifact, so FAST's declarative TemplateParser scans every
+    /// `{`/`}` binding before it reaches raw CSS rule blocks. The CSS — nested
+    /// at-rules included — is preserved byte-for-byte and no `{{styles}}` marker
+    /// leaks.
+    #[test]
+    fn fast_v3_style_strategy_trails_style_in_ssr_and_artifact() {
+        // Nested `@media` is what makes FAST's naive brace scan leave a stray
+        // `}` that corrupts the next binding when the `<style>` leads the body.
+        let css = ":host { display: inline-flex; } \
+@media (forced-colors: active) { :host { color: CanvasText; } }";
+        let style_block = format!("<style>{css}</style>");
+        let mut parser = HtmlParser::with_plugin_options(
+            Box::new(plugin::fast_v3::FastV3ParserPlugin::new()),
+            (CssStrategy::Style, DomStrategy::Shadow),
+        );
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "fluent-btn",
+                r#"<f-template name="fluent-btn"><template @click="{click($e)}"><slot name="start" f-ref="{start}"></slot><span class="content"><slot f-slotted="{slotted}"></slot></span></template></f-template>"#,
+                Some(css),
+                true,
+            ))
+            .expect("register component");
+        parser
+            .parse("index.html", "<fluent-btn></fluent-btn>")
+            .expect("parse entry");
+
+        // SSR raw stream: the <style> trails the body (after the slots/span,
+        // immediately before </template>). FAST client bindings are stripped
+        // from SSR, so they do not appear here.
+        let records = parser.fragment_records.clone();
+        let ssr_raw: String = records["fluent-btn"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            ssr_raw.contains(&style_block),
+            "SSR must inline the CSS verbatim: {ssr_raw}"
+        );
+        assert!(
+            ssr_raw.find("<style>") > ssr_raw.find("<span"),
+            "SSR <style> must trail the body content: {ssr_raw}"
+        );
+        assert!(
+            ssr_raw.trim_end().ends_with("</style></template>"),
+            "SSR <style> must be the last body node before </template>: {ssr_raw}"
+        );
+        assert!(!ssr_raw.contains("{{styles}}"), "no marker leak: {ssr_raw}");
+
+        // Client artifact: bindings are retained and every one precedes the
+        // trailing <style>; the CSS is preserved verbatim.
+        let ParserPluginArtifacts::ComponentTemplates(templates) =
+            parser.take_plugin_artifacts().expect("artifacts")
+        else {
+            panic!("expected component template artifacts");
+        };
+        let template = &templates[0].template;
+        assert!(
+            template.contains(&style_block),
+            "artifact must inline the CSS verbatim: {template}"
+        );
+        let style_at = template.find("<style>").expect("artifact style");
+        for binding in ["@click=", "f-ref=", "f-slotted="] {
+            assert!(
+                template.find(binding).expect(binding) < style_at,
+                "artifact binding {binding} must precede the trailing <style>: {template}"
+            );
+        }
+        assert!(
+            template.contains("</style></template>"),
+            "artifact <style> must be the last body node before </template>: {template}"
+        );
+        assert!(
+            !template.contains("{{styles}}"),
+            "no marker leak: {template}"
+        );
+    }
+
+    /// The Style strategy must not perturb WebUI's own binding classification:
+    /// the per-element binding counts a FAST component emits are identical under
+    /// `--css style` and `--css module`. Only the inert `<style>` node moves.
+    #[test]
+    fn fast_v3_style_and_module_emit_equal_binding_counts() {
+        fn binding_counts(css_strategy: CssStrategy) -> Vec<u32> {
+            let mut parser = HtmlParser::with_plugin_options(
+                Box::new(plugin::fast_v3::FastV3ParserPlugin::new()),
+                (css_strategy, DomStrategy::Shadow),
+            );
+            parser
+                .component_registry
+                .register_component(ComponentRegistration::new(
+                    "fluent-btn",
+                    r#"<f-template name="fluent-btn"><template @click="{click($e)}"><slot name="start" f-ref="{start}"></slot><span class="content"><slot f-slotted="{slotted}"></slot></span></template></f-template>"#,
+                    Some("@media screen { :host { color: red; } } .content { display: inherit; }"),
+                    true,
+                ))
+                .expect("register component");
+            parser
+                .parse("index.html", "<fluent-btn></fluent-btn>")
+                .expect("parse entry");
+            parser.fragment_records["fluent-btn"]
+                .fragments
+                .iter()
+                .filter_map(|fragment| {
+                    let Some(Fragment::Plugin(data)) = fragment.fragment.as_ref() else {
+                        return None;
+                    };
+                    (data.data.len() == 4).then(|| {
+                        u32::from_le_bytes([data.data[0], data.data[1], data.data[2], data.data[3]])
+                    })
+                })
+                .collect()
+        }
+        let style_counts = binding_counts(CssStrategy::Style);
+        assert!(
+            !style_counts.is_empty(),
+            "component should emit binding counts"
+        );
+        assert_eq!(
+            style_counts,
+            binding_counts(CssStrategy::Module),
+            "Style-strategy <style> placement must not change binding counts",
+        );
     }
 
     #[test]
@@ -4201,6 +4370,79 @@ mod tests {
             assert!(template.contains(client_attr));
         }
         assert!(!template.contains("data-webui-internal-"));
+    }
+
+    fn assert_fast_root_template_bindings_counted(plugin: Box<dyn ParserPlugin>) {
+        let mut parser = HtmlParser::with_plugin(plugin);
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "root-binding-card",
+                // The root <template> carries client-only event bindings (like
+                // Fluent's button) plus a boolean binding (like Fluent's
+                // tree-item's `?focusgroupstart`); the child carries one more.
+                r#"<f-template name="root-binding-card" shadowrootmode="open"><template @click="{clickHandler($e)}" @keydown="{keydownHandler($e)}" ?focusgroupstart="{{selected}}"><span @focus="{focus()}">{{label}}</span></template></f-template>"#,
+                None,
+                true,
+            ))
+            .expect("register component");
+        parser
+            .parse("index.html", "<root-binding-card></root-binding-card>")
+            .expect("parse entry");
+        let fragments = &parser.fragment_records["root-binding-card"].fragments;
+        let binding_counts: Vec<u32> = fragments
+            .iter()
+            .filter_map(|fragment| {
+                let Some(Fragment::Plugin(data)) = fragment.fragment.as_ref() else {
+                    return None;
+                };
+                (data.data.len() == 4).then(|| {
+                    u32::from_le_bytes([data.data[0], data.data[1], data.data[2], data.data[3]])
+                })
+            })
+            .collect();
+        // Root <template>: @click + @keydown + ?focusgroupstart = 3, emitted
+        // before the child <span>'s single binding, so client hydration markers
+        // stay aligned with the client template's binding order.
+        assert_eq!(
+            binding_counts,
+            vec![3, 1],
+            "root <template> client-only bindings must be counted before the child's binding"
+        );
+
+        // The root <template>'s client-only bindings must never leak into SSR
+        // raw text, but its declarative-shadow-root option must be preserved.
+        let raw: String = fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        for client_attr in ["@click", "@keydown", "?focusgroupstart", "@focus"] {
+            assert!(
+                !raw.contains(client_attr),
+                "SSR must not leak client-only binding {client_attr}: {raw}"
+            );
+        }
+        assert!(
+            raw.contains(r#"shadowrootmode="open""#),
+            "SSR root <template> must carry the wrapper's shadowrootmode: {raw}"
+        );
+    }
+
+    #[test]
+    fn fast_v2_counts_root_template_bindings_for_hydration_alignment() {
+        assert_fast_root_template_bindings_counted(Box::new(
+            plugin::fast_v2::FastV2ParserPlugin::new(),
+        ));
+    }
+
+    #[test]
+    fn fast_v3_counts_root_template_bindings_for_hydration_alignment() {
+        assert_fast_root_template_bindings_counted(Box::new(
+            plugin::fast_v3::FastV3ParserPlugin::new(),
+        ));
     }
 
     #[test]
