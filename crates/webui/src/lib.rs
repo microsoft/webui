@@ -838,7 +838,7 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         component.navigation_keys = navigation_keys;
     }
 
-    let component_asset_graph = component_assets::render_component_assets(
+    let mut component_asset_graph = component_assets::render_component_assets(
         &protocol,
         &options.entry,
         &options.component_asset_roots,
@@ -2592,6 +2592,7 @@ mod tests {
             ("index.html", "<app-shell></app-shell>"),
             ("app-shell.html", "<entry-badge></entry-badge>"),
             ("entry-badge.html", "<span>Entry</span>"),
+            ("entry-badge.css", ":host { display: inline-block; }"),
             (
                 "lazy-panel.html",
                 "<entry-badge></entry-badge><shared-detail></shared-detail><panel-only></panel-only>",
@@ -2601,6 +2602,9 @@ mod tests {
                 "<entry-badge></entry-badge><shared-detail></shared-detail><secondary-only></secondary-only>",
             ),
             ("shared-detail.html", "<p>Shared</p>"),
+            ("shared-detail.css", ":host { display: block; }"),
+            ("lazy-panel.css", ":host { color: green; }"),
+            ("secondary-panel.css", ":host { color: blue; }"),
             ("panel-only.html", "<p>Panel</p>"),
             ("secondary-only.html", "<p>Secondary</p>"),
         ]);
@@ -2629,6 +2633,25 @@ mod tests {
         }
         assert!(result.protocol.fragments.contains_key("app-shell"));
         assert!(result.protocol.components.contains_key("entry-badge"));
+        assert_eq!(
+            result.protocol.component_asset_style_preloads,
+            vec![
+                webui_protocol::ComponentAssetStylePreload {
+                    root: "lazy-panel".to_string(),
+                    style_hrefs: vec![
+                        "lazy-panel.css".to_string(),
+                        "shared-detail.css".to_string(),
+                    ],
+                },
+                webui_protocol::ComponentAssetStylePreload {
+                    root: "secondary-panel".to_string(),
+                    style_hrefs: vec![
+                        "secondary-panel.css".to_string(),
+                        "shared-detail.css".to_string(),
+                    ],
+                },
+            ]
+        );
 
         let names: Vec<&str> = result
             .component_asset_files
@@ -2739,6 +2762,58 @@ mod tests {
         assert!(chunk_name.starts_with("chunk-shared-detail-"));
         assert!(forward[0].content.contains(chunk_name));
         assert!(forward[1].content.contains(chunk_name));
+    }
+
+    #[test]
+    fn test_component_asset_style_preloads_use_final_css_hrefs() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("lazy-panel.html", "<p>Lazy</p>"),
+            ("lazy-panel.css", ":host { display: block; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.component_asset_roots = vec!["lazy-panel".to_string()];
+        options.css_file_name_template = "[name]-[hash].[ext]".to_string();
+        options.css_public_base = Some("https://cdn.example.com/webui".to_string());
+
+        let result = build(options).unwrap();
+        let preload = &result.protocol.component_asset_style_preloads[0];
+
+        assert_eq!(preload.root, "lazy-panel");
+        assert_eq!(preload.style_hrefs.len(), 1);
+        assert!(preload.style_hrefs[0].starts_with("https://cdn.example.com/webui/lazy-panel-"));
+        assert!(preload.style_hrefs[0].ends_with(".css"));
+    }
+
+    #[test]
+    fn test_light_component_asset_styles_are_retained_for_document_links() {
+        let app = create_app_dir(&[
+            ("index.html", "<app-shell></app-shell>"),
+            ("app-shell.html", "<p>Entry</p>"),
+            ("z-lazy-panel.html", "<a-lazy-child></a-lazy-child>"),
+            ("z-lazy-panel.css", ".z-lazy-panel { display: block; }"),
+            ("a-lazy-child.html", "<p>Child</p>"),
+            ("a-lazy-child.css", ".a-lazy-child { color: green; }"),
+        ]);
+        let mut options = default_options(app.path());
+        options.plugin = Some(Plugin::WebUI);
+        options.dom = DomStrategy::Light;
+        options.component_asset_roots = vec!["z-lazy-panel".to_string()];
+
+        let result = build(options).unwrap();
+
+        assert_eq!(
+            result.protocol.component_asset_style_preloads,
+            vec![webui_protocol::ComponentAssetStylePreload {
+                root: "z-lazy-panel".to_string(),
+                style_hrefs: vec![
+                    "z-lazy-panel.css".to_string(),
+                    "a-lazy-child.css".to_string(),
+                ],
+            }]
+        );
     }
 
     #[test]

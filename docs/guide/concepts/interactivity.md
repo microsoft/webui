@@ -531,19 +531,41 @@ export const settingsAssets = defineComponentAssets({
 });
 ```
 
-`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. Keep only
-stable root inputs in the manifest; generated chunk filenames can change as the
-dependency graph changes, and each root asset already carries its dynamic
-imports. `preload(tag)` starts the component's template graph, styles,
-JavaScript module, and optional data together. Components can then fetch their
-own data in their class code and expose it through `@observable` fields when
-JavaScript needs to read or mutate it. Concurrent roots deduplicate shared chunk
-imports by resolved URL.
+`defineComponentAssets()` exposes `preload(tag)` and `create(tag)`. The compiler
+stores final Link stylesheet hrefs in the protocol. For Shadow builds, the
+handler publishes that finite manifest as inert JSON in the document head, or
+at the rendered body start for body-only host protocols. Light builds emit the
+same hrefs as deduplicated document stylesheets because their CSS is globally
+scoped.
+Automatic Shadow intent preloading requires HTML rendered through the WebUI
+handler or `Protocol`, which emits `#webui-component-assets`. A shell that uses
+the build artifacts without rendering the protocol still mounts safely through
+the native stylesheet guard, but it cannot start the compiler-owned style
+preload before loading the root asset.
+If an authoritative native stylesheet link fails, WebUI reports the error,
+keeps the native link in place, releases the temporary guard, and completes
+hydration. The component may be unstyled, but it remains visible and usable.
+Generated root, shared chunk, and content-hashed stylesheet filenames never
+belong in authored code. In Shadow builds, `preload(tag)` starts the component's
+Link styles, template graph, JavaScript module, and optional data together.
+Components can
+then fetch their own data in their class code and expose it through
+`@observable` fields when JavaScript needs to read or mutate it. Concurrent
+roots deduplicate shared chunk and stylesheet work by resolved URL.
 `create(tag)` creates the element after template/module work is ready. Use
 `create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
 wait briefly for state before mounting. Use a manifest helper when you want the
-fastest path: it lets the shell start the template asset, JS chunk, and data
-fetch in parallel.
+fastest path: it lets the shell start Link CSS, the authored root asset, the JS
+chunk, and data in parallel. Application code keeps only the stable root asset
+URL; shared chunk and content-hashed stylesheet names remain compiler-owned. A
+preload whose intent never mounts the component is removed after three seconds,
+but the browser may still report its standard unused-preload warning.
+If the root asset or authored module rejects, the registry evicts that failed
+generation so the next `preload(tag)` or `create(tag)` retries it.
+Generated bundler integrations can supply
+`asset: () => import('./settings-dialog.webui.js')` instead of a URL so chunk
+loading and public-path rewriting stay bundler-owned without bypassing
+`defineComponentAssets()`.
 
 Do not put `<settings-dialog>` in an SSR-reachable `<if>` block for this pattern.
 If the server state ever makes that condition true, the component is part of the

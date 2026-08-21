@@ -46,6 +46,7 @@ impl<'a> GraphIndex<'a> {
 
 pub(super) struct CollectedClosure {
     pub components: Vec<usize>,
+    pub component_order: Vec<usize>,
     pub fragments: Vec<usize>,
 }
 
@@ -78,6 +79,7 @@ impl TraversalScratch {
         let Some(&root_id) = index.fragment_ids.get(root) else {
             return Ok(CollectedClosure {
                 components: Vec::new(),
+                component_order: Vec::new(),
                 fragments: Vec::new(),
             });
         };
@@ -98,7 +100,7 @@ impl TraversalScratch {
             let Some(fragment_list) = protocol.fragments.get(fragment_name) else {
                 continue;
             };
-            for fragment in &fragment_list.fragments {
+            for fragment in fragment_list.fragments.iter().rev() {
                 enqueue_dependency(
                     fragment.fragment.as_ref(),
                     fragment_name,
@@ -108,10 +110,12 @@ impl TraversalScratch {
             }
         }
 
+        let component_order = self.components.clone();
         self.components.sort_unstable();
         self.fragments.sort_unstable();
         Ok(CollectedClosure {
             components: std::mem::take(&mut self.components),
+            component_order,
             fragments: std::mem::take(&mut self.fragments),
         })
     }

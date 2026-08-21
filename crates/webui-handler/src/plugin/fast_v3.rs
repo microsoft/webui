@@ -157,50 +157,15 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         Ok(())
     }
 
-    /// FAST emits scalar attributes + `data-state` JSON on route component elements.
+    /// FAST emits scalar attributes on route component elements.
     /// Components read these via `@attr` and their connection lifecycle.
     fn write_route_component_state(
         &self,
         state: &Value,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
-        write_fast_route_component_state(state, writer)
+        super::fast::write_route_component_state(state, writer)
     }
-}
-
-fn write_fast_route_component_state(state: &Value, writer: &mut dyn ResponseWriter) -> Result<()> {
-    let map = match state.as_object() {
-        Some(m) => m,
-        None => return Ok(()),
-    };
-
-    // Emit scalar values as individual kebab-case attributes.
-    for (key, value) in map {
-        let val_str = match value {
-            Value::String(s) => std::borrow::Cow::Borrowed(s.as_str()),
-            Value::Number(n) => std::borrow::Cow::Owned(n.to_string()),
-            Value::Bool(true) => std::borrow::Cow::Borrowed("true"),
-            Value::Bool(false) => std::borrow::Cow::Borrowed("false"),
-            _ => continue,
-        };
-        let attr_name = webui_protocol::attrs::camel_to_kebab(key);
-        writer.write(" ")?;
-        writer.write(&attr_name)?;
-        writer.write("=\"")?;
-        crate::route_renderer::write_escaped_state_attr(writer, val_str.as_ref())?;
-        writer.write("\"")?;
-    }
-
-    // Emit data-state JSON for complex values (arrays, objects).
-    let has_complex = map.values().any(|v| v.is_array() || v.is_object());
-    if has_complex {
-        let json_str = state.to_string();
-        writer.write(" data-state=\"")?;
-        crate::route_renderer::write_escaped_state_attr(writer, &json_str)?;
-        writer.write("\"")?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -410,31 +375,6 @@ mod tests {
             "invalid payload length should produce a plugin-data error: {result:?}"
         );
         assert_eq!(writer.output, "");
-    }
-
-    #[test]
-    fn test_write_route_component_state_emits_data_state() {
-        let plugin = FastV3HydrationPlugin::new();
-        let mut writer = TestWriter::new();
-        let state = serde_json::json!({
-            "title": "Hello",
-            "items": [{"name": "A&B"}]
-        });
-
-        plugin
-            .write_route_component_state(&state, &mut writer)
-            .unwrap();
-
-        assert!(
-            writer.output.contains("data-state="),
-            "FAST handler plugin should emit data-state: {}",
-            writer.output
-        );
-        assert!(
-            writer.output.contains(r#"title="Hello""#),
-            "FAST handler plugin should still emit scalar attrs: {}",
-            writer.output
-        );
     }
 
     // ── Integration tests (full render cycles with WebUIHandler) ────────

@@ -211,7 +211,10 @@ Keep the lazy component tag out of SSR-reachable templates unless it should be
 eligible for initial SSR. Use a mount element or another non-HTML trigger, then
 create the custom element with `mailAssets.create(...)`. The application must
 load its normal entry bundle before component assets because entry-reachable
-dependencies are external prerequisites.
+dependencies are external prerequisites. For Shadow builds, the compiler records final Link stylesheet hrefs in the
+protocol so `preload(tag)` can start CSS beside the authored stable root asset
+without exposing content-hashed stylesheet names. Light builds emit those hrefs
+as document stylesheets with the entry because their CSS is globally scoped.
 
 **Comment handling:**
 

@@ -2,7 +2,7 @@
   "name": "@microsoft/webui",
   "description": "WebUI — high-performance server-side rendering framework. Build-time protocol compiler and streaming renderer.",
   "license": "MIT",
-  "version": "0.0.24",
+  "version": "0.0.25",
   "type": "module",
   "repository": {
     "type": "git",
@@ -58,7 +58,7 @@
   },
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": {
@@ -71,6 +71,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "esbuild": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "typescript-6": "catalog:"
   }
 }

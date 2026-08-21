@@ -9,11 +9,14 @@
  */
 
 import { loadComponentAsset } from './component-asset/loader.js';
+import { takeGeneratedComponentAssetStyles } from './component-asset/generated-manifest.js';
+import { preloadComponentAssetStyles } from './element/link-styles.js';
 import type {
   ComponentAssetCreateOptions,
   ComponentAssetManifest,
   ComponentAssetPreload,
   ComponentAssetRegistry,
+  ComponentAssetSource,
   ComponentAssetState,
 } from './component-asset/manifest.js';
 
@@ -27,6 +30,7 @@ export type {
   ComponentAssetManifestEntry,
   ComponentAssetPreload,
   ComponentAssetRegistry,
+  ComponentAssetSource,
   ComponentAssetState,
 } from './component-asset/manifest.js';
 
@@ -42,6 +46,10 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     if (!entry) {
       throw new Error(`[WebUI] No component asset manifest entry for <${tag}>.`);
     }
+    const styles = takeGeneratedComponentAssetStyles(tag);
+    if (styles) {
+      preloadComponentAssetStyles(styles);
+    }
 
     const next: ComponentAssetPreload<Data> = {
       asset: loadComponentAsset(tag, entry.asset),
@@ -52,8 +60,11 @@ export function defineComponentAssets(manifest: ComponentAssetManifest): Compone
     if (entry.data) {
       next.data = entry.data() as Promise<Data>;
     }
-    next.asset.catch(() => {});
-    next.module?.catch(() => {});
+    const evictFailedResources = (): void => {
+      if (preloads.get(tag) === next) preloads.delete(tag);
+    };
+    next.asset.catch(evictFailedResources);
+    next.module?.catch(evictFailedResources);
     next.data?.catch(() => {});
     preloads.set(tag, next);
     return next;

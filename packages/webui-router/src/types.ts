@@ -15,7 +15,7 @@ declare global {
 
   interface Window {
     __webui?: WebUIRuntimeGlobal;
-    __webuiRegisterComponentStyles?: (value: unknown) => void;
+    __webuiRegisterComponentStyles?: (value: unknown) => Promise<void> | undefined;
   }
 }
 

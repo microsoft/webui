@@ -12,7 +12,7 @@ mod serialize;
 mod traversal;
 
 use std::collections::HashSet;
-use webui_protocol::WebUIProtocol;
+use webui_protocol::{ComponentAssetStylePreload, WebUIProtocol};
 
 use crate::{AssetFileNameTemplate, WebUIError};
 
@@ -32,18 +32,21 @@ pub struct ComponentAssetGraph {
     pub files: Vec<ComponentAssetFile>,
     /// Optional esbuild-compatible metafile JSON.
     pub metafile: Option<String>,
+    /// Compiler-resolved Link stylesheet hrefs for intent-time root preloading.
+    pub style_preloads: Vec<ComponentAssetStylePreload>,
     entry_fragments: Vec<String>,
     entry_components: Vec<String>,
 }
 
 impl ComponentAssetGraph {
     pub(crate) fn retain_entry_protocol(
-        &self,
+        &mut self,
         protocol: &mut WebUIProtocol,
     ) -> Result<(), WebUIError> {
         if self.files.is_empty() {
             return Ok(());
         }
+        protocol.component_asset_style_preloads = std::mem::take(&mut self.style_preloads);
         protocol
             .fragments
             .retain(|name, _| self.entry_fragments.binary_search(name).is_ok());
@@ -138,6 +141,7 @@ pub fn render_component_assets(
         return Ok(ComponentAssetGraph {
             files: Vec::new(),
             metafile: None,
+            style_preloads: Vec::new(),
             entry_fragments: Vec::new(),
             entry_components: Vec::new(),
         });
@@ -149,6 +153,7 @@ pub fn render_component_assets(
     let plan = graph::plan_component_assets(protocol, entry, roots)?;
     let rendered =
         render::render_component_asset_graph(protocol, &plan, &file_name_template, emit_metafile)?;
+    let style_preloads = collect_component_asset_style_preloads(protocol, &plan);
     validate_unique_asset_file_names(&rendered.files)?;
     let metafile = if emit_metafile {
         Some(metafile::render_metafile(protocol, &rendered.outputs)?)
@@ -159,9 +164,45 @@ pub fn render_component_assets(
     Ok(ComponentAssetGraph {
         files: rendered.files,
         metafile,
+        style_preloads,
         entry_fragments: plan.entry_fragments,
         entry_components: plan.entry_components,
     })
+}
+
+fn collect_component_asset_style_preloads(
+    protocol: &WebUIProtocol,
+    plan: &graph::AssetGraphPlan<'_>,
+) -> Vec<ComponentAssetStylePreload> {
+    let mut preloads = Vec::with_capacity(plan.roots.len());
+    for root in &plan.roots {
+        let mut style_hrefs = Vec::new();
+        let mut seen = HashSet::with_capacity(root.required_components.len());
+        for component in &root.style_components {
+            if root.external_components.binary_search(component).is_ok() {
+                continue;
+            }
+            let Some(href) = protocol
+                .components
+                .get(plan.component_names[*component])
+                .map(|component| component.css_href.as_str())
+                .filter(|href| !href.is_empty())
+            else {
+                continue;
+            };
+            if seen.insert(href) {
+                style_hrefs.push(href.to_string());
+            }
+        }
+        if style_hrefs.is_empty() {
+            continue;
+        }
+        preloads.push(ComponentAssetStylePreload {
+            root: root.root.clone(),
+            style_hrefs,
+        });
+    }
+    preloads
 }
 
 fn validate_unique_asset_file_names(files: &[ComponentAssetFile]) -> Result<(), WebUIError> {
@@ -209,12 +250,13 @@ mod tests {
                 style_chunks: Vec::new(),
             },
         );
-        let graph = ComponentAssetGraph {
+        let mut graph = ComponentAssetGraph {
             files: vec![ComponentAssetFile {
                 name: "root.js".to_string(),
                 content: String::new(),
             }],
             metafile: None,
+            style_preloads: Vec::new(),
             entry_fragments: vec!["index.html".to_string(), "kept-card".to_string()],
             entry_components: vec!["kept-card".to_string()],
         };
@@ -271,12 +313,13 @@ mod tests {
                 style_chunks: vec![0],
             },
         );
-        let graph = ComponentAssetGraph {
+        let mut graph = ComponentAssetGraph {
             files: vec![ComponentAssetFile {
                 name: "removed-card.js".to_string(),
                 content: String::new(),
             }],
             metafile: None,
+            style_preloads: Vec::new(),
             entry_fragments: vec!["index.html".to_string(), "kept-card".to_string()],
             entry_components: vec!["kept-card".to_string()],
         };

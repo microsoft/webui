@@ -356,6 +356,16 @@ Templates are not sent during initial SSR or partial navigation for
 unmatched routes — zero cost until explicitly requested. If a user navigates
 directly to the route path, the component renders normally in the outlet.
 
+When `@microsoft/webui-framework` is loaded, `ensureLoaded()` also waits for
+bounded Link stylesheet cache warming or an explicit native-link fallback
+decision. Warmup bytes are never applied; the first native shadow link remains
+the authorization source for any later shared constructable sheet. JSON and
+NDJSON soft navigation use the same readiness bridge before committing new
+route components. Globally retained head CSS is injected before this wait, so
+aborting a stale navigation cannot advance inventory without retaining its
+styles. The router does not import the framework; without a runtime listener,
+registration remains immediate.
+
 ### View Transitions
 
 The router automatically uses the [View Transitions API](https://developer.mozilla.org/en-US/docs/Web/API/Document/startViewTransition) when available. On each client-side navigation, the DOM swap is wrapped in `document.startViewTransition()`, giving you a CSS-driven cross-fade between old and new route content with zero extra code.
@@ -536,6 +546,11 @@ The `chain` field contains the matched route chain with `component`, `path`,
 `params`, `exact`, `keepAlive`, `pendingComponent`, `errorComponent`, and
 `invalidates`. The `cacheTags` array contains resolved cache tags from the full
 chain. The optional `cacheControl` object can override `staleTime` per-response.
+The deferred Chunk 2 reader starts only after Chunk 1 has committed, so state
+queued during template-resource readiness can never target the previous route.
+For speculative preloads, Chunk 1 is cached before reading continues; Chunk 2
+state is merged into that cached response before the entry becomes consumable.
+Failed commits cancel and unlock the unread stream.
 
 See the [Routing guide](https://github.com/microsoft/webui/blob/main/docs/guide/concepts/routing.md) for complete server implementation examples.
 

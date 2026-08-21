@@ -107,9 +107,10 @@ compile to a binary Protocol Buffer at build time. At runtime any backend
 (Rust, Node, Go, C#, Python) supplies JSON state and produces HTML. On the
 client, interactive components hydrate as islands.
 
-1. **Every template binding must exist in the server state JSON.** If the
+1. **Every template binding should exist in the server state JSON.** If the
    template uses `{{title}}`, the server must provide `{ "title": "..." }`.
-   Missing paths render empty and `<if>` evaluates false. No error is raised.
+   Missing text and attribute paths render empty. A missing condition identifier
+   is falsy, so `path` is false and `!path` is true. No error is raised.
 2. **Derived state belongs in the template or the server.** Use expressions like
    `items.length` or `status == 'active'`. Compute complex values server-side.
 3. **The server is the source of truth for the initial render.** The client
@@ -681,7 +682,7 @@ image from `hydratedCallback()` when component state depends on `@load` or
 | `this.$flushUpdates()` | Synchronously flush pending updates |
 | `protected hydratedCallback()` | Run synchronously once after the first successful hydration or client mount |
 | `static define(tagName)` | Register as a custom element |
-| `defineComponentAssets(manifest)` | Lazy component asset graphs with `preload(tag)` / `create(tag)` |
+| `defineComponentAssets(manifest)` | Lazy component asset graphs from stable URLs or bundler importer callbacks, with compiler-owned Shadow Link preloading through `preload(tag)` / `create(tag)` |
 
 ### Custom events
 
@@ -819,6 +820,16 @@ await Router.ensureLoaded('settings-dialog');
 this.showSettings = true;
 ```
 
+With the framework loaded, `ensureLoaded()` also waits for bounded Link
+stylesheet cache warming or a native-link fallback decision. Warmup bytes are
+never applied; the first mounted instance remains guarded until the browser
+validates its native link and can seed the shared constructable sheet. Redirect,
+service-worker, authored `<style>`, or inaccessible-CSSOM cases keep the native
+link rather than risking different response-base or cascade semantics.
+If an authoritative native link fails, WebUI reports the error, keeps the link
+native, releases the temporary guard, and completes hydration so the component
+remains visible and usable even if it is unstyled.
+
 ```html
 <if condition="showSettings">
   <settings-dialog @close="{onCloseSettings()}"></settings-dialog>
@@ -850,13 +861,24 @@ async onOpenSettings(): Promise<void> {
 }
 ```
 
+The compiler stores final Link stylesheet hrefs in the protocol. Shadow builds
+publish them as inert head JSON that `preload(tag)` consumes automatically;
+Light builds emit them as document stylesheets. Authored code therefore keeps
+only the stable root asset URL and never invents or hardcodes a content-hashed
+stylesheet filename.
+Automatic Shadow intent preloading requires HTML rendered through the WebUI
+handler or `Protocol`, which emits `#webui-component-assets`. Using build
+artifacts without rendering the protocol preserves the guarded native mount but
+does not provide early compiler-owned style preloading.
+
 Assets keep entry-owned templates external, inline dependencies used by one
 asset root, and split dependencies shared by multiple roots into deduplicated
 dynamic chunks. Do not copy generated chunk filenames into the manifest; each
 root asset carries its own dynamic imports. `create(tag)` waits for the template
-graph and module, then creates the element. The normal entry bundle must load
-first. Component assets cannot be combined with `<route>`; use the router for
-routed components.
+graph and module, then creates the element. Failed asset or authored module work
+is evicted so a later `preload(tag)` or `create(tag)` retries. The normal entry
+bundle must load first. Component assets cannot be combined with `<route>`; use
+the router for routed components.
 
 ## Routing
 
@@ -934,7 +956,8 @@ Full detail: [Routing](/guide/concepts/routing).
 
 **Path resolution:** `title`, `user.name`, `items.0.label`, `items.length`
 
-**Missing paths:** text bindings render empty, `<if>` evaluates false. No error.
+**Missing paths:** text bindings render empty. In conditions, a missing
+identifier is falsy, so `path` is false and `!path` is true. No error.
 
 **Route-scoped state.** Each route handler should return only the keys that
 route's template binds to. Sending full app state on every route wastes
@@ -1248,8 +1271,9 @@ one warning and renders the page from fallback state rather than replacing the
 app with the upstream error body. A failure *after* the stream is live still
 fails the response, because boundaries already flushed cannot be rewound.
 
-Equivalent APIs exist for WebAssembly, Python (FFI), Go (cgo), and C#. For
-`Router.ensureLoaded()`, expose `GET /_webui/templates?t=tag1,tag2` backed by
+Equivalent APIs exist for WebAssembly, Python (native `microsoft-webui`
+package), Go (cgo), and C#. For `Router.ensureLoaded()`, expose
+`GET /_webui/templates?t=tag1,tag2` backed by
 `render_component_templates(&tags, &inv)`.
 
 Full detail: [Integrations](/guide/integrations/).
@@ -1264,6 +1288,6 @@ Full detail: [Integrations](/guide/integrations/).
 | Routing, loaders, actions, caching | [/guide/concepts/routing](/guide/concepts/routing) |
 | Design tokens and theming | [/guide/concepts/css-tokens](/guide/concepts/css-tokens) |
 | CLI flags, diagnostics, exit codes | [/guide/cli/](/guide/cli/) |
-| Rust, Node, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
+| Rust, Node, Python, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
 | Performance characteristics | [/guide/concepts/performance](/guide/concepts/performance) |
 | Build a first app | [/tutorials/hello-world/](/tutorials/hello-world/) |

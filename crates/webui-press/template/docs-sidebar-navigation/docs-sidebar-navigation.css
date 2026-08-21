@@ -1,0 +1,117 @@
+:host {
+  display: block;
+}
+
+.sidebar-group {
+  margin-bottom: var(--docs-space-l);
+}
+
+.sidebar-title {
+  margin-bottom: var(--docs-space-s);
+  color: var(--docs-color-text-3);
+  font-size: var(--docs-font-size-s);
+  font-weight: var(--docs-font-weight-bold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sidebar-items,
+.sidebar-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sidebar-items li {
+  margin-bottom: 2px;
+}
+
+.sidebar-children {
+  padding-inline-start: var(--docs-space-m);
+}
+
+.sidebar-children li {
+  margin-bottom: 1px;
+}
+
+.sidebar-link,
+.sidebar-summary {
+  border-radius: var(--docs-radius-m);
+  color: var(--docs-color-text-2);
+  font-size: var(--docs-font-size-m);
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-link {
+  display: block;
+  padding: var(--docs-space-xs) var(--docs-space-m);
+  text-decoration: none;
+}
+
+.sidebar-link:hover,
+.sidebar-link:focus-visible,
+.sidebar-summary:hover,
+.sidebar-summary:focus-visible {
+  background: var(--docs-color-brand-bg);
+  color: var(--docs-color-brand);
+}
+
+.sidebar-link-active,
+.sidebar-summary[active] {
+  background: var(--docs-color-brand-bg);
+  color: var(--docs-color-brand);
+  font-weight: var(--docs-font-weight-semibold);
+}
+
+.sidebar-summary {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--docs-space-s);
+  padding: var(--docs-space-xs) var(--docs-space-s) var(--docs-space-xs) var(--docs-space-m);
+  cursor: pointer;
+  font-weight: var(--docs-font-weight-semibold);
+  list-style: none;
+}
+
+.sidebar-summary::-webkit-details-marker {
+  display: none;
+}
+
+.sidebar-summary::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.sidebar-branch[open] > .sidebar-summary::after {
+  transform: rotate(225deg);
+}
+
+.sidebar-link:focus-visible,
+.sidebar-summary:focus-visible {
+  outline: 2px solid var(--docs-color-brand);
+  outline-offset: 2px;
+}
+
+:host([variant="mobile"]) .sidebar-link,
+:host([variant="mobile"]) .sidebar-summary {
+  min-height: 44px;
+}
+
+:host([variant="mobile"]) .sidebar-link {
+  display: flex;
+  align-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-summary::after {
+    transition: none;
+  }
+}

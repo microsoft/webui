@@ -9,8 +9,16 @@
   </p>
 
   <div class="actions">
-    <button @click="{openPanel()}">Load lazy panel</button>
-    <button @click="{openSecondaryPanel()}">Load secondary panel</button>
+    <button
+      @pointerover="{preloadPanel()}"
+      @focusin="{preloadPanel()}"
+      @click="{openPanel()}"
+    >Load lazy panel</button>
+    <button
+      @pointerover="{preloadSecondaryPanel()}"
+      @focusin="{preloadSecondaryPanel()}"
+      @click="{openSecondaryPanel()}"
+    >Load secondary panel</button>
   </div>
   <div class="panel-slot" w-ref="{panelSlot}"></div>
   <div class="panel-slot" w-ref="{secondaryPanelSlot}"></div>

@@ -21,9 +21,9 @@ dependencies = [
 
 [[package]]
 name = "actix-http"
-version = "3.13.1"
+version = "3.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48e2faa3e7418ed780cca54829d32782a4008a077230f67457caa063415e99c2"
+checksum = "11004b0e9b44b4eb3d15e0c3132b96fb178c7e50a74758b2f17bb9cc9a7fb4f6"
 dependencies = [
  "actix-codec",
  "actix-rt",
@@ -289,7 +289,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -300,7 +300,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1081,7 +1081,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1779,7 +1779,7 @@ checksum = "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4"
 
 [[package]]
 name = "microsoft-webui"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "actix-web",
  "awc",
@@ -1808,7 +1808,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-cli"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1837,7 +1837,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-dev-server"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1855,7 +1855,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-discovery"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "anyhow",
  "expand-tilde",
@@ -1867,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-expressions"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "criterion",
  "microsoft-webui-protocol",
@@ -1879,7 +1879,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-ffi"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "cbindgen",
  "criterion",
@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-handler"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "criterion",
  "memchr",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-node"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "microsoft-webui",
  "microsoft-webui-handler",
@@ -1921,7 +1921,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-parser"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "clap",
  "criterion",
@@ -1936,7 +1936,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-press"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "actix-web",
  "anyhow",
@@ -1961,7 +1961,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-protocol"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "criterion",
  "prost",
@@ -1973,8 +1973,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "microsoft-webui-python"
+version = "0.0.25"
+dependencies = [
+ "microsoft-webui-handler",
+ "pyo3",
+ "serde_json",
+]
+
+[[package]]
 name = "microsoft-webui-state"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "criterion",
  "microsoft-webui-test-utils",
@@ -1983,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-test-utils"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "microsoft-webui-protocol",
  "serde_json",
@@ -1992,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-tokens"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "serde_json",
  "tempfile",
@@ -2001,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "microsoft-webui-wasm"
-version = "0.0.24"
+version = "0.0.25"
 dependencies = [
  "js-sys",
  "microsoft-webui-handler",
@@ -2543,6 +2552,63 @@ dependencies = [
 ]
 
 [[package]]
+name = "pyo3"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4688ddedf473e32662b9b067670129a8afb8c18e351482c70d62ba4a88171e8b"
+dependencies = [
+ "libc",
+ "once_cell",
+ "portable-atomic",
+ "pyo3-build-config",
+ "pyo3-ffi",
+ "pyo3-macros",
+]
+
+[[package]]
+name = "pyo3-build-config"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9"
+dependencies = [
+ "target-lexicon",
+]
+
+[[package]]
+name = "pyo3-ffi"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e591a95526fead067432c3b3a33fc74770b87b1e04e73671090d9c2055a2b327"
+dependencies = [
+ "libc",
+ "pyo3-build-config",
+]
+
+[[package]]
+name = "pyo3-macros"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73225868fc1cd84eef2c3c230ddb91273bf1de46aeb8a4248da76d32a0924a1c"
+dependencies = [
+ "proc-macro2",
+ "pyo3-macros-backend",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "pyo3-macros-backend"
+version = "0.29.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "571575aa3749fa6216757dd47d2a3e7ef360f329a40f0666a9fbd14889024952"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2735,7 +2801,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2974,7 +3040,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3063,16 +3129,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "target-lexicon"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3533,7 +3605,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

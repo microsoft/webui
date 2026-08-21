@@ -60,6 +60,21 @@ pub struct ComponentData {
     #[prost(bool, tag = "10")]
     pub uses_shadow_dom: bool,
 }
+/// Link stylesheet metadata for one static component asset root.
+///
+/// Shadow builds publish this finite manifest so the framework can begin CSS
+/// beside the root module on interaction. Light builds emit the hrefs as
+/// deduplicated document stylesheets because their CSS is globally scoped.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ComponentAssetStylePreload {
+    /// Root component tag used by defineComponentAssets().
+    #[prost(string, tag = "1")]
+    pub root: ::prost::alloc::string::String,
+    /// Final Link-mode stylesheet hrefs required by this asset graph.
+    #[prost(string, repeated, tag = "2")]
+    pub style_hrefs: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 /// Root protocol containing all fragment records and build metadata.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,6 +143,14 @@ pub struct WebUiProtocol {
     /// of individual component resources.
     #[prost(message, repeated, tag = "11")]
     pub style_chunks: ::prost::alloc::vec::Vec<StyleChunk>,
+    /// Build-generated eager metadata for static component asset roots.
+    ///
+    /// Entries are sorted by root tag. Builds without component assets omit the
+    /// field from the wire.
+    #[prost(message, repeated, tag = "12")]
+    pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
+        ComponentAssetStylePreload,
+    >,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]

@@ -48,8 +48,8 @@ pub use streaming::{
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{
-    web_ui_fragment::Fragment, InitialStateStrategy, StateProjectionMode, WebUIFragment,
-    WebUIProtocol,
+    web_ui_fragment::Fragment, ComponentAssetStylePreload, InitialStateStrategy,
+    StateProjectionMode, WebUIFragment, WebUIProtocol,
 };
 use webui_state::find_value_by_dotted_path_ref;
 
@@ -58,6 +58,14 @@ use webui_state::find_value_by_dotted_path_ref;
 pub enum HandlerError {
     #[error("Rendering error: {0}")]
     Rendering(String),
+
+    /// Host-supplied state JSON could not be parsed or validated.
+    ///
+    /// This is a caller input error, not a render failure. Bindings map it to
+    /// their own state-error type, so it must stay distinguishable from
+    /// [`HandlerError::Rendering`] without inspecting the message text.
+    #[error("invalid state JSON: {0}")]
+    InvalidState(String),
 
     #[error("Rendering invariant error: {0}")]
     Invariant(String),
@@ -369,6 +377,11 @@ pub(crate) struct ShadowStyleRoot {
 /// Context object for processing WebUI fragments
 pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) protocol: &'protocol WebUIProtocol,
+    /// Build-constant component asset style metadata serialized once when the
+    /// runtime [`Protocol`] is created.
+    pub(crate) component_asset_style_manifest: &'protocol str,
+    /// Deduplicated document-scoped component asset styles for Light DOM.
+    pub(crate) component_asset_style_links: &'protocol str,
     pub(crate) state: &'state Value,
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: HashMap<String, Value>,
@@ -437,6 +450,9 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// twice — without this, state-supplied `bodyStart` HTML would be
     /// duplicated.
     pub(crate) body_start_emitted: bool,
+    /// Tracks whether compiler-owned component asset styles were emitted at
+    /// either the head or body fallback boundary.
+    pub(crate) component_asset_styles_emitted: bool,
     /// Tracks whether the `body_end` hook has already fired in this
     /// render. Defends against malformed protocols emitting the
     /// signal twice — without this, hydration `<script>` blocks and
@@ -536,6 +552,77 @@ fn doctype_prefix_end(raw: &str) -> Option<usize> {
 /// Maximum scope maps retained in the request-local pool. Small: sibling
 /// component roots rarely nest deeply, so the cap keeps retained capacity bounded.
 const SCOPE_POOL_CAP: usize = 8;
+const COMPONENT_ASSET_MANIFEST_ID: &str = "webui-component-assets";
+
+struct ComponentAssetStyleManifest<'a>(&'a [ComponentAssetStylePreload]);
+
+impl Serialize for ComponentAssetStyleManifest<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for entry in self.0 {
+            map.serialize_entry(&entry.root, &entry.style_hrefs)?;
+        }
+        map.end()
+    }
+}
+
+fn serialize_component_asset_style_manifest(
+    preloads: &[ComponentAssetStylePreload],
+) -> std::result::Result<String, serde_json::Error> {
+    if preloads.is_empty() {
+        return Ok(String::new());
+    }
+    let json = serde_json::to_string(&ComponentAssetStyleManifest(preloads))?;
+    if json.contains("</") {
+        Ok(json.replace("</", "<\\/"))
+    } else {
+        Ok(json)
+    }
+}
+
+fn serialize_component_asset_style_links(preloads: &[ComponentAssetStylePreload]) -> String {
+    let href_count = preloads.iter().map(|entry| entry.style_hrefs.len()).sum();
+    let mut seen = HashSet::with_capacity(href_count);
+    let mut links = String::with_capacity(href_count.saturating_mul(48));
+    for entry in preloads {
+        for href in &entry.style_hrefs {
+            if !seen.insert(href.as_str()) {
+                continue;
+            }
+            links.push_str("<link rel=\"stylesheet\" href=\"");
+            push_escaped_html_attribute(&mut links, href);
+            links.push_str("\">");
+        }
+    }
+    links
+}
+
+fn push_escaped_html_attribute(output: &mut String, value: &str) {
+    let mut start = 0;
+    for (index, ch) in value.char_indices() {
+        let escaped = match ch {
+            '&' => Some("&amp;"),
+            '"' => Some("&quot;"),
+            '<' => Some("&lt;"),
+            '>' => Some("&gt;"),
+            _ => None,
+        };
+        let Some(entity) = escaped else {
+            continue;
+        };
+        if start < index {
+            output.push_str(&value[start..index]);
+        }
+        output.push_str(entity);
+        start = index + ch.len_utf8();
+    }
+    if start < value.len() {
+        output.push_str(&value[start..]);
+    }
+}
 
 /// Take a cleared scope map from the pool, or a fresh empty one when the pool is
 /// empty. A fresh `HashMap` does not allocate until its first insert.
@@ -1006,9 +1093,44 @@ fn write_webui_data_block(
         writer.write(nonce)?;
         writer.write("\"")?;
     }
+
     writer.write(">")?;
     write_webui_bootstrap(writer, scratch, bootstrap)?;
     writer.write("</script>\n")
+}
+
+fn write_component_asset_style_manifest(
+    writer: &mut dyn ResponseWriter,
+    manifest: &str,
+    nonce: Option<&str>,
+) -> Result<()> {
+    if manifest.is_empty() {
+        return Ok(());
+    }
+    writer.write("<script type=\"application/json\" id=\"")?;
+    writer.write(COMPONENT_ASSET_MANIFEST_ID)?;
+    writer.write("\"")?;
+    if let Some(nonce) = nonce {
+        writer.write(" nonce=\"")?;
+        writer.write(&crate::html_encode::encode_safe(nonce))?;
+        writer.write("\"")?;
+    }
+    writer.write(">")?;
+    writer.write(manifest)?;
+    writer.write("</script>")
+}
+
+fn write_component_asset_styles(context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()> {
+    if context.component_asset_styles_emitted {
+        return Ok(());
+    }
+    context.component_asset_styles_emitted = true;
+    context.writer.write(context.component_asset_style_links)?;
+    write_component_asset_style_manifest(
+        context.writer,
+        context.component_asset_style_manifest,
+        context.nonce,
+    )
 }
 
 fn write_webui_template_json_map(
@@ -1247,11 +1369,9 @@ impl WebUIHandler {
 
                 // Emit matched <webui-route>
                 context.writer.write("<webui-route")?;
-                if !matched_child.path.is_empty() {
-                    context.writer.write(" path=\"")?;
-                    context.writer.write(&matched_child.path)?;
-                    context.writer.write("\"")?;
-                }
+                context.writer.write(" path=\"")?;
+                context.writer.write(&matched_child.path)?;
+                context.writer.write("\"")?;
                 context.writer.write(" component=\"")?;
                 context.writer.write(comp)?;
                 context.writer.write("\"")?;
@@ -1300,11 +1420,9 @@ impl WebUIHandler {
             let is_matched = best.as_ref().is_some_and(|(bi, _)| *bi == idx);
             if !is_matched && !child.fragment_id.is_empty() {
                 context.writer.write("<webui-route")?;
-                if !child.path.is_empty() {
-                    context.writer.write(" path=\"")?;
-                    context.writer.write(&child.path)?;
-                    context.writer.write("\"")?;
-                }
+                context.writer.write(" path=\"")?;
+                context.writer.write(&child.path)?;
+                context.writer.write("\"")?;
                 context.writer.write(" component=\"")?;
                 context.writer.write(&child.fragment_id)?;
                 context.writer.write("\"")?;
@@ -1704,11 +1822,9 @@ impl WebUIHandler {
             .is_some_and(|(best_key, _)| *best_key == route_frag.fragment_id);
 
         context.writer.write("<webui-route")?;
-        if !route_frag.path.is_empty() {
-            context.writer.write(" path=\"")?;
-            context.writer.write(&route_frag.path)?;
-            context.writer.write("\"")?;
-        }
+        context.writer.write(" path=\"")?;
+        context.writer.write(&route_frag.path)?;
+        context.writer.write("\"")?;
         if !route_frag.fragment_id.is_empty() {
             context.writer.write(" component=\"")?;
             context.writer.write(&route_frag.fragment_id)?;
@@ -1897,7 +2013,8 @@ impl WebUIHandler {
     ///
     /// Uses a resolver closure that checks local variables first, then falls
     /// back to global state — avoiding a full clone of the state tree.
-    /// Returns false if the condition references a missing value.
+    /// Missing identifier operands are falsy before logical operators are applied.
+    /// Missing predicate values make the complete condition false.
     fn evaluate_condition(
         &self,
         condition: &webui_protocol::ConditionExpr,
@@ -2094,6 +2211,8 @@ impl WebUIHandler {
                 }
             }
 
+            write_component_asset_styles(context)?;
+
             // Per-render `head_inject` HTML — image preloads, A/B test
             // markers, etc. supplied by the host via RenderOptions.
             // Emitted at the structural head_end boundary, after the
@@ -2115,6 +2234,7 @@ impl WebUIHandler {
         // by its own dedup flag so a malformed protocol cannot duplicate it.
         if structural_value == "body_start" && !context.body_start_emitted {
             context.body_start_emitted = true;
+            write_component_asset_styles(context)?;
             if let Some(html) = context.state_inject.body_start {
                 context.writer.write(html)?;
             }
@@ -2559,8 +2679,11 @@ impl WebUIHandler {
             doctype_prefix_end(&raw.value).map(|end| (raw.value.as_str(), end))
         })
         .flatten();
+        let component_asset_style_manifest = protocol.component_asset_style_manifest()?;
         let mut context = WebUIProcessContext {
             protocol: document,
+            component_asset_style_manifest,
+            component_asset_style_links: protocol.component_asset_style_links(),
             state,
             writer,
             local_vars: HashMap::new(),
@@ -2579,6 +2702,7 @@ impl WebUIHandler {
             state_inject: StateInject::resolve(state),
             head_end_emitted: false,
             body_start_emitted: false,
+            component_asset_styles_emitted: false,
             component_index: protocol.component_index(),
             style_resource_index: protocol.style_resource_index(),
             style_chunk_index: protocol.protocol().style_chunk_index(),
@@ -2899,6 +3023,36 @@ mod tests {
         );
         assert_eq!(writer_false.get_content(), "Status: End");
         assert!(writer_false.is_ended());
+    }
+
+    #[test]
+    fn missing_identifier_is_falsy_before_negation_in_global_and_loop_scopes() {
+        let source = r#"<if condition="missingTopLevel">top-positive</if><if condition="!missingTopLevel">top-negated</if><for each="item in items"><if condition="item.searchPresentation"><mark>{{item.label}}</mark></if><if condition="!item.searchPresentation"><span>{{item.label}}</span></if></for>"#;
+        let mut parser = HtmlParser::new();
+        parser
+            .parse("index.html", source)
+            .expect("parse missing-path condition fixture");
+        let protocol = WebUIProtocol::new(parser.into_fragment_records());
+        let state = test_json!({
+            "items": [
+                {"label": "Normal"},
+                {"label": "Search", "searchPresentation": true}
+            ]
+        });
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .expect("render missing-path condition fixture");
+
+        assert_eq!(
+            writer.get_content(),
+            "top-negated<span>Normal</span><mark>Search</mark>"
+        );
     }
 
     #[test]
@@ -9268,6 +9422,137 @@ mod tests {
         );
     }
 
+    #[test]
+    fn component_asset_manifest_falls_back_to_body_start() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<body>".to_string()),
+                    structural_fragment("body_start"),
+                    WebUIFragment::raw("<main>Body-only host</main></body>".to_string()),
+                ],
+            },
+        )]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.component_asset_style_preloads = vec![ComponentAssetStylePreload {
+            root: "lazy-panel".to_string(),
+            style_hrefs: vec!["/assets/lazy-panel.css".to_string()],
+        }];
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &Value::Null,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        assert_eq!(
+            writer.get_content(),
+            r#"<body><script type="application/json" id="webui-component-assets">{"lazy-panel":["/assets/lazy-panel.css"]}</script><main>Body-only host</main></body>"#
+        );
+    }
+
+    #[test]
+    fn component_asset_styles_emit_once_when_body_precedes_head() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<body>".to_string()),
+                    structural_fragment("body_start"),
+                    WebUIFragment::raw("</body><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head>".to_string()),
+                ],
+            },
+        )]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.component_asset_style_preloads = vec![ComponentAssetStylePreload {
+            root: "lazy-panel".to_string(),
+            style_hrefs: vec!["/assets/lazy-panel.css".to_string()],
+        }];
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &Value::Null,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        assert_eq!(
+            writer
+                .get_content()
+                .matches(r#"id="webui-component-assets""#)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn light_component_asset_styles_apply_at_head_end() {
+        let fragments = HashMap::from([(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw("</head><body></body></html>".to_string()),
+                ],
+            },
+        )]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for root in ["lazy-panel", "secondary-panel"] {
+            protocol.components.insert(
+                root.to_string(),
+                webui_protocol::ComponentData {
+                    uses_shadow_dom: false,
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.component_asset_style_preloads = vec![
+            ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec![
+                    "/assets/lazy-panel.css".to_string(),
+                    "/assets/shared.css".to_string(),
+                ],
+            },
+            ComponentAssetStylePreload {
+                root: "secondary-panel".to_string(),
+                style_hrefs: vec![
+                    "/assets/secondary-panel.css".to_string(),
+                    "/assets/shared.css".to_string(),
+                ],
+            },
+        ];
+        let mut writer = TestWriter::new();
+
+        handle(
+            &protocol,
+            &Value::Null,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+        let html = writer.get_content();
+        assert_eq!(html.matches(r#"rel="stylesheet""#).count(), 3);
+        assert_eq!(html.matches("/assets/shared.css").count(), 1);
+        assert!(!html.contains(COMPONENT_ASSET_MANIFEST_ID));
+        let links_end = html
+            .find(r#"<link rel="stylesheet" href="/assets/secondary-panel.css">"#)
+            .expect("asset stylesheet must be emitted");
+        let head_end = html.find("</head>").expect("head must close");
+        assert!(links_end < head_end);
+    }
+
     // ── CSP nonce on CSS module importmap ───────────────────────────
     //
     // When `RenderOptions::with_nonce(...)` is set, every inline
@@ -9845,6 +10130,21 @@ mod tests {
         assert_eq!(
             sink.get_content(),
             r#"{"serverOnly":"<\/script><b>","value":42}"#
+        );
+    }
+
+    #[test]
+    fn component_asset_style_manifest_is_serialized_once_and_script_safe() {
+        let preloads = vec![ComponentAssetStylePreload {
+            root: "lazy-panel".to_string(),
+            style_hrefs: vec!["/assets/</script><script>alert(1)</script>.css".to_string()],
+        }];
+
+        let manifest = serialize_component_asset_style_manifest(&preloads).unwrap();
+
+        assert_eq!(
+            manifest,
+            r#"{"lazy-panel":["/assets/<\/script><script>alert(1)<\/script>.css"]}"#
         );
     }
 

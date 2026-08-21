@@ -631,6 +631,7 @@ impl WebUiProtocol {
             component_render_css: String::new(),
             style_closures: HashMap::new(),
             style_chunks: Vec::new(),
+            component_asset_style_preloads: Vec::new(),
         }
     }
 
@@ -647,6 +648,7 @@ impl WebUiProtocol {
             component_render_css: String::new(),
             style_closures: HashMap::new(),
             style_chunks: Vec::new(),
+            component_asset_style_preloads: Vec::new(),
         }
     }
 }
@@ -1325,6 +1327,27 @@ mod tests {
             !bytes.windows(2).any(|w| w == [0x3a, 0x00]),
             "an empty repeated field must not be encoded"
         );
+    }
+
+    #[test]
+    fn test_component_asset_style_preloads_roundtrip_preserves_generated_hrefs() {
+        let mut protocol = sample_protocol();
+        protocol.component_asset_style_preloads = vec![ComponentAssetStylePreload {
+            root: "lazy-panel".to_string(),
+            style_hrefs: vec![
+                "/assets/lazy-panel-e5f6a7b8.css".to_string(),
+                "/assets/shared-detail-10203040.css".to_string(),
+            ],
+        }];
+
+        let bytes = protocol.to_protobuf().expect("encode failed");
+        let decoded = WebUIProtocol::from_protobuf(&bytes).expect("decode failed");
+
+        assert_eq!(
+            decoded.component_asset_style_preloads,
+            protocol.component_asset_style_preloads
+        );
+        assert_eq!(protocol, decoded);
     }
 
     #[test]

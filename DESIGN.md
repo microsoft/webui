@@ -40,6 +40,10 @@ pub struct WebUIProtocol {
     pub css_strategy: CssStrategy,
     /// Full initial state or WebUI per-component projection.
     pub initial_state_strategy: InitialStateStrategy,
+    /// Ordered modulepreload hrefs for critical shared JavaScript chunks.
+    pub module_preloads: Vec<String>,
+    /// Entry fragment boundary names in declaration order.
+    pub streaming_boundaries: HashMap<String, StreamingBoundaryList>,
     /// Deterministic document-level CSS for build-authored component rendering
     /// policies. Empty when no component uses `w-render="lazy"`.
     pub component_render_css: String,
@@ -47,6 +51,9 @@ pub struct WebUIProtocol {
     pub style_closures: HashMap<String, ComponentStyleClosure>,
     /// Bundled stylesheet chunks, empty unless the build enabled `css_bundle`.
     pub style_chunks: Vec<StyleChunk>,
+    /// Deterministic Link stylesheet metadata for component asset roots.
+    /// Empty when the build does not emit component assets.
+    pub component_asset_style_preloads: Vec<ComponentAssetStylePreload>,
 }
 
 pub struct ComponentStyleClosure {
@@ -67,6 +74,12 @@ pub struct StyleChunk {
     pub css_href: String,
     /// Merged component tags, in cascade order.
     pub component_tags: Vec<String>,
+}
+
+/// Link stylesheet metadata for one static component asset root.
+pub struct ComponentAssetStylePreload {
+    pub root: String,
+    pub style_hrefs: Vec<String>,
 }
 
 /// Per-component metadata populated by the active parser plugin at build time.
@@ -319,8 +332,14 @@ optional parameters. Exact matches (most literal segments) take precedence over 
 2. Matched route: emit `<webui-route path="..." component="..." active data-ri="N">` (where N is the route chain index), render component, recurse into children. Attributes emitted on matched routes: `path`, `component`, `active`, `exact`, `pending`, `error`, `keep-alive`, `data-ri`. Routing metadata (`query`, `cache-tags`, `invalidates`) is **not** emitted as DOM attributes — it is included in the SSR `window.__webui` chain JSON instead. `keep-alive` remains on unmatched placeholders so pending UI can be skipped before the destination partial resolves.
 3. Non-matched routes: emit `<webui-route ... style="display:none">`.
 
-For the WebUI framework path, matched route components do **not** receive route
-state as scalar attributes or `data-state`. Initial SSR state comes from the
+For FAST plugins, matched route components expose scalar route state as
+kebab-case HTML attributes. Strings, numbers, and booleans are emitted.
+Complex values should be initialized from the rendered DOM or another
+documented mechanism appropriate to the component. Keep FAST route payloads
+flat when the component reads them via `@attr`.
+
+For the WebUI framework plugin path, matched route components do **not**
+receive route state as scalar attributes. Initial SSR state comes from the
 rendered DOM plus hydration markers, and client-side navigations apply fresh
 state through the partial-response `setState(...)` path.
 
@@ -391,7 +410,7 @@ emit WebUI `templates` or `templateFns`.
 2. `RouterConfig` supports `ssrFresh?: boolean` (default `true`) — when set, the router skips the initial loader replay because SSR state is authoritative. Components can opt into loader replay at startup by declaring `static ssrLoader = true`.
 3. On navigation, fetches a partial response (`Accept: application/x-ndjson, application/json`) from the server. The initial response, including the JSON body or first NDJSON chain chunk, has a 10-second deadline. A router-owned controller cancels a deferred NDJSON reader when a newer navigation starts or the router is destroyed; the deadline itself is cleared after the initial chunk so deferred state is not time-limited.
 4. The server returns the authoritative matched route chain; the client does NOT select route content. Before that chain is available, the client may match the SSR-emitted hidden route placeholders solely to choose the destination's pending/error boundary. This bounded fallback uses the same literal, `:param`, `:param?`, `*splat`, exactness, specificity, and relative-path semantics as server matching. If more than one sibling has the same winning specificity, the client defers to an inherited boundary rather than guessing from SSR DOM order.
-5. Newly received templates are registered and published through `webui:templates-registered`, allowing the framework to define compiler-owned hosts before commit.
+5. Newly received templates are registered and published through `webui:templates-registered`, allowing the framework to define compiler-owned hosts before commit. The event detail includes a synchronous `waitUntil(promise)` collector. Optional runtimes use it to extend template-resource readiness without creating a router-to-framework import; the router awaits collected work before loaders or route commit and stops waiting promptly when the navigation is aborted. Inventory, templates, and head CSS are global retained resources, so CSS injection occurs before the wait and remains available when a stale navigation is abandoned.
 6. Configured authored loaders run. If the destination tag is still unregistered, the router performs document navigation.
 7. Otherwise, the router reconciles old vs new chain — finds first changed level.
 8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
@@ -412,7 +431,7 @@ values into the response. FFI, Node, WASM, and .NET expose only the complete
 - `chain`: matched route chain array. Each entry has `component`, `path`, optional `params`, `exact`, `allowedQuery`, `keepAlive`, `pendingComponent`, `errorComponent`, and `invalidates`
 - `cacheTags`: resolved cache tags from the full route chain (union of all levels, deduplicated). The client tags its cache entry with these values for tag-based invalidation
 
-**NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately for instant navigation commit. Chunk 2 (per-component states) arrives when the backend data is ready. The router reads Chunk 1, commits navigation, then applies Chunk 2 states in the background.
+**NDJSON streaming:** For servers that support it, the partial can be split into two NDJSON lines. Chunk 1 (chain + templates) flushes immediately. The router registers those templates, awaits any `webui:templates-registered` readiness work, commits the navigation, and then reads Chunk 2 (per-component states) in the background. Deferred states are merged into the retained Chunk 1 response before a streaming cache entry is marked complete, including speculative preloads. A superseding navigation aborts the readiness wait and prevents the stale chunk from committing; rejected commits cancel and unlock the unread stream.
 
 **Cache control:** The server can include `cacheControl: { staleTime: number }` in the partial response to override the client's default stale time for this specific route.
 
@@ -525,14 +544,70 @@ compiler-owned and are not revalidated in the browser. A malformed graph
 registers none of its payloads. Resolved root and chunk URLs share global
 in-flight deduplication. Module-style import maps use the page's CSP nonce and
 are deduplicated against `window.__webui.styles`.
+Link-style payloads begin a bounded, destination-matched
+`<link rel="preload" as="style">` before the asset is registered. The preload
+mirrors the stylesheet's CORS, integrity, and referrer-policy attributes so the
+native link reuses its request. `create(tag)` waits for that warmup or an
+explicit native-link fallback decision. Preload bytes are never applied
+directly. The first client mount validates the original link through the
+browser and releases its paint guard as soon as that native CSS is active. It
+then promotes the native CSSOM into a shared constructable sheet; later
+instances can adopt that authorized sheet synchronously.
 
-`defineComponentAssets()` manifest entries provide the stable root asset URL
-plus optional component class and data loaders. Shared chunk filenames do not
-belong in authored manifests; each generated root asset carries its own dynamic
-imports. `preload(tag)` starts the root asset, component class module, and
-optional data request. `create(tag)` waits for asset/module work, mounts without
-blocking on data by default, and can opt into bounded data blocking with
+After final CSS filenames are resolved, the compiler stores one root-sorted
+`ComponentAssetStylePreload` per requested root that has Link-mode CSS. Each
+entry contains the compiler-emitted stylesheet hrefs owned by that root and its
+shared chunks in component discovery order, preserving the Light-DOM cascade.
+Entry-owned prerequisites remain excluded because a component asset protocol is
+built for one entry and the runtime rejects an asset until those entry templates
+are registered.
+
+For Shadow builds, the handler publishes this finite manifest at the document
+`head_end` boundary as inert JSON in `#webui-component-assets`. Body-only host
+protocols that omit a head boundary emit it at `body_start` instead. It is
+available before body interaction, including streaming responses, without
+adding a fetch or creating a client-build dependency on later protocol output.
+The component asset runtime parses and removes the node on first use, shares the
+remaining entries through `window.__webui`, and preserves them when the body
+metadata block is loaded. Light builds instead emit the deduplicated hrefs as
+document-level stylesheet links at the same boundary. Light CSS is global, so
+it must be applied rather than warmed speculatively and is loaded with the
+entry's other document styles.
+Automatic Shadow intent preloading requires document output rendered through
+the WebUI handler or `Protocol`, which emits `#webui-component-assets`. Consuming
+build artifacts without rendering that protocol does not publish a browser
+manifest. The later native-link mount remains guarded, but it cannot begin the
+compiler-owned style request before the root asset reveals its template
+metadata.
+
+Low-level Rust integrations that call `render_component_assets()` directly can
+read the same records from `ComponentAssetGraph.style_preloads`. A full
+`build()` moves them into `WebUIProtocol.component_asset_style_preloads` before
+returning the retained entry protocol.
+
+`defineComponentAssets()` manifest entries keep either the authored stable root
+asset URL or a build-tool-owned importer callback, plus optional component class
+and data loaders. The callback form lets bundlers preserve their normal chunk
+and public-path semantics without reimplementing component asset registration.
+Shared chunk and stylesheet filenames never belong in authored code. Each
+generated root asset carries its own dynamic imports, while Shadow builds carry
+eager Link styles in the head manifest.
+
+For Shadow builds, `preload(tag)` resolves the compiler-owned style metadata
+synchronously, creates temporary style-destination preloads, and then starts
+the authored root asset, component class module, and optional data request.
+Resolved hrefs are deduplicated for the finite generated manifest. Registration
+claims a speculative node when its eventual native link has the
+compiler-default request attributes, so CSS starts beside the lazy root module
+instead of after it. Unclaimed nodes are removed after three seconds. An intent
+that never mounts the component may produce the browser's standard
+unused-preload warning.
+`create(tag)` waits for asset/module work, mounts without blocking on data by
+default, and can opt into bounded data blocking with
 `{ awaitData: true, dataTimeoutMs }`.
+Rejected root asset or authored module work evicts that registry generation, so
+a later `preload(tag)` or `create(tag)` retries instead of reusing a permanently
+rejected promise.
 
 FAST plugin builds can emit the same graph with trusted `<f-template>`
 payloads in `templates`; those assets require a FAST-owned runtime loader.
@@ -675,7 +750,10 @@ Existing JSON values are returned as `Cow::Borrowed` so handler and expression h
 - Special length property support for arrays and strings (e.g., users.length)
 - Numeric array indexes are not resolved by dotted path lookup; loops bind array items by moniker instead
 - Nullable path handling via `Option`
-- Missing paths return `None`; handler text and attribute bindings render empty, and missing condition values evaluate as false
+- Missing paths return `None`; handler text and attribute bindings render empty.
+  A missing identifier in a condition is a falsy operand, so `path` evaluates
+  false and `!path` evaluates true. A missing comparison operand still makes
+  the complete handler condition false.
 
 ## Expression Evaluation (webui-expressions)
 ### Core Function
@@ -688,6 +766,8 @@ pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, Expres
 - **Logical operators:** Support for && (AND) and || (OR) only
 - **Comparison operators:** Support for >, <, ==, !=, >=, <= only
 - **Negation:** Support for ! operator
+- **Missing identifiers:** Treat a missing identifier as a falsy operand before
+  applying negation or logical operators
 - **No mixed operators:**  Cannot mix AND and OR in the same expression level
 - **Operator limit:**  Maximum of 5 logical operators per expression
 - **Error handling:**  Clear, actionable error messages for invalid expressions
@@ -708,7 +788,7 @@ pub enum ExpressionError {
 ### Core API
 ```rust
 pub struct WebUIHandler {
-    plugin: Option<Box<dyn HandlerPlugin>>,
+    plugin_factory: Option<fn() -> Box<dyn HandlerPlugin>>,
 }
 
 /// Options controlling how the handler renders a protocol.
@@ -1009,7 +1089,7 @@ callbacks during rendering and write marker formats for their framework, while s
 completion work such as rendered-component template emission stays in handler core.
 
 ```rust
-pub trait HandlerPlugin {
+pub trait HandlerPlugin: Send {
     fn push_scope(&mut self);
     fn pop_scope(&mut self);
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -1017,6 +1097,7 @@ pub trait HandlerPlugin {
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
+    /// Write framework-specific route component opening-tag attributes.
     fn write_route_component_state(
         &self,
         state: &serde_json::Value,
@@ -1024,6 +1105,21 @@ pub trait HandlerPlugin {
     ) -> Result<()>;
 }
 ```
+
+`HandlerPlugin` deliberately requires `Send`, but not `Sync`. The same erased
+factory type backs buffered rendering and owned host-driven streaming. An owned
+`StreamingSession` parks its live per-render plugin between calls and may move
+to another host thread; Rust cannot safely add `Send` after a factory result has
+been erased to `Box<dyn HandlerPlugin>`. Establishing the guarantee at the
+plugin implementation boundary therefore keeps the unified handler API
+statically sound, even though an ordinary buffered render does not itself move
+threads.
+
+Each render creates a fresh plugin instance from the stored factory, and plugin
+instances are never shared or called concurrently. Sendable single-owner
+interior mutability such as `Cell` and `RefCell` remains valid. Plugins cannot
+retain thread-affine state such as `Rc`; use owned state, `Arc`, or another
+sendable handle instead.
 
 **Hook invocation points:**
 - **Signal**: `on_binding_start` before, `on_binding_end` after (same scope)
@@ -1035,12 +1131,18 @@ pub trait HandlerPlugin {
 
 **Selecting handler plugins**
 
-The CLI and host APIs select handler plugins by name (passed as a string). No plugin
-is loaded by default; output is plain SSR HTML unless a plugin is selected.
+The CLI and host APIs select handler plugins by name (passed as a string). No
+plugin is loaded by default; output is plain SSR HTML unless a plugin is
+selected.
 
-The set of available plugin names is implementation-defined; refer to the CLI and
-crate documentation for the current list. Each plugin emits its own framework-specific
-hydration markers and attributes; WebUI itself does not interpret them.
+The shipped handler names are:
+- `fast` - deprecated alias for `fast-v2`
+- `fast-v2` - deprecated FAST 2 compatibility name
+- `fast-v3` - FAST 3 hydration plugin
+- `webui` - WebUI framework hydration plugin
+
+Each plugin emits its own framework-specific hydration markers and
+attributes; WebUI itself does not interpret them.
 
 **Usage:**
 ```rust
@@ -1266,13 +1368,23 @@ pub enum CssStrategy {
 - **Link** (default): Stores an external `.css` href for each component with CSS.
   Output filenames use `[name]`, `[hash]`, and `[ext]`, default to
   `[name].[ext]`, and may use a public base URL.
+  Static component-asset roots retain their final Link hrefs in
+  `component_asset_style_preloads`. Shadow builds publish this finite metadata
+  so `assets.preload(tag)` can begin stylesheet requests beside the lazy root
+  module; Light builds emit the same hrefs as deduplicated document stylesheets
+  because their CSS is global. Client-created Shadow components use bounded
+  `<link rel="preload" as="style">` requests with matching link attributes, and
+  the first native stylesheet link remains authoritative for CSP, MIME,
+  integrity, CORS, redirects, and service workers.
 - **Style**: Stores compiled CSS bytes for delivery in `<style>` elements. No
   separate CSS files are written.
 - **Module**: Stores the same compiled bytes and a component specifier. SSR
   provides an immediately usable style fallback, while the browser can import
   one shared CSS module and adopt its `CSSStyleSheet` into each target CSS tree.
   No separate CSS files are written. Module loading requires CSS Module Scripts
-  support.
+  support. Partial navigation carries newly needed module import-map entries
+  with the template payload; the router applies the request nonce before
+  appending them to `<head>`.
 
 All three strategies use the ordered component style closures below. CSS
 strategy changes delivery, not component discovery, Shadow ownership, authored
@@ -1397,6 +1509,42 @@ registration creates each nonce-bearing import-map definition once per
 Document before publishing templates. SSR resource markers seed that
 definition set. The SSR style fallback remains until module adoption succeeds;
 failed asynchronous module installs remain retryable.
+
+
+Constructable Link promotion is a progressive enhancement. Unsupported
+browsers, inaccessible native CSSOM, ambiguous, redirected, or
+service-worker-backed native resource timing, top-level `@import`, authored DOM
+`<style>` elements, CSS URL forms that cannot be rewritten safely, dynamically
+bound link attributes, compiled link events, and unsupported link attributes
+retain the original template links. The authored-style check covers staged
+template styles, live styles, and styles appended by `hydratedCallback()`, so a
+link is never promoted across the DOM-style/adopted-style cascade boundary.
+Classes with an authored `hydratedCallback()` take the guarded native path even
+when shared sheets are warm, allowing lifecycle-added styles to be observed
+before promotion. Bound link attributes are reconciled before a CSP-deferred
+append; if a request-affecting value changes, readiness is re-armed for the new
+native request instead of exposing the component.
+Preload CORS, integrity, CSP `style-src`, or timeout failures likewise do not
+authorize CSS and do not weaken the authoritative native path. MIME enforcement
+belongs to the native stylesheet link because preload exposes no response
+headers. The framework
+installs an anonymous first-layer shadow guard with an inline backup before
+appending client content. The guard disables host transitions before forcing
+hidden visibility, then restores both inline properties only after every
+applicable native link fires `load`. If CSP blocks the temporary shadow guard,
+non-style content stays detached and `$ready` remains false. Immediately before
+append, the framework reconciles the staging instance from current reactive
+state; it then transfers structural containers to the live root and invokes
+`hydratedCallback()`. A synchronous disconnect/reconnect keeps that pending
+mount intact. A disconnect that remains detached through microtask teardown
+cancels and discards it so a later reconnect creates a fresh client instance.
+Disabled and non-CSS-type links are preserved but do not block readiness. A
+final link `error` is reported, leaves every native link in place, releases the
+temporary guard, and completes deferred content and hydration. The component
+may render unstyled after a definitive stylesheet failure, but it remains
+visible and usable instead of becoming permanently hidden. Declarative-shadow-root
+SSR hydration, Style mode, Module mode, and Light DOM behavior do not use this
+client-mount gate.
 
 Set at construction time with
 `HtmlParser::with_options(ParserOptions::try_new(css, dom, css_file_name_template, css_public_base, legal_comments))`.
@@ -1939,7 +2087,9 @@ All arrays are optional and omitted from the output when empty to minimize paylo
 
 The closure itself has the shape `(resolve, scope) => boolean`; generated source calls
 `resolve(path, scope)` for identifier lookups and preserves the existing WebUI condition
-semantics for truthiness, comparison, negation, and `&&` / `||` compounds.
+semantics for truthiness, comparison, negation, and `&&` / `||` compounds. A resolver
+miss is a falsy identifier operand on both server and client, so `path` is false
+and `!path` is true even when the path is absent from a loop item.
 
 > **Known divergence.** A bare identifier compiles to `!!resolve(path, scope)`, i.e.
 > host JavaScript truthiness, while the server evaluator in `webui-expressions`
@@ -2314,9 +2464,14 @@ contract rather than introduce a parallel one.
     for fatal cleanup when the malformed stream no longer exposes a complete
     marker range.
 14. **Post-hydration author code runs exactly once.** `hydratedCallback()` runs
-    synchronously after the first successful ordinary hydration, client mount,
-    streamed activation, or dormant static-host wake. Its latch is set before
-    author code runs, so reconnects and exceptions never retry it.
+    synchronously with the first successful ordinary hydration, client mount,
+    streamed activation, or dormant static-host wake. A Link-mode client mount
+    whose CSP blocks the prepaint guard remains resource-deferred until its
+    native styles load. Reactive writes made during that interval are reconciled
+    against the staging instance immediately before detached content is
+    appended; the callback runs only after the live container is installed.
+    Its latch is set before author code runs, so reconnects and exceptions never
+    retry it.
 15. **Updates never rehydrate.** A state update calls the existing reactive
     `setState()` path on each target root. It does not rerun
     `$activateDeferredSSR()`, template wiring, or `hydratedCallback()`. If the
@@ -2734,8 +2889,10 @@ CSS delivery strategy is selected once per build and is not boundary-local.
    bookkeeping deltas are appended with deduplication; component-style
    resources and closures are registered only on first delivery.
 5. Hydrates outer roots before descendants. After each successful first
-   hydration or mount, `hydratedCallback()` runs synchronously exactly once;
-   reconnects and callback exceptions do not retry it.
+   hydration or mount, `hydratedCallback()` runs synchronously with completion
+   exactly once; a CSP-deferred Link mount completes only after its native styles
+   load and detached content is appended. Reconnects and callback exceptions do
+   not retry it.
 6. Removes the payload, sentinel, markers, and `data-ws` identities and releases
    parsed arrays before dispatching diagnostics or completion.
 
@@ -2930,7 +3087,10 @@ terminal record, flushes, and ends the writer.
 The session never awaits and never retains a borrowed state value between calls.
 Rust async hosts await data between calls and serialize commands onto the one
 worker that owns the response and transport. Concurrent calls to one session are
-not allowed.
+not allowed. `StreamingSession` is `Send`, so ownership may move between worker
+threads. It is not required to be `Sync`; a binding that exposes one session
+through a shared host object synchronizes it (for example,
+`Mutex<StreamingSession>`), which is `Send + Sync`.
 
 ### Host-owned streaming sessions
 
@@ -2950,6 +3110,7 @@ Non-Rust hosts therefore drive `StreamingSession`, which owns its state and
 | WASM | `StreamingSession` from `@microsoft/webui-wasm` | `Uint8Array` |
 | C | `webui_streaming_session_*` | `uint8_t *` + length |
 | C# | `Microsoft.WebUI.StreamingSession` | `byte[]` |
+| Python | `StreamingSession` from `microsoft_webui` | `bytes` |
 
 Every host has the same six operations — `boundary`, `writeShell`,
 `writeBoundary`, `update`, `finish`, plus the `boundaryCount` / `isFinished`
@@ -3134,6 +3295,8 @@ Internal source organization:
 packages/webui/src/projection/
   index.ts          — public subpath barrel
   compiler.ts       — TypeScript AST analysis and symbol graph
+  typescript-api.ts — TypeScript 6/7 parser API compatibility layer
+  typescript-version.ts — centralized supported-version policy
   graph.ts          — normalized module graph types and adapter SPI
   manifest.ts       — manifest schema types and serialization
   loader.ts         — manifest loading and filesystem validation
@@ -3157,7 +3320,7 @@ dependencies of `@microsoft/webui`. The supported bundler is esbuild:
 {
   "peerDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3 || 7.0.2"
   },
   "peerDependenciesMeta": {
     "esbuild": { "optional": true },
@@ -3174,6 +3337,19 @@ peer produces an actionable diagnostic (`PROJ-P001`/`PROJ-P002`; see
 
 Both peers are optional so users importing only the root build/render API do
 not receive dependency warnings for compiler tooling they do not use.
+The TypeScript range is intentionally split at the major boundary: WebUI
+supports TypeScript 6 from 6.0.3 onward and the tested TypeScript 7.0.2
+release, while excluding earlier and untested versions. TypeScript 7 is
+pinned because its compiler integration uses unstable subpaths; later
+TypeScript 7 releases are added only after compatibility testing.
+The projection compiler uses the legacy in-process parser exposed by
+TypeScript 6. TypeScript 7 builds use its native synchronous API with an
+in-memory virtual filesystem, preserving the adapter contract that source is
+analyzed from the resolved module graph rather than reread from application
+files. The TypeScript 6 parser is isolated behind `LegacyProjectionParser`,
+its single traversal shim, and a pinned `typescript-6` test-only dependency;
+removing TypeScript 6 support deletes those three surfaces plus the version
+policy branch.
 
 Bundler adapters use local structural interfaces and do **not** statically
 import their bundler packages at module load time. Every supported adapter
@@ -4502,6 +4678,7 @@ webui/
 │   ├── webui-parser/         # HTML/CSS/template parser
 │   ├── webui-press/          # Markdown-driven docs site generator + dev server
 │   ├── webui-protocol/       # Protocol definition
+│   ├── webui-python/         # Python native extension (PyO3 + maturin)
 │   ├── webui-state/          # State management
 │   ├── webui-test-utils/     # Testing utilities
 │   └── webui-wasm/           # WebAssembly bindings
@@ -4540,6 +4717,9 @@ webui-cli ──────► webui (library) ◄────── webui-node
 webui-ffi ──────► webui-handler ◄────── webui-wasm (handler feature)
      └──────────► webui-protocol   ┌──── webui-wasm (parser feature)
                                    └──── webui-wasm (all/default feature)
+
+webui-python ───► webui-handler
+             └──► webui-protocol
 ```
 
 The `webui` library crate is the primary API surface for programmatic use.
@@ -4604,9 +4784,123 @@ both decoded protocol data and reusable indices on dispose.
 
 Native assets are split into `Microsoft.WebUI.Runtime.<rid>` packages for each supported RID. The runtime packages share `dotnet/runtime/README.md`, include NuGet release notes pointing to the GitHub release notes, and carry the matching `runtimes/<rid>/native` asset. The managed package references every runtime package so NuGet restores them transitively; .NET then resolves `webui_ffi` from the matching native asset. `WEBUI_LIB_PATH` remains the override for custom local native builds.
 
-`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, a package license URL with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
+`dotnet/Directory.Build.props` applies NuGet metadata to packable .NET projects: `Authors=Microsoft`, `PackageOwners=Microsoft`, the SPDX `MIT` license expression with `PackageRequireLicenseAcceptance=true`, project and repository URLs, Source Link, release notes links, discoverability tags, the required `© Microsoft Corporation. All rights reserved.` copyright notice, and `.snupkg` symbol package generation. `cargo xtask publish-stage --pack-only` invokes `dotnet pack` on `dotnet/Microsoft.WebUI.sln` and stages both `.nupkg` and `.snupkg` files under `publish/nuget`.
 
-Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. Pushes to `main` trigger the Microsoft-hosted `Web UI - CD Build` pipeline immediately; the pipeline may also be queued manually. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Its `PrepareRelease` stage selects an untagged stable workspace version. Production build and CD runs require the release build source to be `refs/heads/main`; other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. `BuildArtifacts` runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. The assembly job merges those six outputs, restores its Cargo and pnpm caches, and uses `cargo xtask publish-stage --pack-only` for WASM, npm, crate, NuGet, and standalone artifacts. The packer validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Its `SignArtifacts` stage restores the build outputs with Azure artifact tasks and runs ESRP signing. For production runs, `TagRelease` creates or verifies the annotated Git tag, then `PublishRelease` runs independent parallel jobs for the GitHub Release, npm packages, and Rust crates so one publication destination does not block another. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all four folders for 54 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+Azure release automation uses the `.ado/pipelines/azure-pipelines-build.yml` and `.ado/pipelines/azure-pipelines-cd.yml` definitions. `Web UI - CD Build` triggers on `main` and can also be queued manually. Each target leg runs `cargo xtask publish-build`, which produces that target's native binaries and its Python wheel together. Linux is the one split: the natives build on the host with `--native-only`, then the same command runs with `--python-only` inside a digest-pinned `manylinux2014` cross image so the wheel links an old glibc. Export is mode-aware, so the second run adds `publish/python/` without disturbing the natives the first run staged. All six wheels are cross-compiled on Microsoft-hosted x64 pools, the same way this pipeline has always produced the ARM64 npm, NuGet, FFI, and CLI binaries. `Web UI - CD` has no direct CI or pull-request trigger and starts only from a successful `BuildArtifacts` pipeline resource event on `main` or a manual queue. Its `PrepareRelease` stage selects an untagged stable workspace version. Production build and CD runs require the release build source to be `refs/heads/main`; other branches are accepted only in validation mode, which prevents feature-branch commits from becoming public release tags. `BuildArtifacts` runs three OS matrix jobs with two target legs each, providing six parallel native builds; each leg restores target-specific Cargo caches before invoking the single-target `cargo xtask publish-build`. The assembly job merges those six outputs and restores its Cargo, target, and pnpm caches. It preserves reusable Cargo compilation artifacts while removing `target/package` before and after `cargo xtask publish-stage --pack-only`, because that directory contains versioned release archives rather than incremental build inputs. The packer generates WASM, npm, crate, NuGet, Python, and standalone artifacts and validates the exact 9 npm, 15 crate, 8 NuGet package, 2 NuGet symbol package, 6 Python wheel, 1 Python sdist, and 20 standalone asset contract before Azure publishes the unsigned artifact sets and release metadata. Completion of `BuildArtifacts` on `main` triggers the unscheduled 1ES Official `Web UI - CD` pipeline. Its `SignArtifacts` stage restores the build outputs with Azure artifact tasks and runs ESRP signing. For production runs, `TagRelease` creates or verifies the annotated Git tag. `PublishRelease` publishes npm and Rust crates, then creates the GitHub Release after the Rust crates are available. Python wheels and the sdist are attached to the GitHub Release as downloadable assets. WebUI does not publish them to PyPI; that remains an explicit future step once package ownership and signing policy are settled. GitHub Releases include an issue-based changelog covering changes since the last full release instead of a static placeholder description. Validation runs stop after signing and retain unsigned npm tarballs, unsigned crate and Python archives, signed `.nupkg` and `.snupkg` files, and standalone assets for inspection. `standalone_release_assets` contains the six direct-download native binaries, twelve WASM files, `README.md`, and `package.json`. The GitHub Release uploads all five folders for 61 explicit assets, while GitHub supplies the source ZIP and tarball as two additional downloads. Publishing to NuGet.org remains a manual operation using `signed_nuget_packages`. Before NuGet.org publishing, ownership must be limited to the approved Microsoft package owner/co-owner accounts, every Authenticode-signable file in the package must be signed, and each `.nupkg` must be signed with the Microsoft certificate through the approved signing process. The queue-time `validationMode` parameter defaults to `false`; selecting `true` in both pipelines permits an existing-version artifact rebuild while omitting tag creation and external publication. The selected validation mode is carried in release metadata, and CD rejects builds whose mode does not match its own configuration.
+
+### Python Distribution
+
+The `microsoft-webui` package is a first-class runtime binding for
+`webui-handler` and `webui-protocol`, built with `maturin` from a
+`webui-python` crate as a direct **PyO3** native extension — not a `ctypes`
+wrapper around `webui-ffi`. It imports as `microsoft_webui`.
+
+**Runtime-only scope.** Like `webui-ffi`, the Python binding renders compiled
+protocols; it does not expose a build/compile API. Producing `protocol.bin`
+stays the job of `webui build` (the npm or Rust CLI); Python consumes the
+compiled artifact exactly like every other host.
+
+**Ownership.** `Renderer` decodes and indexes protocol bytes once at
+construction and binds an optional named plugin, mirroring the `Protocol` /
+handler pairing every other host owns for the process lifetime:
+
+```python
+from microsoft_webui import Renderer
+
+renderer = Renderer(protocol_bytes, plugin="webui")
+# or:
+renderer = Renderer.from_file("dist/protocol.bin", plugin="webui")
+```
+
+**Concurrency and the GIL.** `Renderer` is thread-safe: the underlying
+`Arc<Protocol>` and bound handler satisfy the same `Send + Sync` contract as
+every other host binding. Every rendering call releases the GIL for the
+duration of the Rust work via `Python::detach`, so concurrent Python
+threads render through one `Renderer` without serializing on CPython's
+interpreter lock. `StreamingSession` is synchronized for memory safety but is
+logically **single-driver** — drive one session from one Python thread at a
+time, exactly like the Node and C# session types (see
+[Host-owned streaming sessions](#host-owned-streaming-sessions)); independent
+sessions on the same `Renderer` may run concurrently. Every session method,
+including the `boundary_count` and `finished` observers, acquires the session
+lock with the GIL already released, so a misuse that contends on one session
+can never stall unrelated Python threads.
+
+**API surface.**
+
+| Python | Description |
+|--------|-------------|
+| `Renderer(protocol_bytes, *, plugin=None)` | Decode and index protocol bytes once, binding an optional named plugin |
+| `Renderer.from_file(path, *, plugin=None)` | Read `path` and construct a `Renderer` from its bytes |
+| `renderer.render(state, *, entry="index.html", request_path="/")` | Render into `bytes`, the canonical fast path |
+| `renderer.render_text(...)` | Render and decode to `str` |
+| `renderer.render_partial(state, *, entry="index.html", request_path="/", inventory="")` | Complete JSON partial-navigation response as `bytes` |
+| `renderer.render_component_templates(tags, *, inventory="")` | On-demand component template payloads as `bytes` |
+| `renderer.tokens` | `tuple[str, ...]` of CSS token names in build order |
+| `renderer.stream_response(*, entry="index.html", request_path="/", nonce=None, head_inject=None, body_inject=None)` | Open a host-driven `StreamingSession` |
+
+`StreamingSession` exposes `boundary(name) -> int`, `boundary_count`,
+`finished`, `write_shell(state) -> bytes`,
+`write_boundary(id, state, mode=BoundaryMode.FINAL) -> bytes`,
+`update(id, state) -> bytes`, and `finish(state) -> bytes`. Every method
+returns `bytes`; WebUI never touches a Python socket or ASGI/WSGI transport,
+so ordering (shell, then boundaries in declaration order, then updates to
+already-committed `updatable` boundaries, then `finish()` last) and
+backpressure are the caller's responsibility, exactly as documented in
+[Host-owned streaming sessions](#host-owned-streaming-sessions).
+
+**State encoding.** `state` accepts a Python `Mapping`, which the facade
+serializes with the standard library `json` module before crossing into
+Rust. Callers that already hold serialized JSON pass `str`, `bytes`,
+`bytearray`, or a `memoryview` directly, bypassing Python-side `json.dumps`.
+Immutable `str` and `bytes` stay backed by their Python objects during detached
+Rust work; mutable/general buffers are copied before the GIL is released.
+
+**Exceptions.** Every failure raises a native subclass of `WebUIError`:
+`ProtocolError` (undecodable protocol bytes), `StateError` (bad caller state
+JSON), `RenderError` (render failure), and `StreamingError` (session ordering
+or lifecycle violation). Type errors and unknown plugin names raise the builtin
+`TypeError` / `ValueError`, and a missing protocol file raises the builtin
+`OSError` subclass, so ordinary Python idioms keep working. The classes are
+defined on `microsoft_webui._native`, which makes them picklable and safe to
+propagate out of `ProcessPoolExecutor` workers.
+
+Bindings must be able to tell a caller input error from a render failure
+**without inspecting message text**. `HandlerError::InvalidState` exists for
+exactly this: `webui-handler` returns it for any host-supplied state JSON it
+cannot parse or validate, and each binding maps that one variant to its own
+state-error type (`StateError` in Python). Reclassifying by matching on error
+prose is not permitted.
+
+**`Plugin` and `BoundaryMode`.** Both are `enum.StrEnum` — available since
+CPython 3.11, the package's minimum interpreter version — so plugin
+identifiers and boundary modes compare equal to their plain string form while
+staying self-documenting and typo-checked by static analysis.
+
+**Head/body injection.** `head_inject`, `body_inject`, and the reserved
+`$webui` state channel's `headEnd` / `bodyStart` / `bodyEnd` members are
+written **verbatim**, exactly like every other host binding. They are
+trusted HTML, not escaped input — never let untrusted request data reach
+these fields. See [Per-Render HTML Injection](#per-render-html-injection) and
+[Reserved State Inject Channel](#reserved-state-inject-channel).
+
+### Python Wheel Matrix
+
+`webui-python` builds against PyO3's `abi3-py311` stable ABI, so one wheel per
+platform serves every CPython 3.11+ interpreter without a per-minor-version
+build matrix. v1 ships six wheels plus one `sdist`:
+
+| Platform | Architectures |
+|----------|---------------|
+| Windows | x86_64, ARM64 |
+| macOS | x86_64, ARM64 (separate wheels, not a `universal2` fat binary) |
+| manylinux | x86_64, ARM64 |
+
+Explicitly out of scope for v1: PyPy, GraalPy, free-threaded (`t`-suffixed)
+CPython builds, `musllinux`, and 32-bit architectures — each would need its
+own ABI-specific build and CI leg. The self-contained `sdist` bundles the
+matching WebUI Rust source closure and lets a Rust toolchain build any of those
+targets, but doing so is unsupported and untested.
 
 ### Documentation Guidelines
 - Using `vitepress` in `docs/`
@@ -4646,7 +4940,7 @@ host, and lets the host apply its own backpressure policy.
 
 | Function | Description |
 |----------|-------------|
-| `webui_streaming_session_create(handler, protocol, entry_id, request_path, nonce, head_inject, body_inject)` | Open a session. The session clones its own references to the handler and protocol, so destruction order between the three is irrelevant. Optional arguments accept `NULL`. |
+| `webui_streaming_session_create(handler, protocol, entry_id, request_path)` | Open a session. It inherits the handler's already-configured nonce (see `webui_handler_set_nonce`); head/body injection travels through the reserved `$webui` state key on `state_json` (see [Reserved State Inject Channel](#reserved-state-inject-channel)), not a create-time argument. The session clones its own references to the handler and protocol, so destruction order between the three is irrelevant. |
 | `webui_streaming_session_destroy(session)` | Destroy a session. `NULL` is a safe no-op. Destroying an unfinished session discards its pending output. |
 | `webui_streaming_session_boundary(session, name, out_id)` | Resolve an authored boundary name to its integer handle once, outside the write loop. Returns `false` and sets an error listing the valid names on an unknown name. |
 | `webui_streaming_session_boundary_count(session)` | Number of boundaries declared by the entry template. |

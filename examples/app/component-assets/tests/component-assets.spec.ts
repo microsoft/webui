@@ -42,6 +42,82 @@ async function loadedTemplateNames(page: Page): Promise<string[]> {
 }
 
 test.describe('static component assets', () => {
+  test('starts generated Link styles before the root asset settles', async ({ page }) => {
+    let cssRequests = 0;
+    let releaseAsset!: () => void;
+    let assetRequested!: () => void;
+    let cssRequested!: () => void;
+    const assetGate = new Promise<void>(resolve => {
+      releaseAsset = resolve;
+    });
+    const assetSeen = new Promise<void>(resolve => {
+      assetRequested = resolve;
+    });
+    const cssSeen = new Promise<void>(resolve => {
+      cssRequested = resolve;
+    });
+    await page.route('**/lazy-panel.webui.js', async route => {
+      assetRequested();
+      await assetGate;
+      await route.continue();
+    });
+    await page.route('**/lazy-panel.css', async route => {
+      cssRequests += 1;
+      cssRequested();
+      await route.continue();
+    });
+
+    await page.goto('/');
+    const button = page.getByRole('button', { name: 'Load lazy panel' });
+    await expect(button).toBeVisible();
+    await button.hover();
+    await Promise.all([assetSeen, cssSeen]);
+    await expect(page.locator('lazy-panel')).toHaveCount(0);
+
+    await button.click();
+    releaseAsset();
+    await expect(page.locator('lazy-panel')).toHaveCount(1);
+    expect(cssRequests).toBe(1);
+  });
+
+  test('waits for Link stylesheet cache warmup before inserting a lazy component', async ({ page }) => {
+    let releaseCss!: () => void;
+    let cssRequested!: () => void;
+    const cssGate = new Promise<void>(resolve => {
+      releaseCss = resolve;
+    });
+    const requestSeen = new Promise<void>(resolve => {
+      cssRequested = resolve;
+    });
+    await page.route('**/lazy-panel.css', async route => {
+      cssRequested();
+      await cssGate;
+      await route.continue();
+    });
+
+    await page.goto('/');
+    await expect(page.getByRole('button', { name: 'Load lazy panel' })).toBeVisible();
+    await page.getByRole('button', { name: 'Load lazy panel' }).click();
+    await requestSeen;
+    await page.evaluate(async () => {
+      await new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+    });
+    await expect(page.locator('lazy-panel')).toHaveCount(0);
+
+    releaseCss();
+    await expect(page.locator('lazy-panel')).toHaveCount(1);
+    await expect(page.locator('lazy-panel').evaluate((panel) => ({
+      adopted: panel.shadowRoot?.adoptedStyleSheets.length ?? 0,
+      disabled:
+        (panel.shadowRoot?.querySelector(
+          'link[rel~="stylesheet"]',
+        ) as HTMLLinkElement | null)?.disabled ?? false,
+      links: panel.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
+    }))).resolves.toEqual({ adopted: 1, disabled: true, links: 1 });
+  });
+
   test('splits and reuses a lazy-only dependency chunk', async ({ page }) => {
     const lazyRequests: LazyResource[] = [];
     page.on('request', (request) => {

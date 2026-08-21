@@ -501,7 +501,8 @@ Generated root and page entries also receive build-time `<link rel="modulepreloa
 | `<webui-press-tab>`         | Tab triggers                                           |
 | `<webui-press-tab-panel>`   | Tab content panels                                     |
 
-Plus shadow components used by the chrome itself: `<docs-search>`, `<docs-theme-toggle>`.
+Plus shadow components used by the chrome itself: `<docs-site-navigation>`,
+`<docs-sidebar-navigation>`, `<docs-search>`, and `<docs-theme-toggle>`.
 
 ---
 
@@ -510,10 +511,17 @@ Plus shadow components used by the chrome itself: `<docs-search>`, `<docs-theme-
 Powered by [comrak](https://github.com/kivikakk/comrak), GitHub-flavored markdown:
 
 - Tables, task lists, autolinks, footnotes, strikethrough
-- Header anchors auto-injected (`<a class="header-anchor" href="#...">#</a>`)
+- Header anchors auto-injected with descriptive accessible labels
 - Relative links resolve from the Markdown source directory and remain valid under `basePath`
 - Fenced code blocks wrapped in `<code-block>` (copy button + dual-theme highlighting)
 - Raw HTML pass-through, including custom elements
+
+The generated shell uses a native `<dialog>` inside `<docs-site-navigation>`,
+native `<details>` disclosures inside `<docs-sidebar-navigation>`, and a
+skip-to-content link. The active documentation branch starts expanded. Normal
+documentation pages use the cross-document fade; navigation into or out of a
+`full` custom page skips that transition so viewport-filling app surfaces and
+their page-specific bundles paint immediately.
 
 ### Syntax highlighting
 

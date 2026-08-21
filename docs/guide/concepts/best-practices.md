@@ -4,7 +4,10 @@ This page covers proven patterns and common pitfalls when building WebUI applica
 
 ## SSR State Completeness
 
-Every binding in your template must have a corresponding key in the server state JSON. The handler resolves bindings by looking up keys - if a key is missing, the binding renders empty or the condition evaluates to false.
+Every binding in your template should have a corresponding key in the server
+state JSON. The handler resolves bindings by looking up keys. A missing text or
+attribute binding renders empty; a missing condition identifier is a falsy
+operand, so a positive branch is hidden and a negated branch is shown.
 
 **The rule:** check every `{{binding}}`, `<if condition>`, and `<for each>` in your template and ensure the server provides the data.
 

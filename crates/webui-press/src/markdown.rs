@@ -361,8 +361,9 @@ pub fn render_markdown(
             }
         };
         let slug = slugify(&plain_text);
+        let anchor_label = html_escape::encode_double_quoted_attribute(&plain_text);
         let html = format!(
-            "<h{level} id=\"{slug}\">{html_text} <a class=\"header-anchor\" href=\"{page_url}#{slug}\">#</a></h{level}>"
+            "<h{level} id=\"{slug}\">{html_text} <a class=\"header-anchor\" href=\"{page_url}#{slug}\" aria-label=\"Link to {anchor_label}\">#</a></h{level}>"
         );
         // Detach children first, then replace value. The heading is a
         // block-level node, so its raw-HTML replacement must be an
@@ -494,6 +495,10 @@ mod tests {
         assert!(
             html.contains(r##"href="/webui/guide/#hello""##),
             "heading anchor should be absolute to the page: {html}"
+        );
+        assert!(
+            html.contains(r##"aria-label="Link to Hello""##),
+            "heading anchor should have a descriptive accessible name: {html}"
         );
         assert!(
             html.contains(r##"<a href="/webui/guide/#hello">below</a>"##),

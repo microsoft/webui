@@ -1,10 +1,10 @@
 <Project>
   <PropertyGroup>
-    <Version>0.0.24</Version>
+    <Version>0.0.25</Version>
     <Authors>Microsoft</Authors>
     <Company>Microsoft</Company>
     <PackageOwners>Microsoft</PackageOwners>
-    <PackageLicenseUrl>https://github.com/microsoft/webui/blob/main/LICENSE</PackageLicenseUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>true</PackageRequireLicenseAcceptance>
     <PackageProjectUrl>https://github.com/microsoft/webui</PackageProjectUrl>
     <RepositoryUrl>https://github.com/microsoft/webui</RepositoryUrl>

@@ -50,7 +50,22 @@ pub struct BootstrapExtensionContext<'a> {
 ///
 /// WebUI does not interpret what plugins write — it just calls the hooks.
 /// Each framework defines its own marker format.
-pub trait HandlerPlugin {
+///
+/// # Threading
+///
+/// Plugins must be [`Send`] because the same handler can create an owned
+/// [`StreamingSession`](crate::StreamingSession). That session parks its live
+/// per-render plugin between calls and may move to another host thread. Rust
+/// cannot safely add `Send` after a factory result has been erased to
+/// `Box<dyn HandlerPlugin>`, so the guarantee is established here.
+///
+/// Plugins do not need to be [`Sync`]. Every render receives a fresh instance,
+/// and WebUI never invokes one instance concurrently. Sendable interior
+/// mutability such as [`Cell`](std::cell::Cell) and
+/// [`RefCell`](std::cell::RefCell) remains supported; thread-affine state such
+/// as [`Rc`](std::rc::Rc) must be replaced with owned data, [`Arc`](std::sync::Arc),
+/// or another sendable handle.
+pub trait HandlerPlugin: Send {
     /// Enter a new scope (component or for-loop item boundary).
     /// Typically resets per-scope counters.
     fn push_scope(&mut self);
@@ -237,4 +252,74 @@ pub(crate) fn emit_component_templates_slice(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::HandlerPlugin;
+    use crate::{ResponseWriter, Result};
+
+    #[derive(Default)]
+    struct SendOnlyPlugin {
+        scope_depth: Cell<usize>,
+    }
+
+    impl HandlerPlugin for SendOnlyPlugin {
+        fn push_scope(&mut self) {
+            self.scope_depth
+                .set(self.scope_depth.get().saturating_add(1));
+        }
+
+        fn pop_scope(&mut self) {
+            self.scope_depth
+                .set(self.scope_depth.get().saturating_sub(1));
+        }
+
+        fn on_binding_start(
+            &mut self,
+            _name: &str,
+            _writer: &mut dyn ResponseWriter,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_binding_end(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_repeat_item_start(
+            &mut self,
+            _index: usize,
+            _writer: &mut dyn ResponseWriter,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_repeat_item_end(
+            &mut self,
+            _index: usize,
+            _writer: &mut dyn ResponseWriter,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn on_element_data(
+            &mut self,
+            _data: &[u8],
+            _writer: &mut dyn ResponseWriter,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn handler_plugin_is_send_but_does_not_require_sync() {
+        fn assert_send<T: Send + ?Sized>() {}
+        fn assert_plugin<T: HandlerPlugin>() {}
+
+        assert_send::<dyn HandlerPlugin>();
+        assert_plugin::<SendOnlyPlugin>();
+    }
 }

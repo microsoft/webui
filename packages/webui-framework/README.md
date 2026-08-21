@@ -241,9 +241,14 @@ development-only and is dead-code-eliminated from production bundles via the
 
 Override the protected `hydratedCallback()` hook for work that requires the
 component's bindings, events, and `w-ref` references to be ready. It runs
-synchronously exactly once after the first successful ordinary SSR hydration,
-client-created mount, lazy activation, deferred streamed activation, or dormant
-static-host wake. Its once-latch is set before author code runs, so a thrown
+exactly once with the first successful ordinary SSR hydration, client-created
+mount, lazy activation, deferred streamed activation, or dormant static-host
+wake. If CSP blocks the temporary Link-mode prepaint guard, a client-created
+mount keeps non-style content detached and delays `$ready` and this callback
+until its native links load and the content is appended. Reactive writes made
+while detached are reconciled immediately before append. A synchronous
+disconnect/reconnect preserves the pending mount; a lasting disconnect cancels
+it. The callback's once-latch is set before author code runs, so a thrown
 callback is not retried on reconnect.
 
 `connectedCallback()` remains a native per-connection lifecycle. On ordinary
@@ -329,14 +334,35 @@ the normal entry bundle first so external prerequisites are registered.
 Current assets require version 3 and an atomically validated
 `componentStyles` catalog; any other version is rejected as unsupported.
 
-Shared chunk filenames are generated and must not be copied into the manifest.
-Each root asset carries its own dynamic imports; `--metafile` is available for
-analysis and build tooling. `preload(tag)` starts template, module, and optional
-data work. Concurrent roots share in-flight chunk imports by resolved URL and
-CSS module styles are deduped. `create(tag)` creates the element after
-template/module work is ready and does not block on optional data by default. Use
-`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component must
-wait briefly for state before mounting.
+The compiler records final Link stylesheet filenames in the protocol. For
+Shadow builds, the handler emits that finite manifest as inert JSON in the
+document head; body-only host protocols emit it at the start of their rendered
+body fragment. Light builds emit the same hrefs as deduplicated document
+stylesheets because their CSS must apply globally.
+Automatic Shadow intent preloading therefore requires HTML rendered through the
+WebUI handler or `Protocol`, which emits `#webui-component-assets`. A shell that
+uses build artifacts without rendering the protocol still mounts safely through
+the native stylesheet guard, but it does not receive the earlier
+compiler-owned style preload.
+Shared chunk and content-hashed stylesheet filenames are generated and must not
+be copied into authored code. Each root asset carries its own dynamic imports;
+`--metafile` remains available for analysis and build tooling.
+
+In Shadow builds, `preload(tag)` reads the compiler-owned style metadata and
+starts Link styles beside the authored root asset, component module, and
+optional data request. Only the stable root asset URL remains in application
+code; shared chunks and content-hashed CSS stay compiler-owned.
+
+Bundler-generated loaders can use `asset: () => import('./settings-dialog.webui.js')`
+instead of a URL. This keeps chunk naming and public-path rewriting inside the
+bundler while preserving the same `preload(tag)` and `create(tag)` lifecycle.
+Concurrent roots share in-flight chunk and stylesheet work. `create(tag)`
+creates the element after template/module work is ready and does not block on
+optional data by default. Use
+`create(tag, { awaitData: true, dataTimeoutMs: 150 })` only when a component
+must wait briefly for state before mounting. A rejected root asset or authored
+module is evicted from the registry so a later `preload(tag)` or `create(tag)`
+retries it.
 
 ### `@observable`
 
@@ -838,15 +864,53 @@ The framework supports three CSS delivery strategies:
 
 | Strategy | How it works |
 |----------|-------------|
-| **Link** | Installs an external stylesheet resource |
-| **Style** | Installs compiled CSS in a `<style>` element with no external request |
-| **Module** | Uses an SSR style fallback, then imports and adopts a shared `CSSStyleSheet` when supported |
+| **Link** | `<link>` tag baked into `meta.h`; the first client-created shadow instance authorizes shared constructable sheets through native loading, then warm instances adopt them before paint |
+| **Style** | `<style>` tag baked into `meta.h` — no external request |
+| **Module** | `<script type="importmap">{"imports":{"tag-name":"data:text/css,..."}}</script>` in the HTML payload registers the CSS as a module under `tag-name`. The framework imports it via `import(tag, { with: { type: 'css' } })` and applies the resulting `CSSStyleSheet` via `adoptedStyleSheets` for shadow DOM isolation |
 
-The compiler publishes resources and cascade-ordered closures. The framework
-installs each resource once per Document or ShadowRoot, including resources
-arriving through partial navigation, streaming, and version-3 component assets.
-Shadow roots are closure cut points. CSS module stylesheets are cached so each
-component instance adopts the same parsed sheet without re-parsing CSS.
+Link promotion is progressive enhancement. Registration performs a bounded
+`<link rel="preload" as="style">` using the stylesheet's CORS, integrity, and
+referrer-policy attributes, so the native stylesheet link can reuse the same
+style-destination request. Preload bytes are never applied directly, and a
+preload cannot inspect response MIME type; the first client instance's native
+link remains authoritative for CSP, MIME, integrity, CORS, redirects, and
+service workers. The framework releases the instance's paint guard as soon as
+every original link loads, before constructing the shared ordered set from
+native CSSOM. It then adopts that set before existing sheets with one assignment
+and shares it with later instances. Promoted links remain disabled in place so
+reconnect hydration retains the compiled element indexes. Classes with an authored
+`hydratedCallback()` still take the guarded native path on warm mounts, allowing
+lifecycle-added `<style>` elements to preserve native cascade order. If
+construction is unsupported, native CSSOM or
+unredirected, non-service-worker timing is unavailable, or `@import`, unsafe URL
+syntax, link attributes, bindings, compiled events, or authored DOM `<style>`
+cascade semantics cannot be preserved, the original links remain. An anonymous
+first-layer shadow guard prevents component CSS from overriding the loading
+gate and cancels host transitions before hiding. When CSP blocks that guard,
+non-style content, `$ready`, and `hydratedCallback()` remain deferred; current
+reactive state is reconciled before append. If that reconciliation changes a
+request-affecting bound link value, the framework waits for the replacement
+native load before append. Disconnecting permanently cancels
+the pending mount, while a synchronous reconnect preserves it. A link error
+is reported, leaves the browser's native links in place, releases the temporary
+guard, and completes deferred hydration. The component may be unstyled after a
+definitive stylesheet failure, but it remains visible and usable. SSR hydration,
+Style, Module, and authored/global Light DOM behavior are unchanged.
+
+### Intent-time Link preloading for component assets
+
+In a Shadow build, call `assets.preload(tag)` from pointer, focus, or other
+intent handling. The framework reads the compiler-owned head manifest, so
+application code never derives or hardcodes content-hashed CSS names. Link
+styles begin before the root asset executes, and later template registration
+reuses the same style-destination request. Repeated intent is deduplicated. An
+intent that never mounts the component may still produce the browser's standard
+unused-preload warning. Light builds load component-asset CSS as document
+stylesheets at the structural head boundary instead.
+
+CSS module stylesheets are cached so each component instance adopts the same
+parsed sheet without re-parsing CSS.  The `meta.sa` field specifies the
+stylesheet specifier for a component.
 
 ---
 

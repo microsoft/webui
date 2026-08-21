@@ -19,7 +19,33 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{OnceLock, RwLock};
-use webui_protocol::{web_ui_fragment::Fragment, WebUIFragmentRoute, WebUIProtocol};
+use webui_protocol::{
+    web_ui_fragment::Fragment, ComponentAssetStylePreload, CssStrategy, WebUIFragmentRoute,
+    WebUIProtocol,
+};
+
+fn partition_component_asset_style_preloads(
+    protocol: &WebUIProtocol,
+    preloads: &[ComponentAssetStylePreload],
+) -> (
+    Vec<ComponentAssetStylePreload>,
+    Vec<ComponentAssetStylePreload>,
+) {
+    let mut shadow = Vec::new();
+    let mut light = Vec::new();
+    for preload in preloads {
+        if protocol
+            .components
+            .get(&preload.root)
+            .is_some_and(|component| !component.uses_shadow_dom)
+        {
+            light.push(preload.clone());
+        } else {
+            shadow.push(preload.clone());
+        }
+    }
+    (shadow, light)
+}
 
 // ── Protocol Index ──────────────────────────────────────────────────────
 
@@ -36,6 +62,8 @@ pub struct Protocol {
     protocol: WebUIProtocol,
     style_metadata_error: Option<String>,
     css_strategy: webui_protocol::CssStrategy,
+    component_asset_style_manifest: std::result::Result<String, String>,
+    component_asset_style_links: String,
     component_index: HashMap<String, u32>,
     style_resource_index: HashMap<String, u32>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
@@ -66,10 +94,26 @@ impl Protocol {
     }
 
     fn new_with_style_metadata(
-        protocol: WebUIProtocol,
+        mut protocol: WebUIProtocol,
         style_metadata_error: Option<String>,
     ) -> Self {
         let css_strategy = protocol.css_strategy();
+        let component_asset_style_preloads =
+            std::mem::take(&mut protocol.component_asset_style_preloads);
+        let (shadow_preloads, light_preloads) =
+            partition_component_asset_style_preloads(&protocol, &component_asset_style_preloads);
+        let component_asset_style_links = if css_strategy == CssStrategy::Link {
+            crate::serialize_component_asset_style_links(&light_preloads)
+        } else {
+            String::new()
+        };
+        let component_asset_style_manifest = if css_strategy == CssStrategy::Link {
+            crate::serialize_component_asset_style_manifest(&shadow_preloads).map_err(|error| {
+                format!("failed to serialize component asset style metadata: {error}")
+            })
+        } else {
+            Ok(String::new())
+        };
         let component_index = build_component_index(&protocol);
         let style_resource_index = build_style_resource_index(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
@@ -93,6 +137,8 @@ impl Protocol {
             protocol,
             style_metadata_error,
             css_strategy,
+            component_asset_style_manifest,
+            component_asset_style_links,
             component_index,
             style_resource_index,
             component_reachability: OnceLock::new(),
@@ -114,6 +160,17 @@ impl Protocol {
 
     pub(crate) fn css_strategy(&self) -> webui_protocol::CssStrategy {
         self.css_strategy
+    }
+
+    pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
+        match &self.component_asset_style_manifest {
+            Ok(manifest) => Ok(manifest),
+            Err(message) => Err(HandlerError::Rendering(message.clone())),
+        }
+    }
+
+    pub(crate) fn component_asset_style_links(&self) -> &str {
+        &self.component_asset_style_links
     }
 
     pub(crate) fn component_index(&self) -> &HashMap<String, u32> {
@@ -1384,7 +1441,7 @@ impl<'de> Visitor<'de> for BorrowedStringVisitor {
 #[cold]
 #[inline(never)]
 fn invalid_state_json(message: &str) -> HandlerError {
-    HandlerError::Rendering(format!("invalid state JSON: {message}"))
+    HandlerError::InvalidState(message.to_string())
 }
 
 #[cold]
@@ -2820,6 +2877,78 @@ mod tests {
     }
 
     #[test]
+    fn protocol_retains_only_serialized_component_asset_styles() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.component_asset_style_preloads =
+            vec![webui_protocol::ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec!["/lazy-panel.css".to_string()],
+            }];
+
+        let prepared = Protocol::new(protocol);
+
+        assert!(prepared
+            .protocol()
+            .component_asset_style_preloads
+            .is_empty());
+        assert_eq!(
+            prepared.component_asset_style_manifest().unwrap(),
+            r#"{"lazy-panel":["/lazy-panel.css"]}"#
+        );
+        assert!(prepared.component_asset_style_links().is_empty());
+    }
+
+    #[test]
+    fn protocol_precomputes_deduplicated_light_component_asset_styles() {
+        let mut protocol = WebUIProtocol::default();
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for root in ["lazy-panel", "secondary-panel"] {
+            protocol.components.insert(
+                root.to_string(),
+                webui_protocol::ComponentData {
+                    uses_shadow_dom: false,
+                    ..Default::default()
+                },
+            );
+        }
+        protocol.component_asset_style_preloads = vec![
+            webui_protocol::ComponentAssetStylePreload {
+                root: "lazy-panel".to_string(),
+                style_hrefs: vec![
+                    "/lazy-panel.css".to_string(),
+                    "/shared.css?theme=a&mode=\"dark\"".to_string(),
+                ],
+            },
+            webui_protocol::ComponentAssetStylePreload {
+                root: "secondary-panel".to_string(),
+                style_hrefs: vec![
+                    "/secondary-panel.css".to_string(),
+                    "/shared.css?theme=a&mode=\"dark\"".to_string(),
+                ],
+            },
+        ];
+
+        let prepared = Protocol::new(protocol);
+
+        assert!(prepared
+            .protocol()
+            .component_asset_style_preloads
+            .is_empty());
+        assert!(prepared
+            .component_asset_style_manifest()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            prepared.component_asset_style_links(),
+            concat!(
+                r#"<link rel="stylesheet" href="/lazy-panel.css">"#,
+                r#"<link rel="stylesheet" href="/shared.css?theme=a&amp;mode=&quot;dark&quot;">"#,
+                r#"<link rel="stylesheet" href="/secondary-panel.css">"#,
+            )
+        );
+    }
+
+    #[test]
     fn protocol_partial_matches_direct_index_path() {
         let mut fragments = HashMap::new();
         fragments.insert(
@@ -3033,6 +3162,10 @@ mod tests {
         let error = prepared
             .render_partial(r#"{"broken":"#, "index.html", "/", "")
             .expect_err("invalid state JSON must fail");
+        assert!(
+            matches!(error, HandlerError::InvalidState(_)),
+            "host bindings classify caller state errors by variant, got {error:?}"
+        );
         assert!(error.to_string().contains("invalid state JSON"));
     }
 
@@ -3053,6 +3186,10 @@ mod tests {
             let error = prepared
                 .render_partial(state, "index.html", "/", "")
                 .expect_err("out-of-range state numbers must fail");
+            assert!(
+                matches!(error, HandlerError::InvalidState(_)),
+                "host bindings classify caller state errors by variant, got {error:?}"
+            );
             assert!(error.to_string().contains("invalid state JSON"));
         }
     }

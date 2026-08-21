@@ -84,7 +84,12 @@ collections are the exception - see the note below the table:
 | `"false"` (string) | ⚠️ **Yes** | Non-empty string is truthy! |
 | `[]` (empty array) | ⚠️ Differs | Use `items.length` instead |
 | `{}` (empty object) | ⚠️ Differs | Test a real field instead |
-| `null` / missing | ❌ No | Missing state key |
+| `null` / missing identifier | ❌ No | Missing state key |
+
+A missing identifier is a falsy operand, not a failure of the complete
+expression. Therefore `<if condition="missingPath">` does not render, while
+`<if condition="!missingPath">` does render. This applies to dotted paths in
+loop scopes, such as `!item.optionalFlag`.
 
 <webui-blockquote appearance="warning" title="Warning" icon="⚠️">
 

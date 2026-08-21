@@ -6,7 +6,7 @@
 .blockquote {
   border-radius: var(--docs-radius-l, 8px);
   padding: var(--docs-space-m, 16px) 20px;
-  border-left: 4px solid var(--bq-accent, var(--docs-color-brand, #4f46e5));
+  border: 1px solid var(--bq-accent, var(--docs-color-brand, #4f46e5));
   background: var(--bq-bg, var(--docs-color-brand-bg, #eef2ff));
 }
 

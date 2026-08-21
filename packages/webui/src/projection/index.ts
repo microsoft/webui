@@ -8,7 +8,7 @@
  * entry so that render/build consumers do not load compiler or adapter code.
  *
  * Peer dependencies required by this subpath:
- *   - `typescript` ^6.0.3  (for TypeScript AST analysis)
+ *   - `typescript` ^6.0.3 || 7.0.2  (for TypeScript AST analysis)
  *   - `esbuild` ^0.28.1    (for the esbuild adapter only; other adapters have
  *                            their own optional peer requirements)
  *
