@@ -1520,6 +1520,7 @@ impl WebUIHandler {
         // so the emitted cascade is identical either way. Bundling is a
         // build-wide decision, so the two never mix within one protocol.
         let unit_count = WebUIProtocol::style_closure_unit_count(closure);
+        let mut emitted_resources = HashSet::with_capacity(unit_count);
 
         for position in 0..unit_count {
             let unit = context
@@ -1531,6 +1532,9 @@ impl WebUIHandler {
                     ))
                 })?;
             let (name, chunk) = (unit.name, unit.chunk);
+            if !emitted_resources.insert(name) {
+                continue;
+            }
             let resource = unit.resource.ok_or_else(|| match chunk {
                 Some(index) => HandlerError::Invariant(format!(
                     "component style closure `{root}` references missing style chunk {index}"

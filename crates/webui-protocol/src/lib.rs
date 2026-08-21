@@ -582,8 +582,10 @@ impl WebUiProtocol {
     ///
     /// This is the single walk shared by every delivery path, so all of them
     /// agree on [`Self::style_chunk_index`]'s definition of "already covered by
-    /// a chunk". `chunk_index` must come from that accessor; pass an empty map
-    /// for an unbundled protocol.
+    /// a chunk". A closure that was not a bundler root uses a chunk only when
+    /// the chunk's complete ordered membership is present; otherwise it falls
+    /// back to the individual component resource. `chunk_index` must come from
+    /// that accessor; pass an empty map for an unbundled protocol.
     ///
     /// Returns `None` only when `position` is out of range. A unit whose
     /// `resource` is `None` names a resource the protocol does not hold, which
@@ -597,13 +599,31 @@ impl WebUiProtocol {
     ) -> Option<StyleClosureUnit<'a>> {
         let chunk = if closure.style_chunks.is_empty() {
             let tag = closure.component_tags.get(position)?.as_str();
-            let Some(index) = chunk_index.get(tag).copied() else {
-                return Some(StyleClosureUnit {
+            let fallback = || {
+                Some(StyleClosureUnit {
                     name: tag,
                     resource: self.component_style_resource(tag),
                     chunk: None,
-                });
+                })
             };
+            let Some(index) = chunk_index.get(tag).copied() else {
+                return fallback();
+            };
+            let Some(members) = self.style_chunk_members(index) else {
+                return fallback();
+            };
+            let Some(member_position) = members.iter().position(|member| member == tag) else {
+                return fallback();
+            };
+            let Some(start) = position.checked_sub(member_position) else {
+                return fallback();
+            };
+            let Some(end) = start.checked_add(members.len()) else {
+                return fallback();
+            };
+            if closure.component_tags.get(start..end) != Some(members) {
+                return fallback();
+            }
             index
         } else {
             *closure.style_chunks.get(position)?

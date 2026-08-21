@@ -377,6 +377,14 @@ export function isComponentStyleMarker(element: Element): boolean {
     (element.localName === 'style' && (strategy === 'style' || strategy === 'module'));
 }
 
+/** Whether an element is any compiler-owned style resource marker. */
+export function isComponentStyleResourceMarker(element: Element): boolean {
+  if (isComponentStyleMarker(element)) return true;
+  return element.localName === 'script' &&
+    element.getAttribute('type') === 'importmap' &&
+    element.getAttribute('data-webui-resource') !== null;
+}
+
 function scanSsrMarkerElements(
   candidates: ArrayLike<Element>,
   catalog: DocumentCatalog,

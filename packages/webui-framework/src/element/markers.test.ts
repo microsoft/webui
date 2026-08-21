@@ -570,6 +570,30 @@ describe('buildSSRIndex', () => {
     assert.strictEqual(index.elements[2], ssrB);
   });
 
+  test('skips a compiler-emitted CSS import map the template never contained', () => {
+    const tplA = el('A');
+    const tplB = el('B');
+    const tpl = el('ROOT', tplA, tplB);
+    const importMap = {
+      nodeType: ELEMENT,
+      tagName: 'SCRIPT',
+      localName: 'script',
+      firstChild: null,
+      nextSibling: null,
+      getAttribute: (name: string) =>
+        name === 'type' ? 'importmap' :
+          name === 'data-webui-resource' ? 'card' : null,
+    } as unknown as TreeNode;
+    const ssrA = el('A');
+    const ssrB = el('B');
+    const ssr = el('ROOT', importMap, ssrA, ssrB);
+
+    const index = build(tpl, ssr);
+
+    assert.strictEqual(index.elements[1], ssrA);
+    assert.strictEqual(index.elements[2], ssrB);
+  });
+
   test('indexes authored elements that use data-webui-resource', () => {
     const tplAuthored = el('DIV');
     const tplButton = el('BUTTON');

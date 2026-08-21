@@ -68,6 +68,16 @@ pub(crate) fn bundle_style_chunks(
     let Some(plan) = plan_chunks(protocol, entry)? else {
         return Ok(Vec::new());
     };
+    for chunk in &plan.chunks {
+        for tag in &chunk.component_tags {
+            let css = css_by_tag
+                .get(tag.as_str())
+                .ok_or_else(|| missing_css(tag))?;
+            if contains_top_level_import(css) {
+                return Err(css_bundle_import(tag));
+            }
+        }
+    }
 
     let emit_files = protocol.css_strategy() == CssStrategy::Link;
     let mut files = Vec::new();
@@ -244,9 +254,10 @@ fn split_incompatible_chunks(
         }
     }
 
+    let mut touched = Vec::with_capacity(chunks.len());
     for root in roots {
         let mut current = usize::MAX;
-        let mut touched = Vec::with_capacity(chunks.len());
+        touched.clear();
         for tag in closure_tags(protocol, root) {
             let Some(component) = index.get(tag.as_str()) else {
                 continue;
@@ -269,7 +280,7 @@ fn split_incompatible_chunks(
             }
             next_member[chunk] += 1;
         }
-        for chunk in touched {
+        for &chunk in &touched {
             seen[chunk] = false;
             next_member[chunk] = 0;
         }
@@ -328,15 +339,15 @@ fn chunk_sequence(
 /// Only closures the runtime installs *as a unit* qualify: the entry document,
 /// every Shadow component (which owns its own `ShadowRoot`), and every route
 /// root (installed at its route host into the inherited tree). A plain Light
-/// component also keeps a closure for independent loading, but it does not own a
-/// CSS tree: its normal ancestor tree installs the chunk before the host
-/// connects. Treating every Light fallback as a consumer would make each
-/// component unique and prevent all merging.
+/// component also keeps a stored closure for independent loading, but it does
+/// not own a CSS tree: its normal ancestor tree installs the covering chunk
+/// before the host connects. Treating every Light fallback as a consumer would
+/// make every component unique and prevent all merging.
 ///
-/// Excluding a closure is always safe — it keeps an empty `style_chunks` and
-/// every consumer falls back to per-component delivery, exactly as an unbundled
-/// build does. Including one that is never installed as a unit is not, so this
-/// stays conservative.
+/// Excluded plain-Light closures keep an empty `style_chunks`; delivery resolves
+/// a chunk only when its complete ordered membership is present in that
+/// closure, otherwise it falls back to per-component resources. This prevents a
+/// partial closure from receiving unrelated bundled CSS.
 ///
 /// The entry comes first because chunks are shaped by whichever closure claims
 /// their members first and the entry is what every request pays for. Remaining
@@ -448,11 +459,128 @@ fn concatenate(
     Ok(bundled)
 }
 
+fn contains_top_level_import(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    let mut index = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut statement_has_token = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' | b'\'' => {
+                statement_has_token = true;
+                index = skip_quoted(source, index);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = skip_block_comment(source, index);
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index = skip_line_comment(source, index);
+            }
+            b'\\' => {
+                statement_has_token = true;
+                index = (index + 2).min(bytes.len());
+            }
+            b'(' => {
+                statement_has_token = true;
+                paren_depth += 1;
+                index += 1;
+            }
+            b')' => {
+                paren_depth = paren_depth.saturating_sub(1);
+                index += 1;
+            }
+            b'[' => {
+                statement_has_token = true;
+                bracket_depth += 1;
+                index += 1;
+            }
+            b']' => {
+                bracket_depth = bracket_depth.saturating_sub(1);
+                index += 1;
+            }
+            b'@' if paren_depth == 0
+                && bracket_depth == 0
+                && !statement_has_token
+                && is_import_at_rule(bytes, index) =>
+            {
+                return true;
+            }
+            b';' | b'{' | b'}' if paren_depth == 0 && bracket_depth == 0 => {
+                statement_has_token = false;
+                index += 1;
+            }
+            byte if byte.is_ascii_whitespace() => index += 1,
+            _ => {
+                statement_has_token = true;
+                index += 1;
+            }
+        }
+    }
+    false
+}
+
+fn is_import_at_rule(bytes: &[u8], start: usize) -> bool {
+    const IMPORT: &[u8] = b"import";
+    let Some(end) = start.checked_add(1 + IMPORT.len()) else {
+        return false;
+    };
+    if end > bytes.len() {
+        return false;
+    }
+    if !bytes[start + 1..end]
+        .iter()
+        .zip(IMPORT)
+        .all(|(actual, expected)| actual.eq_ignore_ascii_case(expected))
+    {
+        return false;
+    }
+    !bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_'))
+}
+
+fn skip_quoted(source: &str, start: usize) -> usize {
+    let bytes = source.as_bytes();
+    let quote = bytes[start];
+    let mut index = start + 1;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' {
+            index = (index + 2).min(bytes.len());
+        } else if bytes[index] == quote {
+            return index + 1;
+        } else {
+            index += 1;
+        }
+    }
+    bytes.len()
+}
+
+fn skip_block_comment(source: &str, start: usize) -> usize {
+    source[start + 2..]
+        .find("*/")
+        .map_or(source.len(), |offset| start + offset + 4)
+}
+
+fn skip_line_comment(source: &str, start: usize) -> usize {
+    source[start + 2..]
+        .find('\n')
+        .map_or(source.len(), |offset| start + offset + 2)
+}
+
 #[cold]
 #[inline(never)]
 fn missing_css(tag: &str) -> WebUIError {
     WebUIError::InvalidBuildOptions(format!(
         "CSS bundling found no compiled stylesheet for <{tag}>, but its style closure requires one"
+    ))
+}
+
+#[cold]
+#[inline(never)]
+fn css_bundle_import(tag: &str) -> WebUIError {
+    WebUIError::InvalidBuildOptions(format!(
+        "CSS bundling cannot include @import in <{tag}>; move the import to entry CSS, inline the imported rules, or disable --css-bundle"
     ))
 }
 
@@ -625,6 +753,72 @@ mod tests {
     }
 
     #[test]
+    fn independently_loaded_light_closure_does_not_receive_partial_chunk() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.set_css_strategy(CssStrategy::Style);
+        protocol.style_closures.insert(
+            "index.html".to_string(),
+            ComponentStyleClosure {
+                component_tags: ["a-card", "b-card"]
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                style_chunks: Vec::new(),
+            },
+        );
+        protocol.style_closures.insert(
+            "lazy-panel".to_string(),
+            ComponentStyleClosure {
+                component_tags: vec!["a-card".to_string()],
+                style_chunks: Vec::new(),
+            },
+        );
+        for tag in ["a-card", "b-card"] {
+            protocol.components.insert(
+                tag.to_string(),
+                ComponentData {
+                    css: format!(".{tag}{{}}"),
+                    ..Default::default()
+                },
+            );
+        }
+        let css = HashMap::from([("a-card", ".a-card{}"), ("b-card", ".b-card{}")]);
+
+        bundle_style_chunks(
+            &mut protocol,
+            "index.html",
+            &css,
+            &CssLinkOptions::default(),
+        )
+        .expect("bundle");
+
+        let chunks: Vec<Vec<String>> = protocol
+            .style_chunks
+            .iter()
+            .map(|chunk| chunk.component_tags.clone())
+            .collect();
+        assert_eq!(
+            chunks,
+            vec![vec!["a-card".to_string(), "b-card".to_string()]]
+        );
+        assert_eq!(
+            protocol.style_closure_chunks("lazy-panel"),
+            Some([].as_slice())
+        );
+        let chunk_index = protocol.style_chunk_index();
+        let closure = protocol.style_closures.get("lazy-panel").unwrap();
+        let unit = protocol
+            .style_closure_unit(closure, &chunk_index, 0)
+            .expect("component closure unit");
+        assert_eq!(unit.name, "a-card");
+        assert_eq!(unit.chunk, None);
+        assert_eq!(
+            protocol.style_chunk_members(0),
+            Some(["a-card".to_string(), "b-card".to_string()].as_slice())
+        );
+    }
+
+    #[test]
     fn preserves_cascade_order_when_a_shared_run_is_interleaved() {
         // `index.html` orders the shared pair adjacently; `about-page` splits
         // them around a local component, so the pair must not merge.
@@ -689,6 +883,37 @@ mod tests {
             protocol.style_chunk_resource(0),
             Some(("_chunk-page-header-2", "_chunk-page-header-2.css"))
         );
+    }
+
+    #[test]
+    fn rejects_top_level_imports_when_bundling() {
+        let mut protocol = protocol_with(
+            &[("index.html", &["page-header", "page-body"])],
+            CssStrategy::Style,
+        );
+        protocol.components.get_mut("page-header").unwrap().css =
+            "@import \"base.css\"; .header{}".to_string();
+        let css = HashMap::from([
+            ("page-header", "@import \"base.css\"; .header{}"),
+            ("page-body", ".body{}"),
+        ]);
+
+        let error = bundle_style_chunks(
+            &mut protocol,
+            "index.html",
+            &css,
+            &CssLinkOptions::default(),
+        )
+        .expect_err("bundled @import must fail");
+        assert!(error.to_string().contains("disable --css-bundle"));
+    }
+
+    #[test]
+    fn import_detection_ignores_values_and_comments() {
+        assert!(!contains_top_level_import(
+            ".card{--url:@import;content:\"@import\"}/* @import \"x\" */"
+        ));
+        assert!(contains_top_level_import("@IMPORT \"base.css\";"));
     }
 
     #[test]
