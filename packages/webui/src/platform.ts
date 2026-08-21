@@ -12,7 +12,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const PLATFORMS: Record<string, string> = {
   "darwin-arm64": "@microsoft/webui-darwin-arm64",
-  "darwin-x64": "@microsoft/webui-darwin-x64",
   "linux-x64": "@microsoft/webui-linux-x64",
   "linux-arm64": "@microsoft/webui-linux-arm64",
   "win32-x64": "@microsoft/webui-win32-x64",

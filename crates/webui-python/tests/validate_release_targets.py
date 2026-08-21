@@ -52,9 +52,9 @@ def _contract_tags() -> set[str]:
 
     tags = CONTRACT_TAG.findall(source)
     unique = set(tags)
-    if len(unique) != 6:
+    if len(unique) != 5:
         raise ValueError(
-            f"{CONTRACT_SOURCE}: expected 6 unique python_platform_tag values, "
+            f"{CONTRACT_SOURCE}: expected 5 unique python_platform_tag values, "
             f"found {sorted(unique)}"
         )
     return unique

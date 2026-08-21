@@ -1,7 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Local macOS Windows artifact builds through cargo-xwin.
+//! Local Windows artifact builds through cargo-xwin, for developers on
+//! macOS or Linux who want to reproduce a Windows MSVC release leg without
+//! CI. `publish-build` shares this module's cargo-xwin preflight checks
+//! (`ensure_cargo_xwin`, `ensure_llvm_tools`) when it selects the same
+//! `cargo xwin` backend for a Linux host.
 
 use crate::util::which_exists;
 use std::fmt::Write;
@@ -12,11 +16,6 @@ use std::process::{Command, ExitCode};
 const CARGO_XWIN_VERSION: &str = "0.23.0";
 const PROFILE: &str = "release";
 const XWIN_CACHE_DIR: &str = "target/xwin-cache";
-const NATIVE_PACKAGES: &[&str] = &[
-    "microsoft-webui-cli",
-    "microsoft-webui-ffi",
-    "microsoft-webui-node",
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct WindowsTarget {
@@ -69,7 +68,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     };
 
     let root = std::env::current_dir().map_err(|e| format!("failed to read current dir: {e}"))?;
-    ensure_macos_host()?;
+    ensure_supported_host()?;
     ensure_cargo_xwin()?;
     ensure_llvm_tools()?;
     ensure_rustup_targets(&targets)?;
@@ -175,27 +174,33 @@ fn find_target(value: &str) -> Option<&'static WindowsTarget> {
 fn print_usage() {
     eprintln!(
         "Usage: cargo xtask build-windows-local [--target all|x64|arm64|<triple>]\n\n\
-         Builds and stages Windows MSVC artifacts locally on macOS using cargo-xwin.\n\
+         Builds and stages Windows MSVC artifacts locally on macOS or Linux using cargo-xwin.\n\
          Defaults to both x86_64-pc-windows-msvc and aarch64-pc-windows-msvc."
     );
 }
 
-fn ensure_macos_host() -> Result<(), String> {
-    if cfg!(target_os = "macos") {
+fn ensure_supported_host() -> Result<(), String> {
+    if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
         return Ok(());
     }
 
-    Err("build-windows-local is intended for local macOS use; CI and release workflows are unchanged".to_string())
+    Err("build-windows-local is intended for local macOS or Linux use only".to_string())
 }
 
-fn ensure_cargo_xwin() -> Result<(), String> {
+/// Verify the pinned `cargo-xwin` is on PATH.
+///
+/// Shared with `publish-build`'s `CargoXwin` backend (see
+/// `publish::preflight_backend`), so a Linux host cross-compiling Windows
+/// MSVC artifacts gets the same actionable version check as this local
+/// command instead of a duplicated one.
+pub(crate) fn ensure_cargo_xwin() -> Result<(), String> {
     match installed_cargo_xwin_version()? {
         Some(found) if found == CARGO_XWIN_VERSION => Ok(()),
         Some(found) => Err(format!(
-            "cargo-xwin {CARGO_XWIN_VERSION} is required, found {found}.\n  help: install the pinned version with: cargo install cargo-xwin --version {CARGO_XWIN_VERSION}"
+            "cargo-xwin {CARGO_XWIN_VERSION} is required, found {found}.\n  help: install the pinned version with: cargo install cargo-xwin --version {CARGO_XWIN_VERSION} --locked"
         )),
         None => Err(format!(
-            "cargo-xwin {CARGO_XWIN_VERSION} is required but was not found on PATH.\n  help: install it with: cargo install cargo-xwin --version {CARGO_XWIN_VERSION}"
+            "cargo-xwin {CARGO_XWIN_VERSION} is required but was not found on PATH.\n  help: install it with: cargo install cargo-xwin --version {CARGO_XWIN_VERSION} --locked"
         )),
     }
 }
@@ -266,11 +271,15 @@ fn missing_targets_message(missing: &[&str]) -> String {
     message
 }
 
-fn ensure_llvm_tools() -> Result<(), String> {
+/// Verify `clang-cl`, `lld-link`, and `llvm-lib` are on PATH.
+///
+/// Shared with `publish-build`'s `CargoXwin` backend; see `ensure_cargo_xwin`.
+pub(crate) fn ensure_llvm_tools() -> Result<(), String> {
     let has_clang_cl = which_exists("clang-cl");
     let has_lld = which_exists("lld-link") || which_exists("ld.lld") || which_exists("lld");
+    let has_llvm_lib = which_exists("llvm-lib");
 
-    if has_clang_cl && has_lld {
+    if has_clang_cl && has_lld && has_llvm_lib {
         return Ok(());
     }
 
@@ -278,7 +287,7 @@ fn ensure_llvm_tools() -> Result<(), String> {
 }
 
 fn llvm_tools_help() -> &'static str {
-    "clang-cl and LLD are required for cargo-xwin. On macOS: brew install llvm lld, then ensure both Homebrew bin directories are on PATH"
+    "clang-cl, lld-link, and llvm-lib are required for cargo-xwin. On macOS: brew install llvm lld; on Linux: install clang, lld, and llvm from your package manager, then ensure clang-cl, lld-link, and llvm-lib are on PATH"
 }
 
 fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result<(), String> {
@@ -288,11 +297,19 @@ fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result
         console::style(target.triple).bold(),
     );
 
-    let args = cargo_xwin_build_args(target);
-    let mut command = Command::new("cargo-xwin");
-    command.args(&args);
+    let args = crate::publish::native_build_args(
+        target.triple,
+        PROFILE,
+        crate::publish::Backend::CargoXwin,
+    )
+    .map_err(|e| {
+        format!(
+            "failed to assemble cargo-xwin build args for {}: {e}",
+            target.triple
+        )
+    })?;
+    let mut command = crate::util::build_command("cargo", &args);
     command.current_dir(root);
-    command.env("CARGO_INCREMENTAL", "0");
     command.env("XWIN_CACHE_DIR", cache_dir);
 
     match command.status() {
@@ -306,19 +323,6 @@ fn build_target(root: &Path, target: &WindowsTarget, cache_dir: &Path) -> Result
             target.triple
         )),
     }
-}
-
-fn cargo_xwin_build_args(target: &WindowsTarget) -> Vec<String> {
-    let mut args = Vec::with_capacity(4 + (NATIVE_PACKAGES.len() * 2));
-    args.push("build".to_string());
-    args.push("--release".to_string());
-    args.push("--target".to_string());
-    args.push(target.triple.to_string());
-    for package in NATIVE_PACKAGES {
-        args.push("-p".to_string());
-        args.push((*package).to_string());
-    }
-    args
 }
 
 fn validate_staged_artifacts(root: &Path, targets: &[&WindowsTarget]) -> Result<(), String> {
@@ -440,6 +444,17 @@ mod tests {
     }
 
     #[test]
+    fn ensure_supported_host_accepts_macos_and_linux_only() {
+        let result = ensure_supported_host();
+        if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+            assert!(result.is_ok());
+        } else {
+            let error = result.expect_err("unsupported hosts should fail");
+            assert!(error.contains("macOS or Linux"));
+        }
+    }
+
+    #[test]
     fn missing_targets_message_includes_install_command() {
         let message =
             missing_targets_message(&["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]);
@@ -453,10 +468,12 @@ mod tests {
     }
 
     #[test]
-    fn llvm_tools_help_mentions_clang_cl() {
+    fn llvm_tools_help_mentions_required_tools() {
         let message = llvm_tools_help();
 
         assert!(message.contains("clang-cl"));
+        assert!(message.contains("lld-link"));
+        assert!(message.contains("llvm-lib"));
         assert!(message.contains("brew install llvm lld"));
     }
 
@@ -467,11 +484,19 @@ mod tests {
             None => panic!("x64 target should exist"),
         };
 
-        let args = cargo_xwin_build_args(target);
+        // build_target shares its argument construction with publish-build's
+        // CargoXwin backend; assert on that shared function directly.
+        let args = crate::publish::native_build_args(
+            target.triple,
+            PROFILE,
+            crate::publish::Backend::CargoXwin,
+        )
+        .expect("cargo-xwin build args should be assembled for x64");
 
         assert_eq!(
             args,
             vec![
+                "xwin",
                 "build",
                 "--release",
                 "--target",

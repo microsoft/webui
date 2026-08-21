@@ -20,7 +20,6 @@ Reference a runtime package directly only when you are manually assembling nativ
 | Windows ARM64 | `Microsoft.WebUI.Runtime.win-arm64` |
 | Linux x64 | `Microsoft.WebUI.Runtime.linux-x64` |
 | Linux ARM64 | `Microsoft.WebUI.Runtime.linux-arm64` |
-| macOS x64 | `Microsoft.WebUI.Runtime.osx-x64` |
 | macOS ARM64 | `Microsoft.WebUI.Runtime.osx-arm64` |
 
 ## Documentation

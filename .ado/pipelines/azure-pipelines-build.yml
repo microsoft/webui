@@ -112,23 +112,64 @@ stages:
     sourceDateEpoch: $[ stageDependencies.PrepareRelease.SelectRelease.outputs['release.sourceDateEpoch'] ]
     CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
+    # Pinned cross-compilation toolchain versions. All five target legs build
+    # on Linux; Windows and macOS legs cross-compile instead of running on
+    # native hosted pools, so these versions gate reproducibility for them.
+    # Bump deliberately, and update the matching `toolchainIdentity` cache
+    # label below alongside any version bump so stale caches are dropped.
+    cargoXwinVersion: '0.23.0'
+    llvmAptVersion: '18'
+    cargoZigbuildVersion: '0.23.0'
+    zigVersion: '0.13.0'
+    # Official SHA-256 of https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz.
+    # Update this alongside zigVersion if the pin is ever bumped.
+    zigSha256: 'd45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea'
+    # Name of the Azure DevOps Library secure file holding the Apple SDK used
+    # by macOS legs. The file itself is uploaded out-of-band by release
+    # engineering from a legally obtained Xcode/Apple SDK distribution; it is
+    # never embedded in source control.
+    appleSdkSecureFileName: 'WebUI-MacOSX-SDK.tar.xz'
+    # The Apple SDK archive's expected SHA-256 is intentionally NOT a pipeline
+    # variable here: it must never be committed as a placeholder. It comes
+    # from the required `WEBUI_APPLE_SDK_SHA256` Azure Pipelines/Library
+    # variable (set in the pipeline's variable group), validated for format
+    # and folded into the Cargo cache identity below so a rotated SDK busts
+    # stale macOS caches instead of silently reusing them.
   jobs:
-  - job: BuildLinuxAssets
-    displayName: Build Linux release asset
+  - job: BuildReleaseAssets
+    displayName: Build release asset
     strategy:
       matrix:
         LinuxX64:
           targetTriple: x86_64-unknown-linux-gnu
           artifactName: stage-linux-x64
+          backend: linux
           installArm64Linker: 'false'
           manylinuxCrossImage: messense/manylinux2014-cross:x86_64@sha256:13670ccc63c35e072661938181c046243c01d7bca7976b3914177fb9b162998d
-          pythonNativeTest: 'true'
+          toolchainIdentity: manylinux2014-x86_64-13670ccc
         LinuxArm64:
           targetTriple: aarch64-unknown-linux-gnu
           artifactName: stage-linux-arm64
+          backend: linux
           installArm64Linker: 'true'
           manylinuxCrossImage: messense/manylinux2014-cross:aarch64@sha256:32c92568ebee8db53e0598c21bcd06a6dd1649d45d507646a8a49313c50325f8
-          pythonNativeTest: 'false'
+          toolchainIdentity: manylinux2014-aarch64-32c92568
+        WindowsX64:
+          targetTriple: x86_64-pc-windows-msvc
+          artifactName: stage-windows-x64
+          backend: windows
+          toolchainIdentity: xwin-0.23.0-llvm-18
+        WindowsArm64:
+          targetTriple: aarch64-pc-windows-msvc
+          artifactName: stage-windows-arm64
+          backend: windows
+          toolchainIdentity: xwin-0.23.0-llvm-18
+        MacOSArm64:
+          targetTriple: aarch64-apple-darwin
+          artifactName: stage-macos-arm64
+          backend: macos
+          macosDeploymentTarget: '11.0'
+          toolchainIdentity: zigbuild-0.23.0-zig-0.13.0-sdk-11.0
     pool:
       vmImage: ubuntu-latest
     steps:
@@ -138,23 +179,126 @@ stages:
       displayName: Use Python 3.11
       inputs:
         versionSpec: '3.11'
+    - task: Bash@3
+      displayName: Resolve Apple SDK cache identity
+      name: appleSdkCacheIdentity
+      inputs:
+        targetType: inline
+        script: |
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          # Runs for every leg (not just macOS) so the Cargo cache key below
+          # can reference a single variable regardless of backend. Non-macOS
+          # legs never need the Apple SDK, so their cache identity segment is
+          # a fixed constant that never changes and never busts their cache.
+          if [[ "$BACKEND" != "macos" ]]; then
+            echo "##vso[task.setvariable variable=digest;isOutput=true]none"
+            exit 0
+          fi
+
+          : "${WEBUI_APPLE_SDK_SHA256:?WEBUI_APPLE_SDK_SHA256 is required for macOS legs. Set it as an Azure Pipelines/Library variable containing the Apple SDK secure file's SHA-256 digest.}"
+
+          if [[ ! "$WEBUI_APPLE_SDK_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "##vso[task.logissue type=error]WEBUI_APPLE_SDK_SHA256 must be exactly 64 lowercase hex characters."
+            exit 1
+          fi
+
+          # Also feeds the Cargo cache key: rotating the Apple SDK changes
+          # this value, which invalidates every macOS leg's stale cache.
+          echo "##vso[task.setvariable variable=digest;isOutput=true]$WEBUI_APPLE_SDK_SHA256"
+      env:
+        BACKEND: $(backend)
+        WEBUI_APPLE_SDK_SHA256: $(WEBUI_APPLE_SDK_SHA256)
     - task: Cache@2
       displayName: Restore Cargo cache
       inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)" | Cargo.lock'
         restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
+          cargo-home | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)"
+          cargo-home | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)"
         path: $(CARGO_CACHE_HOME)
     - task: Cache@2
       displayName: Restore target cache
       inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
+        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)" | Cargo.lock'
         restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
+          cargo-target | "$(Agent.OS)" | "$(targetTriple)" | "$(backend)" | "$(toolchainIdentity)" | "$(appleSdkCacheIdentity.digest)"
         path: $(Build.SourcesDirectory)/target
+    - task: DownloadSecureFile@1
+      name: appleSdkSecureFile
+      displayName: Download Apple SDK secure file
+      condition: eq(variables['backend'], 'macos')
+      inputs:
+        secureFile: $(appleSdkSecureFileName)
     - task: Bash@3
-      displayName: Build and stage $(targetTriple)
+      displayName: Verify and extract Apple SDK
+      condition: eq(variables['backend'], 'macos')
+      inputs:
+        targetType: inline
+        script: |
+          # Copyright (c) Microsoft Corporation.
+          # Licensed under the MIT license.
+
+          set -euo pipefail
+
+          : "${SECURE_FILE_PATH:?SECURE_FILE_PATH is required}"
+          : "${EXPECTED_SHA256:?EXPECTED_SHA256 is required}"
+          : "${AGENT_TEMP_DIRECTORY:?AGENT_TEMP_DIRECTORY is required}"
+
+          # EXPECTED_SHA256 is the validated WEBUI_APPLE_SDK_SHA256 digest
+          # (format-checked by the "Resolve Apple SDK cache identity" step
+          # above); re-validate here too so this step fails safely even if
+          # invoked on its own.
+          if [[ ! "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "##vso[task.logissue type=error]EXPECTED_SHA256 must be exactly 64 lowercase hex characters."
+            exit 1
+          fi
+
+          actual_sha256=$(sha256sum "$SECURE_FILE_PATH" | awk '{print $1}')
+          if [[ "$actual_sha256" != "$EXPECTED_SHA256" ]]; then
+            echo "##vso[task.logissue type=error]Apple SDK archive SHA-256 mismatch: expected $EXPECTED_SHA256, received $actual_sha256."
+            exit 1
+          fi
+
+          # Extracted only under a fixed path below Agent.TempDirectory: never
+          # cached, never published. The cleanup step always removes this
+          # exact path, even if this step fails partway through, so it never
+          # depends on a variable that only gets set on success.
+          sdk_extract_dir="$AGENT_TEMP_DIRECTORY/apple-sdk"
+          rm -rf "$sdk_extract_dir"
+          mkdir -p "$sdk_extract_dir"
+          tar -xf "$SECURE_FILE_PATH" -C "$sdk_extract_dir"
+
+          mapfile -t sdk_dirs < <(find "$sdk_extract_dir" -maxdepth 2 -type d -name '*.sdk')
+          if [[ ${#sdk_dirs[@]} -ne 1 ]]; then
+            echo "##vso[task.logissue type=error]Expected exactly one *.sdk directory inside the extracted Apple SDK archive, found ${#sdk_dirs[@]}."
+            exit 1
+          fi
+
+          # Resolve symlinks/relative segments and confirm the SDK root did
+          # not escape the fixed extraction directory (e.g. via a symlinked
+          # archive entry), before ever pointing SDKROOT at it.
+          sdk_root=$(realpath "${sdk_dirs[0]}")
+          sdk_extract_dir_resolved=$(realpath "$sdk_extract_dir")
+          case "$sdk_root" in
+            "$sdk_extract_dir_resolved"/*) ;;
+            *)
+              echo "##vso[task.logissue type=error]Resolved Apple SDK path $sdk_root escapes the extraction directory $sdk_extract_dir_resolved."
+              exit 1
+              ;;
+          esac
+
+          echo "##vso[task.setvariable variable=appleSdkRoot]$sdk_root"
+      env:
+        SECURE_FILE_PATH: $(appleSdkSecureFile.secureFilePath)
+        EXPECTED_SHA256: $(appleSdkCacheIdentity.digest)
+        AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
+    - task: Bash@3
+      displayName: Build and stage $(targetTriple) (Linux)
+      condition: eq(variables['backend'], 'linux')
       inputs:
         targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
@@ -190,7 +334,8 @@ stages:
         INSTALL_ARM64_LINKER: $(installArm64Linker)
         TARGET_TRIPLE: $(targetTriple)
     - task: Bash@3
-      displayName: Build Python wheel ($(targetTriple))
+      displayName: Build Python wheel ($(targetTriple)) in manylinux container
+      condition: eq(variables['backend'], 'linux')
       inputs:
         targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
@@ -208,50 +353,9 @@ stages:
         SOURCE_DATE_EPOCH: $(sourceDateEpoch)
         TARGET_TRIPLE: $(targetTriple)
         WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload $(targetTriple) artifact
-      inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
-        artifactName: $(artifactName)
-
-  - job: BuildMacOSAssets
-    displayName: Build macOS release asset
-    strategy:
-      matrix:
-        MacOSArm64:
-          targetTriple: aarch64-apple-darwin
-          artifactName: stage-macos-arm64
-          pythonNativeTest: 'false'
-        MacOSX64:
-          targetTriple: x86_64-apple-darwin
-          artifactName: stage-macos-x64
-          pythonNativeTest: 'true'
-    pool:
-      vmImage: macOS-latest
-    steps:
-    - checkout: self
-      clean: true
-    - task: UsePythonVersion@0
-      displayName: Use Python 3.11
-      inputs:
-        versionSpec: '3.11'
-    - task: Cache@2
-      displayName: Restore Cargo cache
-      inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
     - task: Bash@3
-      displayName: Build and stage $(targetTriple)
+      displayName: Build and stage $(targetTriple) (Windows via cargo-xwin)
+      condition: eq(variables['backend'], 'windows')
       inputs:
         targetType: inline
         workingDirectory: '$(Build.SourcesDirectory)'
@@ -265,138 +369,136 @@ stages:
           : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
           : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
           : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+          : "${CARGO_XWIN_VERSION:?CARGO_XWIN_VERSION is required}"
+          : "${LLVM_APT_VERSION:?LLVM_APT_VERSION is required}"
 
-          if ! command -v protoc >/dev/null 2>&1; then
-            brew install protobuf
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler "clang-${LLVM_APT_VERSION}" "lld-${LLVM_APT_VERSION}" "llvm-${LLVM_APT_VERSION}"
+          sudo ln -sf "/usr/bin/clang-${LLVM_APT_VERSION}" /usr/local/bin/clang-cl
+          sudo ln -sf "/usr/bin/lld-link-${LLVM_APT_VERSION}" /usr/local/bin/lld-link
+          sudo ln -sf "/usr/bin/llvm-lib-${LLVM_APT_VERSION}" /usr/local/bin/llvm-lib
+          export CARGO_HOME="$CARGO_CACHE_HOME"
+          export PATH="$CARGO_HOME/bin:/usr/local/bin:$PATH"
+
+          installed_xwin_version=$(cargo-xwin --version 2>/dev/null || true)
+          if [[ "$installed_xwin_version" != "cargo-xwin ${CARGO_XWIN_VERSION}" ]]; then
+            cargo install cargo-xwin --locked --version "$CARGO_XWIN_VERSION"
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
 
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
+          # publish-build's full (non --native-only) run also builds the
+          # Python wheel through maturin. maturin has no built-in `--xwin`
+          # flag, so `xtask` exports cargo-xwin's own linker/SDK environment
+          # (from `cargo xwin env`) onto the maturin process instead.
+          python3.11 -m pip install --upgrade "maturin==1.14.1"
+
+          # cargo-xwin downloads the Windows SDK/CRT itself once the license is
+          # accepted; XWIN_CACHE_DIR lives under the cached Cargo home so
+          # repeat runs reuse it instead of re-downloading every build.
+          export XWIN_ACCEPT_LICENSE=1
+          export XWIN_CACHE_DIR="$CARGO_CACHE_HOME/xwin-cache"
+          mkdir -p "$XWIN_CACHE_DIR"
+
+          cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
             --profile release \
             --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
       env:
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        CARGO_XWIN_VERSION: $(cargoXwinVersion)
+        LLVM_APT_VERSION: $(llvmAptVersion)
         TARGET_TRIPLE: $(targetTriple)
-    - task: PublishPipelineArtifact@1
-      displayName: Upload $(targetTriple) artifact
-      inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
-        artifactName: $(artifactName)
-
-  - job: BuildWindowsAssets
-    displayName: Build Windows release asset
-    strategy:
-      matrix:
-        WindowsX64:
-          targetTriple: x86_64-pc-windows-msvc
-          artifactName: stage-windows-x64
-          pythonNativeTest: 'true'
-        WindowsArm64:
-          targetTriple: aarch64-pc-windows-msvc
-          artifactName: stage-windows-arm64
-          pythonNativeTest: 'false'
-    pool:
-      vmImage: windows-latest
-    steps:
-    - checkout: self
-      clean: true
-    - task: UsePythonVersion@0
-      displayName: Use Python 3.11
-      inputs:
-        versionSpec: '3.11'
-    - task: Cache@2
-      displayName: Restore Cargo cache
-      inputs:
-        key: 'cargo-home | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-home | "$(Agent.OS)" | "$(targetTriple)"
-          cargo-home | "$(Agent.OS)"
-        path: $(CARGO_CACHE_HOME)
-    - task: Cache@2
-      displayName: Restore target cache
-      inputs:
-        key: 'cargo-target | "$(Agent.OS)" | "$(targetTriple)" | Cargo.lock'
-        restoreKeys: |
-          cargo-target | "$(Agent.OS)" | "$(targetTriple)"
-        path: $(Build.SourcesDirectory)/target
-    - task: PowerShell@2
-      displayName: Build and stage $(targetTriple)
+    - task: Bash@3
+      displayName: Build and stage $(targetTriple) (macOS via cargo-zigbuild)
+      condition: eq(variables['backend'], 'macos')
       inputs:
         targetType: inline
-        pwsh: true
         workingDirectory: '$(Build.SourcesDirectory)'
         script: |
+          #!/usr/bin/env bash
           # Copyright (c) Microsoft Corporation.
           # Licensed under the MIT license.
 
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
+          set -euo pipefail
 
-          if (-not $env:BUILD_ARTIFACT_STAGING_DIRECTORY) {
-              throw 'BUILD_ARTIFACT_STAGING_DIRECTORY is required.'
-          }
-          if (-not $env:TARGET_TRIPLE) {
-              throw 'TARGET_TRIPLE is required.'
-          }
-          if (-not $env:ARTIFACT_NAME) {
-              throw 'ARTIFACT_NAME is required.'
-          }
+          : "${BUILD_ARTIFACT_STAGING_DIRECTORY:?BUILD_ARTIFACT_STAGING_DIRECTORY is required}"
+          : "${TARGET_TRIPLE:?TARGET_TRIPLE is required}"
+          : "${ARTIFACT_NAME:?ARTIFACT_NAME is required}"
+          : "${CARGO_ZIGBUILD_VERSION:?CARGO_ZIGBUILD_VERSION is required}"
+          : "${ZIG_VERSION:?ZIG_VERSION is required}"
+          : "${ZIG_SHA256:?ZIG_SHA256 is required}"
+          : "${MACOSX_DEPLOYMENT_TARGET:?MACOSX_DEPLOYMENT_TARGET is required}"
+          : "${SDKROOT:?SDKROOT is required; the Apple SDK extraction step must run first}"
+          : "${AGENT_TEMP_DIRECTORY:?AGENT_TEMP_DIRECTORY is required}"
 
-          if (-not (Get-Command protoc -ErrorAction SilentlyContinue)) {
-              $version = '29.5'
-              $expectedSha256 = '633d3e555fc97f0a1f55b4adb03256cd94b8059e51e7abbae98ff39e58a9dfa5'
-              $zip = "$env:AGENT_TEMP_DIRECTORY\protoc.zip"
-              $dest = "$env:AGENT_TEMP_DIRECTORY\protoc"
-              Invoke-WebRequest `
-                  -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v$version/protoc-$version-win64.zip" `
-                  -OutFile $zip
-              $actualSha256 = (Get-FileHash -Path $zip -Algorithm SHA256).Hash
-              if (-not $actualSha256.Equals($expectedSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
-                  Remove-Item $zip -Force
-                  throw "protoc archive SHA-256 mismatch: expected $expectedSha256, received $actualSha256."
-              }
-              Expand-Archive -Path $zip -DestinationPath $dest -Force
-              $env:PATH = "$dest\bin;$env:PATH"
-          }
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler xz-utils
 
-          rustup toolchain install 1.93 --profile minimal --target $env:TARGET_TRIPLE
+          zig_dir="$AGENT_TEMP_DIRECTORY/zig-${ZIG_VERSION}"
+          if [[ ! -x "$zig_dir/zig" ]]; then
+            rm -rf "$zig_dir"
+            mkdir -p "$zig_dir"
+            zig_archive="$AGENT_TEMP_DIRECTORY/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+            curl -fsSL -o "$zig_archive" \
+              "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-x86_64-${ZIG_VERSION}.tar.xz"
+            if ! echo "${ZIG_SHA256}  ${zig_archive}" | sha256sum --check --status; then
+              echo "##vso[task.logissue type=error]Zig archive SHA-256 mismatch for ${zig_archive}; expected ${ZIG_SHA256}."
+              exit 1
+            fi
+            tar -xJf "$zig_archive" -C "$zig_dir" --strip-components=1
+            rm -f "$zig_archive"
+          fi
+          export CARGO_HOME="$CARGO_CACHE_HOME"
+          export PATH="$CARGO_HOME/bin:$zig_dir:$PATH"
 
-          $env:CARGO_HOME = $env:CARGO_CACHE_HOME
-          cargo +1.93 xtask publish-build `
-              --target $env:TARGET_TRIPLE `
-              --profile release `
-              --output "$env:BUILD_ARTIFACT_STAGING_DIRECTORY\$env:ARTIFACT_NAME"
+          installed_zigbuild_version=$(cargo-zigbuild --version 2>/dev/null || true)
+          if [[ "$installed_zigbuild_version" != "cargo-zigbuild ${CARGO_ZIGBUILD_VERSION}" ]]; then
+            cargo install cargo-zigbuild --locked --version "$CARGO_ZIGBUILD_VERSION"
+          fi
+          rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+
+          # publish-build's full (non --native-only) run also builds the
+          # Python wheel through maturin, cross-compiled with its --zig flag.
+          python3.11 -m pip install --upgrade "maturin==1.14.1"
+
+          cargo +1.93 xtask publish-build \
+            --target "$TARGET_TRIPLE" \
+            --profile release \
+            --output "$BUILD_ARTIFACT_STAGING_DIRECTORY/$ARTIFACT_NAME"
       env:
         AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
         ARTIFACT_NAME: $(artifactName)
         BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
+        CARGO_ZIGBUILD_VERSION: $(cargoZigbuildVersion)
+        MACOSX_DEPLOYMENT_TARGET: $(macosDeploymentTarget)
+        SDKROOT: $(appleSdkRoot)
         TARGET_TRIPLE: $(targetTriple)
+        ZIG_VERSION: $(zigVersion)
+        ZIG_SHA256: $(zigSha256)
+    - task: Bash@3
+      displayName: Remove Apple SDK from agent
+      condition: and(always(), eq(variables['backend'], 'macos'))
+      inputs:
+        targetType: inline
+        script: |
+          set -euo pipefail
+          # Fixed path, matching the extraction step above exactly: cleanup
+          # must not depend on a variable that is only set after a successful
+          # extraction, so a failed or partial extraction is still removed.
+          rm -rf "${AGENT_TEMP_DIRECTORY}/apple-sdk"
+      env:
+        AGENT_TEMP_DIRECTORY: $(Agent.TempDirectory)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
         targetPath: '$(Build.ArtifactStagingDirectory)/$(artifactName)'
         artifactName: $(artifactName)
 
-  # Microsoft-hosted pools have no ARM64 Linux or Windows vmImage, and
-  # macOS-latest is Intel x64, so the ARM64 wheels built above can only be
-  # cross-compiled on those hosted pools, never genuinely executed there.
-  # Each of the following three jobs is a compile-time template conditional:
-  # if the matching pool parameter is set, it downloads the pre-built wheel
-  # and smoke-tests it on real matching hardware; otherwise it hard-fails
-  # with actionable guidance instead of silently skipping the test or
-  # claiming the wheel was validated when it was not.
-  # The configured self-hosted pool's agent must already have a Python 3.11
-  # interpreter on PATH (as `python3.11` on Linux/macOS, `python` on
-  # Windows) - UsePythonVersion@0 is not used here because its tool cache
-  # is not guaranteed to be provisioned on arbitrary self-hosted agents.
   - job: AssembleRelease
     displayName: Assemble release packages
     dependsOn:
-    - BuildLinuxAssets
-    - BuildMacOSAssets
-    - BuildWindowsAssets
+    - BuildReleaseAssets
     pool:
       vmImage: ubuntu-latest
     steps:
@@ -442,12 +544,6 @@ stages:
         artifactName: stage-macos-arm64
         targetPath: $(Build.SourcesDirectory)
     - task: DownloadPipelineArtifact@2
-      displayName: Download macOS x64 release asset
-      inputs:
-        buildType: current
-        artifactName: stage-macos-x64
-        targetPath: $(Build.SourcesDirectory)
-    - task: DownloadPipelineArtifact@2
       displayName: Download Windows x64 release asset
       inputs:
         buildType: current
@@ -487,7 +583,7 @@ stages:
           corepack enable
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
           # Needed for the `cargo xtask publish-stage --pack-only` sdist step
-          # below; the six pre-built wheels were already downloaded above.
+          # below; the five pre-built wheels were already downloaded above.
           python3.11 -m pip install --upgrade "maturin==1.14.1"
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
@@ -498,7 +594,6 @@ stages:
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_amd64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-win_arm64.whl" \
-            "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_10_12_x86_64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}-cp311-abi3-macosx_11_0_arm64.whl" \
             "publish/python/microsoft_webui-${RELEASE_VERSION}.tar.gz"
       env:

@@ -44,8 +44,8 @@ extends:
     sdl:
       sourceAnalysisPool:
         name: OneESPool
-        image: HostedPoolWindowsImage
-        os: windows
+        image: HostedPoolLinuxImage
+        os: linux
     settings:
       networkIsolationPolicy: Permissive
     stages:

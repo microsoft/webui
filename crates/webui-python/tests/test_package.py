@@ -120,7 +120,7 @@ def test_distribution_has_no_runtime_dependencies() -> None:
 def test_release_target_contract_is_restated_consistently() -> None:
     contract = validate_release_targets._contract_tags()
 
-    assert len(contract) == 6
+    assert len(contract) == 5
     assert validate_release_targets.main() == 0
 
 
