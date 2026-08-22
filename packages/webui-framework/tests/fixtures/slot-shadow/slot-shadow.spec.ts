@@ -48,6 +48,8 @@ test.describe('slot-shadow: SPA partial regression', () => {
         lightDomChildren: el?.children.length,
         // Slot content should be projected
         slotText: el?.textContent?.trim(),
+        projected:
+          el?.querySelector('span:not(.appearance)')?.assignedSlot?.localName,
       };
     });
 
@@ -56,6 +58,14 @@ test.describe('slot-shadow: SPA partial regression', () => {
     // Light DOM children (the icon span and label span) stay in place
     expect(result.lightDomChildren).toBeGreaterThanOrEqual(2);
     expect(result.slotText).toContain('Reply');
+    expect(result.projected).toBe('slot');
+    await expect(page.locator('#preloaded-child .appearance')).toHaveText('primary');
+
+    await page.locator('#preloaded-child').evaluate((element) => {
+      (element as HTMLElement & { appearance: string }).appearance = 'secondary';
+    });
+    await expect(page.locator('#preloaded-child .appearance')).toHaveText('secondary');
+    await expect(page.locator('#preloaded-child')).toContainText('Reply');
   });
 
   test('dynamically spawned child with slot content gets a shadow root', async ({ page }) => {
@@ -81,11 +91,17 @@ test.describe('slot-shadow: SPA partial regression', () => {
         hasShadow: !!child?.shadowRoot,
         shadowHasButton: !!child?.shadowRoot?.querySelector('button.btn'),
         slotText: child?.textContent?.trim(),
+        projected:
+          child?.querySelector('span:not(.appearance)')?.assignedSlot?.localName,
       };
     });
 
     expect(result.hasShadow).toBe(true);
     expect(result.shadowHasButton).toBe(true);
     expect(result.slotText).toContain('Reply');
+    expect(result.projected).toBe('slot');
+    await expect(
+      page.locator('test-slot-parent test-slot-btn .appearance'),
+    ).toHaveText('primary');
   });
 });

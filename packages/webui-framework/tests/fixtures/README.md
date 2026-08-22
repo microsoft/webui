@@ -77,10 +77,11 @@ template metadata is emitted) without rendering it during SSR.
 
 ## Light-DOM fixtures
 
-The pipeline always produces shadow DOM. The `light-dom` fixture uses manual
-template registration (`registerCompiledTemplate`) and hand-written `fixture.html`
-to keep the light-DOM hydration code path tested. Use this pattern for any test
-that specifically targets light-DOM behavior.
+The pipeline defaults to shadow DOM. Set `"dom": "light"` in
+`webui.config.json` for real-pipeline light-DOM fixtures; see
+`fixtures/light-dom-structural/`. Use manual template registration with
+`registerCompiledTemplate` and a hand-written `fixture.html` only when a test
+needs exact metadata or SSR markup; see `fixtures/light-dom/`.
 
 ## Per-fixture build config
 
@@ -90,4 +91,5 @@ Create `webui.config.json` to override build options:
 { "css": "module" }
 ```
 
-Supported keys: `css` (`"link"` | `"style"` | `"module"`).
+Supported keys: `css` (`"link"` | `"style"` | `"module"`) and `dom`
+(`"shadow"` | `"light"`).
