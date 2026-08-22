@@ -174,9 +174,23 @@ impl WebUiFragment {
 
     /// Create a signal inside an HTML raw-text context such as `<style>`.
     ///
-    /// The rendered value follows `raw` escaping semantics but never owns an
-    /// HTML sibling range because comment markers are plain text in raw-text
-    /// elements.
+    /// `raw_text_context` is scoped to **marker ownership only**: it tells the
+    /// handler that comment/text sibling markers cannot be inserted around this
+    /// signal because they would be inert plain text in a raw-text/RCDATA
+    /// element (`<script>`, `<style>`, `<xmp>`, `<title>`, `<textarea>`, ...).
+    /// It does **not** change escaping. The rendered value still follows plain
+    /// `raw` semantics: `raw = false` (`{{value}}`) HTML-encodes the value via
+    /// `encode_safe`, `raw = true` (`{{{value}}}`) writes it verbatim.
+    ///
+    /// This distinction matters because HTML raw-text elements (`<script>`,
+    /// `<style>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`) never decode
+    /// character references, unlike RCDATA elements (`<title>`, `<textarea>`)
+    /// which do. Authors who bind a value that may contain `&`, `<`, `>`, or
+    /// quotes inside a raw-text element must use the raw (`{{{value}}}`) form;
+    /// otherwise the HTML-encoded entities (e.g. `&amp;`) are emitted as literal
+    /// text and are never decoded back by the browser, corrupting the CSS/JS.
+    /// The parser does not currently reject an escaped binding in these
+    /// contexts — this is a known authoring footgun, not a parser bug.
     pub fn raw_text_signal(value: impl Into<String>, raw: bool) -> Self {
         Self {
             fragment: Some(web_ui_fragment::Fragment::Signal(WebUiFragmentSignal {

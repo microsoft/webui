@@ -170,6 +170,17 @@ pub struct WebUIFragmentSignal {
     pub raw_text_context: bool,
 }
 ```
+`raw_text_context` governs marker ownership only; it does not change escaping.
+`raw` keeps its usual meaning (`false` HTML-encodes, `true` writes verbatim) in
+every context, including inside `<script>`/`<style>`/`<xmp>` (HTML raw-text,
+never decodes character references) and `<title>`/`<textarea>` (RCDATA, does
+decode them). An escaped (`{{value}}`) binding inside a raw-text element is
+therefore an authoring footgun: an HTML-encoded value such as `&amp;` is
+emitted as literal text and is never decoded back by the browser, which can
+corrupt CSS/JS. Authors binding values that may contain `&`, `<`, `>`, or
+quotes inside `<script>`/`<style>`/`<xmp>` must use the raw (`{{{value}}}`)
+form. The parser does not currently reject an escaped binding in these
+contexts.
 #### Conditional Fragment
 ```rust
 pub struct WebUIFragmentIf {
@@ -1669,6 +1680,13 @@ trimmed body is exactly one handlebars expression:
 
 Bare handlebars expressions in CSS are raw text. Dynamic CSS fragments must use
 the comment wrapper so the CSS parser can distinguish them from invalid CSS.
+`<style>` is an HTML raw-text element, so the browser never decodes character
+references in it: an escaped (`raw: false`) CSS signal whose value contains
+`&`, `<`, `>`, or quotes is HTML-encoded (e.g. `&amp;`) exactly like any other
+escaped signal, and that encoded text is emitted verbatim into the stylesheet
+rather than decoded back — corrupting the CSS for those values. Prefer
+`/*{{{tokens.light}}}*/` (raw) for CSS custom-property/token values, which are
+expected to be plain CSS syntax rather than pre-escaped text.
 
 ### Design Token Resolution (`webui-tokens`)
 

@@ -1949,6 +1949,17 @@ impl WebUIHandler {
         Ok(())
     }
 
+    /// Process a plain (non-structural) signal by resolving its value and
+    /// writing it to the response, HTML-encoded unless `signal.raw` is set.
+    ///
+    /// `owns_html_range` only controls whether the active plugin emits
+    /// replaceable sibling markers around the value (`on_binding_start/end`);
+    /// it never affects escaping. In particular, `signal.raw_text_context`
+    /// (marker ownership inside `<style>`/`<script>`/etc.) is independent of
+    /// `signal.raw` (escaping): a signal can be marker-free *and* HTML-encoded
+    /// at the same time. See `WebUIFragment::raw_text_signal` for why an
+    /// escaped binding inside an HTML raw-text element is an authoring
+    /// footgun rather than something this function can safely correct.
     #[inline]
     fn process_state_signal(
         &self,
@@ -1972,6 +1983,12 @@ impl WebUIHandler {
 
     /// Write a signal value directly to the writer, avoiding intermediate String allocation.
     /// For HTML-escaped output, writes the Cow from `encode_safe` directly.
+    ///
+    /// `raw` here is purely the authored escaping choice (`{{value}}` vs.
+    /// `{{{value}}}`) and is applied uniformly regardless of surrounding HTML
+    /// context: it does not know whether it is writing into a raw-text
+    /// element (`<script>`, `<style>`, `<xmp>`, which never decode character
+    /// references) or an RCDATA element (`<title>`, `<textarea>`, which do).
     fn write_signal_value(
         &self,
         value: &Value,
