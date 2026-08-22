@@ -5,7 +5,14 @@
   <title>Light DOM Hydration Fixture</title>
 </head>
 <body>
-  <test-light-dom><span class="greeting">Hello</span> <span class="name">World</span>!</test-light-dom>
+  <test-light-dom><span
+      class="greeting"
+    >Hello</span> <span
+      class="name"
+    >World</span>!</test-light-dom>
+  <test-light-dom-comment>server<!--authored--><span
+      class="tail"
+    >tail</span></test-light-dom-comment>
   <script src="/dist/light-dom/element.js"></script>
 </body>
 </html>

@@ -28,9 +28,9 @@
  * as the runtime condition anchor.
  *
  * **Marker removal is deferred** until after all path-based resolution
- * (`buildSSRIndex`, `$findSSRText`, `$finalize`) is complete.  This is
- * critical because both use marker pairs to skip structural
- * block content when counting element/text ordinals — removing a closing
+ * (`buildSSRIndex`, text-slot resolution, `$finalize`) is complete.  This is
+ * critical because marker-aware resolution uses marker pairs to skip structural
+ * block content — removing a closing
  * marker mid-hydration would break later resolution calls.
  *
  * ## Comment anchors (client-created)
@@ -55,6 +55,7 @@ import type {
   CompiledAttrPart,
   CompiledCondition,
   TemplateNodeIndex,
+  TemplateSlot,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
@@ -77,6 +78,7 @@ import {
   collectTemplateElements,
   MARKER_COND_START,
   MARKER_COND_END,
+  type SSRIndex,
 } from './element/markers.js';
 import {
   injectModuleStyle,
@@ -144,6 +146,9 @@ const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
  *  Avoids re-counting siblings on every text-slot resolution. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
+/** Encoded next structural marker per text slot, built once per template. */
+const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, Int32Array>();
+const NO_TEXT_MARKER_BOUNDARIES = new Int32Array(0);
 
 /**
  * Pre-order element table for a parsed template, keyed by its root.
@@ -168,14 +173,56 @@ function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
   map = new Map();
   let elemOrd = 0;
   let textOrd = 0;
+  let commentOrd = 0;
   const children = tplNode.childNodes;
   for (let k = 0; k < children.length; k++) {
     const type = children[k].nodeType;
     if (type === 1) { map.set(k, [1, elemOrd]); elemOrd++; }
     else if (type === 3) { map.set(k, [3, textOrd]); textOrd++; }
+    else if (type === 8) { map.set(k, [8, commentOrd]); commentOrd++; }
   }
   tplOrdinalCache.set(tplNode, map);
   return map;
+}
+
+function slotKey(slot: TemplateSlot, orderOffset = 0): string {
+  return `${slot[0]},${slot[1]},${(slot[2] ?? 0) + orderOffset}`;
+}
+
+/**
+ * Resolve the structural binding immediately after each text slot.
+ *
+ * Positive values encode `meta.c` indexes plus one; negative values encode
+ * `meta.r` indexes plus one. The compiler assigns gapless order values within
+ * each static slot, so the next dynamic boundary is exactly `order + 1`.
+ */
+function getTextMarkerBoundaries(meta: TemplateBlockMeta): Int32Array {
+  const cached = textMarkerBoundaryCache.get(meta);
+  if (cached) return cached;
+  const texts = meta.tx;
+  if (!texts || (!meta.c && !meta.r)) {
+    textMarkerBoundaryCache.set(meta, NO_TEXT_MARKER_BOUNDARIES);
+    return NO_TEXT_MARKER_BOUNDARIES;
+  }
+
+  const markers = new Map<string, number>();
+  if (meta.c) {
+    for (let i = 0; i < meta.c.length; i++) {
+      markers.set(slotKey(meta.c[i][2]), i + 1);
+    }
+  }
+  if (meta.r) {
+    for (let i = 0; i < meta.r.length; i++) {
+      markers.set(slotKey(meta.r[i][3]), -(i + 1));
+    }
+  }
+
+  const boundaries = new Int32Array(texts.length);
+  for (let i = 0; i < texts.length; i++) {
+    boundaries[i] = markers.get(slotKey(texts[i][0], 1)) ?? 0;
+  }
+  textMarkerBoundaryCache.set(meta, boundaries);
+  return boundaries;
 }
 
 // ── Sentinels ───────────────────────────────────────────────────
@@ -1600,63 +1647,104 @@ export class TemplateElement extends HTMLElement {
     // pre-order reproduces the indices the compiler assigned.
     const elements = collectTemplateElements(root);
 
+    type SlotRef = {
+      parent: Node;
+      ref: Node | null;
+      order: number;
+      node: Node;
+    };
+    const slotRefs = new Array<SlotRef>(
+      (meta.tx?.length ?? 0) + (meta.c?.length ?? 0) + (meta.r?.length ?? 0),
+    );
+    let slotRefCount = 0;
+    let hasSharedSlots = false;
+
     // Pre-resolve text binding slots
-    const textRefs = new Array<{ parent: Node; ref: Node | null; parts: CompiledAttrPart[]; raw?: boolean }>(meta.tx?.length ?? 0);
-    let textRefCount = 0;
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
         const entry = meta.tx[i];
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
-        const [parentIndex, beforeIndex] = slot;
+        const [parentIndex, beforeIndex, order = 0] = slot;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        textRefs[textRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, parts, raw };
-        textRefCount += 1;
+        let node: Node;
+        if (raw) {
+          const container = document.createElement('span');
+          const textNode = document.createTextNode('');
+          instance.texts.push({
+            node: textNode,
+            parts,
+            scope,
+            raw: true,
+            rawParent: container,
+          });
+          node = container;
+        } else {
+          const textNode = document.createTextNode('');
+          instance.texts.push({ node: textNode, parts, scope });
+          node = textNode;
+        }
+        slotRefs[slotRefCount++] = {
+          parent,
+          ref: parent.childNodes[beforeIndex] || null,
+          order,
+          node,
+        };
+        if (order > 0) hasSharedSlots = true;
       }
     }
 
     // Pre-resolve conditional slots
-    type CondRef = { parent: Node; ref: Node | null; condition: CompiledCondition; blockIndex: number };
-    const condRefs = new Array<CondRef>(meta.c?.length ?? 0);
-    let condRefCount = 0;
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
-        const [parentIndex, beforeIndex] = slotMeta;
+        const [parentIndex, beforeIndex, order = 0] = slotMeta;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        condRefs[condRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, condition: condition as CompiledCondition, blockIndex };
-        condRefCount += 1;
+        const anchor = document.createComment('');
+        instance.conds.push({
+          condition: condition as CompiledCondition,
+          blockIndex,
+          anchor,
+          scope,
+          owner: instance,
+          instance: null,
+        });
+        slotRefs[slotRefCount++] = {
+          parent,
+          ref: parent.childNodes[beforeIndex] || null,
+          order,
+          node: anchor,
+        };
+        if (order > 0) hasSharedSlots = true;
       }
     }
 
     // Pre-resolve repeat slots
-    type RepRef = {
-      parent: Node;
-      ref: Node | null;
-      collection: string;
-      itemVar: string;
-      blockIndex: number;
-      keyPath?: string;
-    };
-    const repRefs = new Array<RepRef>(meta.r?.length ?? 0);
-    let repRefCount = 0;
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
-        const [parentIndex, beforeIndex] = slotMeta;
+        const [parentIndex, beforeIndex, order = 0] = slotMeta;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        repRefs[repRefCount] = {
+        const anchor = document.createComment('');
+        const binding: RepeatBinding = {
+          markerId: i, collection, itemVar, blockIndex,
+          container: parent as ParentNode & Node, start: anchor, end: null,
+          scope, owner: instance, instances: [],
+        };
+        if (keyPath !== undefined) {
+          binding.keyState = createRepeatKeyState(keyPath);
+        }
+        instance.repeats.push(binding);
+        slotRefs[slotRefCount++] = {
           parent,
           ref: parent.childNodes[beforeIndex] || null,
-          collection,
-          itemVar,
-          blockIndex,
-          keyPath,
+          order,
+          node: anchor,
         };
-        repRefCount += 1;
+        if (order > 0) hasSharedSlots = true;
       }
     }
 
@@ -1668,59 +1756,21 @@ export class TemplateElement extends HTMLElement {
     // insertions still shift childNode indices for sibling elements.
     this.$finalize(instance, root, meta, (_r, i) => elements[i] ?? null, scope);
 
-    // Now insert anchors using pre-resolved references
-
-    // Text bindings
-    for (let i = 0; i < textRefCount; i++) {
-      const t = textRefs[i];
-      const anchor = document.createComment('');
-      t.parent.insertBefore(anchor, t.ref);
-      if (t.raw) {
-        // Raw binding: create a container span for innerHTML updates
-        const container = document.createElement('span');
-        t.parent.insertBefore(container, anchor);
-        const textNode = document.createTextNode('');
-        instance.texts.push({ node: textNode, parts: t.parts, scope, raw: true, rawParent: container });
-      } else {
-        const textNode = document.createTextNode('');
-        t.parent.insertBefore(textNode, anchor);
-        instance.texts.push({ node: textNode, parts: t.parts, scope });
-      }
+    // Co-located dynamic slots have the same static insertion reference. The
+    // compiler's order field preserves their source order across binding kinds.
+    // Slots at different pre-resolved references commute, so ordering only by
+    // this group-local value is sufficient.
+    if (hasSharedSlots) {
+      slotRefs.length = slotRefCount;
+      slotRefs.sort((left, right) => left.order - right.order);
+    }
+    for (let i = 0; i < slotRefCount; i++) {
+      const slot = slotRefs[i];
+      slot.parent.insertBefore(slot.node, slot.ref);
     }
 
-    // Conditional bindings
-    for (let i = 0; i < condRefCount; i++) {
-      const c = condRefs[i];
-      const anchor = document.createComment('');
-      c.parent.insertBefore(anchor, c.ref);
-      instance.conds.push({
-        condition: c.condition,
-        blockIndex: c.blockIndex,
-        anchor,
-        scope,
-        owner: instance,
-        instance: null,
-      });
-    }
-
-    // Repeat bindings
-    for (let i = 0; i < repRefCount; i++) {
-      const r = repRefs[i];
-      const anchor = document.createComment('');
-      r.parent.insertBefore(anchor, r.ref);
-      const binding: RepeatBinding = {
-        markerId: i, collection: r.collection, itemVar: r.itemVar, blockIndex: r.blockIndex,
-        container: r.parent as ParentNode & Node, start: anchor, end: null,
-        scope, owner: instance, instances: [],
-      };
-      if (r.keyPath !== undefined) {
-        binding.keyState = createRepeatKeyState(r.keyPath);
-      }
-      instance.repeats.push(binding);
-    }
-
-    // Evaluate conditionals and repeats inline so blocks are created
-    // immediately — no deferred $update() flush needed.
+    // Create conditional blocks immediately; the first full binding pass
+    // reconciles repeats after this wiring step returns.
     for (let i = 0; i < instance.conds.length; i++) this.$toggleCond(instance.conds[i]);
 
     return instance;
@@ -1757,8 +1807,8 @@ export class TemplateElement extends HTMLElement {
     // Collect SSR markers for deferred removal.  Closing markers
     // (<!--/wc-->, <!--/wr-->) and item markers (<!--wi-->) must stay in
     // the DOM throughout the entire hydration pass so that the index walk
-    // and $findSSRText can correctly skip structural block content when
-    // counting element/text ordinals.  All collected markers are removed
+    // and text-slot resolution can correctly skip structural block content.
+    // All collected markers are removed
     // in a single cleanup pass after $finalize() (events + refs).
     //
     // Hydration order:  text → attrs → conditionals → repeats → events
@@ -1782,6 +1832,7 @@ export class TemplateElement extends HTMLElement {
     );
     const ssrElements = ssrIndex.elements;
     const tplElements = getTemplateElements(tplDom);
+    const textMarkerBoundaries = getTextMarkerBoundaries(meta);
 
     // Text bindings — find existing text nodes rendered by the server
     if (meta.tx) {
@@ -1799,13 +1850,23 @@ export class TemplateElement extends HTMLElement {
           const textNode = document.createTextNode('');
           instance.texts.push({ node: textNode, parts, scope, raw: true, rawParent });
         } else {
-          let textNode = this.$findSSRText(ssrParent, tplParent, beforeIndex);
-          if (!textNode) {
+          const insertRef = this.$findSSRSlotRef(
+            ssrParent,
+            tplParent,
+            meta,
+            ssrIndex,
+            slot,
+            textMarkerBoundaries[i] ?? 0,
+          );
+          // The compiler coalesces adjacent text into one run, so the node
+          // immediately left of this boundary is the only possible SSR match.
+          const previous = insertRef ? insertRef.previousSibling : ssrParent.lastChild;
+          let textNode = previous?.nodeType === 3 ? previous as Text : null;
+          if (textNode === null) {
             textNode = document.createTextNode('');
-            const insertRef = this.$findSSRSlotRef(ssrParent, tplParent, beforeIndex);
             ssrParent.insertBefore(textNode, insertRef);
           }
-          if (textNode) instance.texts.push({ node: textNode, parts, scope });
+          instance.texts.push({ node: textNode, parts, scope });
         }
       }
     }
@@ -2095,42 +2156,31 @@ export class TemplateElement extends HTMLElement {
   }
 
   /**
-   * Find existing SSR text node by mapping template text-node ordinal.
+   * Find the SSR insertion reference for an empty text slot.
    *
-   * Elements are numbered in pre-order, but text cannot be: the renderer
-   * strips inter-element whitespace that `meta.h` keeps.  Text slots therefore
-   * resolve by ordinal, and the SSR DOM may contain extra text nodes
-   * inside structural blocks (`<if>`/`<for>`) that are not in the
-   * compiled template.  We skip `<!--wc-->...<!--/wc-->` and
-   * `<!--wr-->...<!--/wr-->` ranges to keep text ordinals aligned.
+   * SSR omits an empty text node, so use the next co-located structural marker
+   * before falling back to the next static template child.
    */
-  private $findSSRText(ssrParent: Node, tplParent: Node, beforeIndex: number): Text | null {
-    // Count how many text nodes precede `beforeIndex` in the template
-    const ordinals = getTplOrdinals(tplParent);
-    let textOrd = 0;
-    for (let k = 0; k < beforeIndex; k++) {
-      const entry = ordinals.get(k);
-      if (entry && entry[0] === 3) textOrd++;
-    }
+  private $findSSRSlotRef(
+    ssrParent: Node,
+    tplParent: Node,
+    meta: TemplateBlockMeta,
+    ssrIndex: SSRIndex,
+    slot: TemplateSlot,
+    markerBoundary: number,
+  ): Node | null {
+    const [, beforeIndex] = slot;
+    const marker = markerBoundary > 0
+      && meta.c
+      && ssrIndex.conds.length === meta.c.length
+      ? ssrIndex.conds[markerBoundary - 1]
+      : markerBoundary < 0
+        && meta.r
+        && ssrIndex.repeats.length === meta.r.length
+        ? ssrIndex.repeats[-markerBoundary - 1]
+        : null;
+    if (marker?.parentNode === ssrParent) return marker;
 
-    // Find the matching text node in SSR DOM, skipping structural block
-    // content - see findByOrdinal for the skipping algorithm.
-    const found = findByOrdinal(ssrParent, 3 /* TEXT_NODE */, textOrd);
-    if (found) return found as Text;
-
-    // Fallback: any text node with content
-    let child = ssrParent.firstChild;
-    while (child) {
-      if (child.nodeType === 3 && (child as Text).data && (child as Text).data.trim()) {
-        return child as Text;
-      }
-      child = child.nextSibling;
-    }
-    return null;
-  }
-
-  /** Find the SSR insertion reference for an empty text slot. */
-  private $findSSRSlotRef(ssrParent: Node, tplParent: Node, beforeIndex: number): Node | null {
     const ordinals = getTplOrdinals(tplParent);
     const children = tplParent.childNodes;
     for (let i = beforeIndex; i < children.length; i++) {

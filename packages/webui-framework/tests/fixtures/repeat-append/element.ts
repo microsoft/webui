@@ -36,6 +36,20 @@ export class TestRepeatParent extends WebUIElement {
     this.items = [{ id, title: `Item ${id}` }, ...this.items];
   }
 
+  insertMiddleItem(): void {
+    const id = String(this.nextId);
+    this.nextId += 1;
+    this.items = [
+      ...this.items.slice(0, 2),
+      { id, title: `Item ${id}` },
+      ...this.items.slice(2),
+    ];
+  }
+
+  removeMiddleItem(): void {
+    this.items = [...this.items.slice(0, 2), ...this.items.slice(3)];
+  }
+
   removeItem(): void {
     this.items = this.items.slice(0, -1);
   }

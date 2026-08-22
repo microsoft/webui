@@ -183,7 +183,11 @@ Create `webui.config.json` to override build options:
 
 ### Light-DOM fixtures
 
-The pipeline always produces shadow DOM. For light-DOM hydration tests, use manual template registration with `registerCompiledTemplate` from `@microsoft/webui-test-support` and a hand-written `fixture.html`. See `fixtures/light-dom/` for the pattern.
+The pipeline defaults to shadow DOM. Set `"dom": "light"` in
+`webui.config.json` for real-pipeline light-DOM fixtures; see
+`fixtures/light-dom-structural/`. Use manual template registration with
+`registerCompiledTemplate` and a hand-written `fixture.html` only when a test
+needs exact metadata or SSR markup; see `fixtures/light-dom/`.
 
 ### Running framework E2E tests
 
