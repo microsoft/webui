@@ -162,9 +162,24 @@ fn boundary_parent_scope(name: &str) -> Option<&'static str> {
 
 #[inline]
 fn is_html_text_only_scope(scope: Option<&str>) -> bool {
+    // Explicit allowlist of the raw-text/RCDATA scopes returned by
+    // `boundary_parent_scope`, so a new scope value must be deliberately
+    // added here to become text-only rather than silently defaulting to it.
+    // `<template> inert content` and "component host content" are
+    // intentionally excluded: both parse normal (escaped) child content.
     matches!(
         scope,
-        Some(value) if value != "component host content" && value != "<template> inert content"
+        Some(
+            "<xmp> raw-text content"
+                | "<title> text content"
+                | "<iframe> raw-text content"
+                | "<script> raw-text content"
+                | "<noembed> raw-text content"
+                | "<textarea> text content"
+                | "<noframes> raw-text content"
+                | "<noscript> inert content"
+                | "<plaintext> text content"
+        )
     )
 }
 
