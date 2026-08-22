@@ -1,0 +1,34 @@
+<div class="exact">
+  <for each="turn in turns">
+    <section class="exact-turn" key="{{turn.turnId}}">
+      <for each="message in turn.messages">
+        <if condition="!message.hidden">
+          <span class="message" key="{{message.messageId}}" data-kind="{{message.kind}}">{{message.kind}}</span>
+        </if>
+      </for>
+      <if condition="turn.terminal.type">
+        <if condition="turn.terminal.type == 'failed'">
+          <p data-kind="error">error</p>
+        </if>
+      </if>
+    </section>
+  </for>
+</div>
+
+<div class="minimal">
+  <for each="turn in minimalTurns">
+    <section class="minimal-turn">
+      <div class="for-if">
+        <for each="message in turn.messages"><span data-kind="{{message}}">{{message}}</span></for>
+        <if condition="turn.failed"><p data-kind="error">error</p></if>
+      </div>
+      <div class="if-for">
+        <if condition="turn.failed"><p data-kind="error">error</p></if>
+        <for each="message in turn.messages"><span data-kind="{{message}}">{{message}}</span></for>
+      </div>
+    </section>
+  </for>
+</div>
+
+<div class="text-before-repeat">{{beforeRepeat}}<for each="item in textItems"><span>{{item}}</span></for><span>tail</span></div>
+<div class="text-between-blocks">{{beforeBlocks}}<if condition="showTextConditional"><span>if</span></if>{{betweenBlocks}}<for each="item in textItems"><span>{{item}}</span></for><span>tail</span></div>

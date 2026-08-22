@@ -40,4 +40,21 @@ test.describe('light-dom hydration', () => {
     await expect(page.locator('test-light-dom .greeting')).toHaveText('Hi');
     await expect(page.locator('test-light-dom .name')).toHaveText('WebUI');
   });
+
+  test('keeps a text binding before a static metadata comment', async ({ page }) => {
+    const host = page.locator('test-light-dom-comment');
+    await page.waitForFunction(() => {
+      const element = document.querySelector('test-light-dom-comment');
+      return element && (element as unknown as { $ready?: boolean }).$ready === true;
+    });
+
+    await host.evaluate((element) => {
+      (element as HTMLElement & { commentText: string }).commentText = 'updated';
+    });
+
+    await expect(host).toHaveText('updatedtail');
+    expect(
+      await host.evaluate((element) => element.childNodes[1]?.nodeType),
+    ).toBe(8);
+  });
 });

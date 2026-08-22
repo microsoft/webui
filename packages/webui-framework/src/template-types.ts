@@ -22,6 +22,14 @@ export type CompiledAttrPart = string | [path: string];
  * array index instead of by walking a path of child offsets.
  */
 export type TemplateNodeIndex = number;
+
+/**
+ * A dynamic insertion point in marker-free template HTML.
+ *
+ * `order` disambiguates text, conditional, and repeat bindings removed at the
+ * same static child offset. It starts at zero for each `(parentIndex,
+ * beforeIndex)` pair and is omitted for the first binding.
+ */
 export type TemplateSlot = [
   parentIndex: TemplateNodeIndex,
   beforeIndex: number,

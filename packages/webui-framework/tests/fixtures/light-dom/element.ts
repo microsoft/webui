@@ -21,9 +21,21 @@ registerCompiledTemplate('test-light-dom', {
   ],
 });
 
+registerCompiledTemplate('test-light-dom-comment', {
+  h: '<!--authored--><span class="tail">tail</span>',
+  tx: [
+    [[0, 0], [['commentText']]],
+  ],
+});
+
 export class TestLightDom extends WebUIElement {
   @observable greeting = 'Hello';
   @observable name = 'World';
 }
 
+export class TestLightDomComment extends WebUIElement {
+  @observable commentText = 'server';
+}
+
 TestLightDom.define('test-light-dom');
+TestLightDomComment.define('test-light-dom-comment');
