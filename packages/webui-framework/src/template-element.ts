@@ -21,11 +21,13 @@
  *   - `<!--wr-->` / `<!--/wr-->` — repeat (for-loop) block boundaries
  *   - `<!--wi-->` — repeat item boundary (one per item)
  *   - `<!--wc-->` / `<!--/wc-->` — conditional (if) block boundaries
+ *   - `<!--wN-->` / `<!--/wN-->` — raw HTML ownership boundaries
  *
  * During hydration these markers are consumed: `<!--wi-->`, `<!--/wr-->`,
- * and `<!--/wc-->` are removed from the DOM.  The `<!--wr-->` start
+ * and `<!--/wc-->` are removed from the DOM. The `<!--wr-->` start
  * marker is kept as the runtime repeat anchor, and `<!--wc-->` is kept
- * as the runtime condition anchor.
+ * as the runtime condition anchor. Raw HTML markers remain as the minimum
+ * stable range required for sibling-safe reactive replacement.
  *
  * **Marker removal is deferred** until after all path-based resolution
  * (`buildSSRIndex`, `$findSSRText`, `$finalize`) is complete.  This is
@@ -55,6 +57,7 @@ import type {
   CompiledAttrPart,
   CompiledCondition,
   TemplateNodeIndex,
+  TemplateSlot,
 } from './template.js';
 import { hydrationStart, hydrationEnd } from './lifecycle.js';
 import {
@@ -77,6 +80,8 @@ import {
   collectTemplateElements,
   MARKER_COND_START,
   MARKER_COND_END,
+  rawMarker,
+  type SSRIndex,
 } from './element/markers.js';
 import {
   injectModuleStyle,
@@ -144,6 +149,10 @@ const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 /** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
  *  Avoids re-counting siblings on every text-slot resolution. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
+/** Encoded next marker boundary per text slot, built once per template. */
+const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, Int32Array>();
+const NO_TEXT_MARKER_BOUNDARIES = new Int32Array(0);
+const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
 
 /**
  * Pre-order element table for a parsed template, keyed by its root.
@@ -168,14 +177,65 @@ function getTplOrdinals(tplNode: Node): Map<number, [number, number]> {
   map = new Map();
   let elemOrd = 0;
   let textOrd = 0;
+  let commentOrd = 0;
   const children = tplNode.childNodes;
   for (let k = 0; k < children.length; k++) {
     const type = children[k].nodeType;
     if (type === 1) { map.set(k, [1, elemOrd]); elemOrd++; }
     else if (type === 3) { map.set(k, [3, textOrd]); textOrd++; }
+    else if (type === 8) { map.set(k, [8, commentOrd]); commentOrd++; }
   }
   tplOrdinalCache.set(tplNode, map);
   return map;
+}
+
+function slotKey(slot: TemplateSlot, orderOffset = 0): string {
+  return `${slot[0]},${slot[1]},${(slot[2] ?? 0) + orderOffset}`;
+}
+
+/**
+ * Resolve the dynamic marker immediately after each text slot.
+ *
+ * Positive values encode `meta.c` indexes plus one; negative values encode
+ * `meta.r` indexes plus one; large positive values encode raw-range indexes.
+ * The compiler assigns gapless order values within each static slot.
+ */
+function getTextMarkerBoundaries(meta: TemplateBlockMeta): Int32Array {
+  const cached = textMarkerBoundaryCache.get(meta);
+  if (cached) return cached;
+  const texts = meta.tx;
+  if (!texts) {
+    textMarkerBoundaryCache.set(meta, NO_TEXT_MARKER_BOUNDARIES);
+    return NO_TEXT_MARKER_BOUNDARIES;
+  }
+
+  const markers = new Map<string, number>();
+  if (meta.c) {
+    for (let i = 0; i < meta.c.length; i++) {
+      markers.set(slotKey(meta.c[i][2]), i + 1);
+    }
+  }
+  if (meta.r) {
+    for (let i = 0; i < meta.r.length; i++) {
+      markers.set(slotKey(meta.r[i][3]), -(i + 1));
+    }
+  }
+  let rawIndex = 0;
+  for (let i = 0; i < texts.length; i++) {
+    if (texts[i][2] !== 1) continue;
+    markers.set(
+      slotKey(texts[i][0]),
+      RAW_MARKER_BOUNDARY_BASE + rawIndex + 1,
+    );
+    rawIndex++;
+  }
+
+  const boundaries = new Int32Array(texts.length);
+  for (let i = 0; i < texts.length; i++) {
+    boundaries[i] = markers.get(slotKey(texts[i][0], 1)) ?? 0;
+  }
+  textMarkerBoundaryCache.set(meta, boundaries);
+  return boundaries;
 }
 
 // ── Sentinels ───────────────────────────────────────────────────
@@ -702,6 +762,7 @@ export class TemplateElement extends HTMLElement {
         // Retained DOM is client-owned after the first mount. Reconcile roots
         // that are still available while preserving trusted values for any
         // template-only state the client never received.
+        this.$invalidateRawValues(this.$root);
         this.$updateBindings(
           this.$root.texts,
           this.$root.attrs,
@@ -1671,16 +1732,23 @@ export class TemplateElement extends HTMLElement {
     // Now insert anchors using pre-resolved references
 
     // Text bindings
+    let rawIndex = 0;
     for (let i = 0; i < textRefCount; i++) {
       const t = textRefs[i];
-      const anchor = document.createComment('');
+      const anchor = document.createComment(t.raw ? rawMarker(rawIndex, true) : '');
       t.parent.insertBefore(anchor, t.ref);
       if (t.raw) {
-        // Raw binding: create a container span for innerHTML updates
-        const container = document.createElement('span');
-        t.parent.insertBefore(container, anchor);
-        const textNode = document.createTextNode('');
-        instance.texts.push({ node: textNode, parts: t.parts, scope, raw: true, rawParent: container });
+        const start = document.createComment(rawMarker(rawIndex));
+        rawIndex++;
+        t.parent.insertBefore(start, anchor);
+        instance.texts.push({
+          node: start,
+          parts: t.parts,
+          scope,
+          raw: true,
+          rawEnd: anchor,
+          rawOwner: instance,
+        });
       } else {
         const textNode = document.createTextNode('');
         t.parent.insertBefore(textNode, anchor);
@@ -1774,38 +1842,76 @@ export class TemplateElement extends HTMLElement {
     // Built before any mutation: the phases below insert text nodes and
     // anchors, but never add or permanently remove elements outside a block
     // range, so the element pairing stays valid for the whole pass.
+    let rawTextCount = 0;
+    if (meta.tx) {
+      for (let i = 0; i < meta.tx.length; i++) {
+        if (meta.tx[i][2] === 1) rawTextCount++;
+      }
+    }
     const ssrIndex = buildSSRIndex(
       tplDom,
       ssrRoot,
-      meta.c !== undefined || meta.r !== undefined,
+      meta.c !== undefined || meta.r !== undefined || rawTextCount !== 0,
       pathStart > 0,
     );
     const ssrElements = ssrIndex.elements;
     const tplElements = getTemplateElements(tplDom);
+    const textMarkerBoundaries = getTextMarkerBoundaries(meta);
 
     // Text bindings — find existing text nodes rendered by the server
     if (meta.tx) {
+      const rawRanges = ssrIndex.raws.length === rawTextCount ? ssrIndex.raws : null;
+      let rawIndex = 0;
       for (let i = 0; i < meta.tx.length; i++) {
         const entry = meta.tx[i];
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
-        const [parentIndex, beforeIndex] = slot;
+        const [parentIndex] = slot;
         const ssrParent = ssrElements[parentIndex];
         if (!ssrParent) continue;
         const tplParent = tplElements[parentIndex];
         if (!tplParent) continue;
         if (raw) {
-          const rawParent = ssrParent as Element;
-          const textNode = document.createTextNode('');
-          instance.texts.push({ node: textNode, parts, scope, raw: true, rawParent });
+          const rawRange = rawRanges?.[rawIndex++];
+          if (!rawRange) continue;
+          const binding: TextBinding = {
+            node: rawRange[0],
+            parts,
+            scope,
+            raw: true,
+            rawEnd: rawRange[1],
+            rawOwner: instance,
+          };
+          if (
+            (!scope || this.$scopeIsKnown(scope))
+            && this.$textStateIsKnown(binding)
+          ) {
+            binding.rawValue = this.$resolveParts(parts, scope);
+          }
+          instance.texts.push(binding);
         } else {
-          let textNode = this.$findSSRText(ssrParent, tplParent, beforeIndex);
-          if (!textNode) {
+          const insertRef = this.$findSSRSlotRef(
+            ssrParent,
+            tplParent,
+            meta,
+            ssrIndex,
+            slot,
+            textMarkerBoundaries[i] ?? 0,
+          );
+          let previous = insertRef ? insertRef.previousSibling : ssrParent.lastChild;
+          if (
+            previous?.nodeType === 8
+            && (previous as Comment).data === ''
+            && previous.previousSibling?.nodeType === 3
+          ) {
+            previous = previous.previousSibling;
+          }
+          let textNode = previous?.nodeType === 3 ? previous as Text : null;
+          if (textNode === null) {
             textNode = document.createTextNode('');
-            const insertRef = this.$findSSRSlotRef(ssrParent, tplParent, beforeIndex);
             ssrParent.insertBefore(textNode, insertRef);
           }
-          if (textNode) instance.texts.push({ node: textNode, parts, scope });
+          instance.texts.push({ node: textNode, parts, scope });
         }
       }
     }
@@ -1851,7 +1957,7 @@ export class TemplateElement extends HTMLElement {
         // than claiming the first static sibling after <!--/wc-->.
         if (marker && blockMeta) {
           condInstance = this.$hydrateCondContent(condAnchor, blockMeta, scope);
-          if (condInstance) condInstance.parent = instance;
+          if (condInstance) this.$setInstanceParent(condInstance, instance);
         }
 
         // Collect the <!--/wc--> end marker for deferred removal.  Do NOT remove
@@ -1886,7 +1992,10 @@ export class TemplateElement extends HTMLElement {
         const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
         const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
-        const rootTag = blockMeta && blockTplDom?.childNodes.length === 1 && blockTplDom.children.length === 1
+        const rootTag = blockMeta
+          && blockTplDom?.childNodes.length === 1
+          && blockTplDom.children.length === 1
+          && !this.$hasRootStructuralSlot(blockMeta)
           ? this.$rootTag(blockMeta)
           : null;
 
@@ -1937,7 +2046,7 @@ export class TemplateElement extends HTMLElement {
               const itemEl = nextElement(itemMarkers[j]);
               if (itemEl) {
                 const childInstance = this.$hydrate(itemEl, blockMeta, blockTplDom, itemScope, 1);
-                childInstance.parent = instance;
+                this.$setInstanceParent(childInstance, instance);
                 repeatInsts.push(childInstance);
               }
             } else {
@@ -1951,7 +2060,6 @@ export class TemplateElement extends HTMLElement {
                 cursor = next;
               }
               const inst = this.$hydrate(wrapper, blockMeta, blockTplDom, itemScope);
-              inst.parent = instance;
               inst.nodes = childNodesArray(wrapper);
               let afterNode: Node = itemMarkers[j];
               for (let nodeIndex = 0; nodeIndex < inst.nodes.length; nodeIndex++) {
@@ -1966,6 +2074,7 @@ export class TemplateElement extends HTMLElement {
                   itemParent as ParentNode & Node,
                 );
               }
+              this.$setInstanceParent(inst, instance);
               repeatInsts.push(inst);
             }
           }
@@ -2049,6 +2158,11 @@ export class TemplateElement extends HTMLElement {
         if (meta.r[i][3][0] === 0) return true;
       }
     }
+    if (meta.tx) {
+      for (let i = 0; i < meta.tx.length; i++) {
+        if (meta.tx[i][2] === 1 && meta.tx[i][0][0] === 0) return true;
+      }
+    }
     return false;
   }
 
@@ -2094,43 +2208,35 @@ export class TemplateElement extends HTMLElement {
     return inst;
   }
 
-  /**
-   * Find existing SSR text node by mapping template text-node ordinal.
-   *
-   * Elements are numbered in pre-order, but text cannot be: the renderer
-   * strips inter-element whitespace that `meta.h` keeps.  Text slots therefore
-   * resolve by ordinal, and the SSR DOM may contain extra text nodes
-   * inside structural blocks (`<if>`/`<for>`) that are not in the
-   * compiled template.  We skip `<!--wc-->...<!--/wc-->` and
-   * `<!--wr-->...<!--/wr-->` ranges to keep text ordinals aligned.
-   */
-  private $findSSRText(ssrParent: Node, tplParent: Node, beforeIndex: number): Text | null {
-    // Count how many text nodes precede `beforeIndex` in the template
-    const ordinals = getTplOrdinals(tplParent);
-    let textOrd = 0;
-    for (let k = 0; k < beforeIndex; k++) {
-      const entry = ordinals.get(k);
-      if (entry && entry[0] === 3) textOrd++;
+  /** Find the SSR right-hand boundary for an escaped text slot. */
+  private $findSSRSlotRef(
+    ssrParent: Node,
+    tplParent: Node,
+    meta: TemplateBlockMeta,
+    ssrIndex: SSRIndex,
+    slot: TemplateSlot,
+    markerBoundary: number,
+  ): Node | null {
+    const [, beforeIndex] = slot;
+    let marker: Comment | null = null;
+    if (markerBoundary >= RAW_MARKER_BOUNDARY_BASE) {
+      marker =
+        ssrIndex.raws[markerBoundary - RAW_MARKER_BOUNDARY_BASE - 1]?.[0] ?? null;
+    } else if (
+      markerBoundary > 0
+      && meta.c
+      && ssrIndex.conds.length === meta.c.length
+    ) {
+      marker = ssrIndex.conds[markerBoundary - 1];
+    } else if (
+      markerBoundary < 0
+      && meta.r
+      && ssrIndex.repeats.length === meta.r.length
+    ) {
+      marker = ssrIndex.repeats[-markerBoundary - 1];
     }
+    if (marker?.parentNode === ssrParent) return marker;
 
-    // Find the matching text node in SSR DOM, skipping structural block
-    // content - see findByOrdinal for the skipping algorithm.
-    const found = findByOrdinal(ssrParent, 3 /* TEXT_NODE */, textOrd);
-    if (found) return found as Text;
-
-    // Fallback: any text node with content
-    let child = ssrParent.firstChild;
-    while (child) {
-      if (child.nodeType === 3 && (child as Text).data && (child as Text).data.trim()) {
-        return child as Text;
-      }
-      child = child.nextSibling;
-    }
-    return null;
-  }
-
-  /** Find the SSR insertion reference for an empty text slot. */
-  private $findSSRSlotRef(ssrParent: Node, tplParent: Node, beforeIndex: number): Node | null {
     const ordinals = getTplOrdinals(tplParent);
     const children = tplParent.childNodes;
     for (let i = beforeIndex; i < children.length; i++) {
@@ -2407,6 +2513,26 @@ export class TemplateElement extends HTMLElement {
     return !binding.path || this.$hasStateRoot(binding.path, binding.scope);
   }
 
+  private $invalidateRawValues(root: TemplateInstance): void {
+    const stack: TemplateInstance[] = [root];
+    while (stack.length > 0) {
+      const instance = stack.pop();
+      if (!instance) continue;
+      for (let i = 0; i < instance.texts.length; i++) {
+        const binding = instance.texts[i];
+        if (binding.raw) binding.rawValue = undefined;
+      }
+      for (let i = 0; i < instance.conds.length; i++) {
+        const child = instance.conds[i].instance;
+        if (child) stack.push(child);
+      }
+      for (let i = 0; i < instance.repeats.length; i++) {
+        const children = instance.repeats[i].instances;
+        for (let j = 0; j < children.length; j++) stack.push(children[j]);
+      }
+    }
+  }
+
   private $attrStateIsKnown(binding: AttrBinding): boolean {
     if (binding.path && !this.$hasStateRoot(binding.path, binding.scope)) return false;
     if (binding.parts && !this.$partsAreKnown(binding.parts, binding.scope)) return false;
@@ -2458,9 +2584,37 @@ export class TemplateElement extends HTMLElement {
     } else {
       return;
     }
-    if (b.raw && b.rawParent) {
-      // Raw binding: render unescaped HTML via innerHTML
-      if (b.rawParent.innerHTML !== val) b.rawParent.innerHTML = val;
+    if (b.raw && b.rawEnd) {
+      if (b.rawValue === val) return;
+      const range = document.createRange();
+      range.setStartAfter(b.node);
+      range.setEndBefore(b.rawEnd);
+      range.deleteContents();
+      let rawNodes: Node[] | undefined;
+      const rawOwner = b.rawOwner;
+      if (val !== '') {
+        const fragment = range.createContextualFragment(val);
+        if (rawOwner && b.node.parentNode === rawOwner.container) {
+          rawNodes = childNodesArray(fragment);
+        }
+        range.insertNode(fragment);
+      } else if (rawOwner && b.node.parentNode === rawOwner.container) {
+        rawNodes = [];
+      }
+      if (rawNodes && rawOwner) {
+        const container = b.node.parentNode;
+        let owner: TemplateInstance | undefined = rawOwner;
+        while (owner && owner.container === container) {
+          const ownerNodes = owner.nodes;
+          const startIndex = ownerNodes.indexOf(b.node);
+          const endIndex = ownerNodes.indexOf(b.rawEnd, startIndex + 1);
+          if (startIndex >= 0 && endIndex > startIndex) {
+            ownerNodes.splice(startIndex + 1, endIndex - startIndex - 1, ...rawNodes);
+          }
+          owner = owner.parent;
+        }
+      }
+      b.rawValue = val;
     } else {
       if (b.node.data !== val) b.node.data = val;
     }
@@ -2603,6 +2757,13 @@ export class TemplateElement extends HTMLElement {
 
   // ── Block instance management ─────────────────────────────────
 
+  private $setInstanceParent(
+    instance: TemplateInstance,
+    parent: TemplateInstance | undefined,
+  ): void {
+    instance.parent = parent;
+  }
+
   $block(blockIndex: number): TemplateBlockMeta | undefined {
     return this.$meta?.b?.[blockIndex];
   }
@@ -2617,7 +2778,6 @@ export class TemplateElement extends HTMLElement {
     if (!bm) return null;
     const wrapper = this.$createStagingRoot(bm);
     const inst = this.$wire(wrapper, bm, scope);
-    inst.parent = parent;
     inst.nodes = childNodesArray(wrapper);
     this.$updateInstance(inst);
     if (inst.repeats.length !== 0 || inst.conds.length !== 0) {
@@ -2626,6 +2786,7 @@ export class TemplateElement extends HTMLElement {
     } else if (container) {
       inst.container = container;
     }
+    this.$setInstanceParent(inst, parent);
     return inst;
   }
 
@@ -2644,7 +2805,7 @@ export class TemplateElement extends HTMLElement {
         cleanups.length = 0;
       }
       if (removeNodes) {
-        for (const node of instance.nodes) node.parentNode?.removeChild(node);
+        this.$removeInstanceNodes(instance);
       }
       for (const binding of instance.conds) {
         if (binding.instance) stack.push(binding.instance);
@@ -2656,6 +2817,11 @@ export class TemplateElement extends HTMLElement {
       }
       this.$clearInstance(instance);
     }
+  }
+
+  private $removeInstanceNodes(instance: TemplateInstance): void {
+    const nodes = instance.nodes;
+    for (let i = 0; i < nodes.length; i++) nodes[i].parentNode?.removeChild(nodes[i]);
   }
 
   private $compactNodeArray(instance: TemplateInstance): void {

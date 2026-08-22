@@ -25,18 +25,21 @@ import type {
   CompiledCondition,
 } from '../template.js';
 
-/** Direct reference to a text node bound to a property path. */
+/** Direct reference to character data bound to a property path. */
 export interface TextBinding {
-  node: Text;
+  node: CharacterData;
   path?: string;
   parts?: CompiledAttrPart[];
   scope?: ScopeFrame;
-  /** When true, the binding renders unescaped HTML via innerHTML on the
-   *  parent element instead of setting Text.data. Corresponds to the
-   *  triple-brace `{{{expr}}}` template syntax. */
+  /** When true, the binding renders unescaped HTML between comment anchors.
+   *  Corresponds to the triple-brace `{{{expr}}}` template syntax. */
   raw?: boolean;
-  /** The parent element for raw bindings — innerHTML is set here. */
-  rawParent?: Element;
+  /** Closing ownership anchor for a raw HTML binding. */
+  rawEnd?: Comment;
+  /** Last client-patched value, used to avoid repeat HTML parsing. */
+  rawValue?: string;
+  /** Owning instance when the raw range is part of its top-level node list. */
+  rawOwner?: TemplateInstance;
 }
 
 /** Attribute binding kind constants (matches compiled metadata). */

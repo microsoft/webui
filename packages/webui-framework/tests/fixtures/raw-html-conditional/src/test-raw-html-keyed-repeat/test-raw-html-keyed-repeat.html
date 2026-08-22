@@ -1,0 +1,7 @@
+<for each="item in items">
+  <article class="keyed-raw-item" key="{{item.id}}" data-id="{{item.id}}">
+    <span class="item-before">{{item.label}} before</span>
+    <span class="item-after">after</span>
+  </article>
+  <if condition="item.showRaw">{{{item.rawHtml}}}</if>
+</for>

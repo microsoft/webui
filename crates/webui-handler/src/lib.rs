@@ -1639,7 +1639,7 @@ impl WebUIHandler {
         if signal.raw {
             self.process_raw_signal(signal, context)
         } else {
-            self.process_state_signal(signal, context)
+            self.process_state_signal(signal, false, context)
         }
     }
 
@@ -1650,7 +1650,7 @@ impl WebUIHandler {
         context: &mut WebUIProcessContext<'data, '_, '_>,
     ) -> Result<()> {
         let Some(structural_value) = structural_signal_value(signal) else {
-            return self.process_state_signal(signal, context);
+            return self.process_state_signal(signal, !signal.raw_text_context, context);
         };
 
         if context.streaming.is_some()
@@ -1953,10 +1953,15 @@ impl WebUIHandler {
     fn process_state_signal(
         &self,
         signal: &webui_protocol::WebUIFragmentSignal,
+        owns_html_range: bool,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         if let Some(p) = &mut context.plugin {
-            p.on_binding_start(&signal.value, context.writer)?;
+            if owns_html_range {
+                p.on_raw_binding_start(&signal.value, context.writer)?;
+            } else {
+                p.on_binding_start(&signal.value, context.writer)?;
+            }
         }
 
         if let Some(value) = self.resolve_value(&signal.value, context) {
@@ -1964,7 +1969,11 @@ impl WebUIHandler {
         }
 
         if let Some(p) = &mut context.plugin {
-            p.on_binding_end(&signal.value, context.writer)?;
+            if owns_html_range {
+                p.on_raw_binding_end(&signal.value, context.writer)?;
+            } else {
+                p.on_binding_end(&signal.value, context.writer)?;
+            }
         }
         Ok(())
     }

@@ -1,5 +1,31 @@
 {
   "expanded": true,
+  "firstRawHtml": "<b class=\"adjacent-first\">First</b>",
+  "inlineName": "Alice",
+  "inlineRawHtml": "<b class=\"inline-raw\">raw</b>",
   "name": "Alice",
-  "rawHtml": "<p>Hello</p>"
+  "rawHtml": "<p class=\"raw-initial\">Hello</p>",
+  "rowsHtml": "<tr class=\"raw-row raw-row-initial\"><td>Initial row</td></tr>",
+  "secondRawHtml": "<i class=\"adjacent-second\">Second</i>",
+  "styleRule": "color: rgb(1, 2, 3);",
+  "items": [
+    {
+      "id": "a",
+      "label": "A",
+      "rawHtml": "<b class=\"raw-node raw-first\" data-owner=\"a\">A1</b><i class=\"raw-node raw-second\" data-owner=\"a\">A2</i>",
+      "showRaw": true
+    },
+    {
+      "id": "b",
+      "label": "B",
+      "rawHtml": "<b class=\"raw-node raw-first\" data-owner=\"b\">B1</b><i class=\"raw-node raw-second\" data-owner=\"b\">B2</i>",
+      "showRaw": true
+    },
+    {
+      "id": "c",
+      "label": "C",
+      "rawHtml": "<b class=\"raw-node raw-first\" data-owner=\"c\">C1</b><i class=\"raw-node raw-second\" data-owner=\"c\">C2</i>",
+      "showRaw": true
+    }
+  ]
 }

@@ -167,6 +167,22 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::Signal(WebUiFragmentSignal {
                 value: value.into(),
                 raw,
+                raw_text_context: false,
+            })),
+        }
+    }
+
+    /// Create a signal inside an HTML raw-text context such as `<style>`.
+    ///
+    /// The rendered value follows `raw` escaping semantics but never owns an
+    /// HTML sibling range because comment markers are plain text in raw-text
+    /// elements.
+    pub fn raw_text_signal(value: impl Into<String>, raw: bool) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Signal(WebUiFragmentSignal {
+                value: value.into(),
+                raw,
+                raw_text_context: true,
             })),
         }
     }
@@ -819,7 +835,22 @@ mod tests {
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         let frag = &decoded.fragments["main"].fragments[0];
         match frag.fragment.as_ref() {
-            Some(web_ui_fragment::Fragment::Signal(s)) => assert!(!s.raw),
+            Some(web_ui_fragment::Fragment::Signal(s)) => {
+                assert!(!s.raw);
+                assert!(!s.raw_text_context);
+            }
+            _ => panic!("expected signal"),
+        }
+    }
+
+    #[test]
+    fn raw_text_signal_does_not_own_html_range() {
+        let fragment = WebUIFragment::raw_text_signal("tokens.light", true);
+        match fragment.fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Signal(signal)) => {
+                assert!(signal.raw);
+                assert!(signal.raw_text_context);
+            }
             _ => panic!("expected signal"),
         }
     }

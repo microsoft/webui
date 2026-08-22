@@ -148,9 +148,26 @@ pub trait HandlerPlugin: Send {
     /// Leave the current scope.
     fn pop_scope(&mut self);
 
-    /// Called before/after a signal binding.
+    /// Called before/after an escaped or raw-text signal binding.
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Called before/after an owned raw HTML range. The default methods
+    /// delegate to on_binding_start/end for source compatibility.
+    fn on_raw_binding_start(
+        &mut self,
+        name: &str,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        self.on_binding_start(name, writer)
+    }
+    fn on_raw_binding_end(
+        &mut self,
+        name: &str,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        self.on_binding_end(name, writer)
+    }
 
     /// Called before/after for-loop and if-condition blocks.
     fn on_for_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;

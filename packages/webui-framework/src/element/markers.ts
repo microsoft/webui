@@ -15,6 +15,8 @@
  *   <!--wi-->   repeat item boundary
  *   <!--wc-->   conditional block start
  *   <!--/wc-->  conditional block end
+ *   <!--wN-->   raw HTML binding start
+ *   <!--/wN-->  raw HTML binding end
  */
 
 // Marker data constants matching the handler plugin output.
@@ -22,8 +24,24 @@ export const MARKER_REPEAT_START = 'wr';
 export const MARKER_REPEAT_END = '/wr';
 export const MARKER_COND_START = 'wc';
 export const MARKER_COND_END = '/wc';
+export const MARKER_RAW_START = 'w';
+export const MARKER_RAW_END = '/w';
 
 const MARKER_REPEAT_ITEM = 'wi';
+
+/** Build the paired marker data for a client-created raw binding. */
+export function rawMarker(index: number, closing = false): string {
+  return `${closing ? MARKER_RAW_END : MARKER_RAW_START}${index}`;
+}
+
+function isRawStartMarker(data: string): boolean {
+  if (data.length < 2 || data.charCodeAt(0) !== 119 /* w */) return false;
+  for (let i = 1; i < data.length; i++) {
+    const code = data.charCodeAt(i);
+    if (code < 48 /* 0 */ || code > 57 /* 9 */) return false;
+  }
+  return true;
+}
 
 /**
  * Collect the item markers (<!--wi-->) within a repeat range.
@@ -66,6 +84,10 @@ export function nextElement(marker: Comment): Element | null {
     if (node.nodeType === 1 /* ELEMENT_NODE */) return node as Element;
     if (node.nodeType === 8 /* COMMENT_NODE */) {
       const data = (node as Comment).data;
+      if (isRawStartMarker(data)) {
+        node = skipBlockRange(node as Comment, data);
+        continue;
+      }
       if (data === MARKER_REPEAT_END || data === MARKER_REPEAT_ITEM || data === MARKER_COND_END) return null;
     }
     node = node.nextSibling;
@@ -76,13 +98,17 @@ export function nextElement(marker: Comment): Element | null {
 /**
  * Skip a complete structural block range and return the node that follows it.
  *
- * `start` must be a `<!--wc-->` or `<!--wr-->` comment.  Walks forward with
+ * `start` must be a `<!--wc-->`, `<!--wr-->`, or `<!--wN-->` comment. Walks forward with
  * depth tracking over same-type markers so nested blocks of the same kind are
  * consumed as part of the range, and returns the sibling after the matching
  * closing marker (or `null` when the range is unterminated).
  */
 export function skipBlockRange(start: Comment, data: string): ChildNode | null {
-  const endTag = data === MARKER_COND_START ? MARKER_COND_END : MARKER_REPEAT_END;
+  const endTag = data === MARKER_COND_START
+    ? MARKER_COND_END
+    : isRawStartMarker(data)
+      ? `/${data}`
+      : MARKER_REPEAT_END;
   let depth = 1;
   let node: ChildNode | null = start.nextSibling;
   while (node && depth > 0) {
@@ -132,13 +158,14 @@ export function collectTemplateElements(root: Node): Array<Node | undefined> {
  * A resolved view of one SSR subtree, built in a single pre-order pass.
  *
  * `elements` holds the server-rendered element for each compiled pre-order
- * index, and `conds` / `repeats` list the structural markers in document order.
+ * index. Block markers and raw HTML ranges are listed in document order.
  */
 export interface SSRIndex {
   /** Server-rendered elements by pre-order index; `0` is the section root. */
   elements: Array<Node | undefined>;
   conds: Comment[];
   repeats: Comment[];
+  raws: Array<[Comment, Comment]>;
 }
 
 /**
@@ -183,6 +210,7 @@ export function buildSSRIndex(
   const elements: Array<Node | undefined> = [ssrIsSectionChild ? undefined : ssrRoot];
   const conds: Comment[] = [];
   const repeats: Comment[] = [];
+  const raws: Array<[Comment, Comment]> = [];
   // `solo` bounds a frame to the single element it was entered on.  In-place
   // block hydration starts inside the block's own `<!--wc-->` range, so an
   // unbounded frame would run past the closing marker once the template ran
@@ -214,6 +242,27 @@ export function buildSSRIndex(
         if (data === MARKER_REPEAT_START) {
           repeats.push(s as Comment);
           s = skipBlockRange(s as Comment, data);
+          continue;
+        }
+        if (isRawStartMarker(data)) {
+          const start = s as Comment;
+          let end: ChildNode | null = start.nextSibling;
+          let depth = 1;
+          const endMarker = `/${data}`;
+          while (end && depth > 0) {
+            if (end.nodeType === 8 /* COMMENT_NODE */) {
+              const marker = (end as Comment).data;
+              if (marker === data) depth++;
+              else if (marker === endMarker) depth--;
+            }
+            if (depth > 0) end = end.nextSibling;
+          }
+          if (end) {
+            raws.push([start, end as Comment]);
+            s = end.nextSibling;
+          } else {
+            s = null;
+          }
           continue;
         }
       } else if (type === 1 /* ELEMENT_NODE */) {
@@ -255,7 +304,7 @@ export function buildSSRIndex(
     }
   }
 
-  return { elements, conds, repeats };
+  return { elements, conds, repeats, raws };
 }
 
 
@@ -286,7 +335,11 @@ export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): 
     // Detect a structural block opening marker and skip the entire range.
     if (child.nodeType === 8 /* COMMENT_NODE */) {
       const data = (child as Comment).data;
-      if (data === MARKER_COND_START || data === MARKER_REPEAT_START) {
+      if (
+        data === MARKER_COND_START
+        || data === MARKER_REPEAT_START
+        || isRawStartMarker(data)
+      ) {
         child = skipBlockRange(child as Comment, data);
         continue;
       }

@@ -41,7 +41,7 @@ pub struct BootstrapExtensionContext<'a> {
 ///
 /// Plugins receive callbacks at key points in the rendering lifecycle:
 /// - **Scope management**: `push_scope` / `pop_scope` for component and loop boundaries
-/// - **Binding lifecycle**: `on_binding_start` / `on_binding_end` around signals
+/// - **Binding lifecycle**: binding hooks around escaped and raw signals
 /// - **For-loop lifecycle**: `on_for_start` / `on_for_end` around for-loop blocks
 /// - **If-condition lifecycle**: `on_if_start` / `on_if_end` around if-condition blocks
 /// - **Repeat items**: `on_repeat_item_start` / `on_repeat_item_end` per for-loop item
@@ -73,11 +73,27 @@ pub trait HandlerPlugin: Send {
     /// Exit the current scope, restoring the parent scope state.
     fn pop_scope(&mut self);
 
-    /// Called before rendering a signal binding.
+    /// Called before rendering an escaped signal binding.
     fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
 
-    /// Called after rendering a signal binding.
+    /// Called after rendering an escaped signal binding.
     fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+
+    /// Called before rendering a signal that owns a raw HTML range.
+    ///
+    /// Defaults to the ordinary binding hook so existing plugins remain source
+    /// compatible and keep their established marker behavior.
+    fn on_raw_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        self.on_binding_start(name, writer)
+    }
+
+    /// Called after rendering a signal that owns a raw HTML range.
+    ///
+    /// Defaults to the ordinary binding hook so existing plugins remain source
+    /// compatible and keep their established marker behavior.
+    fn on_raw_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+        self.on_binding_end(name, writer)
+    }
 
     /// Called before rendering a for-loop block.
     /// Defaults to [`on_binding_start`](HandlerPlugin::on_binding_start).
@@ -264,6 +280,19 @@ mod tests {
     #[derive(Default)]
     struct SendOnlyPlugin {
         scope_depth: Cell<usize>,
+        binding_calls: Cell<usize>,
+    }
+
+    struct TestWriter;
+
+    impl ResponseWriter for TestWriter {
+        fn write(&mut self, _content: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn end(&mut self) -> Result<()> {
+            Ok(())
+        }
     }
 
     impl HandlerPlugin for SendOnlyPlugin {
@@ -282,10 +311,14 @@ mod tests {
             _name: &str,
             _writer: &mut dyn ResponseWriter,
         ) -> Result<()> {
+            self.binding_calls
+                .set(self.binding_calls.get().saturating_add(1));
             Ok(())
         }
 
         fn on_binding_end(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
+            self.binding_calls
+                .set(self.binding_calls.get().saturating_add(1));
             Ok(())
         }
 
@@ -321,5 +354,20 @@ mod tests {
 
         assert_send::<dyn HandlerPlugin>();
         assert_plugin::<SendOnlyPlugin>();
+    }
+
+    #[test]
+    fn raw_hooks_default_to_existing_binding_hooks() {
+        let mut plugin = SendOnlyPlugin::default();
+        let mut writer = TestWriter;
+
+        plugin
+            .on_raw_binding_start("trusted_html", &mut writer)
+            .unwrap();
+        plugin
+            .on_raw_binding_end("trusted_html", &mut writer)
+            .unwrap();
+
+        assert_eq!(plugin.binding_calls.get(), 2);
     }
 }
