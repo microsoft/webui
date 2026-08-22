@@ -4,8 +4,9 @@
 //! WebUI handler plugin that emits lightweight hydration markers.
 //!
 //! Emits comment markers around for-loop blocks (`<!--wr-->` / `<!--/wr-->`),
-//! before each repeat item (`<!--wi-->`), and around if-condition blocks
-//! (`<!--wc-->` / `<!--/wc-->`). These markers enable zero-DOM-mutation
+//! before each repeat item (`<!--wi-->`), around if-condition blocks
+//! (`<!--wc-->` / `<!--/wc-->`), and around raw HTML bindings
+//! (`<!--wN-->` / `<!--/wN-->`). These markers enable zero-DOM-mutation
 //! in-place hydration on the client: the framework reuses the SSR comment
 //! nodes as runtime anchors instead of creating temporary wrappers.
 
@@ -19,20 +20,63 @@ const REPEAT_END: &str = "<!--/wr-->";
 const REPEAT_ITEM: &str = "<!--wi-->";
 const COND_START: &str = "<!--wc-->";
 const COND_END: &str = "<!--/wc-->";
+const RAW_START_PREFIX: &str = "<!--w";
+const RAW_END_PREFIX: &str = "<!--/w";
+const MARKER_SUFFIX: &str = "-->";
 
 /// WebUI handler plugin that emits hydration markers.
 ///
 /// Emits lightweight HTML comment markers around structural boundaries
 /// (for-loops and if-conditions) so the client can hydrate in-place
 /// without reparenting DOM nodes.
-pub struct WebUIHydrationPlugin;
+pub struct WebUIHydrationPlugin {
+    raw_index: usize,
+    raw_marker: String,
+}
 
 impl WebUIHydrationPlugin {
     /// Create a new WebUI handler plugin.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self {
+            raw_index: 0,
+            raw_marker: String::new(),
+        }
     }
+}
+
+fn write_raw_marker(
+    marker: &mut String,
+    writer: &mut dyn ResponseWriter,
+    index: usize,
+    closing: bool,
+) -> Result<()> {
+    let mut reversed_digits = [0_u8; 20];
+    let mut digit_count = 0;
+    let mut remaining = index;
+    loop {
+        reversed_digits[digit_count] = b"0123456789"[remaining % 10];
+        digit_count += 1;
+        remaining /= 10;
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    marker.clear();
+    if marker.capacity() == 0 {
+        marker.reserve(32);
+    }
+    marker.push_str(if closing {
+        RAW_END_PREFIX
+    } else {
+        RAW_START_PREFIX
+    });
+    for index in (0..digit_count).rev() {
+        marker.push(char::from(reversed_digits[index]));
+    }
+    marker.push_str(MARKER_SUFFIX);
+    writer.write(marker)
 }
 
 impl Default for WebUIHydrationPlugin {
@@ -46,11 +90,29 @@ impl HandlerPlugin for WebUIHydrationPlugin {
 
     fn pop_scope(&mut self) {}
 
-    fn on_binding_start(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
-        Ok(())
+    fn on_binding_start(
+        &mut self,
+        _name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
+            write_raw_marker(&mut self.raw_marker, writer, self.raw_index, false)
+        } else {
+            Ok(())
+        }
     }
 
-    fn on_binding_end(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(
+        &mut self,
+        _name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
+            write_raw_marker(&mut self.raw_marker, writer, self.raw_index, true)?;
+            self.raw_index += 1;
+        }
         Ok(())
     }
 
@@ -295,19 +357,29 @@ mod tests {
 
     #[test]
     fn test_default_creates_instance() {
-        let _plugin = WebUIHydrationPlugin;
+        let _plugin = WebUIHydrationPlugin::default();
     }
 
     #[test]
     fn test_signal_binding_emits_no_output() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         assert_eq!(
             writer.output, "",
             "signal binding hooks must not emit output"
         );
+    }
+
+    #[test]
+    fn test_raw_signal_binding_emits_range_markers() {
+        let mut plugin = WebUIHydrationPlugin::new();
+        let mut writer = TestWriter::new();
+        plugin.on_binding_start("html", true, &mut writer).unwrap();
+        writer.write("<b>trusted</b>").unwrap();
+        plugin.on_binding_end("html", true, &mut writer).unwrap();
+        assert_eq!(writer.output, "<!--w0--><b>trusted</b><!--/w0-->");
     }
 
     #[test]
@@ -429,9 +501,9 @@ mod tests {
         // Simulate a component with a signal, repeat, and conditional.
         plugin.push_scope();
         // Signal binding — no markers
-        plugin.on_binding_start("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
         writer.write("hello").unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         // For-loop — markers
         plugin.on_for_start("list", &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
@@ -622,6 +694,7 @@ mod tests {
                 fragments: vec![
                     WebUIFragment::for_loop("item", "items", "for-body"),
                     WebUIFragment::if_cond(ConditionExpr::identifier("show"), "if-body"),
+                    WebUIFragment::signal("html", true),
                 ],
             },
         );
@@ -638,7 +711,7 @@ mod tests {
             },
         );
         let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"items": ["a", "b"], "show": true});
+        let state = test_json!({"items": ["a", "b"], "show": true, "html": "<i>raw</i>"});
         let output = render_with_webui_plugin(&protocol, &state);
 
         // For-loop markers
@@ -684,5 +757,31 @@ mod tests {
             output.contains("<span>yes</span>"),
             "Expected if-condition body, got: {output}"
         );
+        assert!(
+            output.contains("<!--w0--><i>raw</i><!--/w0-->"),
+            "Expected bounded raw HTML markers, got: {output}"
+        );
+    }
+
+    #[test]
+    fn test_handler_keeps_raw_text_signal_marker_free() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<style>:root{"),
+                    WebUIFragment::raw_text_signal("tokens", true),
+                    WebUIFragment::raw("}</style>"),
+                ],
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({"tokens": "--accent:red"});
+        let output = render_with_webui_plugin(&protocol, &state);
+
+        assert!(output.contains("<style>:root{--accent:red}</style>"));
+        assert!(!output.contains("<!--w0-->"));
+        assert!(!output.contains("<!--/w0-->"));
     }
 }

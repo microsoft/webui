@@ -132,7 +132,12 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         self.scopes.pop();
     }
 
-    fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_start(
+        &mut self,
+        name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -142,7 +147,12 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         writer.write(&self.buffer)
     }
 
-    fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(
+        &mut self,
+        name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -232,8 +242,12 @@ mod tests {
         let mut plugin = FastV2HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
-        plugin.on_binding_end("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_start("userName", false, &mut writer)
+            .unwrap();
+        plugin
+            .on_binding_end("userName", false, &mut writer)
+            .unwrap();
         assert_eq!(
             writer.output,
             "<!--fe-b$$start$$0$$userName$$fe-b--><!--fe-b$$end$$0$$userName$$fe-b-->"
@@ -245,10 +259,10 @@ mod tests {
         let mut plugin = FastV2HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("a", &mut writer).unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         writer.output.clear();
-        plugin.on_binding_start("b", &mut writer).unwrap();
+        plugin.on_binding_start("b", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe-b$$start$$1$$b$$fe-b-->");
     }
 
@@ -291,7 +305,7 @@ mod tests {
         plugin.on_element_data(&three, &mut writer).unwrap();
 
         writer.output.clear();
-        plugin.on_binding_start("next", &mut writer).unwrap();
+        plugin.on_binding_start("next", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe-b$$start$$3$$next$$fe-b-->");
     }
 
@@ -299,8 +313,8 @@ mod tests {
     fn test_fast_v2_root_scope_disabled() {
         let mut plugin = FastV2HydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
         let data = 3u32.to_le_bytes();

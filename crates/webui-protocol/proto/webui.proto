@@ -225,6 +225,9 @@ message WebUIFragmentFor {
 message WebUIFragmentSignal {
   string value = 1;
   bool raw = 2;
+  // True inside an HTML raw-text context such as <style>. Raw-text signals do
+  // not own replaceable HTML sibling ranges because comments parse as text.
+  bool raw_text_context = 3;
 }
 
 // Conditional rendering fragment.

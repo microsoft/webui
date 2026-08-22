@@ -160,6 +160,29 @@ fn boundary_parent_scope(name: &str) -> Option<&'static str> {
     }
 }
 
+#[inline]
+fn is_html_text_only_scope(scope: Option<&str>) -> bool {
+    // Explicit allowlist of the raw-text/RCDATA scopes returned by
+    // `boundary_parent_scope`, so a new scope value must be deliberately
+    // added here to become text-only rather than silently defaulting to it.
+    // `<template> inert content` and "component host content" are
+    // intentionally excluded: both parse normal (escaped) child content.
+    matches!(
+        scope,
+        Some(
+            "<xmp> raw-text content"
+                | "<title> text content"
+                | "<iframe> raw-text content"
+                | "<script> raw-text content"
+                | "<noembed> raw-text content"
+                | "<textarea> text content"
+                | "<noframes> raw-text content"
+                | "<noscript> inert content"
+                | "<plaintext> text content"
+        )
+    )
+}
+
 /// Strategy for how component CSS is delivered in rendered output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
@@ -2403,6 +2426,15 @@ impl HtmlParser {
                 if Self::should_emit_text_content(&raw.value) {
                     self.add_raw_fragment(&raw.value);
                 }
+            } else if let Some(Fragment::Signal(signal)) = fragment.fragment.as_ref() {
+                if signal.raw && is_html_text_only_scope(self.boundary_parent_scope) {
+                    self.add_fragment(
+                        WebUIFragment::raw_text_signal(signal.value.as_str(), true),
+                        fragments,
+                    );
+                } else {
+                    self.add_fragment(fragment, fragments);
+                }
             } else {
                 self.add_fragment(fragment, fragments);
             }
@@ -2441,7 +2473,7 @@ impl HtmlParser {
 
     fn css_signal_comment_fragment(&self, comment: &str) -> Option<WebUIFragment> {
         let signal = comment_policy::parse_css_signal_comment(comment)?;
-        Some(WebUIFragment::signal(signal.path, signal.raw))
+        Some(WebUIFragment::raw_text_signal(signal.path, signal.raw))
     }
 
     /// Check if an attribute value is a pure handlebars expression (e.g., "{{name}}" or
@@ -5612,6 +5644,45 @@ mod tests {
     }
 
     #[test]
+    fn raw_bindings_in_html_text_contexts_do_not_own_html_ranges() {
+        for element in ["title", "textarea", "script", "xmp"] {
+            let html = format!("<{element}>{{{{{{value}}}}}}</{element}>");
+            let (fragments, _) = parse_and_get_fragments(&html);
+            let signal = fragments
+                .iter()
+                .find_map(|fragment| match fragment.fragment.as_ref() {
+                    Some(Fragment::Signal(signal)) if signal.value == "value" => Some(signal),
+                    _ => None,
+                });
+            let signal = signal
+                .unwrap_or_else(|| panic!("expected raw signal inside <{element}>: {fragments:?}"));
+            assert!(
+                signal.raw,
+                "<{element}> should preserve raw brace semantics"
+            );
+            assert!(
+                signal.raw_text_context,
+                "<{element}> should suppress HTML ownership markers"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_bindings_in_template_content_own_html_ranges() {
+        let (fragments, _) = parse_and_get_fragments("<template>{{{value}}}</template>");
+        let signal = fragments
+            .iter()
+            .find_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Signal(signal)) if signal.value == "value" => Some(signal),
+                _ => None,
+            });
+        let signal =
+            signal.unwrap_or_else(|| panic!("expected raw signal inside template: {fragments:?}"));
+        assert!(signal.raw);
+        assert!(!signal.raw_text_context);
+    }
+
+    #[test]
     fn test_css_strategy_external_emits_link_tag() {
         let mut parser = HtmlParser::new();
         parser
@@ -5650,7 +5721,8 @@ mod tests {
         assert!(
             fragments.iter().any(|f| matches!(
                 f.fragment.as_ref(),
-                Some(Fragment::Signal(s)) if s.value == "tokens" && !s.raw
+                Some(Fragment::Signal(s))
+                    if s.value == "tokens" && !s.raw && s.raw_text_context
             )),
             "uppercase <STYLE> should be CSS-processed, got: {:?}",
             fragments
@@ -8213,7 +8285,7 @@ mod tests {
                 raw("<html><head>"),
                 structural_matcher("head_start"),
                 raw("<style>\n:root {\n    "),
-                signal_raw("tokens.light"),
+                raw_text_signal("tokens.light", true),
                 raw("\n}\n</style>"),
                 structural_matcher("head_end"),
                 raw("</head><body>"),
@@ -8244,7 +8316,7 @@ mod tests {
                 raw("<html><head>"),
                 structural_matcher("head_start"),
                 raw("<style>\n:root {\n    "),
-                signal_raw("tokens.light"),
+                raw_text_signal("tokens.light", true),
                 raw("\n}\n</style>"),
                 structural_matcher("head_end"),
                 raw("</head><body>"),
@@ -8271,7 +8343,7 @@ mod tests {
                 raw("<html><head>"),
                 structural_matcher("head_start"),
                 raw("<style>"),
-                signal("themeCss"),
+                raw_text_signal("themeCss", false),
                 raw("</style>"),
                 structural_matcher("head_end"),
                 raw("</head><body>"),
@@ -8379,7 +8451,7 @@ mod tests {
                 raw("<html><head>"),
                 structural_matcher("head_start"),
                 raw("<style>\n  .a { color: red; }\n  "),
-                signal("themeCss"),
+                raw_text_signal("themeCss", false),
                 raw("\n  .b { color: blue; }\n</style>"),
                 structural_matcher("head_end"),
                 raw("</head><body>"),

@@ -1580,7 +1580,7 @@ fn compile_style_content(input: &str, meta: &mut TemplateSectionMeta) {
 fn compile_css_signal_comment(comment: &str, meta: &mut TemplateSectionMeta) -> bool {
     if let Some(signal) = comment_policy::parse_css_signal_comment(comment) {
         let idx = meta.text_bindings.len();
-        meta.text_bindings.push((signal.path, signal.raw));
+        meta.text_bindings.push((signal.path, false));
         emit_text_marker(meta, idx);
         return true;
     }
@@ -1682,7 +1682,11 @@ fn process_fragment_children(
         if let Some((parts, consumed, has_dynamic, is_raw)) =
             collect_text_run(&nodes[index..], text_bindings)
         {
-            if has_dynamic {
+            let adjacent_to_raw = !has_dynamic
+                && ((index > 0 && is_raw_text_marker(&nodes[index - 1], text_bindings))
+                    || (index + consumed < nodes.len()
+                        && is_raw_text_marker(&nodes[index + consumed], text_bindings)));
+            if has_dynamic || adjacent_to_raw {
                 // Decode HTML entities in static parts so that runtime
                 // textContent assignment renders decoded characters
                 // (e.g. `&gt;` → `>`).  Static-only text runs are
@@ -1885,10 +1889,15 @@ fn collect_text_run(
             FragmentNode::Comment(_) => break,
             FragmentNode::TextMarker(index) => {
                 if let Some((path, raw)) = text_bindings.get(*index) {
+                    if *raw && consumed != 0 {
+                        break;
+                    }
                     parts.push(CompiledAttrPart::Dynamic(path.clone()));
                     has_dynamic = true;
                     if *raw {
                         is_raw = true;
+                        consumed += 1;
+                        break;
                     }
                     consumed += 1;
                 } else {
@@ -1904,6 +1913,13 @@ fn collect_text_run(
     }
 
     Some((parts, consumed, has_dynamic, is_raw))
+}
+
+fn is_raw_text_marker(node: &FragmentNode, text_bindings: &[(String, bool)]) -> bool {
+    let FragmentNode::TextMarker(index) = node else {
+        return false;
+    };
+    text_bindings.get(*index).is_some_and(|(_, raw)| *raw)
 }
 
 fn collect_static_text(parts: &[CompiledAttrPart]) -> String {
@@ -3499,7 +3515,10 @@ mod tests {
         );
 
         assert_no_client_markers(&result);
-        assert!(result.contains(r#"["tokens.light"]"#));
+        assert!(
+            result.contains(r#","tx":[[[1,0],[":root{",["tokens.light"],"}"]]]"#),
+            "raw CSS stays an ordinary text binding: {result}"
+        );
         assert!(!result.contains("/*"));
         assert!(!result.contains("*/"));
     }
@@ -4647,6 +4666,29 @@ mod tests {
         assert!(
             result.contains("\"rawHtml\""),
             "rawHtml path in text bindings"
+        );
+    }
+
+    #[test]
+    fn raw_binding_is_split_from_adjacent_text_and_escaped_binding() {
+        let result =
+            generate_compiled_template("my-comp", r#"<div>Before {{{html}}} After {{name}}</div>"#);
+
+        assert!(
+            result.contains(
+                r#","tx":[[[1,0],["Before "]],[[1,0,1],[["html"]],1],[[1,0,2],[" After ",["name"]]]]"#,
+            ),
+            "raw HTML must own only its signal while adjacent text remains separate: {result}"
+        );
+    }
+
+    #[test]
+    fn adjacent_raw_bindings_compile_to_distinct_ranges() {
+        let result = generate_compiled_template("my-comp", r#"<div>{{{first}}}{{{second}}}</div>"#);
+
+        assert!(
+            result.contains(r#","tx":[[[1,0],[["first"]],1],[[1,0,1],[["second"]],1]]"#,),
+            "each raw binding needs one metadata entry and one marker range: {result}"
         );
     }
 

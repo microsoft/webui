@@ -165,8 +165,22 @@ pub struct WebUIFragmentSignal {
     pub value: String,
     /// Determines if the value should be rendered as raw content.
     pub raw: bool,
+    /// Whether the signal is inside an HTML raw-text context such as `<style>`.
+    /// Raw-text signals never own replaceable sibling ranges.
+    pub raw_text_context: bool,
 }
 ```
+`raw_text_context` governs marker ownership only; it does not change escaping.
+`raw` keeps its usual meaning (`false` HTML-encodes, `true` writes verbatim) in
+every context, including inside `<script>`/`<style>`/`<xmp>` (HTML raw-text,
+never decodes character references) and `<title>`/`<textarea>` (RCDATA, does
+decode them). An escaped (`{{value}}`) binding inside a raw-text element is
+therefore an authoring footgun: an HTML-encoded value such as `&amp;` is
+emitted as literal text and is never decoded back by the browser, which can
+corrupt CSS/JS. Authors binding values that may contain `&`, `<`, `>`, or
+quotes inside `<script>`/`<style>`/`<xmp>` must use the raw (`{{{value}}}`)
+form. The parser does not currently reject an escaped binding in these
+contexts.
 #### Conditional Fragment
 ```rust
 pub struct WebUIFragmentIf {
@@ -1050,8 +1064,18 @@ completion work such as rendered-component template emission stays in handler co
 pub trait HandlerPlugin: Send {
     fn push_scope(&mut self);
     fn pop_scope(&mut self);
-    fn on_binding_start(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
-    fn on_binding_end(&mut self, name: &str, writer: &mut dyn ResponseWriter) -> Result<()>;
+    fn on_binding_start(
+        &mut self,
+        name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
+    fn on_binding_end(
+        &mut self,
+        name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()>;
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -1080,7 +1104,9 @@ retain thread-affine state such as `Rc`; use owned state, `Arc`, or another
 sendable handle instead.
 
 **Hook invocation points:**
-- **Signal**: `on_binding_start` before, `on_binding_end` after (same scope)
+- **Signal**: every signal calls `on_binding_start/end`. The `raw` argument is
+  `true` only for authored raw HTML signals that own replaceable sibling ranges;
+  escaped signals and marker-free signals in HTML raw-text contexts pass `false`.
 - **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
 - **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
 - **Component**: `push_scope/pop_scope` around component body
@@ -1654,6 +1680,13 @@ trimmed body is exactly one handlebars expression:
 
 Bare handlebars expressions in CSS are raw text. Dynamic CSS fragments must use
 the comment wrapper so the CSS parser can distinguish them from invalid CSS.
+`<style>` is an HTML raw-text element, so the browser never decodes character
+references in it: an escaped (`raw: false`) CSS signal whose value contains
+`&`, `<`, `>`, or quotes is HTML-encoded (e.g. `&amp;`) exactly like any other
+escaped signal, and that encoded text is emitted verbatim into the stylesheet
+rather than decoded back — corrupting the CSS for those values. Prefer
+`/*{{{tokens.light}}}*/` (raw) for CSS custom-property/token values, which are
+expected to be plain CSS syntax rather than pre-escaped text.
 
 ### Design Token Resolution (`webui-tokens`)
 
@@ -1757,7 +1790,7 @@ update hot paths still call the function directly.
 | Field | Type                              | Description                                        |
 |-------|-----------------------------------|----------------------------------------------------|
 | `h`   | `string`                          | Marker-free static HTML for client-created DOM, including baked-in `<link>` / `<style>` nodes for link/style CSS strategies |
-| `tx`  | `[slot, parts][]`                 | Client text runs inserted at precompiled slots     |
+| `tx`  | `[slot, parts, raw?][]`           | Client text runs inserted at precompiled slots; `raw = 1` identifies unescaped HTML ranges |
 | `a`   | `CompiledAttrMeta[]`              | Attribute binding metadata                         |
 | `ag`  | `[elementIndex, start, count][]`  | Attribute-target groups for `a[]`                  |
 | `c`   | `[ConditionRef, blockIndex, slot][]` | Conditional blocks                              |
@@ -4045,7 +4078,7 @@ strict missing-fragment failure.
 
 **Machine-readable diagnostics.** `webui-cli` accepts a global `--format <human|json>` flag. In `json` mode the colorized terminal output is suppressed and each error is emitted as a single JSON object on **stdout** (`{severity, code, message, file, line, column, snippet, help, chain}`), so editors, CI, and AI assistants consume diagnostics without scraping ANSI text. The process exit code follows BSD `sysexits.h` so callers can branch on the cause: `65` (`EX_DATAERR`) for a template/authoring error, `66` (`EX_NOINPUT`) for a missing app folder / state file / serve dir / entry, `69` (`EX_UNAVAILABLE`) for an occupied port, `74` (`EX_IOERR`) for other I/O failures, `2` for argument/usage errors (clap), and `1` otherwise.
 
-`tx[]` stores text runs as `[slot, parts]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Client-created DOM inserts one runtime `Text` node per run instead of scanning compiled marker comments.
+`tx[]` stores text runs as `[slot, parts, raw?]`, where `parts` reuse the compact attribute-part encoding (`string` for static text, `[path]` for dynamic text). Escaped text omits `raw` and client-created DOM inserts one runtime `Text` node per run. Triple-brace bindings set `raw` to `1` and own the sibling-safe DOM range between paired `<!--wN-->` and `<!--/wN-->` markers.
 
 **Element addressing.** Every locator - the `slot` in `tx` / `c` / `r`, the target in `ag`, and the event target in `eg` - names an element by its **pre-order index** within its own compiled section: `0` is the section root and elements are numbered `1..N` in the order a depth-first walk of `h` meets them. The root template and each `<if>` / `<for>` block number independently, matching the `b[]` split. A `slot` is `[parentIndex, beforeIndex, order?]`, where `beforeIndex` remains a child offset within that parent. Both runtime paths rebuild the same numbering in one walk - client-created DOM by walking the cloned `h`, SSR by walking the server output while skipping structural block ranges - so a binding resolves by array index rather than by descending a chain of child offsets.
 
@@ -4079,8 +4112,10 @@ WebUI SSR marker formats are:
 | Repeat item | `<!--wi-->` | Marks each iteration boundary inside a repeat |
 | Conditional start | `<!--wc-->` | Opens an `<if>` block |
 | Conditional end | `<!--/wc-->` | Closes the `<if>` block |
+| Raw HTML start | `<!--wN-->` | Opens raw range `N` owned by a triple-brace binding |
+| Raw HTML end | `<!--/wN-->` | Closes the same raw range `N` |
 
-The WebUI handler plugin emits only these five comment markers. Text bindings, attribute bindings, and event handlers are resolved from compiled pre-order element indices at hydration time - no DOM attribute markers are needed. The handler only emits markers in active child scopes; the root page scope remains marker-free. During hydration the framework keeps `<!--wr-->` and `<!--wc-->` as runtime anchors and removes `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->` markers.
+The WebUI handler plugin emits these seven comment marker roles. Escaped text bindings, attribute bindings, and event handlers are resolved from compiled pre-order element indices at hydration time - no DOM attribute markers are needed. Raw HTML is the exception because its rendered value can contain any number of top-level nodes and therefore needs explicit ownership boundaries. Raw markers carry a decimal pair identifier so adjacent bindings cannot claim each other's ranges. Exact `<!--wN-->` / `<!--/wN-->` comments are framework-reserved and trusted raw HTML must not emit a marker matching its surrounding range. During hydration the framework keeps `<!--wr-->`, `<!--wc-->`, `<!--wN-->`, and `<!--/wN-->` as runtime anchors and removes `<!--/wr-->`, `<!--/wc-->`, and `<!--wi-->` markers.
 
 WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled metadata were generated by the same trusted WebUI compiler/handler version. Hand-authored or partially modified marker streams are unsupported; missing structural closing markers are invalid input, not a recoverable runtime condition.
 
@@ -4088,7 +4123,11 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
 
 `@microsoft/webui-framework` consumes the metadata object above plus the SSR markers emitted by `WebUIHydrationPlugin`. This follows an Islands Architecture approach: the server delivers fully-rendered HTML, authored Web Components hydrate on startup or explicitly opt into visibility-driven activation, and compiler-owned scriptless hosts remain dormant until browser code actually writes state.
 
-- SSR hydration performs one pre-order walk per component that pairs each template element with the server-rendered element it hydrates and collects `<!--wc-->` / `<!--wr-->` markers in document order. Because the compiler emits `c` / `r` in source order and the server renders in source order, the two line up by index, so each block's anchor is unambiguous. Bindings then resolve by lookup rather than by rescanning, keeping hydration linear in subtree size instead of proportional to bindings times sibling count. The walk skips whole `<!--wc-->` / `<!--wr-->` ranges — that content belongs to the block's own metadata — and stops at child components, which contribute no children to the parent's `h`. `<!--wi-->` item markers and SSR-only closing markers are removed afterwards.
+- SSR hydration performs one pre-order walk per component that pairs each template element with the server-rendered element it hydrates and collects structural markers and raw HTML ranges in document order. Because compiler metadata and server output share source order, each block and raw range is unambiguous. Bindings then resolve by lookup rather than by rescanning, keeping hydration linear in subtree size instead of proportional to bindings times sibling count. The walk skips complete conditional, repeat, and raw HTML ranges - their rendered elements are not static children owned by the enclosing section - and stops at child components, which contribute no children to the parent's `h`. `<!--wi-->` item markers and structural closing markers are removed afterwards; raw HTML boundaries remain for targeted updates.
+- Reactive triple-brace updates delete only the nodes between the binding's retained
+  `<!--wN-->` / `<!--/wN-->` anchors, parse the new trusted HTML in the parent
+  element's context, and insert the resulting fragment before the end anchor.
+  Static, conditional, and repeated siblings outside that range are preserved.
 - Authored browser entries execute only after every SSR instance they may
   upgrade has complete markup. Parser-inserted, non-async ES module scripts and
   classic `defer` scripts satisfy this automatically; blocking classic scripts

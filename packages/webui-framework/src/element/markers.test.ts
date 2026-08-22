@@ -525,6 +525,35 @@ describe('buildSSRIndex', () => {
     assert.deepStrictEqual(index.conds, [markerA, markerC, markerB]);
   });
 
+  test('collects raw ranges and excludes their elements from static pairing', () => {
+    const tplStatic = el('SPAN');
+    const tpl = el('ROOT', tplStatic);
+    const rawStart = cmt('w0');
+    const rawEnd = cmt('/w0');
+    const ssrStatic = el('SPAN');
+    const ssr = el('ROOT', rawStart, el('B'), el('I'), rawEnd, ssrStatic);
+
+    const index = build(tpl, ssr);
+
+    assert.deepStrictEqual(index.raws, [[rawStart, rawEnd]]);
+    assert.strictEqual(index.elements[1], ssrStatic);
+  });
+
+  test('ignores legacy-looking comments inside an indexed raw range', () => {
+    const tplStatic = el('SPAN');
+    const tpl = el('ROOT', tplStatic);
+    const rawStart = cmt('w0');
+    const contentComment = cmt('/wh');
+    const rawEnd = cmt('/w0');
+    const ssrStatic = el('SPAN');
+    const ssr = el('ROOT', rawStart, el('B'), contentComment, el('I'), rawEnd, ssrStatic);
+
+    const index = build(tpl, ssr);
+
+    assert.deepStrictEqual(index.raws, [[rawStart, rawEnd]]);
+    assert.strictEqual(index.elements[1], ssrStatic);
+  });
+
   test('does not pair elements inside a structural range', () => {
     // The <p> rendered inside the conditional belongs to the block's own
     // metadata, so the template's first element must pair with <div>.

@@ -275,6 +275,10 @@ pub struct WebUiFragmentSignal {
     pub value: ::prost::alloc::string::String,
     #[prost(bool, tag = "2")]
     pub raw: bool,
+    /// True inside an HTML raw-text context such as <style>. Raw-text signals do
+    /// not own replaceable HTML sibling ranges because comments parse as text.
+    #[prost(bool, tag = "3")]
+    pub raw_text_context: bool,
 }
 /// Conditional rendering fragment.
 #[derive(serde::Serialize, serde::Deserialize)]

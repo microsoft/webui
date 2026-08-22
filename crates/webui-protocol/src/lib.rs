@@ -167,6 +167,36 @@ impl WebUiFragment {
             fragment: Some(web_ui_fragment::Fragment::Signal(WebUiFragmentSignal {
                 value: value.into(),
                 raw,
+                raw_text_context: false,
+            })),
+        }
+    }
+
+    /// Create a signal inside an HTML raw-text context such as `<style>`.
+    ///
+    /// `raw_text_context` is scoped to **marker ownership only**: it tells the
+    /// handler that comment/text sibling markers cannot be inserted around this
+    /// signal because they would be inert plain text in a raw-text/RCDATA
+    /// element (`<script>`, `<style>`, `<xmp>`, `<title>`, `<textarea>`, ...).
+    /// It does **not** change escaping. The rendered value still follows plain
+    /// `raw` semantics: `raw = false` (`{{value}}`) HTML-encodes the value via
+    /// `encode_safe`, `raw = true` (`{{{value}}}`) writes it verbatim.
+    ///
+    /// This distinction matters because HTML raw-text elements (`<script>`,
+    /// `<style>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`) never decode
+    /// character references, unlike RCDATA elements (`<title>`, `<textarea>`)
+    /// which do. Authors who bind a value that may contain `&`, `<`, `>`, or
+    /// quotes inside a raw-text element must use the raw (`{{{value}}}`) form;
+    /// otherwise the HTML-encoded entities (e.g. `&amp;`) are emitted as literal
+    /// text and are never decoded back by the browser, corrupting the CSS/JS.
+    /// The parser does not currently reject an escaped binding in these
+    /// contexts — this is a known authoring footgun, not a parser bug.
+    pub fn raw_text_signal(value: impl Into<String>, raw: bool) -> Self {
+        Self {
+            fragment: Some(web_ui_fragment::Fragment::Signal(WebUiFragmentSignal {
+                value: value.into(),
+                raw,
+                raw_text_context: true,
             })),
         }
     }
@@ -819,7 +849,22 @@ mod tests {
         let decoded = WebUIProtocol::from_protobuf(&bytes).unwrap();
         let frag = &decoded.fragments["main"].fragments[0];
         match frag.fragment.as_ref() {
-            Some(web_ui_fragment::Fragment::Signal(s)) => assert!(!s.raw),
+            Some(web_ui_fragment::Fragment::Signal(s)) => {
+                assert!(!s.raw);
+                assert!(!s.raw_text_context);
+            }
+            _ => panic!("expected signal"),
+        }
+    }
+
+    #[test]
+    fn raw_text_signal_does_not_own_html_range() {
+        let fragment = WebUIFragment::raw_text_signal("tokens.light", true);
+        match fragment.fragment.as_ref() {
+            Some(web_ui_fragment::Fragment::Signal(signal)) => {
+                assert!(signal.raw);
+                assert!(signal.raw_text_context);
+            }
             _ => panic!("expected signal"),
         }
     }

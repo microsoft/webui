@@ -471,10 +471,11 @@ resource-constrained devices.
    `$update(path)` only visits bindings that reference the changed property.
    Everything else is skipped via a per-path index built once at hydration time.
 
-2. **Zero allocations during updates.**
+2. **Zero framework allocations during ordinary updates.**
    Targeted updates are a single `Map.get()` → direct array iteration.
    No intermediate arrays, no object creation, no spread operators on the
-   update path.
+   update path. A changed raw HTML binding necessarily parses and creates its
+   replacement DOM nodes inside its pre-resolved ownership range.
 
 3. **Parse once, clone forever.**
    Compiled template HTML is parsed via `innerHTML` once per component tag
@@ -928,24 +929,28 @@ const target = elements[index];
 ### SSR resolution (`buildSSRIndex`)
 
 SSR DOM differs from the compiled template: the renderer strips inter-element
-whitespace, and `<if>` / `<for>` bodies are rendered inline between markers.
+whitespace, `<if>` / `<for>` bodies are rendered inline between structural
+markers, and raw HTML values can contribute arbitrary element runs.
 `buildSSRIndex` walks the SSR DOM and the compiled template DOM **in lockstep**,
 skipping whole marker ranges, and numbers the result the same way:
 
 ```typescript
 // Elements are paired positionally and numbered in pre-order.
-// Structural ranges are skipped whole — that content belongs to
-// the block's own metadata.
+// Structural and raw HTML ranges are skipped whole - that content
+// is not part of the enclosing section's static element numbering.
 // Text is the exception: whitespace stripping means text nodes do
-// not line up, so text slots still resolve by ordinal.
+// not line up, so each text slot resolves from its compiled
+// right-hand static or marker boundary.
 ```
 
-This eliminates all *per-binding* annotation: no `data-w-*` attributes, no
-comment per text run, no DOM markers around individual bindings.  What the SSR
-server does emit is the five structural comments documented above
-(`<!--wr-->`, `<!--wi-->`, `<!--/wr-->`, `<!--wc-->`, `<!--/wc-->`), which
-delimit `<if>` / `<for>` bodies and are what the walk skips over and anchors
-blocks on.  They are removed once hydration completes.
+This eliminates annotations for ordinary bindings: no `data-w-*` attributes and
+no comments around escaped text. The SSR server emits five structural comments
+for `<if>` / `<for>` bodies plus paired `<!--wN-->` / `<!--/wN-->` markers around each raw HTML
+binding. Structural closing/item markers are removed after hydration. Raw HTML
+anchors remain so updates can replace zero or multiple direct sibling nodes
+without touching content outside the binding's range. These exact marker
+comments are framework-reserved and must not appear in the trusted raw value
+inside that range.
 
 ---
 
@@ -963,7 +968,8 @@ blocks on.  They are removed once hydration completes.
 
 - **No virtual DOM** — no tree copy, no diff algorithm
 - **No runtime template parsing** — the Rust compiler handles all syntax
-- **No `innerHTML` on updates** — only `textContent` and `setAttribute`
+- **No parent-wide `innerHTML` on updates** — raw HTML parses into its bounded
+  contextual range; escaped text and attributes patch direct node references
 - **No `querySelector` on updates** — all nodes are pre-resolved references
 - **No recursion in hot paths** — conditions use iterative stack evaluation
 

@@ -86,12 +86,12 @@ describe('textDiffersFromDom', () => {
     assert.equal(textDiffersFromDom(b, makeCtx({}, 'a-c')), true);
   });
 
-  test('raw bindings are skipped (innerHTML re-serialization is unreliable)', () => {
+  test('raw bindings are skipped because their owned range is not text data', () => {
     const b = {
-      node: { data: 'stale' } as unknown as Text,
+      node: { data: 'wh' } as unknown as Comment,
       path: 'html',
       raw: true,
-      rawParent: fakeEl({}, '<b>x</b>'),
+      rawEnd: { data: '/wh' } as unknown as Comment,
     } as TextBinding;
     // Even with a divergent value, raw bindings never report a mismatch.
     assert.equal(textDiffersFromDom(b, makeCtx({ html: '<b>y</b>' })), false);
