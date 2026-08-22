@@ -68,6 +68,69 @@ test.describe('client-created structural sibling order', () => {
     ]);
   });
 
+  test('keeps a conditional latent after an existing repeat', async ({ page }) => {
+    const turns = page.locator('test-structural-sibling-order .minimal-turn');
+    await page.evaluate(() => {
+      (document.querySelector('test-structural-sibling-order') as HTMLElement & {
+        appendMinimalTurn(messages: string[], failed: boolean): void;
+      }).appendMinimalTurn(['user', 'assistant'], false);
+    });
+
+    await expect(turns).toHaveCount(2);
+    expect(await directChildKinds(turns.nth(1).locator('.for-if'))).toEqual([
+      'user',
+      'assistant',
+    ]);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-structural-sibling-order') as HTMLElement & {
+        updateLastMinimalTurn(patch: { failed: boolean }): void;
+      }).updateLastMinimalTurn({ failed: true });
+    });
+
+    expect(await directChildKinds(turns.nth(1).locator('.for-if'))).toEqual([
+      'user',
+      'assistant',
+      'error',
+    ]);
+    expect(await directChildKinds(turns.nth(1).locator('.if-for'))).toEqual([
+      'error',
+      'user',
+      'assistant',
+    ]);
+  });
+
+  test('keeps a late-growing repeat before an existing conditional', async ({ page }) => {
+    const turns = page.locator('test-structural-sibling-order .minimal-turn');
+    await page.evaluate(() => {
+      (document.querySelector('test-structural-sibling-order') as HTMLElement & {
+        appendMinimalTurn(messages: string[], failed: boolean): void;
+      }).appendMinimalTurn([], true);
+    });
+
+    await expect(turns).toHaveCount(2);
+    expect(await directChildKinds(turns.nth(1).locator('.for-if'))).toEqual([
+      'error',
+    ]);
+
+    await page.evaluate(() => {
+      (document.querySelector('test-structural-sibling-order') as HTMLElement & {
+        updateLastMinimalTurn(patch: { messages: string[] }): void;
+      }).updateLastMinimalTurn({ messages: ['user', 'assistant'] });
+    });
+
+    expect(await directChildKinds(turns.nth(1).locator('.for-if'))).toEqual([
+      'user',
+      'assistant',
+      'error',
+    ]);
+    expect(await directChildKinds(turns.nth(1).locator('.if-for'))).toEqual([
+      'error',
+      'user',
+      'assistant',
+    ]);
+  });
+
   test('hydrates an empty text slot before a following repeat', async ({ page }) => {
     const container = page.locator('test-structural-sibling-order .text-before-repeat');
     await expect(container).toHaveText('itemtail');
