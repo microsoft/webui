@@ -51,6 +51,20 @@ export class TestStructuralSiblingOrder extends WebUIElement {
     ];
   }
 
+  appendMinimalTurn(messages: string[], failed: boolean): void {
+    this.minimalTurns = [
+      ...this.minimalTurns,
+      { messages, failed },
+    ];
+  }
+
+  updateLastMinimalTurn(patch: Partial<MinimalTurn>): void {
+    const last = this.minimalTurns.length - 1;
+    this.minimalTurns = this.minimalTurns.map((turn, index) => (
+      index === last ? { ...turn, ...patch } : turn
+    ));
+  }
+
   setBeforeRepeat(): void {
     this.beforeRepeat = 'before';
   }
