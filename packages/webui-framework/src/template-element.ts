@@ -1748,63 +1748,111 @@ export class TemplateElement extends HTMLElement {
     // pre-order reproduces the indices the compiler assigned.
     const elements = collectTemplateElements(root);
 
+    type SlotRef = {
+      parent: Node;
+      ref: Node | null;
+      order: number;
+      first: Node;
+      second?: Node;
+    };
+    const slotRefs = new Array<SlotRef>(
+      (meta.tx?.length ?? 0) + (meta.c?.length ?? 0) + (meta.r?.length ?? 0),
+    );
+    let slotRefCount = 0;
+    let hasSharedSlots = false;
+
     // Pre-resolve text binding slots
-    const textRefs = new Array<{ parent: Node; ref: Node | null; parts: CompiledAttrPart[]; raw?: boolean }>(meta.tx?.length ?? 0);
-    let textRefCount = 0;
+    let rawIndex = 0;
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
         const entry = meta.tx[i];
         const [slot, parts] = entry;
         const raw = entry[2] === 1;
-        const [parentIndex, beforeIndex] = slot;
+        const [parentIndex, beforeIndex, order = 0] = slot;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        textRefs[textRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, parts, raw };
-        textRefCount += 1;
+        let first: Node;
+        let second: Node | undefined;
+        if (raw) {
+          const start = document.createComment(rawMarker(rawIndex));
+          const end = document.createComment(rawMarker(rawIndex, true));
+          rawIndex++;
+          instance.texts.push({
+            node: start,
+            parts,
+            scope,
+            raw: true,
+            rawEnd: end,
+            rawOwner: instance,
+          });
+          first = start;
+          second = end;
+        } else {
+          const textNode = document.createTextNode('');
+          instance.texts.push({ node: textNode, parts, scope });
+          first = textNode;
+        }
+        slotRefs[slotRefCount++] = {
+          parent,
+          ref: parent.childNodes[beforeIndex] || null,
+          order,
+          first,
+          second,
+        };
+        if (order > 0) hasSharedSlots = true;
       }
     }
 
     // Pre-resolve conditional slots
-    type CondRef = { parent: Node; ref: Node | null; condition: CompiledCondition; blockIndex: number };
-    const condRefs = new Array<CondRef>(meta.c?.length ?? 0);
-    let condRefCount = 0;
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
-        const [parentIndex, beforeIndex] = slotMeta;
+        const [parentIndex, beforeIndex, order = 0] = slotMeta;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        condRefs[condRefCount] = { parent, ref: parent.childNodes[beforeIndex] || null, condition: condition as CompiledCondition, blockIndex };
-        condRefCount += 1;
+        const anchor = document.createComment('');
+        instance.conds.push({
+          condition: condition as CompiledCondition,
+          blockIndex,
+          anchor,
+          scope,
+          owner: instance,
+          instance: null,
+        });
+        slotRefs[slotRefCount++] = {
+          parent,
+          ref: parent.childNodes[beforeIndex] || null,
+          order,
+          first: anchor,
+        };
+        if (order > 0) hasSharedSlots = true;
       }
     }
 
     // Pre-resolve repeat slots
-    type RepRef = {
-      parent: Node;
-      ref: Node | null;
-      collection: string;
-      itemVar: string;
-      blockIndex: number;
-      keyPath?: string;
-    };
-    const repRefs = new Array<RepRef>(meta.r?.length ?? 0);
-    let repRefCount = 0;
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
-        const [parentIndex, beforeIndex] = slotMeta;
+        const [parentIndex, beforeIndex, order = 0] = slotMeta;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        repRefs[repRefCount] = {
+        const anchor = document.createComment('');
+        const binding: RepeatBinding = {
+          markerId: i, collection, itemVar, blockIndex,
+          container: parent as ParentNode & Node, start: anchor, end: null,
+          scope, owner: instance, instances: [],
+        };
+        if (keyPath !== undefined) {
+          binding.keyState = createRepeatKeyState(keyPath);
+        }
+        instance.repeats.push(binding);
+        slotRefs[slotRefCount++] = {
           parent,
           ref: parent.childNodes[beforeIndex] || null,
-          collection,
-          itemVar,
-          blockIndex,
-          keyPath,
+          order,
+          first: anchor,
         };
-        repRefCount += 1;
+        if (order > 0) hasSharedSlots = true;
       }
     }
 
@@ -1816,66 +1864,20 @@ export class TemplateElement extends HTMLElement {
     // insertions still shift childNode indices for sibling elements.
     this.$finalize(instance, root, meta, (_r, i) => elements[i] ?? null, scope);
 
-    // Now insert anchors using pre-resolved references
-
-    // Text bindings
-    let rawIndex = 0;
-    for (let i = 0; i < textRefCount; i++) {
-      const t = textRefs[i];
-      const anchor = document.createComment(t.raw ? rawMarker(rawIndex, true) : '');
-      t.parent.insertBefore(anchor, t.ref);
-      if (t.raw) {
-        const start = document.createComment(rawMarker(rawIndex));
-        rawIndex++;
-        t.parent.insertBefore(start, anchor);
-        instance.texts.push({
-          node: start,
-          parts: t.parts,
-          scope,
-          raw: true,
-          rawEnd: anchor,
-          rawOwner: instance,
-        });
-      } else {
-        const textNode = document.createTextNode('');
-        t.parent.insertBefore(textNode, anchor);
-        instance.texts.push({ node: textNode, parts: t.parts, scope });
-      }
+    // Co-located dynamic slots share one static insertion reference. The
+    // compiler's order field preserves source order across binding kinds.
+    if (hasSharedSlots) {
+      slotRefs.length = slotRefCount;
+      slotRefs.sort((left, right) => left.order - right.order);
+    }
+    for (let i = 0; i < slotRefCount; i++) {
+      const slot = slotRefs[i];
+      slot.parent.insertBefore(slot.first, slot.ref);
+      if (slot.second) slot.parent.insertBefore(slot.second, slot.ref);
     }
 
-    // Conditional bindings
-    for (let i = 0; i < condRefCount; i++) {
-      const c = condRefs[i];
-      const anchor = document.createComment('');
-      c.parent.insertBefore(anchor, c.ref);
-      instance.conds.push({
-        condition: c.condition,
-        blockIndex: c.blockIndex,
-        anchor,
-        scope,
-        owner: instance,
-        instance: null,
-      });
-    }
-
-    // Repeat bindings
-    for (let i = 0; i < repRefCount; i++) {
-      const r = repRefs[i];
-      const anchor = document.createComment('');
-      r.parent.insertBefore(anchor, r.ref);
-      const binding: RepeatBinding = {
-        markerId: i, collection: r.collection, itemVar: r.itemVar, blockIndex: r.blockIndex,
-        container: r.parent as ParentNode & Node, start: anchor, end: null,
-        scope, owner: instance, instances: [],
-      };
-      if (r.keyPath !== undefined) {
-        binding.keyState = createRepeatKeyState(r.keyPath);
-      }
-      instance.repeats.push(binding);
-    }
-
-    // Evaluate conditionals and repeats inline so blocks are created
-    // immediately — no deferred $update() flush needed.
+    // Create conditional blocks immediately; the first full binding pass
+    // reconciles repeats after this wiring step returns.
     for (let i = 0; i < instance.conds.length; i++) this.$toggleCond(instance.conds[i]);
 
     return instance;

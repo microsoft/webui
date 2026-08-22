@@ -328,9 +328,10 @@ export function buildSSRIndex(
  * type are handled via depth tracking. Returns the child at the given
  * `ordinal`, or null.
  *
- * Used by `$findSSRText` to keep SSR text ordinals aligned with the template.
- * Elements are addressed by pre-order index instead (see `buildSSRIndex`);
- * text cannot be, because the renderer strips whitespace that `meta.h` keeps.
+ * Used by static slot fallback to keep SSR node ordinals aligned with the
+ * template. Elements are addressed by pre-order index instead (see
+ * `buildSSRIndex`); text cannot be, because the renderer strips whitespace
+ * that `meta.h` keeps.
  *
  * **Requires closing markers to still be in the DOM** — caller must
  * not remove `<!--/wc-->` or `<!--/wr-->` before all resolution is done.

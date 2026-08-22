@@ -145,7 +145,7 @@ The matching executable payload is stored under `window.__webui.templateFns['tod
 | Field | Purpose |
 |---|---|
 | `h` | Static HTML, marker-free, used for client-created cloning. **Never has SSR markers.** |
-| `tx` | Text-binding runs, slot path + parts. |
+| `tx` | Text-binding runs, ordered slot + parts. |
 | `a` / `ag` | Attribute bindings and the elements they target. |
 | `c` | Conditional blocks with `[conditionRef, blockIndex, slot]`. |
 | `r` | Repeat blocks with `[collection, itemVar, blockIndex, slot]`. |
@@ -218,13 +218,21 @@ Two details shape the walk:
   children to the parent's `h`, so whatever the server rendered inside belongs
   to them.
 
-### `$findSSRText`
+### Text slot boundaries
 
-Text is the one thing that cannot be indexed. The renderer strips
-inter-element whitespace that `meta.h` keeps, so text nodes do not line up
-positionally even though elements do. The compiler emits text-slot positions as
-`[parentIndex, beforeIndex]`, and `$findSSRText` walks SSR text-node ordinals up
-to that index, skipping marker ranges.
+Text is the one thing that cannot use the element index directly. The compiler
+emits each dynamic slot as `[parentIndex, beforeIndex, order?]`. `order`
+disambiguates text, conditional, and repeat bindings removed at the same static
+child offset.
+
+During hydration, the runtime finds the slot's right-hand boundary: the next
+co-located structural marker by `order`, or the next static child. A
+server-rendered text node is the boundary's immediate previous sibling. When an
+empty server value produced no text node, the runtime inserts one at that exact
+boundary. The text-to-marker relation is encoded once into an `Int32Array`
+cached by template metadata, so every instance resolves a structural boundary
+in O(1) without retaining a `Map`. This avoids rescanning sibling ranges and
+prevents adjacent dynamic slots from claiming the same text node.
 
 ---
 

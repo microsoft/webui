@@ -31,11 +31,15 @@ test.describe('hydration bench fixture', () => {
     expect(totals['test-hydration-wide'].count).toBe(150);
     expect(totals['test-hydration-deep'].count).toBe(150);
     expect(totals['test-hydration-nested'].count).toBe(40);
+    expect(totals['test-hydration-slots'].count).toBe(40);
     expect(totals['test-hydration-wide'].totalMs).toBeGreaterThan(0);
 
     // Hydration must actually have wired the bindings.
     await expect(page.locator('test-hydration-wide').first().locator('.w0')).toHaveText('v0');
     await expect(page.locator('test-hydration-deep').first().locator('.d0')).toHaveText('v0');
+    await expect(page.locator('test-hydration-slots').first().locator('.slots')).toHaveText(
+      'v0av1v2cv3dv4v5fv0av1v2cv3dv4v5fv0av1v2cv3dv4v5fv0av1v2cv3dv4v5fv0av1v2cv3dv4v5f',
+    );
   });
 
   test('keeps hydrated bindings reactive', async ({ page }) => {
