@@ -1,1 +1,6 @@
-<template shadowrootmode="open"><button class="btn"><slot></slot></button></template>
+<template shadowrootmode="open">
+  <button class="btn">
+    <slot></slot>
+    <span class="appearance">{{appearance}}</span>
+  </button>
+</template>
