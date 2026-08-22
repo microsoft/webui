@@ -1957,11 +1957,7 @@ impl WebUIHandler {
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         if let Some(p) = &mut context.plugin {
-            if owns_html_range {
-                p.on_raw_binding_start(&signal.value, context.writer)?;
-            } else {
-                p.on_binding_start(&signal.value, context.writer)?;
-            }
+            p.on_binding_start(&signal.value, owns_html_range, context.writer)?;
         }
 
         if let Some(value) = self.resolve_value(&signal.value, context) {
@@ -1969,11 +1965,7 @@ impl WebUIHandler {
         }
 
         if let Some(p) = &mut context.plugin {
-            if owns_html_range {
-                p.on_raw_binding_end(&signal.value, context.writer)?;
-            } else {
-                p.on_binding_end(&signal.value, context.writer)?;
-            }
+            p.on_binding_end(&signal.value, owns_html_range, context.writer)?;
         }
         Ok(())
     }

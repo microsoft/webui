@@ -1056,27 +1056,15 @@ pub trait HandlerPlugin: Send {
     fn on_binding_start(
         &mut self,
         name: &str,
+        raw: bool,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
     fn on_binding_end(
         &mut self,
         name: &str,
+        raw: bool,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()>;
-    fn on_raw_binding_start(
-        &mut self,
-        name: &str,
-        writer: &mut dyn ResponseWriter,
-    ) -> Result<()> {
-        self.on_binding_start(name, writer)
-    }
-    fn on_raw_binding_end(
-        &mut self,
-        name: &str,
-        writer: &mut dyn ResponseWriter,
-    ) -> Result<()> {
-        self.on_binding_end(name, writer)
-    }
     fn on_repeat_item_start(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_repeat_item_end(&mut self, index: usize, writer: &mut dyn ResponseWriter) -> Result<()>;
     fn on_element_data(&mut self, data: &[u8], writer: &mut dyn ResponseWriter) -> Result<()>;
@@ -1105,10 +1093,9 @@ retain thread-affine state such as `Rc`; use owned state, `Arc`, or another
 sendable handle instead.
 
 **Hook invocation points:**
-- **Signal**: escaped and raw-text signals call `on_binding_start` before and
-  `on_binding_end` after; authored raw HTML range signals call
-  `on_raw_binding_start` / `on_raw_binding_end`. The raw hooks default to the
-  escaped hooks, preserving existing plugin behavior and source compatibility.
+- **Signal**: every signal calls `on_binding_start/end`. The `raw` argument is
+  `true` only for authored raw HTML signals that own replaceable sibling ranges;
+  escaped signals and marker-free signals in HTML raw-text contexts pass `false`.
 - **For loop**: `on_binding_start/end` around entire loop; `on_repeat_item_start/end` + `push_scope/pop_scope` per item
 - **If condition**: `on_binding_start/end` around condition; `push_scope/pop_scope` if condition is true
 - **Component**: `push_scope/pop_scope` around component body

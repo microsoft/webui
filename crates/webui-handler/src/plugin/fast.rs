@@ -89,7 +89,9 @@ mod tests {
         let mut plugin = FastHydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        assert!(plugin.on_binding_start("userName", &mut writer).is_ok());
+        assert!(plugin
+            .on_binding_start("userName", false, &mut writer)
+            .is_ok());
         assert_eq!(writer.output, "<!--fe-b$$start$$0$$userName$$fe-b-->");
     }
 

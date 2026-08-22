@@ -107,7 +107,12 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         self.scopes.pop();
     }
 
-    fn on_binding_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_start(
+        &mut self,
+        _name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -115,7 +120,12 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         writer.write(BINDING_START_MARKER)
     }
 
-    fn on_binding_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
+    fn on_binding_end(
+        &mut self,
+        _name: &str,
+        _raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
         if !self.is_active() {
             return Ok(());
         }
@@ -201,8 +211,8 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         let mut writer = TestWriter::new();
         // Root scope should not emit markers
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
         let data = 3u32.to_le_bytes();
@@ -215,7 +225,9 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_start("userName", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -224,9 +236,13 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_start("userName", false, &mut writer)
+            .unwrap();
         writer.output.clear();
-        plugin.on_binding_end("userName", &mut writer).unwrap();
+        plugin
+            .on_binding_end("userName", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:/b-->");
     }
 
@@ -235,10 +251,10 @@ mod tests {
         let mut plugin = FastV3HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("a", &mut writer).unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         writer.output.clear();
-        plugin.on_binding_start("b", &mut writer).unwrap();
+        plugin.on_binding_start("b", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -249,18 +265,18 @@ mod tests {
         // Push first active scope (root is disabled)
         plugin.push_scope();
         // Active scope emits compact markers.
-        plugin.on_binding_start("a", &mut writer).unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         // Push child scope: markers are still emitted.
         plugin.push_scope();
         writer.output.clear();
-        plugin.on_binding_start("b", &mut writer).unwrap();
+        plugin.on_binding_start("b", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
-        plugin.on_binding_end("b", &mut writer).unwrap();
+        plugin.on_binding_end("b", false, &mut writer).unwrap();
         // Pop child scope: parent remains active.
         plugin.pop_scope();
         writer.output.clear();
-        plugin.on_binding_start("c", &mut writer).unwrap();
+        plugin.on_binding_start("c", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -317,7 +333,7 @@ mod tests {
 
         // Next binding still emits the compact sequential marker.
         writer.output.clear();
-        plugin.on_binding_start("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -328,26 +344,32 @@ mod tests {
         // Push first active scope (root is disabled)
         plugin.push_scope();
         // Active scope emits binding markers.
-        plugin.on_binding_start("root", &mut writer).unwrap();
-        plugin.on_binding_end("root", &mut writer).unwrap();
+        plugin.on_binding_start("root", false, &mut writer).unwrap();
+        plugin.on_binding_end("root", false, &mut writer).unwrap();
         // Component scope
         plugin.push_scope();
         // For-loop binding in component emits compact markers.
         writer.output.clear();
-        plugin.on_binding_start("for-1", &mut writer).unwrap();
+        plugin
+            .on_binding_start("for-1", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
         // For-loop item scope
         plugin.push_scope();
         writer.output.clear();
-        plugin.on_binding_start("signal", &mut writer).unwrap();
+        plugin
+            .on_binding_start("signal", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
-        plugin.on_binding_end("signal", &mut writer).unwrap();
+        plugin.on_binding_end("signal", false, &mut writer).unwrap();
         plugin.pop_scope();
-        plugin.on_binding_end("for-1", &mut writer).unwrap();
+        plugin.on_binding_end("for-1", false, &mut writer).unwrap();
         plugin.pop_scope();
         // Back to first active scope: compact markers are still emitted.
         writer.output.clear();
-        plugin.on_binding_start("root2", &mut writer).unwrap();
+        plugin
+            .on_binding_start("root2", false, &mut writer)
+            .unwrap();
         assert_eq!(writer.output, "<!--fe:b-->");
     }
 
@@ -977,10 +999,10 @@ mod tests {
             plugin_bind.push_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
-                .on_binding_start("items", &mut writer_bind)
+                .on_binding_start("items", false, &mut writer_bind)
                 .unwrap();
             plugin_bind
-                .on_binding_end("items", &mut writer_bind)
+                .on_binding_end("items", false, &mut writer_bind)
                 .unwrap();
 
             assert_eq!(
@@ -1002,10 +1024,10 @@ mod tests {
             plugin_bind.push_scope();
             let mut writer_bind = TestWriter::new();
             plugin_bind
-                .on_binding_start("visible", &mut writer_bind)
+                .on_binding_start("visible", false, &mut writer_bind)
                 .unwrap();
             plugin_bind
-                .on_binding_end("visible", &mut writer_bind)
+                .on_binding_end("visible", false, &mut writer_bind)
                 .unwrap();
 
             assert_eq!(

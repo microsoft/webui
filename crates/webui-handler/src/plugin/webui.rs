@@ -90,21 +90,29 @@ impl HandlerPlugin for WebUIHydrationPlugin {
 
     fn pop_scope(&mut self) {}
 
-    fn on_binding_start(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
-        Ok(())
+    fn on_binding_start(
+        &mut self,
+        _name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
+            write_raw_marker(&mut self.raw_marker, writer, self.raw_index, false)
+        } else {
+            Ok(())
+        }
     }
 
-    fn on_binding_end(&mut self, _name: &str, _writer: &mut dyn ResponseWriter) -> Result<()> {
-        Ok(())
-    }
-
-    fn on_raw_binding_start(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
-        write_raw_marker(&mut self.raw_marker, writer, self.raw_index, false)
-    }
-
-    fn on_raw_binding_end(&mut self, _name: &str, writer: &mut dyn ResponseWriter) -> Result<()> {
-        write_raw_marker(&mut self.raw_marker, writer, self.raw_index, true)?;
-        self.raw_index += 1;
+    fn on_binding_end(
+        &mut self,
+        _name: &str,
+        raw: bool,
+        writer: &mut dyn ResponseWriter,
+    ) -> Result<()> {
+        if raw {
+            write_raw_marker(&mut self.raw_marker, writer, self.raw_index, true)?;
+            self.raw_index += 1;
+        }
         Ok(())
     }
 
@@ -356,8 +364,8 @@ mod tests {
     fn test_signal_binding_emits_no_output() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.on_binding_start("x", &mut writer).unwrap();
-        plugin.on_binding_end("x", &mut writer).unwrap();
+        plugin.on_binding_start("x", false, &mut writer).unwrap();
+        plugin.on_binding_end("x", false, &mut writer).unwrap();
         assert_eq!(
             writer.output, "",
             "signal binding hooks must not emit output"
@@ -368,9 +376,9 @@ mod tests {
     fn test_raw_signal_binding_emits_range_markers() {
         let mut plugin = WebUIHydrationPlugin::new();
         let mut writer = TestWriter::new();
-        plugin.on_raw_binding_start("html", &mut writer).unwrap();
+        plugin.on_binding_start("html", true, &mut writer).unwrap();
         writer.write("<b>trusted</b>").unwrap();
-        plugin.on_raw_binding_end("html", &mut writer).unwrap();
+        plugin.on_binding_end("html", true, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--w0--><b>trusted</b><!--/w0-->");
     }
 
@@ -493,9 +501,9 @@ mod tests {
         // Simulate a component with a signal, repeat, and conditional.
         plugin.push_scope();
         // Signal binding — no markers
-        plugin.on_binding_start("a", &mut writer).unwrap();
+        plugin.on_binding_start("a", false, &mut writer).unwrap();
         writer.write("hello").unwrap();
-        plugin.on_binding_end("a", &mut writer).unwrap();
+        plugin.on_binding_end("a", false, &mut writer).unwrap();
         // For-loop — markers
         plugin.on_for_start("list", &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
