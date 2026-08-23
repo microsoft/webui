@@ -219,19 +219,26 @@ export class Protocol {
 if (Symbol.dispose) Protocol.prototype[Symbol.dispose] = Protocol.prototype.free;
 
 /**
- * A progressive HTML response driven one chunk at a time from JavaScript.
+ * A progressive HTML response driven one semantic step at a time from JavaScript.
  *
- * Every method returns the UTF-8 bytes it produced. Write them to the
- * response and apply the host's own backpressure; the session holds no
- * transport and never blocks on one.
+ * `start()`, `resume()`, and `advance()` return
+ * `{ bytes, done, boundary? }`, where `bytes` is a `Uint8Array` and a boundary is
+ * `{ instanceId, declarationId, owner, name, key }`. Boundary keys retain
+ * their authored JSON type: strings are JavaScript strings and finite numbers
+ * are JavaScript numbers.
  *
  * ```js
  * const session = protocol.streamResponse('index.html', '/');
- * const weather = session.boundary('weather-shell');
- * controller.enqueue(session.writeShell(shellState));
- * controller.enqueue(session.writeBoundary(weather, weatherState, 'updatable'));
- * controller.enqueue(session.update(weather, forecast));
- * controller.enqueue(session.finish(tailState));
+ * let step = session.start(JSON.stringify(shellState));
+ * controller.enqueue(step.bytes);
+ * while (!step.done) {
+ *   const { instanceId, name, key } = step.boundary;
+ *   const state = await loadBoundary(name, key);
+ *   step = session.resume(instanceId, JSON.stringify(state), 'updatable');
+ *   controller.enqueue(step.bytes);
+ *   step = session.advance();
+ *   controller.enqueue(step.bytes);
+ * }
  * ```
  */
 export class StreamingSession {
@@ -252,139 +259,90 @@ export class StreamingSession {
         wasm.__wbg_streamingsession_free(ptr, 0);
     }
     /**
-     * Resolve an authored boundary name to a stable integer handle.
+     * Write the parent bytes after the committed occurrence.
      *
-     * Resolve once outside the write loop; the handle costs nothing to reuse.
-     * @param {string} name
-     * @returns {number}
+     * Valid only after `resume()`. Returns the next boundary occurrence or
+     * completes the document tail.
+     * @returns {object}
      */
-    boundary(name) {
+    advance() {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(name, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.streamingsession_boundary(retptr, this.__wbg_ptr, ptr0, len0);
+            wasm.streamingsession_advance(retptr, this.__wbg_ptr);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
             if (r2) {
                 throw takeObject(r1);
             }
-            return r0 >>> 0;
+            return takeObject(r0);
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
     }
     /**
-     * Number of compile-time boundaries declared by this entry.
-     * @returns {number}
-     */
-    get boundaryCount() {
-        const ret = wasm.streamingsession_boundaryCount(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * Render the document tail and emit the terminal record.
-     * @param {string} state_json
-     * @returns {Uint8Array}
-     */
-    finish(state_json) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.streamingsession_finish(retptr, this.__wbg_ptr, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-            if (r3) {
-                throw takeObject(r2);
-            }
-            var v2 = getArrayU8FromWasm0(r0, r1).slice();
-            wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            return v2;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Whether the terminal record has been written.
-     * @returns {boolean}
-     */
-    get finished() {
-        const ret = wasm.streamingsession_finished(this.__wbg_ptr);
-        return ret !== 0;
-    }
-    /**
-     * Push a projected state patch to a committed updatable boundary.
-     * @param {number} boundary
-     * @param {string} state_json
-     * @returns {Uint8Array}
-     */
-    update(boundary, state_json) {
-        try {
-            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
-            const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
-            const len0 = WASM_VECTOR_LEN;
-            wasm.streamingsession_update(retptr, this.__wbg_ptr, boundary, ptr0, len0);
-            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
-            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
-            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-            if (r3) {
-                throw takeObject(r2);
-            }
-            var v2 = getArrayU8FromWasm0(r0, r1).slice();
-            wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            return v2;
-        } finally {
-            wasm.__wbindgen_add_to_stack_pointer(16);
-        }
-    }
-    /**
-     * Render and commit the next boundary in declaration order.
+     * Commit the pending occurrence through its checkpoint, then stop.
      *
      * `mode` is `"final"` (default) or `"updatable"`. Only updatable
      * boundaries accept later `update()` calls.
-     * @param {number} boundary
+     * @param {number} instance_id
      * @param {string} state_json
      * @param {string | null} [mode]
-     * @returns {Uint8Array}
+     * @returns {object}
      */
-    writeBoundary(boundary, state_json, mode) {
+    resume(instance_id, state_json, mode) {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             const len0 = WASM_VECTOR_LEN;
             var ptr1 = isLikeNone(mode) ? 0 : passStringToWasm0(mode, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             var len1 = WASM_VECTOR_LEN;
-            wasm.streamingsession_writeBoundary(retptr, this.__wbg_ptr, boundary, ptr0, len0, ptr1, len1);
+            wasm.streamingsession_resume(retptr, this.__wbg_ptr, instance_id, ptr0, len0, ptr1, len1);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
-            var r3 = getDataViewMemory0().getInt32(retptr + 4 * 3, true);
-            if (r3) {
-                throw takeObject(r2);
+            if (r2) {
+                throw takeObject(r1);
             }
-            var v3 = getArrayU8FromWasm0(r0, r1).slice();
-            wasm.__wbindgen_export4(r0, r1 * 1, 1);
-            return v3;
+            return takeObject(r0);
         } finally {
             wasm.__wbindgen_add_to_stack_pointer(16);
         }
     }
     /**
-     * Render everything before the first boundary.
+     * Render until the first runtime boundary occurrence or terminal.
      * @param {string} state_json
-     * @returns {Uint8Array}
+     * @returns {object}
      */
-    writeShell(state_json) {
+    start(state_json) {
         try {
             const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
             const ptr0 = passStringToWasm0(state_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
             const len0 = WASM_VECTOR_LEN;
-            wasm.streamingsession_writeShell(retptr, this.__wbg_ptr, ptr0, len0);
+            wasm.streamingsession_start(retptr, this.__wbg_ptr, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
+            if (r2) {
+                throw takeObject(r1);
+            }
+            return takeObject(r0);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * Push a projected state patch to a committed updatable boundary.
+     * @param {number} instance_id
+     * @param {string} patch_json
+     * @returns {Uint8Array}
+     */
+    update(instance_id, patch_json) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(patch_json, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.streamingsession_update(retptr, this.__wbg_ptr, instance_id, ptr0, len0);
             var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
             var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
             var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -579,6 +537,14 @@ function __wbg_get_imports() {
             const ret = new Uint8Array(getObject(arg0));
             return addHeapObject(ret);
         },
+        __wbg_new_da52cf8fe3429cb2: function() {
+            const ret = new Object();
+            return addHeapObject(ret);
+        },
+        __wbg_new_from_slice_77cdfb7977362f3c: function(arg0, arg1) {
+            const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
+            return addHeapObject(ret);
+        },
         __wbg_next_6dbf2c0ac8cde20f: function(arg0) {
             const ret = getObject(arg0).next;
             return addHeapObject(ret);
@@ -590,6 +556,10 @@ function __wbg_get_imports() {
         __wbg_prototypesetcall_4770620bbe4688a0: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), getObject(arg2));
         },
+        __wbg_set_8535240470bf2500: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = Reflect.set(getObject(arg0), getObject(arg1), getObject(arg2));
+            return ret;
+        }, arguments); },
         __wbg_set_8a16b38e4805b298: function(arg0, arg1, arg2) {
             getObject(arg0)[arg1 >>> 0] = takeObject(arg2);
         },
@@ -597,7 +567,12 @@ function __wbg_get_imports() {
             const ret = getObject(arg0).value;
             return addHeapObject(ret);
         },
-        __wbindgen_cast_0000000000000001: function(arg0, arg1) {
+        __wbindgen_cast_0000000000000001: function(arg0) {
+            // Cast intrinsic for `F64 -> Externref`.
+            const ret = arg0;
+            return addHeapObject(ret);
+        },
+        __wbindgen_cast_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Ref(String) -> Externref`.
             const ret = getStringFromWasm0(arg0, arg1);
             return addHeapObject(ret);

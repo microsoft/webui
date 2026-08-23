@@ -42,19 +42,26 @@ export class Protocol {
 }
 
 /**
- * A progressive HTML response driven one chunk at a time from JavaScript.
+ * A progressive HTML response driven one semantic step at a time from JavaScript.
  *
- * Every method returns the UTF-8 bytes it produced. Write them to the
- * response and apply the host's own backpressure; the session holds no
- * transport and never blocks on one.
+ * `start()`, `resume()`, and `advance()` return
+ * `{ bytes, done, boundary? }`, where `bytes` is a `Uint8Array` and a boundary is
+ * `{ instanceId, declarationId, owner, name, key }`. Boundary keys retain
+ * their authored JSON type: strings are JavaScript strings and finite numbers
+ * are JavaScript numbers.
  *
  * ```js
  * const session = protocol.streamResponse('index.html', '/');
- * const weather = session.boundary('weather-shell');
- * controller.enqueue(session.writeShell(shellState));
- * controller.enqueue(session.writeBoundary(weather, weatherState, 'updatable'));
- * controller.enqueue(session.update(weather, forecast));
- * controller.enqueue(session.finish(tailState));
+ * let step = session.start(JSON.stringify(shellState));
+ * controller.enqueue(step.bytes);
+ * while (!step.done) {
+ *   const { instanceId, name, key } = step.boundary;
+ *   const state = await loadBoundary(name, key);
+ *   step = session.resume(instanceId, JSON.stringify(state), 'updatable');
+ *   controller.enqueue(step.bytes);
+ *   step = session.advance();
+ *   controller.enqueue(step.bytes);
+ * }
  * ```
  */
 export class StreamingSession {
@@ -62,38 +69,27 @@ export class StreamingSession {
     free(): void;
     [Symbol.dispose](): void;
     /**
-     * Resolve an authored boundary name to a stable integer handle.
+     * Write the parent bytes after the committed occurrence.
      *
-     * Resolve once outside the write loop; the handle costs nothing to reuse.
+     * Valid only after `resume()`. Returns the next boundary occurrence or
+     * completes the document tail.
      */
-    boundary(name: string): number;
+    advance(): object;
     /**
-     * Render the document tail and emit the terminal record.
-     */
-    finish(state_json: string): Uint8Array;
-    /**
-     * Push a projected state patch to a committed updatable boundary.
-     */
-    update(boundary: number, state_json: string): Uint8Array;
-    /**
-     * Render and commit the next boundary in declaration order.
+     * Commit the pending occurrence through its checkpoint, then stop.
      *
      * `mode` is `"final"` (default) or `"updatable"`. Only updatable
      * boundaries accept later `update()` calls.
      */
-    writeBoundary(boundary: number, state_json: string, mode?: string | null): Uint8Array;
+    resume(instance_id: number, state_json: string, mode?: string | null): object;
     /**
-     * Render everything before the first boundary.
+     * Render until the first runtime boundary occurrence or terminal.
      */
-    writeShell(state_json: string): Uint8Array;
+    start(state_json: string): object;
     /**
-     * Number of compile-time boundaries declared by this entry.
+     * Push a projected state patch to a committed updatable boundary.
      */
-    readonly boundaryCount: number;
-    /**
-     * Whether the terminal record has been written.
-     */
-    readonly finished: boolean;
+    update(instance_id: number, patch_json: string): Uint8Array;
 }
 
 /**
@@ -117,13 +113,10 @@ export interface InitOutput {
     readonly protocol_renderStream: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly protocol_streamResponse: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly protocol_tokens: (a: number, b: number) => void;
-    readonly streamingsession_boundary: (a: number, b: number, c: number, d: number) => void;
-    readonly streamingsession_boundaryCount: (a: number) => number;
-    readonly streamingsession_finish: (a: number, b: number, c: number, d: number) => void;
-    readonly streamingsession_finished: (a: number) => number;
+    readonly streamingsession_advance: (a: number, b: number) => void;
+    readonly streamingsession_resume: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly streamingsession_start: (a: number, b: number, c: number, d: number) => void;
     readonly streamingsession_update: (a: number, b: number, c: number, d: number, e: number) => void;
-    readonly streamingsession_writeBoundary: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
-    readonly streamingsession_writeShell: (a: number, b: number, c: number, d: number) => void;
     readonly __wbindgen_export: (a: number, b: number) => number;
     readonly __wbindgen_export2: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_export3: (a: number) => void;
