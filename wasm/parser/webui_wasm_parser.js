@@ -3,18 +3,24 @@
 /**
  * Build protocol protobuf bytes from virtual files without rendering.
  *
+ * `dom` accepts `"shadow"` (default) or `"light"` for unwrapped components;
+ * authored open Shadow roots remain Shadow in either mode.
+ *
  * Returns the serialized `WebUIProtocol` as protobuf bytes.
  * @param {any} files
  * @param {string} entry
  * @param {any | null} [projection_manifests]
+ * @param {string | null} [dom]
  * @returns {Uint8Array}
  */
-export function build_protocol(files, entry, projection_manifests) {
+export function build_protocol(files, entry, projection_manifests, dom) {
     try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(entry, wasm.__wbindgen_export, wasm.__wbindgen_export2);
         const len0 = WASM_VECTOR_LEN;
-        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0, isLikeNone(projection_manifests) ? 0 : addHeapObject(projection_manifests));
+        var ptr1 = isLikeNone(dom) ? 0 : passStringToWasm0(dom, wasm.__wbindgen_export, wasm.__wbindgen_export2);
+        var len1 = WASM_VECTOR_LEN;
+        wasm.build_protocol(retptr, addHeapObject(files), ptr0, len0, isLikeNone(projection_manifests) ? 0 : addHeapObject(projection_manifests), ptr1, len1);
         var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
         var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
         var r2 = getDataViewMemory0().getInt32(retptr + 4 * 2, true);
@@ -22,9 +28,9 @@ export function build_protocol(files, entry, projection_manifests) {
         if (r3) {
             throw takeObject(r2);
         }
-        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        var v3 = getArrayU8FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export4(r0, r1 * 1, 1);
-        return v2;
+        return v3;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
