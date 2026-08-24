@@ -28,7 +28,8 @@ export type TemplateNodeIndex = number;
  *
  * `order` disambiguates text, conditional, and repeat bindings removed at the
  * same static child offset. It starts at zero for each `(parentIndex,
- * beforeIndex)` pair and is omitted for the first binding.
+ * beforeIndex)` pair, is omitted for the first binding, and has no ordering
+ * meaning between different pairs.
  */
 export type TemplateSlot = [
   parentIndex: TemplateNodeIndex,

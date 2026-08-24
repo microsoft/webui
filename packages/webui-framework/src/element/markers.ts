@@ -328,13 +328,15 @@ export function buildSSRIndex(
  * type are handled via depth tracking. Returns the child at the given
  * `ordinal`, or null.
  *
- * Used by static slot fallback to keep SSR node ordinals aligned with the
- * template. Elements are addressed by pre-order index instead (see
- * `buildSSRIndex`); text cannot be, because the renderer strips whitespace
- * that `meta.h` keeps.
+ * Used by static slot fallback to keep SSR nodes aligned with the template.
+ * Element bindings resolve directly from the stable pre-order element table
+ * built by `buildSSRIndex`. Text bindings cannot use that table because SSR
+ * strips formatting-whitespace text nodes that remain in `meta.h`; their
+ * fallback boundaries are therefore located by node type and ordinal.
  *
- * **Requires closing markers to still be in the DOM** — caller must
- * not remove `<!--/wc-->` or `<!--/wr-->` before all resolution is done.
+ * **Requires closing markers to still be in the DOM** - caller must retain
+ * `<!--/wc-->`, `<!--/wr-->`, and paired raw-range end markers until all
+ * resolution is done.
  */
 export function findByOrdinal(parent: Node, nodeType: number, ordinal: number): Node | null {
   let count = 0;

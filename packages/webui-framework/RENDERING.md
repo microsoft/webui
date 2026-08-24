@@ -220,10 +220,10 @@ Two details shape the walk:
 
 ### Text slot boundaries
 
-Text is the one thing that cannot use the element index directly. The compiler
-emits each dynamic slot as `[parentIndex, beforeIndex, order?]`. `order`
-disambiguates text, conditional, and repeat bindings removed at the same static
-child offset.
+Text bindings cannot use the pre-order element table directly because that
+table contains only elements. The compiler instead emits each dynamic slot as
+`[parentIndex, beforeIndex, order?]`. `order` disambiguates text, conditional,
+and repeat bindings removed at the same static child offset.
 
 During hydration, the runtime finds the slot's right-hand boundary: the next
 co-located structural marker by `order`, or the next static child. A

@@ -153,8 +153,7 @@ const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
 /** Parsed template DOM for SSR path mapping, keyed by TemplateBlockMeta. */
 const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 
-/** Pre-computed ordinals for template nodes: childIndex → [nodeType, ordinal].
- *  Avoids re-counting siblings on every text-slot resolution. */
+/** Per-child node-type ordinals used when a text slot has no dynamic boundary. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
 /** Encoded next marker boundary per text slot, built once per template. */
 const textMarkerBoundaryCache = new WeakMap<TemplateBlockMeta, Int32Array>();
@@ -169,11 +168,16 @@ const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
  */
 const tplElementCache = new WeakMap<Node, Array<Node | undefined>>();
 
+/**
+ * A dynamic node and the static DOM reference captured before wiring mutates
+ * the cloned template. Raw HTML owns two nodes; every other slot owns one.
+ */
 interface PendingSlot {
   parent: Node;
   before: Node | null;
   order: number;
   node: Node;
+  /** Paired raw-HTML end anchor. */
   end?: Comment;
 }
 
@@ -181,6 +185,13 @@ function comparePendingSlots(left: PendingSlot, right: PendingSlot): number {
   return left.order - right.order;
 }
 
+/**
+ * Insert queued dynamic nodes after all static references have been captured.
+ *
+ * `order` is local to slots sharing one `(parent, before)` reference. Sorting
+ * the complete queue is safe because insertions at different references
+ * commute; only colliding slots need a relative order.
+ */
 function insertPendingSlots(
   slots: PendingSlot[],
   count: number,
@@ -1768,9 +1779,8 @@ export class TemplateElement extends HTMLElement {
       texts: [], attrs: [], conds: [], repeats: [],
     };
 
-    // Resolve ALL slot reference nodes BEFORE inserting any anchors.
-    // Inserting comment anchors shifts childNode indices, so we must
-    // capture target positions from the untouched DOM first.
+    // Resolve every static insertion reference before inserting dynamic nodes.
+    // Any insertion shifts childNodes and invalidates later compiled offsets.
     //
     // Cloned template DOM matches `h` exactly, so numbering its elements in
     // pre-order reproduces the indices the compiler assigned.
