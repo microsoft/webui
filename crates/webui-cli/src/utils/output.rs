@@ -83,9 +83,7 @@ fn template_diagnostic(err: &anyhow::Error) -> Option<&Diagnostic> {
                 source: ParserError::Template(diag),
                 ..
             }) => Some(&**diag),
-            // Component-source transforms (e.g. FAST `<f-template>`) surface
-            // authoring mistakes during registration; the structured
-            // diagnostic is preserved through `ComponentRegistration`'s source.
+            // Source-transform diagnostics surface during registration.
             Some(WebUIError::ComponentRegistration {
                 source: ParserError::Template(diag),
                 ..
@@ -309,15 +307,12 @@ mod tests {
     }
 
     fn registration_template_error() -> anyhow::Error {
-        // A FAST `<f-template>` authoring mistake surfaced by the component
-        // registry's source transform, carried structurally (not flattened to
-        // a string) through `ComponentRegistration`.
-        let diag = Diagnostic::error("invalid FAST template: unsupported f-* element '<f-choose>'")
-            .code("invalid-fast-template")
+        let diag = Diagnostic::error("invalid transformed component source")
+            .code("invalid-component-source")
             .component("file-card")
             .position(3, 5)
-            .snippet("<f-choose>")
-            .help("remove the unsupported FAST construct or replace it with supported declarative syntax");
+            .snippet("<invalid-source>")
+            .help("fix the component source accepted by the active plugin");
         WebUIError::ComponentRegistration {
             context: "Failed to register components from ./src".to_owned(),
             source: ParserError::Template(Box::new(diag)),
@@ -412,17 +407,17 @@ mod tests {
         console::set_colors_enabled(prev);
 
         assert_eq!(value["severity"], "error");
-        assert_eq!(value["code"], "invalid-fast-template");
+        assert_eq!(value["code"], "invalid-component-source");
         assert_eq!(value["file"], "file-card");
         assert_eq!(value["line"], 3);
         assert_eq!(value["column"], 5);
-        assert_eq!(value["snippet"], "<f-choose>");
+        assert_eq!(value["snippet"], "<invalid-source>");
         assert!(value["message"]
             .as_str()
-            .is_some_and(|m| m.contains("invalid FAST template")));
+            .is_some_and(|m| m.contains("invalid transformed component source")));
         assert!(value["help"]
             .as_str()
-            .is_some_and(|h| h.contains("unsupported FAST construct")));
+            .is_some_and(|h| h.contains("active plugin")));
         assert!(value["chain"].is_array());
         assert!(!value.to_string().contains('\u{1b}'));
     }
@@ -442,7 +437,7 @@ mod tests {
             "browser message must be ANSI-free: {message:?}"
         );
         assert!(message.contains("--> file-card:3:5"));
-        assert!(message.contains("[invalid-fast-template]"));
+        assert!(message.contains("[invalid-component-source]"));
     }
 
     #[test]

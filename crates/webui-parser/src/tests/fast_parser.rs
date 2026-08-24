@@ -120,6 +120,61 @@ fn discovery_rejects_authored_name_collision() {
 }
 
 #[test]
+fn webui_plugin_leaves_fast_source_inert() {
+    let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
+    parser
+        .component_registry
+        .register_component(ComponentRegistration::new(
+            "file-card",
+            r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
+            None,
+            true,
+        ))
+        .expect("register component");
+
+    assert!(parser.component_registry.contains("file-card"));
+    assert!(!parser.component_registry.contains("named-card"));
+    assert_eq!(
+        parser
+            .component_registry
+            .get("file-card")
+            .map(|component| component.html_content.as_str()),
+        Some(
+            r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#
+        )
+    );
+    assert_eq!(
+        parser
+            .component_registry
+            .component_artifact_source("file-card"),
+        None
+    );
+}
+
+#[test]
+fn default_parser_leaves_fast_source_inert() {
+    let mut parser = HtmlParser::new();
+    parser
+        .component_registry
+        .register_component(ComponentRegistration::new(
+            "file-card",
+            r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
+            None,
+            true,
+        ))
+        .expect("register component");
+
+    assert!(parser.component_registry.contains("file-card"));
+    assert!(!parser.component_registry.contains("named-card"));
+    assert_eq!(
+        parser
+            .component_registry
+            .component_artifact_source("file-card"),
+        None
+    );
+}
+
+#[test]
 fn plugins_receive_authored_shadow_metadata() {
     for plugin in versioned_plugins() {
         let mut parser = HtmlParser::with_plugin(plugin);

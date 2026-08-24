@@ -5812,65 +5812,6 @@ mod tests {
     }
 
     #[test]
-    fn webui_plugin_leaves_f_template_shaped_source_inert() {
-        // The WebUI plugin supplies no component-source transform, so
-        // `<f-template>`-shaped markup is stored verbatim under the filename
-        // tag: no rename, no FAST conversion, and no FAST diagnostics.
-        let mut parser = HtmlParser::with_plugin(Box::new(plugin::webui::WebUIParserPlugin::new()));
-        parser
-            .component_registry
-            .register_component(ComponentRegistration::new(
-                "file-card",
-                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
-                None,
-                true,
-            ))
-            .expect("register component");
-
-        assert!(parser.component_registry.contains("file-card"));
-        assert!(!parser.component_registry.contains("named-card"));
-        assert_eq!(
-            parser
-                .component_registry
-                .get("file-card")
-                .map(|component| component.html_content.as_str()),
-            Some(
-                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#
-            )
-        );
-        assert_eq!(
-            parser
-                .component_registry
-                .component_artifact_source("file-card"),
-            None
-        );
-    }
-
-    #[test]
-    fn default_parser_leaves_f_template_shaped_source_inert() {
-        // With no plugin selected, `<f-template>`-shaped markup is inert too.
-        let mut parser = HtmlParser::new();
-        parser
-            .component_registry
-            .register_component(ComponentRegistration::new(
-                "file-card",
-                r#"<f-template name="named-card"><template><span>{{label}}</span></template></f-template>"#,
-                None,
-                true,
-            ))
-            .expect("register component");
-
-        assert!(parser.component_registry.contains("file-card"));
-        assert!(!parser.component_registry.contains("named-card"));
-        assert_eq!(
-            parser
-                .component_registry
-                .component_artifact_source("file-card"),
-            None
-        );
-    }
-
-    #[test]
     fn test_shadow_dom_shell_fragment_graph_includes_child_components() {
         // Reproduces commerce app: mp-app has a shadow DOM template containing
         // child components (mp-navbar, mp-cart-panel, mp-footer) plus an <outlet>.

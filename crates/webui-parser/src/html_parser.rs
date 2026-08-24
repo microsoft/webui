@@ -490,9 +490,8 @@ fn tag_is_self_closing(input: &str, close: usize) -> bool {
 /// markup, so any tag-like bytes inside their body must be copied verbatim.
 ///
 /// Tag names are compared ASCII-case-insensitively, matching the rest of the
-/// scanner. This is the canonical set recognized across the parser (component
-/// policy scanning and FAST template conversion) so markup-shaped text such as
-/// `<div>` inside `<script>`/`<style>` is never mistaken for a real element.
+/// scanner. This canonical set keeps markup-shaped text inside raw-text bodies
+/// from being mistaken for real elements.
 #[inline]
 pub(crate) fn is_raw_text_element(tag_name: &str) -> bool {
     tag_name.eq_ignore_ascii_case("script")

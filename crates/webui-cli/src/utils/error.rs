@@ -174,10 +174,8 @@ mod tests {
 
     #[test]
     fn exit_code_for_registration_template_error_is_dataerr() {
-        // A FAST/authoring mistake surfaced during component registration is a
-        // data error (65), the same as one surfaced during entry parsing.
-        let diag = webui::Diagnostic::error("invalid FAST template")
-            .code("invalid-fast-template")
+        let diag = webui::Diagnostic::error("invalid component source")
+            .code("invalid-component-source")
             .component("file-card")
             .position(3, 5);
         let err: anyhow::Error = webui::WebUIError::ComponentRegistration {

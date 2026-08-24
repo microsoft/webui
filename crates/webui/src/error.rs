@@ -24,8 +24,7 @@ pub enum WebUIError {
     /// `context` names what was being registered (an app directory or a
     /// discovered source). The underlying [`ParserError`] is preserved as a
     /// structured `#[source]` rather than being flattened to a string, so a
-    /// build-time authoring mistake surfaced by a plugin's
-    /// component-source transform (for example an invalid `<f-template>`)
+    /// build-time authoring mistake surfaced by a component-source transform
     /// reaches the CLI as [`ParserError::Template`] with its stable diagnostic
     /// `code`, source location, snippet, and `help` intact — the same
     /// structured path already used by [`WebUIError::Parse`].
