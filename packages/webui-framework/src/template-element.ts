@@ -169,6 +169,34 @@ const RAW_MARKER_BOUNDARY_BASE = 0x40000000;
  */
 const tplElementCache = new WeakMap<Node, Array<Node | undefined>>();
 
+interface PendingSlot {
+  parent: Node;
+  before: Node | null;
+  order: number;
+  node: Node;
+  end?: Comment;
+}
+
+function comparePendingSlots(left: PendingSlot, right: PendingSlot): number {
+  return left.order - right.order;
+}
+
+function insertPendingSlots(
+  slots: PendingSlot[],
+  count: number,
+  needsOrdering: boolean,
+): void {
+  if (needsOrdering) {
+    slots.length = count;
+    slots.sort(comparePendingSlots);
+  }
+  for (let i = 0; i < count; i++) {
+    const slot = slots[i];
+    slot.parent.insertBefore(slot.node, slot.before);
+    if (slot.end) slot.parent.insertBefore(slot.end, slot.before);
+  }
+}
+
 function getTemplateElements(tplRoot: Node): Array<Node | undefined> {
   let cached = tplElementCache.get(tplRoot);
   if (!cached) {
@@ -1748,20 +1776,13 @@ export class TemplateElement extends HTMLElement {
     // pre-order reproduces the indices the compiler assigned.
     const elements = collectTemplateElements(root);
 
-    type SlotRef = {
-      parent: Node;
-      ref: Node | null;
-      order: number;
-      first: Node;
-      second?: Node;
-    };
-    const slotRefs = new Array<SlotRef>(
+    const pendingSlots = new Array<PendingSlot>(
       (meta.tx?.length ?? 0) + (meta.c?.length ?? 0) + (meta.r?.length ?? 0),
     );
-    let slotRefCount = 0;
-    let hasSharedSlots = false;
+    let pendingSlotCount = 0;
+    let needsSlotOrdering = false;
 
-    // Pre-resolve text binding slots
+    // Text bindings: create direct nodes and queue their compiled placement.
     let rawIndex = 0;
     if (meta.tx) {
       for (let i = 0; i < meta.tx.length; i++) {
@@ -1771,11 +1792,11 @@ export class TemplateElement extends HTMLElement {
         const [parentIndex, beforeIndex, order = 0] = slot;
         const parent = elements[parentIndex];
         if (!parent || (parent.nodeType !== 1 && parent.nodeType !== 11)) continue;
-        let first: Node;
-        let second: Node | undefined;
+        let node: Node;
+        let end: Comment | undefined;
         if (raw) {
           const start = document.createComment(rawMarker(rawIndex));
-          const end = document.createComment(rawMarker(rawIndex, true));
+          end = document.createComment(rawMarker(rawIndex, true));
           rawIndex++;
           instance.texts.push({
             node: start,
@@ -1785,25 +1806,24 @@ export class TemplateElement extends HTMLElement {
             rawEnd: end,
             rawOwner: instance,
           });
-          first = start;
-          second = end;
+          node = start;
         } else {
           const textNode = document.createTextNode('');
           instance.texts.push({ node: textNode, parts, scope });
-          first = textNode;
+          node = textNode;
         }
-        slotRefs[slotRefCount++] = {
+        pendingSlots[pendingSlotCount++] = {
           parent,
-          ref: parent.childNodes[beforeIndex] || null,
+          before: parent.childNodes[beforeIndex] || null,
           order,
-          first,
-          second,
+          node,
+          end,
         };
-        if (order > 0) hasSharedSlots = true;
+        if (order > 0) needsSlotOrdering = true;
       }
     }
 
-    // Pre-resolve conditional slots
+    // Conditional bindings: create stable anchors and queue their placement.
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
@@ -1819,17 +1839,17 @@ export class TemplateElement extends HTMLElement {
           owner: instance,
           instance: null,
         });
-        slotRefs[slotRefCount++] = {
+        pendingSlots[pendingSlotCount++] = {
           parent,
-          ref: parent.childNodes[beforeIndex] || null,
+          before: parent.childNodes[beforeIndex] || null,
           order,
-          first: anchor,
+          node: anchor,
         };
-        if (order > 0) hasSharedSlots = true;
+        if (order > 0) needsSlotOrdering = true;
       }
     }
 
-    // Pre-resolve repeat slots
+    // Repeat bindings: create stable anchors and queue their placement.
     if (meta.r) {
       for (let i = 0; i < meta.r.length; i++) {
         const [collection, itemVar, blockIndex, slotMeta, keyPath] = meta.r[i];
@@ -1846,13 +1866,13 @@ export class TemplateElement extends HTMLElement {
           binding.keyState = createRepeatKeyState(keyPath);
         }
         instance.repeats.push(binding);
-        slotRefs[slotRefCount++] = {
+        pendingSlots[pendingSlotCount++] = {
           parent,
-          ref: parent.childNodes[beforeIndex] || null,
+          before: parent.childNodes[beforeIndex] || null,
           order,
-          first: anchor,
+          node: anchor,
         };
-        if (order > 0) hasSharedSlots = true;
+        if (order > 0) needsSlotOrdering = true;
       }
     }
 
@@ -1864,17 +1884,9 @@ export class TemplateElement extends HTMLElement {
     // insertions still shift childNode indices for sibling elements.
     this.$finalize(instance, root, meta, (_r, i) => elements[i] ?? null, scope);
 
-    // Co-located dynamic slots share one static insertion reference. The
-    // compiler's order field preserves source order across binding kinds.
-    if (hasSharedSlots) {
-      slotRefs.length = slotRefCount;
-      slotRefs.sort((left, right) => left.order - right.order);
-    }
-    for (let i = 0; i < slotRefCount; i++) {
-      const slot = slotRefs[i];
-      slot.parent.insertBefore(slot.first, slot.ref);
-      if (slot.second) slot.parent.insertBefore(slot.second, slot.ref);
-    }
+    // Co-located slots share one static insertion reference. Commit them only
+    // after every reference has been captured from the untouched DOM.
+    insertPendingSlots(pendingSlots, pendingSlotCount, needsSlotOrdering);
 
     // Create conditional blocks immediately; the first full binding pass
     // reconciles repeats after this wiring step returns.
