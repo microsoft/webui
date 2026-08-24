@@ -410,6 +410,7 @@ mod tests {
             writer: &mut writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
+            collecting_component_attrs: false,
             request_path: "/account/details",
             route_base: std::borrow::Cow::Borrowed("/account"),
             rendered_components: std::collections::HashSet::new(),

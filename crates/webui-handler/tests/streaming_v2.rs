@@ -103,6 +103,40 @@ fn component_local_boundary_suspends_and_emits_v2_span_contract() {
 }
 
 #[test]
+fn native_attribute_does_not_leak_into_next_streamed_component() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="probe">"#,
+            r#"<div title="{{nativeTitle}}"></div>"#,
+            "<leaf-box></leaf-box>",
+            "</boundary>",
+        )),
+        &[("leaf-box", "<span>{{title}}</span>")],
+    );
+    let mut session = new_session(protocol, "/");
+
+    let state = test_json!({ "nativeTitle": "native", "title": "global" });
+    let start = session.start(&state).unwrap();
+    let boundary = start.boundary.unwrap();
+    let committed = session
+        .resume(boundary.instance_id, &state, BoundaryMode::Final)
+        .unwrap();
+    let html = String::from_utf8(committed.bytes).unwrap();
+    assert!(
+        html.contains(r#"<div title="native">"#),
+        "native attribute should still render: {html}"
+    );
+    assert!(
+        html.contains("<span>global</span>"),
+        "component must resolve `title` from global state, not the leaked native attribute: {html}"
+    );
+    assert!(
+        !html.contains("<span>native</span>"),
+        "native attribute leaked into component state: {html}"
+    );
+}
+
+#[test]
 fn resume_writes_only_the_committed_boundary_and_advance_writes_the_tail() {
     let protocol = parsed_protocol(
         &document(concat!(

@@ -539,6 +539,7 @@ impl SessionCore {
             writer,
             local_vars: std::mem::take(&mut self.local_vars),
             component_attrs: std::mem::take(&mut self.component_attrs),
+            collecting_component_attrs: false,
             request_path: options.request_path,
             route_base: self
                 .route_base

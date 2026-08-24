@@ -417,6 +417,10 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) local_vars: HashMap<String, Value>,
     /// Accumulates component attribute values between attrStart and the component fragment.
     pub(crate) component_attrs: HashMap<String, Value>,
+    /// True only while parser-produced component opening-tag attributes are
+    /// being accumulated. Native element attributes render directly and never
+    /// enter `component_attrs`.
+    collecting_component_attrs: bool,
     /// URL path for server-side route matching. Borrowed from
     /// `RenderOptions<'a>::request_path` — zero-copy.
     pub(crate) request_path: &'protocol str,
@@ -2078,6 +2082,7 @@ impl WebUIHandler {
             take_scope_map(&mut context.scope_pool),
         );
         context.local_vars = saved_component_attrs;
+        context.collecting_component_attrs = false;
 
         if let Some(p) = &mut context.plugin {
             p.push_scope();
@@ -2688,16 +2693,18 @@ impl WebUIHandler {
         attr: &webui_protocol::WebUIFragmentAttribute,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        // Initialize component attribute accumulator on attrStart
+        // Initialize component attribute accumulator on attrStart. Clearing the
+        // pooled map keeps its bucket capacity instead of allocating a fresh one.
         if attr.attr_start {
-            context.component_attrs = HashMap::new();
+            context.component_attrs.clear();
+            context.collecting_component_attrs = true;
         }
 
         // Boolean attribute with condition tree
         if let Some(condition) = &attr.condition_tree {
             let condition_met = self.evaluate_condition(condition, context)?;
 
-            if !attr.attr_skip {
+            if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_attr_name(&attr.name);
                 context
                     .component_attrs
@@ -2717,7 +2724,7 @@ impl WebUIHandler {
             let escaped = crate::html_encode::encode_safe(&raw_value);
             write_attr(context.writer, &attr.name, &escaped)?;
 
-            if !attr.attr_skip {
+            if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_attr_name(&attr.name);
                 context
                     .component_attrs
@@ -2731,7 +2738,7 @@ impl WebUIHandler {
             if attr.raw_value {
                 // Static attribute — value is the literal string
                 write_attr(context.writer, &attr.name, &attr.value)?;
-                if !attr.attr_skip {
+                if context.collecting_component_attrs && !attr.attr_skip {
                     let name = component_attr_name(&attr.name);
                     context
                         .component_attrs
@@ -2740,7 +2747,7 @@ impl WebUIHandler {
             } else if attr.complex {
                 // Complex attribute — resolve value, don't render to HTML, store as state
                 if let Some(value) = self.resolve_value(&attr.value, context) {
-                    if !attr.attr_skip {
+                    if context.collecting_component_attrs && !attr.attr_skip {
                         let stripped = attr.name.strip_prefix(':').unwrap_or(&attr.name);
                         let name = component_attr_name(stripped);
                         context.component_attrs.insert(name, value);
@@ -2772,7 +2779,7 @@ impl WebUIHandler {
                     }
                 }
 
-                if !attr.attr_skip {
+                if context.collecting_component_attrs && !attr.attr_skip {
                     let name = component_attr_name(&attr.name);
                     context
                         .component_attrs
@@ -2860,6 +2867,7 @@ impl WebUIHandler {
             writer,
             local_vars: HashMap::new(),
             component_attrs: HashMap::new(),
+            collecting_component_attrs: false,
             request_path: options.request_path,
             route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
@@ -3229,6 +3237,56 @@ mod tests {
         assert_eq!(
             writer.get_content(),
             "top-negated<span>Normal</span><mark>Search</mark>"
+        );
+    }
+
+    #[test]
+    fn native_dynamic_attribute_does_not_leak_into_next_component() {
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<div"),
+                    WebUIFragment {
+                        fragment: Some(web_ui_fragment::Fragment::Attribute(
+                            WebUIFragmentAttribute {
+                                name: "title".into(),
+                                value: "nativeTitle".into(),
+                                ..Default::default()
+                            },
+                        )),
+                    },
+                    WebUIFragment::raw("></div><my-comp>"),
+                    WebUIFragment::component("my-comp"),
+                    WebUIFragment::raw("</my-comp>"),
+                ],
+                contains_boundary: false,
+            },
+        );
+        fragments.insert(
+            "my-comp".to_string(),
+            FragmentList {
+                fragments: vec![WebUIFragment::signal("title", false)],
+                contains_boundary: false,
+            },
+        );
+        let protocol = WebUIProtocol::new(fragments);
+        let state = test_json!({
+            "nativeTitle": "native",
+            "title": "global"
+        });
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap_or_else(|error| panic!("render failed: {error}"));
+        assert_eq!(
+            writer.get_content(),
+            "<div title=\"native\"></div><my-comp>global</my-comp>"
         );
     }
 

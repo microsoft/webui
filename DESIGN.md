@@ -283,6 +283,13 @@ pub struct WebUIFragmentAttribute {
 }
 ```
 
+`attr_start` opens the component attribute collection window and `attr_skip`
+excludes individual attributes from it. The window closes when the matching
+component fragment is entered. Attributes on native elements never carry
+`attr_start`, so they render directly to HTML and never enter component
+attribute state — a native attribute cannot become a local variable of a
+later component.
+
 ##### Attribute Name Mapping
 
 Some HTML attributes use concatenated lowercase names that do not follow

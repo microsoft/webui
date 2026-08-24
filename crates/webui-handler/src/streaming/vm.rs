@@ -725,6 +725,7 @@ impl ContinuationVm {
             crate::take_scope_map(&mut context.scope_pool),
         );
         context.local_vars = saved_component_attrs;
+        context.collecting_component_attrs = false;
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.push_scope();
         }
@@ -749,6 +750,7 @@ impl ContinuationVm {
         let used_locals = std::mem::replace(&mut context.local_vars, frame.saved_local_vars);
         crate::recycle_scope_map(&mut context.scope_pool, used_locals);
         context.component_attrs.clear();
+        context.collecting_component_attrs = false;
         if frame.owns_css_tree {
             let component = protocol
                 .fragment_id(frame.component_slot)
