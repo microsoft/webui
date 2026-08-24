@@ -743,7 +743,7 @@ fn parser_adversarial_bench(c: &mut Criterion) {
 /// conversion). Each iteration registers into a freshly built parser created
 /// outside the timed closure, so parser construction and source generation are
 /// excluded and no duplicate-registration error can occur.
-fn component_registration_fast_source_transform_bench(c: &mut Criterion) {
+fn parser_fast_plugin_bench(c: &mut Criterion) {
     let mut group = c.benchmark_group("component_registration_fast_source_transform");
     let scenarios = [
         ("ordinary", 8, build_ordinary_component_source(8)),
@@ -798,7 +798,7 @@ criterion_group!(
     parser_parse_reuse_bench,
     parser_parse_fresh_vs_reuse,
     parser_plugin_bench,
-    component_registration_fast_source_transform_bench,
+    parser_fast_plugin_bench,
     parser_css_strategy_bench,
     parser_light_css_global_bench,
     parser_size_sweep_bench,
