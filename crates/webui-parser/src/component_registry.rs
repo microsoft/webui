@@ -302,7 +302,6 @@ impl ComponentRegistry {
 
         // Read CSS content and extract definitions/fallback requirements if available
         let (css_content, css_definitions, css_fallback_chains) = if let Some(css_path) = css_path {
-            let css_path: &Path = css_path.as_ref();
             if css_path.exists() {
                 let content = fs::read_to_string(css_path).map_err(|source| ParserError::IO {
                     context: format!("Failed to read CSS file: {}", css_path.display()),

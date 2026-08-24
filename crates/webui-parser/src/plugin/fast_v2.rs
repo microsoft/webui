@@ -9,6 +9,7 @@
 
 use super::fast_v3::{
     build_f_template, f_template_style_injection, require_fast_shadow_dom, style_injection_snippet,
+    FastTemplateStyle,
 };
 use super::{
     AttributeAction, ComponentSourceTransform, ComponentStyleDelivery, ComponentTemplateArtifact,
@@ -67,9 +68,11 @@ impl FastV2ParserPlugin {
                     &comp.tag_name,
                     &convert_btr_to_fast(&comp.template_html),
                     &super::fast_shared::hoisted_shadow_options(&comp.template_html),
-                    comp.style_injection.as_deref(),
-                    None,
-                    comp.styles_at_end,
+                    FastTemplateStyle {
+                        injection: comp.style_injection.as_deref(),
+                        module_specifier: None,
+                        at_end: comp.styles_at_end,
+                    },
                 );
                 ComponentTemplateArtifact::template(
                     comp.tag_name.clone(),
@@ -194,9 +197,7 @@ fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) 
         tag_name,
         &convert_btr_to_fast(processed_template),
         &super::fast_shared::hoisted_shadow_options(processed_template),
-        None,
-        None,
-        false,
+        FastTemplateStyle::default(),
     )
 }
 
@@ -215,9 +216,11 @@ pub fn generate_f_template_with_css_options(
         tag_name,
         &convert_btr_to_fast(html_content),
         &super::fast_shared::hoisted_shadow_options(html_content),
-        css_injection.as_deref(),
-        module_specifier,
-        css_strategy == CssStrategy::Style,
+        FastTemplateStyle {
+            injection: css_injection.as_deref(),
+            module_specifier,
+            at_end: css_strategy == CssStrategy::Style,
+        },
     )
 }
 

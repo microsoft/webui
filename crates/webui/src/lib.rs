@@ -3660,7 +3660,7 @@ mod tests {
             ),
             (
                 "plain-card.html",
-                r#"<template><if condition="visible"><span>{{label}}</span></if></template>"#,
+                r#"<if condition="visible"><span>{{label}}</span></if>"#,
             ),
         ]);
 
@@ -3689,14 +3689,16 @@ mod tests {
                 .expect("file-named FAST component");
             assert!(fallback
                 .template
-                .contains(r#"<f-template name="fallback-card">"#));
+                .contains(r#"<f-template name="fallback-card" shadowrootmode="open">"#));
             assert!(fallback.template.contains("<span>{{label}}</span>"));
             let plain = result
                 .protocol
                 .components
                 .get("plain-card")
                 .expect("ordinary WebUI component");
-            assert!(plain.template.contains(r#"<f-template name="plain-card">"#));
+            assert!(plain
+                .template
+                .contains(r#"<f-template name="plain-card" shadowrootmode="open">"#));
             assert!(plain.template.contains(r#"<f-when value="{{visible}}">"#));
         }
     }
@@ -3749,7 +3751,7 @@ mod tests {
                 "artifact for {css:?} must contain exactly one inner <template>, not a nested pair: {template}"
             );
             assert!(
-                template.contains(r#"<f-template name="named-card">"#),
+                template.contains(r#"<f-template name="named-card" shadowrootmode="open">"#),
                 "artifact for {css:?} must be wrapped once in the resolved f-template: {template}"
             );
             for binding in [

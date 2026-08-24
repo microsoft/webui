@@ -67,9 +67,11 @@ impl FastV3ParserPlugin {
                     &comp.tag_name,
                     &convert_btr_to_fast(&comp.template_html),
                     &super::fast_shared::hoisted_shadow_options(&comp.template_html),
-                    comp.style_injection.as_deref(),
-                    None,
-                    comp.styles_at_end,
+                    FastTemplateStyle {
+                        injection: comp.style_injection.as_deref(),
+                        module_specifier: None,
+                        at_end: comp.styles_at_end,
+                    },
                 );
                 ComponentTemplateArtifact::template(
                     comp.tag_name.clone(),
@@ -194,9 +196,7 @@ fn generate_f_template_from_processed(tag_name: &str, processed_template: &str) 
         tag_name,
         &convert_btr_to_fast(processed_template),
         &super::fast_shared::hoisted_shadow_options(processed_template),
-        None,
-        None,
-        false,
+        FastTemplateStyle::default(),
     )
 }
 
@@ -260,13 +260,18 @@ fn push_style_text(output: &mut String, css: &str) {
 /// `module_specifier` adds `shadowrootadoptedstylesheets` when this function
 /// synthesizes the wrapper; templates that already went through the parser
 /// carry it verbatim and pass `None`.
+#[derive(Default)]
+pub(super) struct FastTemplateStyle<'a> {
+    pub(super) injection: Option<&'a str>,
+    pub(super) module_specifier: Option<&'a str>,
+    pub(super) at_end: bool,
+}
+
 pub(super) fn build_f_template(
     tag_name: &str,
     converted_html: &str,
     hoisted_shadow_options: &str,
-    css_injection: Option<&str>,
-    module_specifier: Option<&str>,
-    styles_at_end: bool,
+    style: FastTemplateStyle<'_>,
 ) -> String {
     let mut output = String::with_capacity(256);
     output.push_str("<f-template name=\"");
@@ -292,15 +297,15 @@ pub(super) fn build_f_template(
             super::fast_shared::push_body_with_css_injection(
                 &mut output,
                 &trimmed[close_pos + 1..],
-                css_injection,
-                styles_at_end,
+                style.injection,
+                style.at_end,
             );
         } else {
             output.push_str(trimmed);
         }
     } else {
         output.push_str("<template");
-        if let Some(specifier) = module_specifier {
+        if let Some(specifier) = style.module_specifier {
             output.push_str(" shadowrootadoptedstylesheets=\"");
             output.push_str(specifier);
             output.push('"');
@@ -309,8 +314,8 @@ pub(super) fn build_f_template(
         super::fast_shared::push_body_with_css_injection(
             &mut output,
             trimmed,
-            css_injection,
-            styles_at_end,
+            style.injection,
+            style.at_end,
         );
         output.push_str("</template>");
     }
@@ -356,9 +361,11 @@ pub fn generate_f_template_with_css_options(
         tag_name,
         &convert_btr_to_fast(html_content),
         &super::fast_shared::hoisted_shadow_options(html_content),
-        css_injection.as_deref(),
-        module_specifier,
-        css_strategy == CssStrategy::Style,
+        FastTemplateStyle {
+            injection: css_injection.as_deref(),
+            module_specifier,
+            at_end: css_strategy == CssStrategy::Style,
+        },
     )
 }
 
