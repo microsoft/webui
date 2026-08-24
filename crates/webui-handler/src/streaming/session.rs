@@ -533,6 +533,7 @@ impl SessionCore {
             StreamingRenderState::from_progress(progress, protocol.component_reachability());
         let mut context = WebUIProcessContext {
             protocol: protocol.protocol(),
+            render_fragments: protocol.render_fragments().resolve(protocol.protocol()),
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,

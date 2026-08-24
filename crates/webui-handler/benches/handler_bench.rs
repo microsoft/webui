@@ -525,12 +525,88 @@ fn handler_state_depth_bench(c: &mut Criterion) {
     group.finish();
 }
 
+/// Build a document whose fragment graph is wide enough that per-fragment
+/// preparation cost is visible, including a large sibling route table.
+fn build_construction_document(fragment_count: usize, routes_per_page: usize) -> WebUIProtocol {
+    let mut fragments = HashMap::new();
+
+    let mut root = Vec::with_capacity(fragment_count + routes_per_page);
+    for route in 0..routes_per_page {
+        root.push(WebUIFragment::route(
+            format!("/section-{route}"),
+            format!("route-{route}.html"),
+        ));
+        fragments.insert(
+            format!("route-{route}.html"),
+            FragmentList {
+                fragments: vec![WebUIFragment::raw("<p>route body</p>")],
+                contains_boundary: false,
+            },
+        );
+    }
+    for page in 0..fragment_count {
+        root.push(WebUIFragment::component(format!("card-{page}")));
+        fragments.insert(
+            format!("card-{page}"),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::attribute("data-card-label", format!("card {page}")),
+                    WebUIFragment::attribute(":card-detail-text", format!("detail {page}")),
+                    WebUIFragment::signal(format!("cards.{page}.title"), false),
+                    WebUIFragment::raw("</div>"),
+                ],
+                contains_boundary: false,
+            },
+        );
+    }
+
+    fragments.insert(
+        "index.html".to_string(),
+        FragmentList {
+            fragments: root,
+            contains_boundary: false,
+        },
+    );
+
+    WebUIProtocol::new(fragments)
+}
+
+/// Control for the load-time half of the render fragment index: a render-time
+/// win must not be paid for by a disproportionate `Protocol::new` regression.
+fn handler_protocol_construction_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("handler_protocol_construction");
+
+    let cases = [
+        ("small_16_fragments", 16usize, 0usize),
+        ("medium_128_fragments", 128, 0),
+        ("wide_128_routes", 32, 128),
+        ("large_512_fragments", 512, 0),
+    ];
+
+    for (label, fragment_count, routes) in cases {
+        let document = build_construction_document(fragment_count, routes);
+        group.throughput(Throughput::Elements(
+            u64::try_from(document.fragments.len()).unwrap_or(u64::MAX),
+        ));
+        group.bench_function(label, |b| {
+            b.iter_batched(
+                || document.clone(),
+                |document| Protocol::new(black_box(document)),
+                criterion::BatchSize::SmallInput,
+            );
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     handler_plugin_fast_bench,
     handler_loop_scaling_bench,
     handler_condition_variety_bench,
     handler_nested_components_bench,
-    handler_state_depth_bench
+    handler_state_depth_bench,
+    handler_protocol_construction_bench
 );
 criterion_main!(benches);

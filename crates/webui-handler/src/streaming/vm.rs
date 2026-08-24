@@ -250,6 +250,9 @@ struct ComponentEndFrame {
 
 struct FragmentFrame {
     slot: u32,
+    /// Prepared render slot for the same fragment list, used to read the
+    /// per-fragment metadata prepared when the protocol was loaded.
+    render_slot: usize,
     index: usize,
     best_route: Option<(String, RouteMatch)>,
 }
@@ -544,7 +547,13 @@ impl ContinuationVm {
                     self.process_signal(signal, handler, context)?;
                 }
                 Some(Fragment::Attribute(attribute)) => {
-                    handler.process_attribute(attribute, context)?;
+                    let prepared = context.render_fragments.list(frame.render_slot);
+                    handler.process_attribute(
+                        attribute,
+                        prepared.and_then(|prepared| prepared.target(index)),
+                        prepared.and_then(|prepared| prepared.component_attr_name(index)),
+                        context,
+                    )?;
                 }
                 Some(Fragment::Plugin(plugin)) => {
                     if let Some(active) = context.plugin.as_mut() {
@@ -1530,6 +1539,10 @@ fn open_fragment(
     );
     FragmentFrame {
         slot,
+        // Render slots and continuation slots are the same numbering: both index
+        // the protocol's sorted fragment IDs. Reading prepared metadata therefore
+        // costs no ID lookup. `render_slots_match_continuation_slots` pins this.
+        render_slot: slot as usize,
         index: 0,
         best_route,
     }

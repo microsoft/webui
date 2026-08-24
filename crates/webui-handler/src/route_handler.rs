@@ -63,6 +63,9 @@ pub struct Protocol {
     protocol: WebUIProtocol,
     style_metadata_error: Option<String>,
     css_strategy: webui_protocol::CssStrategy,
+    /// Render plan prepared once at load: numeric fragment slots, per-fragment
+    /// render targets, canonical component prop names, and route presence bits.
+    render_fragments: crate::RenderFragmentIndex,
     component_asset_style_manifest: std::result::Result<String, String>,
     component_asset_style_links: String,
     component_index: HashMap<String, u32>,
@@ -142,10 +145,16 @@ impl Protocol {
             #[allow(clippy::cast_possible_truncation)]
             fragment_slots.insert(Arc::clone(id), slot as u32);
         }
+        // Render slots reuse the continuation slot numbering, so the prepared
+        // index shares the interned IDs instead of duplicating every string, and
+        // resolves targets through the slot map instead of re-searching by name.
+        let render_fragments =
+            crate::RenderFragmentIndex::new(&protocol, &fragment_ids, &fragment_slots);
         Self {
             protocol,
             style_metadata_error,
             css_strategy,
+            render_fragments,
             component_asset_style_manifest,
             component_asset_style_links,
             component_index,
@@ -172,6 +181,11 @@ impl Protocol {
 
     pub(crate) fn css_strategy(&self) -> webui_protocol::CssStrategy {
         self.css_strategy
+    }
+
+    /// Render plan built once when this protocol was loaded.
+    pub(crate) fn render_fragments(&self) -> &crate::RenderFragmentIndex {
+        &self.render_fragments
     }
 
     pub(crate) fn component_asset_style_manifest(&self) -> Result<&str, HandlerError> {
