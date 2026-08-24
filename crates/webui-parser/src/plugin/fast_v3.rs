@@ -12,11 +12,10 @@ use super::{
     ComponentTemplateContext, ParserPlugin, ParserPluginArtifacts,
 };
 use crate::component_registry::Component;
-use crate::diagnostic::{codes, Diagnostic};
 use crate::html_parser::{
     find_element_end, find_tag_close, leading_content, opening_tag_name, starts_with_html_tag_name,
 };
-use crate::{CssLinkOptions, CssStrategy, ParserError, Result};
+use crate::{CssLinkOptions, CssStrategy, Result};
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
@@ -736,19 +735,7 @@ pub(super) fn require_fast_shadow_dom(
     if context.uses_shadow_dom {
         return Ok(());
     }
-    Err(fast_light_dom_error(tag_name))
-}
-
-#[cold]
-#[inline(never)]
-fn fast_light_dom_error(tag_name: &str) -> ParserError {
-    Diagnostic::error("FAST plugins require effective Shadow DOM")
-        .code(codes::FAST_LIGHT_DOM_UNSUPPORTED)
-        .component(tag_name)
-        .help(
-            "build with `dom: \"shadow\"`, author an open declarative Shadow root for this component, or use the WebUI plugin for global Light DOM",
-        )
-        .into()
+    Err(super::fast_diagnostic::light_dom_unsupported(tag_name))
 }
 
 #[cfg(test)]
@@ -756,6 +743,8 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::*;
+    use crate::diagnostic::codes;
+    use crate::ParserError;
     fn make_component(tag: &str, html: &str, css: Option<&str>) -> Component {
         Component {
             tag_name: tag.to_string(),

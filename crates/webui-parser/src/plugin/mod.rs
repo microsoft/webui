@@ -9,6 +9,7 @@
 
 pub mod fast;
 mod fast_convert;
+pub(crate) mod fast_diagnostic;
 mod fast_shared;
 pub mod fast_v2;
 pub mod fast_v3;
