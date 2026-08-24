@@ -28,7 +28,7 @@ use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, Protocol, RenderOptions,
-    ResponseWriter, SessionOptions, StreamStep, StreamingSession, WebUIHandler,
+    SessionOptions, StreamStep, StreamingSession, WebUIHandler,
 };
 
 /// Opaque C handle for a loaded WebUI protocol.
@@ -81,29 +81,7 @@ struct ProtocolContext {
     protocol: Arc<Protocol>,
 }
 
-/// A simple string buffer for collecting rendered output.
-struct StringResponseWriter {
-    content: String,
-}
-
-impl StringResponseWriter {
-    fn new() -> Self {
-        Self {
-            content: String::new(),
-        }
-    }
-}
-
-impl ResponseWriter for StringResponseWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.content.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
-}
+webui_handler::define_string_response_writer!(StringResponseWriter, content);
 
 // ---------------------------------------------------------------------------
 // FFI: error reporting
@@ -414,7 +392,7 @@ unsafe fn render_decoded_protocol(
         options = options.with_nonce(nonce);
     }
 
-    let mut writer = StringResponseWriter::new();
+    let mut writer = StringResponseWriter::with_capacity(0);
     match context
         .handler
         .render(protocol, &data, &options, &mut writer)

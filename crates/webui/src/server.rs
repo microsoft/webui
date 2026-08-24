@@ -27,9 +27,11 @@
 //! }
 //! ```
 
-use crate::{Protocol, ResponseWriter, WebUIHandler};
+use crate::{Protocol, WebUIHandler};
 use webui_handler::route_handler;
 use webui_handler::RenderOptions;
+
+webui_handler::define_string_response_writer!(MemWriter, buf);
 
 /// A server request to be handled by [`serve_request`].
 pub struct ServeRequest<'a> {
@@ -105,29 +107,6 @@ pub fn serve_request(
             .map_err(|e| format!("render failed: {e}"))?;
 
         Ok(ServeResponse::Html(writer.buf))
-    }
-}
-
-struct MemWriter {
-    buf: String,
-}
-
-impl MemWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for MemWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
     }
 }
 

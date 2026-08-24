@@ -15,9 +15,11 @@ use std::sync::Arc;
 
 use webui::{build, BuildOptions, Plugin, Protocol};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
-use webui_handler::{RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{RenderOptions, WebUIHandler};
 
 use crate::registry::AppEntry;
+
+webui_handler::define_string_response_writer!(StringWriter, buf);
 
 /// Shared state for the shell renderer: the compiled protocol and the
 /// directory containing client-side assets (`dist/`).
@@ -97,21 +99,6 @@ fn build_state(apps: &[AppEntry], current_index: usize) -> serde_json::Value {
     })
 }
 
-struct StringWriter {
-    buf: String,
-}
-
-impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
-}
-
 /// Serves the shell page at `/`. Picks the initial current app via the
 /// `?app=<slug>` query parameter when present.
 pub(crate) async fn shell_page(
@@ -136,9 +123,7 @@ pub(crate) async fn shell_page(
 
     let state = build_state(&apps, current_index);
 
-    let mut writer = StringWriter {
-        buf: String::with_capacity(8 * 1024),
-    };
+    let mut writer = StringWriter::with_capacity(8 * 1024);
     let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
     let opts = RenderOptions::new("index.html", "/");
 

@@ -618,6 +618,28 @@ impl ResponseWriter for StreamingWriter {
         Ok(())
     }
 
+    fn write_attribute(&mut self, name: &str, value: &str) -> Result<()> {
+        if let Some(cause) = self.terminated {
+            return Err(cause.into());
+        }
+        webui_handler::append_attribute_to_bytes(&mut self.buf, name, value);
+        if self.buf.len() >= self.chunk_target {
+            self.flush_buf()?;
+        }
+        Ok(())
+    }
+
+    fn write_boolean_attribute(&mut self, name: &str) -> Result<()> {
+        if let Some(cause) = self.terminated {
+            return Err(cause.into());
+        }
+        webui_handler::append_boolean_attribute_to_bytes(&mut self.buf, name);
+        if self.buf.len() >= self.chunk_target {
+            self.flush_buf()?;
+        }
+        Ok(())
+    }
+
     fn end(&mut self) -> Result<()> {
         // Surface the final-flush error so the caller can distinguish
         // "fully delivered" from "client gave up at the very last

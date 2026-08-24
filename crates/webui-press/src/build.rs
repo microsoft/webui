@@ -14,7 +14,7 @@ use console::style;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use webui::BuildOptions;
-use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_handler::{Protocol, RenderOptions, WebUIHandler};
 use webui_tokens::TokenFile;
 
 use crate::bundler::{
@@ -28,6 +28,8 @@ use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
 use crate::state::{load_render_states, merge_page_state};
 use crate::types::{BuildStats, DocsConfig};
+
+webui_handler::define_string_response_writer!(StringWriter, buf);
 
 /// Persistent state held by the dev server across rebuilds. The dev
 /// server always performs a full rebuild on every watcher tick — the
@@ -215,30 +217,6 @@ fn json_obj<const N: usize>(entries: [(&str, Value); N]) -> Value {
         map.insert(k.to_string(), v);
     }
     Value::Object(map)
-}
-
-/// A writer that collects rendered HTML into a String buffer.
-struct StringWriter {
-    buf: String,
-}
-
-impl StringWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
 }
 
 /// Build a documentation site from the given configuration.

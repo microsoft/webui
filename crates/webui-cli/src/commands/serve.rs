@@ -33,6 +33,8 @@ use crate::utils::error::CliError;
 use crate::utils::output;
 #[cfg(test)]
 use metafile::temp_directory as metafile_temp_directory;
+
+webui_handler::define_string_response_writer!(MemoryWriter, buf);
 use metafile::write_atomic;
 
 #[derive(Args)]
@@ -228,30 +230,6 @@ struct SharedState {
     rebuild_error: Option<String>,
     /// Entry fragment ID used for rendering (e.g., "index.html").
     entry: String,
-}
-
-/// In-memory writer implementing `ResponseWriter` for the handler.
-struct MemoryWriter {
-    buf: String,
-}
-
-impl MemoryWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            buf: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for MemoryWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.buf.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
 }
 
 /// SSE endpoint path. Root-relative so the script works under any
@@ -564,9 +542,10 @@ fn build_and_render(
         &mut writer,
     )?;
 
+    let output = writer.buf;
     let html = match livereload {
-        Some(lr) => lr.inject(&writer.buf),
-        None => writer.buf,
+        Some(lr) => lr.inject(&output),
+        None => output,
     };
 
     if let Some(path) = &config.metafile {

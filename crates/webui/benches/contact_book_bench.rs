@@ -6,7 +6,7 @@
 //! benchmark time, then measures protocol parsing and handler rendering at
 //! different data scales (10 / 100 / 1,000 contacts).
 //!
-//! Run with: `cargo bench -p webui --bench contact_book_bench`
+//! Run with: `cargo bench -p microsoft-webui --bench contact_book_bench`
 
 use criterion::{criterion_group, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
@@ -95,6 +95,8 @@ impl ResponseWriter for BenchWriter {
         self.output.push_str(content);
         Ok(())
     }
+
+    webui_handler::string_response_writer_methods!(output);
 
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())

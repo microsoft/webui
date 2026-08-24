@@ -21,29 +21,7 @@ use webui_protocol::WebUIProtocol;
 
 const STREAM_CHUNK_SIZE: usize = 16 * 1024;
 
-/// A string buffer for collecting rendered output.
-struct StringWriter {
-    content: String,
-}
-
-impl StringWriter {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            content: String::with_capacity(cap),
-        }
-    }
-}
-
-impl ResponseWriter for StringWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.content.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
-}
+webui_handler::define_string_response_writer!(StringWriter, content);
 
 /// A writer that batches rendered fragments before crossing into JavaScript.
 struct CallbackWriter<'a> {
@@ -75,6 +53,22 @@ impl<'a> CallbackWriter<'a> {
 impl ResponseWriter for CallbackWriter<'_> {
     fn write(&mut self, content: &str) -> webui_handler::Result<()> {
         self.buffer.push_str(content);
+        if self.buffer.len() >= STREAM_CHUNK_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn write_attribute(&mut self, name: &str, value: &str) -> webui_handler::Result<()> {
+        webui_handler::append_attribute_to_string(&mut self.buffer, name, value);
+        if self.buffer.len() >= STREAM_CHUNK_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn write_boolean_attribute(&mut self, name: &str) -> webui_handler::Result<()> {
+        webui_handler::append_boolean_attribute_to_string(&mut self.buffer, name);
         if self.buffer.len() >= STREAM_CHUNK_SIZE {
             self.flush()?;
         }

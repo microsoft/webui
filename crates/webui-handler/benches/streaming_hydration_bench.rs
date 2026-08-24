@@ -59,6 +59,8 @@ impl ResponseWriter for BenchWriter {
         Ok(())
     }
 
+    webui_handler::string_response_writer_methods!(output);
+
     fn end(&mut self) -> webui_handler::Result<()> {
         Ok(())
     }

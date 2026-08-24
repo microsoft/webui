@@ -38,6 +38,16 @@ impl ResponseWriter for BufferSink {
         Ok(())
     }
 
+    fn write_attribute(&mut self, name: &str, value: &str) -> Result<()> {
+        crate::append_attribute_to_bytes(&mut self.bytes, name, value);
+        Ok(())
+    }
+
+    fn write_boolean_attribute(&mut self, name: &str) -> Result<()> {
+        crate::append_boolean_attribute_to_bytes(&mut self.bytes, name);
+        Ok(())
+    }
+
     fn end(&mut self) -> Result<()> {
         Ok(())
     }

@@ -557,28 +557,7 @@ fn create_handler(plugin: Option<String>) -> napi::Result<WebUIHandler> {
     })
 }
 
-struct BufferedWriter {
-    output: String,
-}
-
-impl BufferedWriter {
-    fn new() -> Self {
-        Self {
-            output: String::with_capacity(4096),
-        }
-    }
-}
-
-impl ResponseWriter for BufferedWriter {
-    fn write(&mut self, content: &str) -> webui_handler::Result<()> {
-        self.output.push_str(content);
-        Ok(())
-    }
-
-    fn end(&mut self) -> webui_handler::Result<()> {
-        Ok(())
-    }
-}
+webui_handler::define_string_response_writer!(BufferedWriter, output);
 
 fn render_to_string(
     handler: &WebUIHandler,
@@ -586,7 +565,7 @@ fn render_to_string(
     state: &Value,
     options: &RenderOptions<'_>,
 ) -> napi::Result<String> {
-    let mut writer = BufferedWriter::new();
+    let mut writer = BufferedWriter::with_capacity(4096);
     handler
         .render(protocol, state, options, &mut writer)
         .map_err(|e| NapiError::from_reason(format!("Render error: {e}")))?;
@@ -638,6 +617,28 @@ where
             return Err(callback_writer_error());
         }
         self.buffer.push_str(content);
+        if self.buffer.len() >= STREAM_CHUNK_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn write_attribute(&mut self, name: &str, value: &str) -> webui_handler::Result<()> {
+        if self.error.is_some() {
+            return Err(callback_writer_error());
+        }
+        webui_handler::append_attribute_to_string(&mut self.buffer, name, value);
+        if self.buffer.len() >= STREAM_CHUNK_SIZE {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn write_boolean_attribute(&mut self, name: &str) -> webui_handler::Result<()> {
+        if self.error.is_some() {
+            return Err(callback_writer_error());
+        }
+        webui_handler::append_boolean_attribute_to_string(&mut self.buffer, name);
         if self.buffer.len() >= STREAM_CHUNK_SIZE {
             self.flush()?;
         }

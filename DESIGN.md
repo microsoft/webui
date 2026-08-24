@@ -1007,6 +1007,15 @@ pub trait ResponseWriter {
 }
 ```
 
+The handler owns quoted and boolean attribute formatting in centralized string
+and byte helpers. Normal buffered hosts use the hidden
+`define_string_response_writer!` / `define_bytes_response_writer!` macros, or
+the corresponding method macros for writers with additional fields. The macros
+expand local, inlinable methods without duplicating formatter source in every
+host. Generic writers retain byte-identical `write()`-based fallback behavior.
+Only writers with distinct semantics - threshold flushing, stream forwarding,
+or profiling counters - implement the hidden attribute methods directly.
+
 ### Streaming Response Writers (`webui::streaming`)
 
 Hosts that support HTTP response streaming can render directly into a

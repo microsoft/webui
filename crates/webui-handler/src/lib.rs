@@ -9,11 +9,17 @@
 pub mod css_module;
 pub(crate) mod html_encode;
 pub mod plugin;
+mod response_writer;
 pub mod route_handler;
 pub mod route_matcher;
 pub(crate) mod route_renderer;
 pub(crate) mod streaming;
 
+#[doc(hidden)]
+pub use response_writer::{
+    append_attribute_to_bytes, append_attribute_to_string, append_boolean_attribute_to_bytes,
+    append_boolean_attribute_to_string,
+};
 pub use route_handler::Protocol;
 
 /// Minimal HTML escaper for the 6 XSS-critical characters
@@ -191,6 +197,23 @@ fn route_style_plan_length_error(routes: usize, targets: usize) -> HandlerError 
 pub trait ResponseWriter {
     /// Write content to the output
     fn write(&mut self, content: &str) -> Result<()>;
+
+    /// Write one complete quoted HTML attribute.
+    #[doc(hidden)]
+    fn write_attribute(&mut self, name: &str, value: &str) -> Result<()> {
+        self.write(" ")?;
+        self.write(name)?;
+        self.write("=\"")?;
+        self.write(value)?;
+        self.write("\"")
+    }
+
+    /// Write one complete boolean HTML attribute.
+    #[doc(hidden)]
+    fn write_boolean_attribute(&mut self, name: &str) -> Result<()> {
+        self.write(" ")?;
+        self.write(name)
+    }
 
     /// Finalize the output
     fn end(&mut self) -> Result<()>;
@@ -2939,11 +2962,7 @@ impl Default for WebUIHandler {
 
 /// Write ` name="value"` to the writer without allocating a format string.
 fn write_attr(writer: &mut dyn ResponseWriter, name: &str, value: &str) -> Result<()> {
-    writer.write(" ")?;
-    writer.write(name)?;
-    writer.write("=\"")?;
-    writer.write(value)?;
-    writer.write("\"")
+    writer.write_attribute(name, value)
 }
 
 #[cfg(test)]
@@ -3009,6 +3028,36 @@ mod tests {
             *self.ended.borrow_mut() = true;
             Ok(())
         }
+    }
+
+    #[test]
+    fn generated_string_writer_methods_preserve_exact_attribute_output() {
+        struct AttributeWriter {
+            output: String,
+        }
+
+        impl ResponseWriter for AttributeWriter {
+            fn write(&mut self, content: &str) -> Result<()> {
+                self.output.push_str(content);
+                Ok(())
+            }
+
+            crate::string_response_writer_methods!(output);
+
+            fn end(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut writer = AttributeWriter {
+            output: String::new(),
+        };
+        write_attr(&mut writer, "data-id", "42")
+            .unwrap_or_else(|error| panic!("attribute write failed: {error}"));
+        writer
+            .write_boolean_attribute("disabled")
+            .unwrap_or_else(|error| panic!("boolean attribute write failed: {error}"));
+        assert_eq!(writer.output, " data-id=\"42\" disabled");
     }
 
     #[test]

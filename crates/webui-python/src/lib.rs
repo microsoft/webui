@@ -15,7 +15,7 @@ use webui_handler::plugin::fast_v3::FastV3HydrationPlugin;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, HandlerError, Protocol,
-    RenderOptions, ResponseWriter, SessionOptions, StreamStep as HandlerStreamStep,
+    RenderOptions, SessionOptions, StreamStep as HandlerStreamStep,
     StreamingSession as HandlerStreamingSession, WebUIHandler,
 };
 
@@ -43,6 +43,8 @@ type PyRenderOptions = (
 );
 type PyPartialOptions = (String, String, String);
 type PyTemplateOptions = (Vec<String>, String);
+
+webui_handler::define_bytes_response_writer!(BytesWriter, bytes);
 
 enum JsonInput {
     Text(PyBackedStr),
@@ -182,29 +184,6 @@ impl BindingError {
     }
 }
 
-struct BytesWriter {
-    bytes: Vec<u8>,
-}
-
-impl BytesWriter {
-    fn new() -> Self {
-        Self {
-            bytes: Vec::with_capacity(4096),
-        }
-    }
-}
-
-impl ResponseWriter for BytesWriter {
-    fn write(&mut self, content: &str) -> Result<(), HandlerError> {
-        self.bytes.extend_from_slice(content.as_bytes());
-        Ok(())
-    }
-
-    fn end(&mut self) -> Result<(), HandlerError> {
-        Ok(())
-    }
-}
-
 #[pyclass(name = "_Renderer", frozen, module = "microsoft_webui._native")]
 struct NativeRenderer {
     protocol: Arc<Protocol>,
@@ -338,7 +317,7 @@ impl NativeRenderer {
     ) -> Result<Vec<u8>, BindingError> {
         let state = serde_json::from_slice::<Value>(input.as_bytes())
             .map_err(|error| BindingError::state(format!("failed to parse state JSON: {error}")))?;
-        let mut writer = BytesWriter::new();
+        let mut writer = BytesWriter::with_capacity(4096);
         self.handler
             .render(&self.protocol, &state, &options.borrowed(), &mut writer)
             .map_err(render_binding_error)?;

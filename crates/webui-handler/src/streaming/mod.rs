@@ -146,6 +146,26 @@ impl<W: FlushWriter + ?Sized> ResponseWriter for StreamingSink<'_, W> {
         self.transport.write(content)
     }
 
+    fn write_attribute(&mut self, name: &str, value: &str) -> Result<()> {
+        if let Some(opening) = self.component_opening.as_mut() {
+            crate::response_writer::append_attribute_to_string(&mut opening.bytes, name, value);
+            return Ok(());
+        }
+        self.written = self
+            .written
+            .wrapping_add(name.len().wrapping_add(value.len()).wrapping_add(4));
+        self.transport.write_attribute(name, value)
+    }
+
+    fn write_boolean_attribute(&mut self, name: &str) -> Result<()> {
+        if let Some(opening) = self.component_opening.as_mut() {
+            crate::response_writer::append_boolean_attribute_to_string(&mut opening.bytes, name);
+            return Ok(());
+        }
+        self.written = self.written.wrapping_add(name.len().wrapping_add(1));
+        self.transport.write_boolean_attribute(name)
+    }
+
     fn end(&mut self) -> Result<()> {
         self.transport.end()
     }
