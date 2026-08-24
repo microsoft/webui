@@ -201,6 +201,7 @@ mod tests {
 
     use super::*;
     use crate::diagnostic::codes;
+    use crate::plugin::fast_diagnostic::{INVALID_FAST_TEMPLATE, UNSUPPORTED_MULTIPLE_F_TEMPLATES};
     use crate::ParserError;
 
     // --- is_hoisted_shadow_attr / hoisted_shadow_options / strip_hoisted_shadow_options ---
@@ -414,7 +415,7 @@ mod tests {
             let ParserError::Template(diag) = err else {
                 panic!("expected template diagnostic");
             };
-            assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+            assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
             assert_eq!(diag.component_name(), Some("file-card"));
             assert!(diag
                 .help_text()
@@ -433,7 +434,7 @@ mod tests {
         let ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert_eq!(
             diag.help_text(),
             Some(
@@ -464,10 +465,7 @@ mod tests {
         let ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(
-            diag.error_code(),
-            Some(codes::UNSUPPORTED_MULTIPLE_F_TEMPLATES)
-        );
+        assert_eq!(diag.error_code(), Some(UNSUPPORTED_MULTIPLE_F_TEMPLATES));
         assert!(diag.to_string().contains("not currently supported"));
     }
 
@@ -482,7 +480,7 @@ mod tests {
         let ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert!(diag.to_string().contains("item in items"));
         assert!(diag.help_text().is_some());
     }
@@ -497,7 +495,7 @@ mod tests {
         let ParserError::Template(repeat_diag) = repeat else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(repeat_diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(repeat_diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert_eq!(repeat_diag.position_line_column(), Some((3, 5)));
         assert_eq!(repeat_diag.snippet_text(), Some("{{items}}"));
 
@@ -509,10 +507,7 @@ mod tests {
         let ParserError::Template(attribute_diag) = attribute else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(
-            attribute_diag.error_code(),
-            Some(codes::INVALID_FAST_TEMPLATE)
-        );
+        assert_eq!(attribute_diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert_eq!(attribute_diag.position_line_column(), Some((3, 11)));
         assert_eq!(attribute_diag.snippet_text(), Some("f-unknown"));
     }
@@ -528,7 +523,7 @@ mod tests {
             let ParserError::Template(diag) = err else {
                 panic!("expected template diagnostic");
             };
-            assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+            assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
             assert_eq!(
                 diag.help_text(),
                 Some("keep exactly one inner <template> element inside <f-template>")
@@ -549,7 +544,7 @@ mod tests {
             let ParserError::Template(diag) = err else {
                 panic!("expected template diagnostic");
             };
-            assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+            assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
             assert!(diag.help_text().is_some());
         }
     }
@@ -688,7 +683,7 @@ mod tests {
         let ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert_eq!(diag.snippet_text(), Some("class"));
         assert!(diag
             .to_string()
@@ -874,7 +869,7 @@ mod tests {
         let ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert!(diag.to_string().contains("mixes single and double quotes"));
         assert!(diag.help_text().is_some());
     }
@@ -1074,7 +1069,7 @@ mod tests {
         let ParserError::Template(diag) = err else {
             panic!("expected template diagnostic");
         };
-        assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
         assert_eq!(diag.component_name(), Some("invalid-card"));
         assert_eq!(
             diag.help_text(),
@@ -1108,7 +1103,7 @@ mod tests {
                 let ParserError::Template(diag) = err else {
                     panic!("expected template diagnostic");
                 };
-                assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+                assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
                 assert_eq!(diag.component_name(), Some("attr-card"));
                 assert_eq!(diag.snippet_text(), Some(offending));
                 assert!(diag
@@ -1154,7 +1149,7 @@ mod tests {
             let ParserError::Template(diag) = err else {
                 panic!("expected template diagnostic");
             };
-            assert_eq!(diag.error_code(), Some(codes::INVALID_FAST_TEMPLATE));
+            assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
             assert_eq!(diag.component_name(), Some("orphan-card"));
             assert_eq!(diag.snippet_text(), Some(snippet));
         }

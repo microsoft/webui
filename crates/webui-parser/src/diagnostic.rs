@@ -113,11 +113,6 @@ pub mod codes {
     pub const EXCESSIVE_NESTING: &str = "excessive-nesting";
     /// A template references itself (directly or transitively) at build time.
     pub const RECURSIVE_TEMPLATE: &str = "recursive-template";
-    /// Compatibility alias for the FAST-owned multiple-template diagnostic code.
-    pub const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str =
-        crate::plugin::fast_diagnostic::UNSUPPORTED_MULTIPLE_F_TEMPLATES;
-    /// Compatibility alias for the FAST-owned invalid-template diagnostic code.
-    pub const INVALID_FAST_TEMPLATE: &str = crate::plugin::fast_diagnostic::INVALID_FAST_TEMPLATE;
     /// A `<style>` block contains malformed CSS.
     pub const INVALID_CSS: &str = "invalid-css";
     /// A CSS token required by parser output is missing from the configured theme.
