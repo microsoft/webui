@@ -19,6 +19,7 @@ how to compare results.
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
 | `cargo xtask bench streaming-browser` | Playwright | ~30 s | real Chromium TTFB / FCP / LCP / DCL / load | proving user-perceived paint improvement |
+| `cargo xtask bench lazy-hydration` | Playwright + CDP | ~1 min | hydration, heap, rendering, and trace metrics at 10/100/1000 rows | validating offscreen work reduction |
 | `cargo xtask bench full` (= `streaming-all`) | suite | ~3 min | runs all four streaming-related benches in sequence | full streaming evidence pack for a PR |
 
 ## The before/after workflow
@@ -41,12 +42,34 @@ Baselines are stored at `target/bench-baselines/`:
 * `streaming-resource-<name>.json`  — alloc + RSS + CPU table
 * `e2e-ttfb-<name>.json`            — HTTP TTFB/TTLB table
 * `browser-<name>.json`             — browser metrics table
+* `browser-lazy-hydration-<name>.json` — offscreen rendering/hydration matrix
 * `node-addon-<name>.json`          — Node/V8/N-API latency table
 * `target/criterion/<bench>/<name>` — criterion's native baseline
                                        directory tree
 
 The compare phase prints a Δ%-table for every row. Negative Δ% =
 improvement; positive = regression.
+
+### Criterion baselines are recorded per target
+
+`cargo xtask bench all` invokes each Criterion target separately —
+`cargo bench -p <package> --bench <target> -- --save-baseline NAME` — rather
+than a single `cargo bench --workspace`. A workspace-wide run forwards
+Criterion's flags to *every* benchable target, including the libtest
+unit-test harnesses of libraries and binaries, which abort with
+`error: Unrecognized option: 'save-baseline'` before a single baseline is
+written.
+
+Because each target runs on its own, criterion writes one baseline directory
+per bench:
+
+```bash
+cargo xtask bench all --save-baseline before
+# target/criterion/<group>/<bench-id>/before/ for every Criterion target
+```
+
+The target list lives in `CRITERION_BENCHES` in `xtask/src/main.rs`. Add new
+`benches/*.rs` harnesses there so `bench all` and its baselines pick them up.
 
 ### Threshold guidance
 
@@ -154,6 +177,25 @@ Rust end-to-end benchmark, rendering `/contacts` so output grows with
 the workload. The first-callback metric is in-process; it is not HTTP
 TTFB. The runner verifies JSON-string, object-state, and streamed output are
 byte-identical before collecting samples.
+
+### `lazy-hydration` (offscreen hydration matrix)
+
+`cargo xtask bench lazy-hydration` drives the Playwright + CDP lazy-hydration
+matrix in `examples/integration/streaming-browser-bench` across the `eager`,
+`lazy-hydrate`, and `lazy-render` modes at 10/100/1000 rows. It reports bundle
+init cost, hydration CPU, hydrated-root and listener counts, JS heap, rendering
+trace metrics, and validated interaction counts.
+
+```bash
+cargo xtask bench lazy-hydration --save-baseline before
+# … change …
+cargo xtask bench lazy-hydration --baseline before
+```
+
+The command maps its baseline flags onto the `WEBUI_LAZY_HYDRATION_SAVE` and
+`WEBUI_LAZY_HYDRATION_COMPARE` env vars consumed by the spec, and writes
+`target/bench-baselines/browser-lazy-hydration-<name>.json`. See the bench
+README for run-count, mode-subset, and framework-source overrides.
 
 ## Recommended PR workflow
 

@@ -5,6 +5,7 @@ import { build } from 'esbuild';
 import { gzipSync } from 'node:zlib';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { TemplateMeta } from '../../../../../packages/webui-framework/src/template-types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FRAMEWORK_SRC = process.env.WEBUI_LAZY_HYDRATION_FRAMEWORK_SRC
@@ -32,7 +33,7 @@ export const ITEM_COUNTS = [10, 100, 1_000] as const;
  */
 export type LazyBenchMode = 'eager' | 'lazy-hydrate' | 'lazy-render';
 
-const TODO_TEMPLATE = {
+const TODO_TEMPLATE: TemplateMeta = {
   h: '<article><input type="checkbox"><span></span><small></small><strong></strong><time></time><button type="button">Toggle</button><button type="button">Delete</button></article>',
   tr: ['title', 'description', 'priority', 'due'],
   tx: [
@@ -47,7 +48,7 @@ const TODO_TEMPLATE = {
       ['remove', [], 8],
     ]],
   ],
-} as const;
+};
 
 function entrySource(mode: LazyBenchMode): string {
   const optionalImport = mode === 'eager'
@@ -86,10 +87,12 @@ class BenchTodoItem extends WebUIElement {
 
   toggle() {
     window.__benchInteractionCount = (window.__benchInteractionCount || 0) + 1;
+    window.__benchToggleCount = (window.__benchToggleCount || 0) + 1;
   }
 
   remove() {
     window.__benchInteractionCount = (window.__benchInteractionCount || 0) + 1;
+    window.__benchRemoveCount = (window.__benchRemoveCount || 0) + 1;
   }
 }
 

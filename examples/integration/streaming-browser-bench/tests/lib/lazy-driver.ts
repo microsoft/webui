@@ -68,6 +68,8 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
     __benchListenerCount?: number;
     __benchPeakHeap?: number;
     __benchInteractionCount?: number;
+    __benchRemoveCount?: number;
+    __benchToggleCount?: number;
     __defineBenchTodo(): void;
   };
 
@@ -99,6 +101,8 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
   win.__benchHydratedCount = 0;
   win.__benchListenerCount = 0;
   win.__benchInteractionCount = 0;
+  win.__benchRemoveCount = 0;
+  win.__benchToggleCount = 0;
   const baseHeap = heapSize();
   win.__benchPeakHeap = baseHeap ?? 0;
   const roots = document.getElementsByTagName('bench-todo-item');
@@ -150,9 +154,10 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
   }
 
   const firstButton = roots[0]?.querySelector('button');
+  const firstDeleteButton = roots[0]?.querySelectorAll('button')[1];
   const lastRoot = roots[roots.length - 1] as HTMLElement | undefined;
   const lastButton = lastRoot?.querySelector('button');
-  if (!firstButton || !lastRoot || !lastButton) {
+  if (!firstButton || !firstDeleteButton || !lastRoot || !lastButton) {
     throw new Error('lazy hydration benchmark roots are incomplete');
   }
   const dormantContentSkipped = typeof lastButton.checkVisibility === 'function'
@@ -168,6 +173,14 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
   lastButton.click();
   const dormantInteractionMs = performance.now() - dormantStarted;
   const afterDormant = win.__benchHydratedCount ?? 0;
+  const interactionCount = win.__benchInteractionCount ?? 0;
+  firstDeleteButton.click();
+  if (
+    win.__benchToggleCount !== 2
+    || win.__benchRemoveCount !== 1
+  ) {
+    throw new Error('lazy hydration benchmark wired Toggle/Delete incorrectly');
+  }
 
   return {
     bundleInitMs: win.__benchBundleInitMs ?? 0,
@@ -196,7 +209,7 @@ export async function runLazyHydration(mode: LazyMode): Promise<LazyRunMetrics> 
     dormantInteractionMs,
     dormantInteractionHydrated: afterDormant > beforeDormant,
     dormantContentSkipped,
-    interactionCount: win.__benchInteractionCount ?? 0,
+    interactionCount,
     liveRootCount: roots.length,
   };
 }

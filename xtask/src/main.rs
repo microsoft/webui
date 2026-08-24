@@ -135,9 +135,10 @@ fn usage() -> ExitCode {
            docs    Build the documentation site\n  \
            bench <target> [-- <extra>] [--save-baseline NAME | --baseline NAME]\n  \
                        Criterion: parser, handler, protocol, expressions, state, contact-book, streaming, all\n  \
-                       Integration: node-addon, streaming-resource, streaming-e2e-ttfb, streaming-browser\n  \
+                       Integration: node-addon, streaming-resource, streaming-e2e-ttfb, streaming-browser, lazy-hydration\n  \
                        Streaming suite: streaming-all/full\n  \
                        Baselines: --save-baseline NAME records, --baseline NAME compares\n  \
+                       'all' runs each Criterion target separately so baselines are recorded per target\n  \
            dev <app>  Run example app in dev mode (server + client watch concurrently)\n  \
            e2e [--update-snapshots]  Run Playwright E2E tests for all example apps\n  \
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
@@ -187,6 +188,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
         Some("streaming-resource") => bench_resource(save_baseline, compare_baseline),
         Some("streaming-e2e-ttfb") => bench_e2e_ttfb(save_baseline, compare_baseline),
         Some("streaming-browser") => bench_browser(save_baseline, compare_baseline),
+        Some("lazy-hydration") => bench_lazy_hydration(save_baseline, compare_baseline),
         Some("node-addon") | Some("webui-node") | Some("microsoft-webui-node") => {
             bench_node_addon(save_baseline, compare_baseline)
         }
@@ -218,6 +220,7 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Some("all") | None => bench_all_criterion(&criterion_args, save_baseline, compare_baseline),
         _ => {
             // Criterion path (existing behaviour). Pass baseline flags
             // through as criterion's native flags.
@@ -258,7 +261,9 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
                     args.push("streaming_bench".into());
                 }
                 Some("all") | None => {
-                    args.push("--workspace".into());
+                    // Handled by `bench_all_criterion` before reaching this arm.
+                    eprintln!("bench target was not resolved");
+                    return ExitCode::FAILURE;
                 }
                 Some(other) => {
                     eprintln!(
@@ -266,7 +271,8 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
                          Criterion targets: parser, handler, protocol, expressions, state, \
                          contact-book, streaming, all.\n\
                          Integration targets: node-addon, streaming-resource, \
-                         streaming-e2e-ttfb, streaming-browser, streaming-all (= full)."
+                         streaming-e2e-ttfb, streaming-browser, lazy-hydration, \
+                         streaming-all (= full)."
                     );
                     return ExitCode::FAILURE;
                 }
@@ -300,6 +306,100 @@ fn bench(target: Option<&str>, extra_args: &[&str]) -> ExitCode {
             }
         }
     }
+}
+
+/// Every Criterion benchmark target in the workspace, as
+/// `(cargo package, bench target)` pairs.
+///
+/// `cargo xtask bench all` walks this table and invokes each target
+/// individually. Running `cargo bench --workspace` instead would forward
+/// Criterion flags such as `--save-baseline` to *every* benchable target,
+/// including the libtest unit-test harnesses of libs and binaries, which
+/// reject them with `Unrecognized option: 'save-baseline'` before any
+/// baseline is recorded.
+const CRITERION_BENCHES: &[(&str, &str)] = &[
+    ("microsoft-webui-parser", "parser_bench"),
+    ("microsoft-webui-handler", "handler_bench"),
+    ("microsoft-webui-handler", "bootstrap_state_bench"),
+    ("microsoft-webui-handler", "streaming_hydration_bench"),
+    ("microsoft-webui-protocol", "protocol_bench"),
+    ("microsoft-webui-expressions", "expressions_bench"),
+    ("microsoft-webui-state", "state_bench"),
+    ("microsoft-webui-ffi", "protocol_bench"),
+    ("microsoft-webui", "contact_book_bench"),
+    ("microsoft-webui", "streaming_bench"),
+    ("microsoft-webui", "component_assets_bench"),
+];
+
+fn bench_all_criterion(
+    criterion_args: &[&str],
+    save: Option<String>,
+    compare: Option<String>,
+) -> ExitCode {
+    for &(package, bench_name) in CRITERION_BENCHES {
+        eprintln!(
+            "\n{} {} / {}",
+            console::style("▸").cyan().bold(),
+            console::style(package).bold(),
+            console::style(bench_name).bold()
+        );
+        if let Err(message) = run_criterion_bench(
+            package,
+            bench_name,
+            criterion_args,
+            save.as_deref(),
+            compare.as_deref(),
+        ) {
+            eprintln!("bench failed: {message}");
+            return ExitCode::FAILURE;
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_criterion_bench(
+    package: &str,
+    bench_name: &str,
+    criterion_args: &[&str],
+    save: Option<&str>,
+    compare: Option<&str>,
+) -> Result<(), String> {
+    let args = criterion_bench_args(package, bench_name, criterion_args, save, compare);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_command("cargo", &arg_refs, None)
+}
+
+/// Build the `cargo bench` argument vector for one Criterion target.
+///
+/// Kept separate from process spawning so the routing of baseline flags is
+/// unit-testable.
+fn criterion_bench_args(
+    package: &str,
+    bench_name: &str,
+    criterion_args: &[&str],
+    save: Option<&str>,
+    compare: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec![
+        "bench".to_string(),
+        "-p".to_string(),
+        package.to_string(),
+        "--bench".to_string(),
+        bench_name.to_string(),
+    ];
+    if save.is_some() || compare.is_some() || !criterion_args.is_empty() {
+        args.push("--".to_string());
+    }
+    args.extend(criterion_args.iter().map(|arg| (*arg).to_string()));
+    if let Some(name) = save {
+        args.push("--save-baseline".to_string());
+        args.push(name.to_string());
+    }
+    if let Some(name) = compare {
+        args.push("--baseline".to_string());
+        args.push(name.to_string());
+    }
+    args
 }
 
 fn bench_webui_criterion_phase(save: Option<String>, compare: Option<String>) -> ExitCode {
@@ -416,6 +516,36 @@ fn bench_browser(save: Option<String>, compare: Option<String>) -> ExitCode {
         }
         Err(e) => {
             eprintln!("streaming-browser bench: failed to spawn pnpm: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn bench_lazy_hydration(save: Option<String>, compare: Option<String>) -> ExitCode {
+    use std::process::Command;
+    let bench_dir = std::path::PathBuf::from("examples")
+        .join("integration")
+        .join("streaming-browser-bench");
+    if !bench_dir.join("package.json").exists() {
+        eprintln!("lazy-hydration bench: {} not found", bench_dir.display());
+        return ExitCode::FAILURE;
+    }
+    let mut cmd = Command::new("pnpm");
+    cmd.arg("test:lazy-hydration").current_dir(&bench_dir);
+    if let Some(name) = save.as_ref() {
+        cmd.env("WEBUI_LAZY_HYDRATION_SAVE", name);
+    }
+    if let Some(name) = compare.as_ref() {
+        cmd.env("WEBUI_LAZY_HYDRATION_COMPARE", name);
+    }
+    match cmd.status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => {
+            eprintln!("lazy-hydration bench exited with {status}");
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("lazy-hydration bench: failed to spawn pnpm: {error}");
             ExitCode::FAILURE
         }
     }
@@ -826,4 +956,141 @@ fn print_failure_output_with_name(name: &str, output: &str) {
         );
     }
     eprintln!("    {separator}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{criterion_bench_args, CRITERION_BENCHES};
+
+    #[test]
+    fn criterion_bench_args_target_one_bench_binary() {
+        let args = criterion_bench_args("microsoft-webui-parser", "parser_bench", &[], None, None);
+        assert_eq!(
+            args,
+            vec![
+                "bench",
+                "-p",
+                "microsoft-webui-parser",
+                "--bench",
+                "parser_bench"
+            ]
+        );
+        // `--workspace` would also sweep libtest harnesses, which reject
+        // Criterion's baseline flags.
+        assert!(!args.iter().any(|arg| arg == "--workspace"));
+    }
+
+    #[test]
+    fn criterion_bench_args_forward_save_baseline_after_separator() {
+        let args = criterion_bench_args(
+            "microsoft-webui-state",
+            "state_bench",
+            &[],
+            Some("before"),
+            None,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "bench",
+                "-p",
+                "microsoft-webui-state",
+                "--bench",
+                "state_bench",
+                "--",
+                "--save-baseline",
+                "before"
+            ]
+        );
+    }
+
+    #[test]
+    fn criterion_bench_args_forward_compare_baseline_after_separator() {
+        let args = criterion_bench_args(
+            "microsoft-webui-state",
+            "state_bench",
+            &[],
+            None,
+            Some("before"),
+        );
+        assert_eq!(
+            args,
+            vec![
+                "bench",
+                "-p",
+                "microsoft-webui-state",
+                "--bench",
+                "state_bench",
+                "--",
+                "--baseline",
+                "before"
+            ]
+        );
+    }
+
+    #[test]
+    fn criterion_bench_args_keep_extra_args_before_baseline_flags() {
+        let args = criterion_bench_args(
+            "microsoft-webui",
+            "streaming_bench",
+            &["--quick"],
+            Some("after"),
+            None,
+        );
+        assert_eq!(
+            args,
+            vec![
+                "bench",
+                "-p",
+                "microsoft-webui",
+                "--bench",
+                "streaming_bench",
+                "--",
+                "--quick",
+                "--save-baseline",
+                "after"
+            ]
+        );
+    }
+
+    #[test]
+    fn criterion_bench_args_omit_separator_without_passthrough_args() {
+        let args = criterion_bench_args("microsoft-webui-ffi", "protocol_bench", &[], None, None);
+        assert!(!args.iter().any(|arg| arg == "--"));
+    }
+
+    #[test]
+    fn criterion_bench_table_is_non_empty_and_unique() {
+        assert!(!CRITERION_BENCHES.is_empty());
+        let mut seen: Vec<(&str, &str)> = CRITERION_BENCHES.to_vec();
+        seen.sort_unstable();
+        let before = seen.len();
+        seen.dedup();
+        assert_eq!(
+            before,
+            seen.len(),
+            "CRITERION_BENCHES has duplicate entries"
+        );
+    }
+
+    #[test]
+    fn criterion_bench_table_targets_exist_on_disk() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default();
+        for &(package, bench_name) in CRITERION_BENCHES {
+            let crate_dir = package.replace("microsoft-", "");
+            let path = root
+                .join("crates")
+                .join(&crate_dir)
+                .join("benches")
+                .join(format!("{bench_name}.rs"));
+            assert!(
+                path.is_file(),
+                "CRITERION_BENCHES entry ({package}, {bench_name}) has no harness at {}",
+                path.display()
+            );
+        }
+    }
 }
