@@ -1305,14 +1305,15 @@ resolve before component discovery and compilation; do not manually register
 their components elsewhere. See [WebUI Press named regions](/guide/webui-press)
 for the stable built-in region list and full configuration contract.
 
-**FAST authored templates.** With `--plugin=fast-v3` (or the deprecated `fast`
-/ `fast-v2`), a component file authored as one `<f-template name="...">`
-wrapping a single inner `<template>` is recognized: a non-empty `name` sets the
-component tag (else the filename is kept), `<f-repeat>`/`<f-when>` convert to
-`<for>`/`<if>` for SSR, client-only bindings (`@event`, `:property`, `f-ref`,
-`f-slotted`, `f-children`) — including bindings authored directly on the root
-`<template>` — are counted for hydration, and the authored inner `<template>` is
-retained for the client artifact. The verbatim FAST filename
+**FAST authored templates.** The `fast-v2` and `fast-v3` plugins are pinned to
+FAST major versions 2 and 3, respectively. With either plugin, a component file
+authored as one `<f-template name="...">` wrapping a single inner `<template>`
+is recognized: a non-empty `name` sets the component tag (else the filename is
+kept), `<f-repeat>`/`<f-when>` convert to `<for>`/`<if>` for SSR, client-only
+bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) - including
+bindings authored directly on the root `<template>` - are counted for hydration,
+and the authored inner `<template>` is retained for the client artifact. The
+verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
 registering under the authored `name`. Wrapper shadow options (`shadowrootmode`,
 `shadowrootdelegatesfocus`) move onto the inner `<template>` for the Shadow-DOM

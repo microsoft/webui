@@ -37,9 +37,8 @@ implementations are loaded.
 
 | Name | Behavior |
 |------|----------|
-| `fast` | Deprecated alias for `fast-v2` |
-| `fast-v2` | Deprecated FAST 2 compatibility name |
-| `fast-v3` | FAST 3 hydration plugin |
+| `fast-v2` | FAST hydration plugin pinned to FAST major version 2 |
+| `fast-v3` | FAST hydration plugin pinned to FAST major version 3 |
 | `webui` | WebUI framework hydration plugin |
 
 ## Using Plugins with Handlers
@@ -104,8 +103,9 @@ let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())
 
 ### Using FAST Plugins
 
-The Rust FAST integrations are `fast`, `fast_v2`, and `fast_v3`; their CLI
-names are `fast`, `fast-v2`, and `fast-v3`:
+The Rust FAST integrations are `fast_v2` and `fast_v3`; their CLI names are
+`fast-v2` and `fast-v3`. Each integration is pinned to the corresponding FAST
+major version:
 
 ```bash
 webui build ./src --out ./dist --plugin=fast-v3
@@ -210,8 +210,9 @@ Multiple wrappers report `unsupported-multiple-f-templates`; malformed or
 unsupported FAST declarative syntax reports `invalid-fast-template`, while
 unclosed markup uses the shared `unclosed-html-tag` diagnostic.
 
-The deprecated `fast` selector aliases FAST 2. `fast`, `fast_v2`, and `fast_v3`
-all share this same transform, conversion, and retained-artifact path.
+`fast_v2` and `fast_v3` share this same transform, conversion, and
+retained-artifact path while emitting hydration markers for their pinned FAST
+major versions.
 
 ## Writing Custom Plugins
 

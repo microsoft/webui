@@ -33,7 +33,7 @@ struct TrackedComponent {
     styles_at_end: bool,
 }
 
-/// Deprecated FAST 2 parser plugin used by `fast` and `fast-v2`.
+/// FAST parser plugin pinned to FAST major version 2.
 ///
 /// Implements the `ParserPlugin` trait for FAST 2 compatibility:
 /// - Filters FAST-specific runtime binding attributes (`@click`, `f-ref`, etc.)

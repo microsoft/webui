@@ -32,7 +32,7 @@ struct TrackedComponent {
     styles_at_end: bool,
 }
 
-/// FAST 3 parser plugin used by `fast-v3`.
+/// FAST parser plugin pinned to FAST major version 3.
 ///
 /// Implements the `ParserPlugin` trait for FAST 3 applications:
 /// - Filters FAST-specific runtime binding attributes (`@click`, `f-ref`, etc.)

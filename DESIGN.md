@@ -1347,9 +1347,8 @@ plugin is loaded by default; output is plain SSR HTML unless a plugin is
 selected.
 
 The shipped handler names are:
-- `fast` - deprecated alias for `fast-v2`
-- `fast-v2` - deprecated FAST 2 compatibility name
-- `fast-v3` - FAST 3 hydration plugin
+- `fast-v2` - FAST hydration plugin pinned to FAST major version 2
+- `fast-v3` - FAST hydration plugin pinned to FAST major version 3
 - `webui` - WebUI framework hydration plugin
 
 Each plugin emits its own framework-specific hydration markers and
@@ -1917,13 +1916,13 @@ documentation for the current list. Each plugin defines:
 
 **Built-in FAST parser plugins**
 
-The `fast`, `fast_v2`, and `fast_v3` parser implementations (selected as
-`fast`, `fast-v2`, and `fast-v3` by CLI and host string APIs) share one
-`component_source_transform` implementation. Only when one of these plugins is
-selected does the component registry run that transform for each component,
-after reading the authored HTML but before name validation, duplicate
-checking, CSS processing, or insertion. With no plugin, or with any other
-plugin (including `webui`) that returns `None` from
+The `fast_v2` and `fast_v3` parser implementations (selected as `fast-v2` and
+`fast-v3` by CLI and host string APIs) are pinned to FAST major versions 2 and
+3, respectively, and share one `component_source_transform` implementation.
+Only when one of these plugins is selected does the component registry run that
+transform for each component, after reading the authored HTML but before name
+validation, duplicate checking, CSS processing, or insertion. With no plugin,
+or with any other plugin (including `webui`) that returns `None` from
 `component_source_transform`, the registry never scans for or interprets
 `<f-template>` syntax — an `<f-template>`-shaped source passes through
 unchanged, exactly like any other component.
@@ -2030,10 +2029,9 @@ shadow root). The FAST plugin wraps that retained source in the resolved
 preserved byte-for-byte: it passes through the same generic component-template
 processing as any other component, including wrapper normalization, selected
 CSS-strategy injection, module stylesheet adoption where applicable,
-legal-comment handling, and plugin artifact normalization. The deprecated
-`fast` selector aliases the FAST 2 implementation, while `fast_v2` and `fast_v3`
-use their respective hydration marker formats; all three share this transform,
-conversion, and artifact-retention behavior.
+legal-comment handling, and plugin artifact normalization. `fast_v2` and
+`fast_v3` use the hydration marker formats for their pinned FAST major versions
+while sharing this transform, conversion, and artifact-retention behavior.
 
 WebUI itself does not interpret plugin-emitted bytes; each parser plugin pairs with
 a matching handler plugin that consumes them at render time. See [packages/webui-framework/README.md](packages/webui-framework/README.md)

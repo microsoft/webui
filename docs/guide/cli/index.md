@@ -248,7 +248,7 @@ Closed roots and invalid values or placement always fail the build. Native
 Light components.
 
 FAST 2/3 plugins currently require effective Shadow components. Combining
-`--plugin fast`, `fast-v2`, or `fast-v3` with an unwrapped component under
+`--plugin fast-v2` or `fast-v3` with an unwrapped component under
 `--dom light` fails with `fast-light-dom-unsupported` instead of allowing the
 FAST client runtime to replace Light SSR with a Shadow root.
 
