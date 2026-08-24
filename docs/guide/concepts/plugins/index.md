@@ -146,7 +146,7 @@ Because the authored `<f-template name>` supplies the registry key, recursive
 discovery also accepts a file whose stem is not itself a custom-element name.
 FAST's generated files are named `<component>.template.html`, whose stem
 (`button.template`) has no hyphen; a FAST plugin still discovers and registers
-them under their authored `fluent-*` name. Without a FAST plugin those files are
+them under their authored `custom-*` name. Without a FAST plugin those files are
 ignored, exactly as any non-custom-element filename is.
 
 The wrapper accepts only `name` and declarative-shadow-root options — attributes

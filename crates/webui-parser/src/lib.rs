@@ -6062,20 +6062,20 @@ mod tests {
         parser
             .component_registry
             .register_component(ComponentRegistration::new(
-                "fluent-btn",
-                r#"<f-template name="fluent-btn"><template @click="{click($e)}"><slot name="start" f-ref="{start}"></slot><span class="content"><slot f-slotted="{slotted}"></slot></span></template></f-template>"#,
+                "custom-btn",
+                r#"<f-template name="custom-btn"><template @click="{click($e)}"><slot name="start" f-ref="{start}"></slot><span class="content"><slot f-slotted="{slotted}"></slot></span></template></f-template>"#,
                 Some(css),
                 true,
             ))
             .expect("register component");
         parser
-            .parse("index.html", "<fluent-btn></fluent-btn>")
+            .parse("index.html", "<custom-btn></custom-btn>")
             .expect("parse entry");
 
         // SSR style delivery comes from the precomputed tree closure rather
         // than the component raw stream.
         let records = parser.fragment_records.clone();
-        let ssr_raw: String = records["fluent-btn"]
+        let ssr_raw: String = records["custom-btn"]
             .fragments
             .iter()
             .filter_map(|fragment| match fragment.fragment.as_ref() {
@@ -6131,16 +6131,16 @@ mod tests {
             parser
                 .component_registry
                 .register_component(ComponentRegistration::new(
-                    "fluent-btn",
-                    r#"<f-template name="fluent-btn"><template @click="{click($e)}"><slot name="start" f-ref="{start}"></slot><span class="content"><slot f-slotted="{slotted}"></slot></span></template></f-template>"#,
+                    "custom-btn",
+                    r#"<f-template name="custom-btn"><template @click="{click($e)}"><slot name="start" f-ref="{start}"></slot><span class="content"><slot f-slotted="{slotted}"></slot></span></template></f-template>"#,
                     Some("@media screen { :host { color: red; } } .content { display: inherit; }"),
                     true,
                 ))
                 .expect("register component");
             parser
-                .parse("index.html", "<fluent-btn></fluent-btn>")
+                .parse("index.html", "<custom-btn></custom-btn>")
                 .expect("parse entry");
-            parser.fragment_records["fluent-btn"]
+            parser.fragment_records["custom-btn"]
                 .fragments
                 .iter()
                 .filter_map(|fragment| {
@@ -6240,7 +6240,7 @@ mod tests {
             .register_component(ComponentRegistration::new(
                 "root-binding-card",
                 // The root <template> carries client-only event bindings (like
-                // Fluent's button) plus a boolean binding (like Fluent's
+                // a custom button) plus a boolean binding (like a custom
                 // tree-item's `?focusgroupstart`); the child carries one more.
                 r#"<f-template name="root-binding-card" shadowrootmode="open"><template @click="{clickHandler($e)}" @keydown="{keydownHandler($e)}" ?focusgroupstart="{{selected}}"><span @focus="{focus()}">{{label}}</span></template></f-template>"#,
                 None,

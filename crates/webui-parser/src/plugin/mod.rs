@@ -387,7 +387,7 @@ mod artifact_tests {
     }
 
     #[test]
-    fn with_hydration_attaches_surface_fluently() {
+    fn with_hydration_attaches_custom_surface() {
         let artifact =
             ComponentTemplateArtifact::webui("x-c".into(), "{}".into(), "[]".into(), false)
                 .with_hydration(StateSurface::keys(vec!["count".into(), "name".into()]));

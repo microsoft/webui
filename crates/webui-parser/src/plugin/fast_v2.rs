@@ -1138,20 +1138,20 @@ mod tests {
         // shadowrootadoptedstylesheets on the inner template.
         let processed = concat!(
             r#"<template shadowrootmode="open" shadowrootdelegatesfocus "#,
-            r#"shadowrootadoptedstylesheets="fluent-field" @click="{clickHandler($e)}">"#,
+            r#"shadowrootadoptedstylesheets="custom-field" @click="{clickHandler($e)}">"#,
             r#"<slot></slot></template>"#,
         );
-        let html = generate_f_template_from_processed("fluent-field", processed);
+        let html = generate_f_template_from_processed("custom-field", processed);
         assert!(
             html.contains(
-                r#"<f-template name="fluent-field" shadowrootmode="open" shadowrootdelegatesfocus>"#
+                r#"<f-template name="custom-field" shadowrootmode="open" shadowrootdelegatesfocus>"#
             ),
             "wrapper must carry hoisted shadow options: {html}"
         );
         // The inner <template> keeps its bindings and the adopted-stylesheets
         // CSS delivery, but not the hoisted shadow-root options.
         assert!(html.contains(r#"@click="{clickHandler($e)}""#));
-        assert!(html.contains(r#"shadowrootadoptedstylesheets="fluent-field""#));
+        assert!(html.contains(r#"shadowrootadoptedstylesheets="custom-field""#));
         assert!(
             !html.contains("<template shadowrootmode"),
             "inner <template> must not keep shadowrootmode: {html}"
@@ -1170,14 +1170,14 @@ mod tests {
         // removed from the inner <template>, not only when `shadowrootmode`
         // happens to be present too.
         let processed = r#"<template shadowrootdelegatesfocus><slot></slot></template>"#;
-        let html = generate_f_template_from_processed("fluent-field", processed);
+        let html = generate_f_template_from_processed("custom-field", processed);
         assert_eq!(
             html.matches("shadowrootdelegatesfocus").count(),
             1,
             "shadowrootdelegatesfocus must appear exactly once (hoisted, not duplicated): {html}"
         );
         assert!(
-            html.contains(r#"<f-template name="fluent-field" shadowrootdelegatesfocus>"#),
+            html.contains(r#"<f-template name="custom-field" shadowrootdelegatesfocus>"#),
             "wrapper must carry the hoisted option: {html}"
         );
         assert!(
@@ -1190,7 +1190,7 @@ mod tests {
     fn clonable_and_serializable_only_are_hoisted_and_stripped() {
         let processed =
             r#"<template shadowrootclonable shadowrootserializable><slot></slot></template>"#;
-        let html = generate_f_template_from_processed("fluent-field", processed);
+        let html = generate_f_template_from_processed("custom-field", processed);
         for attr in ["shadowrootclonable", "shadowrootserializable"] {
             assert_eq!(
                 html.matches(attr).count(),
@@ -1200,7 +1200,7 @@ mod tests {
         }
         assert!(
             html.contains(
-                r#"<f-template name="fluent-field" shadowrootclonable shadowrootserializable>"#
+                r#"<f-template name="custom-field" shadowrootclonable shadowrootserializable>"#
             ),
             "wrapper must carry both hoisted options: {html}"
         );
@@ -1214,14 +1214,14 @@ mod tests {
     #[test]
     fn adoptedstylesheets_only_is_neither_hoisted_nor_stripped() {
         let processed =
-            r#"<template shadowrootadoptedstylesheets="fluent-field"><slot></slot></template>"#;
-        let html = generate_f_template_from_processed("fluent-field", processed);
+            r#"<template shadowrootadoptedstylesheets="custom-field"><slot></slot></template>"#;
+        let html = generate_f_template_from_processed("custom-field", processed);
         assert!(
-            html.contains("<f-template name=\"fluent-field\">"),
+            html.contains("<f-template name=\"custom-field\">"),
             "shadowrootadoptedstylesheets is not a shadow-root-creation option and must stay off the wrapper: {html}"
         );
         assert!(
-            html.contains(r#"<template shadowrootadoptedstylesheets="fluent-field">"#),
+            html.contains(r#"<template shadowrootadoptedstylesheets="custom-field">"#),
             "inner <template> must keep shadowrootadoptedstylesheets: {html}"
         );
     }
@@ -1236,19 +1236,19 @@ mod tests {
         // binding must stay on the inner template.
         let processed = concat!(
             r#"<template shadowrootmode="open" shadowrootdelegatesfocus shadowrootclonable "#,
-            r#"shadowrootserializable shadowrootadoptedstylesheets="fluent-field" "#,
+            r#"shadowrootserializable shadowrootadoptedstylesheets="custom-field" "#,
             r#"@click="{clickHandler($e)}"><slot></slot></template>"#,
         );
-        let html = generate_f_template_from_processed("fluent-field", processed);
+        let html = generate_f_template_from_processed("custom-field", processed);
         assert!(
             html.contains(
-                r#"<f-template name="fluent-field" shadowrootmode="open" shadowrootdelegatesfocus shadowrootclonable shadowrootserializable>"#
+                r#"<f-template name="custom-field" shadowrootmode="open" shadowrootdelegatesfocus shadowrootclonable shadowrootserializable>"#
             ),
             "wrapper must carry every hoisted option exactly once, in order: {html}"
         );
         assert!(
             html.contains(
-                r#"<template shadowrootadoptedstylesheets="fluent-field" @click="{clickHandler($e)}">"#
+                r#"<template shadowrootadoptedstylesheets="custom-field" @click="{clickHandler($e)}">"#
             ),
             "inner <template> must keep shadowrootadoptedstylesheets and the binding, and nothing hoisted: {html}"
         );

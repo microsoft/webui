@@ -2221,7 +2221,7 @@ mod tests {
             PathBuf::from("/repo/components/live-preview/live-preview.ts"),
         ];
         let scripts = vec![
-            ScriptSource::File("./scripts/fluent.ts".to_string()),
+            ScriptSource::File("./scripts/custom.ts".to_string()),
             ScriptSource::Inline("import \"@mai-ui/button/define.js\";".to_string()),
         ];
 
@@ -2497,10 +2497,11 @@ mod tests {
 
     #[test]
     fn extract_bundle_scripts_inline() {
-        let html = r#"<p>Hello</p><script type="module" bundle>import "@fluentui/web-components";</script><p>World</p>"#;
+        let html =
+            r#"<p>Hello</p><script type="module" bundle>import "custom";</script><p>World</p>"#;
         let (out, scripts) = extract_bundle_scripts(html);
         assert_eq!(scripts.len(), 1);
-        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("@fluentui")));
+        assert!(matches!(&scripts[0], ScriptSource::Inline(s) if s.contains("custom")));
         assert!(!out.contains("<script"));
         assert!(out.contains("<p>Hello</p>"));
         assert!(out.contains("<p>World</p>"));

@@ -634,21 +634,21 @@ mod tests {
     #[test]
     #[cfg(feature = "fs")]
     fn discovery_registers_verbatim_fast_filename_via_transform() {
-        // Fluent's committed filenames are `<component>.template.html`, whose
+        // Custom package filenames are `<component>.template.html`, whose
         // stem (`button.template`) is not itself a custom-element name. With a
         // FAST source transform installed, discovery still registers it under
         // the authored `<f-template name>`.
         let mut fs = TestFileSystem::new();
         let html = fs.add_file(
             "components/button.template.html",
-            r#"<f-template name="fluent-button" shadowrootmode="open"><template @click="{clickHandler($e)}"><slot></slot></template></f-template>"#,
+            r#"<f-template name="custom-button" shadowrootmode="open"><template @click="{clickHandler($e)}"><slot></slot></template></f-template>"#,
         );
         let mut registry = ComponentRegistry::new();
         registry.set_component_source_transform(fast_transform());
         registry
             .register_from_paths(&[html.parent().expect("dir")])
             .expect("discover");
-        assert!(registry.contains("fluent-button"));
+        assert!(registry.contains("custom-button"));
         assert!(!registry.contains("button.template"));
     }
 
@@ -661,13 +661,13 @@ mod tests {
         let mut fs = TestFileSystem::new();
         let html = fs.add_file(
             "components/button.template.html",
-            r#"<f-template name="fluent-button"><template><slot></slot></template></f-template>"#,
+            r#"<f-template name="custom-button"><template><slot></slot></template></f-template>"#,
         );
         let mut registry = ComponentRegistry::new();
         registry
             .register_from_paths(&[html.parent().expect("dir")])
             .expect("discover");
-        assert!(!registry.contains("fluent-button"));
+        assert!(!registry.contains("custom-button"));
         assert!(registry.get_all().next().is_none());
     }
 
@@ -735,11 +735,11 @@ mod tests {
         let mut fs = TestFileSystem::new();
         let first = fs.add_file(
             "a/button.template.html",
-            r#"<f-template name="fluent-button"><template><slot></slot></template></f-template>"#,
+            r#"<f-template name="custom-button"><template><slot></slot></template></f-template>"#,
         );
         let second = fs.add_file(
             "b/toggle-button.template.html",
-            r#"<f-template name="fluent-button"><template><slot></slot></template></f-template>"#,
+            r#"<f-template name="custom-button"><template><slot></slot></template></f-template>"#,
         );
         let mut registry = ComponentRegistry::new();
         registry.set_component_source_transform(fast_transform());
@@ -1276,7 +1276,7 @@ mod tests {
     fn test_exclude_dot_in_component_name() {
         let mut registry = ComponentRegistry::new();
         let result = registry.register_component(ComponentRegistration::new(
-            "fluent.button",
+            "custom.button",
             "<p>Dot name</p>",
             None,
             true,
@@ -1320,7 +1320,7 @@ mod tests {
     fn test_valid_component_with_hyphen() {
         let mut registry = ComponentRegistry::new();
         let result = registry.register_component(ComponentRegistration::new(
-            "fluent-button",
+            "custom-button",
             "<button>Click me</button>",
             None,
             true,
@@ -1330,7 +1330,7 @@ mod tests {
             result.is_ok(),
             "Component name with hyphen should be accepted"
         );
-        assert!(registry.contains("fluent-button"));
+        assert!(registry.contains("custom-button"));
         assert_eq!(registry.len(), 1);
     }
 

@@ -785,7 +785,7 @@ mod tests {
         // the same position) so it is not rendered as a `styles` text signal or
         // counted as a hydration binding on either the server or client.
         let html = concat!(
-            r#"<f-template name="fluent-button" shadowrootmode="open">"#,
+            r#"<f-template name="custom-button" shadowrootmode="open">"#,
             "<template @click=\"{clickHandler($e)}\">\n    {{styles}}\n    ",
             r#"<slot name="start" f-ref="{start}"></slot></template></f-template>"#,
         );
@@ -794,7 +794,7 @@ mod tests {
         else {
             panic!("expected a transformed FAST source");
         };
-        assert_eq!(result.tag_name, "fluent-button");
+        assert_eq!(result.tag_name, "custom-button");
         assert!(
             !result.parser_content.contains("{{styles}}"),
             "parser view must not retain the generator marker: {}",
@@ -833,11 +833,11 @@ mod tests {
         let result = transformed(
             "field.template",
             concat!(
-                r#"<f-template name="fluent-field" shadowrootmode="open" shadowrootdelegatesfocus>"#,
+                r#"<f-template name="custom-field" shadowrootmode="open" shadowrootdelegatesfocus>"#,
                 r#"<template @click="{clickHandler($e)}"><slot></slot></template></f-template>"#,
             ),
         );
-        assert_eq!(result.tag_name, "fluent-field");
+        assert_eq!(result.tag_name, "custom-field");
         assert_eq!(
             result.parser_content,
             r#"<template shadowrootmode="open" shadowrootdelegatesfocus @click="{clickHandler($e)}"><slot></slot></template>"#
@@ -869,7 +869,7 @@ mod tests {
         // the client artifact.
         let err = transform(
             "file-card",
-            r#"<f-template name="fluent-button" class="danger"><template><slot></slot></template></f-template>"#,
+            r#"<f-template name="custom-button" class="danger"><template><slot></slot></template></f-template>"#,
         )
         .expect_err("unknown wrapper attribute should error");
         let ParserError::Template(diag) = err else {
