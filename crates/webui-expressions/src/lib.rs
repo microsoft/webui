@@ -57,6 +57,16 @@ pub fn evaluate_with_resolver<'a, F>(condition: &ConditionExpr, resolver: F) -> 
 where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
+    // Single-term conditions carry no logical operators, so the traversal in
+    // `count_logical_operators` (and the allocation backing its stack) is pure
+    // overhead for the most common template conditions.
+    if matches!(
+        condition.expr,
+        Some(condition_expr::Expr::Identifier(_)) | Some(condition_expr::Expr::Predicate(_))
+    ) {
+        return evaluate_expr(condition, &resolver);
+    }
+
     let (logical_op_count, has_mixed_ops) = count_logical_operators(condition);
 
     if logical_op_count > 5 {
@@ -939,6 +949,125 @@ mod tests {
             matches!(result, Ok(true)),
             "Expected Ok(true), got {:?}",
             result
+        );
+    }
+
+    // === Single-term fast path ===
+
+    #[test]
+    fn test_single_term_matches_operator_guard_semantics() {
+        let state = test_json!({
+            "flag": true,
+            "off": false,
+            "count": 0,
+            "name": "Alice",
+            "user": { "age": 25 }
+        });
+
+        // Single identifiers and predicates carry no logical operators, so they
+        // must evaluate normally and never surface an operator-limit error.
+        let cases: [(ConditionExpr, bool); 6] = [
+            (ConditionExpr::identifier("flag"), true),
+            (ConditionExpr::identifier("off"), false),
+            (ConditionExpr::identifier("count"), false),
+            (ConditionExpr::identifier("name"), true),
+            (
+                ConditionExpr::predicate("user.age", ComparisonOperator::GreaterThan, "18"),
+                true,
+            ),
+            (
+                ConditionExpr::predicate("name", ComparisonOperator::Equal, "'Bob'"),
+                false,
+            ),
+        ];
+
+        for (condition, expected) in cases {
+            assert_eq!(
+                evaluate(&condition, &state).ok(),
+                Some(expected),
+                "single-term condition {:?} must evaluate to {}",
+                condition,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_single_term_predicate_still_reports_missing_value() {
+        let state = test_json!({ "user": { "name": "John" } });
+        let condition = ConditionExpr::predicate("user.age", ComparisonOperator::LessThan, "18");
+
+        assert!(matches!(
+            evaluate(&condition, &state),
+            Err(ExpressionError::MissingValue(_))
+        ));
+    }
+
+    #[test]
+    fn test_negated_tree_still_enforces_operator_limit() {
+        // A `Not` wrapper must not be mistaken for a single term: the operator
+        // guard has to keep walking the tree underneath it.
+        let mut inner = ConditionExpr::identifier("a");
+        for i in 0..6 {
+            inner = ConditionExpr::compound(
+                inner,
+                LogicalOperator::And,
+                ConditionExpr::identifier(format!("var{}", i)),
+            );
+        }
+        let condition = ConditionExpr::negated(inner);
+
+        let state = test_json!({
+            "a": true, "var0": true, "var1": true,
+            "var2": true, "var3": true, "var4": true, "var5": true
+        });
+
+        assert!(matches!(
+            evaluate(&condition, &state),
+            Err(ExpressionError::TooManyOperators(6))
+        ));
+    }
+
+    #[test]
+    fn test_negated_tree_still_rejects_mixed_operators() {
+        let condition = ConditionExpr::negated(ConditionExpr::compound(
+            ConditionExpr::compound(
+                ConditionExpr::identifier("a"),
+                LogicalOperator::And,
+                ConditionExpr::identifier("b"),
+            ),
+            LogicalOperator::Or,
+            ConditionExpr::identifier("c"),
+        ));
+
+        let state = test_json!({ "a": true, "b": true, "c": true });
+
+        assert!(matches!(
+            evaluate(&condition, &state),
+            Err(ExpressionError::MixedOperators)
+        ));
+    }
+
+    #[test]
+    fn test_single_term_fast_path_uses_same_resolver_contract() {
+        let value = Value::String("active".to_string());
+        let lookups = std::cell::Cell::new(0usize);
+
+        let condition = ConditionExpr::predicate("status", ComparisonOperator::Equal, "'active'");
+        let result = evaluate_with_resolver(&condition, |path| {
+            lookups.set(lookups.get() + 1);
+            if path == "status" {
+                Some(Cow::Borrowed(&value))
+            } else {
+                None
+            }
+        });
+
+        assert!(matches!(result, Ok(true)));
+        assert_eq!(
+            lookups.get(),
+            1,
+            "a single-term predicate must resolve exactly one path"
         );
     }
 }
