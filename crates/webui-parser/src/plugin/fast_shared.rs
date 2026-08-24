@@ -1,16 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Shared FAST `<f-template>` source handling for the FAST parser plugins.
-//!
-//! This module owns everything FAST-specific about turning an authored
-//! `<f-template>` component source into the WebUI parser view: scanning for the
-//! single `<f-template>` element, resolving its `name` (falling back to the
-//! filename-derived tag), converting supported FAST directives, retaining the
-//! authored `<f-template>` body for the client artifact. The FAST parser plugins
-//! expose it through the framework-neutral
-//! [`ParserPlugin::component_source_transform`](super::ParserPlugin::component_source_transform)
-//! hook; the parser core never references FAST.
+//! Shared FAST source conversion and artifact handling.
 
 use super::fast_convert::{convert_template, F_TEMPLATE_NAME};
 use super::fast_diagnostic::converter_error;
@@ -19,12 +10,7 @@ use crate::html_parser::{leading_content, parse_tag};
 use crate::Result;
 use webui_protocol::FastElementData;
 
-/// Classify a FAST framework-owned attribute (shared by every FAST plugin
-/// version).
-///
-/// Event (`@`) and property (`:`) bindings plus the `f-ref`, `f-slotted`, and
-/// `f-children` reference attributes are dynamic bindings that the parser skips
-/// and counts; everything else is kept for normal processing.
+/// Classify FAST-owned attributes that SSR skips but hydration counts.
 #[inline]
 pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
     if attr_name.starts_with('@')
@@ -39,11 +25,7 @@ pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
     }
 }
 
-/// Encode per-element FAST binding metadata (shared by every FAST plugin
-/// version).
-///
-/// Returns the encoded [`FastElementData`] bytes when an element carried at
-/// least one dynamic binding, or `None` when it carried none.
+/// Encode FAST binding metadata when an element has dynamic bindings.
 #[inline]
 pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     if binding_attribute_count > 0 {
@@ -59,14 +41,9 @@ pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// Whether an inner-`<template>` attribute is a declarative-shadow-root option
-/// that belongs on the `<f-template>` wrapper rather than the inner template.
+/// Return whether FAST reads this shadow-root option from `<f-template>`.
 ///
-/// The FAST runtime reads shadow-root-creation options (`shadowrootmode`,
-/// `shadowrootdelegatesfocus`, …) from the `<f-template>` wrapper, so the client
-/// artifact generator hoists them there. WebUI's CSS-module delivery attribute
-/// `shadowrootadoptedstylesheets` is not a shadow-root-creation option and stays
-/// on the inner template.
+/// `shadowrootadoptedstylesheets` remains on the inner template.
 #[inline]
 pub(crate) fn is_hoisted_shadow_attr(name: &str) -> bool {
     const PREFIX: &[u8] = b"shadowroot";
@@ -75,11 +52,7 @@ pub(crate) fn is_hoisted_shadow_attr(name: &str) -> bool {
         && !name.eq_ignore_ascii_case("shadowrootadoptedstylesheets")
 }
 
-/// Collect the declarative-shadow-root options to hoist from a processed
-/// component template's leading inner `<template>` onto the `<f-template>`
-/// wrapper, as a ` name="value"`/bare ` name` string (empty when there are
-/// none). The inner-template stripper removes the same attributes, so the
-/// hoisted options are never duplicated across the wrapper and inner template.
+/// Collect shadow-root options to hoist onto `<f-template>`.
 pub(crate) fn hoisted_shadow_options(processed_template: &str) -> String {
     let (trimmed, _) = leading_content(processed_template);
     let Some(tag) = parse_tag(trimmed) else {
@@ -98,32 +71,16 @@ pub(crate) fn hoisted_shadow_options(processed_template: &str) -> String {
     options
 }
 
-/// Strip declarative-shadow-root options hoisted onto the `<f-template>`
-/// wrapper (`shadowrootmode`, `shadowrootdelegatesfocus`, …) from an inner
-/// `<template ...>` opening tag, keeping every other attribute (including
-/// WebUI's `shadowrootadoptedstylesheets`). Returns `Some(bytes_consumed)`
-/// when `tag_str` opens with a `<template` tag, or `None` when it does not
-/// (nothing is written to `result` in that case).
+/// Strip options hoisted onto `<f-template>` from the inner template.
 ///
-/// Shared by every FAST plugin version's `convert_btr_to_fast` pass so the
-/// inner-template side can never drift from [`is_hoisted_shadow_attr`] (the
-/// hoisting predicate used by [`hoisted_shadow_options`]): each version used
-/// to reimplement this scan gated on a literal `"shadowrootmode"` substring
-/// check, so a `shadowroot*` option without `shadowrootmode` (e.g.
-/// `shadowrootdelegatesfocus` alone) was hoisted onto the wrapper but never
-/// removed from the inner template, duplicating it there.
-///
-/// The common case — a `<template>` tag with no hoisted shadow-root option at
-/// all — returns `None` after a single allocation-free pass over the parsed
-/// attributes, so ordinary component templates never pay for a rebuild.
+/// Returns the consumed byte count when rebuilding was required.
 pub(crate) fn strip_hoisted_shadow_options(tag_str: &str, result: &mut String) -> Option<usize> {
     let tag = parse_tag(tag_str)?;
     if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
         return None;
     }
 
-    // Fast guard: bail without allocating or rebuilding the tag when none of
-    // its attributes need hoisting.
+    // Avoid rebuilding templates without hoisted options.
     if !tag.attrs().any(|attr| is_hoisted_shadow_attr(attr.name)) {
         return None;
     }
@@ -169,19 +126,10 @@ pub(crate) fn strip_hoisted_shadow_options(tag_str: &str, result: &mut String) -
     Some(tag.close + 1)
 }
 
-/// Push a component `<template>` body plus its optional CSS injection into
-/// `output`.
+/// Inject CSS into a component template.
 ///
-/// FAST's declarative `TemplateParser` scans the client `<f-template>` body for
-/// `{`/`}` bindings. Raw CSS rule blocks (`selector { … }`), especially with
-/// nested at-rules like `@media`, leave an unbalanced `}` in that naive scan
-/// that corrupts the next real binding after `</style>`. When `at_end` is set
-/// (the Style CSS strategy) the injection therefore trails the body, right
-/// before the final `</template>`, keeping every binding ahead of the CSS
-/// braces; styles apply regardless of shadow-root position. Link injections
-/// carry no braces, so they stay at the opening (`at_end == false`). Falls back
-/// to opening-position injection when no closing tag is present so styles are
-/// never silently dropped.
+/// Inline CSS trails bindings because FAST scans braces as binding delimiters.
+/// Link CSS stays at the opening. Missing closing tags use opening injection.
 pub(crate) fn push_body_with_css_injection(
     output: &mut String,
     body: &str,
@@ -204,22 +152,13 @@ pub(crate) fn push_body_with_css_injection(
     output.push_str(body);
 }
 
-/// Component-source transform for FAST authored templates.
+/// Convert an authored FAST source into parser and client-artifact views.
 ///
-/// Returns [`ComponentSourceResult::Unchanged`] when the source contains no
-/// `<f-template>`; otherwise converts the FAST declarative syntax to the WebUI
-/// parser view, resolves the registry key from the `<f-template name>`
-/// attribute (or the filename), and retains the authored `<f-template>` body
-/// as the client artifact.
-///
-/// A cheap byte precheck ([`contains_f_template_name`]) rules out sources that
-/// cannot possibly contain an `<f-template>` element, so ordinary FAST-free
-/// component sources never pay for the element walk.
+/// Sources without `<f-template>` remain unchanged after a byte precheck.
 ///
 /// # Errors
 ///
-/// Returns a [`Diagnostic`]-carrying error when multiple `<f-template>` blocks
-/// are present or the FAST template cannot be converted.
+/// Returns a diagnostic for malformed or unsupported FAST syntax.
 pub(crate) fn transform_component_source(
     source: ComponentSource<'_>,
 ) -> Result<ComponentSourceResult> {
@@ -245,17 +184,10 @@ pub(crate) fn transform_component_source(
     ))
 }
 
-/// Cheap case-insensitive precheck for the bare ASCII name `f-template`
-/// anywhere in `haystack`, without the surrounding `<` delimiter.
+/// Case-insensitive byte precheck for `f-template`.
 ///
-/// The converter takes an opening element name to be the run of bytes after `<`
-/// (skipping ASCII whitespace) and matches it ASCII-case-insensitively, so every
-/// spelling it accepts contains these ten bytes verbatim, case aside. Searching
-/// for the bare name therefore has no false negatives, whereas searching for
-/// `"<f-template"` would. Non-ASCII bytes are compared without case folding, so
-/// UTF-8 input can neither panic nor be misread. False positives (the bytes
-/// appearing in text, comments, attributes, or longer names) only cost the
-/// authoritative conversion scan, which still reports `Unchanged`.
+/// False positives trigger the authoritative scan; accepted tags cannot be
+/// false negatives because their ASCII name contains these bytes verbatim.
 #[inline]
 fn contains_f_template_name(haystack: &[u8]) -> bool {
     haystack

@@ -13,13 +13,9 @@ pub(super) struct NamedTagMatches {
     pub(super) count: usize,
 }
 
-/// Scan opening tags across a bounded source range, ignoring comments.
+/// Scan named opening tags, skipping comments and raw-text bodies.
 ///
-/// Each valid tag is parsed once and its terminator derived from the parsed
-/// [`Tag`](crate::html_parser::Tag). Raw-text element bodies (`<script>`,
-/// `<style>`, …) are skipped verbatim so tag-like text inside them is never
-/// counted as a wrapper. Unterminated opening tags fall back to the name-only
-/// reader so a malformed `<target` is still reported to the caller.
+/// Unterminated tags use a name-only fallback so callers can diagnose them.
 pub(super) fn scan_named_open_tags(
     source: &str,
     range: Range<usize>,
@@ -67,22 +63,10 @@ pub(super) fn scan_named_open_tags(
     NamedTagMatches { first, count }
 }
 
-/// Find the matching closing tag for a FAST wrapper/inner-template element
-/// body, treating raw-text element bodies (`<script>`, `<style>`, …) as
-/// opaque. Returns `(close_start, close_end)`.
+/// Find a matching close while treating raw-text bodies as opaque.
 ///
-/// This mirrors [`find_matching_end`](crate::html_parser::find_matching_end)
-/// depth-tracking exactly, except a raw-text element's body is skipped with
-/// [`find_raw_text_end`] before resuming the scan. Without this, a literal
-/// `</template>`/`</f-template>`-shaped string inside a genuine `<script>` or
-/// `<style>` body nested in the real `<f-template>`/`<template>` wrapper could
-/// be mistaken for the real closing tag (or a fake opening tag could demand
-/// an extra closing tag that does not exist), silently truncating or
-/// corrupting `parser_content`, or spuriously reporting a well-formed
-/// template as unclosed. This stays local to the FAST converter subtree
-/// because the generic [`find_matching_end`](crate::html_parser::find_matching_end)
-/// is shared by callers (e.g. the main HTML walker) that already track
-/// raw-text bodies through other means.
+/// Returns `(close_start, close_end)` and otherwise follows the generic
+/// matcher's depth rules.
 pub(super) fn find_matching_end_skip_raw_text(
     input: &str,
     tag_name: &str,

@@ -21,27 +21,16 @@ use std::ops::Range;
 pub(super) const F_TEMPLATE_NAME: &str = "f-template";
 const INNER_TEMPLATE_NAME: &str = "template";
 
-/// FAST test-harness style-injection placeholder emitted by
-/// `@microsoft/fast-test-harness`'s `generate-templates` immediately after the
-/// inner `<template>` opening. It is a build-time marker the harness replaces
-/// with a `<link rel="stylesheet">` (or strips) before hydration — not
-/// component state — so WebUI removes it and lets its own CSS strategy inject
-/// styles at the same position.
+/// Build-time FAST style placeholder removed before parsing.
 const STYLES_MARKER: &str = "{{styles}}";
 
-/// Case-insensitive prefix that marks a declarative-shadow-root option
-/// (`shadowrootmode`, `shadowrootdelegatesfocus`, …) on the `<f-template>`
-/// wrapper.
+/// Prefix for declarative shadow-root options on `<f-template>`.
 const SHADOW_ROOT_ATTR_PREFIX: &[u8] = b"shadowroot";
 
 /// Converted parser and artifact views for one authored `<f-template>`.
 pub(super) struct ConvertedTemplate<'a> {
     pub(super) name: Option<&'a str>,
-    /// Authored inner `<template>` element (including its opening and closing
-    /// tags) retained as the client artifact, with the wrapper's shadow-root
-    /// options baked onto its opening tag and the generator `{{styles}}` marker
-    /// removed. It always begins with `<template`, so it is never re-wrapped in
-    /// a synthetic `<template>`.
+    /// Inner `<template>` retained for the client artifact.
     pub(super) artifact_content: String,
     pub(super) parser_content: String,
 }
@@ -474,12 +463,7 @@ fn convert_directive<'a>(
 
 /// Emit the WebUI opening tag for a converted FAST directive.
 ///
-/// `<f-repeat>` expressions are validated to the quote-free `item in items`
-/// grammar, so the `<for each="…">` value is always safe in double quotes.
-/// `<f-when>` conditions may contain a string literal, so the generated
-/// `<if condition=…>` delimiter is chosen to avoid clashing with a quote in the
-/// expression (the WebUI parser reads the raw attribute value without entity
-/// decoding, so entity escaping is not an option).
+/// Repeat expressions use double quotes; conditions choose a safe delimiter.
 fn push_directive_open<'a>(
     state: &mut ConvertState,
     kind: DirectiveKind,
@@ -509,14 +493,9 @@ fn push_directive_open<'a>(
     Ok(())
 }
 
-/// Choose the quote delimiter for a generated `<if condition=…>` attribute.
+/// Choose a raw attribute delimiter absent from the condition.
 ///
-/// Returns the ASCII delimiter byte that does not appear in `expression`, so
-/// the WebUI parser extracts the condition verbatim. A double quote is
-/// preferred (byte-identical to the historical output) and a single quote is
-/// used when the expression contains a double-quoted literal. Returns `None`
-/// when the expression contains both quote styles and cannot be represented
-/// with a raw attribute delimiter.
+/// Prefers double quotes and returns `None` when both quote styles occur.
 fn condition_attribute_delimiter(expression: &str) -> Option<u8> {
     let bytes = expression.as_bytes();
     match (bytes.contains(&b'"'), bytes.contains(&b'\'')) {

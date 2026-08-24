@@ -14,11 +14,7 @@ pub(crate) const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str = "unsupported-multiple-
 /// A FAST component source uses malformed or unsupported declarative syntax.
 pub(crate) const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
 
-/// Build a diagnostic from a FAST converter failure.
-///
-/// `tag_name` is the filename-derived component tag; it is attached as the
-/// diagnostic's owner because the authored `<f-template name>` may not have
-/// been resolved before conversion failed.
+/// Build a diagnostic from a FAST conversion failure.
 #[cold]
 #[inline(never)]
 pub(super) fn converter_error(

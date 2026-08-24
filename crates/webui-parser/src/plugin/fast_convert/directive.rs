@@ -7,15 +7,9 @@ use crate::html_parser::Tag;
 const F_REPEAT_NAME: &str = "f-repeat";
 const F_WHEN_NAME: &str = "f-when";
 
-/// Validate a FAST directive's attributes and capture its `value` expression in
-/// a single attribute walk.
+/// Validate a FAST directive and return its `value` expression.
 ///
-/// Directives accept only the `value="{{…}}"` attribute. Any other attribute —
-/// whether a framework `f-*` attribute or an ordinary one such as `id`, `class`,
-/// or `data-*` — is rejected at its own source offset before value validation,
-/// so it is never silently dropped. The first offending attribute in source
-/// order is reported. Otherwise the inner expression is extracted from the
-/// required `value="{{…}}"` attribute.
+/// Only `value="{{...}}"` is accepted; the first extra attribute is reported.
 pub(super) fn parse_directive<'a>(
     tag: &Tag<'a>,
     kind: DirectiveKind,
@@ -29,10 +23,7 @@ pub(super) fn parse_directive<'a>(
             }
             continue;
         }
-        // A directive takes only `value`. Reject every other attribute at its
-        // own offset: `f-*` attributes are unsupported FAST syntax, and any
-        // ordinary attribute (`id`, `class`, `data-*`, …) is not part of the
-        // FAST declarative directive grammar and must not be silently dropped.
+        // Report unsupported f-* attributes separately from other extras.
         let error_kind = if attr.name.starts_with("f-") {
             ConvertErrorKind::UnsupportedFAttribute {
                 attribute: attr.name,

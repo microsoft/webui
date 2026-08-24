@@ -101,9 +101,7 @@ pub struct ComponentRegistry {
     render_policies: HashMap<String, ComponentRenderPolicy>,
     /// Components whose render policy CSS has been appended.
     policy_css: HashSet<String>,
-    /// Authored client artifact sources retained by a component-source
-    /// transform, keyed by resolved tag name. Framework-neutral: any plugin
-    /// that owns a distinct client template populates it.
+    /// Plugin-retained client sources keyed by resolved tag name.
     component_artifact_sources: HashMap<String, String>,
     /// Optional plugin-supplied transform applied to each component's authored
     /// source before insertion. `None` stores sources unchanged.
@@ -115,11 +113,7 @@ pub struct ComponentRegistry {
 }
 
 #[cfg(feature = "fs")]
-/// Return whether a component has an authored sibling module.
-///
-/// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
-/// errors into `false`, which could silently classify an inaccessible authored
-/// component as scriptless and bypass projection-manifest coverage.
+/// Return whether a component has an accessible sibling module.
 fn has_component_script(html_path: &Path) -> Result<bool> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
@@ -160,10 +154,7 @@ impl ComponentRegistry {
         }
     }
 
-    /// Install the component-source transform supplied by the active plugin.
-    ///
-    /// Passing `None` (the default) stores authored sources verbatim, so
-    /// framework-specific markup is inert.
+    /// Install the active plugin's component-source transform.
     pub(crate) fn set_component_source_transform(
         &mut self,
         transform: Option<ComponentSourceTransform>,
@@ -171,14 +162,7 @@ impl ComponentRegistry {
         self.source_transform = transform;
     }
 
-    /// Apply the installed source transform, borrowing the authored source and
-    /// returning owned replacement views only when a transform fires.
-    ///
-    /// Returns `Some(TransformedComponentSource)` when the plugin transformed
-    /// the source, or `None` when no transform is installed or it returned
-    /// [`ComponentSourceResult::Unchanged`]. Borrowing the input means the
-    /// caller allocates an owned copy of the authored HTML only when the source
-    /// is preserved unchanged, never when it is replaced by transformed output.
+    /// Apply the source transform, allocating only when it claims the source.
     fn resolve_component_source(
         &self,
         tag_name: &str,
@@ -214,20 +198,13 @@ impl ComponentRegistry {
                 let Some(filename) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                // A filename-derived custom-element name (hyphenated stem) is
-                // discoverable directly. Otherwise a plugin source transform
-                // (e.g. FAST's `<f-template name>`) may still resolve a registry
-                // name from the authored source, so admit the file only when a
-                // transform is installed to claim it. With neither, keep the
-                // zero-overhead fast path that ignores non-custom-element files
-                // without reading them.
+                // A transform may name files whose stems are not custom elements.
                 if !filename.contains('-') && self.source_transform.is_none() {
                     continue;
                 }
                 let css_path = path.with_extension("css");
                 let css_path = css_path.exists().then_some(css_path);
-                // Discovery ignores a non-custom-element file the transform does
-                // not claim, rather than failing the build over it.
+                // Ignore non-component files the transform does not claim.
                 self.register_component_from_paths_inner(path, css_path.as_deref(), true)?;
             }
         }
@@ -245,15 +222,7 @@ impl ComponentRegistry {
         self.register_component_from_paths_inner(html_path.as_ref(), css_path, false)
     }
 
-    /// Register a component from HTML/CSS paths, optionally skipping a file that
-    /// no source transform claims.
-    ///
-    /// When `allow_skip_unresolved` is set (recursive discovery), a file whose
-    /// source transform returns [`ComponentSourceResult::Unchanged`] and whose
-    /// stem is not itself a custom-element name is silently ignored rather than
-    /// rejected: it is not a component in the plugin's dialect. Explicit
-    /// registration passes `false`, keeping the strict "must contain a hyphen"
-    /// contract for an unresolved name.
+    /// Register component paths, optionally skipping unclaimed discovery files.
     #[cfg(feature = "fs")]
     fn register_component_from_paths_inner(
         &mut self,
@@ -275,14 +244,11 @@ impl ComponentRegistry {
         let resolved = match self.resolve_component_source(tag_name, &html_content)? {
             Some(transformed) => transformed,
             None => {
-                // No transform claimed the file. During discovery, a stem that
-                // is not itself a custom-element name means this is not a
-                // component in the active plugin's dialect, so ignore it.
+                // Ignore unclaimed non-component files during discovery.
                 if allow_skip_unresolved && !tag_name.contains('-') {
                     return Ok(());
                 }
-                // Preserve the filename-derived tag and reuse the already-owned
-                // file contents as the parser view without a second allocation.
+                // Reuse the owned file contents for unchanged sources.
                 TransformedComponentSource {
                     tag_name: tag_name.to_string(),
                     parser_content: html_content,

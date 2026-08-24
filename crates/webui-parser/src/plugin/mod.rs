@@ -165,11 +165,7 @@ impl ComponentTemplateArtifact {
     }
 }
 
-/// How a component's compiled CSS is delivered, as resolved by the build.
-///
-/// This is a neutral statement of fact about the component, not a request:
-/// WebUI installs its own stylesheets from precomputed style closures, so its
-/// templates stay style-free and most plugins ignore this entirely.
+/// Build-resolved CSS delivery for a component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComponentStyleDelivery<'a> {
     /// An external stylesheet served at `href`.
@@ -196,13 +192,7 @@ pub enum ComponentStyleDelivery<'a> {
 pub struct ComponentTemplateContext<'a> {
     /// Whether this component effectively uses Shadow DOM.
     pub uses_shadow_dom: bool,
-    /// How this component's CSS is delivered, when it has any.
-    ///
-    /// A plugin whose client runtime builds roots from the template it captures
-    /// here is outside WebUI's style registry, so it can use this to keep those
-    /// roots styled. Light CSS belongs to the containing CSS tree rather than
-    /// the captured component template, so delivery is reported only for
-    /// components that effectively use a Shadow root.
+    /// CSS delivery for effective Shadow DOM components.
     pub style: Option<ComponentStyleDelivery<'a>>,
 }
 
@@ -238,19 +228,10 @@ pub enum ComponentSourceResult {
     Transformed(TransformedComponentSource),
 }
 
-/// Stateless component-source transform installed into a [`ComponentRegistry`].
+/// Stateless source transform installed into a [`ComponentRegistry`].
 ///
-/// A parser plugin that owns an alternate authored-template dialect supplies
-/// this hook through [`ParserPlugin::component_source_transform`]. The registry
-/// runs it once per component — after reading the authored HTML but before name
-/// validation, duplicate checking, CSS processing, or insertion — so the plugin
-/// can resolve the registry key, produce the SSR parser view, and retain a
-/// distinct client artifact. Returning [`ComponentSourceResult::Unchanged`]
-/// leaves the component's filename-derived tag and HTML untouched.
-///
-/// The transform is a plain function pointer: it is deterministic, allocation
-/// free when absent, [`Copy`], and keeps [`ComponentRegistry`] `Debug` without
-/// a trait object.
+/// It may resolve the registry key and provide separate SSR and client views.
+/// [`ComponentSourceResult::Unchanged`] preserves the authored source.
 ///
 /// # Errors
 ///
