@@ -33,9 +33,9 @@ use crate::utils::error::CliError;
 use crate::utils::output;
 #[cfg(test)]
 use metafile::temp_directory as metafile_temp_directory;
+use metafile::write_atomic;
 
 webui_handler::define_string_response_writer!(MemoryWriter, buf);
-use metafile::write_atomic;
 
 #[derive(Args)]
 pub struct ServeArgs {
