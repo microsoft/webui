@@ -691,6 +691,8 @@ deduplicate ancestor capture work. This opt-in exchanges first-interaction
 latency for lower startup JS and heap. Prefer an eager root with lazy descendants
 when request-to-hydrated time matters, and hydrate eagerly for transient user
 activation or closed-shadow targets.
+Router `preload: true` remains effective only if the router is already started;
+placing `Router.start()` inside `load()` delays hover prefetch until activation.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|

@@ -193,6 +193,11 @@ Prefer an eager root with lazy descendants when request-to-hydrated time matters
 Synthetic replay cannot preserve transient user activation or target controls
 inside closed shadow roots; hydrate those paths eagerly.
 
+Router `preload: true` is independent. An already-started router keeps its
+document-level hover prefetch; if `Router.start()` runs inside `load()`, route
+prefetch begins only after activation. Keep the shell/router eager when
+pre-interaction route prefetch matters.
+
 ### Build with the WebUI plugin
 
 ```bash

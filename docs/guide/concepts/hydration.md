@@ -182,6 +182,19 @@ measure both. Prefer an eager root with `w-render="lazy"` descendants when
 request-to-hydrated time matters. Synthetic replay cannot preserve transient
 user activation or target closed-shadow controls; hydrate those paths eagerly.
 
+### Router preload
+
+Interaction hydration defers component JavaScript; router preload fetches route
+partials. They do not share listeners or caches:
+
+| Router placement | Before first interaction |
+|---|---|
+| Already started outside this boundary | Mouse hover continues to prefetch partial routes |
+| Started inside `load()` | Hover prefetch begins after the boundary activates |
+
+Keep the shell/router eager when pre-interaction route prefetch matters. A
+replayed link click still reaches an active router and can consume its cache.
+
 ### Images in deferred components
 
 Visibility-deferred hydration delays JavaScript bindings, not image fetching. Use

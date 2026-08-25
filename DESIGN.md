@@ -2305,6 +2305,9 @@ replacement cannot loop while nested boundaries still compose. Replay cannot
 preserve `isTrusted`, transient activation, or closed-shadow targets. This is a
 runtime scheduling policy, not an SSR protocol change; evidence must pair startup
 bytes/heap with first-interaction latency.
+Router route preload is independent: an already-started router's document-level
+hover listener remains active, while a router started inside `load()` cannot
+prefetch partial routes before activation.
 
 `ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 

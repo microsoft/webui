@@ -55,7 +55,7 @@ export function installInteractionHydration(
     if (!listening) return;
     listening = false;
     for (let i = 0; i < WAKE_EVENTS.length; i++) {
-      root.removeEventListener(WAKE_EVENTS[i], preload, true);
+      root.removeEventListener(WAKE_EVENTS[i], wake, true);
     }
     root.removeEventListener('click', replay, true);
     installedBoundaries.delete(root);
@@ -66,7 +66,7 @@ export function installInteractionHydration(
     remove();
   };
 
-  const load = (): Promise<void> => {
+  const ensureLoaded = (): Promise<void> => {
     loading ??= Promise.resolve().then(options.load).then(
       () => {
         remove();
@@ -79,8 +79,8 @@ export function installInteractionHydration(
     return loading;
   };
 
-  const preload = (): void => {
-    void load();
+  const wake = (): void => {
+    void ensureLoaded();
   };
 
   const replay = (event: Event): void => {
@@ -88,7 +88,7 @@ export function installInteractionHydration(
     const target = event.composedPath()[0] ?? event.target;
     const replayEvent = target ? cloneClick(event, target, root) : null;
     if (!replayEvent) {
-      preload();
+      wake();
       return;
     }
     event.preventDefault();
@@ -96,12 +96,12 @@ export function installInteractionHydration(
     const dispatchReplay = (): void => {
       if (!disposed) target.dispatchEvent(replayEvent);
     };
-    void load().then(dispatchReplay, dispatchReplay);
+    void ensureLoaded().then(dispatchReplay, dispatchReplay);
   };
 
   installedBoundaries.set(root, dispose);
   for (let i = 0; i < WAKE_EVENTS.length; i++) {
-    root.addEventListener(WAKE_EVENTS[i], preload, true);
+    root.addEventListener(WAKE_EVENTS[i], wake, true);
   }
   root.addEventListener('click', replay, true);
   return dispose;
