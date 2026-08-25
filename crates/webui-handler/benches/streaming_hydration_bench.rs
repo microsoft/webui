@@ -118,8 +118,8 @@ fn entry_html(boundaries: usize) -> String {
 /// Build the timed protocol by running the real `HtmlParser` over authored
 /// HTML. The entry fragment graph — head fragmentation, body brackets, and
 /// per-boundary `boundary_start`/`boundary_end` signals — is parser-produced;
-/// only the island's known `ComponentData` (template + hydration surface) is
-/// attached afterward so the benchmark's hydration payload stays deterministic.
+/// only the island's known runtime metadata and style closures are attached
+/// afterward so the benchmark's hydration payload stays deterministic.
 fn parser_protocol(boundaries: usize) -> Protocol {
     let entry_html = entry_html(boundaries);
     let mut parser =
@@ -148,11 +148,13 @@ fn parser_protocol(boundaries: usize) -> Protocol {
         ISLAND_TAG.to_string(),
         ComponentData {
             template_json: r#"{"h":"<button></button>","th":1}"#.to_string(),
+            uses_shadow_dom: true,
             hydration_mode: StateProjectionMode::Keys as i32,
             hydration_keys: vec!["count".to_string(), "title".to_string()],
             ..Default::default()
         },
     );
+    document.populate_style_closures(&[ENTRY_ID]);
     Protocol::new(document)
 }
 
@@ -202,6 +204,16 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
     render_legacy(&handler, &protocol, &state, &mut legacy);
     render_streaming(&handler, &protocol, &state, &mut streaming);
 
+    assert_eq!(
+        occurrences(&legacy.output, "<template shadowrootmode=\"open\">"),
+        boundaries,
+        "legacy rendering must honor the parser-produced Shadow roots"
+    );
+    assert_eq!(
+        occurrences(&streaming.output, "<template shadowrootmode=\"open\">"),
+        boundaries,
+        "streaming rendering must honor the parser-produced Shadow roots"
+    );
     assert!(
         legacy.flushes.is_empty(),
         "legacy rendering must not request streaming flushes"
@@ -635,10 +647,12 @@ fn full_state_protocol(boundaries: usize) -> Protocol {
         ISLAND_TAG.to_string(),
         ComponentData {
             template_json: r#"{"h":"<button></button>","th":1}"#.to_string(),
+            uses_shadow_dom: true,
             hydration_mode: StateProjectionMode::All as i32,
             ..Default::default()
         },
     );
+    document.populate_style_closures(&[ENTRY_ID]);
     Protocol::new(document)
 }
 
