@@ -429,6 +429,114 @@ pub(crate) struct ShadowStyleRoot {
     routed_resources: Vec<u32>,
 }
 
+struct LoopBinding<'protocol, 'state> {
+    name: &'protocol str,
+    value: &'state Value,
+}
+
+#[derive(Clone, Copy)]
+struct VisibleLoopScope {
+    start: usize,
+    end: usize,
+}
+
+impl VisibleLoopScope {
+    const EMPTY: Self = Self { start: 0, end: 0 };
+}
+
+#[derive(Clone, Copy)]
+struct LocalValueSources<'ctx, 'protocol, 'state> {
+    owned: &'ctx HashMap<String, Value>,
+    borrowed: &'ctx BorrowedScope<'protocol, 'state>,
+}
+
+#[derive(Default)]
+struct BorrowedScope<'protocol, 'state> {
+    inline: [Option<(&'protocol str, &'state Value)>; INLINE_SCOPE_SLOTS],
+    inline_len: usize,
+    overflow: Vec<(&'protocol str, &'state Value)>,
+}
+
+impl<'protocol, 'state> BorrowedScope<'protocol, 'state> {
+    fn get(&self, name: &str) -> Option<&'state Value> {
+        if self.inline_len == 0 {
+            return None;
+        }
+        if let Some((entry_name, value)) = self.inline[0].as_ref() {
+            if *entry_name == name {
+                return Some(*value);
+            }
+        }
+        for (entry_name, value) in self.inline[1..self.inline_len].iter().flatten() {
+            if *entry_name == name {
+                return Some(*value);
+            }
+        }
+        self.overflow
+            .iter()
+            .find_map(|(entry_name, value)| (*entry_name == name).then_some(*value))
+    }
+
+    fn insert(&mut self, name: &'protocol str, value: &'state Value) -> Option<&'state Value> {
+        for (entry_name, current) in self.inline[..self.inline_len].iter_mut().flatten() {
+            if *entry_name == name {
+                return Some(std::mem::replace(current, value));
+            }
+        }
+        for (entry_name, current) in &mut self.overflow {
+            if *entry_name == name {
+                return Some(std::mem::replace(current, value));
+            }
+        }
+        if self.inline_len < INLINE_SCOPE_SLOTS {
+            self.inline[self.inline_len] = Some((name, value));
+            self.inline_len += 1;
+        } else {
+            self.overflow.push((name, value));
+        }
+        None
+    }
+
+    fn remove(&mut self, name: &str) -> Option<&'state Value> {
+        if let Some(index) = self.inline[..self.inline_len].iter().position(|entry| {
+            entry
+                .as_ref()
+                .is_some_and(|(entry_name, _)| *entry_name == name)
+        }) {
+            let removed = self.inline[index].take().map(|(_, value)| value);
+            if let Some(entry) = self.overflow.pop() {
+                self.inline[index] = Some(entry);
+            } else {
+                self.inline_len -= 1;
+                self.inline[index] = self.inline[self.inline_len].take();
+            }
+            return removed;
+        }
+        let index = self
+            .overflow
+            .iter()
+            .position(|(entry_name, _)| *entry_name == name)?;
+        Some(self.overflow.swap_remove(index).1)
+    }
+
+    fn clear(&mut self) {
+        for entry in &mut self.inline[..self.inline_len] {
+            *entry = None;
+        }
+        self.inline_len = 0;
+        self.overflow.clear();
+    }
+
+    fn clone_into_owned(&self, target: &mut HashMap<String, Value>) {
+        for (name, value) in self.inline[..self.inline_len].iter().flatten() {
+            target.insert((*name).to_owned(), (*value).clone());
+        }
+        for (name, value) in &self.overflow {
+            target.insert((*name).to_owned(), (*value).clone());
+        }
+    }
+}
+
 /// A fragment list paired with the render metadata prepared for it when the
 /// runtime [`Protocol`] was loaded.
 ///
@@ -714,8 +822,17 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) state: &'state Value,
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: HashMap<String, Value>,
+    /// Component-local values that still point into immutable request state.
+    local_borrowed_vars: BorrowedScope<'protocol, 'state>,
+    /// Borrowed loop bindings, in lexical order.
+    loop_vars: Vec<LoopBinding<'protocol, 'state>>,
+    /// Range of `loop_vars` visible to the current fragment scope. Component
+    /// bodies hide outer loop monikers while still allowing their own loops.
+    visible_loop_scope: VisibleLoopScope,
     /// Accumulates component attribute values between attrStart and the component fragment.
     pub(crate) component_attrs: HashMap<String, Value>,
+    /// State-backed component attributes accumulated without cloning.
+    component_borrowed_attrs: BorrowedScope<'protocol, 'state>,
     /// True only while parser-produced component opening-tag attributes are
     /// being accumulated. Native element attributes render directly and never
     /// enter `component_attrs`.
@@ -831,6 +948,8 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Active Shadow roots and their route-activated resource indexes. The
     /// route vector allocates only when a matched Light route contributes CSS.
     pub(crate) shadow_style_roots: Vec<ShadowStyleRoot>,
+    /// Capacity-preserving pool for borrowed component scope maps.
+    borrowed_scope_pool: Vec<BorrowedScope<'protocol, 'state>>,
 }
 
 /// Compiler-owned signal namespace. The leading `}}}` cannot be produced by
@@ -885,6 +1004,8 @@ fn doctype_prefix_end(raw: &str) -> Option<usize> {
 /// Maximum scope maps retained in the request-local pool. Small: sibling
 /// component roots rarely nest deeply, so the cap keeps retained capacity bounded.
 const SCOPE_POOL_CAP: usize = 8;
+/// Borrowed component scopes typically contain only a handful of attributes.
+const INLINE_SCOPE_SLOTS: usize = 4;
 /// Fragment lists memoized inline per render. Sized to cover the distinct lists
 /// a typical app touches in one render while keeping the per-render zeroing cost
 /// negligible; larger protocols fall back to the protocol map for the overflow
@@ -981,6 +1102,22 @@ fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<St
     if pool.len() < SCOPE_POOL_CAP {
         map.clear();
         pool.push(map);
+    }
+}
+
+fn take_borrowed_scope<'protocol, 'state>(
+    pool: &mut Vec<BorrowedScope<'protocol, 'state>>,
+) -> BorrowedScope<'protocol, 'state> {
+    pool.pop().unwrap_or_default()
+}
+
+fn recycle_borrowed_scope<'protocol, 'state>(
+    pool: &mut Vec<BorrowedScope<'protocol, 'state>>,
+    mut scope: BorrowedScope<'protocol, 'state>,
+) {
+    if pool.len() < SCOPE_POOL_CAP {
+        scope.clear();
+        pool.push(scope);
     }
 }
 
@@ -1650,14 +1787,37 @@ fn write_webui_template_json_map(
 
 fn resolve_value_from_sources<'ctx, 'state>(
     path: &str,
-    local_vars: &'ctx HashMap<String, Value>,
+    loop_vars: &'ctx [LoopBinding<'_, 'state>],
+    visible_loop_scope: VisibleLoopScope,
+    local_values: LocalValueSources<'ctx, '_, 'state>,
     state: &'state Value,
 ) -> Option<Cow<'ctx, Value>>
 where
     'state: 'ctx,
 {
+    if let Some(binding) = loop_vars
+        .get(visible_loop_scope.start..visible_loop_scope.end)
+        .and_then(|bindings| bindings.last())
+    {
+        let name = binding.name;
+        if path.len() == name.len() && path == name {
+            return Some(Cow::Borrowed(binding.value));
+        }
+        if path.len() > name.len()
+            && path.as_bytes().get(name.len()) == Some(&b'.')
+            && path.starts_with(name)
+        {
+            if let Some(value) =
+                find_value_by_dotted_path_ref(&path[name.len() + 1..], binding.value)
+            {
+                return Some(value);
+            }
+            return find_value_by_dotted_path_ref(path, state);
+        }
+    }
+
     if let Some(first_part) = path.split('.').next() {
-        if let Some(local_value) = local_vars.get(first_part) {
+        if let Some(local_value) = local_values.borrowed.get(first_part) {
             if first_part.len() == path.len() {
                 return Some(Cow::Borrowed(local_value));
             }
@@ -1665,10 +1825,184 @@ where
             if let Some(value) = find_value_by_dotted_path_ref(remaining, local_value) {
                 return Some(value);
             }
+            return find_value_by_dotted_path_ref(path, state);
+        }
+        if let Some(local_value) = local_values.owned.get(first_part) {
+            if first_part.len() == path.len() {
+                return Some(Cow::Borrowed(local_value));
+            }
+            let remaining = &path[first_part.len() + 1..];
+            if let Some(value) = find_value_by_dotted_path_ref(remaining, local_value) {
+                return Some(value);
+            }
+            return find_value_by_dotted_path_ref(path, state);
+        }
+
+        for binding in loop_vars[visible_loop_scope.start..visible_loop_scope.end]
+            .iter()
+            .rev()
+        {
+            if binding.name != first_part {
+                continue;
+            }
+            if first_part.len() == path.len() {
+                return Some(Cow::Borrowed(binding.value));
+            }
+            let remaining = &path[first_part.len() + 1..];
+            if let Some(value) = find_value_by_dotted_path_ref(remaining, binding.value) {
+                return Some(value);
+            }
+            return find_value_by_dotted_path_ref(path, state);
         }
     }
 
     find_value_by_dotted_path_ref(path, state)
+}
+
+fn resolve_borrowed_collection<'state>(
+    path: &str,
+    loop_vars: &[LoopBinding<'_, 'state>],
+    visible_loop_scope: VisibleLoopScope,
+    local_values: LocalValueSources<'_, '_, 'state>,
+    state: &'state Value,
+) -> Option<&'state [Value]> {
+    let first_part = path.split('.').next()?;
+    if let Some(binding) = loop_vars
+        .get(visible_loop_scope.start..visible_loop_scope.end)
+        .and_then(|bindings| bindings.last())
+        .filter(|binding| binding.name == first_part)
+    {
+        if first_part.len() == path.len() {
+            return binding.value.as_array().map(Vec::as_slice);
+        }
+        let remaining = &path[first_part.len() + 1..];
+        return match find_value_by_dotted_path_ref(remaining, binding.value) {
+            Some(Cow::Borrowed(value)) => value.as_array().map(Vec::as_slice),
+            Some(Cow::Owned(_)) => None,
+            None => borrowed_state_array(path, state),
+        };
+    }
+    if let Some(local_value) = local_values.borrowed.get(first_part) {
+        let local_match = if first_part.len() == path.len() {
+            Some(Cow::Borrowed(local_value))
+        } else {
+            find_value_by_dotted_path_ref(&path[first_part.len() + 1..], local_value)
+        };
+        return match local_match {
+            Some(Cow::Borrowed(value)) => value.as_array().map(Vec::as_slice),
+            Some(Cow::Owned(_)) => None,
+            None => borrowed_state_array(path, state),
+        };
+    }
+    if let Some(local_value) = local_values.owned.get(first_part) {
+        let local_match = if first_part.len() == path.len() {
+            Some(Cow::Borrowed(local_value))
+        } else {
+            find_value_by_dotted_path_ref(&path[first_part.len() + 1..], local_value)
+        };
+        if local_match.is_some() {
+            return None;
+        }
+        return borrowed_state_array(path, state);
+    }
+
+    for binding in loop_vars[visible_loop_scope.start..visible_loop_scope.end]
+        .iter()
+        .rev()
+    {
+        if binding.name != first_part {
+            continue;
+        }
+        if first_part.len() == path.len() {
+            return binding.value.as_array().map(Vec::as_slice);
+        }
+        let remaining = &path[first_part.len() + 1..];
+        return match find_value_by_dotted_path_ref(remaining, binding.value) {
+            Some(Cow::Borrowed(value)) => value.as_array().map(Vec::as_slice),
+            Some(Cow::Owned(_)) => None,
+            None => borrowed_state_array(path, state),
+        };
+    }
+
+    borrowed_state_array(path, state)
+}
+
+fn resolve_state_backed_value<'state>(
+    path: &str,
+    loop_vars: &[LoopBinding<'_, 'state>],
+    visible_loop_scope: VisibleLoopScope,
+    local_values: LocalValueSources<'_, '_, 'state>,
+    state: &'state Value,
+) -> Option<&'state Value> {
+    let first_part = path.split('.').next()?;
+    if let Some(binding) = loop_vars
+        .get(visible_loop_scope.start..visible_loop_scope.end)
+        .and_then(|bindings| bindings.last())
+        .filter(|binding| binding.name == first_part)
+    {
+        if first_part.len() == path.len() {
+            return Some(binding.value);
+        }
+        let remaining = &path[first_part.len() + 1..];
+        return match find_value_by_dotted_path_ref(remaining, binding.value) {
+            Some(Cow::Borrowed(value)) => Some(value),
+            Some(Cow::Owned(_)) => None,
+            None => borrowed_state_value(path, state),
+        };
+    }
+    if let Some(local_value) = local_values.borrowed.get(first_part) {
+        if first_part.len() == path.len() {
+            return Some(local_value);
+        }
+        return match find_value_by_dotted_path_ref(&path[first_part.len() + 1..], local_value) {
+            Some(Cow::Borrowed(value)) => Some(value),
+            Some(Cow::Owned(_)) => None,
+            None => borrowed_state_value(path, state),
+        };
+    }
+    if let Some(local_value) = local_values.owned.get(first_part) {
+        if first_part.len() == path.len() {
+            return None;
+        }
+        return match find_value_by_dotted_path_ref(&path[first_part.len() + 1..], local_value) {
+            Some(_) => None,
+            None => borrowed_state_value(path, state),
+        };
+    }
+
+    for binding in loop_vars[visible_loop_scope.start..visible_loop_scope.end]
+        .iter()
+        .rev()
+    {
+        if binding.name != first_part {
+            continue;
+        }
+        if first_part.len() == path.len() {
+            return Some(binding.value);
+        }
+        let remaining = &path[first_part.len() + 1..];
+        return match find_value_by_dotted_path_ref(remaining, binding.value) {
+            Some(Cow::Borrowed(value)) => Some(value),
+            Some(Cow::Owned(_)) => None,
+            None => borrowed_state_value(path, state),
+        };
+    }
+
+    borrowed_state_value(path, state)
+}
+
+fn borrowed_state_value<'state>(path: &str, state: &'state Value) -> Option<&'state Value> {
+    match find_value_by_dotted_path_ref(path, state) {
+        Some(Cow::Borrowed(value)) => Some(value),
+        Some(Cow::Owned(_)) | None => None,
+    }
+}
+
+fn borrowed_state_array<'state>(path: &str, state: &'state Value) -> Option<&'state [Value]> {
+    match find_value_by_dotted_path_ref(path, state)? {
+        Cow::Borrowed(value) => value.as_array().map(Vec::as_slice),
+        Cow::Owned(_) => None,
+    }
 }
 
 impl WebUIHandler {
@@ -2460,6 +2794,7 @@ impl WebUIHandler {
 
         // Save parent scope. `mem::take` leaves an alloc-free empty map behind.
         let saved_local_vars = std::mem::take(&mut context.local_vars);
+        let saved_local_borrowed_vars = std::mem::take(&mut context.local_borrowed_vars);
         // The component's accumulated attrs become its local vars; the next
         // sibling accumulates into a recycled (capacity-preserving) map from the
         // request-local pool instead of a freshly allocated `HashMap`.
@@ -2467,14 +2802,25 @@ impl WebUIHandler {
             &mut context.component_attrs,
             take_scope_map(&mut context.scope_pool),
         );
+        let saved_component_borrowed_attrs = std::mem::replace(
+            &mut context.component_borrowed_attrs,
+            take_borrowed_scope(&mut context.borrowed_scope_pool),
+        );
         context.local_vars = saved_component_attrs;
+        context.local_borrowed_vars = saved_component_borrowed_attrs;
         context.collecting_component_attrs = false;
+        let saved_loop_scope = context.visible_loop_scope;
+        context.visible_loop_scope = VisibleLoopScope {
+            start: context.loop_vars.len(),
+            end: context.loop_vars.len(),
+        };
 
         if let Some(p) = &mut context.plugin {
             p.push_scope();
         }
 
         let render_result = self.process_fragment_target(target, &component.fragment_id, context);
+        context.visible_loop_scope = saved_loop_scope;
 
         if owns_css_tree {
             Self::pop_shadow_style_root(&component.fragment_id, context)?;
@@ -2489,9 +2835,13 @@ impl WebUIHandler {
         // accumulated attrs) back into the pool so a sibling reuses its capacity.
         let used_locals = std::mem::replace(&mut context.local_vars, saved_local_vars);
         recycle_scope_map(&mut context.scope_pool, used_locals);
+        let used_borrowed_locals =
+            std::mem::replace(&mut context.local_borrowed_vars, saved_local_borrowed_vars);
+        recycle_borrowed_scope(&mut context.borrowed_scope_pool, used_borrowed_locals);
         // The attr accumulator (pulled from the pool above) is cleared for the
         // next sibling while retaining its bucket capacity.
         context.component_attrs.clear();
+        context.component_borrowed_attrs.clear();
 
         Ok(())
     }
@@ -2543,13 +2893,23 @@ impl WebUIHandler {
         Ok(())
     }
 
-    /// Resolve a dotted path value, checking local variables first, then global state.
-    fn resolve_value(
+    /// Resolve a dotted path into owned state for values retained by the context.
+    fn resolve_value_owned(
         &self,
         path: &str,
         context: &WebUIProcessContext<'_, '_, '_>,
     ) -> Option<Value> {
-        resolve_value_from_sources(path, &context.local_vars, context.state).map(Cow::into_owned)
+        resolve_value_from_sources(
+            path,
+            &context.loop_vars,
+            context.visible_loop_scope,
+            LocalValueSources {
+                owned: &context.local_vars,
+                borrowed: &context.local_borrowed_vars,
+            },
+            context.state,
+        )
+        .map(Cow::into_owned)
     }
 
     /// Evaluate a condition expression against the current context.
@@ -2563,10 +2923,15 @@ impl WebUIHandler {
         condition: &webui_protocol::ConditionExpr,
         context: &WebUIProcessContext,
     ) -> Result<bool> {
-        let local_vars = &context.local_vars;
+        let loop_vars = &context.loop_vars;
+        let visible_loop_scope = context.visible_loop_scope;
+        let local_values = LocalValueSources {
+            owned: &context.local_vars,
+            borrowed: &context.local_borrowed_vars,
+        };
         let state = context.state;
         match evaluate_with_resolver(condition, |path| {
-            resolve_value_from_sources(path, local_vars, state)
+            resolve_value_from_sources(path, loop_vars, visible_loop_scope, local_values, state)
         }) {
             Ok(result) => Ok(result),
             Err(ExpressionError::MissingValue(_)) => Ok(false),
@@ -2579,17 +2944,86 @@ impl WebUIHandler {
     /// Creates a new context for each iteration that includes the current loop item.
     /// This allows nested templates to access both the loop variable and any parent context.
     /// Example: `for item in items` makes "item" available in the loop body.
-    fn process_for_loop(
+    fn process_for_loop<'protocol, 'state>(
         &self,
-        for_loop: &webui_protocol::WebUIFragmentFor,
+        for_loop: &'protocol webui_protocol::WebUIFragmentFor,
         target: Option<usize>,
-        context: &mut WebUIProcessContext,
+        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
+    ) -> Result<()> {
+        if let Some(items) = resolve_borrowed_collection(
+            &for_loop.collection,
+            &context.loop_vars,
+            context.visible_loop_scope,
+            LocalValueSources {
+                owned: &context.local_vars,
+                borrowed: &context.local_borrowed_vars,
+            },
+            context.state,
+        ) {
+            return self.process_borrowed_for_loop(for_loop, target, items, context);
+        }
+        self.process_owned_for_loop(for_loop, target, context)
+    }
+
+    fn process_borrowed_for_loop<'protocol, 'state>(
+        &self,
+        for_loop: &'protocol webui_protocol::WebUIFragmentFor,
+        target: Option<usize>,
+        items: &'state [Value],
+        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
+    ) -> Result<()> {
+        if let Some(plugin) = &mut context.plugin {
+            plugin.on_for_start(&for_loop.fragment_id, context.writer)?;
+        }
+
+        let item_name = for_loop.item.as_str();
+        let saved_value = context.local_vars.remove(item_name);
+        let saved_borrowed_value = context.local_borrowed_vars.remove(item_name);
+        let saved_scope = context.visible_loop_scope;
+        for (index, item) in items.iter().enumerate() {
+            if let Some(plugin) = &mut context.plugin {
+                plugin.on_repeat_item_start(index, context.writer)?;
+                plugin.push_scope();
+            }
+
+            context.loop_vars.push(LoopBinding {
+                name: item_name,
+                value: item,
+            });
+            context.visible_loop_scope.end = context.loop_vars.len();
+            self.process_fragment_target(target, &for_loop.fragment_id, context)?;
+            context.loop_vars.pop();
+            context.visible_loop_scope = saved_scope;
+
+            if let Some(plugin) = &mut context.plugin {
+                plugin.pop_scope();
+                plugin.on_repeat_item_end(index, context.writer)?;
+            }
+        }
+        if let Some(value) = saved_value {
+            context.local_vars.insert(item_name.to_string(), value);
+        }
+        if let Some(value) = saved_borrowed_value {
+            context.local_borrowed_vars.insert(item_name, value);
+        }
+
+        if let Some(plugin) = &mut context.plugin {
+            plugin.on_for_end(&for_loop.fragment_id, context.writer)?;
+        }
+        Ok(())
+    }
+
+    fn process_owned_for_loop<'protocol, 'state>(
+        &self,
+        for_loop: &'protocol webui_protocol::WebUIFragmentFor,
+        target: Option<usize>,
+        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
     ) -> Result<()> {
         let collection_name = &for_loop.collection;
 
         // If the collection is missing, treat it as empty (0 iterations) — matches NodeJS behavior.
         // Hydration comments are always emitted regardless of collection presence.
-        let items = match self.resolve_value(collection_name, context) {
+        let items = match self.resolve_value_owned(collection_name, context) {
             Some(Value::Array(arr)) => arr,
             Some(_) => {
                 return Err(HandlerError::TypeError(format!(
@@ -2613,6 +3047,7 @@ impl WebUIHandler {
         // iteration via `get_mut`. Restoration at the end happens once.
         let item_name = for_loop.item.as_str();
         let saved_value = context.local_vars.remove(item_name);
+        let saved_borrowed_value = context.local_borrowed_vars.remove(item_name);
         // Pre-insert the key so per-iteration `get_mut` is infallible.
         // Cost: at most one `String::from(item_name)` for the lifetime
         // of the loop, regardless of iteration count.
@@ -2646,6 +3081,9 @@ impl WebUIHandler {
             None => {
                 context.local_vars.remove(item_name);
             }
+        }
+        if let Some(value) = saved_borrowed_value {
+            context.local_borrowed_vars.insert(item_name, value);
         }
 
         if let Some(p) = &mut context.plugin {
@@ -2999,8 +3437,17 @@ impl WebUIHandler {
             p.on_binding_start(&signal.value, owns_html_range, context.writer)?;
         }
 
-        if let Some(value) = self.resolve_value(&signal.value, context) {
-            self.write_signal_value(&value, signal.raw, context.writer)?;
+        if let Some(value) = resolve_value_from_sources(
+            &signal.value,
+            &context.loop_vars,
+            context.visible_loop_scope,
+            LocalValueSources {
+                owned: &context.local_vars,
+                borrowed: &context.local_borrowed_vars,
+            },
+            context.state,
+        ) {
+            self.write_signal_value(value.as_ref(), signal.raw, context.writer)?;
         }
 
         if let Some(p) = &mut context.plugin {
@@ -3080,17 +3527,18 @@ impl WebUIHandler {
     /// `template_target` and `component_name` are prepared once per protocol by
     /// [`RenderFragmentIndex`], so neither the template fragment lookup nor the
     /// camelCase prop-name conversion is repeated per render.
-    fn process_attribute(
+    fn process_attribute<'protocol, 'state>(
         &self,
-        attr: &webui_protocol::WebUIFragmentAttribute,
+        attr: &'protocol webui_protocol::WebUIFragmentAttribute,
         template_target: Option<usize>,
-        component_name: Option<&str>,
-        context: &mut WebUIProcessContext,
+        component_name: Option<&'protocol str>,
+        context: &mut WebUIProcessContext<'protocol, 'state, '_>,
     ) -> Result<()> {
         // Initialize component attribute accumulator on attrStart. Clearing the
         // pooled map keeps its bucket capacity instead of allocating a fresh one.
         if attr.attr_start {
             context.component_attrs.clear();
+            context.component_borrowed_attrs.clear();
             context.collecting_component_attrs = true;
         }
 
@@ -3100,6 +3548,7 @@ impl WebUIHandler {
 
             if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                context.component_borrowed_attrs.remove(name);
                 context
                     .component_attrs
                     .insert(name.to_owned(), Value::Bool(condition_met));
@@ -3121,6 +3570,7 @@ impl WebUIHandler {
 
             if context.collecting_component_attrs && !attr.attr_skip {
                 let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                context.component_borrowed_attrs.remove(name);
                 context
                     .component_attrs
                     .insert(name.to_owned(), Value::String(raw_value));
@@ -3135,24 +3585,73 @@ impl WebUIHandler {
                 write_attr(context.writer, &attr.name, &attr.value)?;
                 if context.collecting_component_attrs && !attr.attr_skip {
                     let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                    context.component_borrowed_attrs.remove(name);
                     context
                         .component_attrs
                         .insert(name.to_owned(), Value::String(attr.value.clone()));
                 }
             } else if attr.complex {
                 // Complex attribute — resolve value, don't render to HTML, store as state
-                if let Some(value) = self.resolve_value(&attr.value, context) {
-                    if context.collecting_component_attrs && !attr.attr_skip {
+                if context.collecting_component_attrs && !attr.attr_skip {
+                    let state_backed_value = if context.streaming.is_none() {
+                        resolve_state_backed_value(
+                            &attr.value,
+                            &context.loop_vars,
+                            context.visible_loop_scope,
+                            LocalValueSources {
+                                owned: &context.local_vars,
+                                borrowed: &context.local_borrowed_vars,
+                            },
+                            context.state,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(value) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                        context.component_attrs.remove(name);
+                        context.component_borrowed_attrs.insert(name, value);
+                    } else if let Some(value) = self.resolve_value_owned(&attr.value, context) {
+                        let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                        context.component_borrowed_attrs.remove(name);
                         context.component_attrs.insert(name.to_owned(), value);
                     }
                 }
             } else {
                 // Dynamic attribute — resolve and render
-                let value = self.resolve_value(&attr.value, context);
+                // Streaming continuations must own component locals across host
+                // calls, so borrowing there would add a second lookup before the
+                // VM materializes the same value.
+                let state_backed_value = if context.collecting_component_attrs
+                    && !attr.attr_skip
+                    && context.streaming.is_none()
+                {
+                    resolve_state_backed_value(
+                        &attr.value,
+                        &context.loop_vars,
+                        context.visible_loop_scope,
+                        LocalValueSources {
+                            owned: &context.local_vars,
+                            borrowed: &context.local_borrowed_vars,
+                        },
+                        context.state,
+                    )
+                } else {
+                    None
+                };
+                let value = resolve_value_from_sources(
+                    &attr.value,
+                    &context.loop_vars,
+                    context.visible_loop_scope,
+                    LocalValueSources {
+                        owned: &context.local_vars,
+                        borrowed: &context.local_borrowed_vars,
+                    },
+                    context.state,
+                );
                 // Always emit the attribute so FAST hydration markers
                 // (`data-fe`) match the DOM node structure.
-                match &value {
+                match value.as_deref() {
                     Some(Value::String(s)) => {
                         write_attr(
                             context.writer,
@@ -3174,11 +3673,20 @@ impl WebUIHandler {
                 }
 
                 if context.collecting_component_attrs && !attr.attr_skip {
-                    let name = component_name.ok_or_else(missing_component_attr_name_error)?;
-                    context.component_attrs.insert(
-                        name.to_owned(),
-                        value.unwrap_or(Value::String(String::new())),
-                    );
+                    if let Some(borrowed) = state_backed_value {
+                        let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                        context.component_attrs.remove(name);
+                        context.component_borrowed_attrs.insert(name, borrowed);
+                    } else {
+                        let name = component_name.ok_or_else(missing_component_attr_name_error)?;
+                        context.component_borrowed_attrs.remove(name);
+                        context.component_attrs.insert(
+                            name.to_owned(),
+                            value
+                                .map(Cow::into_owned)
+                                .unwrap_or(Value::String(String::new())),
+                        );
+                    }
                 }
             }
         }
@@ -3205,8 +3713,17 @@ impl WebUIHandler {
             match frag.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
                 Some(Fragment::Signal(signal)) => {
-                    if let Some(value) = self.resolve_value(&signal.value, context) {
-                        match &value {
+                    if let Some(value) = resolve_value_from_sources(
+                        &signal.value,
+                        &context.loop_vars,
+                        context.visible_loop_scope,
+                        LocalValueSources {
+                            owned: &context.local_vars,
+                            borrowed: &context.local_borrowed_vars,
+                        },
+                        context.state,
+                    ) {
+                        match value.as_ref() {
                             Value::String(s) => raw_value.push_str(s),
                             _ => raw_value.push_str(&value.to_string()),
                         }
@@ -3268,7 +3785,11 @@ impl WebUIHandler {
             state,
             writer,
             local_vars: HashMap::new(),
+            local_borrowed_vars: BorrowedScope::default(),
+            loop_vars: Vec::new(),
+            visible_loop_scope: VisibleLoopScope::EMPTY,
             component_attrs: HashMap::new(),
+            component_borrowed_attrs: BorrowedScope::default(),
             collecting_component_attrs: false,
             request_path: options.request_path,
             route_base: Cow::Borrowed("/"),
@@ -3300,6 +3821,7 @@ impl WebUIHandler {
             scope_pool: Vec::new(),
             document_style_resources: HashSet::new(),
             shadow_style_roots: Vec::new(),
+            borrowed_scope_pool: Vec::new(),
         };
 
         if entry_owns_css_tree {
@@ -3380,6 +3902,201 @@ mod tests {
             format!("{STRUCTURAL_SIGNAL_PREFIX}{}", value.as_ref()),
             true,
         )
+    }
+
+    #[test]
+    fn borrowed_collection_reuses_state_array() {
+        let state = test_json!({
+            "items": [
+                {"name": "first"},
+                {"name": "second"}
+            ]
+        });
+        let local_vars = HashMap::new();
+        let local_borrowed_vars = BorrowedScope::default();
+        let loop_vars = Vec::new();
+        let items = resolve_borrowed_collection(
+            "items",
+            &loop_vars,
+            VisibleLoopScope::EMPTY,
+            LocalValueSources {
+                owned: &local_vars,
+                borrowed: &local_borrowed_vars,
+            },
+            &state,
+        )
+        .unwrap_or_else(|| panic!("state array should be borrowed"));
+        let state_items = state["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("fixture items should be an array"));
+        assert!(std::ptr::eq(items.as_ptr(), state_items.as_ptr()));
+    }
+
+    #[test]
+    fn owned_local_collection_keeps_precedence() {
+        let state = test_json!({"items": [{"name": "global"}]});
+        let local_vars = HashMap::from([("items".to_string(), test_json!([{"name": "local"}]))]);
+        let local_borrowed_vars = BorrowedScope::default();
+        assert!(resolve_borrowed_collection(
+            "items",
+            &[],
+            VisibleLoopScope::EMPTY,
+            LocalValueSources {
+                owned: &local_vars,
+                borrowed: &local_borrowed_vars,
+            },
+            &state,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn borrowed_component_collection_reuses_state_array() {
+        let state = test_json!({"teams": [{"contacts": [{"name": "Avery"}]}]});
+        let contacts = &state["teams"][0]["contacts"];
+        let mut local_borrowed_vars = BorrowedScope::default();
+        local_borrowed_vars.insert("contacts", contacts);
+        let local_vars = HashMap::new();
+        let items = resolve_borrowed_collection(
+            "contacts",
+            &[],
+            VisibleLoopScope::EMPTY,
+            LocalValueSources {
+                owned: &local_vars,
+                borrowed: &local_borrowed_vars,
+            },
+            &state,
+        )
+        .unwrap_or_else(|| panic!("component collection should stay borrowed"));
+        let state_items = contacts
+            .as_array()
+            .unwrap_or_else(|| panic!("fixture contacts should be an array"));
+        assert!(std::ptr::eq(items.as_ptr(), state_items.as_ptr()));
+    }
+
+    #[test]
+    fn nested_borrowed_collection_reuses_child_array() {
+        let state = test_json!({
+            "items": [{
+                "children": [
+                    {"name": "first"},
+                    {"name": "second"}
+                ]
+            }]
+        });
+        let item = &state["items"][0];
+        let loop_vars = vec![LoopBinding {
+            name: "item",
+            value: item,
+        }];
+        let local_vars = HashMap::new();
+        let local_borrowed_vars = BorrowedScope::default();
+        let children = resolve_borrowed_collection(
+            "item.children",
+            &loop_vars,
+            VisibleLoopScope { start: 0, end: 1 },
+            LocalValueSources {
+                owned: &local_vars,
+                borrowed: &local_borrowed_vars,
+            },
+            &state,
+        )
+        .unwrap_or_else(|| panic!("nested state array should be borrowed"));
+        let state_children = item["children"]
+            .as_array()
+            .unwrap_or_else(|| panic!("fixture children should be an array"));
+        assert!(std::ptr::eq(children.as_ptr(), state_children.as_ptr()));
+    }
+
+    #[test]
+    fn borrowed_resolver_preserves_loop_precedence_and_component_isolation() {
+        let state = test_json!({
+            "item": {"name": "global", "fallback": "global fallback"},
+            "outer": {"name": "outer"},
+            "inner": {"name": "inner"}
+        });
+        let loop_vars = vec![
+            LoopBinding {
+                name: "item",
+                value: &state["outer"],
+            },
+            LoopBinding {
+                name: "item",
+                value: &state["inner"],
+            },
+        ];
+        let local_vars = HashMap::new();
+        let local_borrowed_vars = BorrowedScope::default();
+        let sources = LocalValueSources {
+            owned: &local_vars,
+            borrowed: &local_borrowed_vars,
+        };
+
+        assert_eq!(
+            resolve_value_from_sources(
+                "item.name",
+                &loop_vars,
+                VisibleLoopScope { start: 0, end: 2 },
+                sources,
+                &state,
+            )
+            .as_deref()
+            .and_then(Value::as_str),
+            Some("inner")
+        );
+        assert_eq!(
+            resolve_value_from_sources(
+                "item.fallback",
+                &loop_vars,
+                VisibleLoopScope { start: 0, end: 2 },
+                sources,
+                &state,
+            )
+            .as_deref()
+            .and_then(Value::as_str),
+            Some("global fallback")
+        );
+        assert_eq!(
+            resolve_value_from_sources(
+                "item.name",
+                &loop_vars,
+                VisibleLoopScope { start: 2, end: 2 },
+                sources,
+                &state,
+            )
+            .as_deref()
+            .and_then(Value::as_str),
+            Some("global")
+        );
+    }
+
+    #[test]
+    fn borrowed_scope_preserves_inline_overflow_and_replacement_semantics() {
+        let values = [
+            Value::String("a".to_string()),
+            Value::String("b".to_string()),
+            Value::String("c".to_string()),
+            Value::String("d".to_string()),
+            Value::String("e".to_string()),
+            Value::String("f".to_string()),
+            Value::String("replacement".to_string()),
+        ];
+        let mut scope = BorrowedScope::default();
+        for (index, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+            assert!(scope.insert(name, &values[index]).is_none());
+        }
+        assert_eq!(scope.inline_len, INLINE_SCOPE_SLOTS);
+        assert_eq!(scope.overflow.len(), 2);
+        assert_eq!(scope.get("a"), Some(&values[0]));
+        assert_eq!(scope.get("f"), Some(&values[5]));
+        assert_eq!(scope.insert("a", &values[6]), Some(&values[0]));
+        assert_eq!(scope.get("a"), Some(&values[6]));
+        assert_eq!(scope.remove("b"), Some(&values[1]));
+        assert!(scope.get("b").is_none());
+        assert_eq!(scope.get("f"), Some(&values[5]));
+        scope.clear();
+        assert!(scope.get("a").is_none());
+        assert!(scope.overflow.is_empty());
     }
 
     // A simple test writer implementation

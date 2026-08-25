@@ -539,7 +539,11 @@ impl SessionCore {
             state,
             writer,
             local_vars: std::mem::take(&mut self.local_vars),
+            local_borrowed_vars: super::super::BorrowedScope::default(),
+            loop_vars: Vec::new(),
+            visible_loop_scope: super::super::VisibleLoopScope::EMPTY,
             component_attrs: std::mem::take(&mut self.component_attrs),
+            component_borrowed_attrs: super::super::BorrowedScope::default(),
             collecting_component_attrs: false,
             request_path: options.request_path,
             route_base: self
@@ -572,6 +576,7 @@ impl SessionCore {
             scope_pool: std::mem::take(&mut self.scope_pool),
             document_style_resources: std::mem::take(&mut self.document_style_resources),
             shadow_style_roots: std::mem::take(&mut self.shadow_style_roots),
+            borrowed_scope_pool: Vec::new(),
         };
         let result = operation(&mut self.vm, &mut context);
         self.local_vars = std::mem::take(&mut context.local_vars);

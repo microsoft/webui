@@ -729,10 +729,14 @@ impl ContinuationVm {
             WebUIHandler::push_shadow_style_root(&component.fragment_id, context)?;
         }
         let saved_local_vars = std::mem::take(&mut context.local_vars);
-        let saved_component_attrs = std::mem::replace(
+        let mut saved_component_attrs = std::mem::replace(
             &mut context.component_attrs,
             crate::take_scope_map(&mut context.scope_pool),
         );
+        context
+            .component_borrowed_attrs
+            .clone_into_owned(&mut saved_component_attrs);
+        context.component_borrowed_attrs.clear();
         context.local_vars = saved_component_attrs;
         context.collecting_component_attrs = false;
         if let Some(plugin) = context.plugin.as_mut() {
@@ -759,6 +763,7 @@ impl ContinuationVm {
         let used_locals = std::mem::replace(&mut context.local_vars, frame.saved_local_vars);
         crate::recycle_scope_map(&mut context.scope_pool, used_locals);
         context.component_attrs.clear();
+        context.component_borrowed_attrs.clear();
         context.collecting_component_attrs = false;
         if frame.owns_css_tree {
             let component = protocol
@@ -809,7 +814,7 @@ impl ContinuationVm {
         protocol: &crate::Protocol,
         context: &mut WebUIProcessContext<'_, '_, '_>,
     ) -> Result<()> {
-        let items = match handler.resolve_value(&for_loop.collection, context) {
+        let items = match handler.resolve_value_owned(&for_loop.collection, context) {
             Some(Value::Array(items)) => items,
             Some(_) => return Err(non_array_collection_error(&for_loop.collection)),
             None => Vec::new(),
@@ -979,7 +984,7 @@ impl ContinuationVm {
             .strip_prefix("{{")
             .and_then(|value| value.strip_suffix("}}"))
             .map_or(trimmed, str::trim);
-        let Some(value) = handler.resolve_value(path, context) else {
+        let Some(value) = handler.resolve_value_owned(path, context) else {
             return Err(invalid_boundary_key_error(
                 boundary.declaration_id,
                 &boundary.name,
