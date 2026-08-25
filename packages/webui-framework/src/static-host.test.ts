@@ -7,66 +7,23 @@ import type { TemplateMeta } from './template.js';
 
 const registry = new Map<string, CustomElementConstructor>();
 const windowListeners = new Map<string, Array<(event: Event) => void>>();
-const headChildren: FakeStyleElement[] = [];
-
-class FakeStyleElement {
-  localName: string;
-  nonce = '';
-  textContent = '';
-  private readonly attributes = new Map<string, string>();
-
-  constructor(localName: string) {
-    this.localName = localName;
-  }
-
-  getAttribute(name: string): string | null {
-    return this.attributes.get(name) ?? null;
-  }
-
-  setAttribute(name: string, value: string): void {
-    this.attributes.set(name, value);
-  }
-}
-
-const fakeHead = {
-  get childElementCount(): number {
-    return headChildren.length;
-  },
-  get children(): FakeStyleElement[] {
-    return headChildren;
-  },
-  insertBefore(
-    child: FakeStyleElement,
-    before: FakeStyleElement | null,
-  ): FakeStyleElement {
-    const index = before ? headChildren.indexOf(before) : -1;
-    if (index < 0) headChildren.push(child);
-    else headChildren.splice(index, 0, child);
-    return child;
-  },
-  querySelectorAll(): FakeStyleElement[] {
-    return headChildren.filter(
-      (child) => child.getAttribute('data-webui-resource') !== null,
-    );
-  },
-};
+let streamingMode = false;
 
 Object.defineProperty(globalThis, 'HTMLElement', {
   value: class HTMLElement {
+    private readonly attributes = new Set<string>();
     tagName = '';
     localName = '';
     isConnected = false;
     childNodes: unknown[] = [];
     shadowRoot = null;
-    parentElement = null;
-    ownerDocument = document;
 
-    hasAttribute(_name: string): boolean {
-      return false;
+    hasAttribute(name: string): boolean {
+      return this.attributes.has(name);
     }
 
-    getRootNode(): Document {
-      return this.ownerDocument;
+    setAttribute(name: string): void {
+      this.attributes.add(name);
     }
   },
   configurable: true,
@@ -86,20 +43,12 @@ Object.defineProperty(globalThis, 'customElements', {
 
 Object.defineProperty(globalThis, 'document', {
   value: {
-    nodeType: 9,
     readyState: 'complete',
-    head: fakeHead,
-    createElement(name: string) {
-      return new FakeStyleElement(name);
-    },
     getElementById() {
       return null;
     },
     querySelector() {
-      return null;
-    },
-    querySelectorAll() {
-      return fakeHead.querySelectorAll();
+      return streamingMode ? {} : null;
     },
   },
   configurable: true,
@@ -143,6 +92,7 @@ const { deferTemplateDefinition } = await import('./template.js');
 const { TemplateElement } = await import('./template-element.js');
 const {
   ACTIVATION_STATIC_HOST_OPT_OUT,
+  resetStreamingModeForTests,
   STREAMING_BOUNDARY_ACTIVATE,
 } = await import('./streaming-mode.js');
 const { registerComponentStyles } = await import('./element/styles.js');
@@ -243,8 +193,6 @@ describe('dormant template host runtime', () => {
 
     const writer = parent as unknown as ComplexPropertyWriter;
     writer.$writeComplexProperty(child, 'payload', payload, false);
-    writer.$writeComplexProperty(child, 'hasAttribute', 'queued', false);
-    writer.$writeComplexProperty(child, 'getRootNode', 'queued', false);
     assert.equal(Object.hasOwn(child, 'payload'), false);
 
     installTemplateElementRuntime();
@@ -256,88 +204,82 @@ describe('dormant template host runtime', () => {
     assert.equal(child.payload, payload);
     assert.deepEqual(
       Object.keys(child).filter((key) => !ownKeysBefore.includes(key)),
-      ['payload', 'hasAttribute', 'getRootNode'],
-      'only queued keys become instance state',
+      ['payload'],
+      'only the queued key becomes instance state',
     );
 
     writer.$writeComplexProperty(child, 'later', { answer: 43 }, false);
     assert.deepEqual(child.later, { answer: 43 });
   });
 
-  test('installs streamed styles before queued properties shadow DOM methods', () => {
-    const tag = `empty-pending-streamed-property-${Date.now()}`;
+  test('defers queued properties with a streamed empty host', () => {
+    const tag = `empty-pending-streamed-${Date.now()}`;
     registerTemplate(tag, { h: '', th: 1 });
     const parent = new TemplateElement();
     const child = new HTMLElement();
     (child as unknown as { localName: string }).localName = tag;
+    child.setAttribute('data-ws', '');
     (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
       child,
-      'getRootNode',
+      'hasAttribute',
       'queued',
       false,
     );
 
-    installTemplateElementRuntime();
-    const ctor = registry.get(tag);
-    assert.ok(ctor);
-    Object.setPrototypeOf(child, ctor.prototype);
-    const activatable = child as HTMLElement & {
-      [STREAMING_BOUNDARY_ACTIVATE](): number;
-    };
+    streamingMode = true;
+    resetStreamingModeForTests();
+    try {
+      installTemplateElementRuntime();
+      const ctor = registry.get(tag);
+      assert.ok(ctor);
+      Object.setPrototypeOf(child, ctor.prototype);
+      const streamed = child as HTMLElement & {
+        connectedCallback(): void;
+        [STREAMING_BOUNDARY_ACTIVATE](): number;
+      };
 
-    assert.equal(
-      activatable[STREAMING_BOUNDARY_ACTIVATE](),
-      ACTIVATION_STATIC_HOST_OPT_OUT,
-    );
-    assert.equal(
-      (child as unknown as Record<string, unknown>)['getRootNode'],
-      'queued',
-    );
+      streamed.connectedCallback();
+      assert.equal(Object.hasOwn(child, 'hasAttribute'), false);
+      (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
+        child,
+        'hasAttribute',
+        'newer',
+        false,
+      );
+      assert.equal(
+        streamed[STREAMING_BOUNDARY_ACTIVATE](),
+        ACTIVATION_STATIC_HOST_OPT_OUT,
+      );
+      assert.equal(
+        (child as unknown as Record<string, unknown>)['hasAttribute'],
+        'newer',
+      );
+    } finally {
+      streamingMode = false;
+      resetStreamingModeForTests();
+    }
   });
 
-  test('installs styles for connected and streamed empty hosts', () => {
-    const connectedTag = `empty-style-connected-${Date.now()}`;
-    const streamedTag = `empty-style-streamed-${Date.now()}`;
-    const connectedResource = `${connectedTag}-css`;
-    const streamedResource = `${streamedTag}-css`;
+  test('keeps CSS-bearing empty templates on TemplateElement', () => {
+    const tag = `empty-style-${Date.now()}`;
+    const resource = `${tag}-css`;
     registerComponentStyles({
       version: 1,
       strategy: 'style',
       resources: {
-        [connectedResource]: { kind: 'style', css: ':host{display:block}' },
-        [streamedResource]: { kind: 'style', css: ':host{display:none}' },
+        [resource]: { kind: 'style', css: ':host{display:block}' },
       },
       closures: {
-        [connectedTag]: [connectedResource],
-        [streamedTag]: [streamedResource],
+        [tag]: [resource],
       },
     });
-    registerTemplate(connectedTag, { h: '', th: 1 });
-    registerTemplate(streamedTag, { h: '', th: 1 });
+    registerTemplate(tag, { h: '', th: 1 });
 
     installTemplateElementRuntime();
 
-    const connectedCtor = registry.get(connectedTag);
-    const streamedCtor = registry.get(streamedTag);
-    assert.ok(connectedCtor);
-    assert.ok(streamedCtor);
-    const connected = new connectedCtor() as HTMLElement & {
-      connectedCallback(): void;
-    };
-    const streamed = new streamedCtor() as HTMLElement & {
-      [STREAMING_BOUNDARY_ACTIVATE](): number;
-    };
-    connected.connectedCallback();
-    assert.equal(
-      streamed[STREAMING_BOUNDARY_ACTIVATE](),
-      ACTIVATION_STATIC_HOST_OPT_OUT,
-    );
-
-    const installed = headChildren.map(
-      (child) => child.getAttribute('data-webui-resource'),
-    );
-    assert.ok(installed.includes(connectedResource));
-    assert.ok(installed.includes(streamedResource));
+    const ctor = registry.get(tag);
+    assert.ok(ctor);
+    assert.equal(ctor.prototype instanceof TemplateElement, true);
   });
 
   test('keeps behavior-bearing empty templates on TemplateElement', () => {

@@ -337,6 +337,14 @@ export function hasRegisteredComponentStyleResource(
   return catalogFor(document).resources.has(id);
 }
 
+/** Whether one component has registered style resources to install. */
+export function hasComponentStyleWork(
+  rootId: string,
+  document: Document = globalThis.document,
+): boolean {
+  return (catalogFor(document).closures.get(rootId)?.length ?? 0) > 0;
+}
+
 function targetInstalledResources(target: StyleTarget): Set<string> {
   let targetInstalled = installed.get(target);
   if (!targetInstalled) {

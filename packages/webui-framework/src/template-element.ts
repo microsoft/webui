@@ -48,10 +48,6 @@
 
 import { deferTemplateDefinition, getTemplate } from './template.js';
 import {
-  consumePendingParentState,
-  queuePendingParentState,
-} from './pending-parent-state.js';
-import {
   cloneTemplateContent,
 } from './template-content.js';
 import type {
@@ -300,8 +296,43 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
 
+interface PendingParentState {
+  readonly values: Record<string, unknown>;
+  replay?: Set<string>;
+}
+
+const pendingParentStateByElement = new WeakMap<Element, PendingParentState>();
+
 function bindingArray<T>(count: number): T[] {
   return count > 0 ? [] : EMPTY_ARR as unknown as T[];
+}
+
+function queuePendingParentState(
+  element: Element,
+  name: string,
+  value: unknown,
+  replayAfterHydration: boolean,
+): void {
+  let pending = pendingParentStateByElement.get(element);
+  if (!pending) {
+    pending = {
+      values: Object.create(null) as Record<string, unknown>,
+    };
+    pendingParentStateByElement.set(element, pending);
+  }
+  pending.values[name] = value;
+  if (replayAfterHydration) {
+    (pending.replay ??= new Set()).add(name);
+  }
+}
+
+/** Internal seam for compiler-owned hosts defined after a parent state write. */
+export function consumePendingParentState(
+  element: Element,
+): PendingParentState | undefined {
+  const pending = pendingParentStateByElement.get(element);
+  if (pending) pendingParentStateByElement.delete(element);
+  return pending;
 }
 
 function isUnupgradedWebUITarget(element: Element): boolean {

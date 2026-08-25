@@ -12,7 +12,7 @@
  *
  * Scriptless components use compiler-owned hosts and never import this authored
  * behavior layer. Templates with DOM or reactive work use TemplateElement;
- * templates proven to have no such work use a minimal HTMLElement host.
+ * templates with no DOM, reactive, or CSS work use a minimal HTMLElement host.
  */
 
 import { TemplateElement } from './template-element.js';

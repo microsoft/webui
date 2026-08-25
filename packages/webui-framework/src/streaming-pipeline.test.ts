@@ -3356,7 +3356,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(hasWs(ok), false, 'the surviving root also loses its marker');
   });
 
-  test('a committed root whose hook OPTS OUT (static-host style) still loses its data-ws marker', async () => {
+  test('a stateless static opt-out is not retained for updates', async () => {
     // A compiler-owned static host defines the hook but returns without
     // activating ($shouldActivateOnBoundaryCommit() === false). The coordinator
     // must still strip its marker so the committed host is not left deferred.
@@ -3368,16 +3368,18 @@ describe('streaming coordinator pipeline', () => {
         called = true; // opts out: records the call but performs no activation
       },
     });
-    const b = buildBoundary(0, 0, [host], { state: {} });
+    const initial = buildUpdatableBoundary(0, 0, [host], { state: {} });
+    const patch = buildStateUpdate(1, 0, { count: 2 });
 
     predefine('my-optout');
-    enqueue(b.sentinel);
+    enqueue(initial.sentinel);
+    enqueue(patch.sentinel);
     await flush();
 
     assert.equal(called, true, 'the opt-out hook was still invoked');
     assert.equal(__isHaltedForTests(), false);
     assert.equal(hasWs(host), false, 'data-ws stripped from a committed opt-out root');
-    assert.equal(host.parentNode, b.root, 'the opt-out root is retained');
+    assert.equal(host.parentNode, initial.root, 'the opt-out root remains in the DOM');
   });
 
   // ── Shared activation-outcome contract (`streaming-mode.ts`) ─────────
@@ -3601,24 +3603,5 @@ describe('streaming coordinator pipeline', () => {
     assertLogged(logged.messages, 'unrecognized streaming activation outcome 77');
     assert.equal(__pendingBarrierRootCountForTests(), 0, 'the retained root is released');
     assert.equal(hasStreamingAttrs(child), false, 'fatal cleanup strips its markers');
-  });
-
-  test('a static opt-out root without state is not retained for updates', async () => {
-    const host = element('my-static-update-optout', {
-      attrs: { 'data-ws': '' },
-      activationOutcome: ACTIVATION_STATIC_HOST_OPT_OUT,
-      hook() {},
-    });
-    const initial = buildUpdatableBoundary(0, 0, [host], { state: {} });
-    const patch = buildStateUpdate(1, 0, { count: 2 });
-
-    predefine('my-static-update-optout');
-    enqueue(initial.sentinel);
-    enqueue(patch.sentinel);
-    await flush();
-
-    assert.equal(__isHaltedForTests(), false);
-    assert.equal(hasWs(host), false);
-    assert.equal(host.parentNode, initial.root);
   });
 });

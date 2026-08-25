@@ -11,12 +11,11 @@
  * immediately because they have no server-rendered DOM to preserve.
  */
 
-import { TemplateElement } from './template-element.js';
 import {
-  claimSsrComponentStyles,
-  installComponentStyles,
-} from './element/styles.js';
-import { consumePendingParentState } from './pending-parent-state.js';
+  consumePendingParentState,
+  TemplateElement,
+} from './template-element.js';
+import { hasComponentStyleWork } from './element/styles.js';
 import { getTemplateRegistry } from './template.js';
 import { templateNeedsStaticHost } from './template-roots.js';
 import {
@@ -33,14 +32,8 @@ import type { TemplateMeta } from './template.js';
 
 let runtimeInstalled = false;
 
-/**
- * Restore values a parent wrote before this compiler-owned tag was defined.
- *
- * The default entry installs static hosts in a later task, so an authored
- * parent can deliver a `:` property first. The shared WeakMap keeps the common
- * no-write host field-free; only values that were actually queued become own
- * properties here.
- */
+// Static hosts are defined in a later task, so parent `:` writes can arrive
+// first. The WeakMap keeps hosts with no queued writes field-free.
 function applyPendingNoopHostState(host: HTMLElement): void {
   const pending = consumePendingParentState(host);
   if (!pending) return;
@@ -48,27 +41,7 @@ function applyPendingNoopHostState(host: HTMLElement): void {
   const keys = Object.keys(pending.values);
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
-    target[key] = pending.values[key];
-  }
-}
-
-/**
- * Preserve component CSS without allocating the full template runtime.
- *
- * Style closures are registered separately from template metadata, so `h: ''`
- * does not imply that the host has no CSS to claim or install.
- */
-function installNoopHostStyles(host: HTMLElement, tag: string): void {
-  const containingRoot = host.getRootNode();
-  const target = containingRoot.nodeType === 11 && 'host' in containingRoot
-    ? containingRoot as ShadowRoot
-    : host.ownerDocument;
-  claimSsrComponentStyles(host, target);
-  const installation = installComponentStyles(tag, target, host);
-  if (installation) {
-    void installation.catch((error) => {
-      console.error(error);
-    });
+    if (!Object.hasOwn(target, key)) target[key] = pending.values[key];
   }
 }
 
@@ -79,29 +52,22 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
   if (!w.__webui.templates) w.__webui.templates = {};
   if (!w.__webui.templates[tag]) w.__webui.templates[tag] = meta;
 
-  if (templateIsNoopHost(meta)) {
-    // The tag still needs custom-element identity, queued parent properties,
-    // component CSS, and the streaming hook. Keeping those behaviors on the
-    // prototype avoids TemplateElement's per-instance state for empty hosts.
+  if (templateIsNoopHost(meta) && !hasComponentStyleWork(tag)) {
+    // Prototype-only behavior avoids TemplateElement's per-instance state.
     customElements.define(tag, class extends HTMLElement {
       connectedCallback(): void {
-        // Match TemplateElement timing: an uncommitted streamed root installs
-        // its styles when the boundary activates, not while its DOM is partial.
-        // Inspect the marker before queued property names can shadow DOM methods.
+        // Preserve streamed deferral before a queued property can shadow
+        // hasAttribute(). Ordinary data-ws attributes remain author-owned.
         if (
           isStreamingHydrationMode() &&
           this.hasAttribute(STREAMED_HOST_ATTR)
         ) {
           return;
         }
-        installNoopHostStyles(this, tag);
         applyPendingNoopHostState(this);
       }
 
       [STREAMING_BOUNDARY_ACTIVATE](): typeof ACTIVATION_STATIC_HOST_OPT_OUT {
-        // Style resolution calls DOM methods such as getRootNode(), so complete
-        // it before exposing arbitrary queued property names on the instance.
-        installNoopHostStyles(this, tag);
         applyPendingNoopHostState(this);
         return ACTIVATION_STATIC_HOST_OPT_OUT;
       }
@@ -133,12 +99,7 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
   StaticTemplateHost.define(tag);
 }
 
-/**
- * Return true when a compiler-owned host has no DOM or reactive work.
- *
- * The compiler omits empty optional metadata. Any present behavior-bearing
- * field keeps the full TemplateElement path, even when the static HTML is empty.
- */
+/** Whether metadata proves there is no DOM or reactive work. */
 function templateIsNoopHost(meta: TemplateMeta): boolean {
   return meta.h.length === 0
     && meta.tx === undefined
