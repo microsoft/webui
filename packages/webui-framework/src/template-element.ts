@@ -303,6 +303,10 @@ interface PendingParentState {
 
 const pendingParentStateByElement = new WeakMap<Element, PendingParentState>();
 
+function bindingArray<T>(count: number): T[] {
+  return count > 0 ? [] : EMPTY_ARR as unknown as T[];
+}
+
 function queuePendingParentState(
   element: Element,
   name: string,
@@ -492,8 +496,10 @@ export class TemplateElement extends HTMLElement {
   /** Keep unavailable template-only roots from being replaced by empty values
    *  after a deferred SSR activation. */
   declare private $guardUnknownState: boolean | undefined;
-  /** Cached condition resolver — avoids allocating a closure per evaluation. */
-  private $resolver = (p: string, s?: unknown): unknown => this.$resolveValue(p, s as ScopeFrame | undefined);
+  /** Allocated only for components that evaluate a runtime condition. */
+  declare private $resolver:
+    | ((path: string, scope?: unknown) => unknown)
+    | undefined;
   private $pathIndex?: Map<string, {
     texts: TextBinding[];
     attrs: AttrBinding[];
@@ -1019,10 +1025,10 @@ export class TemplateElement extends HTMLElement {
     instance.parent = undefined;
     instance.container = null;
     instance.nodes.length = 0;
-    instance.texts.length = 0;
-    instance.attrs.length = 0;
-    instance.conds.length = 0;
-    instance.repeats.length = 0;
+    if (instance.texts.length > 0) instance.texts.length = 0;
+    if (instance.attrs.length > 0) instance.attrs.length = 0;
+    if (instance.conds.length > 0) instance.conds.length = 0;
+    if (instance.repeats.length > 0) instance.repeats.length = 0;
   }
 
   attributeChangedCallback(
@@ -1696,7 +1702,7 @@ export class TemplateElement extends HTMLElement {
     const index = this.$pathIndex;
     if (!index) return;
     const ctx: MismatchContext = {
-      resolver: this.$resolver,
+      resolver: this.$conditionResolver(),
       resolveParts: (parts, scope) => this.$resolveParts(parts, scope),
       resolveValue: (path, scope) => this.$resolveValue(path, scope),
     };
@@ -1776,7 +1782,10 @@ export class TemplateElement extends HTMLElement {
   private $wire(root: Node, meta: TemplateBlockMeta, scope?: ScopeFrame): TemplateInstance {
     const instance: TemplateInstance = {
       scope, container: root as ParentNode & Node, nodes: childNodesArray(root),
-      texts: [], attrs: [], conds: [], repeats: [],
+      texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
+      attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
+      conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
+      repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
     };
 
     // Resolve every static insertion reference before inserting dynamic nodes.
@@ -1930,7 +1939,10 @@ export class TemplateElement extends HTMLElement {
       scope,
       container: (pathStart > 0 ? ssrRoot.parentNode : ssrRoot) as (ParentNode & Node) | null,
       nodes: pathStart > 0 ? [ssrRoot] : childNodesArray(ssrRoot),
-      texts: [], attrs: [], conds: [], repeats: [],
+      texts: bindingArray<TextBinding>(meta.tx?.length ?? 0),
+      attrs: bindingArray<AttrBinding>(meta.a?.length ?? 0),
+      conds: bindingArray<CondBinding>(meta.c?.length ?? 0),
+      repeats: bindingArray<RepeatBinding>(meta.r?.length ?? 0),
     };
 
     // Collect SSR markers for deferred removal.  Closing markers
@@ -2740,7 +2752,7 @@ export class TemplateElement extends HTMLElement {
         break;
       }
       case ATTR_KIND_BOOLEAN: {
-        const show = b.condition![0](this.$resolver, b.scope);
+        const show = b.condition![0](this.$conditionResolver(), b.scope);
         if (show) el.setAttribute(b.name, '');
         else el.removeAttribute(b.name);
         // Form control properties must be set via DOM property, not attribute
@@ -2778,7 +2790,7 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $toggleCond(c: CondBinding): void {
-    const show = c.condition[0](this.$resolver, c.scope);
+    const show = c.condition[0](this.$conditionResolver(), c.scope);
     if (show) {
       let created = false;
       const container = c.anchor.parentNode as (ParentNode & Node) | null;
@@ -2820,6 +2832,11 @@ export class TemplateElement extends HTMLElement {
     const dot = path.indexOf('.');
     if (dot === -1) return this.$resolveComponentRoot(path);
     return dotWalk(this.$resolveComponentRoot(path.substring(0, dot)), path, dot + 1);
+  }
+
+  private $conditionResolver(): (path: string, scope?: unknown) => unknown {
+    return this.$resolver ??= (path, scope) =>
+      this.$resolveValue(path, scope as ScopeFrame | undefined);
   }
 
   /** Return whether a binding path's scope or component root is available. */
