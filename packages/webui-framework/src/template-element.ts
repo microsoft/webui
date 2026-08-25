@@ -2803,42 +2803,27 @@ export class TemplateElement extends HTMLElement {
     }
   }
 
-  /** Keep ancestor node ownership aligned when a condition swaps its live range. */
-  private $replaceOwnedRange(
+  /** Swap one live range in every owner that shares its DOM container. */
+  private $swapOwnedRange(
     owner: TemplateInstance,
     current: Node | readonly Node[],
     replacement: Node | readonly Node[],
   ): void {
-    const currentNodes = Array.isArray(current)
-      ? current as readonly Node[]
-      : null;
-    const first = currentNodes ? currentNodes[0] : current as Node;
+    const currentIsRange = Array.isArray(current);
+    const first = currentIsRange ? current[0] : current as Node;
     if (!first) return;
-    const currentLength = currentNodes?.length ?? 1;
-    const replacementNodes = Array.isArray(replacement)
-      ? replacement as readonly Node[]
-      : null;
-
+    const count = currentIsRange ? current.length : 1;
+    const last = currentIsRange ? current[count - 1] : first;
+    const container = first.parentNode;
     let instance: TemplateInstance | undefined = owner;
-    while (instance) {
-      const ownedNodes = instance.nodes;
-      const index = ownedNodes.indexOf(first);
-      if (index !== -1) {
-        let matches = true;
-        if (currentNodes) {
-          for (let offset = 1; offset < currentLength; offset++) {
-            if (ownedNodes[index + offset] !== currentNodes[offset]) {
-              matches = false;
-              break;
-            }
-          }
-        }
-        if (matches) {
-          if (replacementNodes) {
-            ownedNodes.splice(index, currentLength, ...replacementNodes);
-          } else {
-            ownedNodes.splice(index, currentLength, replacement as Node);
-          }
+    while (container && instance && instance.container === container) {
+      const nodes = instance.nodes;
+      const index = nodes.indexOf(first);
+      if (index >= 0 && nodes[index + count - 1] === last) {
+        if (Array.isArray(replacement)) {
+          nodes.splice(index, count, ...replacement);
+        } else {
+          nodes.splice(index, count, replacement as Node);
         }
       }
       instance = instance.parent;
@@ -2864,26 +2849,29 @@ export class TemplateElement extends HTMLElement {
       );
       if (!instance) return;
       c.instance = instance;
+      const nodes = instance.nodes;
       this.$insertInstanceAfter(anchor, container, instance);
-      if (instance.nodes.length > 0) {
-        this.$replaceOwnedRange(c.owner, anchor, instance.nodes);
+      if (nodes.length > 0) {
+        this.$swapOwnedRange(c.owner, anchor, nodes);
         anchor.remove();
         c.anchor = null;
       }
       this.$changeStructure();
     } else if (c.instance) {
       const instance = c.instance;
+      const block = this.$block(c.blockIndex);
+      const compactOwners = !!block && this.$hasRootStructuralSlot(block);
       const first = instance.nodes[0] ?? null;
       const container = first?.parentNode as (ParentNode & Node) | null;
       if (first && container) {
         const anchor = document.createComment('');
         container.insertBefore(anchor, first);
-        this.$replaceOwnedRange(c.owner, instance.nodes, anchor);
+        this.$swapOwnedRange(c.owner, instance.nodes, anchor);
         c.anchor = anchor;
       }
       this.$removeInstance(instance);
       c.instance = null;
-      this.$changeStructure(c.owner);
+      this.$changeStructure(compactOwners ? c.owner : undefined);
     }
   }
 

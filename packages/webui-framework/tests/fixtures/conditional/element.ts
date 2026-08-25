@@ -33,6 +33,8 @@ export class TestConditionalHydrationRanges extends WebUIElement {
   @observable clientOnlyOpen = true;
   @observable outerOpen = true;
   @observable innerOpen = false;
+  @observable snapshotOpen = false;
+  @observable snapshotItems: string[] = [];
 
   protected $shouldApplySSRBootstrapState(): boolean {
     return false;

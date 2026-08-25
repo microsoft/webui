@@ -19,23 +19,14 @@ test.describe('conditional fixture', () => {
     });
   });
 
-  test('renders the SSR conditional body', async ({ page }) => {
-    await expect(page.locator('test-conditional .details')).toHaveText('Details');
-    const hasVisibleAnchor = await page.locator('test-conditional .details').evaluate(
-      (element) =>
-        element.previousSibling?.nodeType === Node.COMMENT_NODE
-        && (element.previousSibling as Comment).data === 'wc',
-    );
-    expect(hasVisibleAnchor).toBe(false);
-  });
-
-  test('creates conditional anchors only while content is hidden', async ({ page }) => {
+  test('retains anchors only while conditional bodies are absent', async ({ page }) => {
     const result = await page.evaluate(async () => {
       const host = document.querySelector('test-conditional') as any;
       const root = host.shadowRoot ?? host;
       const button = root.querySelector('.toggle');
-      const nextOwnedNode = (): ChildNode | null => {
-        let node = button?.nextSibling ?? null;
+      const sentinel = root.querySelector('.empty-sentinel');
+      const nextMeaningful = (start: ChildNode | null): ChildNode | null => {
+        let node = start?.nextSibling ?? null;
         while (
           node?.nodeType === Node.TEXT_NODE
           && node.textContent?.trim() === ''
@@ -44,44 +35,8 @@ test.describe('conditional fixture', () => {
         }
         return node;
       };
-
-      host.open = false;
-      await Promise.resolve();
-      const firstAnchor = nextOwnedNode();
-      host.open = true;
-      await Promise.resolve();
-      const firstRemoved = firstAnchor?.isConnected === false;
-      host.open = false;
-      await Promise.resolve();
-      const secondAnchor = nextOwnedNode();
-
-      return {
-        firstIsAnchor:
-          firstAnchor?.nodeType === Node.COMMENT_NODE
-          && (firstAnchor as Comment).data === '',
-        firstRemoved,
-        secondIsAnchor:
-          secondAnchor?.nodeType === Node.COMMENT_NODE
-          && (secondAnchor as Comment).data === '',
-        replaced: firstAnchor !== secondAnchor,
-      };
-    });
-
-    expect(result).toEqual({
-      firstIsAnchor: true,
-      firstRemoved: true,
-      secondIsAnchor: true,
-      replaced: true,
-    });
-  });
-
-  test('reuses the anchor for an empty conditional body', async ({ page }) => {
-    const result = await page.evaluate(async () => {
-      const host = document.querySelector('test-conditional') as any;
-      const root = host.shadowRoot ?? host;
-      const sentinel = root.querySelector('.empty-sentinel');
-      const previousOwnedNode = (): ChildNode | null => {
-        let node = sentinel?.previousSibling ?? null;
+      const previousMeaningful = (start: ChildNode | null): ChildNode | null => {
+        let node = start?.previousSibling ?? null;
         while (
           node?.nodeType === Node.TEXT_NODE
           && node.textContent?.trim() === ''
@@ -90,29 +45,60 @@ test.describe('conditional fixture', () => {
         }
         return node;
       };
+      const isComment = (node: ChildNode | null, data: string): boolean =>
+        node?.nodeType === Node.COMMENT_NODE
+        && (node as Comment).data === data;
 
-      const anchor = previousOwnedNode();
+      const initialDetails = root.querySelector('.details');
+      const initialVisibleAnchor = isComment(
+        previousMeaningful(initialDetails),
+        'wc',
+      );
+      host.open = false;
+      await Promise.resolve();
+      const firstAnchor = nextMeaningful(button);
+      host.open = true;
+      await Promise.resolve();
+      const firstRemoved = firstAnchor?.isConnected === false;
+      const restoredDetails = root.querySelector('.details');
+      const restoredVisibleAnchor = isComment(
+        previousMeaningful(restoredDetails),
+        '',
+      );
+      host.open = false;
+      await Promise.resolve();
+      const secondAnchor = nextMeaningful(button);
+
+      const anchor = previousMeaningful(sentinel);
       host.empty = true;
       await Promise.resolve();
-      const sameWhileVisible = previousOwnedNode() === anchor;
+      const sameWhileVisible = previousMeaningful(sentinel) === anchor;
       host.empty = false;
       await Promise.resolve();
 
       return {
-        isAnchor:
-          anchor?.nodeType === Node.COMMENT_NODE
-          && (anchor as Comment).data === 'wc',
-        sameWhileVisible,
-        sameAfterHide: previousOwnedNode() === anchor,
-        connected: anchor?.isConnected === true,
+        initialVisibleAnchor,
+        firstIsAnchor: isComment(firstAnchor, ''),
+        firstRemoved,
+        restoredVisibleAnchor,
+        secondIsAnchor: isComment(secondAnchor, ''),
+        replaced: firstAnchor !== secondAnchor,
+        emptyIsAnchor: isComment(anchor, 'wc'),
+        emptyReused: sameWhileVisible
+          && previousMeaningful(sentinel) === anchor
+          && anchor?.isConnected === true,
       };
     });
 
     expect(result).toEqual({
-      isAnchor: true,
-      sameWhileVisible: true,
-      sameAfterHide: true,
-      connected: true,
+      initialVisibleAnchor: false,
+      firstIsAnchor: true,
+      firstRemoved: true,
+      restoredVisibleAnchor: false,
+      secondIsAnchor: true,
+      replaced: true,
+      emptyIsAnchor: true,
+      emptyReused: true,
     });
   });
 
@@ -160,6 +146,36 @@ test.describe('conditional fixture', () => {
     await host.locator('.outer-toggle').click();
     await expect(host.locator('.outer-details')).toHaveCount(1);
     await expect(host.locator('.nested-details')).toHaveCount(0);
+  });
+
+  test('compacts a resnapshotted root repeat when its condition hides', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const host = document.querySelector('test-conditional-hydration-ranges') as any;
+      const root = host.shadowRoot ?? host;
+      host.snapshotItems = ['a', 'b', 'c', 'd'];
+      host.snapshotOpen = true;
+      await Promise.resolve();
+      host.snapshotItems = ['a', 'b', 'c', 'd', 'e'];
+      await Promise.resolve();
+
+      const fifth = root.querySelectorAll('.snapshot-item')[4];
+      const rootInstance = host.$root as { nodes: Node[] };
+      rootInstance.nodes = Array.from(root.childNodes);
+      host.snapshotOpen = false;
+      await Promise.resolve();
+
+      return {
+        rendered: root.querySelectorAll('.snapshot-item').length,
+        connected: fifth?.isConnected ?? true,
+        retained: rootInstance.nodes.includes(fifth),
+      };
+    });
+
+    expect(result).toEqual({
+      rendered: 0,
+      connected: false,
+      retained: false,
+    });
   });
 
   test('toggles boolean attributes reactively', async ({ page }) => {

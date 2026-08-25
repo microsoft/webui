@@ -7,6 +7,8 @@
   "clientOnlyOpen": false,
   "outerOpen": true,
   "innerOpen": false,
+  "snapshotOpen": false,
+  "snapshotItems": [],
   "showStats": true,
   "compact": false,
   "value": "",
