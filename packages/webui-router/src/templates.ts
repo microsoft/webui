@@ -17,6 +17,9 @@ const TEMPLATES_REGISTERED_EVENT = 'webui:templates-registered';
 const READINESS_COMPLETE = (): true => true;
 const IGNORE_READINESS_RESULTS = (): void => {};
 
+type RuntimeTemplateFns = Record<string, unknown>
+  & Record<symbol, number | undefined>;
+
 /**
  * Register templates + inject CSS from a server response.
  * Shared by fetchPartial and fetchComponentTemplates.
@@ -82,17 +85,35 @@ export function registerTemplatesAndStyles(
   //    same risk as the existing fetchPartial pipeline.
   if (data.templateFunctions) {
     const tags = Object.keys(data.templateFunctions);
+    const runtimeFns = (window as unknown as {
+      __webui?: { templateFns?: RuntimeTemplateFns };
+    }).__webui?.templateFns;
+    let functionCount = 0;
     if (tags.length > 0) {
+      if (runtimeFns) {
+        const count = runtimeFns[Symbol.for('microsoft.webui.templateFnCount')];
+        functionCount = typeof count === 'number'
+          ? count
+          : Object.keys(runtimeFns).length;
+      }
       executableTemplateBody += 'var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
     }
     for (let i = 0; i < tags.length; i++) {
       const tag = tags[i];
       const functions = data.templateFunctions[tag];
       if (!functions) continue;
+      if (!runtimeFns || !Object.prototype.hasOwnProperty.call(runtimeFns, tag)) {
+        functionCount++;
+      }
       executableTemplateBody += 'f[';
       executableTemplateBody += JSON.stringify(tag);
       executableTemplateBody += ']=';
       executableTemplateBody += functions;
+      executableTemplateBody += ';';
+    }
+    if (tags.length > 0) {
+      executableTemplateBody += 'f[Symbol.for("microsoft.webui.templateFnCount")]=';
+      executableTemplateBody += functionCount.toString();
       executableTemplateBody += ';';
     }
   }

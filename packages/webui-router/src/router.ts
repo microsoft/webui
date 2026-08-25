@@ -353,6 +353,9 @@ export class WebUIRouter {
       for (const tag of Object.keys(functionRegistry)) {
         delete functionRegistry[tag];
       }
+      const counts = functionRegistry as Record<string, unknown>
+        & Record<symbol, number | undefined>;
+      counts[Symbol.for('microsoft.webui.templateFnCount')] = 0;
     }
     if (window.__webui) window.__webui.inventory = '';
   }
