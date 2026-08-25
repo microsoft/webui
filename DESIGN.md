@@ -2287,6 +2287,38 @@ update hot paths still call the function directly.
 
 All arrays are optional and omitted from the output when empty to minimize payload.
 
+### Interaction hydration boundary
+
+`@microsoft/webui-framework/interaction-hydration.js` is the lightweight public
+entry for trusted SSR applications that defer their full component module
+graph. `installInteractionHydration({ root, load })` listens in capture phase for
+pointer-down, focus, keyboard, and click intent and invokes `load()` at most
+once. Hover does not start loading because a stationary pointer over a newly
+displayed page must not move hydration onto the first-paint path. Pointer-down,
+focus, keyboard, non-cancelable click, and modified click signals start loading
+without being cancelled. A click already cancelled by an earlier capture
+listener also starts loading but is never replayed. A cancelable, unmodified
+primary click is cancelled, copied, and dispatched on the first target in its
+composed path after `load()` resolves. The loader's promise is the readiness
+contract: it must not resolve until event listeners can receive the replay.
+
+The returned disposer removes the capture listeners. A rejected loader removes
+the boundary, invokes `onError` when supplied (or logs to `console.error`), and
+dispatches the copied click so native behavior can continue. Synthetic replay
+preserves mouse/pointer coordinates and modifiers but cannot preserve
+`isTrusted`, transient user activation, or a target hidden by a closed shadow
+root; applications whose first click must reach closed-shadow content or invoke
+an activation-gated browser API use eager hydration instead. Capture listeners
+above the boundary observe the original event before the boundary can stop it
+and then observe the replay; `isInteractionReplay(event)` identifies the second
+event for deduplication. Replay metadata records the exact boundary roots already
+traversed. It therefore bypasses a same-root replacement installed by `onError`,
+so fallback native behavior cannot enter another load loop, while an unvisited
+nested boundary still waits for its own loader before forwarding another replay.
+This policy changes when browser work occurs, not the SSR protocol, so
+performance reports must pair pre-interaction memory with first-interaction
+latency.
+
 `ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 
 - `functionIndex` indexes the component-local `window.__webui.templateFns[tagName]` array.

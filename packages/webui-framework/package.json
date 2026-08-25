@@ -28,6 +28,12 @@
         "types": "./dist/lazy-hydration-entry.d.ts",
         "default": "./dist/lazy-hydration-entry.js"
       }
+    },
+    "./interaction-hydration.js": {
+      "import": {
+        "types": "./dist/interaction-hydration.d.ts",
+        "default": "./dist/interaction-hydration.js"
+      }
     }
   },
   "files": [

@@ -166,6 +166,51 @@ If the optional entry or `IntersectionObserver` is unavailable, hydration falls
 back to eager; `content-visibility` remains browser-managed. See
 [Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
 
+For the fastest request-to-hydrated path, keep the behavior-owning application
+root in the eager entry graph and apply `w-render="lazy"` only to repeated or
+offscreen descendants. This avoids a serial post-paint module request while
+preserving viewport deferral for expensive rows:
+
+```ts
+import '@microsoft/webui-framework/lazy-hydration.js';
+import './app-shell/app-shell.js';
+```
+
+For an SSR page that should load the full component graph only when the user
+first interacts, install the lightweight interaction boundary:
+
+```ts
+import {
+  installInteractionHydration,
+  isInteractionReplay,
+} from
+  '@microsoft/webui-framework/interaction-hydration.js';
+
+installInteractionHydration({
+  root: document.querySelector('my-app')!,
+  load: () => import('./components.js'),
+});
+```
+
+Pointer-down, focus, and keyboard activity starts the import without cancelling
+the user's action. Hover does not load code because a cursor already resting
+over a newly painted page must not move hydration onto the first-paint path. If
+an unmodified primary click arrives before loading finishes, WebUI waits for the
+`load` promise and replays a synthetic copy on the original composed-path
+target. The promise must resolve only after event listeners are ready. Modified
+clicks and clicks already cancelled by an earlier capture listener pass through
+without replay. Synthetic replay cannot preserve transient user activation or
+target a control hidden inside a closed shadow root, so hydrate eagerly when
+the first click must reach closed-shadow content, open a popup, enter
+fullscreen, or call another activation-gated browser API.
+Capture listeners above the boundary observe both the original click and its
+synthetic replay; use `isInteractionReplay(event)` to deduplicate analytics or
+other document-level capture work.
+This is an explicit first-paint and pre-interaction-memory tradeoff: it delays
+full hydration and adds a second module-loading phase. Do not use it as the
+default when request-to-hydrated time matters; use an eager root with lazy
+descendants instead.
+
 ### Build with the WebUI plugin
 
 ```bash
