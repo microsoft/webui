@@ -153,7 +153,7 @@ describe('template registry helpers', () => {
     }
   });
 
-  test('getTemplate lazily loads webui-data and preserves eager runtime metadata', () => {
+  test('getTemplate loads webui-data without componentStyles and preserves eager runtime metadata', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
     const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
     const fn = (): boolean => true;
@@ -175,7 +175,7 @@ describe('template registry helpers', () => {
           getElementById(id: string) {
             if (id !== 'webui-data') return null;
             return {
-              textContent: '{"inventory":"0c","state":{"title":"Hello"},"componentStyles":{"version":1,"strategy":"style","resources":{},"closures":{}},"templates":{"greeting":{"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[[],0]]]}}}',
+              textContent: '{"inventory":"0c","state":{"title":"Hello"},"templates":{"greeting":{"h":"<p></p>","b":[{"h":"<span></span>"}],"c":[[[0,["ready"]],0,[[],0]]]}}}',
               remove() { removed = true; },
             };
           },
@@ -188,6 +188,7 @@ describe('template registry helpers', () => {
       assert.equal((registered.c![0][0][0] as unknown), fn);
       assert.equal(window.__webui!.inventory, '0c');
       assert.deepEqual(window.__webui!.state, { title: 'Hello' });
+      assert.equal(window.__webui!.componentStyles, undefined);
       assert.deepEqual(
         window.__webui!.componentAssetStyles,
         { 'lazy-panel': ['/lazy-panel.css'] },
