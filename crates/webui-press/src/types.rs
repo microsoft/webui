@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use serde::{de::Error as _, Deserialize, Deserializer};
+use serde::Deserialize;
 
 /// Documentation site configuration (read from config.json).
 #[derive(Debug, Deserialize)]
@@ -52,7 +52,6 @@ pub struct RegionConfig {
     pub html_file: Option<String>,
     /// Inline JSON object exposed beneath the region's dotted state path.
     /// Mutually exclusive with `state_file`.
-    #[serde(default, deserialize_with = "deserialize_region_state")]
     pub state: Option<serde_json::Value>,
     /// JSON object path relative to `config.json`. Mutually exclusive with
     /// `state`.
@@ -60,21 +59,6 @@ pub struct RegionConfig {
     /// Optional JavaScript/TypeScript file bundled only on pages where the
     /// region is active.
     pub script_file: Option<String>,
-}
-
-fn deserialize_region_state<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Option<serde_json::Value>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    if value.is_null() {
-        return Err(D::Error::custom(
-            "region state must be a JSON object; omit 'state' when no state is needed",
-        ));
-    }
-    Ok(Some(value))
 }
 
 fn default_out_dir() -> String {
@@ -452,13 +436,5 @@ mod tests {
         assert_eq!(config.html_file.as_deref(), Some("./regions/summary.html"));
         assert_eq!(config.state_file.as_deref(), Some("./state/summary.json"));
         assert_eq!(config.script_file.as_deref(), Some("./regions/summary.ts"));
-    }
-
-    #[test]
-    fn region_config_rejects_explicit_null_state() {
-        let error =
-            serde_json::from_str::<RegionConfig>(r#"{ "html": "<p>x</p>", "state": null }"#)
-                .unwrap_err();
-        assert!(error.to_string().contains("must be a JSON object"));
     }
 }

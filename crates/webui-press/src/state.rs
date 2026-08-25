@@ -61,18 +61,18 @@ const RESERVED_STATE_KEYS: &[&str] = &[
     "icon",
 ];
 
-struct StateLoader {
+pub(crate) struct StateLoader {
     cache: HashMap<PathBuf, Value>,
 }
 
 impl StateLoader {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             cache: HashMap::new(),
         }
     }
 
-    fn load_state_value(
+    pub(crate) fn load_state_value(
         &mut self,
         label: &str,
         inline: Option<&Value>,

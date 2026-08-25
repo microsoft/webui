@@ -107,8 +107,6 @@ docs/                          # contentDir (anything you want)
 │   │       ├── my-widget.html
 │   │       ├── my-widget.css
 │   │       └── my-widget.ts
-│   ├── regions/               # optional compile-time template fragments
-│   │   └── home-after-hero.html
 │   ├── public/                # optional static asset passthrough
 │   └── state/                 # optional state JSON for custom pages
 │       └── playground.json
@@ -263,13 +261,6 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
 
   "stateFile": "./state/site.json",
 
-  "regions": {
-    "home.afterHero": {
-      "htmlFile": "./regions/home-after-hero.html",
-      "stateFile": "./state/home-summary.json"
-    }
-  },
-
   "customPages": {
     "/playground/": {
       "layout": "full",
@@ -346,8 +337,7 @@ custom page state or static JSON assets for large page-specific datasets.
 
 ### Compile-time named regions
 
-Templates can expose stable extension points without requiring consumers to
-fork the full page template:
+Templates expose stable extension points without requiring a full template fork:
 
 ```html
 <webui-press-region
@@ -369,27 +359,17 @@ Sites provide the content in `config.json`:
 }
 ```
 
-`html` and `htmlFile` are mutually exclusive, as are `state` and `stateFile`.
-An optional `scriptFile` is bundled only on pages where the region is active.
-The marker's optional `layout` attribute limits injection to that page layout;
-without it the region is active on every page.
-
-Region state is namespaced by its dotted name. The example above is available
-as `regions.home.afterHero`:
+Use either `html` or `htmlFile`, and either `state` or `stateFile`. An optional
+`scriptFile` is bundled only on active pages. `layout` limits the marker to one
+page layout; omit it for every layout. Dotted names create nested state:
 
 ```html
 <project-summary :data="{{regions.home.afterHero}}"></project-summary>
 ```
 
-Every dotted segment must be non-empty. Two prefix-related regions such as
-`summary` and `summary.details` may both supply HTML, but they cannot both supply
-state because one JSON value cannot safely own both paths.
-
-WebUI Press replaces region markers before component discovery and protocol
-compilation. Injected components therefore participate in SSR, CSS ordering,
-projection, and script bundling exactly like components authored directly in
-the template. Missing region config renders an empty extension point; configured
-names that the template does not declare fail the build.
+Injected components participate normally in SSR, CSS, projection, and bundling.
+An unconfigured marker is empty; a configured but undeclared name fails the
+build. State-bearing dotted names cannot overlap as prefixes.
 
 ### `head` injection
 

@@ -520,7 +520,6 @@ pub fn build_docs_with_cache(
     }
     let not_found_scripts: Vec<ScriptSource> = regions
         .script_files("doc")
-        .into_iter()
         .map(|path| ScriptSource::File(path.to_string()))
         .collect();
     let not_found_bundle_id =
@@ -620,13 +619,12 @@ pub fn build_docs_with_cache(
             .map(|s| s.as_str())
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
 
-        // Resolve site-owned regions before compiling the page so injected
-        // components participate in discovery, SSR, CSS, and hydration.
+        // Protect markdown code blocks before injecting content into the
+        // region-resolved template.
+        let (protected, pre_blocks) = protect_pre_blocks(content);
         let page_html = regions
             .render(page_layout(page))
-            .replace("{{{page.content}}}", content);
-        // Protect all preformatted content after region and page injection.
-        let (page_html, pre_blocks) = protect_pre_blocks(&page_html);
+            .replace("{{{page.content}}}", &protected);
 
         // Per-page temp dir holding only this page's index.html — components
         // come exclusively from `component_sources`, which already includes
@@ -689,9 +687,7 @@ pub fn build_docs_with_cache(
         }
 
         let layout = page_layout(page).to_string();
-        if regions.has_state(&layout) {
-            regions.apply_state(&layout, &mut page.state)?;
-        }
+        regions.apply_state(&layout, &mut page.state)?;
         if let Some(token_file) = token_file.as_ref() {
             inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
         }
@@ -781,10 +777,10 @@ pub fn build_docs_with_cache(
     });
     regions.apply_state("doc", &mut not_found_state)?;
 
+    let (protected_not_found, not_found_pre_blocks) = protect_pre_blocks(&not_found_content);
     let not_found_html = regions
         .render("doc")
-        .replace("{{{page.content}}}", &not_found_content);
-    let (not_found_html, not_found_pre_blocks) = protect_pre_blocks(&not_found_html);
+        .replace("{{{page.content}}}", &protected_not_found);
     let nf_tmp = std::env::temp_dir().join(format!(
         "webui-press-404-{}-{:x}",
         std::process::id(),
@@ -1373,12 +1369,6 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
         let start = cursor + rel_start;
         if let Some(rel_end) = content[start..].find("</pre>") {
             let end = start + rel_end + "</pre>".len();
-            let block = &content[start..end];
-            if pre_block_requires_compilation(block) {
-                out.push_str(&content[cursor..end]);
-                cursor = end;
-                continue;
-            }
             out.push_str(&content[cursor..start]);
             out.push_str(PRE_BLOCK_MARKER_PREFIX);
             // write! into existing buffer — avoids `format!` allocation per block.
@@ -1392,70 +1382,6 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
     }
     out.push_str(&content[cursor..]);
     (out, blocks)
-}
-
-fn pre_block_requires_compilation(block: &str) -> bool {
-    if block.contains("{{") {
-        return true;
-    }
-
-    let mut cursor = 0;
-    while let Some(offset) = block[cursor..].find('<') {
-        let tag_start = cursor + offset + 1;
-        let Some(tag_offset) = block[tag_start..].find('>') else {
-            break;
-        };
-        let tag_end = tag_start + tag_offset;
-        let raw_tag = &block[tag_start..tag_end];
-        if let Some(tag) = parse_html_tag(raw_tag) {
-            if !tag.is_end
-                && (tag.name.contains('-')
-                    || is_webui_directive(tag.name)
-                    || has_compiler_owned_attribute(raw_tag, tag.name.len()))
-            {
-                return true;
-            }
-        }
-        cursor = tag_end + 1;
-    }
-    false
-}
-
-fn is_webui_directive(name: &str) -> bool {
-    name.eq_ignore_ascii_case("if")
-        || name.eq_ignore_ascii_case("for")
-        || name.eq_ignore_ascii_case("outlet")
-        || name.eq_ignore_ascii_case("boundary")
-}
-
-fn has_compiler_owned_attribute(raw_tag: &str, mut cursor: usize) -> bool {
-    let bytes = raw_tag.as_bytes();
-    while cursor < bytes.len() {
-        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
-            cursor += 1;
-        }
-        let start = cursor;
-        while bytes.get(cursor).is_some_and(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'@' | b':' | b'?')
-        }) {
-            cursor += 1;
-        }
-        if start == cursor {
-            cursor += 1;
-            continue;
-        }
-        let attribute = &raw_tag[start..cursor];
-        if attribute
-            .as_bytes()
-            .first()
-            .is_some_and(|byte| matches!(byte, b'@' | b':' | b'?'))
-            || attribute.starts_with("w-")
-            || attribute == "key"
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// Find the next opening `<pre` tag where the next byte is one of `>`, ` `,
@@ -1638,27 +1564,6 @@ mod tests {
         let (protected, blocks) = protect_pre_blocks(input);
         let restored = restore_pre_blocks(&protected, &blocks);
         assert_eq!(restored, input);
-    }
-
-    #[test]
-    fn protect_pre_blocks_keeps_dynamic_blocks_compilable() {
-        let input = "<pre>{{regions.home.panel.message}}</pre>";
-        let (protected, blocks) = protect_pre_blocks(input);
-        assert_eq!(protected, input);
-        assert!(blocks.is_empty());
-    }
-
-    #[test]
-    fn protect_pre_blocks_keeps_events_and_components_compilable() {
-        for input in [
-            r#"<pre @click="{copy()}">Copy</pre>"#,
-            "<pre><example-widget></example-widget></pre>",
-            r#"<pre w-ref="{code}">Code</pre>"#,
-        ] {
-            let (protected, blocks) = protect_pre_blocks(input);
-            assert_eq!(protected, input);
-            assert!(blocks.is_empty());
-        }
     }
 
     #[test]
