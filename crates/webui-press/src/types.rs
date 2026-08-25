@@ -45,13 +45,13 @@ pub struct DocsConfig {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegionConfig {
-    /// Inline HTML fragment. Mutually exclusive with `html_file`.
+    /// Inline HTML fragment. Mutually exclusive with `htmlFile`.
     pub html: Option<String>,
     /// HTML fragment path relative to `config.json`. Mutually exclusive with
     /// `html`.
     pub html_file: Option<String>,
     /// Inline JSON object exposed beneath the region's dotted state path.
-    /// Mutually exclusive with `state_file`.
+    /// Mutually exclusive with `stateFile`.
     pub state: Option<serde_json::Value>,
     /// JSON object path relative to `config.json`. Mutually exclusive with
     /// `state`.

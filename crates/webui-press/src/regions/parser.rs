@@ -81,22 +81,31 @@ fn parse_attributes(raw: &str, self_closing: bool) -> Result<(String, Option<Str
     let mut name = None;
     let mut layout = None;
 
-    for token in remaining.split_ascii_whitespace() {
-        let Some((attribute, quoted)) = token.split_once('=') else {
-            return Err(attribute_error(token, "requires a quoted value"));
+    while !remaining.is_empty() {
+        let name_end = remaining
+            .find(|ch: char| ch.is_ascii_whitespace() || ch == '=')
+            .unwrap_or(remaining.len());
+        if name_end == 0 {
+            return Err(invalid_declaration("attributes are malformed"));
+        }
+        let attribute = &remaining[..name_end];
+        remaining = remaining[name_end..].trim_start();
+        let Some(after_equals) = remaining.strip_prefix('=') else {
+            return Err(attribute_error(attribute, "requires a quoted value"));
         };
-        let value = quoted
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-            .or_else(|| {
-                quoted
-                    .strip_prefix('\'')
-                    .and_then(|value| value.strip_suffix('\''))
-            })
-            .ok_or_else(|| attribute_error(attribute, "requires a quoted value"))?;
+        remaining = after_equals.trim_start();
+        let Some(quote @ ('"' | '\'')) = remaining.chars().next() else {
+            return Err(attribute_error(attribute, "requires a quoted value"));
+        };
+        let value_start = quote.len_utf8();
+        let Some(value_end) = remaining[value_start..].find(quote) else {
+            return Err(attribute_error(attribute, "has an unclosed quoted value"));
+        };
+        let value = &remaining[value_start..value_start + value_end];
         if value.is_empty() {
             return Err(attribute_error(attribute, "requires a non-empty value"));
         }
+        remaining = remaining[value_start + value_end + quote.len_utf8()..].trim_start();
 
         let slot = if attribute.eq_ignore_ascii_case("name") {
             &mut name

@@ -30,7 +30,7 @@ fn temp_dir() -> Result<PathBuf> {
 fn renders_layout_scoped_and_global_regions() -> TestResult {
     let template = concat!(
         "<main>",
-        "<webui-press-region name=\"home.panel\" layout=\"home\"><p>Default</p></webui-press-region>",
+        "<webui-press-region name = \"home.panel\" layout = \"home\"><p>Default</p></webui-press-region>",
         "<webui-press-region name=\"home.default\" layout=\"home\"><h1>After Hero</h1></webui-press-region>",
         "<webui-press-region name=\"shared.footer\" />",
         "<webui-press-region name=\"optional\" />",

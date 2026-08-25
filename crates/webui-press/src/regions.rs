@@ -49,7 +49,9 @@ impl RegionSet {
             if !regions.iter().any(|item| item.name == *name) {
                 return Err(Error::Build(format!(
                     "Region '{name}' is configured but the template does not declare it. \
-                     Add <{REGION_TAG} name=\"{name}\"></{REGION_TAG}> or remove the config entry."
+                     Add <{REGION_TAG} name=\"{name}\" /> or \
+                     <{REGION_TAG} name=\"{name}\">fallback HTML</{REGION_TAG}>, \
+                     or remove the config entry."
                 )));
             }
         }
