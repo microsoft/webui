@@ -98,6 +98,8 @@ Deno.serve({ port: 3000 }, (req) => {
 | `build(options)` | Build templates into a protocol. Returns `{ protocol, cssFiles, componentAssetFiles, metafile?, warnings, stats }` |
 | `new Protocol(protocol, options?)` | Decode and index protocol bytes once and bind the selected plugin |
 | `protocol.render(state, options?)` | Render into a UTF-8 `Buffer` for direct HTTP writes |
+| `protocol.prepareState(state)` | Parse an immutable, process-local native state snapshot once |
+| `protocol.renderPrepared(state, options?)` | Render a prepared snapshot without serializing or parsing it again |
 | `protocol.renderStream(state, onChunk, options?)` | Render with callbacks coalesced around a 16 KiB target before crossing into JavaScript |
 | `protocol.streamResponse(options?)` | Open a [progressive streaming session](#progressive-streaming) that returns one `Buffer` per host call |
 | `protocol.renderPartial(state, entry, requestPath, inventory)` | Produce a complete partial-navigation JSON response |
@@ -153,6 +155,30 @@ synchronous and its return value is ignored. A `false` result from
 `response.write()` cannot pause native rendering or wait for `drain`, so this
 API does not provide transport backpressure. Callback exceptions abort the
 render immediately and propagate to the caller.
+
+### Reusing immutable state
+
+When one state snapshot is rendered more than once, prepare it alongside the
+protocol:
+
+```js
+const cachedState = protocol.prepareState(await loadCatalogState());
+
+const server = createServer((_req, res) => {
+  res.end(protocol.renderPrepared(cachedState));
+});
+```
+
+Preparation performs serialization and native JSON parsing once.
+`renderPrepared()` reuses the immutable native tree and produces the same bytes
+as `render()` for matching options. Later mutations to the source object are not
+visible; create a new prepared state when request data changes.
+
+The opaque handle is process-local and cannot be serialized. It retains the
+native state tree until JavaScript garbage collection releases the handle, so
+this API trades resident native memory for lower repeated-render CPU and
+allocation pressure. Ordinary per-request state should continue to use
+`render()`.
 
 ### BuildOptions
 

@@ -577,6 +577,12 @@ async function main() {
       objectBuffer.equals(expectedBuffer),
       `object and JSON-string render differ at ${contactCount} contacts`,
     );
+    const prepared = protocol.prepareState(stateJson);
+    const preparedBuffer = protocol.renderPrepared(prepared, RENDER_OPTIONS);
+    assert.ok(
+      preparedBuffer.equals(expectedBuffer),
+      `prepared-state render differs at ${contactCount} contacts`,
+    );
     const expected = expectedBuffer.toString("utf8");
     const chunks = [];
     protocol.renderStream(
@@ -595,6 +601,7 @@ async function main() {
       contactCount,
       state,
       stateJson,
+      prepared,
       expected,
       inputBytes: Buffer.byteLength(stateJson),
       outputBytes: expectedBuffer.length,
@@ -620,6 +627,28 @@ async function main() {
       outputBytes: fixture.outputBytes,
     };
 
+    results.push(
+      makeResult(
+        `prepare-state/${fixture.contactCount}`,
+        "total",
+        collectSyncSamples(
+          () => protocol.prepareState(fixture.stateJson),
+          config,
+        ),
+        details,
+      ),
+    );
+    results.push(
+      makeResult(
+        `render/prepared/${fixture.contactCount}`,
+        "total",
+        collectSyncSamples(
+          () => protocol.renderPrepared(fixture.prepared, RENDER_OPTIONS),
+          config,
+        ),
+        details,
+      ),
+    );
     results.push(
       makeResult(
         `render/json-string/${fixture.contactCount}`,

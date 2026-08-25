@@ -156,6 +156,26 @@ response.end(protocol.render({ title: "Hello" }));
 Call `.toString("utf8")` explicitly when JavaScript string operations are
 required.
 
+### `protocol.prepareState(state)` / `protocol.renderPrepared(state, options?)`
+
+Use an immutable prepared state only when the same snapshot will be rendered
+repeatedly, such as a cached page shell or fan-out response:
+
+```js
+const state = protocol.prepareState({ title: "Cached" });
+response.end(protocol.renderPrepared(state));
+```
+
+Preparation performs object serialization and native JSON parsing once.
+`renderPrepared()` reuses the parsed native tree and returns bytes identical to
+`render()` for the same state and options. The opaque handle is process-local,
+cannot be serialized, and does not observe later mutations to the source object.
+
+A prepared state retains its native tree until the handle is garbage-collected.
+This trades resident native memory for avoiding repeated stringify/parse work.
+Prepare a new snapshot whenever request state changes, and continue to use
+`render()` for ordinary per-request state.
+
 ### `protocol.renderStream(state, onChunk, options?): void`
 
 Renders with streaming output. Internal handler writes are coalesced around a

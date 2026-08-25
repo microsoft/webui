@@ -223,6 +223,8 @@ interface NativeAddon {
 
 interface NativeProtocol {
   render(stateJson: string, entry: string, requestPath: string): Buffer;
+  prepareState(stateJson: string): PreparedState;
+  renderPrepared(state: PreparedState, entry: string, requestPath: string): Buffer;
   renderStream(
     stateJson: string,
     entry: string,
@@ -241,6 +243,18 @@ interface NativeProtocol {
   renderPartial(stateJson: string, entryId: string, requestPath: string, inventoryHex: string): string;
   renderComponentTemplates(componentTags: string[], inventoryHex: string): string;
   tokens(): string[];
+}
+
+declare const preparedStateBrand: unique symbol;
+
+/**
+ * An immutable, process-local native state snapshot.
+ *
+ * The snapshot retains its parsed native state until this handle is garbage
+ * collected. Create snapshots only for state that will be rendered repeatedly.
+ */
+export interface PreparedState {
+  readonly [preparedStateBrand]: never;
 }
 
 interface NativeStreamingSession {
@@ -352,6 +366,27 @@ export class Protocol {
     const stateJson = typeof state === "string" ? state : JSON.stringify(state);
     return this.#native.render(
       stateJson,
+      options?.entry ?? "index.html",
+      options?.requestPath ?? "/",
+    );
+  }
+
+  /**
+   * Parse state once for repeated rendering.
+   *
+   * The returned snapshot is immutable and does not observe later mutations to
+   * the source object. Prepare a new snapshot when request state changes.
+   */
+  prepareState(state: object | string): PreparedState {
+    return this.#native.prepareState(
+      typeof state === "string" ? state : JSON.stringify(state),
+    );
+  }
+
+  /** Render a prepared state snapshot without serializing or parsing it again. */
+  renderPrepared(state: PreparedState, options?: RenderOptions): Buffer {
+    return this.#native.renderPrepared(
+      state,
       options?.entry ?? "index.html",
       options?.requestPath ?? "/",
     );

@@ -61,8 +61,10 @@ directly.
 | Case | Boundary included | What it tells you |
 |---|---|---|
 | `protocol/new` | Node `Buffer` -> N-API -> protobuf decode/index | `Protocol` construction after the addon is loaded |
+| `prepare-state/N` | Pre-serialized JSON -> N-API -> JSON parse -> immutable native snapshot | One-time preparation cost for repeated state |
 | `render/json-string/N` | JS string -> N-API -> JSON parse -> Rust render -> external Node `Buffer` | canonical buffered response when state is already serialized |
 | `render/object/N` | `JSON.stringify` plus the JSON-string path | public-package cost for the common object-state API |
+| `render/prepared/N` | Prepared native state -> Rust render -> external Node `Buffer` | repeated render cost without serialization or JSON parsing |
 | `render-stream/...`, `first-callback` | JS string -> N-API -> JSON parse -> render to first 16 KiB -> JS callback | latency until JavaScript receives the first chunk |
 | `render-stream/...`, `total` | the same input path plus all chunks and callbacks | complete streaming callback-path cost |
 
@@ -92,13 +94,23 @@ runner.
 - Warms each operation before collecting samples.
 - Runs garbage collection once before each sample group when Node exposes it;
   GC is not forced between individual operations.
+- Keeps one prepared snapshot per workload live throughout render sampling.
+  Preparation rows allocate fresh snapshots, so their timing includes natural
+  V8 GC pressure after the group-level collection.
 - Collects at least 20 samples per row and targets 750 ms of measurement time.
 - Reports workload sizes/chunk counts plus min, P50, P95, P99, and
   mean-derived ops/s.
-- Verifies object and JSON-string inputs produce byte-identical buffers.
+- Verifies object, JSON-string, and prepared inputs produce byte-identical
+  buffers.
 - Verifies concatenated streaming chunks exactly equal buffered output.
 - Rejects empty protocols, missing chunks, malformed baselines, unsafe baseline
   names, and accidental debug measurements.
+
+Each prepared handle retains a parsed Rust state tree until JavaScript garbage
+collection. The addon reports an approximate external-memory size to V8 so the
+collector can account for that pressure, but this runner does not report native
+allocation counts or RSS. Interpret `render/prepared/N` as the CPU benefit for a
+deliberately retained immutable snapshot, not as a free per-request optimization.
 
 For raw machine-readable output:
 

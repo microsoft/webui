@@ -16,6 +16,7 @@ import {
 import type {
   BoundaryDescriptor,
   ComponentTemplatesResponse,
+  PreparedState,
   StreamStep,
 } from '@microsoft/webui';
 import { existsSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
@@ -234,6 +235,25 @@ describe('render', () => {
       .toString('utf8');
     assert.ok(objectHtml.includes('Hello, Object!'));
     assert.ok(jsonHtml.includes('Hello, JSON!'));
+  });
+
+  test('renders an immutable prepared state repeatedly', () => {
+    const result = build({ appDir });
+    const protocol = new Protocol(result.protocol);
+    const source = { name: 'Prepared', items: ['a', 'b'], show: true };
+    const expected = protocol.render(source);
+    const prepared = protocol.prepareState(source);
+    source.name = 'Mutated';
+    source.items.push('c');
+    source.show = false;
+
+    const first = protocol.renderPrepared(prepared);
+    const second = protocol.renderPrepared(prepared);
+    assert.ok(Buffer.isBuffer(first));
+    assert.deepEqual(first, expected);
+    assert.deepEqual(second, expected);
+    assert.ok(first.toString('utf8').includes('Hello, Prepared!'));
+    assert.throws(() => protocol.renderPrepared({} as PreparedState));
   });
 
   test('owns decoded state independently of source buffer mutations', () => {

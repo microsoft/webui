@@ -29,7 +29,7 @@
 
 use std::sync::Arc;
 
-use napi::bindgen_prelude::{Buffer, Either, Function};
+use napi::bindgen_prelude::{Buffer, Either, External, Function};
 use napi::Error as NapiError;
 use napi_derive::napi;
 use serde_json::Value;
@@ -282,9 +282,32 @@ impl Protocol {
     ) -> napi::Result<Buffer> {
         let state = parse_state_json(&state_json)?;
         let options = RenderOptions::new(&entry, &request_path);
-        let html = render_to_string(&self.handler, &self.inner, &state, &options)?;
-        // napi-rs can expose the existing Vec as an external Buffer on Node.
-        Ok(Buffer::from(html.into_bytes()))
+        self.render_buffer(&state, &options)
+    }
+
+    /// Parse and retain an immutable, process-local state snapshot.
+    ///
+    /// The returned N-API external owns the parsed state until its JavaScript
+    /// handle is garbage-collected.
+    #[napi]
+    pub fn prepare_state(&self, state_json: String) -> napi::Result<External<Value>> {
+        let size_hint = state_json.len().saturating_mul(2);
+        Ok(External::new_with_size_hint(
+            parse_state_json(&state_json)?,
+            size_hint,
+        ))
+    }
+
+    /// Render an immutable state snapshot prepared by this process.
+    #[napi]
+    pub fn render_prepared(
+        &self,
+        state: &External<Value>,
+        entry: String,
+        request_path: String,
+    ) -> napi::Result<Buffer> {
+        let options = RenderOptions::new(&entry, &request_path);
+        self.render_buffer(state.as_ref(), &options)
     }
 
     /// Stream an existing JSON string in bounded chunks.
@@ -363,6 +386,14 @@ impl Protocol {
         )
         .map_err(streaming_error)?;
         Ok(StreamingSession { inner })
+    }
+}
+
+impl Protocol {
+    fn render_buffer(&self, state: &Value, options: &RenderOptions<'_>) -> napi::Result<Buffer> {
+        let html = render_to_string(&self.handler, &self.inner, state, options)?;
+        // napi-rs can expose the existing Vec as an external Buffer on Node.
+        Ok(Buffer::from(html.into_bytes()))
     }
 }
 

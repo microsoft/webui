@@ -5009,7 +5009,13 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
   accept protocol bytes on every call
 - `Protocol.render()` returns the rendered UTF-8 bytes as the canonical Node
   `Buffer` result; callers explicitly decode it when they need a JavaScript
-  string; `Protocol.renderStream()` batches callbacks with a 16 KiB target
+  string
+- `Protocol.prepareState()` creates an immutable, process-local native state
+  snapshot for repeated renders, and `Protocol.renderPrepared()` renders that
+  snapshot without another stringify/parse cycle; snapshots never observe later
+  source object mutations, retain their native state tree until JavaScript
+  garbage collection, and must be recreated when request state changes
+- `Protocol.renderStream()` batches callbacks with a 16 KiB target
   instead of crossing into JavaScript for every internal handler fragment;
   callbacks are synchronous, arbitrary return values are ignored, and thrown
   errors abort rendering immediately; the API cannot await Node transport
