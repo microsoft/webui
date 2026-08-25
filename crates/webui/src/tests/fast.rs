@@ -31,8 +31,14 @@ fn build_discovers_fast_npm_package_layout() {
     let app = project.path().join("src");
     let package = project.path().join("node_modules").join("custom");
     fs::create_dir_all(package.join("components/button")).unwrap();
+    fs::create_dir_all(package.join("components/item")).unwrap();
+    fs::create_dir_all(package.join("components/textarea")).unwrap();
     fs::create_dir_all(&app).unwrap();
-    fs::write(app.join("index.html"), "<custom-button></custom-button>").unwrap();
+    fs::write(
+        app.join("index.html"),
+        "<custom-button></custom-button><custom-item></custom-item><custom-textarea></custom-textarea>",
+    )
+    .unwrap();
     fs::write(
         package.join("package.json"),
         r#"{
@@ -54,6 +60,22 @@ fn build_discovers_fast_npm_package_layout() {
                     "name": "Button",
                     "tagName": "custom-button"
                 }]
+            }, {
+                "kind": "javascript-module",
+                "path": "components/special-item/special-item.js",
+                "declarations": [{
+                    "kind": "class",
+                    "name": "SpecialItem",
+                    "tagName": "custom-special-item"
+                }]
+            }, {
+                "kind": "javascript-module",
+                "path": "components/text-area/text-area.js",
+                "declarations": [{
+                    "kind": "class",
+                    "name": "TextArea",
+                    "tagName": "custom-text-area"
+                }]
             }]
         }"#,
     )
@@ -68,6 +90,16 @@ fn build_discovers_fast_npm_package_layout() {
         "button { color: blue; }",
     )
     .unwrap();
+    fs::write(
+        package.join("components/item/item.template.html"),
+        r#"<f-template name="custom-item"><template><span>{{value}}</span></template></f-template>"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("components/textarea/textarea.template.html"),
+        r#"<f-template name="custom-textarea"><template><textarea>{{value}}</textarea></template></f-template>"#,
+    )
+    .unwrap();
 
     let mut options = default_options(&app);
     options.plugin = Some(Plugin::FastV3);
@@ -80,6 +112,12 @@ fn build_discovers_fast_npm_package_layout() {
     assert!(component
         .template
         .contains("<style>button { color: blue; }</style>"));
+    assert!(result.protocol.components["custom-item"]
+        .template
+        .contains("<span>{{value}}</span>"));
+    assert!(result.protocol.components["custom-textarea"]
+        .template
+        .contains("<textarea>{{value}}</textarea>"));
 }
 
 #[test]

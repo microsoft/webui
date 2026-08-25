@@ -1899,11 +1899,16 @@ clobbering one another.
 `./template-webui.html`, optionally `./styles.css`, with tag names supplied by
 `customElements`. `FastDiscoveryPlugin` also admits local
 `<component>.template.html` files. For npm packages, it reads CEM module
-declarations and maps each declaration to a sibling
-`<component>.template.html`; it associates `<component>.styles.css` or
-`<component>.css` when present. The parser plugin subsequently resolves the
-final registry key from the authored `<f-template name>`. FAST 2 and FAST 3
-share this discovery layout and retain separate parser and handler behavior.
+declarations and first maps each declaration to a sibling
+`<component>.template.html`. If the declared module is virtual (the package
+does not contain that JavaScript path), discovery also checks component-root
+directories derived from the class name: kebab-case, compact lowercase, then
+the terminal class noun. Candidate priority is deterministic and every
+candidate participates in cache invalidation. Discovery associates
+`<component>.styles.css` or `<component>.css` when present. The parser plugin
+subsequently resolves the final registry key from the authored
+`<f-template name>`. FAST 2 and FAST 3 share this discovery layout and retain
+separate parser and handler behavior.
 
 `discover_source` remains the WebUI-native convenience API.
 `discover_source_with_plugin` selects another layout. Cache keys include the

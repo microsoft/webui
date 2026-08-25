@@ -156,11 +156,15 @@ ignored, exactly as any non-custom-element filename is.
 
 FAST npm packages use their Custom Elements Manifest as the component index.
 For each `modules[].declarations[]` entry with a `tagName`, discovery maps the
-module to a sibling `<component>.template.html` file. Optional styles may use
-`<component>.styles.css` or `<component>.css`. The package still enters the
-same WebUI registration pipeline, so names, duplicates, CSS, render policy, and
-runtime component output follow the same rules as native components. FAST 2 and
-FAST 3 share this package layout.
+module to a sibling `<component>.template.html` file. Generated packages may
+use a virtual CEM module path; when that JavaScript path is absent, discovery
+also checks component directories derived from the declaration class name,
+including compact names such as `textarea` and the terminal class noun.
+Optional styles may use `<component>.styles.css` or `<component>.css`. The
+package still enters the same WebUI registration pipeline, so the authored
+`<f-template name>` determines the final component name and names, duplicates,
+CSS, render policy, and runtime output follow the same rules as native
+components. FAST 2 and FAST 3 share this package layout.
 
 The wrapper accepts only `name` and declarative-shadow-root options — attributes
 beginning with `shadowroot` such as `shadowrootmode` and

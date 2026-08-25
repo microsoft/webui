@@ -13,6 +13,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+// Module + five templates + two style candidates per template.
+const FAST_CACHE_FILES_PER_COMPONENT: usize = 16;
+
 /// Maps a resolved local or npm package layout to WebUI component registrations.
 pub trait DiscoveryPlugin {
     /// Stable cache namespace for this discovery layout.
@@ -141,7 +144,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 
     fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
         let declarations = package_component_declarations(package)?;
-        let mut files = Vec::with_capacity(1 + declarations.len() * 4);
+        let mut files = Vec::with_capacity(1 + declarations.len() * FAST_CACHE_FILES_PER_COMPONENT);
         files.push(crate::npm::custom_elements_manifest_path(package)?);
         for declaration in declarations {
             let module_path = declaration.module_path.as_deref().with_context(|| {
@@ -150,6 +153,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                     declaration.tag_name, package.name
                 )
             })?;
+            files.push(package.root.join(module_path));
             let declaration_name = declaration.name.as_deref().unwrap_or(&declaration.tag_name);
             for candidate in fast_template_candidates(package.root, module_path, declaration_name) {
                 files.push(candidate.clone());
@@ -283,14 +287,37 @@ fn fast_template_candidates(
     let parent = module.parent().unwrap_or(root);
     let module_stem = module.file_stem().and_then(|stem| stem.to_str());
     let declaration_stem = to_kebab_case(declaration_name);
-    let mut candidates = Vec::with_capacity(2);
+    let mut candidates = Vec::with_capacity(5);
     for stem in module_stem
         .into_iter()
         .chain(std::iter::once(declaration_stem.as_str()))
     {
-        candidates.push(parent.join(format!("{stem}.template.html")));
+        push_template_candidate(&mut candidates, parent, stem);
+    }
+
+    // Some generated manifests expose a virtual public module path while the
+    // package stores the implementation under a compact or base class noun.
+    if !module.is_file() {
+        let component_root = parent.parent().unwrap_or(root);
+        push_nested_template_candidate(&mut candidates, component_root, declaration_stem.as_str());
+        let compact_stem = declaration_stem.replace('-', "");
+        push_nested_template_candidate(&mut candidates, component_root, &compact_stem);
+        if let Some((_, suffix)) = declaration_stem.rsplit_once('-') {
+            push_nested_template_candidate(&mut candidates, component_root, suffix);
+        }
     }
     candidates
+}
+
+fn push_template_candidate(candidates: &mut Vec<PathBuf>, parent: &Path, stem: &str) {
+    let candidate = parent.join(format!("{stem}.template.html"));
+    if !candidates.contains(&candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn push_nested_template_candidate(candidates: &mut Vec<PathBuf>, root: &Path, stem: &str) {
+    push_template_candidate(candidates, &root.join(stem), stem);
 }
 
 fn resolve_fast_template(

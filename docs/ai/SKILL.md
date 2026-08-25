@@ -1317,10 +1317,13 @@ verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
 registering under the authored `name`. In npm packages, the FAST discovery
 plugin reads `customElements` declarations and maps each declaration's module
-to a sibling `<component>.template.html`; optional styles use
-`<component>.styles.css` or `<component>.css`. All discovered sources still
-pass through WebUI's shared name, duplicate, CSS, and runtime registration
-rules. Wrapper shadow options (`shadowrootmode`,
+to a sibling `<component>.template.html`. For a virtual CEM module path,
+discovery also checks class-derived component directories (kebab-case, compact
+lowercase, and the terminal class noun); optional styles use
+`<component>.styles.css` or `<component>.css`. The authored
+`<f-template name>` remains the final component name, and all discovered
+sources pass through WebUI's shared name, duplicate, CSS, and runtime
+registration rules. Wrapper shadow options (`shadowrootmode`,
 `shadowrootdelegatesfocus`) move onto the inner `<template>` for the Shadow-DOM
 SSR declarative shadow root and back onto the client `<f-template>` wrapper; the
 harness's `{{styles}}` placeholder is removed (the CSS strategy injects real
