@@ -254,13 +254,6 @@ WebUI dispatches these events on `window`:
   barrier remains pending. It means the complete response lifecycle is done,
   not merely that the first interactive child is ready.
 
-For a non-routed ordinary response, `window.__webui.state` is a one-shot
-projected handoff rather than a retained client store. Eager roots consume it
-during hydration, visibility-deferred roots copy the keys they own before
-sleeping, and the framework releases the global state when the startup
-`webui:hydration-complete` cohort settles. When a route chain exists, the state
-remains available for router-owned lazy startup.
-
 ### Measuring commits in production
 
 Events require a listener installed before the first commit, which is often
