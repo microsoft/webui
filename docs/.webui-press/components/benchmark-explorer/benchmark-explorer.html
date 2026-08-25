@@ -1,0 +1,69 @@
+<section class="benchmark-showcase" aria-labelledby="benchmark-title">
+  <div class="benchmark-showcase-header">
+    <div>
+      <h2 id="benchmark-title">{{data.title}}</h2>
+      <p>{{data.description}}</p>
+    </div>
+    <p class="benchmark-methodology">{{data.methodology}}</p>
+  </div>
+
+  <div class="benchmark-toolbar">
+    <div class="benchmark-metrics" role="group" aria-label="Rank benchmarks by">
+      <for each="metric in data.metrics">
+        <button
+          type="button"
+          class="benchmark-metric"
+          data-metric="{{metric.id}}"
+          ?data-selected="{{metric.selected}}"
+          ?disabled="{{!metric.available}}"
+          aria-pressed="{{metric.selected}}"
+          @click="{selectMetric(e)}"
+        >
+          <span>{{metric.label}}</span>
+          <small>{{metric.directionLabel}}</small>
+        </button>
+      </for>
+    </div>
+    <div class="benchmark-reading">
+      <strong>{{data.selectedMetricLabel}}</strong>
+      <span>{{data.selectedMetricDescription}}</span>
+    </div>
+  </div>
+
+  <p class="benchmark-summary" aria-live="polite">{{data.metricSummary}}</p>
+
+  <div class="benchmark-bars" role="list" aria-label="{{data.selectedMetricLabel}} ranking">
+    <for each="row in data.rows">
+      <div
+        class="benchmark-row"
+        role="listitem"
+        aria-label="{{row.rank}}. {{row.label}}, {{row.activeDetail}}: {{row.activeValueDisplay}} {{row.activeUnit}}"
+      >
+        <span class="benchmark-rank" aria-hidden="true">{{row.rank}}</span>
+        <span class="benchmark-label">
+          <span>{{row.label}}</span>
+          <small>{{row.activeDetail}}</small>
+        </span>
+        <span class="benchmark-track" aria-hidden="true">
+          <if condition="row.activeAvailable">
+            <if condition="row.primary">
+              <span class="benchmark-bar benchmark-bar-primary" style="width: {{row.activeWidth}}"></span>
+            </if>
+            <if condition="!row.primary">
+              <span class="benchmark-bar" style="width: {{row.activeWidth}}"></span>
+            </if>
+          </if>
+        </span>
+        <span class="benchmark-value">{{row.activeValueDisplay}} {{row.activeUnit}}</span>
+      </div>
+    </for>
+  </div>
+
+  <if condition="data.hasUnavailable">
+    <p class="benchmark-unavailable">
+      Unavailable measurements remain visible at the end of the ranking and are never treated as zero.
+    </p>
+  </if>
+
+  <a class="benchmark-link" href="{{data.link}}">Performance guidance and benchmark source →</a>
+</section>

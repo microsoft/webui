@@ -3,7 +3,6 @@ members = [
     "crates/*",
     "xtask",
     "examples/integration/rust",
-    "examples/integration/ssr-performance-showdown",
     "examples/integration/streaming-browser-bench/server",
     "examples/app/commerce/server",
     "examples/demo/server",

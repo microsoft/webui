@@ -26,6 +26,12 @@
   "components": [
     "./.webui-press/components"
   ],
+  "regions": {
+    "home.afterHero": {
+      "htmlFile": "./regions/home-after-hero.html",
+      "stateFile": "./state/benchmark-summary.json"
+    }
+  },
   "css": "./.webui-press/theme.css",
   "nav": [
     {

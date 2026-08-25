@@ -3,6 +3,18 @@
 Component rendering and hydration policies are build-time attributes on the
 root `<template>` in a component HTML file.
 
+This page is the canonical reference for policy syntax and combinations.
+[Hydration](/guide/concepts/hydration) explains lifecycle behavior, while
+[Performance](/guide/concepts/performance) explains when deferral is worthwhile.
+
+| Policy | Rendering before activation | Hydration trigger | Recommended use |
+|---|---|---|---|
+| No directive | Normal | Eager when the definition loads | Visible, first-use-critical UI |
+| `w-hydrate="lazy"` | Normal | Viewport relevance | Offscreen UI where rendering containment is unsafe |
+| `w-render="lazy"` + reservation | Offscreen layout/paint skipped | Viewport relevance | Repeated or numerous offscreen components |
+| `w-hydrate="interaction"` | Normal | Pointer, focus, keyboard, or click intent | One optional visible shell or island |
+| `w-render="lazy"` + reservation + `w-hydrate="interaction"` | Offscreen layout/paint skipped | Interaction intent | One optional offscreen singleton |
+
 ## Full Work Reduction
 
 ```html

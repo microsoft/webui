@@ -63,101 +63,27 @@ Components using `@event` must be authored because the compiler needs a real
 handler implementation. Do not add an empty class merely to make template
 bindings or routing work.
 
-## Lazy Hydration
+## Deferred Hydration Lifecycle
 
-For long feeds and grids, the recommended policy reduces all browser work that
-can be deferred without removing the SSR DOM:
+Deferred policies keep the trusted SSR subtree in the DOM. They change when
+browser rendering work and component bindings/listeners activate; they do not
+defer HTML parsing, DOM construction, custom-element definition, or resource
+discovery.
 
-```html
-<!-- activity-row.html -->
-<template
-  w-render="lazy"
-  w-reserve-block-size="72px"
->
-  <button @click="{open()}">{{label}}</button>
-</template>
-```
+- Visibility policies activate within the viewport lead or immediately before
+  interaction. Chromium uses native content-relevance events when available;
+  other browsers use the shared `IntersectionObserver`.
+- Interaction policy waits for pointer, focus, keyboard, or click intent and can
+  keep the component module graph out of startup JavaScript and heap.
+- Client-created components, successfully hydrated reconnects, and eager
+  instance overrides mount eagerly.
+- `hydratedCallback()` is the cross-policy signal for work that requires
+  bindings or `w-ref` values.
+- Missing optional coordinator/browser support falls back to eager hydration.
 
-`w-render="lazy"` does two things:
-
-1. It hydrates SSR instances only when the browser considers them relevant,
-   within the 200px viewport lead, or immediately before interaction.
-2. It emits `content-visibility: auto` and
-   `contain-intrinsic-block-size: auto 72px` for the component tag in a
-   document-level `<style>` before first layout, plus a tag-qualified component
-   rule for Shadow DOM instances. A Light component nested inside an authored
-   shadow root receives the rule through its precomputed style closure, which
-   delivers the stylesheet into that root under every CSS strategy.
-
-The required reservation should approximate one instance's rendered block size.
-It preserves scroll geometry while the browser skips offscreen style, layout,
-paint, and raster work, then lets `auto` remember the measured size after the
-instance renders. Accepted values are single non-negative CSS lengths such as
-`72px`, `18rem`, `40dvh`, or `25cqb`; percentages, `auto`, negative values, and
-functions such as `calc()` are rejected at build time.
-
-The policy wrapper is build-only. WebUI removes its policy attributes. A
-component that authors `<template shadowrootmode="open">` keeps that wrapper as
-its declarative shadow root; every other component is Light, so the wrapper is
-unwrapped.
-
-Import the optional entry once before registering policy-bearing components:
-
-```typescript
-import '@microsoft/webui-framework/lazy-hydration.js';
-import './activity-row.js';
-```
-
-If rendering containment is not safe for a component, defer only hydration:
-
-```html
-<template w-hydrate="lazy">
-  <button @click="{open()}">{{label}}</button>
-</template>
-```
-
-WebUI keeps the SSR content visible and hydrates each instance within 200px of
-the viewport or immediately on interaction. For the complete policy, Chromium's
-`contentvisibilityautostatechange` relevance event becomes the primary signal
-after the target reports a native state. The shared `IntersectionObserver`
-remains a fallback when definition happens after the initial native event; other
-browsers use it throughout. Client-created components remain eager. After a
-successful mount, reconnect also stays eager and preserves current client state
-rather than replaying SSR bootstrap state. Captured pointer hover activates a
-pending component before its first `@mouseenter` handler.
-
-Keep one priority instance's hydration eager while retaining rendering deferral:
-
-```html
-<activity-row w-hydrate="eager"></activity-row>
-```
-
-Disable both parts of the complete policy for one instance:
-
-```html
-<activity-row w-render="eager"></activity-row>
-```
-
-Use `hydratedCallback()` for setup that requires bindings or refs. If the
-optional entry or `IntersectionObserver` is unavailable, WebUI falls back to
-eager hydration. The rendering policy remains browser-managed. Keep the default
-eager mode for small, fully visible groups.
-
-Choose the policy by the work that can safely wait:
-
-| UI shape | Policy | Startup tradeoff |
-|---|---|---|
-| Visible and commonly interactive | Eager default | Lowest first-use latency |
-| Repeated or offscreen | `w-render="lazy"` | JS loads now; hydration and browser rendering wait for relevance |
-| Visible SSR shell that may never be used | `w-hydrate="interaction"` | JS and heap wait; first use pays a cold wake |
-| One offscreen SSR island that may never be used | Both rendering and interaction policies | Browser rendering, JS, and heap wait; first use pays a cold wake |
-
-The SSR subtree remains in the DOM and available to find-in-page and
-accessibility tooling. The browser can make skipped content relevant for those
-features and WebUI hydrates when the native relevance event fires. This policy
-does not defer HTML parsing, DOM construction, custom-element definition, or
-resource discovery. Use server streaming, pagination, virtualization, and native
-resource hints when those costs dominate.
+See the [Lazy Component Policy](/guide/concepts/directives/lazy) reference for
+the complete policy matrix, required reservation syntax, combinations, and
+per-instance overrides.
 
 ## Interaction-Triggered Application Hydration
 
@@ -213,24 +139,11 @@ measure both. Prefer an eager root with `w-render="lazy"` descendants when
 request-to-hydrated time matters. Synthetic replay cannot preserve transient
 user activation or target closed-shadow controls; hydrate those paths eagerly.
 
-For one offscreen interaction boundary, retain browser rendering deferral too:
-
-```html
-<template
-  w-render="lazy"
-  w-reserve-block-size="18rem"
-  w-hydrate="interaction"
->
-  <button @click="{open()}">Open</button>
-</template>
-```
-
-The rendering rule is emitted before first layout, while component JavaScript
-still waits for interaction. Once loaded, the boundary hydrates eagerly before
-replay rather than entering the visibility queue. This combination is for one
-singleton boundary, not repeated list items. A visible application root should
-use plain interaction hydration because `content-visibility` cannot skip a
-visible root.
+For one offscreen singleton, interaction hydration can be combined with lazy
+rendering. The boundary hydrates immediately after its module loads rather than
+entering the visibility queue. See
+[Lazy Rendering Until Interaction](/guide/concepts/directives/lazy#lazy-rendering-until-interaction)
+for syntax and usage constraints.
 
 Non-router apps can instead use the lower-level
 `installInteractionHydration({ load })` entry. Its `load()` promise must mean all

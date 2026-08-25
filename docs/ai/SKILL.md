@@ -646,8 +646,42 @@ export class MyComponent extends WebUIElement {
 MyComponent.define('my-component');
 ```
 
-For a component with many initially offscreen SSR instances, put the complete
-policy on its root template:
+### Choose the render and hydration policy
+
+Rendering and hydration are separate decisions:
+
+- **Rendering** is browser layout/paint work for the server-rendered DOM.
+- **Hydration** is loading JavaScript and attaching bindings/listeners.
+
+Agents must use this table instead of treating every form of "lazy" as the same
+behavior:
+
+| Root template policy | Rendering before activation | Hydration trigger | Use for |
+|---|---|---|---|
+| No directive | Normal | Eager, when the definition loads | Visible interactive roots and first-use-critical UI |
+| `w-hydrate="lazy"` | Normal | Viewport relevance | Offscreen UI where `content-visibility` containment is unsafe |
+| `w-render="lazy"` + required `w-reserve-block-size` | `content-visibility: auto` skips offscreen layout/paint | Viewport relevance | Repeated or numerous offscreen components; preferred lazy-row policy |
+| `w-hydrate="interaction"` | Normal | Pointer, focus, keyboard, or click intent | One visible app shell/island when startup JS/heap matters more than first-use latency |
+| `w-render="lazy"` + reservation + `w-hydrate="interaction"` | `content-visibility: auto` skips offscreen layout/paint | Interaction intent | One offscreen singleton that should defer both rendering work and JavaScript |
+
+#### Agent decision rules
+
+1. **Default to eager hydration for the visible interactive root.** Put lazy
+   policies on offscreen descendants when request-to-interactive time matters.
+2. **For repeated rows/cards, use `w-render="lazy"` with a realistic
+   `w-reserve-block-size`.** Do not use interaction hydration for repeated items.
+3. **Use `w-hydrate="lazy"` only when hydration should wait for the viewport but
+   rendering containment could break layout or styling.**
+4. **Use `w-hydrate="interaction"` only for a singleton shell/island.** It saves
+   startup JavaScript and heap but adds first-interaction module-loading latency.
+5. **For one offscreen singleton that needs both savings, combine
+   `w-render="lazy"` with `w-hydrate="interaction"`.**
+6. **Never combine `w-render="lazy"` with `w-hydrate="lazy"`.**
+   `w-render="lazy"` already includes viewport-deferred hydration.
+7. **Never author `w-render="lazy"` without `w-reserve-block-size`.** The
+   reservation should approximate one instance's normal block size.
+
+For a component with many initially offscreen SSR instances:
 
 ```html
 <template w-render="lazy" w-reserve-block-size="72px">
@@ -655,13 +689,8 @@ policy on its root template:
 </template>
 ```
 
-This combines visibility-deferred hydration with `content-visibility: auto`.
-The reservation is required and should approximate one instance's normal block
-size. Use `<template w-hydrate="lazy">` only when hydration should defer but
-rendering containment is unsafe.
-
-For one offscreen SSR island whose module graph should remain unloaded until
-use, explicitly override the hydration trigger:
+For one offscreen SSR singleton whose module graph should remain unloaded until
+use:
 
 ```html
 <template
@@ -673,11 +702,8 @@ use, explicitly override the hydration trigger:
 </template>
 ```
 
-This keeps `content-visibility` active while interaction defers JavaScript and
+This keeps rendering containment active while interaction defers JavaScript and
 heap. It is a singleton interaction boundary, not a repeated-item policy.
-Visible app shells should use `w-hydrate="interaction"` and put
-`w-render="lazy"` on offscreen descendant component types. Never combine
-`w-render="lazy"` with `w-hydrate="lazy"` because it is redundant.
 
 Import the optional coordinator once before component definitions:
 
@@ -1382,6 +1408,11 @@ const protocol = new Protocol(result.protocol, { plugin: 'webui' });
 const html = protocol.render(state, { entry: 'index.html', requestPath: req.url });
 ```
 
+For repeated renders of one immutable Node state snapshot, call
+`protocol.prepareState(state)` once and pass the result to
+`protocol.renderPrepared(prepared, options)`. Prepare a new snapshot when state
+changes.
+
 For Rust progressive hydration, create a `StreamingResponse` over a
 `FlushWriter`. Keep one bounded worker as the response owner, cap admitted
 renders before spawning it, and configure the transport's flush timeout.
@@ -1438,12 +1469,14 @@ Full detail: [Integrations](/guide/integrations/).
 | Topic | Page |
 |---|---|
 | Directives (`if`, `for`, attributes, `route`) | [/guide/concepts/directives/](/guide/concepts/directives/) |
-| Component authoring and hydration | [/guide/concepts/interactivity](/guide/concepts/interactivity) |
+| Component authoring and interactivity | [/guide/concepts/interactivity](/guide/concepts/interactivity) |
+| Lazy/interaction policy syntax and combinations | [/guide/concepts/directives/lazy](/guide/concepts/directives/lazy) |
+| Hydration lifecycle, projection, and streaming | [/guide/concepts/hydration](/guide/concepts/hydration) |
 | Best practices and React-habit pitfalls | [/guide/concepts/best-practices](/guide/concepts/best-practices) |
+| Performance strategy and measurement | [/guide/concepts/performance](/guide/concepts/performance) |
 | Routing, loaders, actions, caching | [/guide/concepts/routing](/guide/concepts/routing) |
 | Design tokens and theming | [/guide/concepts/css-tokens](/guide/concepts/css-tokens) |
 | CLI flags, diagnostics, exit codes | [/guide/cli/](/guide/cli/) |
 | WebUI Press named regions | [/guide/webui-press](/guide/webui-press) |
 | Rust, Node, Python, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
-| Performance characteristics | [/guide/concepts/performance](/guide/concepts/performance) |
 | Build a first app | [/tutorials/hello-world/](/tutorials/hello-world/) |

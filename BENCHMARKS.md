@@ -8,6 +8,11 @@ change and compares.
 This document is the reference for what to run, when to run it, and
 how to compare results.
 
+Production cross-framework measurements live in the standalone
+[microsoft/webui-benchmarks](https://github.com/microsoft/webui-benchmarks)
+repository. This document covers the implementation benchmarks maintained with
+WebUI itself.
+
 ## Quick reference
 
 | Bench | Layer | Wall time | What it measures | Use when |
@@ -24,8 +29,8 @@ how to compare results.
 
 ## The before/after workflow
 
-All benches support **named baselines**. The flag pattern is
-identical across criterion, example, and Playwright benches:
+Criterion, example, and Playwright benches support **named before/after
+baselines**:
 
 ```bash
 # 1. Snapshot current numbers as 'before'
@@ -44,8 +49,7 @@ Baselines are stored at `target/bench-baselines/`:
 * `browser-<name>.json`             — browser metrics table
 * `browser-lazy-hydration-<name>.json` — offscreen rendering/hydration matrix
 * `node-addon-<name>.json`          — Node/V8/N-API latency table
-* `target/criterion/<bench>/<name>` — criterion's native baseline
-                                       directory tree
+* `target/criterion/<bench>/<name>`   — criterion's native baseline directory tree
 
 The compare phase prints a Δ%-table for every row. Negative Δ% =
 improvement; positive = regression.
@@ -71,12 +75,30 @@ cargo xtask bench all --save-baseline before
 The target list lives in `CRITERION_BENCHES` in `xtask/src/main.rs`. Add new
 `benches/*.rs` harnesses there so `bench all` and its baselines pick them up.
 
+### Updating the homepage benchmark snapshot
+
+The docs homepage consumes only
+`docs/.webui-press/state/benchmark-summary.json`. After a complete official run
+in the benchmark repository, export the validated compact DTO:
+
+```bash
+pnpm run export:summary -- \
+  --input results/ssr-todo-<official-name>.json \
+  --output results/benchmark-summary.json
+```
+
+The exporter rejects quick, incomplete, or noncanonical matrices. Copy only its
+generated `results/benchmark-summary.json` to
+`docs/.webui-press/state/benchmark-summary.json`. Keep full raw captures and
+machine evidence in `webui-benchmarks` or its CI artifacts; do not copy them
+into the WebUI documentation tree.
+
 ### Threshold guidance
 
 | Source | Treat as noise | Treat as signal |
 |---|---|---|
 | criterion (well-isolated wall-clock) | < ±2% | > ±5% |
-| streaming-resource (alloc count) | exact — any change matters | any non-zero |
+| streaming-resource (alloc count) | exact; any change matters | any non-zero |
 | streaming-resource (bytes, CPU) | < ±2% | > ±5% |
 | streaming-e2e-ttfb (loopback) | < ±10% | > ±20% |
 | streaming-browser (real Chromium) | < ±5% | > ±15% |
@@ -95,10 +117,10 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
   fused-streaming, and async-resumable split-path comparisons
 * `crates/webui-expressions/benches/expressions_bench.rs`
 * `crates/webui-state/benches/state_bench.rs`
-* `crates/webui/benches/contact_book_bench.rs` — end-to-end render
-* `crates/webui/benches/streaming_bench.rs` — writer-path wall-clock + TTFB
-* `crates/webui/benches/component_assets_bench.rs` — static asset graph rendering
-* `crates/webui/benches/server_request_bench.rs` — router-aware full HTML and JSON requests
+* `crates/webui/benches/contact_book_bench.rs`: end-to-end render
+* `crates/webui/benches/streaming_bench.rs`: writer-path wall-clock + TTFB
+* `crates/webui/benches/component_assets_bench.rs`: static asset graph rendering
+* `crates/webui/benches/server_request_bench.rs`: router-aware full HTML and JSON requests
 
 These integrate with criterion's HTML reports
 (`target/criterion/report/index.html`) and native baseline support
@@ -116,11 +138,11 @@ run a clean process where every `alloc` we observe came from the code
 under test (or its dependencies).
 
 Reports per (path × scale):
-- **allocs/run** — exact count from the custom allocator
-- **bytes/run** — exact bytes requested from the allocator
-- **wall µs/run** — `Instant::elapsed()` per iteration
-- **user µs/run** — `getrusage(RUSAGE_SELF).ru_utime` delta
-- **process RSS** — `ru_maxrss` high-water mark
+- **allocs/run:** exact count from the custom allocator
+- **bytes/run:** exact bytes requested from the allocator
+- **wall µs/run:** `Instant::elapsed()` per iteration
+- **user µs/run:** `getrusage(RUSAGE_SELF).ru_utime` delta
+- **process RSS:** `ru_maxrss` high-water mark
 
 This is the **only** bench in the suite that gives you exact
 allocation numbers. Use it to verify "zero per-write allocation"
@@ -145,11 +167,11 @@ with its own actix server and a Playwright spec that drives Chromium
 through `PerformanceObserver`. Reports the **only** browser-perceived
 metrics in the suite:
 
-- **TTFB** — `responseStart - requestStart` from `PerformanceNavigationTiming`
-- **FCP** — first-contentful-paint from `PerformanceObserver`
-- **LCP** — largest-contentful-paint from `PerformanceObserver`
-- **DCL** — `domContentLoadedEventEnd - startTime`
-- **load** — `loadEventEnd - startTime`
+- **TTFB:** `responseStart - requestStart` from `PerformanceNavigationTiming`
+- **FCP:** first-contentful-paint from `PerformanceObserver`
+- **LCP:** largest-contentful-paint from `PerformanceObserver`
+- **DCL:** `domContentLoadedEventEnd - startTime`
+- **load:** `loadEventEnd - startTime`
 
 This is the bench that answers "does streaming actually help users
 see the page faster?" The HTTP-level benches prove the bytes get to
@@ -167,14 +189,14 @@ that loads the release `microsoft-webui-node` artifact through the
 public `@microsoft/webui` API. Unlike a Rust benchmark, it includes
 V8/N-API string and callback crossings:
 
-- **Protocol construction** — Node `Buffer` to protobuf decode/index after the addon is loaded
-- **JSON-string render** — N-API conversion, JSON parse, Rust render,
+- **Protocol construction:** Node `Buffer` to protobuf decode/index after the addon is loaded
+- **JSON-string render:** N-API conversion, JSON parse, Rust render,
   and the returned UTF-8 Node `Buffer`
-- **Object render** — the same path plus public-wrapper
+- **Object render:** the same path plus public-wrapper
   `JSON.stringify`
-- **Streaming first callback** — state conversion and JSON parse,
+- **Streaming first callback:** state conversion and JSON parse,
   followed by rendering until JavaScript receives the first 16 KiB chunk
-- **Streaming total** — all callback crossings and complete render
+- **Streaming total:** all callback crossings and complete render
 
 It uses the same Contact Book fixture and 10/100/1000 scales as the
 Rust end-to-end benchmark, rendering `/contacts` so output grows with
@@ -246,10 +268,10 @@ noise threshold`).
 
 ## Where the data lives
 
-* **Stdout** — every bench prints a human-readable table.
-* **JSON snapshots** — non-criterion benches write to
+* **Stdout:** every bench prints a human-readable table.
+* **JSON snapshots:** non-criterion benches write to
   `target/bench-baselines/`.
-* **Criterion HTML** — `target/criterion/report/index.html` for full
+* **Criterion HTML:** `target/criterion/report/index.html` for full
   PDF/CDF plots and per-baseline violin plots.
 
 ## Why so many benches?
@@ -269,14 +291,14 @@ catches one third of them.
 
 ## Reproducibility tips
 
-* **Close other applications** — CPU-intensive background work adds
+* **Close other applications:** CPU-intensive background work adds
   noise.
-* **Plug in to power** (laptops) — battery savers throttle the CPU.
-* **Pin to release builds** — `cargo bench` and `cargo xtask bench`
+* **Plug in to power** (laptops): battery savers throttle the CPU.
+* **Pin to release builds:** `cargo bench` and `cargo xtask bench`
   always use release; debug builds are not representative.
-* **Run on the same machine** — cross-machine baselines are not
+* **Run on the same machine:** cross-machine baselines are not
   meaningful.
-* **Compare medians (P50)**, not means — robust against thermal
+* **Compare medians (P50)**, not means; medians are robust against thermal
   spikes.
 * **Re-run if Dev% > 15%** in any criterion row.
 
