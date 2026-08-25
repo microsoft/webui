@@ -54,6 +54,11 @@ pub(super) fn parse_declarations(template: &str) -> Result<Vec<Region>> {
                     Error::Build(format!("Template region '{name}' has no closing tag."))
                 })?;
             let close_start = content_start + close_offset;
+            if template[content_start..close_start].contains(REGION_OPEN) {
+                return Err(Error::Build(format!(
+                    "Template region '{name}' contains a nested region; region declarations cannot be nested."
+                )));
+            }
             (
                 close_start + REGION_CLOSE.len(),
                 Some(template[content_start..close_start].to_string()),

@@ -180,6 +180,14 @@ fn rejects_invalid_declarations() {
             "<webui-press-region name=\"x\" unexpected=\"value\" />",
             "unsupported attribute",
         ),
+        (
+            concat!(
+                "<webui-press-region name=\"outer\">",
+                "<webui-press-region name=\"inner\"></webui-press-region>",
+                "</webui-press-region>"
+            ),
+            "cannot be nested",
+        ),
     ];
     for (template, expected) in cases {
         let result = RegionSet::load(&BTreeMap::new(), Path::new("."), template.to_string());

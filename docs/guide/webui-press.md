@@ -75,4 +75,6 @@ overlap as dotted prefixes, because one JSON value cannot own both `summary` and
 
 `home.*` applies to the generated home page. A custom page with
 `layout: "home"` retains the non-home shell and therefore uses `doc.*` regions.
-For complete template replacement, keep using `webui-press --template`.
+For complete template replacement, use
+`webui-press build --template <TEMPLATE_DIR>` or the equivalent `serve`
+subcommand.
