@@ -669,29 +669,7 @@ fetching; use native `loading="lazy"` and reconcile an already-complete `w-ref`
 image from `hydratedCallback()` when component state depends on `@load` or
 `@error`.
 
-For the fastest request-to-hydrated path, keep the interactive application root
-eager and apply `w-render="lazy"` only to repeated or offscreen descendants:
-
-```typescript
-// index.ts - one eager module graph for the interactive root
-import '@microsoft/webui-framework/lazy-hydration.js';
-import './app-shell/app-shell.js';
-```
-
-```html
-<!-- feed-row.html - offscreen descendants remain deferred -->
-<template w-render="lazy" w-reserve-block-size="18rem">
-  <!-- row content -->
-</template>
-```
-
-This avoids a serial "paint, then fetch another component bundle" waterfall.
-The root becomes interactive immediately while lazy descendants do not hold the
-startup hydration-complete signal open. This is the recommended default when
-time to interactivity or time to full startup hydration matters.
-
-For an application-level SSR shell that should load no component runtime until
-interaction, install the optional boundary from a tiny separate entry chunk:
+To defer a trusted SSR shell's component graph until interaction:
 
 ```typescript
 import {
@@ -706,21 +684,13 @@ installInteractionHydration({
 });
 ```
 
-Pointer-down, focus, or keyboard intent starts loading without being cancelled.
-Hover does not load code, which keeps a stationary cursor from moving hydration
-onto the first-paint path. An unmodified primary click waits for `load()` and is
-replayed on its original composed-path target; `load()` must resolve only when
-component listeners are ready. Modified or previously cancelled clicks pass
-through without replay. Use this only with trusted SSR markup, keep the
-bootstrap and component graph in separate bundles, and measure the deferred load
-as part of first-interaction latency. Hydrate eagerly when first-click code
-requires transient user activation or must target closed-shadow content.
-Interaction-triggered root hydration intentionally makes full hydration depend
-on a later user action and adds a second module-loading phase. Use it only when
-lower pre-interaction JavaScript and heap matter more than request-to-hydrated
-time; do not use it as a general lazy-hydration default.
-Document-level capture listeners see the original click and its replay; use
-`isInteractionReplay(event)` when that work must run only once.
+Pointer, focus, and keyboard intent starts `load()` without cancellation. An
+eligible primary click replays after listeners are ready; hover, modified clicks,
+and previously cancelled clicks do not. Use `isInteractionReplay(event)` to
+deduplicate ancestor capture work. This opt-in exchanges first-interaction
+latency for lower startup JS and heap. Prefer an eager root with lazy descendants
+when request-to-hydrated time matters, and hydrate eagerly for transient user
+activation or closed-shadow targets.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|

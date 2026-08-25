@@ -6,21 +6,6 @@ import {
   isInteractionReplay,
 } from '../../../src/interaction-hydration.js';
 
-interface InteractionFixtureState {
-  appClicks: number;
-  documentCaptureReplays: boolean[];
-  loadCount: number;
-  replayed: boolean;
-  targetId: string;
-}
-
-declare global {
-  interface Window {
-    interactionFixture: InteractionFixtureState;
-    releaseInteractionHydration(): void;
-  }
-}
-
 const root = document.querySelector('#interaction-root');
 if (!root) throw new Error('interaction hydration fixture root is missing');
 
@@ -28,26 +13,35 @@ let releaseHydration!: () => void;
 const hydrationPending = new Promise<void>((resolve) => {
   releaseHydration = resolve;
 });
-const state: InteractionFixtureState = {
+const state = {
   appClicks: 0,
-  documentCaptureReplays: [],
+  documentCaptureReplays: [] as boolean[],
   loadCount: 0,
   replayed: false,
   targetId: '',
 };
+
+declare global {
+  interface Window {
+    interactionFixture: typeof state;
+    releaseInteractionHydration(): void;
+  }
+}
+
 window.interactionFixture = state;
 window.releaseInteractionHydration = releaseHydration;
 
 document.addEventListener('click', (event) => {
   const target = event.composedPath()[0];
+  const replay = isInteractionReplay(event);
   if (
     target instanceof Element
     && target.id === 'blocked-link'
-    && !isInteractionReplay(event)
+    && !replay
   ) {
     event.preventDefault();
   }
-  state.documentCaptureReplays.push(isInteractionReplay(event));
+  state.documentCaptureReplays.push(replay);
 }, true);
 
 installInteractionHydration({

@@ -10,14 +10,13 @@ test.describe('interaction hydration boundary', () => {
   });
 
   test('replays an SVG-origin click after listeners are ready', async ({ page }) => {
-    const accepted = await page.evaluate(() => {
-      const target = document.querySelector('#icon-path');
-      return target?.dispatchEvent(new MouseEvent('click', {
+    const accepted = await page.locator('#icon-path').evaluate((target) =>
+      target.dispatchEvent(new MouseEvent('click', {
         bubbles: true,
         cancelable: true,
         composed: true,
-      }));
-    });
+      }))
+    );
     expect(accepted).toBe(false);
 
     await page.evaluate(() => window.releaseInteractionHydration());
@@ -34,12 +33,10 @@ test.describe('interaction hydration boundary', () => {
   });
 
   test('replayed checkbox click performs native activation once', async ({ page }) => {
-    const checkedBeforeHydration = await page.evaluate(() => {
-      const checkbox = document.querySelector<HTMLInputElement>('#toggle');
-      checkbox?.click();
-      return checkbox?.checked;
-    });
-    expect(checkedBeforeHydration).toBe(false);
+    expect(await page.locator('#toggle').evaluate((element) => {
+      (element as HTMLInputElement).click();
+      return (element as HTMLInputElement).checked;
+    })).toBe(false);
 
     await page.evaluate(() => window.releaseInteractionHydration());
     await expect(page.locator('#toggle')).toBeChecked();
@@ -48,76 +45,55 @@ test.describe('interaction hydration boundary', () => {
     ).toBe(1);
   });
 
-  test('pointerdown starts loading without cancellation', async ({ page }) => {
-    const outcome = await page.evaluate(() => {
-      const target = document.querySelector('#icon-button');
-      const event = new PointerEvent('pointerdown', {
-        bubbles: true,
-        button: 0,
-        cancelable: true,
-        composed: true,
-        isPrimary: true,
-        pointerId: 1,
-        pointerType: 'mouse',
-      });
-      return {
-        accepted: target?.dispatchEvent(event),
-        defaultPrevented: event.defaultPrevented,
-      };
+  for (const kind of ['pointerdown', 'focus', 'keydown'] as const) {
+    test(`${kind} starts loading without cancellation`, async ({ page }) => {
+      const outcome = await page.evaluate((wakeKind) => {
+        const target = document.querySelector<HTMLElement>(
+          wakeKind === 'focus' ? '#text-input' : '#icon-button',
+        );
+        if (!target) throw new Error('wake target is missing');
+        if (wakeKind === 'focus') {
+          target.focus();
+          return { accepted: true, defaultPrevented: false };
+        }
+        const event = wakeKind === 'pointerdown'
+          ? new PointerEvent(wakeKind, {
+              bubbles: true,
+              button: 0,
+              cancelable: true,
+              composed: true,
+              isPrimary: true,
+              pointerId: 1,
+              pointerType: 'mouse',
+            })
+          : new KeyboardEvent(wakeKind, {
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+              key: 'Enter',
+            });
+        return {
+          accepted: target.dispatchEvent(event),
+          defaultPrevented: event.defaultPrevented,
+        };
+      }, kind);
+      expect(outcome).toEqual({ accepted: true, defaultPrevented: false });
+      await expect.poll(
+        () => page.evaluate(() => window.interactionFixture.loadCount),
+      ).toBe(1);
+
+      if (kind === 'focus') {
+        await expect(page.locator('#text-input')).toBeFocused();
+        await page.keyboard.type('a');
+        await expect(page.locator('#text-input')).toHaveValue('a');
+      }
     });
-
-    expect(outcome).toEqual({
-      accepted: true,
-      defaultPrevented: false,
-    });
-    await expect.poll(
-      () => page.evaluate(() => window.interactionFixture.loadCount),
-    ).toBe(1);
-  });
-
-  test('focus starts loading without changing focus', async ({ page }) => {
-    await page.locator('#text-input').focus();
-
-    await expect(page.locator('#text-input')).toBeFocused();
-    await expect.poll(
-      () => page.evaluate(() => window.interactionFixture.loadCount),
-    ).toBe(1);
-  });
-
-  test('keydown starts loading without cancellation', async ({ page }) => {
-    const outcome = await page.evaluate(() => {
-      const target = document.querySelector('#icon-button');
-      const event = new KeyboardEvent('keydown', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        key: 'Enter',
-      });
-      return {
-        accepted: target?.dispatchEvent(event),
-        defaultPrevented: event.defaultPrevented,
-      };
-    });
-
-    expect(outcome).toEqual({
-      accepted: true,
-      defaultPrevented: false,
-    });
-    await expect.poll(
-      () => page.evaluate(() => window.interactionFixture.loadCount),
-    ).toBe(1);
-  });
-
-  test('keyboard input remains native while hydration is pending', async ({ page }) => {
-    await page.locator('#text-input').focus();
-    await page.keyboard.type('a');
-
-    await expect(page.locator('#text-input')).toHaveValue('a');
-  });
+  }
 
   test('modified and unclonable clicks pass through unchanged', async ({ page }) => {
     const outcomes = await page.evaluate(() => {
       const target = document.querySelector('#icon-button');
+      if (!target) throw new Error('click target is missing');
       const modified = new MouseEvent('click', {
         bubbles: true,
         cancelable: true,
@@ -128,13 +104,12 @@ test.describe('interaction hydration boundary', () => {
         cancelable: true,
       });
       return {
-        modifiedAccepted: target?.dispatchEvent(modified),
+        modifiedAccepted: target.dispatchEvent(modified),
         modifiedPrevented: modified.defaultPrevented,
-        unclonableAccepted: target?.dispatchEvent(unclonable),
+        unclonableAccepted: target.dispatchEvent(unclonable),
         unclonablePrevented: unclonable.defaultPrevented,
       };
     });
-
     expect(outcomes).toEqual({
       modifiedAccepted: true,
       modifiedPrevented: false,
@@ -143,7 +118,7 @@ test.describe('interaction hydration boundary', () => {
     });
   });
 
-  test('does not replay a click cancelled by an earlier capture listener', async ({ page }) => {
+  test('does not replay an earlier capture cancellation', async ({ page }) => {
     await page.locator('#blocked-link').click();
     expect(new URL(page.url()).hash).toBe('');
 

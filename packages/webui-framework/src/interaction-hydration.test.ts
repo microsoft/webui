@@ -8,389 +8,243 @@ import {
   isInteractionReplay,
 } from './interaction-hydration.js';
 
-class FakeElement extends EventTarget {
-  appClicks = 0;
-  readonly ownerDocument = {
-    defaultView: {
-      MouseEvent: FakeMouseEvent,
-    },
-  };
-
-  click(): void {
-    this.dispatchEvent(new FakeMouseEvent('click', {
-      bubbles: true,
-      cancelable: true,
-    }));
-  }
-}
+type FakeMouseEventInit = EventInit & Partial<Pick<
+  MouseEvent,
+  'altKey' | 'button' | 'ctrlKey' | 'metaKey' | 'shiftKey'
+>>;
 
 class FakeMouseEvent extends Event {
   readonly altKey: boolean;
-  readonly button = 0;
-  readonly buttons = 0;
-  readonly clientX = 0;
-  readonly clientY = 0;
+  readonly button: number;
   readonly ctrlKey: boolean;
-  readonly detail = 1;
   readonly metaKey: boolean;
-  readonly movementX = 0;
-  readonly movementY = 0;
-  readonly relatedTarget = null;
-  readonly screenX = 0;
-  readonly screenY = 0;
   readonly shiftKey: boolean;
-  readonly view = null;
 
-  constructor(
-    type: string,
-    init: EventInit & {
-      altKey?: boolean;
-      ctrlKey?: boolean;
-      metaKey?: boolean;
-      shiftKey?: boolean;
-    },
-  ) {
+  constructor(type: string, init: FakeMouseEventInit = {}) {
     super(type, init);
     this.altKey = init.altKey ?? false;
+    this.button = init.button ?? 0;
     this.ctrlKey = init.ctrlKey ?? false;
     this.metaKey = init.metaKey ?? false;
     this.shiftKey = init.shiftKey ?? false;
   }
 }
 
-async function flushPromises(): Promise<void> {
-  await new Promise<void>((resolve) => {
-    setImmediate(resolve);
+class FakeElement extends EventTarget {
+  appClicks = 0;
+  readonly ownerDocument = {
+    defaultView: { MouseEvent: FakeMouseEvent },
+  };
+
+  click(init: FakeMouseEventInit = {}): FakeMouseEvent {
+    const event = new FakeMouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      ...init,
+    });
+    this.dispatchEvent(event);
+    return event;
+  }
+}
+
+function install(
+  root: FakeElement,
+  load: () => Promise<unknown>,
+  onError?: (error: unknown) => void,
+): () => void {
+  return installInteractionHydration({
+    load,
+    onError,
+    root: root as unknown as Element,
   });
 }
 
-test('loads once and replays the first click after hydration', async () => {
-  const root = new FakeElement() as unknown as Element;
+async function settle(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+test('loads once and replays on the composed-path target', async () => {
+  const root = new FakeElement();
+  const target = new FakeElement();
   let loads = 0;
   let replayed = false;
-  installInteractionHydration({
-    load: async () => {
-      loads++;
-    },
-    root,
-  });
-  root.addEventListener('click', (event) => {
-    (root as unknown as FakeElement).appClicks++;
+  target.addEventListener('click', (event) => {
+    target.appClicks++;
     replayed = isInteractionReplay(event);
   });
+  install(root, async () => {
+    loads++;
+  });
 
-  (root as unknown as FakeElement).click();
-  await flushPromises();
+  const click = new FakeMouseEvent('click', {
+    bubbles: true,
+    cancelable: true,
+  });
+  Object.defineProperty(click, 'composedPath', {
+    value: () => [target, root],
+  });
+  root.dispatchEvent(click);
+  await settle();
 
+  assert.equal(click.defaultPrevented, true);
   assert.equal(loads, 1);
-  assert.equal((root as unknown as FakeElement).appClicks, 1);
+  assert.equal(target.appClicks, 1);
   assert.equal(replayed, true);
 });
 
-test('pointer down preload and click share one import without hover work', async () => {
-  const root = new FakeElement() as unknown as Element;
-  let resolveLoad!: () => void;
+test('wake signals share one load without hover or cancellation', async () => {
+  const root = new FakeElement();
+  let release!: () => void;
   let loads = 0;
   const pending = new Promise<void>((resolve) => {
-    resolveLoad = resolve;
+    release = resolve;
   });
-  installInteractionHydration({
-    load: () => {
-      loads++;
-      return pending;
-    },
-    root,
+  install(root, () => {
+    loads++;
+    return pending;
   });
 
   root.dispatchEvent(new Event('pointerover'));
-  await flushPromises();
+  await settle();
   assert.equal(loads, 0);
 
-  root.dispatchEvent(new Event('pointerdown'));
-  (root as unknown as FakeElement).click();
-  resolveLoad();
+  for (const type of ['pointerdown', 'focusin', 'keydown']) {
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    root.dispatchEvent(event);
+    assert.equal(event.defaultPrevented, false);
+  }
+  const click = root.click();
+  assert.equal(click.defaultPrevented, true);
+  release();
   await pending;
-  await flushPromises();
-
+  await settle();
   assert.equal(loads, 1);
 });
 
-test('keyboard input preloads without cancelling or synthesizing a click', async () => {
-  const root = new FakeElement() as unknown as Element;
+test('ineligible clicks pass through while loading', async () => {
+  const root = new FakeElement();
+  let release!: () => void;
   let loads = 0;
-  installInteractionHydration({
-    load: async () => {
-      loads++;
-    },
-    root,
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  install(root, () => {
+    loads++;
+    return pending;
   });
   root.addEventListener('click', () => {
-    (root as unknown as FakeElement).appClicks++;
+    root.appClicks++;
   });
 
-  const keydown = new Event('keydown', { bubbles: true, cancelable: true });
-  root.dispatchEvent(keydown);
-  await flushPromises();
+  const modified = root.click({ ctrlKey: true });
+  const cancelled = new FakeMouseEvent('click', { cancelable: true });
+  cancelled.preventDefault();
+  root.dispatchEvent(cancelled);
+  const generic = new Event('click', { cancelable: true });
+  root.dispatchEvent(generic);
+  release();
+  await settle();
 
-  assert.equal(keydown.defaultPrevented, false);
+  assert.equal(modified.defaultPrevented, false);
+  assert.equal(cancelled.defaultPrevented, true);
+  assert.equal(generic.defaultPrevented, false);
   assert.equal(loads, 1);
-  assert.equal((root as unknown as FakeElement).appClicks, 0);
+  assert.equal(root.appClicks, 3);
 });
 
-test('modified clicks pass through unchanged while preloading', async () => {
-  const root = new FakeElement() as unknown as Element;
-  let loads = 0;
-  installInteractionHydration({
-    load: async () => {
-      loads++;
-    },
-    root,
-  });
-  root.addEventListener('click', () => {
-    (root as unknown as FakeElement).appClicks++;
-  });
-
-  const click = new FakeMouseEvent('click', {
-    bubbles: true,
-    cancelable: true,
-    ctrlKey: true,
-  });
-  root.dispatchEvent(click);
-  await flushPromises();
-
-  assert.equal(click.defaultPrevented, false);
-  assert.equal(loads, 1);
-  assert.equal((root as unknown as FakeElement).appClicks, 1);
-});
-
-test('previously cancelled clicks are not replayed', async () => {
-  const root = new FakeElement() as unknown as Element;
-  let loads = 0;
-  installInteractionHydration({
-    load: async () => {
-      loads++;
-    },
-    root,
-  });
-  root.addEventListener('click', () => {
-    (root as unknown as FakeElement).appClicks++;
-  });
-
-  const click = new FakeMouseEvent('click', {
-    bubbles: true,
-    cancelable: true,
-  });
-  click.preventDefault();
-  root.dispatchEvent(click);
-  await flushPromises();
-
-  assert.equal(loads, 1);
-  assert.equal((root as unknown as FakeElement).appClicks, 1);
-});
-
-test('unclonable clicks pass through instead of losing native behavior', async () => {
-  const root = new FakeElement() as unknown as Element;
-  let loads = 0;
-  installInteractionHydration({
-    load: async () => {
-      loads++;
-    },
-    root,
-  });
-  root.addEventListener('click', () => {
-    (root as unknown as FakeElement).appClicks++;
-  });
-
-  const click = new Event('click', { bubbles: true, cancelable: true });
-  root.dispatchEvent(click);
-  await flushPromises();
-
-  assert.equal(click.defaultPrevented, false);
-  assert.equal(loads, 1);
-  assert.equal((root as unknown as FakeElement).appClicks, 1);
-});
-
-test('fallback replay bypasses a replacement boundary', async () => {
-  const root = new FakeElement() as unknown as Element;
+test('failure replay bypasses a same-root replacement boundary', async () => {
+  const root = new FakeElement();
+  const failure = new Error('chunk unavailable');
   let replacementLoads = 0;
-  installInteractionHydration({
-    load: async () => {
-      throw new Error('chunk unavailable');
-    },
-    onError: () => {
-      installInteractionHydration({
-        load: async () => {
-          replacementLoads++;
-        },
-        root,
-      });
-    },
-    root,
+  let reported: unknown;
+  install(root, async () => {
+    throw failure;
+  }, (error) => {
+    reported = error;
+    install(root, async () => {
+      replacementLoads++;
+    });
   });
   root.addEventListener('click', () => {
-    (root as unknown as FakeElement).appClicks++;
+    root.appClicks++;
   });
 
-  (root as unknown as FakeElement).click();
-  await flushPromises();
+  root.click();
+  await settle();
 
+  assert.equal(reported, failure);
   assert.equal(replacementLoads, 0);
-  assert.equal((root as unknown as FakeElement).appClicks, 1);
+  assert.equal(root.appClicks, 1);
 });
 
 test('replay still waits for an unvisited nested boundary', async () => {
-  const outer = new FakeElement() as unknown as Element;
-  const inner = new FakeElement() as unknown as Element;
+  const outer = new FakeElement();
+  const inner = new FakeElement();
   let innerLoads = 0;
-  installInteractionHydration({
-    load: async () => undefined,
-    root: outer,
-  });
-  installInteractionHydration({
-    load: async () => {
-      innerLoads++;
-    },
-    root: inner,
+  install(outer, async () => undefined);
+  install(inner, async () => {
+    innerLoads++;
   });
   inner.addEventListener('click', () => {
-    (inner as unknown as FakeElement).appClicks++;
+    inner.appClicks++;
   });
 
-  const click = new FakeMouseEvent('click', {
-    bubbles: true,
-    cancelable: true,
-  });
+  const click = new FakeMouseEvent('click', { cancelable: true });
   Object.defineProperty(click, 'composedPath', {
     value: () => [inner, outer],
   });
   outer.dispatchEvent(click);
-  await flushPromises();
+  await settle();
 
   assert.equal(innerLoads, 1);
-  assert.equal((inner as unknown as FakeElement).appClicks, 1);
+  assert.equal(inner.appClicks, 1);
 });
 
-test('replays on the first target in the composed path', async () => {
-  const root = new FakeElement() as unknown as Element;
-  const innerTarget = new FakeElement();
-  let innerClicks = 0;
-  innerTarget.addEventListener('click', () => {
-    innerClicks++;
-  });
-  installInteractionHydration({
-    load: async () => undefined,
-    root,
-  });
-
-  const click = new FakeMouseEvent('click', {
-    bubbles: true,
-    cancelable: true,
-  });
-  Object.defineProperty(click, 'composedPath', {
-    value: () => [innerTarget, root],
-  });
-  root.dispatchEvent(click);
-  await flushPromises();
-
-  assert.equal(innerClicks, 1);
-});
-
-test('load failure is reported and replays native behavior once', async () => {
-  const root = new FakeElement() as unknown as Element;
-  const failure = new Error('chunk unavailable');
-  let reported: unknown;
+test('disposal, deduplication, and reinstallation share one lifecycle', async () => {
+  const root = new FakeElement();
   let loads = 0;
-  installInteractionHydration({
-    load: async () => {
-      loads++;
-      throw failure;
-    },
-    onError: (error) => {
-      reported = error;
-    },
-    root,
+  const first = install(root, async () => {
+    loads++;
   });
-  root.addEventListener('click', () => {
-    (root as unknown as FakeElement).appClicks++;
-  });
-
-  (root as unknown as FakeElement).click();
-  await flushPromises();
-  (root as unknown as FakeElement).click();
-
-  assert.equal(loads, 1);
-  assert.equal(reported, failure);
-  assert.equal((root as unknown as FakeElement).appClicks, 2);
-});
-
-test('disposer removes the boundary before it loads', async () => {
-  const root = new FakeElement() as unknown as Element;
-  let loads = 0;
-  const dispose = installInteractionHydration({
-    load: async () => {
-      loads++;
-    },
-    root,
-  });
-  dispose();
-
-  (root as unknown as FakeElement).click();
-  await flushPromises();
-
+  assert.equal(install(root, async () => undefined), first);
+  first();
+  root.click();
+  await settle();
   assert.equal(loads, 0);
+
+  install(root, async () => {
+    loads++;
+  });
+  root.click();
+  await settle();
+  install(root, async () => {
+    loads++;
+  });
+  root.click();
+  await settle();
+  assert.equal(loads, 2);
 });
 
-test('successful hydration permits a later boundary on the same root', async () => {
-  const root = new FakeElement() as unknown as Element;
-  let firstLoads = 0;
-  let secondLoads = 0;
-  installInteractionHydration({
-    load: async () => {
-      firstLoads++;
-    },
-    root,
-  });
-  (root as unknown as FakeElement).click();
-  await flushPromises();
-
-  installInteractionHydration({
-    load: async () => {
-      secondLoads++;
-    },
-    root,
-  });
-  (root as unknown as FakeElement).click();
-  await flushPromises();
-
-  assert.equal(firstLoads, 1);
-  assert.equal(secondLoads, 1);
-});
-
-test('throwing error callback cannot prevent native replay fallback', async () => {
-  const root = new FakeElement() as unknown as Element;
+test('a throwing error callback cannot block fallback replay', async () => {
+  const root = new FakeElement();
   const previousConsoleError = console.error;
   let loggedErrors = 0;
   console.error = () => {
     loggedErrors++;
   };
   try {
-    installInteractionHydration({
-      load: async () => {
-        throw new Error('chunk unavailable');
-      },
-      onError: () => {
-        throw new Error('reporter unavailable');
-      },
-      root,
+    install(root, async () => {
+      throw new Error('chunk unavailable');
+    }, () => {
+      throw new Error('reporter unavailable');
     });
     root.addEventListener('click', () => {
-      (root as unknown as FakeElement).appClicks++;
+      root.appClicks++;
     });
+    root.click();
+    await settle();
 
-    (root as unknown as FakeElement).click();
-    await flushPromises();
-
-    assert.equal((root as unknown as FakeElement).appClicks, 1);
+    assert.equal(root.appClicks, 1);
     assert.equal(loggedErrors, 1);
   } finally {
     console.error = previousConsoleError;

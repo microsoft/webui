@@ -150,34 +150,9 @@ does not defer HTML parsing, DOM construction, custom-element definition, or
 resource discovery. Use server streaming, pagination, virtualization, and native
 resource hints when those costs dominate.
 
-## Eager Interactive Root with Lazy Descendants
-
-For the fastest request-to-hydrated path, eagerly import the interactive
-application root and apply `w-render="lazy"` only to repeated or offscreen
-descendants:
-
-```typescript
-// index.ts
-import '@microsoft/webui-framework/lazy-hydration.js';
-import './app-shell/app-shell.js';
-```
-
-```html
-<!-- activity-row.html -->
-<template w-render="lazy" w-reserve-block-size="18rem">
-  <!-- row content -->
-</template>
-```
-
-This keeps one eager module graph for the behavior-owning root, avoids a serial
-post-paint component-bundle request, and still excludes offscreen rows from
-startup hydration completion. Use this as the default when time to
-interactivity or request-to-hydrated performance matters.
-
 ## Interaction-Triggered Application Hydration
 
-An SSR application can keep its trusted initial DOM active while deferring the
-full component graph until the first user action:
+An SSR page can defer its full component graph until the first user action:
 
 ```typescript
 import {
@@ -195,33 +170,17 @@ if (root) {
 }
 ```
 
-Pointer-down, focus, and keyboard signals begin loading early without cancelling
-the user's action. Hover is intentionally excluded so a cursor already resting
-over a newly painted page cannot pull hydration into the first-paint path. If an
-unmodified primary click arrives before loading finishes, WebUI prevents it,
-waits for the `load` promise, then dispatches a synthetic copy on the original
-composed-path target. The promise must resolve only after event listeners are
-ready. Modified clicks and clicks already cancelled by an earlier capture
-listener pass through without replay.
+Pointer-down, focus, and keyboard intent starts `load()` without cancellation.
+An unmodified primary click waits and replays on its original composed-path
+target; the promise must resolve only after listeners are ready. Hover, modified
+clicks, and previously cancelled clicks do not replay. The returned disposer
+removes the boundary, and `onError` receives loader failures. Use
+`isInteractionReplay(event)` to deduplicate ancestor capture work.
 
-The installer returns a disposer, and `onError` can render an application-level
-load failure. A failed load removes the boundary and replays native click
-behavior instead of leaving the page permanently inert. Synthetic events cannot
-preserve transient user activation or target a control hidden inside a closed
-shadow root, so use eager hydration when the first click must reach
-closed-shadow content, open a popup, enter fullscreen, or call another
-activation-gated API.
-Capture listeners above the boundary observe both the original click and its
-synthetic replay. Use `isInteractionReplay(event)` to deduplicate analytics or
-other document-level capture work.
-
-This policy trades first-interaction latency for lower pre-interaction code and
-heap. Measure both sides of that trade; do not report the pre-interaction heap
-without the corresponding interaction timings.
-It also makes full hydration depend on a later user action and introduces a
-second module-loading phase. Do not use it as the general lazy-hydration default
-or when request-to-hydrated time is the primary goal; prefer an eager root with
-lazy descendants instead.
+This policy trades first-interaction latency for lower startup JS and heap, so
+measure both. Prefer an eager root with `w-render="lazy"` descendants when
+request-to-hydrated time matters. Synthetic replay cannot preserve transient
+user activation or target closed-shadow controls; hydrate those paths eagerly.
 
 ### Images in deferred components
 

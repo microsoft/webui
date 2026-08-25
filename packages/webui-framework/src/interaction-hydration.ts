@@ -15,18 +15,23 @@ export interface InteractionHydrationOptions {
   root: Element;
 }
 
-const PRELOAD_EVENTS = [
+const WAKE_EVENTS = [
   'pointerdown',
   'focusin',
   'keydown',
 ] as const;
-const REPLAY_EVENTS = ['click'] as const;
 const installedBoundaries = new WeakMap<Element, () => void>();
-const interactionReplayBoundaries = new WeakMap<Event, ReadonlySet<Element>>();
+
+interface ReplayTrail {
+  readonly boundary: Element;
+  readonly previous?: ReplayTrail;
+}
+
+const interactionReplays = new WeakMap<Event, ReplayTrail>();
 
 /** Return whether an event was replayed by an interaction hydration boundary. */
 export function isInteractionReplay(event: Event): boolean {
-  return interactionReplayBoundaries.has(event);
+  return interactionReplays.has(event);
 }
 
 /**
@@ -49,12 +54,10 @@ export function installInteractionHydration(
   const remove = (): void => {
     if (!listening) return;
     listening = false;
-    for (let i = 0; i < PRELOAD_EVENTS.length; i++) {
-      root.removeEventListener(PRELOAD_EVENTS[i], preload, true);
+    for (let i = 0; i < WAKE_EVENTS.length; i++) {
+      root.removeEventListener(WAKE_EVENTS[i], preload, true);
     }
-    for (let i = 0; i < REPLAY_EVENTS.length; i++) {
-      root.removeEventListener(REPLAY_EVENTS[i], replay, true);
-    }
+    root.removeEventListener('click', replay, true);
     installedBoundaries.delete(root);
   };
 
@@ -81,19 +84,9 @@ export function installInteractionHydration(
   };
 
   const replay = (event: Event): void => {
-    if (
-      !listening
-      || interactionReplayBoundaries.get(event)?.has(root) === true
-    ) {
-      return;
-    }
-    const target = replayTarget(event);
-    const mouseEvent = asMouseEvent(event);
-    if (!target || !mouseEvent || !shouldReplay(mouseEvent)) {
-      preload();
-      return;
-    }
-    const replayEvent = cloneClick(mouseEvent, target, root);
+    if (!listening || hasTraversed(event, root)) return;
+    const target = event.composedPath()[0] ?? event.target;
+    const replayEvent = target ? cloneClick(event, target, root) : null;
     if (!replayEvent) {
       preload();
       return;
@@ -107,48 +100,15 @@ export function installInteractionHydration(
   };
 
   installedBoundaries.set(root, dispose);
-  for (let i = 0; i < PRELOAD_EVENTS.length; i++) {
-    root.addEventListener(PRELOAD_EVENTS[i], preload, true);
+  for (let i = 0; i < WAKE_EVENTS.length; i++) {
+    root.addEventListener(WAKE_EVENTS[i], preload, true);
   }
-  for (let i = 0; i < REPLAY_EVENTS.length; i++) {
-    root.addEventListener(REPLAY_EVENTS[i], replay, true);
-  }
+  root.addEventListener('click', replay, true);
   return dispose;
 }
 
-function replayTarget(event: Event): EventTarget | null {
-  const path = event.composedPath();
-  return path.length > 0 ? path[0] : event.target;
-}
-
-function asMouseEvent(event: Event): MouseEvent | null {
-  const candidate = event as Partial<MouseEvent>;
-  return typeof candidate.altKey === 'boolean'
-    && typeof candidate.button === 'number'
-    && typeof candidate.buttons === 'number'
-    && typeof candidate.clientX === 'number'
-    && typeof candidate.clientY === 'number'
-    && typeof candidate.ctrlKey === 'boolean'
-    && typeof candidate.detail === 'number'
-    && typeof candidate.metaKey === 'boolean'
-    && typeof candidate.screenX === 'number'
-    && typeof candidate.screenY === 'number'
-    && typeof candidate.shiftKey === 'boolean'
-    ? candidate as MouseEvent
-    : null;
-}
-
-function shouldReplay(event: MouseEvent): boolean {
-  if (!event.cancelable || event.defaultPrevented) return false;
-  return event.button === 0
-    && !event.altKey
-    && !event.ctrlKey
-    && !event.metaKey
-    && !event.shiftKey;
-}
-
 function cloneClick(
-  event: MouseEvent,
+  event: Event,
   target: EventTarget,
   boundary: Element,
 ): MouseEvent | null {
@@ -161,73 +121,44 @@ function cloneClick(
         .ownerDocument
     : undefined;
   const view = (
-    ownerDocument?.defaultView ?? event.view
+    ownerDocument?.defaultView
   ) as EventConstructorWindow | null;
   const MouseEventConstructor = view?.MouseEvent
     ?? (typeof MouseEvent === 'function' ? MouseEvent : undefined);
-  if (!MouseEventConstructor) return null;
+  if (
+    !MouseEventConstructor
+    || !(event instanceof MouseEventConstructor)
+    || !event.cancelable
+    || event.defaultPrevented
+    || event.button !== 0
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+    || event.shiftKey
+  ) {
+    return null;
+  }
 
-  const eventInit: EventInit = {
-    bubbles: event.bubbles,
-    cancelable: event.cancelable,
-    composed: event.composed,
-  };
-  const mouseInit: MouseEventInit = {
-    ...eventInit,
-    altKey: event.altKey,
-    button: event.button,
-    buttons: event.buttons,
-    clientX: event.clientX,
-    clientY: event.clientY,
-    ctrlKey: event.ctrlKey,
-    detail: event.detail,
-    metaKey: event.metaKey,
-    movementX: event.movementX,
-    movementY: event.movementY,
-    relatedTarget: event.relatedTarget,
-    screenX: event.screenX,
-    screenY: event.screenY,
-    shiftKey: event.shiftKey,
-    view,
-  };
-  const pointer = event as Partial<PointerEvent>;
   const PointerEventConstructor = view?.PointerEvent
     ?? (typeof PointerEvent === 'function' ? PointerEvent : undefined);
-  if (
-    PointerEventConstructor
-    && typeof pointer.pointerId === 'number'
-    && typeof pointer.pointerType === 'string'
-  ) {
-    const replayEvent = new PointerEventConstructor('click', {
-      ...mouseInit,
-      height: pointer.height,
-      isPrimary: pointer.isPrimary,
-      pointerId: pointer.pointerId,
-      pointerType: pointer.pointerType,
-      pressure: pointer.pressure,
-      tangentialPressure: pointer.tangentialPressure,
-      tiltX: pointer.tiltX,
-      tiltY: pointer.tiltY,
-      twist: pointer.twist,
-      width: pointer.width,
-    });
-    markInteractionReplay(replayEvent, event, boundary);
-    return replayEvent;
-  }
-  const replayEvent = new MouseEventConstructor('click', mouseInit);
-  markInteractionReplay(replayEvent, event, boundary);
+  const replayEvent = PointerEventConstructor
+      && event instanceof PointerEventConstructor
+    ? new PointerEventConstructor('click', event)
+    : new MouseEventConstructor('click', event);
+  interactionReplays.set(replayEvent, {
+    boundary,
+    previous: interactionReplays.get(event),
+  });
   return replayEvent;
 }
 
-function markInteractionReplay(
-  replay: Event,
-  source: Event,
-  boundary: Element,
-): void {
-  const traversed = interactionReplayBoundaries.get(source);
-  const boundaries = traversed ? new Set(traversed) : new Set<Element>();
-  boundaries.add(boundary);
-  interactionReplayBoundaries.set(replay, boundaries);
+function hasTraversed(event: Event, boundary: Element): boolean {
+  let trail = interactionReplays.get(event);
+  while (trail) {
+    if (trail.boundary === boundary) return true;
+    trail = trail.previous;
+  }
+  return false;
 }
 
 function reportFailure(
