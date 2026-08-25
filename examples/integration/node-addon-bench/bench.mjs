@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONTACT_COUNTS = [10, 100, 1000];
 const RENDER_OPTIONS = Object.freeze({ requestPath: "/contacts" });
+const SMALL_ROUTE_OPTIONS = Object.freeze({ requestPath: "/" });
 const SNAPSHOT_SCHEMA = 1;
 const BASELINE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -700,6 +701,40 @@ async function main() {
       ),
     );
   }
+
+  const largestFixture = fixtures[fixtures.length - 1];
+  const smallRouteBuffer = protocol.renderPrepared(
+    largestFixture.prepared,
+    SMALL_ROUTE_OPTIONS,
+  );
+  assert.ok(
+    smallRouteBuffer.length < largestFixture.outputBytes / 2,
+    "alternating-route benchmark needs materially different output sizes",
+  );
+  results.push(
+    makeResult(
+      `render/prepared/alternating-routes/${largestFixture.contactCount}`,
+      "total",
+      collectSyncSamples(() => {
+        const large = protocol.renderPrepared(
+          largestFixture.prepared,
+          RENDER_OPTIONS,
+        );
+        const small = protocol.renderPrepared(
+          largestFixture.prepared,
+          SMALL_ROUTE_OPTIONS,
+        );
+        return large.length + small.length;
+      }, config),
+      {
+        contacts: largestFixture.contactCount,
+        inputBytes: largestFixture.inputBytes,
+        outputBytes: largestFixture.outputBytes + smallRouteBuffer.length,
+        largeOutputBytes: largestFixture.outputBytes,
+        smallOutputBytes: smallRouteBuffer.length,
+      },
+    ),
+  );
 
   // Keep the raw report data-only so --json and snapshots stay machine-readable.
   const report = {
