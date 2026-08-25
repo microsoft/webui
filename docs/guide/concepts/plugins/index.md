@@ -4,17 +4,22 @@ WebUI provides a framework-agnostic plugin system that extends both the parser (
 
 ## How Plugins Work
 
-The plugin system operates at two stages:
+The plugin system operates at three stages:
 
 ```
-Build time (Parser Plugin)         Runtime (Handler Plugin)
-┌──────────────────────────┐       ┌──────────────────────────┐
-│ Skip framework attrs     │       │ Inject hydration markers │
-│ Track components         │  ───► │ Manage scope counters    │
-│ Emit opaque Plugin data  │       │ Process Plugin data      │
-│ Inject content at </body>│       │ Wrap bindings/repeats    │
-└──────────────────────────┘       └──────────────────────────┘
+Discovery Plugin        Parser Plugin          Handler Plugin
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│ Map package files│    │ Classify attrs   │    │ Inject hydration │
+│ Pair HTML + CSS  │ -> │ Compile templates│ -> │ Process metadata │
+│ Return components│    │ Emit metadata    │    │ Render bindings  │
+└──────────────────┘    └──────────────────┘    └──────────────────┘
 ```
+
+WebUI resolves and validates local or npm package roots before discovery plugin
+code maps their framework-specific file layout to components. Every discovered
+component then passes through WebUI's shared registry validation and runtime
+package format. Parser plugins compile those sources and emit opaque binary data
+for their matching handler plugin.
 
 Parser plugins emit opaque binary data into `Plugin` protocol fragments. Handler plugins receive that data at render time via `on_element_data`. WebUI never interprets this data - each plugin pair defines its own contract.
 
@@ -148,6 +153,14 @@ FAST's generated files are named `<component>.template.html`, whose stem
 (`button.template`) has no hyphen; a FAST plugin still discovers and registers
 them under their authored `custom-*` name. Without a FAST plugin those files are
 ignored, exactly as any non-custom-element filename is.
+
+FAST npm packages use their Custom Elements Manifest as the component index.
+For each `modules[].declarations[]` entry with a `tagName`, discovery maps the
+module to a sibling `<component>.template.html` file. Optional styles may use
+`<component>.styles.css` or `<component>.css`. The package still enters the
+same WebUI registration pipeline, so names, duplicates, CSS, render policy, and
+runtime component output follow the same rules as native components. FAST 2 and
+FAST 3 share this package layout.
 
 The wrapper accepts only `name` and declarative-shadow-root options — attributes
 beginning with `shadowroot` such as `shadowrootmode` and

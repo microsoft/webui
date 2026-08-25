@@ -4,6 +4,85 @@
 use super::*;
 
 #[test]
+fn build_discovers_generated_local_template() {
+    let app = create_app_dir(&[
+        ("index.html", "<custom-button></custom-button>"),
+        (
+            "button.template.html",
+            r#"<f-template name="custom-button"><template><button>{{label}}</button></template></f-template>"#,
+        ),
+        ("button.styles.css", "button { color: red; }"),
+    ]);
+    let mut options = default_options(app.path());
+    options.plugin = Some(Plugin::FastV3);
+    options.css = CssStrategy::Style;
+
+    let result = build(options).unwrap();
+    let component = &result.protocol.components["custom-button"];
+    assert!(component.template.contains("<button>{{label}}</button>"));
+    assert!(component
+        .template
+        .contains("<style>button { color: red; }</style>"));
+}
+
+#[test]
+fn build_discovers_fast_npm_package_layout() {
+    let project = TempDir::new().unwrap();
+    let app = project.path().join("src");
+    let package = project.path().join("node_modules").join("custom");
+    fs::create_dir_all(package.join("components/button")).unwrap();
+    fs::create_dir_all(&app).unwrap();
+    fs::write(app.join("index.html"), "<custom-button></custom-button>").unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{
+            "name": "custom",
+            "customElements": "./custom-elements.json",
+            "exports": { ".": "./index.js" }
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("custom-elements.json"),
+        r#"{
+            "schemaVersion": "1.0.0",
+            "modules": [{
+                "kind": "javascript-module",
+                "path": "components/button/button.js",
+                "declarations": [{
+                    "kind": "class",
+                    "name": "Button",
+                    "tagName": "custom-button"
+                }]
+            }]
+        }"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("components/button/button.template.html"),
+        r#"<f-template name="custom-button"><template><button>{{label}}</button></template></f-template>"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("components/button/button.styles.css"),
+        "button { color: blue; }",
+    )
+    .unwrap();
+
+    let mut options = default_options(&app);
+    options.plugin = Some(Plugin::FastV3);
+    options.components = vec!["custom".to_string()];
+    options.css = CssStrategy::Style;
+
+    let result = build(options).unwrap();
+    let component = &result.protocol.components["custom-button"];
+    assert!(component.template.contains("<button>{{label}}</button>"));
+    assert!(component
+        .template
+        .contains("<style>button { color: blue; }</style>"));
+}
+
+#[test]
 fn css_public_base_keeps_shadow_template_styled() {
     let app = create_app_dir(&[
         ("index.html", "<my-card>Hello</my-card>"),

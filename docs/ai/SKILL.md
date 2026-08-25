@@ -1315,7 +1315,12 @@ bindings authored directly on the root `<template>` - are counted for hydration,
 and the authored inner `<template>` is retained for the client artifact. The
 verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
-registering under the authored `name`. Wrapper shadow options (`shadowrootmode`,
+registering under the authored `name`. In npm packages, the FAST discovery
+plugin reads `customElements` declarations and maps each declaration's module
+to a sibling `<component>.template.html`; optional styles use
+`<component>.styles.css` or `<component>.css`. All discovered sources still
+pass through WebUI's shared name, duplicate, CSS, and runtime registration
+rules. Wrapper shadow options (`shadowrootmode`,
 `shadowrootdelegatesfocus`) move onto the inner `<template>` for the Shadow-DOM
 SSR declarative shadow root and back onto the client `<f-template>` wrapper; the
 harness's `{{styles}}` placeholder is removed (the CSS strategy injects real

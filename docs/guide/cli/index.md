@@ -757,7 +757,7 @@ webui build ./my-app --out ./dist \
 
 ### Caching
 
-Discovered npm package components are cached at `~/.webui/cache/components/` to avoid re-traversing on every build. The cache is automatically invalidated when a package's `package.json` changes. Local path sources are always re-scanned.
+Discovered npm package components are cached at `~/.webui/cache/components/` to avoid re-traversing on every build. The cache is automatically invalidated when `package.json` or any template, stylesheet, or manifest used by the selected discovery plugin changes. Local path sources are always re-scanned.
 
 ## Next Steps
 

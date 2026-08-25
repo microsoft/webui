@@ -61,6 +61,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
+use webui_discovery::{DiscoveryPlugin, FastDiscoveryPlugin, WebUIDiscoveryPlugin};
 use webui_parser::plugin::fast_v2::FastV2ParserPlugin;
 use webui_parser::plugin::fast_v3::FastV3ParserPlugin;
 use webui_parser::plugin::webui::WebUIParserPlugin;
@@ -548,22 +549,47 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         }
         None => HtmlParser::with_options(parser_options),
     };
+    let discovery_plugin: Box<dyn DiscoveryPlugin> = match options.plugin {
+        Some(Plugin::Fast | Plugin::FastV2 | Plugin::FastV3) => {
+            Box::new(FastDiscoveryPlugin::new())
+        }
+        Some(Plugin::WebUI) | None => Box::new(WebUIDiscoveryPlugin::new()),
+    };
 
-    // Register app directory components
-    parser
-        .component_registry_mut()
-        .register_from_paths(&[&options.app_dir])
-        .map_err(|source| WebUIError::ComponentRegistration {
-            context: format!(
-                "Failed to register components from {}",
+    let app_components = discovery_plugin
+        .discover_local(&options.app_dir)
+        .map_err(|error| {
+            WebUIError::ComponentDiscovery(format!(
+                "Failed to discover components from {}: {error}",
                 options.app_dir.display()
-            ),
-            source,
+            ))
         })?;
+    for component in &app_components {
+        parser
+            .component_registry_mut()
+            .register_component(webui_parser::ComponentRegistration {
+                tag_name: &component.tag_name,
+                html_content: &component.html_content,
+                css_content: component.css_content.as_deref(),
+                is_client_owned: component.is_client_owned,
+            })
+            .map_err(|source| WebUIError::ComponentRegistration {
+                context: format!(
+                    "Failed to register component '{}' from {}",
+                    component.tag_name, component.source
+                ),
+                source,
+            })?;
+    }
 
     // Discover and register external component sources
     for source in &options.components {
-        let result = webui_discovery::discover_source(source, &options.app_dir).map_err(|e| {
+        let result = webui_discovery::discover_source_with_plugin(
+            source,
+            &options.app_dir,
+            discovery_plugin.as_ref(),
+        )
+        .map_err(|e| {
             WebUIError::ComponentDiscovery(format!(
                 "Failed to discover components from {source}: {e}"
             ))

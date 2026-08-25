@@ -6,10 +6,16 @@ Components are the building blocks of WebUI applications. They leverage the nati
 
 WebUI uses a component discovery system that automatically scans and registers components at build time:
 
-1. The framework scans specified directories for component files
-2. It identifies HTML files with hyphenated names as components
-3. It associates matching CSS and JS files with their components
-4. The discovered components are compiled into the WebUI protocol
+1. WebUI resolves local or npm package roots
+2. The selected plugin maps its package layout to component templates and styles
+3. WebUI validates and registers those components in one shared runtime format
+4. The parser plugin compiles the registered components into the WebUI protocol
+
+Without a plugin-specific layout, WebUI identifies HTML files with hyphenated
+names and associates matching CSS and JavaScript or TypeScript files. Built-in
+plugins may recognize another source layout while preserving the same runtime
+component contract. See [Plugins](/guide/concepts/plugins/) for FAST package
+discovery.
 
 ### Component File Structure
 
@@ -260,6 +266,9 @@ and a sibling `.ts` or `.js` file marks that component as authored/interactive.
 
 ### Caching
 
-npm package discovery results are cached at `~/.webui/cache/components/`. The cache invalidates automatically when a package's `package.json` content changes. Local path sources are always re-scanned.
+npm package discovery results are cached at `~/.webui/cache/components/`. The
+cache invalidates automatically when `package.json` or any template, stylesheet,
+or manifest used by the selected discovery plugin changes. Local path sources
+are always re-scanned.
 
 See the [CLI Reference](/guide/cli/) for full `--components` usage.

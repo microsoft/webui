@@ -12,10 +12,13 @@
 
 mod cache;
 mod npm;
+mod plugin;
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+
+pub use npm::PackageContext;
+pub use plugin::{DiscoveryPlugin, FastDiscoveryPlugin, WebUIDiscoveryPlugin};
 
 /// A component discovered from an external source, ready for registration.
 #[derive(Debug, Clone)]
@@ -85,10 +88,26 @@ pub fn is_local_source(source: &str) -> bool {
 ///
 /// Returns a [`DiscoveryResult`] with the discovered components.
 pub fn discover_source(source: &str, search_dir: &Path) -> Result<DiscoveryResult> {
+    discover_source_with_plugin(source, search_dir, &WebUIDiscoveryPlugin::new())
+}
+
+/// Discover components from a source using the selected package layout.
+///
+/// # Errors
+///
+/// Returns an error when the source cannot be resolved or the plugin rejects
+/// its component layout.
+pub fn discover_source_with_plugin(
+    source: &str,
+    search_dir: &Path,
+    plugin: &dyn DiscoveryPlugin,
+) -> Result<DiscoveryResult> {
     let mut cache = cache::DiscoveryCache::open()?;
 
     let components = match classify_source(source) {
-        ComponentSource::NpmPackage(ref name) => npm::resolve(name, search_dir, &mut cache)?,
+        ComponentSource::NpmPackage(ref name) => {
+            npm::resolve(name, search_dir, plugin, &mut cache)?
+        }
         ComponentSource::Path(ref path) => {
             let resolved = if path.is_relative() {
                 search_dir.join(path)
@@ -98,7 +117,7 @@ pub fn discover_source(source: &str, search_dir: &Path) -> Result<DiscoveryResul
             let resolved = resolved
                 .canonicalize()
                 .with_context(|| format!("Component path not found: {}", path.display()))?;
-            discover_from_path(&resolved)?
+            plugin.discover_local(&resolved)?
         }
     };
 
@@ -108,55 +127,12 @@ pub fn discover_source(source: &str, search_dir: &Path) -> Result<DiscoveryResul
     })
 }
 
-/// Discover components from a local directory path.
-///
-/// Scans recursively for HTML files with hyphenated names (Web Components
-/// convention) and pairs them with matching CSS files.
-fn discover_from_path(dir: &Path) -> Result<Vec<DiscoveredComponent>> {
-    let source = dir.display().to_string();
-    let mut components = Vec::new();
-
-    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        if path.extension().is_some_and(|ext| ext == "html") {
-            if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
-                if filename.contains('-') {
-                    let html_content = std::fs::read_to_string(path).with_context(|| {
-                        format!("Failed to read component HTML: {}", path.display())
-                    })?;
-                    let css_path = path.with_extension("css");
-                    let css_content = if css_path.exists() {
-                        Some(std::fs::read_to_string(&css_path).with_context(|| {
-                            format!("Failed to read component CSS: {}", css_path.display())
-                        })?)
-                    } else {
-                        None
-                    };
-                    let is_client_owned = has_sibling_script(path)?;
-                    components.push(DiscoveredComponent {
-                        tag_name: filename.to_string(),
-                        html_content,
-                        css_content,
-                        is_client_owned,
-                        source: source.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(components)
-}
-
 /// Return whether a component has an authored sibling module.
 ///
 /// Use `try_exists()` rather than `exists()`: `exists()` converts metadata
 /// errors into `false`, which could silently classify an inaccessible authored
 /// component as scriptless and bypass projection-manifest coverage.
-fn has_sibling_script(html_path: &Path) -> Result<bool> {
+pub(crate) fn has_sibling_script(html_path: &Path) -> Result<bool> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
         if candidate.try_exists().with_context(|| {
@@ -267,7 +243,9 @@ mod tests {
         .unwrap();
         std::fs::write(tmp.path().join("interactive-card.ts"), "export {};").unwrap();
 
-        let components = discover_from_path(tmp.path()).unwrap();
+        let components = WebUIDiscoveryPlugin::new()
+            .discover_local(tmp.path())
+            .unwrap();
         let plain = components
             .iter()
             .find(|component| component.tag_name == "plain-card")

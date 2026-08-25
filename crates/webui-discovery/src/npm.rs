@@ -11,8 +11,33 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use super::cache::DiscoveryCache;
-use super::DiscoveredComponent;
+use super::cache::{CacheKey, DiscoveryCache};
+use super::{DiscoveredComponent, DiscoveryPlugin};
+
+/// Validated npm package context presented to a discovery plugin.
+#[derive(Debug, Clone, Copy)]
+pub struct PackageContext<'a> {
+    /// npm package name.
+    pub name: &'a str,
+    /// Canonical package root.
+    pub root: &'a Path,
+    /// Parsed `package.json`.
+    pub manifest: &'a serde_json::Value,
+    /// Whether package metadata exposes authored browser code.
+    pub is_client_owned: bool,
+}
+
+pub(crate) struct ComponentDeclaration {
+    pub(crate) tag_name: String,
+    pub(crate) name: Option<String>,
+    pub(crate) module_path: Option<PathBuf>,
+}
+
+pub(crate) struct WebUIAssets {
+    pub(crate) template_path: PathBuf,
+    pub(crate) styles_path: Option<PathBuf>,
+    pub(crate) manifest_path: PathBuf,
+}
 
 /// Maximum file size for package.json and custom elements manifests (10 MB).
 const MAX_MANIFEST_SIZE: u64 = 10 * 1024 * 1024;
@@ -108,6 +133,7 @@ fn read_to_string_limited(path: &Path, max_size: u64) -> Result<String> {
 pub fn resolve(
     name: &str,
     search_dir: &Path,
+    plugin: &dyn DiscoveryPlugin,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     // Walk up from the build's app directory first, then fall back to the
@@ -119,9 +145,9 @@ pub fn resolve(
     let node_modules = find_node_modules_with_fallback(search_dir, &fallback)?;
 
     if is_bare_scope(name) {
-        resolve_scoped(name, &node_modules, cache)
+        resolve_scoped(name, &node_modules, plugin, cache)
     } else {
-        resolve_single(name, &node_modules, cache)
+        resolve_single(name, &node_modules, plugin, cache)
     }
 }
 
@@ -129,6 +155,7 @@ pub fn resolve(
 fn resolve_scoped(
     scope: &str,
     node_modules: &Path,
+    plugin: &dyn DiscoveryPlugin,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     let scope_dir = node_modules.join(scope);
@@ -150,7 +177,7 @@ fn resolve_scoped(
         }
         let sub_name = format!("{}/{}", scope, entry.file_name().to_string_lossy());
         // Sub-packages without WebUI exports are expected — skip silently.
-        if let Ok(components) = resolve_single(&sub_name, node_modules, cache) {
+        if let Ok(components) = resolve_single(&sub_name, node_modules, plugin, cache) {
             all.extend(components);
         }
     }
@@ -162,6 +189,7 @@ fn resolve_scoped(
 fn resolve_single(
     name: &str,
     node_modules: &Path,
+    plugin: &dyn DiscoveryPlugin,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     let pkg_dir = node_modules.join(name);
@@ -184,84 +212,35 @@ fn resolve_single(
         bail!("No package.json found at {}", pkg_json_path.display());
     }
 
-    // Check cache first
-    if let Some(cached) = cache.get(name, &pkg_json_path)? {
-        return Ok(cached);
-    }
-
     // Read and parse package.json
     let pkg_json_content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
     let pkg_json: serde_json::Value = serde_json::from_str(&pkg_json_content)
         .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?;
 
-    // Resolve exports
-    let exports = pkg_json
-        .get("exports")
-        .with_context(|| format!("No 'exports' field in {}", pkg_json_path.display()))?;
-
-    let template_rel = resolve_export(exports, "./template-webui.html").with_context(|| {
-        format!(
-            "No './template-webui.html' export in {}",
-            pkg_json_path.display()
-        )
-    })?;
-    validate_relative_path(&template_rel, "exports[\"./template-webui.html\"]")?;
-    let template_path = pkg_dir.join(&template_rel);
-
-    let styles_rel = resolve_export(exports, "./styles.css");
-    let styles_path = if let Some(ref rel) = styles_rel {
-        validate_relative_path(rel, "exports[\"./styles.css\"]")?;
-        Some(pkg_dir.join(rel))
-    } else {
-        None
-    };
-
-    // Get custom elements manifest
-    let cem_rel = pkg_json
-        .get("customElements")
-        .and_then(|v| v.as_str())
-        .with_context(|| format!("No 'customElements' field in {}", pkg_json_path.display()))?;
-    validate_relative_path(cem_rel, "customElements")?;
-    let cem_path = pkg_dir.join(cem_rel);
-
-    // Parse custom elements manifest for tag names
-    let tag_names = parse_custom_elements_manifest(&cem_path)?;
-    if tag_names.is_empty() {
-        bail!(
-            "No component tag names found in custom elements manifest: {}",
-            cem_path.display()
-        );
-    }
-
-    // Read template HTML
-    let html_content = read_to_string_limited(&template_path, MAX_MANIFEST_SIZE)
-        .with_context(|| format!("Failed to read template: {}", template_path.display()))?;
-
-    // Read CSS content (optional)
-    let css_content = match &styles_path {
-        Some(css_path) if css_path.exists() => Some(
-            read_to_string_limited(css_path, MAX_MANIFEST_SIZE)
-                .with_context(|| format!("Failed to read styles: {}", css_path.display()))?,
-        ),
-        _ => None,
-    };
-
     let is_client_owned = package_has_authored_script(&pkg_json);
+    let package = PackageContext {
+        name,
+        root: &pkg_dir,
+        manifest: &pkg_json,
+        is_client_owned,
+    };
+    let cache_files = plugin.package_cache_files(package)?;
+    let fingerprint = DiscoveryCache::fingerprint(&pkg_json_path, &cache_files)?;
+    let cache_key = CacheKey {
+        namespace: plugin.cache_namespace(),
+        source: name,
+        package_json: &pkg_json_path,
+        fingerprint,
+    };
+    if let Some(cached) = cache.get(&cache_key)? {
+        return Ok(cached);
+    }
+    let components = plugin.discover_package(package)?;
 
-    // Create one DiscoveredComponent per tag name
-    let components: Vec<DiscoveredComponent> = tag_names
-        .into_iter()
-        .map(|tag_name| DiscoveredComponent {
-            tag_name,
-            html_content: html_content.clone(),
-            css_content: css_content.clone(),
-            is_client_owned,
-            source: name.to_string(),
-        })
-        .collect();
-
-    // Update cache
-    cache.put(name, &pkg_json_path, &components)?;
+    // Do not persist a mixed snapshot if package files changed during discovery.
+    if DiscoveryCache::fingerprint(&pkg_json_path, &cache_files)? == fingerprint {
+        cache.put(&cache_key, &components)?;
+    }
 
     Ok(components)
 }
@@ -275,7 +254,6 @@ fn resolve_export(exports: &serde_json::Value, key: &str) -> Option<String> {
     match exports.get(key)? {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Object(obj) => {
-            // Use deterministic priority order for conditional exports
             for key in EXPORT_PRIORITY {
                 if let Some(serde_json::Value::String(s)) = obj.get(*key) {
                     return Some(s.clone());
@@ -284,6 +262,62 @@ fn resolve_export(exports: &serde_json::Value, key: &str) -> Option<String> {
             None
         }
         _ => None,
+    }
+}
+
+pub(crate) fn resolve_webui_assets(package: PackageContext<'_>) -> Result<WebUIAssets> {
+    let package_json = package.root.join("package.json");
+    let exports = package
+        .manifest
+        .get("exports")
+        .with_context(|| format!("No 'exports' field in {}", package_json.display()))?;
+    let template_rel = resolve_export(exports, "./template-webui.html").with_context(|| {
+        format!(
+            "No './template-webui.html' export in {}",
+            package_json.display()
+        )
+    })?;
+    validate_relative_path(&template_rel, "exports[\"./template-webui.html\"]")?;
+    let styles_path = if let Some(relative) = resolve_export(exports, "./styles.css") {
+        validate_relative_path(&relative, "exports[\"./styles.css\"]")?;
+        Some(package.root.join(relative))
+    } else {
+        None
+    };
+    Ok(WebUIAssets {
+        template_path: package.root.join(template_rel),
+        styles_path,
+        manifest_path: custom_elements_manifest_path(package)?,
+    })
+}
+
+pub(crate) fn package_component_declarations(
+    package: PackageContext<'_>,
+) -> Result<Vec<ComponentDeclaration>> {
+    let path = custom_elements_manifest_path(package)?;
+    parse_custom_elements_manifest(&path)
+}
+
+pub(crate) fn custom_elements_manifest_path(package: PackageContext<'_>) -> Result<PathBuf> {
+    let package_json = package.root.join("package.json");
+    let relative = package
+        .manifest
+        .get("customElements")
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("No 'customElements' field in {}", package_json.display()))?;
+    validate_relative_path(relative, "customElements")?;
+    Ok(package.root.join(relative))
+}
+
+pub(crate) fn read_required_file(path: &Path, kind: &str) -> Result<String> {
+    read_to_string_limited(path, MAX_MANIFEST_SIZE)
+        .with_context(|| format!("Failed to read {kind}: {}", path.display()))
+}
+
+pub(crate) fn read_optional_file(path: Option<&Path>, kind: &str) -> Result<Option<String>> {
+    match path {
+        Some(path) if path.is_file() => read_required_file(path, kind).map(Some),
+        _ => Ok(None),
     }
 }
 
@@ -336,11 +370,11 @@ fn is_script_path(path: &str) -> bool {
         || path.ends_with(".ts")
 }
 
-/// Parse a Custom Elements Manifest JSON file to extract component tag names.
+/// Parse component declarations from a Custom Elements Manifest.
 ///
 /// Follows the Custom Elements Manifest spec:
-/// `modules[].declarations[].tagName`
-fn parse_custom_elements_manifest(path: &Path) -> Result<Vec<String>> {
+/// `modules[].{path,declarations[].{name,tagName}}`
+fn parse_custom_elements_manifest(path: &Path) -> Result<Vec<ComponentDeclaration>> {
     let content = read_to_string_limited(path, MAX_MANIFEST_SIZE)
         .with_context(|| format!("Custom elements manifest: {}", path.display()))?;
     let manifest: serde_json::Value = serde_json::from_str(&content).with_context(|| {
@@ -351,28 +385,44 @@ fn parse_custom_elements_manifest(path: &Path) -> Result<Vec<String>> {
     })?;
 
     let mut seen = std::collections::HashSet::new();
-    let mut tag_names = Vec::new();
+    let mut declarations = Vec::new();
 
     if let Some(modules) = manifest.get("modules").and_then(|v| v.as_array()) {
         for module in modules {
-            if let Some(declarations) = module.get("declarations").and_then(|v| v.as_array()) {
-                for decl in declarations {
-                    if let Some(tag_name) = decl.get("tagName").and_then(|v| v.as_str()) {
-                        if seen.insert(tag_name) {
-                            tag_names.push(tag_name.to_string());
-                        }
+            let module_path = module.get("path").and_then(|value| value.as_str());
+            if let Some(path) = module_path {
+                validate_relative_path(path, "customElements modules[].path")?;
+            }
+            if let Some(module_declarations) = module.get("declarations").and_then(|v| v.as_array())
+            {
+                for declaration in module_declarations {
+                    let Some(tag_name) =
+                        declaration.get("tagName").and_then(|value| value.as_str())
+                    else {
+                        continue;
+                    };
+                    if seen.insert(tag_name) {
+                        declarations.push(ComponentDeclaration {
+                            tag_name: tag_name.to_string(),
+                            name: declaration
+                                .get("name")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string),
+                            module_path: module_path.map(PathBuf::from),
+                        });
                     }
                 }
             }
         }
     }
 
-    Ok(tag_names)
+    Ok(declarations)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WebUIDiscoveryPlugin;
     use std::fs;
     use tempfile::TempDir;
 
@@ -517,7 +567,12 @@ mod tests {
         );
 
         let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve("my-widget", tmp.path(), &mut cache);
+        let result = resolve(
+            "my-widget",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        );
         assert!(result.is_ok());
 
         let components = result.unwrap();
@@ -580,7 +635,12 @@ mod tests {
         );
 
         let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve("@mylib", tmp.path(), &mut cache);
+        let result = resolve(
+            "@mylib",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        );
         assert!(result.is_ok());
 
         let components = result.unwrap();
@@ -598,7 +658,12 @@ mod tests {
         fs::create_dir(&nm).unwrap();
 
         let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve("nonexistent", tmp.path(), &mut cache);
+        let result = resolve(
+            "nonexistent",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        );
         assert!(result.is_err());
     }
 
@@ -684,8 +749,10 @@ mod tests {
         let result = parse_custom_elements_manifest(&cem_path);
         assert!(result.is_ok());
 
-        let tag_names = result.unwrap();
-        assert_eq!(tag_names, vec!["my-button", "my-text"]);
+        let declarations = result.unwrap();
+        assert_eq!(declarations.len(), 2);
+        assert_eq!(declarations[0].tag_name, "my-button");
+        assert_eq!(declarations[1].tag_name, "my-text");
     }
 
     #[test]
@@ -712,11 +779,13 @@ mod tests {
             "modules": [
                 {
                     "kind": "javascript-module",
-                    "declarations": [{ "kind": "class", "tagName": "my-button" }]
+                    "path": "src/button.js",
+                    "declarations": [{ "kind": "class", "name": "MyButton", "tagName": "my-button" }]
                 },
                 {
                     "kind": "javascript-module",
-                    "declarations": [{ "kind": "class", "tagName": "my-button" }]
+                    "path": "src/other-button.js",
+                    "declarations": [{ "kind": "class", "name": "OtherButton", "tagName": "my-button" }]
                 }
             ]
         });
@@ -724,8 +793,9 @@ mod tests {
         let cem_path = tmp.path().join("custom-elements.json");
         fs::write(&cem_path, serde_json::to_string(&manifest).unwrap()).unwrap();
 
-        let tag_names = parse_custom_elements_manifest(&cem_path).unwrap();
-        assert_eq!(tag_names, vec!["my-button"]);
+        let declarations = parse_custom_elements_manifest(&cem_path).unwrap();
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].tag_name, "my-button");
     }
 
     #[test]
@@ -739,12 +809,24 @@ mod tests {
         let mut cache = DiscoveryCache::open().unwrap();
 
         // First resolve: populates cache
-        let first = resolve("cached-pkg", tmp.path(), &mut cache).unwrap();
+        let first = resolve(
+            "cached-pkg",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        )
+        .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].tag_name, "cached-comp");
 
         // Second resolve: should hit cache
-        let second = resolve("cached-pkg", tmp.path(), &mut cache).unwrap();
+        let second = resolve(
+            "cached-pkg",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        )
+        .unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].tag_name, "cached-comp");
     }
@@ -808,7 +890,12 @@ mod tests {
         std::os::windows::fs::symlink_dir(&target_path, &link_path).unwrap();
 
         let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve("my-widget", tmp.path(), &mut cache);
+        let result = resolve(
+            "my-widget",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        );
         assert!(
             result.is_ok(),
             "symlinked package should resolve: {result:?}"
@@ -854,7 +941,12 @@ mod tests {
         std::os::windows::fs::symlink_dir(&target_path, &link_path).unwrap();
 
         let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve("@mai-ui", tmp.path(), &mut cache);
+        let result = resolve(
+            "@mai-ui",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        );
         assert!(
             result.is_ok(),
             "scoped symlinked package should resolve: {result:?}"
@@ -888,7 +980,12 @@ mod tests {
         .unwrap();
 
         let mut cache = DiscoveryCache::open().unwrap();
-        let result = resolve("evil-pkg", tmp.path(), &mut cache);
+        let result = resolve(
+            "evil-pkg",
+            tmp.path(),
+            &WebUIDiscoveryPlugin::new(),
+            &mut cache,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains(".."));
     }
