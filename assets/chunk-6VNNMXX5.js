@@ -1,1 +1,0 @@
-import{a as i,c as l}from"./chunk-FH54OV4G.js";import{a as o}from"./chunk-F6SH3YFS.js";var e=class extends l{constructor(){super(...arguments);this.label="Copy"}copy(){let t=this.querySelector("code");t&&navigator.clipboard.writeText(t.textContent||"").then(()=>{this.label="Copied!",setTimeout(()=>{this.label="Copy"},1500)})}};o([i],e.prototype,"label",2);e.define("code-block");
