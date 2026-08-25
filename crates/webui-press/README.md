@@ -107,6 +107,8 @@ docs/                          # contentDir (anything you want)
 │   │       ├── my-widget.html
 │   │       ├── my-widget.css
 │   │       └── my-widget.ts
+│   ├── regions/               # optional compile-time template fragments
+│   │   └── home-after-hero.html
 │   ├── public/                # optional static asset passthrough
 │   └── state/                 # optional state JSON for custom pages
 │       └── playground.json
@@ -261,6 +263,13 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
 
   "stateFile": "./state/site.json",
 
+  "regions": {
+    "home.afterHero": {
+      "htmlFile": "./regions/home-after-hero.html",
+      "stateFile": "./state/home-summary.json"
+    }
+  },
+
   "customPages": {
     "/playground/": {
       "layout": "full",
@@ -326,14 +335,61 @@ components and Markdown-authored custom elements can bind to it directly:
 
 Shared state cannot override reserved docs keys such as `site`, `navigation`,
 `sidebar`, `page`, `hero`, `footer`, `prev`, `next`, `pageData`,
-`headTags`, `tokens`, `label`, or `icon`. Global state is applied first. Custom page
-state is applied afterward for that page, so non-reserved custom page keys can
-override global keys.
+`regions`, `headTags`, `tokens`, `label`, or `icon`. Global state is applied
+first. Custom page state is applied afterward for that page, so non-reserved
+custom page keys can override global keys.
 
 The merged render state is embedded into each generated page's `#webui-data`
 hydration block. Do not put secrets in `state` or `stateFile`, and keep shared
 state small. Large global JSON files are duplicated into every output page; use
 custom page state or static JSON assets for large page-specific datasets.
+
+### Compile-time named regions
+
+Templates can expose stable extension points without requiring consumers to
+fork the full page template:
+
+```html
+<webui-press-region
+  name="home.afterHero"
+  layout="home"
+></webui-press-region>
+```
+
+Sites provide the content in `config.json`:
+
+```json
+{
+  "regions": {
+    "home.afterHero": {
+      "htmlFile": "./regions/home-after-hero.html",
+      "stateFile": "./state/home-summary.json"
+    }
+  }
+}
+```
+
+`html` and `htmlFile` are mutually exclusive, as are `state` and `stateFile`.
+An optional `scriptFile` is bundled only on pages where the region is active.
+The marker's optional `layout` attribute limits injection to that page layout;
+without it the region is active on every page.
+
+Region state is namespaced by its dotted name. The example above is available
+as `regions.home.afterHero`:
+
+```html
+<project-summary :data="{{regions.home.afterHero}}"></project-summary>
+```
+
+Every dotted segment must be non-empty. Two prefix-related regions such as
+`summary` and `summary.details` may both supply HTML, but they cannot both supply
+state because one JSON value cannot safely own both paths.
+
+WebUI Press replaces region markers before component discovery and protocol
+compilation. Injected components therefore participate in SSR, CSS ordering,
+projection, and script bundling exactly like components authored directly in
+the template. Missing region config renders an empty extension point; configured
+names that the template does not declare fail the build.
 
 ### `head` injection
 

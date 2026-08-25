@@ -16,6 +16,7 @@ mod bundler;
 mod content;
 mod error;
 mod markdown;
+mod regions;
 mod serve;
 mod state;
 mod types;

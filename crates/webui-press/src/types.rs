@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-use serde::Deserialize;
+use serde::{de::Error as _, Deserialize, Deserializer};
 
 /// Documentation site configuration (read from config.json).
 #[derive(Debug, Deserialize)]
@@ -25,6 +25,10 @@ pub struct DocsConfig {
     pub sidebar_groups: std::collections::BTreeMap<String, Vec<SidebarSection>>,
     #[serde(default)]
     pub custom_pages: std::collections::HashMap<String, CustomPage>,
+    /// Site-owned HTML fragments injected into named template regions before
+    /// component discovery and protocol compilation.
+    #[serde(default)]
+    pub regions: std::collections::BTreeMap<String, RegionConfig>,
     /// Inline JSON object merged into every page's render state. Mutually
     /// exclusive with `stateFile`.
     pub state: Option<serde_json::Value>,
@@ -35,6 +39,42 @@ pub struct DocsConfig {
     pub footer: Option<FooterConfig>,
     /// Optional JavaScript bundler configuration (overrides defaults).
     pub bundler: Option<BundlerConfig>,
+}
+
+/// Site-owned content for one compile-time template region.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegionConfig {
+    /// Inline HTML fragment. Mutually exclusive with `html_file`.
+    pub html: Option<String>,
+    /// HTML fragment path relative to `config.json`. Mutually exclusive with
+    /// `html`.
+    pub html_file: Option<String>,
+    /// Inline JSON object exposed beneath the region's dotted state path.
+    /// Mutually exclusive with `state_file`.
+    #[serde(default, deserialize_with = "deserialize_region_state")]
+    pub state: Option<serde_json::Value>,
+    /// JSON object path relative to `config.json`. Mutually exclusive with
+    /// `state`.
+    pub state_file: Option<String>,
+    /// Optional JavaScript/TypeScript file bundled only on pages where the
+    /// region is active.
+    pub script_file: Option<String>,
+}
+
+fn deserialize_region_state<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Err(D::Error::custom(
+            "region state must be a JSON object; omit 'state' when no state is needed",
+        ));
+    }
+    Ok(Some(value))
 }
 
 fn default_out_dir() -> String {
@@ -396,5 +436,29 @@ mod tests {
         let json = r#"{ "layout": "full", "html": "<p>hi</p>" }"#;
         let page: CustomPage = serde_json::from_str(json).unwrap();
         assert!(page.script_file().is_none());
+    }
+
+    #[test]
+    fn region_config_deserializes_file_backed_content() {
+        let config: RegionConfig = serde_json::from_str(
+            r#"{
+                "htmlFile": "./regions/summary.html",
+                "stateFile": "./state/summary.json",
+                "scriptFile": "./regions/summary.ts"
+            }"#,
+        )
+        .unwrap();
+        assert!(config.html.is_none());
+        assert_eq!(config.html_file.as_deref(), Some("./regions/summary.html"));
+        assert_eq!(config.state_file.as_deref(), Some("./state/summary.json"));
+        assert_eq!(config.script_file.as_deref(), Some("./regions/summary.ts"));
+    }
+
+    #[test]
+    fn region_config_rejects_explicit_null_state() {
+        let error =
+            serde_json::from_str::<RegionConfig>(r#"{ "html": "<p>x</p>", "state": null }"#)
+                .unwrap_err();
+        assert!(error.to_string().contains("must be a JSON object"));
     }
 }

@@ -54,6 +54,7 @@ const RESERVED_STATE_KEYS: &[&str] = &[
     "prev",
     "next",
     "pageData",
+    "regions",
     "headTags",
     "tokens",
     "label",
@@ -241,6 +242,7 @@ mod tests {
             sidebar: Vec::new(),
             sidebar_groups: std::collections::BTreeMap::new(),
             custom_pages: HashMap::new(),
+            regions: std::collections::BTreeMap::new(),
             state: None,
             state_file: None,
             hero: None,
@@ -394,11 +396,13 @@ mod tests {
             ("site", test_obj([("title", string_value("Override"))])),
             ("headTags", string_value("<script>bad()</script>")),
             ("tokens", string_value("not-token-css")),
+            ("regions", test_obj([("bad", string_value("override"))])),
         ]);
 
         let merged = merge_page_state(base, None, Some(&custom));
         assert_eq!(merged["site"]["title"], "Docs");
         assert_eq!(merged["headTags"], "<meta name=\"docs\">");
         assert_eq!(merged.get("tokens"), None);
+        assert_eq!(merged.get("regions"), None);
     }
 }

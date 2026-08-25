@@ -26,10 +26,15 @@ use crate::bundler::{
 use crate::content::process_content_with_states;
 use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
+use crate::regions::RegionSet;
 use crate::state::{load_render_states, merge_page_state};
-use crate::types::{BuildStats, DocsConfig};
+use crate::types::{BuildStats, DocsConfig, PageDescriptor};
 
 webui_handler::define_string_response_writer!(StringWriter, buf);
+
+fn page_layout(page: &PageDescriptor) -> &str {
+    page.state["page"]["layout"].as_str().unwrap_or("doc")
+}
 
 /// Persistent state held by the dev server across rebuilds. The dev
 /// server always performs a full rebuild on every watcher tick — the
@@ -320,7 +325,8 @@ pub fn build_docs_with_cache(
     // to pay every keystroke.
     let render_states = load_render_states(config, config_dir)?;
     let highlighter = cache.highlighter.take().unwrap_or_default();
-    let pages = process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
+    let mut pages =
+        process_content_with_states(config, &highlighter, &head_injection, &render_states)?;
 
     // Restore the highlighter for the next rebuild.
     cache.highlighter = Some(highlighter);
@@ -349,6 +355,7 @@ pub fn build_docs_with_cache(
 
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
+    let regions = RegionSet::load(&config.regions, config_dir, template_html.clone())?;
     let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
@@ -408,6 +415,12 @@ pub fn build_docs_with_cache(
                     .extend(scripts);
             }
         }
+        for script_file in regions.script_files(page_layout(page)) {
+            explicit_page_scripts
+                .entry(page.path.clone())
+                .or_default()
+                .push(ScriptSource::File(script_file.to_string()));
+        }
     }
 
     // Collect scriptFile from customPages config.
@@ -466,8 +479,12 @@ pub fn build_docs_with_cache(
             .get(&page.path)
             .map(String::as_str)
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
+        let region_fragments = regions.html_fragments(page_layout(page));
+        let mut html_sources = Vec::with_capacity(region_fragments.len() + 1);
+        html_sources.push(content);
+        html_sources.extend(region_fragments);
         let mut component_scripts =
-            collect_component_scripts_for_html(&[content], &component_script_index)?;
+            collect_component_scripts_for_html(&html_sources, &component_script_index)?;
         if let Some(root) = &root_bundle {
             component_scripts.retain(|path| !root.component_scripts.contains(path));
         }
@@ -475,7 +492,6 @@ pub fn build_docs_with_cache(
         if component_scripts.is_empty() && explicit_scripts.is_empty() {
             continue;
         }
-
         let signature = page_bundle_signature(&component_scripts, &explicit_scripts, config_dir);
         if let Some(&id) = page_bundle_signatures.get(&signature) {
             page_bundle_ids.insert(page.path.clone(), id);
@@ -493,26 +509,40 @@ pub fn build_docs_with_cache(
         });
     }
 
-    let not_found_component_scripts =
-        collect_component_scripts_for_html(&[not_found_content.as_str()], &component_script_index)?;
-    let not_found_bundle_id = if not_found_component_scripts.is_empty() {
-        None
-    } else {
-        let signature = page_bundle_signature(&not_found_component_scripts, &[], config_dir);
-        if let Some(&id) = page_bundle_signatures.get(&signature) {
-            Some(id)
+    let not_found_region_fragments = regions.html_fragments("doc");
+    let mut not_found_sources = Vec::with_capacity(not_found_region_fragments.len() + 1);
+    not_found_sources.push(not_found_content.as_str());
+    not_found_sources.extend(not_found_region_fragments);
+    let mut not_found_component_scripts =
+        collect_component_scripts_for_html(&not_found_sources, &component_script_index)?;
+    if let Some(root) = &root_bundle {
+        not_found_component_scripts.retain(|path| !root.component_scripts.contains(path));
+    }
+    let not_found_scripts: Vec<ScriptSource> = regions
+        .script_files("doc")
+        .into_iter()
+        .map(|path| ScriptSource::File(path.to_string()))
+        .collect();
+    let not_found_bundle_id =
+        if not_found_component_scripts.is_empty() && not_found_scripts.is_empty() {
+            None
         } else {
-            let id = page_bundles.len();
-            page_bundle_signatures.insert(signature, id);
-            page_bundles.push(PageBundleEntry {
-                id,
-                page_path: format!("{base_path}404/"),
-                component_scripts: not_found_component_scripts,
-                explicit_scripts: Vec::new(),
-            });
-            Some(id)
-        }
-    };
+            let signature =
+                page_bundle_signature(&not_found_component_scripts, &not_found_scripts, config_dir);
+            if let Some(&id) = page_bundle_signatures.get(&signature) {
+                Some(id)
+            } else {
+                let id = page_bundles.len();
+                page_bundle_signatures.insert(signature, id);
+                page_bundles.push(PageBundleEntry {
+                    id,
+                    page_path: format!("{base_path}404/"),
+                    component_scripts: not_found_component_scripts,
+                    explicit_scripts: not_found_scripts,
+                });
+                Some(id)
+            }
+        };
 
     // Start the one client bundle in parallel with per-page template parsing.
     // Each page blocks only when it reaches projection finalization.
@@ -580,7 +610,7 @@ pub fn build_docs_with_cache(
         std::sync::Mutex::new(HashMap::new());
 
     let page_start = Instant::now();
-    pages.par_iter().try_for_each(|page| -> Result<()> {
+    pages.par_iter_mut().try_for_each(|page| -> Result<()> {
         let page_dir = site_dir.join(page.path.strip_prefix(base_path).unwrap_or(&page.path));
         let target = page_dir.join("index.html");
 
@@ -590,11 +620,13 @@ pub fn build_docs_with_cache(
             .map(|s| s.as_str())
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
 
-        // Protect <pre> blocks from HTML parser whitespace normalization.
-        let (protected, pre_blocks) = protect_pre_blocks(content);
-
-        // Substitute the raw signal in the template with the literal HTML.
-        let page_html = template_html.replace("{{{page.content}}}", &protected);
+        // Resolve site-owned regions before compiling the page so injected
+        // components participate in discovery, SSR, CSS, and hydration.
+        let page_html = regions
+            .render(page_layout(page))
+            .replace("{{{page.content}}}", content);
+        // Protect all preformatted content after region and page injection.
+        let (page_html, pre_blocks) = protect_pre_blocks(&page_html);
 
         // Per-page temp dir holding only this page's index.html — components
         // come exclusively from `component_sources`, which already includes
@@ -656,21 +688,20 @@ pub fn build_docs_with_cache(
             }
         }
 
-        let mut themed_state;
-        let render_state = if let Some(token_file) = token_file.as_ref() {
-            themed_state = page.state.clone();
-            inject_theme_tokens(&mut themed_state, token_file, &build_result.protocol.tokens)?;
-            &themed_state
-        } else {
-            &page.state
-        };
+        let layout = page_layout(page).to_string();
+        if regions.has_state(&layout) {
+            regions.apply_state(&layout, &mut page.state)?;
+        }
+        if let Some(token_file) = token_file.as_ref() {
+            inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
+        }
 
         let protocol = Protocol::new(build_result.protocol);
         let mut writer = StringWriter::with_capacity(8192);
         handler
             .render(
                 &protocol,
-                render_state,
+                &page.state,
                 &RenderOptions::new("index.html", &page.path),
                 &mut writer,
             )
@@ -748,8 +779,12 @@ pub fn build_docs_with_cache(
         head_injection: &head_injection,
         global_state: render_states.global(),
     });
+    regions.apply_state("doc", &mut not_found_state)?;
 
-    let not_found_html = template_html.replace("{{{page.content}}}", &not_found_content);
+    let not_found_html = regions
+        .render("doc")
+        .replace("{{{page.content}}}", &not_found_content);
+    let (not_found_html, not_found_pre_blocks) = protect_pre_blocks(&not_found_html);
     let nf_tmp = std::env::temp_dir().join(format!(
         "webui-press-404-{}-{:x}",
         std::process::id(),
@@ -809,7 +844,8 @@ pub fn build_docs_with_cache(
         )
         .map_err(|e| Error::Render(format!("404: {e}")))?;
 
-    fs::write(site_dir.join("404.html"), writer_404.buf).map_err(|e| Error::Io(e.to_string()))?;
+    let not_found_output = restore_pre_blocks(&writer_404.buf, &not_found_pre_blocks);
+    fs::write(site_dir.join("404.html"), not_found_output).map_err(|e| Error::Io(e.to_string()))?;
     fs::remove_dir_all(&nf_tmp).ok();
     print_success(cache, "Generated 404 page");
 
@@ -1337,6 +1373,12 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
         let start = cursor + rel_start;
         if let Some(rel_end) = content[start..].find("</pre>") {
             let end = start + rel_end + "</pre>".len();
+            let block = &content[start..end];
+            if pre_block_requires_compilation(block) {
+                out.push_str(&content[cursor..end]);
+                cursor = end;
+                continue;
+            }
             out.push_str(&content[cursor..start]);
             out.push_str(PRE_BLOCK_MARKER_PREFIX);
             // write! into existing buffer — avoids `format!` allocation per block.
@@ -1350,6 +1392,70 @@ fn protect_pre_blocks(content: &str) -> (String, Vec<String>) {
     }
     out.push_str(&content[cursor..]);
     (out, blocks)
+}
+
+fn pre_block_requires_compilation(block: &str) -> bool {
+    if block.contains("{{") {
+        return true;
+    }
+
+    let mut cursor = 0;
+    while let Some(offset) = block[cursor..].find('<') {
+        let tag_start = cursor + offset + 1;
+        let Some(tag_offset) = block[tag_start..].find('>') else {
+            break;
+        };
+        let tag_end = tag_start + tag_offset;
+        let raw_tag = &block[tag_start..tag_end];
+        if let Some(tag) = parse_html_tag(raw_tag) {
+            if !tag.is_end
+                && (tag.name.contains('-')
+                    || is_webui_directive(tag.name)
+                    || has_compiler_owned_attribute(raw_tag, tag.name.len()))
+            {
+                return true;
+            }
+        }
+        cursor = tag_end + 1;
+    }
+    false
+}
+
+fn is_webui_directive(name: &str) -> bool {
+    name.eq_ignore_ascii_case("if")
+        || name.eq_ignore_ascii_case("for")
+        || name.eq_ignore_ascii_case("outlet")
+        || name.eq_ignore_ascii_case("boundary")
+}
+
+fn has_compiler_owned_attribute(raw_tag: &str, mut cursor: usize) -> bool {
+    let bytes = raw_tag.as_bytes();
+    while cursor < bytes.len() {
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        let start = cursor;
+        while bytes.get(cursor).is_some_and(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'@' | b':' | b'?')
+        }) {
+            cursor += 1;
+        }
+        if start == cursor {
+            cursor += 1;
+            continue;
+        }
+        let attribute = &raw_tag[start..cursor];
+        if attribute
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| matches!(byte, b'@' | b':' | b'?'))
+            || attribute.starts_with("w-")
+            || attribute == "key"
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// Find the next opening `<pre` tag where the next byte is one of `>`, ` `,
@@ -1532,6 +1638,27 @@ mod tests {
         let (protected, blocks) = protect_pre_blocks(input);
         let restored = restore_pre_blocks(&protected, &blocks);
         assert_eq!(restored, input);
+    }
+
+    #[test]
+    fn protect_pre_blocks_keeps_dynamic_blocks_compilable() {
+        let input = "<pre>{{regions.home.panel.message}}</pre>";
+        let (protected, blocks) = protect_pre_blocks(input);
+        assert_eq!(protected, input);
+        assert!(blocks.is_empty());
+    }
+
+    #[test]
+    fn protect_pre_blocks_keeps_events_and_components_compilable() {
+        for input in [
+            r#"<pre @click="{copy()}">Copy</pre>"#,
+            "<pre><example-widget></example-widget></pre>",
+            r#"<pre w-ref="{code}">Code</pre>"#,
+        ] {
+            let (protected, blocks) = protect_pre_blocks(input);
+            assert_eq!(protected, input);
+            assert!(blocks.is_empty());
+        }
     }
 
     #[test]
