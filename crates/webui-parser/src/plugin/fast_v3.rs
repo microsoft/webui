@@ -368,19 +368,7 @@ pub fn generate_f_template_with_css_options(
     )
 }
 
-/// Convert WebUI Framework template syntax to FAST syntax in HTML content.
-///
-/// Performs the following transformations without regex:
-/// - `<if condition="EXPR">` → `<f-when value="{{EXPR}}">`
-/// - `</if>` → `</f-when>`
-/// - `<for each="EXPR">` → `<f-repeat value="{{EXPR}}">`
-/// - `</for>` → `</f-repeat>`
-/// - `{{expr}}` inside `:attr` complex attribute values → `{expr}`
-/// - Strips declarative-shadow-root options hoisted onto the `<f-template>`
-///   wrapper (`shadowrootmode`, `shadowrootdelegatesfocus`, …) from
-///   `<template>` tags (in f-template context, they must be removed to
-///   prevent the browser from auto-activating a duplicate declarative
-///   shadow root and to avoid duplicating the hoisted option)
+// Convert WebUI directives and bindings to FAST syntax.
 fn convert_btr_to_fast(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let bytes = input.as_bytes();

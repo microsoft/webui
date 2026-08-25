@@ -101,10 +101,9 @@ pub struct ComponentRegistry {
     render_policies: HashMap<String, ComponentRenderPolicy>,
     /// Components whose render policy CSS has been appended.
     policy_css: HashSet<String>,
-    /// Plugin-retained client sources keyed by resolved tag name.
+    // Plugin-retained client sources keyed by resolved tag name.
     component_artifact_sources: HashMap<String, String>,
-    /// Optional plugin-supplied transform applied to each component's authored
-    /// source before insertion. `None` stores sources unchanged.
+    // Optional source transform applied before component insertion.
     source_transform: Option<ComponentSourceTransform>,
     /// Reusable CSS parser for token extraction during registration.
     css_parser: CssParser,
@@ -113,7 +112,7 @@ pub struct ComponentRegistry {
 }
 
 #[cfg(feature = "fs")]
-/// Return whether a component has an accessible sibling module.
+// Return whether a component has an accessible sibling module.
 fn has_component_script(html_path: &Path) -> Result<bool> {
     for ext in ["ts", "js"] {
         let candidate = html_path.with_extension(ext);
@@ -154,7 +153,7 @@ impl ComponentRegistry {
         }
     }
 
-    /// Install the active plugin's component-source transform.
+    // Install the active plugin's component-source transform.
     pub(crate) fn set_component_source_transform(
         &mut self,
         transform: Option<ComponentSourceTransform>,
@@ -162,7 +161,7 @@ impl ComponentRegistry {
         self.source_transform = transform;
     }
 
-    /// Apply the source transform, allocating only when it claims the source.
+    // Apply the source transform, allocating only when it claims the source.
     fn resolve_component_source(
         &self,
         tag_name: &str,
@@ -222,7 +221,7 @@ impl ComponentRegistry {
         self.register_component_from_paths_inner(html_path.as_ref(), css_path, false)
     }
 
-    /// Register component paths, optionally skipping unclaimed discovery files.
+    // Register component paths, optionally skipping unclaimed discovery files.
     #[cfg(feature = "fs")]
     fn register_component_from_paths_inner(
         &mut self,
@@ -471,10 +470,7 @@ impl ComponentRegistry {
             .and_then(|component| component.css_content.as_deref())
     }
 
-    /// Get the retained authored client artifact source for a component.
-    ///
-    /// Populated only when a component-source transform returned a distinct
-    /// artifact view; otherwise `None`.
+    // Get a distinct client artifact retained by the source transform.
     pub(crate) fn component_artifact_source(&self, tag_name: &str) -> Option<&str> {
         self.component_artifact_sources
             .get(tag_name)

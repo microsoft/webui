@@ -4,18 +4,16 @@ Components are the building blocks of WebUI applications. They leverage the nati
 
 ## Component Discovery
 
-WebUI uses a component discovery system that automatically scans and registers components at build time:
+WebUI automatically discovers components at build time:
 
 1. WebUI resolves local or npm package roots
-2. The selected plugin maps its package layout to component templates and styles
-3. WebUI validates and registers those components in one shared runtime format
-4. The parser plugin compiles the registered components into the WebUI protocol
+2. The selected plugin discovers component templates and styles
+3. WebUI validates and compiles the components
 
-Without a plugin-specific layout, WebUI identifies HTML files with hyphenated
-names and associates matching CSS and JavaScript or TypeScript files. Built-in
-plugins may recognize another source layout while preserving the same runtime
-component contract. See [Plugins](/guide/concepts/plugins/) for FAST package
-discovery.
+The `webui` plugin identifies HTML files with hyphenated names and associates
+matching CSS and JavaScript or TypeScript files. Other built-in plugins may
+support different source layouts. See [Plugins](/guide/concepts/plugins/) for
+FAST component discovery.
 
 ### Component File Structure
 

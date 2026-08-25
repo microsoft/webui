@@ -7,14 +7,14 @@ use super::fast_convert::{ConvertError, ConvertErrorKind};
 use crate::diagnostic::{codes, Diagnostic};
 use crate::ParserError;
 
-/// A FAST plugin was asked to compile a Light DOM component it cannot mount faithfully.
+// FAST cannot mount a Light DOM component faithfully.
 pub(crate) const FAST_LIGHT_DOM_UNSUPPORTED: &str = "fast-light-dom-unsupported";
-/// A FAST component source contains more than one `<f-template>` element.
+// A FAST source contains more than one `<f-template>`.
 pub(crate) const UNSUPPORTED_MULTIPLE_F_TEMPLATES: &str = "unsupported-multiple-f-templates";
-/// A FAST component source uses malformed or unsupported declarative syntax.
+// A FAST source uses malformed or unsupported syntax.
 pub(crate) const INVALID_FAST_TEMPLATE: &str = "invalid-fast-template";
 
-/// Build a diagnostic from a FAST conversion failure.
+// Build a diagnostic from a FAST conversion failure.
 #[cold]
 #[inline(never)]
 pub(super) fn converter_error(
@@ -94,7 +94,7 @@ pub(super) fn converter_error(
         .into()
 }
 
-/// Build the diagnostic returned when FAST cannot preserve effective Light DOM.
+// Build the diagnostic for unsupported effective Light DOM.
 #[cold]
 #[inline(never)]
 pub(super) fn light_dom_unsupported(tag_name: &str) -> ParserError {

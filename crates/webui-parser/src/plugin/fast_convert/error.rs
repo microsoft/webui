@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-/// FAST conversion failure and the source offset used for its diagnostic.
+// FAST conversion failure and its diagnostic source offset.
 #[derive(Debug)]
 pub(crate) struct ConvertError<'a> {
     kind: ConvertErrorKind<'a>,
@@ -97,7 +97,7 @@ impl fmt::Display for ConvertError<'_> {
     }
 }
 
-/// FAST conversion error categories used to select stable WebUI diagnostics.
+// FAST conversion categories used to select stable diagnostics.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ConvertErrorKind<'a> {
     MultipleFTemplates {

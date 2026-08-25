@@ -7,15 +7,13 @@ use crate::html_parser::{
 };
 use std::ops::Range;
 
-/// Opening-tag scan result without allocating a collection of offsets.
+// Opening-tag scan result without an offset collection.
 pub(super) struct NamedTagMatches {
     pub(super) first: Option<usize>,
     pub(super) count: usize,
 }
 
-/// Scan named opening tags, skipping comments and raw-text bodies.
-///
-/// Unterminated tags use a name-only fallback so callers can diagnose them.
+// Scan opening tags while skipping comments and raw-text bodies.
 pub(super) fn scan_named_open_tags(
     source: &str,
     range: Range<usize>,
@@ -63,10 +61,7 @@ pub(super) fn scan_named_open_tags(
     NamedTagMatches { first, count }
 }
 
-/// Find a matching close while treating raw-text bodies as opaque.
-///
-/// Returns `(close_start, close_end)` and otherwise follows the generic
-/// matcher's depth rules.
+// Find a matching close while treating raw-text bodies as opaque.
 pub(super) fn find_matching_end_skip_raw_text(
     input: &str,
     tag_name: &str,
@@ -118,13 +113,13 @@ pub(super) fn find_matching_end_skip_raw_text(
     None
 }
 
-/// Find the end after `>` for one tag without scanning beyond `range_end`.
+// Find one tag end without scanning beyond `range_end`.
 #[inline]
 pub(super) fn find_tag_end(source: &str, start: usize, range_end: usize) -> Option<usize> {
     find_tag_close(&source[start..range_end]).map(|close| start + close + 1)
 }
 
-/// Read an opening tag name without requiring a terminating `>`.
+// Read an opening tag name without requiring a terminating `>`.
 pub(super) fn read_opening_tag_name(source: &str, start: usize, range_end: usize) -> Option<&str> {
     let bytes = source.as_bytes();
     if bytes.get(start) != Some(&b'<') {

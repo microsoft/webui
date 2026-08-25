@@ -48,6 +48,29 @@ Update `docs/` in the same commit when the change is user-visible:
 - Integration behavior that external developers depend on
 - New features or removed features
 
+### Public API boundary
+
+Developer documentation (`docs/`, crate/package READMEs, and
+`docs/ai/SKILL.md`) documents only supported public APIs and externally
+observable contracts. Every addition must map to at least one public entry
+point:
+
+- an exported Rust, Node, WASM, FFI, or package API;
+- a CLI command, flag, configuration field, or supported identifier;
+- supported template/component authoring syntax;
+- a documented protocol or integration contract.
+
+Do not document private or `pub(crate)` items, internal callbacks, intermediate
+representations, cache algorithms, implementation sequencing, regression-test
+details, or dependency-specific workarounds in developer docs. Put architecture
+and implementation invariants in `DESIGN.md`; keep local rationale in succinct
+ordinary source comments.
+
+Rust `///` documentation comments are for exported public APIs only. Use `//`
+sparingly for non-public implementation rationale. Before finishing, audit the
+documentation diff against the public exports and remove text that has no public
+entry point.
+
 Do not update user-facing docs for internal implementation details, regression
 tests, refactors, or bug fixes that only restore already-documented behavior.
 Every addition must help developers author, configure, debug, or integrate a

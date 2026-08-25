@@ -21,23 +21,21 @@ use std::ops::Range;
 pub(super) const F_TEMPLATE_NAME: &str = "f-template";
 const INNER_TEMPLATE_NAME: &str = "template";
 
-/// Build-time FAST style placeholder removed before parsing.
+// Build-time FAST style placeholder removed before parsing.
 const STYLES_MARKER: &str = "{{styles}}";
 
-/// Prefix for declarative shadow-root options on `<f-template>`.
+// Prefix for declarative shadow-root options on `<f-template>`.
 const SHADOW_ROOT_ATTR_PREFIX: &[u8] = b"shadowroot";
 
-/// Converted parser and artifact views for one authored `<f-template>`.
+// Converted parser and artifact views for one authored `<f-template>`.
 pub(super) struct ConvertedTemplate<'a> {
     pub(super) name: Option<&'a str>,
-    /// Inner `<template>` retained for the client artifact.
+    // Inner `<template>` retained for the client artifact.
     pub(super) artifact_content: String,
     pub(super) parser_content: String,
 }
 
-/// Convert the single `<f-template>` in `source` to WebUI parser syntax.
-///
-/// Returns `None` when no `<f-template>` element is present.
+// Convert one `<f-template>` to parser syntax, or return `None` when absent.
 pub(super) fn convert_template(
     source: &str,
 ) -> Result<Option<ConvertedTemplate<'_>>, ConvertError<'_>> {
@@ -172,16 +170,7 @@ pub(super) fn convert_template(
     }))
 }
 
-/// Resolve the `<f-template>` wrapper's `name` and declarative-shadow-root
-/// options in one attribute walk.
-///
-/// The wrapper is matched ASCII-case-insensitively, so its attributes are too.
-/// `name` overrides the filename-derived tag. Any attribute whose name begins
-/// with `shadowroot` (`shadowrootmode`, `shadowrootdelegatesfocus`, …) is a
-/// declarative-shadow-root option and is collected verbatim (as ` name="value"`
-/// or bare ` name`) to bake onto the inner `<template>`. Any other wrapper
-/// attribute is unsupported and rejected at its own offset so it is never
-/// silently dropped from SSR while surviving in the client artifact.
+// Resolve the wrapper name and shadow-root options in one attribute walk.
 fn resolve_wrapper_attrs<'a>(
     tag: &Tag<'a>,
     wrapper_start: usize,
@@ -206,7 +195,7 @@ fn resolve_wrapper_attrs<'a>(
     Ok((name, shadow_options))
 }
 
-/// Whether `name` is a declarative-shadow-root option (`shadowroot*`).
+// Whether `name` is a declarative-shadow-root option (`shadowroot*`).
 #[inline]
 fn is_shadow_root_attr(name: &str) -> bool {
     name.len() >= SHADOW_ROOT_ATTR_PREFIX.len()
@@ -214,15 +203,7 @@ fn is_shadow_root_attr(name: &str) -> bool {
             .eq_ignore_ascii_case(SHADOW_ROOT_ATTR_PREFIX)
 }
 
-/// Bake `shadow_options` onto the inner `<template>` opening and strip a
-/// generator `{{styles}}` marker that sits immediately after that opening tag
-/// (only whitespace may precede it). Returns `None` when neither change
-/// applies, so the caller can reuse the input without allocating.
-///
-/// `shadow_options` is inserted right after `<template` (before the template's
-/// own attributes), matching the authoritative `fTemplateToWebui` output. Only
-/// the leading `{{styles}}` is removed; a legitimate `{{styles}}` binding
-/// elsewhere in the template is left untouched.
+// Apply shadow options and remove only a generated leading `{{styles}}`.
 fn rewrite_inner_template(inner: &str, shadow_options: &str) -> Option<String> {
     let tag = parse_tag(inner)?;
     if !tag.name.eq_ignore_ascii_case(INNER_TEMPLATE_NAME) {
@@ -273,7 +254,7 @@ fn first_non_whitespace_non_comment(source: &str, range: Range<usize>) -> Option
     None
 }
 
-/// Iterative conversion state for nested FAST directives.
+// Iterative conversion state for nested FAST directives.
 struct ConvertState {
     output: String,
     directives: Vec<DirectiveFrame>,
@@ -461,9 +442,7 @@ fn convert_directive<'a>(
     Ok(())
 }
 
-/// Emit the WebUI opening tag for a converted FAST directive.
-///
-/// Repeat expressions use double quotes; conditions choose a safe delimiter.
+// Emit a converted directive with a safe attribute delimiter.
 fn push_directive_open<'a>(
     state: &mut ConvertState,
     kind: DirectiveKind,
@@ -493,9 +472,7 @@ fn push_directive_open<'a>(
     Ok(())
 }
 
-/// Choose a raw attribute delimiter absent from the condition.
-///
-/// Prefers double quotes and returns `None` when both quote styles occur.
+// Choose a raw delimiter absent from the condition.
 fn condition_attribute_delimiter(expression: &str) -> Option<u8> {
     let bytes = expression.as_bytes();
     match (bytes.contains(&b'"'), bytes.contains(&b'\'')) {

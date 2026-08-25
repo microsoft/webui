@@ -31,7 +31,7 @@ pub(crate) struct CacheKey<'a> {
 struct CacheEntry {
     /// The original source identifier (e.g., `@scope/button`)
     source: String,
-    /// Hash of package metadata and plugin-declared discovery inputs.
+    // Hash of package metadata and plugin-declared discovery inputs.
     version_hash: u64,
     /// Discovered components from this source
     components: Vec<CachedComponent>,
@@ -76,7 +76,7 @@ impl DiscoveryCache {
         format!("{:016x}", hasher.finish())
     }
 
-    /// Compute a version hash from every input affecting discovery.
+    // Compute a version hash from every input affecting discovery.
     pub(crate) fn fingerprint(package_json: &Path, dependencies: &[PathBuf]) -> Result<u64> {
         let mut hasher = DefaultHasher::new();
         for path in std::iter::once(package_json).chain(dependencies.iter().map(PathBuf::as_path)) {

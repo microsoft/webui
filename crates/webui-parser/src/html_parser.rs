@@ -486,12 +486,7 @@ fn tag_is_self_closing(input: &str, close: usize) -> bool {
     input[..close].trim_end().ends_with('/')
 }
 
-/// Return true for HTML elements whose content is raw or inert text rather than
-/// markup, so any tag-like bytes inside their body must be copied verbatim.
-///
-/// Tag names are compared ASCII-case-insensitively, matching the rest of the
-/// scanner. This canonical set keeps markup-shaped text inside raw-text bodies
-/// from being mistaken for real elements.
+// Return true for elements whose bodies must be scanned as opaque text.
 #[inline]
 pub(crate) fn is_raw_text_element(tag_name: &str) -> bool {
     tag_name.eq_ignore_ascii_case("script")
@@ -506,14 +501,7 @@ pub(crate) fn is_raw_text_element(tag_name: &str) -> bool {
         || tag_name.eq_ignore_ascii_case("plaintext")
 }
 
-/// Return the byte offset in `source` just past a raw-text element's matching
-/// close tag, given `content_start` (the offset immediately after its opening
-/// `>`). `source` must begin at the raw-text element's opening `<`.
-///
-/// The body is treated as opaque: only a case-insensitive closing tag of the
-/// same name terminates it, so inner tag-like bytes are ignored. `plaintext`
-/// has no end tag and consumes the remainder. An unterminated body also
-/// consumes the remainder (`source.len()`).
+// Find the end of an opaque raw-text body; `plaintext` consumes the remainder.
 #[inline]
 pub(crate) fn find_raw_text_end(source: &str, tag_name: &str, content_start: usize) -> usize {
     if tag_name.eq_ignore_ascii_case("plaintext") {

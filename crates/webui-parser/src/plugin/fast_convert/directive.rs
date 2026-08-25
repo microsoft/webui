@@ -7,9 +7,7 @@ use crate::html_parser::Tag;
 const F_REPEAT_NAME: &str = "f-repeat";
 const F_WHEN_NAME: &str = "f-when";
 
-/// Validate a FAST directive and return its `value` expression.
-///
-/// Only `value="{{...}}"` is accepted; the first extra attribute is reported.
+// Validate a directive and return its sole `value` expression.
 pub(super) fn parse_directive<'a>(
     tag: &Tag<'a>,
     kind: DirectiveKind,

@@ -698,11 +698,7 @@ struct ComponentStyleInjection<'a> {
 struct ComponentTemplateMode {
     preserve_runtime_attrs: bool,
     policy_wrapper: bool,
-    /// Emit the Style-strategy `<style>` after the template body (before the
-    /// closing `</template>`) instead of immediately inside the opening tag.
-    /// Set for plugins whose client runtime scans the template body for
-    /// `{`/`}` bindings (FAST) so raw CSS rule blocks never shift binding
-    /// alignment. See [`crate::plugin::ParserPlugin::styles_trail_template_body`].
+    // Emit inline CSS after bindings for clients that scan braces.
     styles_at_end: bool,
 }
 
@@ -4571,9 +4567,7 @@ impl HtmlParser {
     ///   protocol metadata and never appear in HTML output. Plugin-facing
     ///   artifacts preserve them. If a CSS snippet is supplied, it is injected
     ///   immediately inside the opening tag (before the dev's children) so
-    ///   styles still apply — unless [`ComponentTemplateMode::styles_at_end`]
-    ///   is set, in which case the `<style>` trails the body (before
-    ///   `</template>`). For `CssStrategy::Module`, the parser appends
+    ///   styles still apply. For `CssStrategy::Module`, the parser appends
     ///   `shadowrootadoptedstylesheets="<tag>"` when it is missing.
     ///
     /// - **Sole bare `<template>` root:** unwraps the wrapper and emits its

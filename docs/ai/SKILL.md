@@ -1309,30 +1309,20 @@ for the stable built-in region list and full configuration contract.
 FAST major versions 2 and 3, respectively. With either plugin, a component file
 authored as one `<f-template name="...">` wrapping a single inner `<template>`
 is recognized: a non-empty `name` sets the component tag (else the filename is
-kept), `<f-repeat>`/`<f-when>` convert to `<for>`/`<if>` for SSR, client-only
-bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) - including
-bindings authored directly on the root `<template>` - are counted for hydration,
-and the authored inner `<template>` is retained for the client artifact. The
-verbatim FAST filename
+kept), `<f-repeat>` and `<f-when>` provide repetition and conditions, and
+client bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may
+be authored directly on the root `<template>`. The verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
 registering under the authored `name`. In npm packages, the FAST discovery
-plugin reads `customElements` declarations and maps each declaration's module
-to a sibling `<component>.template.html`. For a virtual CEM module path,
-discovery also checks class-derived component directories (kebab-case, compact
-lowercase, and the terminal class noun); optional styles use
-`<component>.styles.css` or `<component>.css`. The authored
-`<f-template name>` remains the final component name, and all discovered
-sources pass through WebUI's shared name, duplicate, CSS, and runtime
-registration rules. Wrapper shadow options (`shadowrootmode`,
-`shadowrootdelegatesfocus`) move onto the inner `<template>` for the Shadow-DOM
-SSR declarative shadow root and back onto the client `<f-template>` wrapper; the
-harness's `{{styles}}` placeholder is removed (the CSS strategy injects real
-styles there). A directive takes only `value`; any other directive attribute, an
-unsupported wrapper attribute, a stray FAST closing tag, a meaningful sibling
-around the inner `<template>`, or malformed FAST syntax fails the build with
-`invalid-fast-template` (multiple wrappers use
-`unsupported-multiple-f-templates`). Without a FAST plugin, `<f-template>` markup
-is inert and passes through unchanged. See [Plugins](/guide/concepts/plugins/).
+plugin uses Custom Elements Manifest declarations and generated sibling
+`<component>.template.html` files; optional styles use
+`<component>.styles.css` or `<component>.css`. Wrapper shadow options include
+`shadowrootmode` and `shadowrootdelegatesfocus`. A leading generated
+`{{styles}}` marker is reserved for CSS injection. A directive takes only
+`value`; unsupported FAST syntax fails the build. Without a FAST plugin,
+`<f-template>` markup passes through unchanged. See
+[Plugins](/guide/concepts/plugins/) for the complete public authoring and
+package-layout contract.
 
 ```json
 {

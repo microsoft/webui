@@ -370,10 +370,8 @@ fn is_script_path(path: &str) -> bool {
         || path.ends_with(".ts")
 }
 
-/// Parse component declarations from a Custom Elements Manifest.
-///
-/// Follows the Custom Elements Manifest spec:
-/// `modules[].{path,declarations[].{name,tagName}}`
+// Parse `modules[].{path,declarations[].{name,tagName}}` from a Custom Elements
+// Manifest.
 fn parse_custom_elements_manifest(path: &Path) -> Result<Vec<ComponentDeclaration>> {
     let content = read_to_string_limited(path, MAX_MANIFEST_SIZE)
         .with_context(|| format!("Custom elements manifest: {}", path.display()))?;

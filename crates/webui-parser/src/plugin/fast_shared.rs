@@ -10,7 +10,7 @@ use crate::html_parser::{leading_content, parse_tag};
 use crate::Result;
 use webui_protocol::FastElementData;
 
-/// Classify FAST-owned attributes that SSR skips but hydration counts.
+// Classify FAST-owned attributes that SSR skips but hydration counts.
 #[inline]
 pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
     if attr_name.starts_with('@')
@@ -25,7 +25,7 @@ pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
     }
 }
 
-/// Encode FAST binding metadata when an element has dynamic bindings.
+// Encode binding metadata for dynamic attributes.
 #[inline]
 pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     if binding_attribute_count > 0 {
@@ -41,9 +41,7 @@ pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     }
 }
 
-/// Return whether FAST reads this shadow-root option from `<f-template>`.
-///
-/// `shadowrootadoptedstylesheets` remains on the inner template.
+// FAST reads these options from `<f-template>`; adopted styles remain inner.
 #[inline]
 pub(crate) fn is_hoisted_shadow_attr(name: &str) -> bool {
     const PREFIX: &[u8] = b"shadowroot";
@@ -52,7 +50,7 @@ pub(crate) fn is_hoisted_shadow_attr(name: &str) -> bool {
         && !name.eq_ignore_ascii_case("shadowrootadoptedstylesheets")
 }
 
-/// Collect shadow-root options to hoist onto `<f-template>`.
+// Collect shadow-root options to hoist onto `<f-template>`.
 pub(crate) fn hoisted_shadow_options(processed_template: &str) -> String {
     let (trimmed, _) = leading_content(processed_template);
     let Some(tag) = parse_tag(trimmed) else {
@@ -71,9 +69,7 @@ pub(crate) fn hoisted_shadow_options(processed_template: &str) -> String {
     options
 }
 
-/// Strip options hoisted onto `<f-template>` from the inner template.
-///
-/// Returns the consumed byte count when rebuilding was required.
+// Strip hoisted options and return the consumed bytes when rebuilt.
 pub(crate) fn strip_hoisted_shadow_options(tag_str: &str, result: &mut String) -> Option<usize> {
     let tag = parse_tag(tag_str)?;
     if tag.closing || !tag.name.eq_ignore_ascii_case("template") {
@@ -126,10 +122,7 @@ pub(crate) fn strip_hoisted_shadow_options(tag_str: &str, result: &mut String) -
     Some(tag.close + 1)
 }
 
-/// Inject CSS into a component template.
-///
-/// Inline CSS trails bindings because FAST scans braces as binding delimiters.
-/// Link CSS stays at the opening. Missing closing tags use opening injection.
+// Inject CSS after bindings when required by FAST's brace scanner.
 pub(crate) fn push_body_with_css_injection(
     output: &mut String,
     body: &str,
@@ -152,13 +145,7 @@ pub(crate) fn push_body_with_css_injection(
     output.push_str(body);
 }
 
-/// Convert an authored FAST source into parser and client-artifact views.
-///
-/// Sources without `<f-template>` remain unchanged after a byte precheck.
-///
-/// # Errors
-///
-/// Returns a diagnostic for malformed or unsupported FAST syntax.
+// Convert an authored FAST source into parser and client-artifact views.
 pub(crate) fn transform_component_source(
     source: ComponentSource<'_>,
 ) -> Result<ComponentSourceResult> {
@@ -184,10 +171,7 @@ pub(crate) fn transform_component_source(
     ))
 }
 
-/// Case-insensitive byte precheck for `f-template`.
-///
-/// False positives trigger the authoritative scan; accepted tags cannot be
-/// false negatives because their ASCII name contains these bytes verbatim.
+// Case-insensitive byte precheck; false positives use the authoritative scan.
 #[inline]
 fn contains_f_template_name(haystack: &[u8]) -> bool {
     haystack
