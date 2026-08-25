@@ -89,106 +89,134 @@
 
 <body data-layout="{{page.layout}}">
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <header class="nav-bar">
-    <a href="{{site.base}}" class="logo">
-      <img src="{{site.base}}logo.svg" alt="{{site.title}}" />
-      <span>{{site.title}}</span>
-    </a>
-    <docs-site-navigation
-      :navigation="{{navigation}}"
-      :sections="{{sidebar.sections}}"
-      section="{{page.section}}"
-      ?home="{{page.isHome}}"
-      ?full-layout="{{page.layout == 'full'}}"
-      :open="{{page.mobileNavigationOpen}}"
-    ></docs-site-navigation>
-  </header>
+  <webui-press-region name="site.navigation">
+    <header class="nav-bar">
+      <a href="{{site.base}}" class="logo">
+        <img src="{{site.base}}logo.svg" alt="{{site.title}}" />
+        <span>{{site.title}}</span>
+      </a>
+      <docs-site-navigation
+        :navigation="{{navigation}}"
+        :sections="{{sidebar.sections}}"
+        section="{{page.section}}"
+        ?home="{{page.isHome}}"
+        ?full-layout="{{page.layout == 'full'}}"
+        :open="{{page.mobileNavigationOpen}}"
+      ></docs-site-navigation>
+    </header>
+  </webui-press-region>
+  <webui-press-region name="site.announcement" />
 
   <if condition="page.isHome">
     <main class="main-content" id="main-content" tabindex="-1">
       <div class="home-container">
-        <if condition="hero">
-          <div class="home-hero">
-            <h1>{{site.title}}</h1>
-            <if condition="hero.text">
-              <p class="hero-text">{{hero.text}}</p>
+        <webui-press-region name="home.hero" layout="home">
+          <if condition="hero">
+            <div class="home-hero">
+              <h1>{{site.title}}</h1>
+              <if condition="hero.text">
+                <p class="hero-text">{{hero.text}}</p>
+              </if>
+              <p class="tagline">{{hero.tagline}}</p>
+              <div class="home-actions">
+                <for each="action in hero.actions">
+                  <if condition="action.brand">
+                    <a href="{{action.link}}" class="btn-brand">{{action.text}}</a>
+                  </if>
+                  <if condition="!action.brand">
+                    <a href="{{action.link}}" class="btn-alt">{{action.text}}</a>
+                  </if>
+                </for>
+              </div>
+            </div>
+            <if condition="hero.manifesto">
+              <p class="hero-manifesto">{{hero.manifesto}}</p>
             </if>
-            <p class="tagline">{{hero.tagline}}</p>
-            <div class="home-actions">
-              <for each="action in hero.actions">
-                <if condition="action.brand">
-                  <a href="{{action.link}}" class="btn-brand">{{action.text}}</a>
-                </if>
-                <if condition="!action.brand">
-                  <a href="{{action.link}}" class="btn-alt">{{action.text}}</a>
-                </if>
+          </if>
+        </webui-press-region>
+        <webui-press-region name="home.afterHero" layout="home" />
+        <webui-press-region name="home.features" layout="home">
+          <if condition="hero">
+            <div class="features-grid">
+              <for each="feature in hero.features">
+                <div class="feature-card">
+                  <div class="feature-card-header">
+                    <div class="feature-icon">{{feature.icon}}</div>
+                    <h2>{{feature.title}}</h2>
+                  </div>
+                  <p>{{feature.description}}</p>
+                </div>
               </for>
             </div>
-          </div>
-          <if condition="hero.manifesto">
-            <p class="hero-manifesto">{{hero.manifesto}}</p>
           </if>
-          <webui-press-region
-            name="home.afterHero"
-            layout="home"
-          ></webui-press-region>
-          <div class="features-grid">
-            <for each="feature in hero.features">
-              <div class="feature-card">
-                <div class="feature-card-header">
-                  <div class="feature-icon">{{feature.icon}}</div>
-                  <h2>{{feature.title}}</h2>
-                </div>
-                <p>{{feature.description}}</p>
-              </div>
-            </for>
-          </div>
-        </if>
-        <if condition="footer">
-          <footer class="site-footer">
-            {{{footer.html}}}
-          </footer>
-        </if>
+        </webui-press-region>
+        <webui-press-region name="home.footer" layout="home">
+          <if condition="footer">
+            <footer class="site-footer">
+              {{{footer.html}}}
+            </footer>
+          </if>
+        </webui-press-region>
       </div>
     </main>
   </if>
 
   <if condition="!page.isHome">
     <div class="layout">
-    <aside class="sidebar" aria-label="Documentation sections">
-      <docs-sidebar-navigation
-        :sections="{{sidebar.sections}}"
-      ></docs-sidebar-navigation>
-    </aside>
+    <webui-press-region name="doc.sidebar" layout="doc">
+      <aside class="sidebar" aria-label="Documentation sections">
+        <docs-sidebar-navigation
+          :sections="{{sidebar.sections}}"
+        ></docs-sidebar-navigation>
+      </aside>
+    </webui-press-region>
 
     <main class="main-content" id="main-content" tabindex="-1">
-      <if condition="sidebar.currentSection">
-        <div class="mobile-page-context" aria-label="Current location">
-          <span>{{sidebar.currentSection}}</span>
-          <span aria-hidden="true">/</span>
-          <strong>{{page.title}}</strong>
-        </div>
-      </if>
+      <webui-press-region name="doc.context" layout="doc">
+        <if condition="sidebar.currentSection">
+          <div class="mobile-page-context" aria-label="Current location">
+            <span>{{sidebar.currentSection}}</span>
+            <span aria-hidden="true">/</span>
+            <strong>{{page.title}}</strong>
+          </div>
+        </if>
+      </webui-press-region>
+      <webui-press-region name="doc.beforeContent" layout="doc" />
+      <webui-press-region name="page.beforeContent" layout="page" />
+      <webui-press-region name="full.beforeContent" layout="full" />
       <article class="doc-content">
         {{{page.content}}}
       </article>
-
-      <nav class="page-nav">
-        <if condition="prev">
-          <a href="{{prev.link}}">← {{prev.text}}</a>
+      <webui-press-region name="doc.afterContent" layout="doc" />
+      <webui-press-region name="page.afterContent" layout="page" />
+      <webui-press-region name="full.afterContent" layout="full" />
+      <webui-press-region name="doc.pageNavigation" layout="doc">
+        <nav class="page-nav">
+          <if condition="prev">
+            <a href="{{prev.link}}">← {{prev.text}}</a>
+          </if>
+          <if condition="!prev">
+            <span></span>
+          </if>
+          <if condition="next">
+            <a href="{{next.link}}">{{next.text}} →</a>
+          </if>
+        </nav>
+      </webui-press-region>
+      <webui-press-region name="doc.footer" layout="doc">
+        <if condition="footer">
+          <footer class="site-footer">
+            {{{footer.html}}}
+          </footer>
         </if>
-        <if condition="!prev">
-          <span></span>
+      </webui-press-region>
+      <webui-press-region name="page.footer" layout="page">
+        <if condition="footer">
+          <footer class="site-footer">
+            {{{footer.html}}}
+          </footer>
         </if>
-        <if condition="next">
-          <a href="{{next.link}}">{{next.text}} →</a>
-        </if>
-      </nav>
-      <if condition="footer">
-        <footer class="site-footer">
-          {{{footer.html}}}
-        </footer>
-      </if>
+      </webui-press-region>
     </main>
   </div>
   </if>

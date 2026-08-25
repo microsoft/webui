@@ -4566,6 +4566,8 @@ behavior. Dotted names map state beneath the reserved `regions` object, and
 layout-qualified declarations inject only into pages of that layout.
 State-bearing names cannot overlap as dotted prefixes, while HTML-only prefix
 names remain valid. Full template replacement remains an escape hatch.
+The bundled template's `site.*`, `home.*`, `doc.*`, `page.*`, and `full.*`
+region names are stable extension points documented by WebUI Press.
 
 Before the projection barrier releases page rendering, press publishes the
 generated root/page output identities and an exact identity-to-served-URL map.

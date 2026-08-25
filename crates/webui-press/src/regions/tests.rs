@@ -58,6 +58,47 @@ fn renders_layout_scoped_and_global_regions() -> TestResult {
 }
 
 #[test]
+fn bundled_template_exposes_stable_regions() -> TestResult {
+    let template = include_str!("../../template/index.html");
+    let regions = RegionSet::load(&BTreeMap::new(), Path::new("."), template.to_string())?;
+    let names: Vec<&str> = regions
+        .regions
+        .iter()
+        .map(|region| region.name.as_str())
+        .collect();
+
+    assert_eq!(
+        names,
+        [
+            "site.navigation",
+            "site.announcement",
+            "home.hero",
+            "home.afterHero",
+            "home.features",
+            "home.footer",
+            "doc.sidebar",
+            "doc.context",
+            "doc.beforeContent",
+            "page.beforeContent",
+            "full.beforeContent",
+            "doc.afterContent",
+            "page.afterContent",
+            "full.afterContent",
+            "doc.pageNavigation",
+            "doc.footer",
+            "page.footer",
+        ]
+    );
+    assert!(regions
+        .regions
+        .iter()
+        .find(|region| region.name == "home.hero")
+        .and_then(|region| region.html.as_deref())
+        .is_some_and(|html| html.contains("home-hero")));
+    Ok(())
+}
+
+#[test]
 fn loads_files_and_namespaces_state() -> TestResult {
     let dir = temp_dir()?;
     fs::write(dir.join("region.html"), "<summary-card></summary-card>")?;

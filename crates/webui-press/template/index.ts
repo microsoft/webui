@@ -2,9 +2,7 @@
 // Licensed under the MIT license.
 
 // WebUI Docs — hydration entry point.
-// Imports interactive components for client-side behavior.
-
-import "./docs-site-navigation/docs-site-navigation.js";
+// Interactive components are discovered from the active template regions.
 
 // Hash anchor scrolling
 if (window.location.hash) {

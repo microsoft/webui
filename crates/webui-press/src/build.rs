@@ -32,8 +32,13 @@ use crate::types::{BuildStats, DocsConfig, PageDescriptor};
 
 webui_handler::define_string_response_writer!(StringWriter, buf);
 
-fn page_layout(page: &PageDescriptor) -> &str {
-    page.state["page"]["layout"].as_str().unwrap_or("doc")
+fn region_layout(page: &PageDescriptor) -> &str {
+    let layout = page.state["page"]["layout"].as_str().unwrap_or("doc");
+    if layout == "home" && !page.is_home {
+        "doc"
+    } else {
+        layout
+    }
 }
 
 /// Persistent state held by the dev server across rebuilds. The dev
@@ -415,7 +420,7 @@ pub fn build_docs_with_cache(
                     .extend(scripts);
             }
         }
-        for script_file in regions.script_files(page_layout(page)) {
+        for script_file in regions.script_files(region_layout(page)) {
             explicit_page_scripts
                 .entry(page.path.clone())
                 .or_default()
@@ -480,7 +485,7 @@ pub fn build_docs_with_cache(
             .get(&page.path)
             .map(String::as_str)
             .unwrap_or_else(|| page.state["page"]["content"].as_str().unwrap_or(""));
-        let region_fragments = regions.html_fragments(page_layout(page));
+        let region_fragments = regions.html_fragments(region_layout(page));
         let mut html_sources = Vec::with_capacity(region_fragments.len() + 1);
         html_sources.push(content);
         html_sources.extend(region_fragments);
@@ -624,7 +629,7 @@ pub fn build_docs_with_cache(
         // region-resolved template.
         let (protected, pre_blocks) = protect_pre_blocks(content);
         let page_html = regions
-            .render(page_layout(page))
+            .render(region_layout(page))
             .replace("{{{page.content}}}", &protected);
 
         // Per-page temp dir holding only this page's index.html — components
@@ -687,7 +692,7 @@ pub fn build_docs_with_cache(
             }
         }
 
-        let layout = page_layout(page).to_string();
+        let layout = region_layout(page).to_string();
         regions.apply_state(&layout, &mut page.state)?;
         if let Some(token_file) = token_file.as_ref() {
             inject_theme_tokens(&mut page.state, token_file, &build_result.protocol.tokens)?;
@@ -1500,6 +1505,24 @@ mod tests {
         assert_eq!(state["pageData"], Value::Null);
         assert_eq!(state["headTags"], "<meta name=\"docs\">");
         Ok(())
+    }
+
+    #[test]
+    fn custom_home_layout_uses_non_home_regions() {
+        let state = test_obj([("page", test_obj([("layout", string_value("home"))]))]);
+        let custom_page = PageDescriptor {
+            path: "/custom/".to_string(),
+            is_home: false,
+            state: state.clone(),
+        };
+        let home_page = PageDescriptor {
+            path: "/".to_string(),
+            is_home: true,
+            state,
+        };
+
+        assert_eq!(region_layout(&custom_page), "doc");
+        assert_eq!(region_layout(&home_page), "home");
     }
 
     // --- truncate_utf8 ---------------------------------------------------
