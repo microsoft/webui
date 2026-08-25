@@ -3602,4 +3602,23 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__pendingBarrierRootCountForTests(), 0, 'the retained root is released');
     assert.equal(hasStreamingAttrs(child), false, 'fatal cleanup strips its markers');
   });
+
+  test('a static opt-out root without state is not retained for updates', async () => {
+    const host = element('my-static-update-optout', {
+      attrs: { 'data-ws': '' },
+      activationOutcome: ACTIVATION_STATIC_HOST_OPT_OUT,
+      hook() {},
+    });
+    const initial = buildUpdatableBoundary(0, 0, [host], { state: {} });
+    const patch = buildStateUpdate(1, 0, { count: 2 });
+
+    predefine('my-static-update-optout');
+    enqueue(initial.sentinel);
+    enqueue(patch.sentinel);
+    await flush();
+
+    assert.equal(__isHaltedForTests(), false);
+    assert.equal(hasWs(host), false);
+    assert.equal(host.parentNode, initial.root);
+  });
 });

@@ -69,6 +69,15 @@ export interface SpanBypass {
   readonly host: Element;
 }
 
+/** Preserve ordinary and state-capable dormant roots as update targets. */
+function retainsBoundaryUpdates(el: Element, outcome: number): boolean {
+  return outcome === ACTIVATION_ACTIVATED
+    || (
+      outcome === ACTIVATION_STATIC_HOST_OPT_OUT
+      && typeof (el as Element & { setState?: unknown }).setState === 'function'
+    );
+}
+
 interface PendingTagWaiter {
   readonly generation: number;
   readonly roots: Set<Element>;
@@ -319,11 +328,7 @@ function resumeRetainedRoot(
   const outcome = invokeActivationHook(el, record?.state, record?.bypass);
   if (outcome === ACTIVATION_ANCESTOR_BARRIER) {
     deferBehindBarrier(el, record?.state, updates, record?.bypass);
-  } else if (
-    updates &&
-    (outcome === ACTIVATION_ACTIVATED ||
-      outcome === ACTIVATION_STATIC_HOST_OPT_OUT)
-  ) {
+  } else if (updates && retainsBoundaryUpdates(el, outcome)) {
     joinBoundaryUpdates(el, updates);
   }
   return outcome;
@@ -524,8 +529,7 @@ export function activateDeferredTree(
             skippingDeferredDescendants = true;
           } else if (
             updates &&
-            (outcome === ACTIVATION_ACTIVATED ||
-              outcome === ACTIVATION_STATIC_HOST_OPT_OUT)
+            retainsBoundaryUpdates(el, outcome)
           ) {
             joinBoundaryUpdates(el, updates);
           }

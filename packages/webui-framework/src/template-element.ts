@@ -48,6 +48,10 @@
 
 import { deferTemplateDefinition, getTemplate } from './template.js';
 import {
+  consumePendingParentState,
+  queuePendingParentState,
+} from './pending-parent-state.js';
+import {
   cloneTemplateContent,
 } from './template-content.js';
 import type {
@@ -296,34 +300,8 @@ const STREAMING_BOUNDARY_ABANDON = Symbol.for('microsoft.webui.boundaryAbandon')
 const templateMetaByCtor = new WeakMap<Function, TemplateMeta>();
 const pendingAncestorDescendants = new WeakMap<Element, TemplateElement[]>();
 
-interface PendingParentState {
-  readonly values: Record<string, unknown>;
-  replay?: Set<string>;
-}
-
-const pendingParentStateByElement = new WeakMap<Element, PendingParentState>();
-
 function bindingArray<T>(count: number): T[] {
   return count > 0 ? [] : EMPTY_ARR as unknown as T[];
-}
-
-function queuePendingParentState(
-  element: Element,
-  name: string,
-  value: unknown,
-  replayAfterHydration: boolean,
-): void {
-  let pending = pendingParentStateByElement.get(element);
-  if (!pending) {
-    pending = {
-      values: Object.create(null) as Record<string, unknown>,
-    };
-    pendingParentStateByElement.set(element, pending);
-  }
-  pending.values[name] = value;
-  if (replayAfterHydration) {
-    (pending.replay ??= new Set()).add(name);
-  }
 }
 
 function isUnupgradedWebUITarget(element: Element): boolean {
@@ -1529,9 +1507,8 @@ export class TemplateElement extends HTMLElement {
    * walks its own bindings. Parent values override page-wide bootstrap keys.
    */
   private $applyPendingParentState(replayAfterHydration: boolean): void {
-    const pending = pendingParentStateByElement.get(this);
+    const pending = consumePendingParentState(this);
     if (!pending) return;
-    pendingParentStateByElement.delete(this);
 
     const state = pending.values;
     const observableNames = this.$observableNames();
