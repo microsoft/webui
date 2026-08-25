@@ -1,6 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+/**
+ * Parent bindings can run before the delayed compiler-owned host definition.
+ *
+ * Keep that handoff outside TemplateElement so both full and minimal hosts
+ * consume the same queue. Weak keys also ensure an abandoned undefined child
+ * does not stay alive solely because a parent wrote state to it.
+ */
+
 /** State written by a parent before a compiled child upgrades. */
 export interface PendingParentState {
   readonly values: Record<string, unknown>;

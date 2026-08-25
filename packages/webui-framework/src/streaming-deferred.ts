@@ -69,7 +69,15 @@ export interface SpanBypass {
   readonly host: Element;
 }
 
-/** Preserve ordinary and state-capable dormant roots as update targets. */
+/**
+ * Retain only roots that can accept later boundary patches.
+ *
+ * Minimal empty hosts intentionally return the static opt-out result so their
+ * streaming markers are removed, but they have no `setState`. Retaining them
+ * would keep dead element references and turn every later update into an
+ * invariant failure. Full dormant hosts still opt out while exposing setState,
+ * so they remain valid update targets.
+ */
 function retainsBoundaryUpdates(el: Element, outcome: number): boolean {
   return outcome === ACTIVATION_ACTIVATED
     || (
