@@ -94,11 +94,11 @@ export interface TemplateInstance {
   cleanups?: Array<() => void>;
 }
 
-/** Direct reference to a conditional block with anchor + nested compiled block. */
+/** Conditional block state. Visible blocks need no live DOM anchor. */
 export interface CondBinding {
   condition: CompiledCondition;
   blockIndex: number;
-  anchor: Comment;
+  anchor: Comment | null;
   scope?: ScopeFrame;
   owner: TemplateInstance;
   instance: TemplateInstance | null;

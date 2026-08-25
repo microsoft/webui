@@ -18,6 +18,10 @@ export class TestTextOnlyRepeat extends WebUIElement {
       active: i === 1,
     }));
   }
+
+  clearOptions(): void {
+    this.options = [];
+  }
 }
 
 TestTextOnlyRepeat.define('test-text-only-repeat');

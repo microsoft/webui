@@ -8,6 +8,7 @@ export class TestConditional extends WebUIElement {
   @observable busy = false;
   @observable details = 'Details';
   @observable count = 1;
+  @observable empty = false;
 
   toggleOpen(): void {
     this.open = !this.open;

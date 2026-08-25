@@ -25,9 +25,11 @@
  *
  * During hydration these markers are consumed: `<!--wi-->`, `<!--/wr-->`,
  * and `<!--/wc-->` are removed from the DOM. The `<!--wr-->` start
- * marker is kept as the runtime repeat anchor, and `<!--wc-->` is kept
- * as the runtime condition anchor. Raw HTML markers remain as the minimum
- * stable range required for sibling-safe reactive replacement.
+ * marker is kept as the runtime repeat anchor. A `<!--wc-->` marker remains only
+ * while its conditional body is absent; visible bodies hold their position
+ * directly and create an anchor lazily if they later become hidden. Raw HTML
+ * markers remain as the minimum stable range required for sibling-safe reactive
+ * replacement.
  *
  * **Marker removal is deferred** until after all path-based resolution
  * (`buildSSRIndex`, `$findSSRText`, `$finalize`) is complete.  This is
@@ -37,10 +39,9 @@
  *
  * ## Comment anchors (client-created)
  *
- * For client-created components (no SSR), the framework inserts empty
- * comment nodes (`document.createComment('')`) as stable DOM anchors
- * for conditional and repeat blocks.  When SSR markers are absent,
- * the same fallback anchors are used.
+ * For client-created components (no SSR), repeat blocks keep an empty comment
+ * anchor. Conditional blocks keep one only while their body is absent. When SSR
+ * markers are absent, the same fallback anchors are used.
  *
  * These comments are invisible to the user, weigh ~0 bytes, and are the
  * minimum DOM structure needed for the framework to operate.
@@ -1850,7 +1851,8 @@ export class TemplateElement extends HTMLElement {
       }
     }
 
-    // Conditional bindings: create stable anchors and queue their placement.
+    // Conditional bindings: create insertion anchors and queue their placement.
+    // Visible blocks release these anchors during the first binding pass.
     if (meta.c) {
       for (let i = 0; i < meta.c.length; i++) {
         const [condition, blockIndex, slotMeta] = meta.c[i];
@@ -2102,9 +2104,14 @@ export class TemplateElement extends HTMLElement {
           }
         }
 
+        let liveAnchor: Comment | null = condAnchor;
+        if (condInstance && condInstance.nodes.length > 0) {
+          staleMarkers.push(condAnchor);
+          liveAnchor = null;
+        }
         instance.conds.push({
           condition: condition as CompiledCondition, blockIndex,
-          anchor: condAnchor,
+          anchor: liveAnchor,
           scope, owner: instance, instance: condInstance,
         });
       }
@@ -2241,9 +2248,8 @@ export class TemplateElement extends HTMLElement {
     this.$finalize(instance, ssrRoot, meta, (_r, i) => ssrElements[i] ?? null, scope);
 
     // All path-based resolution is complete. Remove the SSR markers that
-    // were kept alive for structural-block skipping.  Start markers
-    // (<!--wc-->, <!--wr-->) are intentionally NOT collected — they
-    // remain as runtime anchors for conditional/repeat toggling.
+    // were kept alive for structural-block skipping. Repeat starts and starts
+    // for absent conditions remain anchors; visible conditions discard theirs.
     for (let i = 0; i < staleMarkers.length; i++) {
       staleMarkers[i].parentNode?.removeChild(staleMarkers[i]);
     }
@@ -2797,28 +2803,85 @@ export class TemplateElement extends HTMLElement {
     }
   }
 
+  /** Keep ancestor node ownership aligned when a condition swaps its live range. */
+  private $replaceOwnedRange(
+    owner: TemplateInstance,
+    current: Node | readonly Node[],
+    replacement: Node | readonly Node[],
+  ): void {
+    const currentNodes = Array.isArray(current)
+      ? current as readonly Node[]
+      : null;
+    const first = currentNodes ? currentNodes[0] : current as Node;
+    if (!first) return;
+    const currentLength = currentNodes?.length ?? 1;
+    const replacementNodes = Array.isArray(replacement)
+      ? replacement as readonly Node[]
+      : null;
+
+    let instance: TemplateInstance | undefined = owner;
+    while (instance) {
+      const ownedNodes = instance.nodes;
+      const index = ownedNodes.indexOf(first);
+      if (index !== -1) {
+        let matches = true;
+        if (currentNodes) {
+          for (let offset = 1; offset < currentLength; offset++) {
+            if (ownedNodes[index + offset] !== currentNodes[offset]) {
+              matches = false;
+              break;
+            }
+          }
+        }
+        if (matches) {
+          if (replacementNodes) {
+            ownedNodes.splice(index, currentLength, ...replacementNodes);
+          } else {
+            ownedNodes.splice(index, currentLength, replacement as Node);
+          }
+        }
+      }
+      instance = instance.parent;
+    }
+  }
+
   private $toggleCond(c: CondBinding): void {
     const show = c.condition[0](this.$conditionResolver(), c.scope);
     if (show) {
-      let created = false;
-      const container = c.anchor.parentNode as (ParentNode & Node) | null;
-      if (!c.instance) {
-        c.instance = this.$createBlockInstance(
-          c.blockIndex,
-          c.scope,
-          c.owner,
-          container ?? undefined,
-        );
-        created = c.instance !== null;
-      } else {
+      if (c.instance) {
         this.$updateInstance(c.instance);
+        return;
       }
-      if (c.instance && container) {
-        this.$insertInstanceAfter(c.anchor, container, c.instance);
-        if (created) this.$changeStructure();
+
+      const anchor = c.anchor;
+      const container = anchor?.parentNode as (ParentNode & Node) | null;
+      if (!anchor || !container) return;
+      const instance = this.$createBlockInstance(
+        c.blockIndex,
+        c.scope,
+        c.owner,
+        container,
+      );
+      if (!instance) return;
+      c.instance = instance;
+      this.$insertInstanceAfter(anchor, container, instance);
+      if (instance.nodes.length > 0) {
+        this.$replaceOwnedRange(c.owner, anchor, instance.nodes);
+        anchor.remove();
+        c.anchor = null;
       }
+      this.$changeStructure();
     } else if (c.instance) {
-      this.$removeInstance(c.instance);
+      const instance = c.instance;
+      const first = instance.nodes[0] ?? null;
+      const container = first?.parentNode as (ParentNode & Node) | null;
+      if (first && container) {
+        const anchor = document.createComment('');
+        container.insertBefore(anchor, first);
+        this.$replaceOwnedRange(c.owner, instance.nodes, anchor);
+        c.anchor = anchor;
+      }
+      this.$removeInstance(instance);
       c.instance = null;
       this.$changeStructure(c.owner);
     }

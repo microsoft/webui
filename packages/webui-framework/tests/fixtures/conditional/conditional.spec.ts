@@ -21,6 +21,99 @@ test.describe('conditional fixture', () => {
 
   test('renders the SSR conditional body', async ({ page }) => {
     await expect(page.locator('test-conditional .details')).toHaveText('Details');
+    const hasVisibleAnchor = await page.locator('test-conditional .details').evaluate(
+      (element) =>
+        element.previousSibling?.nodeType === Node.COMMENT_NODE
+        && (element.previousSibling as Comment).data === 'wc',
+    );
+    expect(hasVisibleAnchor).toBe(false);
+  });
+
+  test('creates conditional anchors only while content is hidden', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const host = document.querySelector('test-conditional') as any;
+      const root = host.shadowRoot ?? host;
+      const button = root.querySelector('.toggle');
+      const nextOwnedNode = (): ChildNode | null => {
+        let node = button?.nextSibling ?? null;
+        while (
+          node?.nodeType === Node.TEXT_NODE
+          && node.textContent?.trim() === ''
+        ) {
+          node = node.nextSibling;
+        }
+        return node;
+      };
+
+      host.open = false;
+      await Promise.resolve();
+      const firstAnchor = nextOwnedNode();
+      host.open = true;
+      await Promise.resolve();
+      const firstRemoved = firstAnchor?.isConnected === false;
+      host.open = false;
+      await Promise.resolve();
+      const secondAnchor = nextOwnedNode();
+
+      return {
+        firstIsAnchor:
+          firstAnchor?.nodeType === Node.COMMENT_NODE
+          && (firstAnchor as Comment).data === '',
+        firstRemoved,
+        secondIsAnchor:
+          secondAnchor?.nodeType === Node.COMMENT_NODE
+          && (secondAnchor as Comment).data === '',
+        replaced: firstAnchor !== secondAnchor,
+      };
+    });
+
+    expect(result).toEqual({
+      firstIsAnchor: true,
+      firstRemoved: true,
+      secondIsAnchor: true,
+      replaced: true,
+    });
+  });
+
+  test('reuses the anchor for an empty conditional body', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const host = document.querySelector('test-conditional') as any;
+      const root = host.shadowRoot ?? host;
+      const sentinel = root.querySelector('.empty-sentinel');
+      const previousOwnedNode = (): ChildNode | null => {
+        let node = sentinel?.previousSibling ?? null;
+        while (
+          node?.nodeType === Node.TEXT_NODE
+          && node.textContent?.trim() === ''
+        ) {
+          node = node.previousSibling;
+        }
+        return node;
+      };
+
+      const anchor = previousOwnedNode();
+      host.empty = true;
+      await Promise.resolve();
+      const sameWhileVisible = previousOwnedNode() === anchor;
+      host.empty = false;
+      await Promise.resolve();
+
+      return {
+        isAnchor:
+          anchor?.nodeType === Node.COMMENT_NODE
+          && (anchor as Comment).data === 'wc',
+        sameWhileVisible,
+        sameAfterHide: previousOwnedNode() === anchor,
+        connected: anchor?.isConnected === true,
+      };
+    });
+
+    expect(result).toEqual({
+      isAnchor: true,
+      sameWhileVisible: true,
+      sameAfterHide: true,
+      connected: true,
+    });
   });
 
   test('toggles the conditional body on click', async ({ page }) => {
@@ -162,6 +255,51 @@ test.describe('conditional fixture', () => {
     });
     await expect(host.locator('.wrap .inner-hit')).toHaveText('inner');
     await expect(host.locator('.inner-hit')).toHaveCount(1);
+  });
+
+  test('removes nested anchors with their enclosing conditional', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const host = document.querySelector('test-conditional-block-escape') as any;
+      const root = host.shadowRoot ?? host;
+      const findInnerAnchor = (): Comment | null => {
+        const wrap = root.querySelector('.wrap');
+        if (!wrap) return null;
+        const walker = document.createTreeWalker(wrap, NodeFilter.SHOW_COMMENT);
+        let node: Node | null;
+        while ((node = walker.nextNode())) {
+          if ((node as Comment).data === '') return node as Comment;
+        }
+        return null;
+      };
+
+      host.escInner = false;
+      await Promise.resolve();
+      const firstAnchor = findInnerAnchor();
+      host.escInner = true;
+      await Promise.resolve();
+      const firstRemoved = firstAnchor?.isConnected === false;
+      host.escInner = false;
+      await Promise.resolve();
+      const secondAnchor = findInnerAnchor();
+      host.escOuter = false;
+      await Promise.resolve();
+
+      return {
+        firstCreated: firstAnchor !== null,
+        firstRemoved,
+        secondCreated: secondAnchor !== null,
+        secondReplaced: secondAnchor !== firstAnchor,
+        secondRemovedWithOuter: secondAnchor?.isConnected === false,
+      };
+    });
+
+    expect(result).toEqual({
+      firstCreated: true,
+      firstRemoved: true,
+      secondCreated: true,
+      secondReplaced: true,
+      secondRemovedWithOuter: true,
+    });
   });
 
   test('anchors a sibling conditional after a root-level nested conditional', async ({ page }) => {
