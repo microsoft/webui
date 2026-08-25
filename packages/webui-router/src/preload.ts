@@ -6,7 +6,7 @@
  * subsequent navigations are instant (cache hit).
  */
 
-import { stripBaseFromPathname } from './navigation-path.js';
+import { pointerPreloadPath } from './preload-path.js';
 import type { PartialResponse } from './cache.js';
 import type { StreamingPartialResponse } from './streaming.js';
 
@@ -17,7 +17,12 @@ export interface PreloadContext {
   readonly currentRequestPath: string;
   readonly inventory: string;
   hasCache(requestPath: string): boolean;
-  storeCache(requestPath: string, data: PartialResponse & { inventory?: string }, preload: boolean): void;
+  storeCache(
+    requestPath: string,
+    data: PartialResponse & { inventory?: string },
+    preload: boolean,
+    streaming: boolean,
+  ): void;
   fetchPartial(requestPath: string, signal: AbortSignal, speculative: boolean): Promise<StreamingPartialResponse | null>;
 }
 
@@ -30,35 +35,11 @@ export interface PreloadContext {
 export function setupPreloadListeners(ctx: PreloadContext): () => void {
   let preloadController: AbortController | null = null;
   let preloadGeneration = 0;
+  let preloadPath: string | null = null;
 
   const onPointerMove = (e: PointerEvent): void => {
-    if (e.pointerType !== 'mouse') return;
-
-    // Walk composedPath to find the nearest <a> — works across shadow boundaries.
-    const path = e.composedPath();
-    let anchor: HTMLAnchorElement | undefined;
-    for (let i = 0; i < path.length; i++) {
-      if ((path[i] as Element)?.tagName === 'A') {
-        anchor = path[i] as HTMLAnchorElement;
-        break;
-      }
-    }
-    if (!anchor) return;
-
-    // Use anchor's pre-parsed URL properties to avoid new URL() allocation.
-    const href = anchor.getAttribute('href');
-    if (!href || href.startsWith('#')) return;
-    if (anchor.origin !== location.origin) return;
-
-    // Skip excluded paths (e.g. /auth/ endpoints) — no speculative fetch.
-    const anchorPathname = anchor.pathname;
-    for (let i = 0; i < ctx.excludePaths.length; i++) {
-      if (anchorPathname.startsWith(ctx.excludePaths[i])) return;
-    }
-
-    // Build request path from anchor properties — no URL allocation needed.
-    const stripped = stripBaseFromPathname(anchor.pathname, ctx.basePath);
-    const requestPath = (stripped + anchor.search) || '/';
+    const requestPath = pointerPreloadPath(e, ctx.basePath, ctx.excludePaths);
+    if (!requestPath || requestPath === preloadPath) return;
 
     // Skip if already on this path or already cached for it
     if (requestPath === ctx.currentRequestPath) return;
@@ -68,13 +49,19 @@ export function setupPreloadListeners(ctx: PreloadContext): () => void {
     preloadController?.abort();
     const controller = new AbortController();
     preloadController = controller;
+    preloadPath = requestPath;
     const gen = ++preloadGeneration;
 
     ctx.fetchPartial(requestPath, controller.signal, true)
       .then(async data => {
         // Only cache if this is still the latest preload request
         if (data && gen === preloadGeneration && !controller.signal.aborted) {
-          ctx.storeCache(requestPath, data, true);
+          ctx.storeCache(
+            requestPath,
+            data,
+            true,
+            data._deferredStream === true,
+          );
         }
         if (!data?._deferredStream) return;
 
@@ -85,7 +72,10 @@ export function setupPreloadListeners(ctx: PreloadContext): () => void {
           await streaming.cancelDeferredStream(data);
         }
       })
-      .catch(() => {}); // Speculative — silently discard errors
+      .catch(() => {}) // Speculative — silently discard errors
+      .finally(() => {
+        if (gen === preloadGeneration) preloadPath = null;
+      });
   };
 
   document.addEventListener('pointermove', onPointerMove);

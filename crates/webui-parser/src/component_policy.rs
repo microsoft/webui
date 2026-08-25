@@ -19,6 +19,7 @@ pub(crate) const RESERVE_BLOCK_SIZE_ATTR: &str = "w-reserve-block-size";
 /// lead margin, interaction, and the browser's own relevance signal, so a
 /// concrete name such as `visible` would overclaim and freeze the heuristic.
 const POLICY_LAZY: &str = "lazy";
+const POLICY_INTERACTION: &str = "interaction";
 const INSTANCE_EAGER: &str = "eager";
 
 struct InvalidPolicyValue<'a> {
@@ -45,6 +46,8 @@ pub(crate) enum ComponentRenderPolicy {
     Eager,
     LazyHydration,
     LazyRender { reserve_block_size: String },
+    InteractionHydration,
+    LazyRenderInteraction { reserve_block_size: String },
 }
 
 impl ComponentRenderPolicy {
@@ -54,6 +57,8 @@ impl ComponentRenderPolicy {
             Self::Eager => None,
             Self::LazyHydration => Some(1),
             Self::LazyRender { .. } => Some(2),
+            Self::InteractionHydration => Some(3),
+            Self::LazyRenderInteraction { .. } => Some(4),
         }
     }
 
@@ -63,15 +68,29 @@ impl ComponentRenderPolicy {
     }
 
     #[inline]
+    pub(crate) fn requires_client_module(&self) -> bool {
+        self.is_interaction_hydration()
+    }
+
+    #[inline]
+    pub(crate) fn is_interaction_hydration(&self) -> bool {
+        matches!(
+            self,
+            Self::InteractionHydration | Self::LazyRenderInteraction { .. }
+        )
+    }
+
+    #[inline]
     pub(crate) fn reserve_block_size(&self) -> Option<&str> {
         match self {
-            Self::LazyRender { reserve_block_size } => Some(reserve_block_size),
-            Self::Eager | Self::LazyHydration => None,
+            Self::LazyRender { reserve_block_size }
+            | Self::LazyRenderInteraction { reserve_block_size } => Some(reserve_block_size),
+            Self::Eager | Self::LazyHydration | Self::InteractionHydration => None,
         }
     }
 
     pub(crate) fn append_declarations(&self, output: &mut String) {
-        let Self::LazyRender { reserve_block_size } = self else {
+        let Some(reserve_block_size) = self.reserve_block_size() else {
             return;
         };
         output.push_str("content-visibility:auto;contain-intrinsic-block-size:auto ");
@@ -80,7 +99,7 @@ impl ComponentRenderPolicy {
     }
 
     pub(crate) fn append_shadow_css(&self, output: &mut String, tag_name: &str) {
-        if !matches!(self, Self::LazyRender { .. }) {
+        if self.reserve_block_size().is_none() {
             return;
         }
         output.push_str(":host(");
@@ -93,7 +112,7 @@ impl ComponentRenderPolicy {
     }
 
     pub(crate) fn append_light_css(&self, output: &mut String, tag_name: &str) {
-        if !matches!(self, Self::LazyRender { .. }) {
+        if self.reserve_block_size().is_none() {
             return;
         }
         output.push_str(tag_name);
@@ -101,6 +120,30 @@ impl ComponentRenderPolicy {
         self.append_declarations(output);
         output.push('}');
     }
+}
+
+pub(crate) fn validate_policy_client_ownership(
+    component: &str,
+    source: &str,
+    policy: &ComponentRenderPolicy,
+    is_client_owned: bool,
+) -> Result<()> {
+    if !policy.requires_client_module() || is_client_owned {
+        return Ok(());
+    }
+    let offset = source.find(HYDRATE_ATTR).unwrap_or(0);
+    Err(
+        Diagnostic::error("interaction hydration requires an authored component module")
+            .code(codes::INVALID_COMPONENT_RENDER_POLICY)
+            .component(component)
+            .element("template")
+            .snippet(r#"w-hydrate="interaction""#)
+            .at_offset(source, offset)
+            .help(format!(
+                "add a sibling `{component}.ts` or `{component}.js` module, or use a non-interaction policy"
+            ))
+            .into(),
+    )
 }
 
 /// Parse policy attributes from an authored root `<template>`.
@@ -168,7 +211,7 @@ pub(crate) fn parse_component_render_policy(
         }
     }
     if let Some(value) = hydrate_value {
-        if value != POLICY_LAZY {
+        if value != POLICY_LAZY && value != POLICY_INTERACTION {
             return Err(invalid_policy_value(
                 component,
                 html,
@@ -182,7 +225,7 @@ pub(crate) fn parse_component_render_policy(
             ));
         }
     }
-    if render_value.is_some() && hydrate_value.is_some() {
+    if render_value.is_some() && hydrate_value == Some(POLICY_LAZY) {
         return Err(conflicting_policy_error(
             component,
             html,
@@ -209,8 +252,14 @@ pub(crate) fn parse_component_render_policy(
                 value,
             ));
         }
-        return Ok(ComponentRenderPolicy::LazyRender {
-            reserve_block_size: value.to_string(),
+        return Ok(if hydrate_value == Some(POLICY_INTERACTION) {
+            ComponentRenderPolicy::LazyRenderInteraction {
+                reserve_block_size: value.to_string(),
+            }
+        } else {
+            ComponentRenderPolicy::LazyRender {
+                reserve_block_size: value.to_string(),
+            }
         });
     }
 
@@ -223,8 +272,12 @@ pub(crate) fn parse_component_render_policy(
             value,
         ));
     }
-    if hydrate_value.is_some() {
-        return Ok(ComponentRenderPolicy::LazyHydration);
+    if let Some(value) = hydrate_value {
+        return Ok(if value == POLICY_INTERACTION {
+            ComponentRenderPolicy::InteractionHydration
+        } else {
+            ComponentRenderPolicy::LazyHydration
+        });
     }
     Ok(ComponentRenderPolicy::Eager)
 }
@@ -507,7 +560,7 @@ fn missing_policy_value(
         .at_offset(source, source_offset + attr.raw_range.start)
         .help(match attr.name {
             RENDER_ATTR => "use `w-render=\"lazy\"`",
-            HYDRATE_ATTR => "use `w-hydrate=\"lazy\"`",
+            HYDRATE_ATTR => "use `w-hydrate=\"lazy\"` or `w-hydrate=\"interaction\"`",
             _ => "provide a non-negative CSS length such as `18rem`",
         })
         .into()
@@ -532,7 +585,13 @@ fn invalid_policy_value(
     .element("template")
     .snippet(attr.map_or(invalid.name, |item| item.raw))
     .at_offset(source, offset)
-    .help(format!("use `{}=\"{}\"`", invalid.name, invalid.expected))
+    .help(if invalid.name == HYDRATE_ATTR {
+        format!(
+            "use `{HYDRATE_ATTR}=\"{POLICY_LAZY}\"` or `{HYDRATE_ATTR}=\"{POLICY_INTERACTION}\"`"
+        )
+    } else {
+        format!("use `{}=\"{}\"`", invalid.name, invalid.expected)
+    })
     .into()
 }
 
@@ -624,7 +683,10 @@ fn unused_reservation_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_non_negative_css_length, parse_component_render_policy, ComponentRenderPolicy};
+    use super::{
+        is_non_negative_css_length, parse_component_render_policy,
+        validate_policy_client_ownership, ComponentRenderPolicy,
+    };
     use crate::diagnostic::codes;
     use crate::ParserError;
 
@@ -688,6 +750,50 @@ mod tests {
             ),
         );
         assert!(matches!(result, Ok(ComponentRenderPolicy::LazyHydration)));
+    }
+
+    #[test]
+    fn recognizes_interaction_hydration_policy() {
+        let result = parse_component_render_policy(
+            "interaction-shell",
+            r#"<template w-hydrate="interaction"><button>Open</button></template>"#,
+        );
+        assert!(matches!(
+            result,
+            Ok(ComponentRenderPolicy::InteractionHydration)
+        ));
+    }
+
+    #[test]
+    fn combines_lazy_rendering_with_interaction_hydration() {
+        let result = parse_component_render_policy(
+            "interaction-panel",
+            concat!(
+                "<template w-render=\"lazy\" w-reserve-block-size=\"18rem\" ",
+                "w-hydrate=\"interaction\"><button>Open</button></template>",
+            ),
+        );
+        assert!(matches!(
+            result,
+            Ok(ComponentRenderPolicy::LazyRenderInteraction {
+                reserve_block_size,
+            }) if reserve_block_size == "18rem"
+        ));
+    }
+
+    #[test]
+    fn interaction_policy_requires_client_ownership() {
+        let source = r#"<template w-hydrate="interaction"><button>Open</button></template>"#;
+        let policy = parse_component_render_policy("static-shell", source).expect("policy parses");
+        let Err(ParserError::Template(diagnostic)) =
+            validate_policy_client_ownership("static-shell", source, &policy, false)
+        else {
+            panic!("scriptless interaction policy must fail");
+        };
+        assert_eq!(
+            diagnostic.error_code(),
+            Some(codes::INVALID_COMPONENT_RENDER_POLICY)
+        );
     }
 
     #[test]

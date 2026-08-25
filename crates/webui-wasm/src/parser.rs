@@ -96,7 +96,11 @@ fn has_component_script(files: &HashMap<String, String>, tag_name: &str) -> bool
     files.contains_key(&format!("{tag_name}.ts")) || files.contains_key(&format!("{tag_name}.js"))
 }
 
-type ComponentDeliverySnapshot = (Vec<(String, String)>, Vec<(String, bool)>);
+type ComponentDeliverySnapshot = (
+    Vec<(String, String)>,
+    Vec<(String, bool)>,
+    Vec<(String, u8)>,
+);
 
 fn component_delivery_snapshot(parser: &HtmlParser) -> ComponentDeliverySnapshot {
     let css = parser
@@ -114,7 +118,11 @@ fn component_delivery_snapshot(parser: &HtmlParser) -> ComponentDeliverySnapshot
         .component_shadow_dom_usage()
         .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
         .collect();
-    (css, shadow_dom)
+    let work_policies = parser
+        .component_work_policies()
+        .map(|(tag_name, policy)| (tag_name.to_string(), policy))
+        .collect();
+    (css, shadow_dom, work_policies)
 }
 
 fn apply_component_delivery(
@@ -136,6 +144,11 @@ fn apply_component_delivery(
     for (tag_name, css) in snapshot.0 {
         if protocol.fragments.contains_key(&tag_name) {
             protocol.components.entry(tag_name).or_default().css = css;
+        }
+    }
+    for (tag_name, work_policy) in snapshot.2 {
+        if protocol.fragments.contains_key(&tag_name) {
+            protocol.components.entry(tag_name).or_default().work_policy = i32::from(work_policy);
         }
     }
     protocol.populate_style_closures(&[entry]);
@@ -491,5 +504,35 @@ mod tests {
                 "contain-intrinsic-block-size:auto 18rem;}",
             )
         );
+    }
+
+    #[test]
+    fn parse_to_protocol_preserves_combined_render_interaction_policy() {
+        let files = HashMap::from([
+            (
+                "index.html".to_string(),
+                "<html><head></head><body><my-panel></my-panel></body></html>".to_string(),
+            ),
+            (
+                "my-panel.html".to_string(),
+                concat!(
+                    r#"<template w-render="lazy" w-reserve-block-size="18rem" "#,
+                    r#"w-hydrate="interaction"><button>Open</button></template>"#,
+                )
+                .to_string(),
+            ),
+            ("my-panel.ts".to_string(), "class MyPanel {}".to_string()),
+        ]);
+
+        let protocol = parse_to_protocol(&files, "index.html", &[]).unwrap();
+        let component = protocol.components.get("my-panel").unwrap();
+        assert!(component.template_json.contains(r#""wp":4"#));
+        assert_eq!(
+            component.work_policy,
+            webui_protocol::ComponentWorkPolicy::LazyRenderInteraction as i32
+        );
+        assert!(protocol
+            .component_render_css
+            .contains("content-visibility:auto"));
     }
 }

@@ -111,6 +111,17 @@ pub struct ComponentData {
     pub navigation_mode: Option<StateProjectionMode>,
     /// Whether the component authors a sole open declarative Shadow root.
     pub uses_shadow_dom: bool,
+    /// Eager, lazy hydration, lazy rendering, interaction hydration, or the
+    /// combined lazy-render/interaction policy.
+    pub work_policy: ComponentWorkPolicy,
+}
+
+pub enum ComponentWorkPolicy {
+    Eager = 0,
+    LazyHydration = 1,
+    LazyRender = 2,
+    Interaction = 3,
+    LazyRenderInteraction = 4,
 }
 
 pub enum InitialStateStrategy {
@@ -2283,15 +2294,24 @@ update hot paths still call the function directly.
 | `ta`  | `string[]`                        | Observed host attributes index-aligned with `tr` |
 | `sd`  | `1`                               | Shadow DOM flag for client-created components      |
 | `th`  | `1`                               | Compiler-owned host flag for a scriptless template |
-| `wp`  | `1 \| 2`                          | Component work policy: `1` = lazy hydration only, `2` = lazy rendering plus lazy hydration |
+| `wp`  | `1 \| 2 \| 3 \| 4`                | Component work policy: `1` = lazy hydration, `2` = lazy rendering + hydration, `3` = interaction, `4` = lazy rendering + interaction |
 
 All arrays are optional and omitted from the output when empty to minimize payload.
 
 ### Interaction hydration boundary
 
-`@microsoft/webui-framework/interaction-hydration.js` is the lightweight public
-entry for trusted SSR applications that defer their full component module
-graph. `installInteractionHydration({ root, load })` listens in capture phase for
+`w-hydrate="interaction"` compiles to `wp: 3` and
+`ComponentData.work_policy = Interaction`. Combining it with
+`w-render="lazy"` and a reservation compiles to `wp: 4` and
+`ComponentData.work_policy = LazyRenderInteraction`. Both forms emit a
+`data-webui-interaction` marker on each rendered root. The combined form also
+emits the same build-time `content-visibility` CSS as `wp: 2`, but hydrates
+eagerly once its deferred module loads instead of entering the visibility
+coordinator. `@microsoft/webui-framework/interaction-hydration.js`
+consumes exactly one marker. Routed apps compose it with the independent
+`@microsoft/webui-router/preload.js` handle; FAST or another runtime composes the
+same router handle with its own readiness lifecycle.
+`installInteractionHydration({ load })` is the lower-level non-router API. It listens in capture phase for
 pointer-down, focus, keyboard, and click intent and invokes `load()` once. Hover
 does not load. Pointer, focus, keyboard, ineligible click, and previously
 cancelled click signals are not cancelled. A cancelable unmodified primary click
@@ -2302,12 +2322,16 @@ The disposer removes capture listeners. Rejection removes the boundary, reports
 through `onError` or `console.error`, and replays the click. Replay metadata
 identifies synthetic events and boundary roots already traversed, so same-root
 replacement cannot loop while nested boundaries still compose. Replay cannot
-preserve `isTrusted`, transient activation, or closed-shadow targets. This is a
-runtime scheduling policy, not an SSR protocol change; evidence must pair startup
-bytes/heap with first-interaction latency.
-Router route preload is independent: an already-started router's document-level
-hover listener remains active, while a router started inside `load()` cannot
-prefetch partial routes before activation.
+preserve `isTrusted`, transient activation, or closed-shadow targets. The
+protocol addition is zero-default and absent for eager components; evidence must
+pair startup bytes/heap with first-interaction latency.
+`@microsoft/webui-router/preload.js` buffers one raw JSON/NDJSON partial (2 MB
+cap, 5 second TTL), deduplicates same-link pointer movement, and transfers the
+single-use response into `Router.start()` without another fetch or early
+template/CSS registration. It contains no WebUI Framework or FAST dependency:
+each hydration runtime starts through `onIntent` and passes the handle to the
+router after readiness. Inventory mismatch, abort, expiry, malformed data, or
+load failure releases the entry and falls back to normal navigation.
 
 `ConditionRef` in JSON metadata is `[functionIndex, paths]`:
 
@@ -2455,6 +2479,7 @@ The Rust compiler (`generate_compiled_template` in `webui-parser/src/plugin/webu
 | `@event` on `<template>` wrapper     | `re[N]`                | *(stripped)*                      |
 | `<template w-hydrate="lazy">`     | `wp: 1`                | policy wrapper/attributes stripped |
 | `<template w-render="lazy" w-reserve-block-size="72px">` | `wp: 2` | policy wrapper/attributes stripped |
+| `<template w-render="lazy" w-reserve-block-size="72px" w-hydrate="interaction">` | `wp: 4` | policy wrapper/attributes stripped |
 | `w-ref="{name}"`                     | *(stays)*              | *(unchanged)*                     |
 | `<outlet />`, `<outlet></outlet>`   | *(stays)*              | `<outlet></outlet>`               |
 
@@ -2482,8 +2507,12 @@ values, misplaced policy attributes, and reservations without the rendering
 policy. Invalid input returns the stable diagnostics
 `invalid-component-render-policy`, `missing-render-reservation`, or
 `invalid-render-reservation`.
+`w-render="lazy"` and `w-hydrate="lazy"` are rejected as redundant.
+`w-render="lazy"` and `w-hydrate="interaction"` are intentionally orthogonal:
+the former controls browser rendering while the latter controls module-graph
+hydration.
 
-For every entry- or component-asset-reachable `wp: 2` component, the registry
+For every entry- or component-asset-reachable `wp: 2` or `wp: 4` component, the registry
 emits one deterministic tag rule into `WebUIProtocol.component_render_css`:
 
 ```css
@@ -4696,7 +4725,12 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   browser-managed `content-visibility: auto` and an intrinsic block-size
   reservation emitted before first layout. Client-created instances always
   mount eagerly.
-  - Both policies require the optional
+  `wp: 3`, compiled from `<template w-hydrate="interaction">`, leaves the
+  component module graph to the document interaction boundary. `wp: 4` combines
+  that hydration trigger with the same lazy-rendering CSS as `wp: 2`; after the
+  module loads it hydrates synchronously before replay rather than registering
+  with the visibility coordinator.
+  - The visibility policies (`wp: 1` and `wp: 2`) require the optional
     `@microsoft/webui-framework/lazy-hydration.js` entry before component
     definitions in the same module graph. Without it, or without
     `IntersectionObserver`, hydration falls back to eager and the component is
@@ -4704,14 +4738,17 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
     warning per session. A missing `IntersectionObserver` never warns because
     the eager fallback is expected on older browsers. A `wp: 2` rendering rule
     remains browser-managed independently of the hydration fallback.
-  - **Instance escape hatches.** `w-hydrate="eager"` makes either policy hydrate
-    synchronously. On `wp: 2`, rendering deferral remains active.
+  - **Instance escape hatches.** For `wp: 1` and `wp: 2`,
+    `w-hydrate="eager"` hydrates synchronously. On `wp: 2`, rendering deferral
+    remains active.
     `w-render="eager"` excludes a `wp: 2` instance from the generated CSS selector
     and also hydrates it synchronously, disabling the complete policy. Only the
     exact, case-sensitive string `"eager"` is recognized. Other values are
     ignored. Ordinary eager components short-circuit on absent `wp` metadata
     before reading either attribute. The framework does not strip instance
     overrides, so they survive hydration and reconnect.
+    On `wp: 4`, `w-render="eager"` disables only browser rendering deferral;
+    module-graph hydration remains owned by the singleton interaction boundary.
 - **Optional lazy-hydration entry.** The shared viewport/interaction
   coordinator lives in `lazy-hydration-coordinator.ts`, reachable only
   through the optional `@microsoft/webui-framework/lazy-hydration.js` entry

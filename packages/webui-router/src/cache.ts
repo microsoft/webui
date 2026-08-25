@@ -134,7 +134,7 @@ export class NavigationCache {
 
     this.cache.set(requestPath, {
       data, tags, ts: Date.now(), staleTime, preload,
-      complete: !preload && !streaming,
+      complete: !streaming,
     });
 
     // Build reverse tag index

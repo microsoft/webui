@@ -33,8 +33,8 @@ use super::{
 };
 use crate::route_matcher::RouteMatch;
 use crate::{
-    structural_signal_value, HandlerError, Result, WebUIHandler, WebUIProcessContext,
-    STATE_INJECT_KEY,
+    structural_signal_value, write_interaction_marker, HandlerError, Result, WebUIHandler,
+    WebUIProcessContext, STATE_INJECT_KEY,
 };
 
 const SPAN_START_PREFIX: &str = "streaming_span_start:";
@@ -1187,6 +1187,7 @@ impl ContinuationVm {
         if let Some(plugin) = context.plugin.as_ref() {
             plugin.write_route_component_state(context.state, context.writer)?;
         }
+        write_interaction_marker(&tag, context)?;
         prepare_generated_streaming_root(&tag, context)?;
         context.writer.write(">")?;
         self.push(Frame::GeneratedComponentEnd { tag, spanning })?;

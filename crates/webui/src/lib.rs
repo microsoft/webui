@@ -631,6 +631,10 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
         .component_shadow_dom_usage()
         .map(|(tag_name, uses_shadow_dom)| (tag_name.to_string(), uses_shadow_dom))
         .collect();
+    let component_work_policies: Vec<(String, u8)> = parser
+        .component_work_policies()
+        .map(|(tag_name, policy)| (tag_name.to_string(), policy))
+        .collect();
 
     // Collect CSS token analysis before consuming the parser.
     let token_analysis = parser.token_analysis();
@@ -726,6 +730,11 @@ fn build_protocol_inner(options: &BuildOptions) -> Result<RawBuildOutput, WebUIE
             .entry(tag_name)
             .or_default()
             .uses_shadow_dom = uses_shadow_dom;
+    }
+    for (tag_name, work_policy) in component_work_policies {
+        if protocol.fragments.contains_key(&tag_name) {
+            protocol.components.entry(tag_name).or_default().work_policy = i32::from(work_policy);
+        }
     }
     protocol.component_render_css = component_render_css;
 
@@ -3723,6 +3732,71 @@ mod tests {
 
         assert!(result.protocol.component_render_css.contains("card-a"));
         assert!(!result.protocol.component_render_css.contains("card-b"));
+    }
+
+    #[test]
+    fn test_build_persists_interaction_work_policy() {
+        let app = create_app_dir(&[
+            ("index.html", "<interaction-shell></interaction-shell>"),
+            (
+                "interaction-shell.html",
+                r#"<template w-hydrate="interaction"><button>Open</button></template>"#,
+            ),
+            (
+                "interaction-shell.ts",
+                "customElements.define('interaction-shell', class extends HTMLElement {});",
+            ),
+        ]);
+        for plugin in [Plugin::WebUI, Plugin::FastV3] {
+            let is_webui = matches!(plugin, Plugin::WebUI);
+            let mut options = default_options(app.path());
+            options.plugin = Some(plugin);
+            let result = build(options).expect("interaction policy build");
+            let component = &result.protocol.components["interaction-shell"];
+            assert_eq!(
+                component.work_policy,
+                webui_protocol::ComponentWorkPolicy::Interaction as i32
+            );
+            if is_webui {
+                assert!(component.template_json.contains(r#""wp":3"#));
+            }
+        }
+    }
+
+    #[test]
+    fn test_build_persists_combined_render_interaction_policy() {
+        let app = create_app_dir(&[
+            ("index.html", "<interaction-panel></interaction-panel>"),
+            (
+                "interaction-panel.html",
+                concat!(
+                    r#"<template w-render="lazy" w-reserve-block-size="18rem" "#,
+                    r#"w-hydrate="interaction"><button>Open</button></template>"#,
+                ),
+            ),
+            (
+                "interaction-panel.ts",
+                "customElements.define('interaction-panel', class extends HTMLElement {});",
+            ),
+        ]);
+        for plugin in [Plugin::WebUI, Plugin::FastV3] {
+            let is_webui = matches!(plugin, Plugin::WebUI);
+            let mut options = default_options(app.path());
+            options.plugin = Some(plugin);
+            let result = build(options).expect("combined interaction policy build");
+            let component = &result.protocol.components["interaction-panel"];
+            assert_eq!(
+                component.work_policy,
+                webui_protocol::ComponentWorkPolicy::LazyRenderInteraction as i32
+            );
+            assert!(result
+                .protocol
+                .component_render_css
+                .contains("interaction-panel"));
+            if is_webui {
+                assert!(component.template_json.contains(r#""wp":4"#));
+            }
+        }
     }
 
     #[test]

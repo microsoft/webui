@@ -166,8 +166,10 @@ If the optional entry or `IntersectionObserver` is unavailable, hydration falls
 back to eager; `content-visibility` remains browser-managed. See
 [Lazy Hydration](https://microsoft.github.io/webui/guide/concepts/hydration#lazy-hydration).
 
-To defer an SSR page's full component graph until interaction, use the separate
-lightweight entry:
+Router applications should author `<template w-hydrate="interaction">` and use
+the framework-agnostic `@microsoft/webui-router/preload.js` handle. FAST and
+other hydration runtimes use that same handle with their own readiness signal.
+Non-router apps use the lower-level framework entry:
 
 ```ts
 import {
@@ -177,7 +179,6 @@ import {
   '@microsoft/webui-framework/interaction-hydration.js';
 
 installInteractionHydration({
-  root: document.querySelector('my-app')!,
   load: () => import('./components.js'),
 });
 ```
@@ -193,10 +194,23 @@ Prefer an eager root with lazy descendants when request-to-hydrated time matters
 Synthetic replay cannot preserve transient user activation or target controls
 inside closed shadow roots; hydrate those paths eagerly.
 
-Router `preload: true` is independent. An already-started router keeps its
-document-level hover prefetch; if `Router.start()` runs inside `load()`, route
-prefetch begins only after activation. Keep the shell/router eager when
-pre-interaction route prefetch matters.
+One offscreen singleton boundary can retain browser rendering deferral while
+also deferring its module graph:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+  w-hydrate="interaction"
+>
+  <!-- Component content -->
+</template>
+```
+
+Do not use the combined form for repeated items. A visible app root gains no
+rendering benefit from `content-visibility`; keep interaction on that root and
+put `w-render="lazy"` on offscreen descendants.
+
 
 ### Build with the WebUI plugin
 

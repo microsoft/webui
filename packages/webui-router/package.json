@@ -17,6 +17,12 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./preload.js": {
+      "import": {
+        "types": "./dist/preload-entry.d.ts",
+        "default": "./dist/preload-entry.js"
+      }
     }
   },
   "files": [
@@ -26,7 +32,7 @@
   "name": "@microsoft/webui-router",
   "scripts": {
     "build": "tsc",
-    "build:e2e": "esbuild tests/fixtures/router-app/src/index.ts --bundle --outfile=tests/fixtures/router-app/dist/index.js --format=esm --sourcemap --tsconfig=tsconfig.e2e.json",
+    "build:e2e": "esbuild tests/fixtures/router-app/src/index.ts tests/fixtures/router-app/src/interaction-entry.ts --bundle --outdir=tests/fixtures/router-app/dist --format=esm --splitting --sourcemap --tsconfig=tsconfig.e2e.json",
     "start:server": "cargo run -p microsoft-webui-cli -- serve ./tests/fixtures/router-app/src --plugin=webui --servedir ./tests/fixtures/router-app/dist --state ./tests/fixtures/router-app/data/state.json --port 39102",
     "test": "tsc -p tsconfig.unit-test.json && node --test dist/**/*.test.js && pnpm build:e2e && playwright test",
     "test:e2e": "playwright test",

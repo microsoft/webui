@@ -42,8 +42,53 @@ This advanced policy leaves rendering unchanged and defers only JavaScript
 hydration. Use it when `content-visibility` containment is unsafe for the
 component's layout.
 
-Do not add both policies. `w-render="lazy"` already includes
-visibility-deferred hydration.
+Do not pair `w-render="lazy"` with `w-hydrate="lazy"` because rendering
+deferral already includes visibility-deferred hydration.
+
+## Interaction Application
+
+```html
+<template w-hydrate="interaction">
+  <nav>...</nav>
+  <outlet />
+</template>
+```
+
+This application-root policy keeps the trusted SSR DOM active while deferring
+the authored component graph and router until interaction. The compiler marks
+the rendered root. Compose
+`@microsoft/webui-framework/interaction-hydration.js` with the
+framework-agnostic `@microsoft/webui-router/preload.js` handle to prefetch one
+hovered route partial, then activate components and router without refetching.
+
+Use this only once in the active document. See
+[Interaction-triggered hydration](/guide/concepts/hydration#interaction-triggered-application-hydration).
+
+## Lazy Rendering Until Interaction
+
+For one offscreen SSR island that may never be used, combine the rendering and
+interaction policies:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+  w-hydrate="interaction"
+>
+  <button @click="{open()}">Open</button>
+</template>
+```
+
+The browser can skip offscreen style, layout, paint, and raster work while the
+component module graph remains unloaded. When interaction starts the graph,
+this boundary hydrates eagerly before click replay; it does not also wait for
+the visibility coordinator.
+
+The interaction marker still has document-wide singleton semantics. Do not use
+this combination for repeated list items. For a visible application shell,
+`content-visibility` provides no initial rendering benefit: put
+`w-hydrate="interaction"` on the shell and `w-render="lazy"` on repeated
+offscreen descendants instead.
 
 ## Per-Instance Overrides
 

@@ -213,6 +213,13 @@ Only mouse pointers trigger preload — touch taps fire simultaneously with the 
 Preload is an optional runtime tier. Apps that do not enable it do not load the
 preload listener or navigation cache implementation.
 
+`@microsoft/webui-router/preload.js` exposes the framework-agnostic
+`prepareRoutePreload()` handle. Start framework-specific hydration from its
+`onIntent` callback, then pass the handle to
+`Router.start({ preload: prepared })`. WebUI Framework calls
+`wakeInteractionHydration()` from that callback; FAST uses its own hydration
+readiness signal. The router imports neither runtime.
+
 ### Route Loaders
 
 Define a static `loader()` method on a component class to fetch data from a custom source instead of using server-provided state:

@@ -1,6 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import type { PreparedRoutePreload } from './prepared-preload.js';
+
 declare global {
   interface WebUIRuntimeGlobal {
     chain?: unknown[];
@@ -94,7 +96,7 @@ export interface RouterConfig {
    * Router.start({ preload: true });
    * ```
    */
-  preload?: boolean;
+  preload?: boolean | PreparedRoutePreload;
 
   /**
    * Intercept same-origin POST forms and dispatch component `static action()`

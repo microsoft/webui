@@ -5,8 +5,11 @@ import {
   installInteractionHydration,
   isInteractionReplay,
 } from '../../../src/interaction-hydration.js';
+import { WebUIElement } from '../../../src/index.js';
 
-const root = document.querySelector('#interaction-root');
+class TestInteraction extends WebUIElement {}
+
+const root = document.querySelector('[data-webui-interaction]');
 if (!root) throw new Error('interaction hydration fixture root is missing');
 
 let releaseHydration!: () => void;
@@ -54,6 +57,6 @@ installInteractionHydration({
       state.replayed = isInteractionReplay(event);
       state.targetId = target instanceof Element ? target.id : '';
     });
+    TestInteraction.define('test-interaction');
   },
-  root,
 });

@@ -59,6 +59,9 @@ pub struct ComponentData {
     /// fallback and authored declarative Shadow DOM resolution.
     #[prost(bool, tag = "10")]
     pub uses_shadow_dom: bool,
+    /// Compiler-owned client work policy. Zero/eager is absent on the wire.
+    #[prost(enumeration = "ComponentWorkPolicy", tag = "11")]
+    pub work_policy: i32,
 }
 /// Link stylesheet metadata for one static component asset root.
 ///
@@ -451,6 +454,47 @@ pub struct CompoundCondition {
 pub struct IdentifierCondition {
     #[prost(string, tag = "1")]
     pub value: ::prost::alloc::string::String,
+}
+/// Per-component client work scheduling policy.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ComponentWorkPolicy {
+    Eager = 0,
+    LazyHydration = 1,
+    LazyRender = 2,
+    Interaction = 3,
+    LazyRenderInteraction = 4,
+}
+impl ComponentWorkPolicy {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Eager => "COMPONENT_WORK_POLICY_EAGER",
+            Self::LazyHydration => "COMPONENT_WORK_POLICY_LAZY_HYDRATION",
+            Self::LazyRender => "COMPONENT_WORK_POLICY_LAZY_RENDER",
+            Self::Interaction => "COMPONENT_WORK_POLICY_INTERACTION",
+            Self::LazyRenderInteraction => {
+                "COMPONENT_WORK_POLICY_LAZY_RENDER_INTERACTION"
+            }
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "COMPONENT_WORK_POLICY_EAGER" => Some(Self::Eager),
+            "COMPONENT_WORK_POLICY_LAZY_HYDRATION" => Some(Self::LazyHydration),
+            "COMPONENT_WORK_POLICY_LAZY_RENDER" => Some(Self::LazyRender),
+            "COMPONENT_WORK_POLICY_INTERACTION" => Some(Self::Interaction),
+            "COMPONENT_WORK_POLICY_LAZY_RENDER_INTERACTION" => {
+                Some(Self::LazyRenderInteraction)
+            }
+            _ => None,
+        }
+    }
 }
 /// Build-wide initial-state behavior.
 #[derive(serde::Serialize, serde::Deserialize)]

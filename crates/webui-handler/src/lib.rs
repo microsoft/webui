@@ -59,8 +59,8 @@ pub use streaming::{
 use thiserror::Error;
 use webui_expressions::{evaluate_with_resolver, ExpressionError};
 use webui_protocol::{
-    web_ui_fragment::Fragment, ComponentAssetStylePreload, FragmentList, InitialStateStrategy,
-    StateProjectionMode, WebUIFragment, WebUIProtocol,
+    web_ui_fragment::Fragment, ComponentAssetStylePreload, ComponentWorkPolicy, FragmentList,
+    InitialStateStrategy, StateProjectionMode, WebUIFragment, WebUIProtocol,
 };
 use webui_state::find_value_by_dotted_path_ref;
 
@@ -963,6 +963,23 @@ pub(crate) fn structural_signal_value(
         return None;
     }
     signal.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX)
+}
+
+pub(crate) fn write_interaction_marker(
+    tag: &str,
+    context: &mut WebUIProcessContext<'_, '_, '_>,
+) -> Result<()> {
+    if matches!(
+        context
+            .protocol
+            .components
+            .get(tag)
+            .and_then(|component| ComponentWorkPolicy::try_from(component.work_policy).ok()),
+        Some(ComponentWorkPolicy::Interaction | ComponentWorkPolicy::LazyRenderInteraction)
+    ) {
+        context.writer.write(" data-webui-interaction")?;
+    }
+    Ok(())
 }
 
 /// Find the end of a leading doctype without treating quoted `>` bytes in
@@ -2251,6 +2268,7 @@ impl WebUIHandler {
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
+                write_interaction_marker(comp, context)?;
                 prepare_generated_streaming_root(comp, context)?;
                 context.writer.write(">")?;
 
@@ -2736,6 +2754,7 @@ impl WebUIHandler {
                 if let Some(p) = &context.plugin {
                     p.write_route_component_state(context.state, context.writer)?;
                 }
+                write_interaction_marker(&route_frag.fragment_id, context)?;
                 prepare_generated_streaming_root(&route_frag.fragment_id, context)?;
                 context.writer.write(">")?;
 

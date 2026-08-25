@@ -90,7 +90,7 @@ function fakeCoordinator(
 }
 
 /** Bypass the `protected` modifier the same way `template-element.test.ts` does. */
-function shouldDefer(el: object, wp?: 1 | 2): boolean {
+function shouldDefer(el: object, wp?: 1 | 2 | 3 | 4): boolean {
   return (
     el as unknown as {
       $shouldDeferSSRHydration(meta: TemplateMeta): boolean;
@@ -156,6 +156,23 @@ describe('WebUIElement — compiler-owned work policy', () => {
     class OffscreenItem extends WebUIElement {}
     const el = new OffscreenItem();
     assert.equal(shouldDefer(el, 2), true);
+  });
+
+  test('interaction policy hydrates eagerly once its deferred module loads', () => {
+    __resetLazyHydrationContractForTests();
+
+    class InteractionItem extends WebUIElement {}
+    const el = new InteractionItem();
+    assert.equal(shouldDefer(el, 3), false);
+  });
+
+  test('combined render and interaction policy hydrates eagerly after loading', () => {
+    __resetLazyHydrationContractForTests();
+    registerLazyHydrationCoordinator(fakeCoordinator());
+
+    class InteractionItem extends WebUIElement {}
+    const el = new InteractionItem();
+    assert.equal(shouldDefer(el, 4), false);
   });
 
   test('falls back to eager, without warning, when the coordinator reports no browser support', () => {

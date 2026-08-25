@@ -43,6 +43,10 @@ import {
 
 import type { PartialResponse, RouteChainEntry } from './cache.js';
 import type { PendingState } from './pending.js';
+import type {
+  PreparedRoutePreload,
+  RawPreloadedPartial,
+} from './prepared-preload.js';
 import {
   registerTemplatesAndStyles,
   injectCssLinks,
@@ -77,6 +81,11 @@ type RouterRuntimeGlobal = WebUIRuntimeGlobal & {
   templateFns?: Record<string, unknown>;
 };
 
+interface PartialReadResult {
+  readonly data: StreamingPartialResponse | null;
+  readonly hasDeferredReader: boolean;
+}
+
 export class WebUIRouter {
   private config: RouterConfig = {};
   private started = false;
@@ -92,6 +101,7 @@ export class WebUIRouter {
   private currentRequestPath = '/';
   private navCache: import('./cache.js').NavigationCache | null = null;
   private navCacheLoad: Promise<import('./cache.js').NavigationCache> | null = null;
+  private preparedPreload: PreparedRoutePreload | null = null;
   private cacheLoadGeneration = 0;
   private cacheEnabled = false;
   private cacheConfig: Required<CacheConfig> = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
@@ -99,6 +109,7 @@ export class WebUIRouter {
   private deferredReader: Promise<void> | null = null;
   private deferredGeneration = 0;
   private partialControllers = new Set<AbortController>();
+  private partialCleanups = new WeakMap<AbortController, () => void>();
   private boundaryGeneration = 0;
   private pending: PendingState | null = null;
   private pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -106,6 +117,7 @@ export class WebUIRouter {
   private loadPromises = new Map<string, Promise<void>>();
   private ssrPreloadsCleared = false;
   private documentNavigationUrl: string | null = null;
+  private startupNavigation: Promise<void> | null = null;
 
   /** The component tag of the currently active leaf route. */
   get activeComponent(): string {
@@ -132,8 +144,17 @@ export class WebUIRouter {
   }
 
   private abortPartialRequests(): void {
-    for (const controller of this.partialControllers) controller.abort();
+    for (const controller of this.partialControllers) {
+      controller.abort();
+      this.releasePartialRequest(controller);
+    }
     this.partialControllers.clear();
+  }
+
+  private releasePartialRequest(controller: AbortController): void {
+    this.partialControllers.delete(controller);
+    this.partialCleanups.get(controller)?.();
+    this.partialCleanups.delete(controller);
   }
 
   private invalidateBoundaryState(): number {
@@ -159,11 +180,23 @@ export class WebUIRouter {
   start(config: RouterConfig = {}): void {
     if (this.started) return;
     this.started = true;
+    try {
+      this.initialize(config);
+    } catch (error) {
+      this.destroy();
+      throw error;
+    }
+  }
+
+  private initialize(config: RouterConfig): void {
     this.config = config;
     this.loaders = config.loaders ?? {};
     this.basePath = document.querySelector('base')?.getAttribute('href')?.replace(/\/+$/, '') ?? '';
     this.excludePaths = config.excludePaths ?? [];
-    this.cacheEnabled = config.cache !== undefined || config.preload === true;
+    this.preparedPreload =
+      typeof config.preload === 'object' ? config.preload : null;
+    this.preparedPreload?.detach();
+    this.cacheEnabled = config.cache !== undefined || !!config.preload;
 
     if (config.cache) {
       this.cacheConfig = {
@@ -246,8 +279,9 @@ export class WebUIRouter {
           excludePaths: this.excludePaths,
           get currentRequestPath() { return self.currentRequestPath; },
           get inventory() { return window.__webui!.inventory!; },
-          hasCache: (p) => cache.has(p),
-          storeCache: (p, d, pre) => cache.store(p, d, pre),
+          hasCache: (p) => cache.has(p) || this.preparedPreload?.has(p) === true,
+          storeCache: (p, d, pre, streaming) =>
+            cache.store(p, d, pre, streaming),
           fetchPartial: (p, s, spec) => this.fetchPartial(p, s, spec),
         });
         if (cancelled) cleanup();
@@ -368,12 +402,15 @@ export class WebUIRouter {
     this.started = false;
     this.ssrPreloadsCleared = false;
     this.documentNavigationUrl = null;
+    this.startupNavigation = null;
     this.cssSet.clear();
 
     this.currentRequestPath = '/';
     this.navCache?.clear();
     this.navCache = null;
     this.navCacheLoad = null;
+    this.preparedPreload?.destroy();
+    this.preparedPreload = null;
     this.cacheLoadGeneration += 1;
     this.cacheEnabled = false;
     this.cacheConfig = { staleTime: 0, gcTime: 300_000, maxEntries: 50 };
@@ -466,7 +503,9 @@ export class WebUIRouter {
         }
 
         try {
-          partialData = await this.fetchPartial(requestPath, signal);
+          partialData =
+            await this.takePreparedPartial(requestPath, signal)
+            ?? await this.fetchPartial(requestPath, signal);
         } finally {
           if (
             thisGen === this.navGeneration &&
@@ -510,6 +549,7 @@ export class WebUIRouter {
         if (partialData && streaming) {
           await streaming.cancelDeferredStream(partialData);
         }
+        this.preparedPreload?.release(requestPath);
         return;
       }
 
@@ -518,6 +558,7 @@ export class WebUIRouter {
         if (partialData.path !== requestPathname && partialData.path !== requestPath) {
           console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
           await streaming?.cancelDeferredStream(partialData);
+          this.preparedPreload?.release(requestPath);
           return;
         }
       }
@@ -525,6 +566,7 @@ export class WebUIRouter {
       if (!cached) {
         const isStreaming = streaming?.hasDeferredStream(partialData) ?? false;
         navCache?.store(requestPath, partialData, undefined, isStreaming);
+        this.preparedPreload?.release(requestPath);
       }
 
       let committed = false;
@@ -584,53 +626,124 @@ export class WebUIRouter {
 
     try {
       const resp = await fetch(fullPath, { headers, signal: requestSignal });
-      if (!resp.ok) return null;
-
-      const contentType = resp.headers.get('content-type') ?? '';
-
-      if (!contentType.includes('json') && !contentType.includes('ndjson')) {
-        if (speculative || requestSignal.aborted) return null;
-        this.navigateDocument(requestPath);
-        return null;
-      }
-
-      if (contentType.includes('ndjson') && resp.body) {
-        const streaming = await import('./streaming.js');
-        const data = await streaming.readStreamingPartial(
-          resp,
-          requestPath,
-          this.streamingContext(requestController),
-          requestSignal,
-        );
-        hasDeferredReader =
-          data !== null && streaming.hasDeferredStream(data);
-        return data;
-      }
-
-      const data = await resp.json() as StreamingPartialResponse;
-      if (requestSignal.aborted) return null;
-      const stylesReady = registerTemplatesAndStyles(
-        data,
-        window.__webui!.nonce!,
-        this.cssSet,
-        (inv) => this.updateInventory(inv),
+      const result = await this.readPartialResponse(
+        resp,
+        requestPath,
+        requestController,
+        requestSignal,
+        speculative,
       );
-      injectCssLinks(data, this.cssSet);
-      if (
-        stylesReady &&
-        !await waitForTemplateReadiness(stylesReady, requestSignal)
-      ) {
-        return null;
-      }
-      if (requestSignal.aborted) return null;
-      return data;
+      hasDeferredReader = result.hasDeferredReader;
+      return result.data;
     } catch (error) {
       if (signal?.aborted) throw error;
       return null;
     } finally {
       clearTimeout(timeout);
-      if (!hasDeferredReader) this.partialControllers.delete(requestController);
+      if (!hasDeferredReader) this.releasePartialRequest(requestController);
     }
+  }
+
+  private async takePreparedPartial(
+    requestPath: string,
+    signal?: AbortSignal,
+  ): Promise<StreamingPartialResponse | null> {
+    const raw = await this.preparedPreload?.take(
+      requestPath,
+      window.__webui!.inventory!,
+      signal,
+    );
+    if (!raw) return null;
+
+    const requestController = new AbortController();
+    this.partialControllers.add(requestController);
+    const timeout = setTimeout(
+      () => requestController.abort(new DOMException('Partial response timed out', 'TimeoutError')),
+      PARTIAL_FETCH_TIMEOUT_MS,
+    );
+    const requestSignal = signal
+      ? AbortSignal.any([signal, requestController.signal])
+      : requestController.signal;
+    const abortRaw = (): void => raw.controller.abort(requestSignal.reason);
+    if (requestSignal.aborted) {
+      abortRaw();
+    } else {
+      requestSignal.addEventListener('abort', abortRaw, { once: true });
+      this.partialCleanups.set(
+        requestController,
+        () => requestSignal.removeEventListener('abort', abortRaw),
+      );
+    }
+    let hasDeferredReader = false;
+    try {
+      const result = await this.readPartialResponse(
+        rawResponse(raw),
+        requestPath,
+        requestController,
+        requestSignal,
+        true,
+      );
+      hasDeferredReader = result.hasDeferredReader;
+      if (!result.data) this.preparedPreload?.release(requestPath);
+      return result.data;
+    } catch (error) {
+      this.preparedPreload?.release(requestPath);
+      if (signal?.aborted) throw error;
+      return null;
+    } finally {
+      clearTimeout(timeout);
+      if (!hasDeferredReader) this.releasePartialRequest(requestController);
+    }
+  }
+
+  private async readPartialResponse(
+    response: Response,
+    requestPath: string,
+    requestController: AbortController,
+    signal: AbortSignal,
+    speculative = false,
+  ): Promise<PartialReadResult> {
+    if (!response.ok) {
+      requestController.abort();
+      return { data: null, hasDeferredReader: false };
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.includes('json') && !contentType.includes('ndjson')) {
+      if (!speculative && !signal.aborted) this.navigateDocument(requestPath);
+      requestController.abort();
+      return { data: null, hasDeferredReader: false };
+    }
+    if (contentType.includes('ndjson') && response.body) {
+      const streaming = await import('./streaming.js');
+      const data = await streaming.readStreamingPartial(
+        response,
+        requestPath,
+        this.streamingContext(requestController),
+        signal,
+      );
+      return {
+        data,
+        hasDeferredReader:
+          data !== null && streaming.hasDeferredStream(data),
+      };
+    }
+
+    const data = await response.json() as StreamingPartialResponse;
+    if (signal.aborted) return { data: null, hasDeferredReader: false };
+    const stylesReady = registerTemplatesAndStyles(
+      data,
+      window.__webui!.nonce!,
+      this.cssSet,
+      (inventory) => this.updateInventory(inventory),
+    );
+    injectCssLinks(data, this.cssSet);
+    if (stylesReady && !await waitForTemplateReadiness(stylesReady, signal)) {
+      return { data: null, hasDeferredReader: false };
+    }
+    return {
+      data: signal.aborted ? null : data,
+      hasDeferredReader: false,
+    };
   }
 
   private mountComponent(
@@ -700,7 +813,7 @@ export class WebUIRouter {
           return;
         }
         if (self.deferredReader === trackedReader) self.deferredReader = null;
-        if (requestController) self.partialControllers.delete(requestController);
+        if (requestController) self.releasePartialRequest(requestController);
       },
       setDeferredGeneration(g) { self.deferredGeneration = g; },
       updateInventory(inv) { self.updateInventory(inv); },
@@ -799,7 +912,23 @@ export class WebUIRouter {
     } else {
       notifyTemplatesRegistered(meta.templates);
     }
-    this.handleNavigation(this.currentTarget());
+    const startup = this.handleNavigation(this.currentTarget());
+    const startupGeneration = this.navGeneration;
+    this.startupNavigation = startup;
+    void startup.then(
+      () => {
+        if (this.startupNavigation === startup) {
+          this.startupNavigation = null;
+        }
+      },
+      (error) => {
+        if (this.startupNavigation !== startup) return;
+        this.startupNavigation = null;
+        if (this.navGeneration !== startupGeneration) return;
+        this.destroy();
+        console.error('[Router] Initial navigation error:', error);
+      },
+    );
   }
 
   // ── Commit ─────────────────────────────────────────────────────
@@ -984,6 +1113,10 @@ function loadWebUIDataBlock(): void {
   }
   el.remove();
   webuiDataLoaded = true;
+}
+
+function rawResponse(raw: RawPreloadedPartial): Response {
+  return raw.response;
 }
 
 /** Singleton router instance. */

@@ -9,6 +9,16 @@ test.describe('interaction hydration boundary', () => {
     await page.waitForFunction(() => window.interactionFixture !== undefined);
   });
 
+  test('combines compiler-owned render and interaction policy', async ({ page }) => {
+    expect(await page.locator('test-interaction').evaluate((root) => ({
+      contentVisibility: getComputedStyle(root).contentVisibility,
+      policy: window.__webui?.templates?.['test-interaction']?.wp,
+    }))).toEqual({
+      contentVisibility: 'auto',
+      policy: 4,
+    });
+  });
+
   test('replays an SVG-origin click after listeners are ready', async ({ page }) => {
     const accepted = await page.locator('#icon-path').evaluate((target) =>
       target.dispatchEvent(new MouseEvent('click', {
@@ -48,7 +58,9 @@ test.describe('interaction hydration boundary', () => {
   for (const kind of ['pointerdown', 'focus', 'keydown'] as const) {
     test(`${kind} starts loading without cancellation`, async ({ page }) => {
       const outcome = await page.evaluate((wakeKind) => {
-        const target = document.querySelector<HTMLElement>(
+        const host = document.querySelector('test-interaction');
+        const root = host?.shadowRoot ?? host;
+        const target = root?.querySelector<HTMLElement>(
           wakeKind === 'focus' ? '#text-input' : '#icon-button',
         );
         if (!target) throw new Error('wake target is missing');
@@ -92,7 +104,8 @@ test.describe('interaction hydration boundary', () => {
 
   test('modified and unclonable clicks pass through unchanged', async ({ page }) => {
     const outcomes = await page.evaluate(() => {
-      const target = document.querySelector('#icon-button');
+      const host = document.querySelector('test-interaction');
+      const target = (host?.shadowRoot ?? host)?.querySelector('#icon-button');
       if (!target) throw new Error('click target is missing');
       const modified = new MouseEvent('click', {
         bubbles: true,

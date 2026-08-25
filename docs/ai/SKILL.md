@@ -654,6 +654,25 @@ The reservation is required and should approximate one instance's normal block
 size. Use `<template w-hydrate="lazy">` only when hydration should defer but
 rendering containment is unsafe.
 
+For one offscreen SSR island whose module graph should remain unloaded until
+use, explicitly override the hydration trigger:
+
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+  w-hydrate="interaction"
+>
+  <!-- Component content -->
+</template>
+```
+
+This keeps `content-visibility` active while interaction defers JavaScript and
+heap. It is a singleton interaction boundary, not a repeated-item policy.
+Visible app shells should use `w-hydrate="interaction"` and put
+`w-render="lazy"` on offscreen descendant component types. Never combine
+`w-render="lazy"` with `w-hydrate="lazy"` because it is redundant.
+
 Import the optional coordinator once before component definitions:
 
 ```typescript
@@ -669,30 +688,51 @@ fetching; use native `loading="lazy"` and reconcile an already-complete `w-ref`
 image from `hydratedCallback()` when component state depends on `@load` or
 `@error`.
 
-To defer a trusted SSR shell's component graph until interaction:
+To defer a routed application until interaction, mark its root template:
+
+```html
+<template w-hydrate="interaction">
+  <nav>...</nav>
+  <outlet />
+</template>
+```
 
 ```typescript
 import {
   installInteractionHydration,
-  isInteractionReplay,
-} from
-  '@microsoft/webui-framework/interaction-hydration.js';
+  wakeInteractionHydration,
+} from '@microsoft/webui-framework/interaction-hydration.js';
+import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
 
-installInteractionHydration({
-  root: document.querySelector('todo-app')!,
-  load: () => import('./component-definitions.js'),
+let prepared: ReturnType<typeof prepareRoutePreload> | undefined;
+const disposeHydration = installInteractionHydration({
+  onError: () => prepared?.destroy(),
+  load: async () => {
+    const [, { Router }] = await Promise.all([
+      import('./component-definitions.js'),
+      import('@microsoft/webui-router'),
+    ]);
+    Router.start({ preload: prepared, loaders });
+  },
 });
+try {
+  prepared = prepareRoutePreload({
+    onIntent: () => wakeInteractionHydration(),
+  });
+} catch (error) {
+  disposeHydration();
+  throw error;
+}
 ```
 
-Pointer, focus, and keyboard intent starts `load()` without cancellation. An
-eligible primary click replays after listeners are ready; hover, modified clicks,
-and previously cancelled clicks do not. Use `isInteractionReplay(event)` to
-deduplicate ancestor capture work. This opt-in exchanges first-interaction
-latency for lower startup JS and heap. Prefer an eager root with lazy descendants
-when request-to-hydrated time matters, and hydrate eagerly for transient user
-activation or closed-shadow targets.
-Router `preload: true` remains effective only if the router is already started;
-placing `Router.start()` inside `load()` delays hover prefetch until activation.
+The compiler marks the root. Hover stores one bounded raw route partial;
+pointer/focus/keyboard/click intent imports components and router concurrently;
+navigation adopts the response without refetching or parsing templates early.
+Non-router apps use `installInteractionHydration({ load })`. This policy trades
+first-interaction latency for lower startup JS/heap and cannot preserve
+transient user activation or closed-shadow click targets.
+The router remains framework-agnostic: FAST or any other runtime starts through
+`onIntent` and passes the same prepared handle after its own hydration is ready.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|

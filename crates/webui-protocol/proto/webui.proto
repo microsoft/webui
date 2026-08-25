@@ -47,6 +47,17 @@ message ComponentData {
   // Whether this component effectively uses Shadow DOM after build-time
   // fallback and authored declarative Shadow DOM resolution.
   bool uses_shadow_dom = 10;
+  // Compiler-owned client work policy. Zero/eager is absent on the wire.
+  ComponentWorkPolicy work_policy = 11;
+}
+
+// Per-component client work scheduling policy.
+enum ComponentWorkPolicy {
+  COMPONENT_WORK_POLICY_EAGER = 0;
+  COMPONENT_WORK_POLICY_LAZY_HYDRATION = 1;
+  COMPONENT_WORK_POLICY_LAZY_RENDER = 2;
+  COMPONENT_WORK_POLICY_INTERACTION = 3;
+  COMPONENT_WORK_POLICY_LAZY_RENDER_INTERACTION = 4;
 }
 
 // Link stylesheet metadata for one static component asset root.

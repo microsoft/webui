@@ -11,16 +11,27 @@ export interface InteractionHydrationOptions {
   load: () => Promise<unknown>;
   /** Surface a component-graph load failure to the application. */
   onError?: (error: unknown) => void;
-  /** Root whose interactions wake hydration. */
-  root: Element;
+  /** Root whose interactions wake hydration. Omit for one compiler-marked root. */
+  root?: Element;
 }
 
+const INTERACTION_ROOT_SELECTOR = '[data-webui-interaction]';
 const WAKE_EVENTS = [
   'pointerdown',
   'focusin',
   'keydown',
 ] as const;
-const installedBoundaries = new WeakMap<Element, () => void>();
+interface InstalledBoundary {
+  readonly dispose: () => void;
+  readonly wake: () => Promise<void>;
+}
+
+interface DisposalSlot {
+  callback?: () => void;
+}
+
+const installedBoundaries = new WeakMap<Element, InstalledBoundary>();
+let compilerRoot: WeakRef<Element> | undefined;
 
 interface ReplayTrail {
   readonly boundary: Element;
@@ -43,13 +54,15 @@ export function isInteractionReplay(event: Event): boolean {
 export function installInteractionHydration(
   options: InteractionHydrationOptions,
 ): () => void {
-  const { root } = options;
+  const root = options.root ?? compilerMarkedRoot();
   const existing = installedBoundaries.get(root);
-  if (existing) return existing;
+  if (existing) return existing.dispose;
 
   let loading: Promise<void> | undefined;
   let listening = true;
   let disposed = false;
+  const disposal: DisposalSlot = {};
+  const dispose = createDisposer(disposal);
 
   const remove = (): void => {
     if (!listening) return;
@@ -57,11 +70,13 @@ export function installInteractionHydration(
     for (let i = 0; i < WAKE_EVENTS.length; i++) {
       root.removeEventListener(WAKE_EVENTS[i], wake, true);
     }
+
     root.removeEventListener('click', replay, true);
     installedBoundaries.delete(root);
+    disposal.callback = undefined;
   };
 
-  const dispose = (): void => {
+  disposal.callback = () => {
     disposed = true;
     remove();
   };
@@ -74,13 +89,14 @@ export function installInteractionHydration(
       (error) => {
         remove();
         reportFailure(error, options.onError);
+        throw error;
       },
     );
     return loading;
   };
 
   const wake = (): void => {
-    void ensureLoaded();
+    void ensureLoaded().catch(() => {});
   };
 
   const replay = (event: Event): void => {
@@ -99,12 +115,57 @@ export function installInteractionHydration(
     void ensureLoaded().then(dispatchReplay, dispatchReplay);
   };
 
-  installedBoundaries.set(root, dispose);
+  installedBoundaries.set(root, { dispose, wake: ensureLoaded });
   for (let i = 0; i < WAKE_EVENTS.length; i++) {
     root.addEventListener(WAKE_EVENTS[i], wake, true);
   }
   root.addEventListener('click', replay, true);
   return dispose;
+}
+
+function createDisposer(slot: DisposalSlot): () => void {
+  return () => slot.callback?.();
+}
+
+/** Begin loading one installed interaction boundary before another wake event. */
+export function wakeInteractionHydration(root?: Element): Promise<void> {
+  const target = root ?? compilerMarkedRoot();
+  const boundary = installedBoundaries.get(target);
+  if (!boundary) {
+    throw new Error('[WebUI] interaction hydration boundary is not installed.');
+  }
+  return boundary.wake();
+}
+
+function compilerMarkedRoot(): Element {
+  const cached = compilerRoot?.deref();
+  if (cached && cached.isConnected !== false) return cached;
+  const roots = compilerMarkedRoots();
+  if (roots.length !== 1) {
+    throw new Error(
+      `[WebUI] interaction hydration requires exactly one compiler-marked root; found ${roots.length}.`,
+    );
+  }
+  const root = roots[0];
+  root.removeAttribute('data-webui-interaction');
+  compilerRoot = new WeakRef(root);
+  return root;
+}
+
+function compilerMarkedRoots(): Element[] {
+  const matches: Element[] = [];
+  const scopes: ParentNode[] = [document];
+  for (let scopeIndex = 0; scopeIndex < scopes.length; scopeIndex++) {
+    const scope = scopes[scopeIndex];
+    const marked = scope.querySelectorAll(INTERACTION_ROOT_SELECTOR);
+    for (let i = 0; i < marked.length; i++) matches.push(marked[i]);
+    const elements = scope.querySelectorAll('*');
+    for (let i = 0; i < elements.length; i++) {
+      const shadowRoot = elements[i].shadowRoot;
+      if (shadowRoot) scopes.push(shadowRoot);
+    }
+  }
+  return matches;
 }
 
 function cloneClick(

@@ -209,6 +209,24 @@ Router.start({ preload: true });
 
 When enabled, the router prefetches JSON partials (templates, CSS, state) when the user hovers over internal links. On click, the cached result is used immediately. Preloaded entries are stored in the [tagged cache](#tagged-cache) with a 5-second minimum freshness. Only mouse pointers trigger preload.
 
+The pre-hydration API is framework-agnostic:
+
+```typescript
+import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
+
+const prepared = prepareRoutePreload({
+  onIntent: () => startYourHydrationRuntime(),
+});
+await hydrationReady;
+Router.start({ ...config, preload: prepared });
+```
+
+It buffers one hovered partial as bounded raw bytes before any hydration
+framework starts, then transfers the in-flight/completed response into normal
+navigation without a second request or early template parsing. WebUI Framework,
+FAST, and other runtimes start through `onIntent`, then pass the same handle to
+the router after their own readiness lifecycle.
+
 ### Tagged Cache
 
 Cache partial responses with server-provided tags for precise invalidation:

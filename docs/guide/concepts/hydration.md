@@ -143,6 +143,15 @@ optional entry or `IntersectionObserver` is unavailable, WebUI falls back to
 eager hydration. The rendering policy remains browser-managed. Keep the default
 eager mode for small, fully visible groups.
 
+Choose the policy by the work that can safely wait:
+
+| UI shape | Policy | Startup tradeoff |
+|---|---|---|
+| Visible and commonly interactive | Eager default | Lowest first-use latency |
+| Repeated or offscreen | `w-render="lazy"` | JS loads now; hydration and browser rendering wait for relevance |
+| Visible SSR shell that may never be used | `w-hydrate="interaction"` | JS and heap wait; first use pays a cold wake |
+| One offscreen SSR island that may never be used | Both rendering and interaction policies | Browser rendering, JS, and heap wait; first use pays a cold wake |
+
 The SSR subtree remains in the DOM and available to find-in-page and
 accessibility tooling. The browser can make skipped content relevant for those
 features and WebUI hydrates when the native relevance event fires. This policy
@@ -152,48 +161,81 @@ resource hints when those costs dominate.
 
 ## Interaction-Triggered Application Hydration
 
-An SSR page can defer its full component graph until the first user action:
+Mark the application component:
+
+```html
+<template w-hydrate="interaction">
+  <nav>...</nav>
+  <outlet />
+</template>
+```
+
+Then use the small router interaction entry instead of eagerly importing the
+component graph:
 
 ```typescript
 import {
   installInteractionHydration,
-  isInteractionReplay,
-} from
-  '@microsoft/webui-framework/interaction-hydration.js';
+  wakeInteractionHydration,
+} from '@microsoft/webui-framework/interaction-hydration.js';
+import { prepareRoutePreload } from '@microsoft/webui-router/preload.js';
 
-const root = document.querySelector('todo-app');
-if (root) {
-  installInteractionHydration({
-    root,
-    load: () => import('./component-definitions.js'),
+let prepared: ReturnType<typeof prepareRoutePreload> | undefined;
+const disposeHydration = installInteractionHydration({
+  onError: () => prepared?.destroy(),
+  load: async () => {
+    const [, { Router }] = await Promise.all([
+      import('./component-definitions.js'),
+      import('@microsoft/webui-router'),
+    ]);
+    Router.start({ preload: prepared, loaders });
+  },
+});
+try {
+  prepared = prepareRoutePreload({
+    onIntent: () => wakeInteractionHydration(),
   });
+} catch (error) {
+  disposeHydration();
+  throw error;
 }
 ```
 
-Pointer-down, focus, and keyboard intent starts `load()` without cancellation.
-An unmodified primary click waits and replays on its original composed-path
-target; the promise must resolve only after listeners are ready. Hover, modified
-clicks, and previously cancelled clicks do not replay. The returned disposer
-removes the boundary, and `onError` receives loader failures. Use
-`isInteractionReplay(event)` to deduplicate ancestor capture work.
+The compiler emits the root marker. Before hydration, mouse hover prefetches one
+internal route partial into a bounded raw-byte buffer without parsing templates
+or loading the router. Pointer-down, focus, and keyboard start the component and
+router imports in parallel. An eligible click waits, then replays after the
+router adopts the prefetched response; no duplicate route request or parse is
+performed.
 
 This policy trades first-interaction latency for lower startup JS and heap, so
 measure both. Prefer an eager root with `w-render="lazy"` descendants when
 request-to-hydrated time matters. Synthetic replay cannot preserve transient
 user activation or target closed-shadow controls; hydrate those paths eagerly.
 
-### Router preload
+For one offscreen interaction boundary, retain browser rendering deferral too:
 
-Interaction hydration defers component JavaScript; router preload fetches route
-partials. They do not share listeners or caches:
+```html
+<template
+  w-render="lazy"
+  w-reserve-block-size="18rem"
+  w-hydrate="interaction"
+>
+  <button @click="{open()}">Open</button>
+</template>
+```
 
-| Router placement | Before first interaction |
-|---|---|
-| Already started outside this boundary | Mouse hover continues to prefetch partial routes |
-| Started inside `load()` | Hover prefetch begins after the boundary activates |
+The rendering rule is emitted before first layout, while component JavaScript
+still waits for interaction. Once loaded, the boundary hydrates eagerly before
+replay rather than entering the visibility queue. This combination is for one
+singleton boundary, not repeated list items. A visible application root should
+use plain interaction hydration because `content-visibility` cannot skip a
+visible root.
 
-Keep the shell/router eager when pre-interaction route prefetch matters. A
-replayed link click still reaches an active router and can consume its cache.
+Non-router apps can instead use the lower-level
+`installInteractionHydration({ load })` entry. Its `load()` promise must mean all
+target listeners are ready. Use `isInteractionReplay(event)` when ancestor
+capture work must distinguish the synthetic replay.
 
 ### Images in deferred components
 

@@ -59,6 +59,8 @@ type EventHandler = (...args: unknown[]) => unknown;
 const HYDRATE_ATTR = 'w-hydrate';
 const RENDER_ATTR = 'w-render';
 const HYDRATE_EAGER = 'eager';
+const INTERACTION_HYDRATION = 3;
+const LAZY_RENDER_INTERACTION = 4;
 
 // ── Development build flag ──────────────────────────────────────
 // See the identical `__WEBUI_DEV__` note in `template-element.ts`: a
@@ -162,6 +164,14 @@ export class WebUIElement extends TemplateElement {
   ): LazyHydrationMode | undefined {
     const policy = meta?.wp;
     if (policy === undefined) return undefined;
+    if (
+      policy === INTERACTION_HYDRATION
+      || policy === LAZY_RENDER_INTERACTION
+    ) return undefined;
+    if (
+      policy !== LAZY_HYDRATION_VIEWPORT
+      && policy !== LAZY_HYDRATION_CONTENT_VISIBILITY
+    ) return undefined;
     if (
       policy === LAZY_HYDRATION_CONTENT_VISIBILITY &&
       this.getAttribute(RENDER_ATTR) === HYDRATE_EAGER

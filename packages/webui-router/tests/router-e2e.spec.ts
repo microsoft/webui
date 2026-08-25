@@ -272,6 +272,79 @@ test.describe('client-side navigation', () => {
     await page.waitForTimeout(300);
   });
 
+  test.describe('pre-hydration route intent', () => {
+    test('prefetches once, then activates components and router on click', async ({ page }) => {
+      const requests: string[] = [];
+      let compilerMarker = false;
+      let servedNdjson = false;
+      page.on('request', (request) => {
+        if (
+          request.url().endsWith('/beta')
+          && request.headers()['accept']?.includes('application/json')
+        ) {
+          requests.push(request.url());
+        }
+      });
+      await page.route('**/*', async (route) => {
+        const request = route.request();
+        const url = new URL(request.url());
+        if (
+          url.pathname === '/beta'
+          && request.headers()['accept']?.includes('application/json')
+        ) {
+          const response = await route.fetch();
+          const body = await response.text();
+          servedNdjson = true;
+          await route.fulfill({
+            response,
+            body: `${body}\n`,
+            contentType: 'application/x-ndjson',
+          });
+          return;
+        }
+        if (
+          request.resourceType() !== 'document'
+          || !url.searchParams.has('interaction-app')
+        ) {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        const html = (await response.text()).replace(
+          'src="/index.js"',
+          'src="/interaction-entry.js"',
+        );
+        compilerMarker = html.includes('data-webui-interaction');
+        await route.fulfill({ response, body: html });
+      });
+      await page.goto('/?interaction-app=1');
+      await page.waitForFunction(
+        () => (window as unknown as {
+          __testInteractionInstalled?: boolean;
+        }).__testInteractionInstalled === true,
+      );
+      expect(compilerMarker).toBe(true);
+      await expect(page.locator('[data-webui-interaction]')).toHaveCount(0);
+      expect(await page.evaluate(
+        () => customElements.get('route-shell') === undefined,
+      )).toBe(true);
+
+      await Promise.all([
+        page.waitForResponse((response) => response.url().endsWith('/beta')),
+        page.getByRole('link', { name: 'Beta' }).hover(),
+      ]);
+      await page.getByRole('link', { name: 'Beta' }).click();
+      await expect(page).toHaveURL(/\/beta$/);
+      await expect(page.locator('page-beta')).toBeVisible();
+      expect(await page.evaluate(
+        () => customElements.get('route-shell') !== undefined,
+      )).toBe(true);
+      expect(servedNdjson).toBe(true);
+      await expect(page.locator('[data-webui-interaction]')).toHaveCount(0);
+      expect(requests).toHaveLength(1);
+    });
+  });
+
   test('navigates without full page reload', async ({ page }) => {
     // Mark the shell element to detect full reloads
     await page.evaluate(() => {

@@ -34,7 +34,7 @@ pub use handlebars_parser::HandlebarsParser;
 pub use webui_tokens::CssFallbackChain;
 
 use crate::component_policy::{
-    parse_component_render_policy, HYDRATE_ATTR as COMPONENT_HYDRATE_ATTR,
+    parse_component_render_policy, ComponentRenderPolicy, HYDRATE_ATTR as COMPONENT_HYDRATE_ATTR,
     RENDER_ATTR as COMPONENT_RENDER_ATTR,
     RESERVE_BLOCK_SIZE_ATTR as COMPONENT_RESERVE_BLOCK_SIZE_ATTR,
 };
@@ -1864,6 +1864,11 @@ impl HtmlParser {
             .map(|(tag_name, analysis)| (tag_name.as_str(), analysis.uses_shadow_dom))
     }
 
+    /// Iterate non-eager component work-policy codes.
+    pub fn component_work_policies(&self) -> impl Iterator<Item = (&str, u8)> {
+        self.component_registry.work_policies()
+    }
+
     /// Take any post-parse artifacts captured by the parser plugin.
     ///
     /// # Errors
@@ -3410,6 +3415,13 @@ impl HtmlParser {
         )));
         self.add_raw_fragment("<");
         self.add_raw_fragment(element.name());
+        if self
+            .component_registry
+            .render_policy(element.name())
+            .is_some_and(ComponentRenderPolicy::is_interaction_hydration)
+        {
+            self.add_raw_fragment(" data-webui-interaction");
+        }
 
         let binding_count = self.process_tag_attributes(element.attrs(), fragments, true)?;
         if let Some(ref mut p) = self.plugin {
@@ -8127,6 +8139,73 @@ mod tests {
             r#"<template shadowrootmode="open"><div>hi</div></template>"#
         );
         assert!(!authored_shadow_built.artifact().contains("w-hydrate"));
+    }
+
+    #[test]
+    fn interaction_policy_marks_component_hosts_in_ssr_fragments() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "interaction-shell",
+                r#"<template w-hydrate="interaction"><button>Open</button></template>"#,
+                None,
+                true,
+            ))
+            .expect("component registration");
+        parser
+            .parse(
+                "index.html",
+                "<body><interaction-shell></interaction-shell></body>",
+            )
+            .expect("entry parse");
+        let records = parser.into_fragment_records();
+        let entry_html: String = records["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(entry_html.contains("<interaction-shell data-webui-interaction"));
+    }
+
+    #[test]
+    fn combined_interaction_policy_marks_hosts_and_emits_render_css() {
+        let mut parser = HtmlParser::new();
+        parser
+            .component_registry
+            .register_component(ComponentRegistration::new(
+                "interaction-panel",
+                concat!(
+                    r#"<template w-render="lazy" w-reserve-block-size="18rem" "#,
+                    r#"w-hydrate="interaction"><button>Open</button></template>"#,
+                ),
+                None,
+                true,
+            ))
+            .expect("component registration");
+        parser
+            .parse(
+                "index.html",
+                "<body><interaction-panel></interaction-panel></body>",
+            )
+            .expect("entry parse");
+        assert!(parser
+            .component_registry
+            .render_policy_css(["interaction-panel"])
+            .contains("content-visibility:auto"));
+        let records = parser.into_fragment_records();
+        let entry_html: String = records["index.html"]
+            .fragments
+            .iter()
+            .filter_map(|fragment| match fragment.fragment.as_ref() {
+                Some(Fragment::Raw(raw)) => Some(raw.value.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(entry_html.contains("<interaction-panel data-webui-interaction"));
     }
 
     // ── CSS-module adoption on dev-authored <template> wrappers ────────

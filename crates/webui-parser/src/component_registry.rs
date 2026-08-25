@@ -5,7 +5,9 @@
 //!
 //! This module manages the registry of web components used in the application.
 
-use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
+use crate::component_policy::{
+    parse_component_render_policy, validate_policy_client_ownership, ComponentRenderPolicy,
+};
 use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "fs")]
@@ -239,6 +241,7 @@ impl ComponentRegistry {
         let is_client_owned = has_component_script(html_path)?;
 
         let render_policy = parse_component_render_policy(tag_name, &html_content)?;
+        validate_policy_client_ownership(tag_name, &html_content, &render_policy, is_client_owned)?;
 
         // Create and register the component
         let component = Component {
@@ -293,6 +296,7 @@ impl ComponentRegistry {
             None => (None, Vec::new(), Vec::new()),
         };
         let render_policy = parse_component_render_policy(tag_name, html_content)?;
+        validate_policy_client_ownership(tag_name, html_content, &render_policy, is_client_owned)?;
         let component: Component = Component {
             tag_name: tag_name.to_string(),
             html_content: html_content.to_string(),
@@ -367,6 +371,16 @@ impl ComponentRegistry {
     /// Get a component by its tag name.
     pub fn get(&self, tag_name: &str) -> Option<&Component> {
         self.components.get(tag_name)
+    }
+
+    pub(crate) fn render_policy(&self, tag_name: &str) -> Option<&ComponentRenderPolicy> {
+        self.render_policies.get(tag_name)
+    }
+
+    pub(crate) fn work_policies(&self) -> impl Iterator<Item = (&str, u8)> {
+        self.render_policies
+            .iter()
+            .filter_map(|(tag, policy)| policy.metadata_code().map(|code| (tag.as_str(), code)))
     }
 
     /// Return component CSS for source diagnostics.

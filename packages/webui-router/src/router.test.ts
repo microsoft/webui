@@ -203,6 +203,95 @@ describe('WebUIRouter', () => {
   });
 
   describe('destroy', () => {
+    test('start rolls back all synchronous bootstrap failures', () => {
+      const router = new WebUIRouter();
+      const previous = window.__webui;
+      window.__webui = {
+        css: {} as unknown as string[],
+        state: {},
+      };
+      assert.throws(() => router.start());
+      assert.equal((router as any).started, false);
+
+      window.__webui = {
+        chain: [],
+        css: [],
+        inventory: '',
+        nonce: '',
+        state: {},
+        styles: [],
+      };
+      router.start();
+      assert.equal((router as any).started, true);
+      router.destroy();
+      window.__webui = previous;
+    });
+
+    test('rolls back an asynchronous initial navigation failure', async () => {
+      const router = new WebUIRouter();
+      const failure = new Error('loader failed');
+      const previousConsoleError = console.error;
+      let reported: unknown;
+      console.error = (_message, error) => {
+        reported = error;
+      };
+      (router as any).started = true;
+      (router as any).handleNavigation = async () => {
+        throw failure;
+      };
+
+      try {
+        (router as any).startInitialNavigation(globals().__webui);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal((router as any).started, false);
+        assert.equal((router as any).startupNavigation, null);
+        assert.equal(reported, failure);
+      } finally {
+        console.error = previousConsoleError;
+        router.destroy();
+      }
+    });
+
+    test('does not roll back a newer navigation after startup fails', async () => {
+      const router = new WebUIRouter();
+      const failure = new Error('stale loader failed');
+      const previousConsoleError = console.error;
+      let rejectStartup!: (error: Error) => void;
+      let reports = 0;
+      console.error = () => {
+        reports++;
+      };
+      (router as any).started = true;
+      (router as any).handleNavigation = () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStartup = reject;
+        });
+
+      try {
+        (router as any).startInitialNavigation(globals().__webui);
+        (router as any).navGeneration++;
+        rejectStartup(failure);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        assert.equal((router as any).started, true);
+        assert.equal((router as any).startupNavigation, null);
+        assert.equal(reports, 0);
+      } finally {
+        console.error = previousConsoleError;
+        router.destroy();
+      }
+    });
+
+    test('restart does not reuse consumed SSR navigation metadata', () => {
+      const router = new WebUIRouter();
+      (router as any).isInitialNavigation = false;
+
+      router.destroy();
+
+      assert.equal((router as any).isInitialNavigation, false);
+    });
+
     test('clears in-flight loadPromises so the router can be restarted cleanly', async () => {
       const router = new WebUIRouter();
       // Initialize navCache so destroy() can call .clear()
@@ -824,6 +913,84 @@ describe('WebUIRouter', () => {
       }
     });
 
+    test('prepared partial timeout covers reading the adopted response body', async () => {
+      const origSetTimeout = globalThis.setTimeout;
+      let timeoutRequest: (() => void) | undefined;
+      (globalThis as any).setTimeout = (callback: () => void) => {
+        timeoutRequest = callback;
+        return 1;
+      };
+      const rawController = new AbortController();
+      const response = {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => new Promise((_resolve, reject) => {
+          rawController.signal.addEventListener(
+            'abort',
+            () => reject(rawController.signal.reason),
+            { once: true },
+          );
+          queueMicrotask(() => timeoutRequest?.());
+        }),
+      };
+      const prepared = {
+        release() {},
+        take: async () => ({
+          controller: rawController,
+          inventory: '',
+          response,
+          timestamp: Date.now(),
+        }),
+      };
+
+      try {
+        const router = new WebUIRouter();
+        (router as any).preparedPreload = prepared;
+        const result = await (router as any).takePreparedPartial('/test');
+        assert.equal(result, null);
+        assert.equal(rawController.signal.aborted, true);
+      } finally {
+        globalThis.setTimeout = origSetTimeout;
+      }
+    });
+
+    test('navigation abort reaches an adopted response body', async () => {
+      const rawController = new AbortController();
+      const response = {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: () => new Promise((_resolve, reject) => {
+          rawController.signal.addEventListener(
+            'abort',
+            () => reject(rawController.signal.reason),
+            { once: true },
+          );
+        }),
+      };
+      const prepared = {
+        release() {},
+        take: async () => ({
+          controller: rawController,
+          inventory: '',
+          response,
+          timestamp: Date.now(),
+        }),
+      };
+      const navigation = new AbortController();
+      const router = new WebUIRouter();
+      (router as any).preparedPreload = prepared;
+
+      const taking = (router as any).takePreparedPartial(
+        '/test',
+        navigation.signal,
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      navigation.abort(new DOMException('Superseded', 'AbortError'));
+
+      await assert.rejects(taking, { name: 'AbortError' });
+      assert.equal(rawController.signal.aborted, true);
+    });
+
     test('a new partial request aborts a stalled deferred stream', async () => {
       const origFetch = (globalThis as any).fetch;
       const encoder = new TextEncoder();
@@ -903,7 +1070,7 @@ describe('WebUIRouter', () => {
       // AbortError without logging. This is critical for rapid navigation
       // where superseded fetches throw AbortError.
       const router = new WebUIRouter();
-      const source = (router as any).start.toString() as string;
+      const source = (router as any).initialize.toString() as string;
 
       // The handler must check for AbortError by name
       assert.ok(
@@ -1157,11 +1324,15 @@ describe('WebUIRouter', () => {
         get origin() { return origLocation.origin; },
         get pathname() { return origLocation.pathname; },
       };
-      (globalThis as any).fetch = async () => ({
-        ok: true,
-        headers: { get: () => 'text/html' },
-        json: async () => ({}),
-      });
+      const responseSignals: AbortSignal[] = [];
+      (globalThis as any).fetch = async (_url: string, init?: RequestInit) => {
+        if (init?.signal) responseSignals.push(init.signal);
+        return {
+          ok: true,
+          headers: { get: () => 'text/html' },
+          json: async () => ({}),
+        };
+      };
 
       try {
         const router = new WebUIRouter();
@@ -1181,6 +1352,11 @@ describe('WebUIRouter', () => {
         const result2 = await fetchPartial('/login', undefined, true);
         assert.equal(result2, null);
         assert.ok(!redirected, 'speculative HTML response should not redirect');
+        assert.equal(
+          responseSignals.every((signal) => signal.aborted),
+          true,
+          'discarded HTML response bodies should be aborted',
+        );
       } finally {
         (globalThis as any).fetch = origFetch;
         (globalThis as any).location = origLocation;
@@ -1204,6 +1380,40 @@ describe('WebUIRouter', () => {
       assert.deepEqual(consumed.state, { msg: 'preloaded' });
       priv.navCache.evict('/about');
       assert.ok(!priv.navCache.has('/about'), 'cache should be empty after eviction');
+    });
+
+    test('completed JSON preload is immediately available to navigation', () => {
+      const cache = new NavigationCache({
+        staleTime: 0,
+        gcTime: 300_000,
+        maxEntries: 50,
+      });
+      const data = {
+        componentStyles: emptyComponentStyles(),
+        chain: [{ component: 'about-page', path: '/about', params: {} }],
+        path: '/about',
+        templates: {},
+      };
+      cache.store('/about', data, true, false);
+      assert.equal(cache.lookup('/about'), data);
+    });
+
+    test('streaming preload remains unavailable until its tail completes', () => {
+      const cache = new NavigationCache({
+        staleTime: 0,
+        gcTime: 300_000,
+        maxEntries: 50,
+      });
+      const data = {
+        componentStyles: emptyComponentStyles(),
+        chain: [{ component: 'about-page', path: '/about', params: {} }],
+        path: '/about',
+        templates: {},
+      };
+      cache.store('/about', data, true, true);
+      assert.equal(cache.lookup('/about'), null);
+      cache.getEntry('/about')!.complete = true;
+      assert.equal(cache.lookup('/about'), data);
     });
 
     test('stale preload cache (>TTL) is not consumed', () => {

@@ -109,7 +109,9 @@ export interface TemplateMeta extends TemplateBlockMeta {
   th?: boolean | 1;
   /**
    * Compiler-owned work policy: `1` defers SSR hydration by viewport;
-   * `2` couples hydration to browser-managed lazy rendering relevance.
+   * `2` couples hydration to browser-managed lazy rendering relevance;
+   * `3` defers the component module graph until interaction; `4` also applies
+   * browser-managed lazy rendering before that interaction.
    */
-  wp?: 1 | 2;
+  wp?: 1 | 2 | 3 | 4;
 }

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import {
   installInteractionHydration,
   isInteractionReplay,
+  wakeInteractionHydration,
 } from './interaction-hydration.js';
 
 type FakeMouseEventInit = EventInit & Partial<Pick<
@@ -32,6 +33,11 @@ class FakeMouseEvent extends Event {
 
 class FakeElement extends EventTarget {
   appClicks = 0;
+  isConnected = true;
+  markerRemoved = false;
+  shadowRoot?: {
+    querySelectorAll(selector: string): FakeElement[];
+  };
   readonly ownerDocument = {
     defaultView: { MouseEvent: FakeMouseEvent },
   };
@@ -44,6 +50,10 @@ class FakeElement extends EventTarget {
     });
     this.dispatchEvent(event);
     return event;
+  }
+
+  removeAttribute(name: string): void {
+    if (name === 'data-webui-interaction') this.markerRemoved = true;
   }
 }
 
@@ -72,6 +82,7 @@ test('loads once and replays on the composed-path target', async () => {
     target.appClicks++;
     replayed = isInteractionReplay(event);
   });
+
   install(root, async () => {
     loads++;
   });
@@ -90,6 +101,78 @@ test('loads once and replays on the composed-path target', async () => {
   assert.equal(loads, 1);
   assert.equal(target.appClicks, 1);
   assert.equal(replayed, true);
+});
+
+test('discovers and consumes one compiler-marked root', async () => {
+  const root = new FakeElement();
+  const previousDocument = globalThis.document;
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: { querySelectorAll: () => [root] },
+  });
+  try {
+    let loads = 0;
+    const first = installInteractionHydration({
+      load: async () => {
+        loads++;
+      },
+    });
+    assert.equal(
+      installInteractionHydration({ load: async () => undefined }),
+      first,
+    );
+    first();
+    installInteractionHydration({
+      load: async () => {
+        loads++;
+      },
+    });
+    await wakeInteractionHydration();
+    await settle();
+    assert.equal(loads, 1);
+    assert.equal(root.markerRemoved, true);
+  } finally {
+    root.isConnected = false;
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: previousDocument,
+    });
+  }
+});
+
+test('discovers a compiler-marked root inside open Shadow DOM', async () => {
+  const host = new FakeElement();
+  const root = new FakeElement();
+  host.shadowRoot = {
+    querySelectorAll: (selector) =>
+      selector === '[data-webui-interaction]' || selector === '*'
+        ? [root]
+        : [],
+  };
+  const previousDocument = globalThis.document;
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      querySelectorAll: (selector: string) => selector === '*' ? [host] : [],
+    },
+  });
+  try {
+    let loads = 0;
+    installInteractionHydration({
+      load: async () => {
+        loads++;
+      },
+    });
+    await wakeInteractionHydration();
+    assert.equal(loads, 1);
+    assert.equal(root.markerRemoved, true);
+  } finally {
+    root.isConnected = false;
+    Object.defineProperty(globalThis, 'document', {
+      configurable: true,
+      value: previousDocument,
+    });
+  }
 });
 
 test('wake signals share one load without hover or cancellation', async () => {

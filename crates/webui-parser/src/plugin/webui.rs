@@ -3649,6 +3649,50 @@ mod tests {
         assert!(!templates[0].template_json.contains("w-reserve-block-size"));
     }
 
+    #[test]
+    fn interaction_policy_is_encoded_in_metadata_and_artifact() {
+        let mut plugin = WebUIParserPlugin::new();
+        let component = test_component(
+            "interaction-shell",
+            r#"<template w-hydrate="interaction"><button>Open</button></template>"#,
+            None,
+            true,
+        );
+        plugin
+            .register_component_template("interaction-shell", &component, "<button>Open</button>")
+            .expect("component registration");
+
+        let templates = plugin
+            .take_component_templates()
+            .expect("template compilation");
+        assert!(templates[0].template_json.contains(r#","wp":3"#));
+        assert!(!templates[0].template_json.contains("w-hydrate"));
+    }
+
+    #[test]
+    fn combined_render_interaction_policy_is_encoded_once() {
+        let mut plugin = WebUIParserPlugin::new();
+        let component = test_component(
+            "interaction-panel",
+            concat!(
+                r#"<template w-render="lazy" w-reserve-block-size="18rem" "#,
+                r#"w-hydrate="interaction"><button>Open</button></template>"#,
+            ),
+            None,
+            true,
+        );
+        plugin
+            .register_component_template("interaction-panel", &component, "<button>Open</button>")
+            .expect("component registration");
+
+        let templates = plugin
+            .take_component_templates()
+            .expect("template compilation");
+        assert!(templates[0].template_json.contains(r#","wp":4"#));
+        assert!(!templates[0].template_json.contains("w-render"));
+        assert!(!templates[0].template_json.contains("w-hydrate"));
+    }
+
     fn assert_no_client_markers(result: &str) {
         assert!(!result.contains("<!--t:"), "text markers should be removed");
         assert!(
