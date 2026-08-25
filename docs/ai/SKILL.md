@@ -980,9 +980,9 @@ the router for routed components.
   Document is applied before `</head>`. ShadowRoot-targeted Link CSS is preloaded
   from the head and applied inside its owning root. Static request-reachable
   Shadow roots are preloaded the same way.
-- FAST 2/3 plugins require effective Shadow components. An unwrapped component
-  under `dom: "light"` fails with `fast-light-dom-unsupported`; use the WebUI
-  plugin for global Light DOM.
+- FAST 2/3 plugins require effective Shadow components. Any effective Light
+  component fails with `fast-light-dom-unsupported`; use the WebUI plugin for
+  global Light DOM.
 
 | Attribute | Example | Description |
 |---|---|---|
@@ -1306,11 +1306,12 @@ their components elsewhere. See [WebUI Press named regions](/guide/webui-press)
 for the stable built-in region list and full configuration contract.
 
 **FAST authored templates.** The `fast-v2` and `fast-v3` plugins are pinned to
-FAST major versions 2 and 3, respectively. With either plugin, a component file
-authored as one `<f-template name="...">` wrapping a single inner `<template>`
-is recognized: a non-empty `name` sets the component tag (else the filename is
-kept), `<f-repeat>` and `<f-when>` provide repetition and conditions, and
-client bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may
+FAST major versions 2 and 3, respectively; `fast` is a deprecated alias for
+`fast-v2`. With either versioned plugin, a component file authored as one
+`<f-template name="...">` wrapping one direct inner `<template>` is recognized:
+a non-empty `name` sets the component tag (else the filename without
+`.template.html` is kept), `<f-repeat>` and `<f-when>` provide repetition and
+conditions, and client bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may
 be authored directly on the root `<template>`. The verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
 registering under the authored `name`. In npm packages, the FAST discovery

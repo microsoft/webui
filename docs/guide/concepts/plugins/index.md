@@ -39,6 +39,7 @@ implementations are loaded.
 
 | Name | Behavior |
 |------|----------|
+| `fast` | Deprecated compatibility alias for `fast-v2` |
 | `fast-v2` | FAST hydration plugin pinned to FAST major version 2 |
 | `fast-v3` | FAST hydration plugin pinned to FAST major version 3 |
 | `webui` | WebUI framework hydration plugin |
@@ -106,8 +107,9 @@ let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new())
 ### Using FAST Plugins
 
 The Rust FAST integrations are `fast_v2` and `fast_v3`; their CLI names are
-`fast-v2` and `fast-v3`. Each integration is pinned to the corresponding FAST
-major version:
+`fast-v2` and `fast-v3`. The deprecated `fast` identifier remains an alias for
+`fast-v2`. Each versioned integration is pinned to the corresponding FAST major
+version:
 
 ```bash
 webui build ./src --out ./dist --plugin=fast-v3
@@ -136,19 +138,21 @@ wrapping `<f-template>`. With no plugin, or with the `webui` plugin,
 
 `<f-template name="named-card">` registers the component as `named-card` instead
 of deriving `file-card` from the filename. If `name` is absent or contains only
-whitespace, WebUI keeps the filename-derived tag. The wrapper must contain
-exactly one inner `<template>` as its only meaningful child: only whitespace and
-comments may surround it. A meaningful sibling around the inner `<template>`,
-multiple inner templates, and unsupported FAST syntax all fail the build with an
-authoring error rather than being silently dropped. Multiple `<f-template>`
-elements are not currently supported and have a dedicated authoring diagnostic.
+whitespace, WebUI keeps the filename-derived tag after removing the generated
+`.template.html` suffix. The wrapper must contain one direct inner `<template>`
+as its only meaningful child: only whitespace and comments may surround it. A
+meaningful sibling around the inner `<template>` and unsupported FAST syntax
+fail the build rather than being silently dropped. Nested inert `<template>`
+elements inside that direct child remain normal component content. Multiple
+`<f-template>` elements are not currently supported and have a dedicated
+authoring diagnostic.
 
 Because the authored `<f-template name>` supplies the registry key, recursive
 discovery also accepts a file whose stem is not itself a custom-element name.
-FAST's generated files are named `<component>.template.html`, whose stem
-(`button.template`) has no hyphen; a FAST plugin still discovers and registers
-them under their authored `custom-*` name. Without a FAST plugin those files are
-ignored, exactly as any non-custom-element filename is.
+FAST's generated files are named `<component>.template.html`; FAST discovery
+removes that suffix before applying the filename fallback. An authored
+`name="custom-*"` can still override it. Without a FAST plugin, a file is
+considered only by the native hyphenated filename rule.
 
 FAST npm packages use their Custom Elements Manifest as the component index.
 For each `modules[].declarations[]` entry with a `tagName`, discovery maps the
@@ -182,7 +186,8 @@ Supported FAST authoring syntax includes:
 Each FAST directive accepts only its required `value` attribute. Unsupported
 `f-*` constructs, additional directive attributes, and stray FAST closing tags
 fail the build. Markup-shaped text inside `<script>` and `<style>` is treated as
-text rather than FAST syntax.
+text rather than FAST syntax. Element and attribute names are
+ASCII-case-insensitive, matching HTML semantics.
 
 Multiple wrappers report `unsupported-multiple-f-templates`; malformed or
 unsupported FAST declarative syntax reports `invalid-fast-template`, while
@@ -225,48 +230,38 @@ files that do not yet exist.
 ### ParserPlugin Trait
 
 ```rust
-pub struct ComponentTemplateContext {
+pub type ComponentSourceTransform =
+    for<'a> fn(ComponentSource<'a>) -> Result<Option<TransformedComponentSource>>;
+
+pub struct ComponentProcessing {
+    pub source_transform: Option<ComponentSourceTransform>,
+    pub process_root_template_attributes: bool,
+    pub inline_styles_after_content: bool,
+}
+
+pub struct ComponentBuildContext<'a> {
+    pub component: &'a Component,
+    pub template: &'a str,
     pub uses_shadow_dom: bool,
+    pub style: Option<ComponentStyleDelivery<'a>>,
 }
 
 pub trait ParserPlugin {
-    /// Called before parsing begins for a fragment.
-    fn start_fragment(&mut self, fragment_id: &str) {}
-
-    /// Called with the plugin-facing template and Shadow ownership metadata.
-    /// Authored root `<template>` attributes are preserved for plugins.
-    fn register_component_template(
-        &mut self,
-        tag_name: &str,
-        component: &Component,
-        processed_template: &str,
-        context: ComponentTemplateContext,
-    ) -> Result<()>;
-
-    /// Return a stateless transform applied to a component's authored source
-    /// before registry insertion, or `None` to store sources unchanged. Only
-    /// plugins that own an alternate authored-template dialect (such as FAST's
-    /// `<f-template>`) need to implement this.
-    fn component_source_transform(&self) -> Option<ComponentSourceTransform> {
-        None
-    }
-
-    /// Decide how a framework-owned attribute should be handled.
-    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction;
-
-    /// Called after all attributes on an element are processed.
-    /// Return opaque bytes to emit as a Plugin protocol fragment.
-    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>>;
-
-    /// Consume the plugin and return captured build artifacts.
-    ///
-    /// Returns an error if the plugin captured an invalid template construct
-    /// (e.g. a malformed `@event` handler) while producing its artifacts.
-    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
-        Ok(ParserPluginArtifacts::None)
-    }
+    fn configure_parser(&mut self, options: &ParserOptions) {}
+    fn component_processing(&self) -> ComponentProcessing { ComponentProcessing::default() }
+    fn begin_fragment(&mut self, context: FragmentContext<'_>) {}
+    fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> { Ok(()) }
+    fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction { AttributeAction::Keep }
+    fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> { None }
+    fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> { Ok(ParserPluginArtifacts::None) }
 }
 ```
+
+`component_processing` is read once, so static component behavior does not add a
+virtual call per component. A missing source transform avoids the indirect call
+entirely, and a transform returns `Ok(None)` to preserve source without
+allocation. The remaining callbacks follow parser lifecycle order and have
+no-op defaults, so a plugin implements only the phases it owns.
 
 When producing a `ComponentTemplateArtifact`, pass
 `context.uses_shadow_dom` to its constructor. This parser-derived boolean is

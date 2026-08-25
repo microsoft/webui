@@ -15,14 +15,14 @@ pub(super) fn parse_directive<'a>(
 ) -> Result<&'a str, ConvertError<'a>> {
     let mut value: Option<(Option<&'a str>, usize)> = None;
     for attr in tag.attrs() {
-        if attr.name == "value" {
+        if attr.name.eq_ignore_ascii_case("value") {
             if value.is_none() {
                 value = Some((attr.value, attr.raw_range.start));
             }
             continue;
         }
         // Report unsupported f-* attributes separately from other extras.
-        let error_kind = if attr.name.starts_with("f-") {
+        let error_kind = if has_f_prefix(attr.name) {
             ConvertErrorKind::UnsupportedFAttribute {
                 attribute: attr.name,
             }
@@ -84,7 +84,7 @@ pub(super) fn validate_attributes<'a>(
     tag_offset: usize,
 ) -> Result<(), ConvertError<'a>> {
     for attr in tag.attrs() {
-        if attr.name.starts_with("f-") && !is_supported_f_attribute(attr.name) {
+        if has_f_prefix(attr.name) && !is_supported_f_attribute(attr.name) {
             return Err(ConvertError::new(
                 ConvertErrorKind::UnsupportedFAttribute {
                     attribute: attr.name,
@@ -106,7 +106,16 @@ pub(super) fn is_repeat_expression(expression: &str) -> bool {
 
 #[inline]
 fn is_supported_f_attribute(name: &str) -> bool {
-    matches!(name, "f-ref" | "f-children" | "f-slotted")
+    name.eq_ignore_ascii_case("f-ref")
+        || name.eq_ignore_ascii_case("f-children")
+        || name.eq_ignore_ascii_case("f-slotted")
+}
+
+#[inline]
+pub(super) fn has_f_prefix(name: &str) -> bool {
+    name.as_bytes()
+        .get(..2)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"f-"))
 }
 
 fn is_path(path: &str) -> bool {
@@ -132,10 +141,12 @@ pub(super) enum DirectiveKind {
 impl DirectiveKind {
     #[inline]
     pub(super) fn from_tag_name(name: &str) -> Option<Self> {
-        match name {
-            F_REPEAT_NAME => Some(Self::Repeat),
-            F_WHEN_NAME => Some(Self::When),
-            _ => None,
+        if name.eq_ignore_ascii_case(F_REPEAT_NAME) {
+            Some(Self::Repeat)
+        } else if name.eq_ignore_ascii_case(F_WHEN_NAME) {
+            Some(Self::When)
+        } else {
+            None
         }
     }
 

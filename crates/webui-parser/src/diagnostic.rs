@@ -101,7 +101,7 @@ pub mod codes {
     pub const UNSUPPORTED_LIGHT_CSS: &str = "unsupported-light-css";
     /// Compatibility alias for the FAST-owned Light DOM diagnostic code.
     pub const FAST_LIGHT_DOM_UNSUPPORTED: &str =
-        crate::plugin::fast_diagnostic::FAST_LIGHT_DOM_UNSUPPORTED;
+        crate::plugin::fast::diagnostic::FAST_LIGHT_DOM_UNSUPPORTED;
     /// Legacy code for removed Light-local keyframe namespacing.
     #[deprecated(note = "Light DOM no longer namespaces component-local keyframes")]
     pub const DYNAMIC_LIGHT_KEYFRAME: &str = "dynamic-light-keyframe";

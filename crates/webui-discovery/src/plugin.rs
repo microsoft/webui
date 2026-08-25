@@ -10,7 +10,7 @@ use crate::npm::{
 use crate::{has_sibling_script, DiscoveredComponent};
 use anyhow::{bail, Context, Result};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 
 // Module + five templates + two style candidates per template.
@@ -66,11 +66,7 @@ impl DiscoveryPlugin for WebUIDiscoveryPlugin {
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
-        discover_local_templates(root, |path| {
-            path.file_stem()
-                .and_then(|stem| stem.to_str())
-                .is_some_and(|stem| stem.contains('-'))
-        })
+        discover_local_templates(root, webui_local_tag)
     }
 
     fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
@@ -130,16 +126,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
     }
 
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
-        discover_local_templates(root, |path| {
-            let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-                return false;
-            };
-            file_name.ends_with(".template.html")
-                || path
-                    .file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .is_some_and(|stem| stem.contains('-'))
-        })
+        discover_local_templates(root, fast_local_tag)
     }
 
     fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
@@ -153,7 +140,12 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                     declaration.tag_name, package.name
                 )
             })?;
-            files.push(package.root.join(module_path));
+            files.push(package_path(package.root, module_path).with_context(|| {
+                format!(
+                    "FAST component <{}> in package '{}' has an invalid CEM module path",
+                    declaration.tag_name, package.name
+                )
+            })?);
             let declaration_name = declaration.name.as_deref().unwrap_or(&declaration.tag_name);
             for candidate in fast_template_candidates(package.root, module_path, declaration_name) {
                 files.push(candidate.clone());
@@ -214,7 +206,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 
 fn discover_local_templates(
     root: &Path,
-    claims: impl Fn(&Path) -> bool,
+    tag_name_for_path: fn(&Path) -> Option<&str>,
 ) -> Result<Vec<DiscoveredComponent>> {
     let source = root.display().to_string();
     let mut components = Vec::new();
@@ -225,14 +217,12 @@ fn discover_local_templates(
             || !path
                 .extension()
                 .is_some_and(|extension| extension == "html")
-            || !claims(path)
         {
             continue;
         }
-        let tag_name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .with_context(|| format!("Invalid component filename: {}", path.display()))?;
+        let Some(tag_name) = tag_name_for_path(path) else {
+            continue;
+        };
         let html_content = read_required_file(path, "component template")?;
         let css_content =
             read_optional_file(resolve_local_styles(path).as_deref(), "component styles")?;
@@ -245,6 +235,19 @@ fn discover_local_templates(
         });
     }
     Ok(components)
+}
+
+fn webui_local_tag(path: &Path) -> Option<&str> {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| stem.contains('-'))
+}
+
+fn fast_local_tag(path: &Path) -> Option<&str> {
+    let file_name = path.file_name()?.to_str()?;
+    file_name
+        .strip_suffix(".template.html")
+        .or_else(|| webui_local_tag(path))
 }
 
 fn resolve_local_styles(template_path: &Path) -> Option<PathBuf> {
@@ -283,7 +286,9 @@ fn fast_template_candidates(
     module_path: &Path,
     declaration_name: &str,
 ) -> Vec<PathBuf> {
-    let module = root.join(module_path);
+    let Some(module) = package_path(root, module_path) else {
+        return Vec::new();
+    };
     let parent = module.parent().unwrap_or(root);
     let module_stem = module.file_stem().and_then(|stem| stem.to_str());
     let declaration_stem = to_kebab_case(declaration_name);
@@ -298,7 +303,14 @@ fn fast_template_candidates(
     // Some generated manifests expose a virtual public module path while the
     // package stores the implementation under a compact or base class noun.
     if !module.is_file() {
-        let component_root = parent.parent().unwrap_or(root);
+        let component_root = if parent == root {
+            root
+        } else {
+            parent
+                .parent()
+                .filter(|candidate| candidate.starts_with(root))
+                .unwrap_or(root)
+        };
         push_nested_template_candidate(&mut candidates, component_root, declaration_stem.as_str());
         let compact_stem = declaration_stem.replace('-', "");
         push_nested_template_candidate(&mut candidates, component_root, &compact_stem);
@@ -307,6 +319,20 @@ fn fast_template_candidates(
         }
     }
     candidates
+}
+
+fn package_path(root: &Path, relative: &Path) -> Option<PathBuf> {
+    if relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir
+            )
+        })
+    {
+        return None;
+    }
+    Some(root.join(relative))
 }
 
 fn push_template_candidate(candidates: &mut Vec<PathBuf>, parent: &Path, stem: &str) {
@@ -346,4 +372,47 @@ fn to_kebab_case(name: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn fast_local_template_uses_component_filename_prefix() {
+        let root = tempfile::TempDir::new().unwrap();
+        fs::write(
+            root.path().join("todo-item.template.html"),
+            "<f-template><template>item</template></f-template>",
+        )
+        .unwrap();
+
+        let components = FastDiscoveryPlugin::new()
+            .discover_local(root.path())
+            .unwrap();
+
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].tag_name, "todo-item");
+    }
+
+    #[test]
+    fn virtual_root_module_candidates_stay_inside_package() {
+        let root = tempfile::TempDir::new().unwrap();
+        let candidates = fast_template_candidates(root.path(), Path::new("index.js"), "MyButton");
+
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.starts_with(root.path())));
+        assert!(candidates.contains(
+            &root
+                .path()
+                .join("my-button")
+                .join("my-button.template.html")
+        ));
+        assert!(
+            fast_template_candidates(root.path(), Path::new("../escape/index.js"), "Escape")
+                .is_empty()
+        );
+    }
 }

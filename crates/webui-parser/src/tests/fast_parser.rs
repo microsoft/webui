@@ -12,7 +12,9 @@ fn versioned_plugins() -> [Box<dyn ParserPlugin>; 2] {
 
 #[cfg(feature = "fs")]
 fn source_transform() -> Option<crate::plugin::ComponentSourceTransform> {
-    crate::plugin::fast_v2::FastV2ParserPlugin::new().component_source_transform()
+    crate::plugin::fast_v2::FastV2ParserPlugin::new()
+        .component_processing()
+        .source_transform
 }
 
 #[test]

@@ -8,10 +8,10 @@ fn build_discovers_generated_local_template() {
     let app = create_app_dir(&[
         ("index.html", "<custom-button></custom-button>"),
         (
-            "button.template.html",
-            r#"<f-template name="custom-button"><template><button>{{label}}</button></template></f-template>"#,
+            "custom-button.template.html",
+            r#"<f-template><template><button>{{label}}</button></template></f-template>"#,
         ),
-        ("button.styles.css", "button { color: red; }"),
+        ("custom-button.styles.css", "button { color: red; }"),
     ]);
     let mut options = default_options(app.path());
     options.plugin = Some(Plugin::FastV3);
@@ -147,10 +147,13 @@ fn css_public_base_keeps_shadow_template_styled() {
 }
 
 #[test]
-fn light_build_is_rejected() {
+fn authored_template_light_build_is_rejected() {
     let app = create_app_dir(&[
         ("index.html", "<my-card>Hello</my-card>"),
-        ("my-card.html", "<div>card</div>"),
+        (
+            "my-card.template.html",
+            r#"<f-template><template><div>card</div></template></f-template>"#,
+        ),
         ("my-card.css", ".card { color: red; }"),
     ]);
     let mut options = default_options(app.path());
@@ -166,6 +169,78 @@ fn light_build_is_rejected() {
             ..
         } if diagnostic.error_code()
             == Some(webui_parser::codes::FAST_LIGHT_DOM_UNSUPPORTED)
+    ));
+}
+
+#[test]
+fn authored_template_dom_diagnostic_uses_original_location() {
+    let app = create_app_dir(&[
+        ("index.html", "<my-card></my-card>"),
+        (
+            "my-card.template.html",
+            "<f-template\n  name=\"my-card\"\n  shadowrootmode=\"closed\">\n  <template><div>card</div></template>\n</f-template>",
+        ),
+    ]);
+    let mut options = default_options(app.path());
+    options.plugin = Some(Plugin::FastV3);
+
+    let error = build(options).expect_err("closed FAST Shadow root must fail");
+    assert!(matches!(
+        error,
+        WebUIError::Parse {
+            source: webui_parser::ParserError::Template(ref diagnostic),
+            ..
+        } if diagnostic.error_code() == Some(webui_parser::codes::INVALID_SHADOW_ROOT_MODE)
+            && diagnostic.position_line_column() == Some((3, 3))
+            && diagnostic.snippet_text() == Some("shadowrootmode=\"closed\">")
+    ));
+}
+
+#[test]
+fn authored_template_duplicate_shadow_diagnostic_uses_second_location() {
+    let app = create_app_dir(&[
+        ("index.html", "<my-card></my-card>"),
+        (
+            "my-card.template.html",
+            "<f-template name=\"my-card\" shadowrootmode=\"open\">\n  <template shadowrootmode=\"open\"><div>card</div></template>\n</f-template>",
+        ),
+    ]);
+    let mut options = default_options(app.path());
+    options.plugin = Some(Plugin::FastV3);
+
+    let error = build(options).expect_err("duplicate Shadow mode must fail");
+    assert!(matches!(
+        error,
+        WebUIError::Parse {
+            source: webui_parser::ParserError::Template(ref diagnostic),
+            ..
+        } if diagnostic.error_code() == Some(webui_parser::codes::INVALID_SHADOW_ROOT_MODE)
+            && diagnostic.position_line_column() == Some((2, 13))
+    ));
+}
+
+#[test]
+fn authored_template_slot_diagnostic_uses_original_location() {
+    let app = create_app_dir(&[
+        ("index.html", "<my-card></my-card>"),
+        (
+            "my-card.template.html",
+            "<f-template name=\"my-card\">\n  <template>\n    <slot name=\"label\"></slot>\n  </template>\n</f-template>",
+        ),
+    ]);
+    let mut options = default_options(app.path());
+    options.plugin = Some(Plugin::FastV3);
+    options.dom = DomStrategy::Light;
+
+    let error = build(options).expect_err("Light DOM slot must fail");
+    assert!(matches!(
+        error,
+        WebUIError::Parse {
+            source: webui_parser::ParserError::Template(ref diagnostic),
+            ..
+        } if diagnostic.error_code() == Some(webui_parser::codes::LIGHT_DOM_SLOT)
+            && diagnostic.position_line_column() == Some((3, 5))
+            && diagnostic.snippet_text() == Some("<slot name=\"label\"></slot>")
     ));
 }
 

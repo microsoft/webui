@@ -3,9 +3,9 @@
 
 //! Shared FAST source conversion and artifact handling.
 
-use super::fast_convert::{convert_template, F_TEMPLATE_NAME};
-use super::fast_diagnostic::converter_error;
-use super::{AttributeAction, ComponentSource, ComponentSourceResult, TransformedComponentSource};
+use super::super::{AttributeAction, ComponentSource, TransformedComponentSource};
+use super::convert::{convert_template, F_TEMPLATE_NAME};
+use super::diagnostic::converter_error;
 use crate::html_parser::{leading_content, parse_tag};
 use crate::Result;
 use webui_protocol::FastElementData;
@@ -15,9 +15,9 @@ use webui_protocol::FastElementData;
 pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
     if attr_name.starts_with('@')
         || attr_name.starts_with(':')
-        || attr_name == "f-ref"
-        || attr_name == "f-slotted"
-        || attr_name == "f-children"
+        || attr_name.eq_ignore_ascii_case("f-ref")
+        || attr_name.eq_ignore_ascii_case("f-slotted")
+        || attr_name.eq_ignore_ascii_case("f-children")
     {
         AttributeAction::SkipAndCountBinding
     } else {
@@ -148,27 +148,25 @@ pub(crate) fn push_body_with_css_injection(
 // Convert an authored FAST source into parser and client-artifact views.
 pub(crate) fn transform_component_source(
     source: ComponentSource<'_>,
-) -> Result<ComponentSourceResult> {
+) -> Result<Option<TransformedComponentSource>> {
     let html_content = source.html_content;
     if !contains_f_template_name(html_content.as_bytes()) {
-        return Ok(ComponentSourceResult::Unchanged);
+        return Ok(None);
     }
 
     let Some(converted) = convert_template(html_content)
         .map_err(|error| converter_error(html_content, source.tag_name, &error))?
     else {
-        return Ok(ComponentSourceResult::Unchanged);
+        return Ok(None);
     };
 
     let resolved_tag = converted.name.unwrap_or(source.tag_name).to_string();
 
-    Ok(ComponentSourceResult::Transformed(
-        TransformedComponentSource {
-            tag_name: resolved_tag,
-            parser_content: converted.parser_content,
-            artifact_content: Some(converted.artifact_content),
-        },
-    ))
+    Ok(Some(TransformedComponentSource {
+        tag_name: resolved_tag,
+        parser_content: converted.parser_content,
+        artifact_content: Some(converted.artifact_content),
+    }))
 }
 
 // Case-insensitive byte precheck; false positives use the authoritative scan.
@@ -185,7 +183,9 @@ mod tests {
 
     use super::*;
     use crate::diagnostic::codes;
-    use crate::plugin::fast_diagnostic::{INVALID_FAST_TEMPLATE, UNSUPPORTED_MULTIPLE_F_TEMPLATES};
+    use crate::plugin::fast::diagnostic::{
+        INVALID_FAST_TEMPLATE, UNSUPPORTED_MULTIPLE_F_TEMPLATES,
+    };
     use crate::ParserError;
 
     // --- is_hoisted_shadow_attr / hoisted_shadow_options / strip_hoisted_shadow_options ---
@@ -194,7 +194,7 @@ mod tests {
     // generators rely on to move declarative-shadow-root options from the
     // inner `<template>` onto the `<f-template>` wrapper without ever
     // duplicating one. Covering them here (once, for the shared predicate and
-    // both shared functions) is what keeps fast_v2.rs and fast_v3.rs from
+    // both shared functions) is what keeps v2.rs and v3.rs from
     // silently reintroducing separate, divergent implementations.
 
     #[test]
@@ -293,7 +293,7 @@ mod tests {
         }
     }
 
-    fn transform(tag: &str, html: &str) -> Result<ComponentSourceResult> {
+    fn transform(tag: &str, html: &str) -> Result<Option<TransformedComponentSource>> {
         transform_component_source(ComponentSource {
             tag_name: tag,
             html_content: html,
@@ -303,21 +303,16 @@ mod tests {
     #[test]
     fn plain_source_without_f_template_is_unchanged() {
         let html = r#"<template><if condition="visible"><span>{{title}}</span></if></template>"#;
-        assert_eq!(
-            transform("plain-card", html).expect("transform"),
-            ComponentSourceResult::Unchanged
-        );
+        assert_eq!(transform("plain-card", html).expect("transform"), None);
     }
 
     #[test]
     fn f_template_name_overrides_tag_and_converts_for_webui() {
         let html = r#"<f-template name="named-card"><template><f-when value="{{visible && count > 0}}"><f-repeat value="{{item in items}}"><button @click="{save()}" :config="{config}" ?disabled="{{disabled}}" f-ref="{button}" title="{{title}}">{{item.label}}</button></f-repeat></f-when></template></f-template>"#;
 
-        let ComponentSourceResult::Transformed(result) =
-            transform("file-card", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("file-card", html)
+            .expect("transform")
+            .expect("transformed FAST source");
 
         assert_eq!(result.tag_name, "named-card");
         // The converter output is the SSR parser view; FAST client attributes
@@ -336,16 +331,42 @@ mod tests {
     }
 
     #[test]
+    fn html_names_are_ascii_case_insensitive() {
+        let result = transformed(
+            "file-card",
+            r#"<F-TEMPLATE NAME="named-card"><TEMPLATE><F-WHEN VALUE="{{visible}}"><button F-REF="{button}">save</button></F-WHEN></TEMPLATE></F-TEMPLATE>"#,
+        );
+
+        assert_eq!(result.tag_name, "named-card");
+        assert!(result
+            .parser_content
+            .contains(r#"<if condition="visible">"#));
+        assert!(!result.parser_content.contains("<F-WHEN"));
+        assert_eq!(
+            classify_attribute("F-REF"),
+            AttributeAction::SkipAndCountBinding
+        );
+
+        let error = transform(
+            "invalid-card",
+            r#"<f-template name="invalid-card"><template><F-BOGUS></F-BOGUS></template></f-template>"#,
+        )
+        .expect_err("unsupported uppercase FAST element should error");
+        let ParserError::Template(diagnostic) = error else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diagnostic.error_code(), Some(INVALID_FAST_TEMPLATE));
+    }
+
+    #[test]
     fn absent_or_blank_name_falls_back_to_filename() {
         for html in [
             "<f-template><template></template></f-template>",
             r#"<f-template name=" "><template></template></f-template>"#,
         ] {
-            let ComponentSourceResult::Transformed(result) =
-                transform("file-card", html).expect("transform")
-            else {
-                panic!("expected a transformed FAST source");
-            };
+            let result = transform("file-card", html)
+                .expect("transform")
+                .expect("transformed FAST source");
             assert_eq!(result.tag_name, "file-card");
             assert_eq!(result.parser_content, "<template></template>");
             assert_eq!(
@@ -362,11 +383,9 @@ mod tests {
         // never be re-wrapped in a synthetic <template>. Comments may surround
         // the inner template but are inert and excluded from the artifact.
         let html = r#"<f-template name="named-card"><!-- lead --><template><button @click="{save()}">{{label}}</button></template><!-- tail --></f-template>"#;
-        let ComponentSourceResult::Transformed(result) =
-            transform("file-card", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("file-card", html)
+            .expect("transform")
+            .expect("transformed FAST source");
 
         assert_eq!(
             result.parser_content,
@@ -430,11 +449,9 @@ mod tests {
     #[test]
     fn whitespace_and_comments_outside_f_template_are_allowed() {
         let html = " \n<!-- lead -->\n<f-template name=\"named-card\"><template><span>{{label}}</span></template></f-template>\n<!-- tail -->\n ";
-        let ComponentSourceResult::Transformed(result) =
-            transform("file-card", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("file-card", html)
+            .expect("transform")
+            .expect("transformed FAST source");
         assert_eq!(result.tag_name, "named-card");
     }
 
@@ -497,22 +514,53 @@ mod tests {
     }
 
     #[test]
-    fn missing_or_multiple_inner_templates_are_diagnostics() {
-        for html in [
+    fn missing_inner_template_is_a_diagnostic() {
+        let err = transform(
+            "invalid-card",
             r#"<f-template name="invalid-card"><span></span></f-template>"#,
+        )
+        .expect_err("missing inner template should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
+        assert_eq!(
+            diag.help_text(),
+            Some("keep exactly one inner <template> element inside <f-template>")
+        );
+    }
+
+    #[test]
+    fn sibling_inner_templates_are_a_diagnostic() {
+        let err = transform(
+            "invalid-card",
             r#"<f-template name="invalid-card"><template></template><template></template></f-template>"#,
-        ] {
-            let err = transform("invalid-card", html)
-                .expect_err("invalid inner template count should error");
-            let ParserError::Template(diag) = err else {
-                panic!("expected template diagnostic");
-            };
-            assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
-            assert_eq!(
-                diag.help_text(),
-                Some("keep exactly one inner <template> element inside <f-template>")
-            );
-        }
+        )
+        .expect_err("sibling inner templates should error");
+        let ParserError::Template(diag) = err else {
+            panic!("expected template diagnostic");
+        };
+        assert_eq!(diag.error_code(), Some(INVALID_FAST_TEMPLATE));
+        assert!(diag
+            .help_text()
+            .is_some_and(|help| help.contains("single inner <template>")));
+    }
+
+    #[test]
+    fn nested_inert_template_is_preserved() {
+        let result = transformed(
+            "file-card",
+            r#"<f-template name="named-card"><template><div><template id="row"><span>{{label}}</span></template></div></template></f-template>"#,
+        );
+
+        assert!(result
+            .parser_content
+            .contains(r#"<template id="row"><span>{{label}}</span></template>"#));
+        assert!(result
+            .artifact_content
+            .as_deref()
+            .is_some_and(|artifact| artifact
+                .contains(r#"<template id="row"><span>{{label}}</span></template>"#)));
     }
 
     #[test]
@@ -557,11 +605,9 @@ mod tests {
     #[test]
     fn supported_fast_attributes_and_comments_are_preserved_for_parser_plugin() {
         let html = r#"<f-template name="binding-card"><template><!-- <f-when value="{{ignored}}"> --><div f-ref="{root}" f-children="{children}" f-slotted="{slotted}">{{label}}</div></template></f-template>"#;
-        let ComponentSourceResult::Transformed(result) =
-            transform("file-card", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("file-card", html)
+            .expect("transform")
+            .expect("transformed FAST source");
 
         assert_eq!(
             result.parser_content,
@@ -581,11 +627,9 @@ mod tests {
             "<template @click=\"{clickHandler($e)}\">\n    {{styles}}\n    ",
             r#"<slot name="start" f-ref="{start}"></slot></template></f-template>"#,
         );
-        let ComponentSourceResult::Transformed(result) =
-            transform("button.template", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("button.template", html)
+            .expect("transform")
+            .expect("transformed FAST source");
         assert_eq!(result.tag_name, "custom-button");
         assert!(
             !result.parser_content.contains("{{styles}}"),
@@ -677,11 +721,9 @@ mod tests {
     #[test]
     fn repeat_alias_and_dotted_source_grammar_is_preserved() {
         let html = r#"<f-template name="repeat-card"><template><f-repeat value="{{ $item in groups.items_2 }}"><span>{{$item.label}}</span></f-repeat></template></f-template>"#;
-        let ComponentSourceResult::Transformed(result) =
-            transform("file-card", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("file-card", html)
+            .expect("transform")
+            .expect("transformed FAST source");
 
         assert_eq!(
             result.parser_content,
@@ -733,11 +775,9 @@ mod tests {
             r#"< f-template name="card"><template><span>{{title}}</span></template></f-template>"#;
         assert!(contains_f_template_name(html.as_bytes()));
 
-        let ComponentSourceResult::Transformed(result) =
-            transform("file-card", html).expect("transform")
-        else {
-            panic!("expected a transformed FAST source");
-        };
+        let result = transform("file-card", html)
+            .expect("transform")
+            .expect("transformed FAST source");
         assert_eq!(result.tag_name, "card");
     }
 
@@ -786,18 +826,14 @@ mod tests {
             // match, but no source contains an actual `<f-template>` element,
             // so the authoritative conversion scan still finds nothing.
             assert!(contains_f_template_name(html.as_bytes()));
-            assert_eq!(
-                transform("plain-card", html).expect("transform"),
-                ComponentSourceResult::Unchanged
-            );
+            assert_eq!(transform("plain-card", html).expect("transform"), None);
         }
     }
 
     fn transformed(tag: &str, html: &str) -> TransformedComponentSource {
-        match transform(tag, html).expect("transform") {
-            ComponentSourceResult::Transformed(result) => result,
-            ComponentSourceResult::Unchanged => panic!("expected a transformed FAST source"),
-        }
+        transform(tag, html)
+            .expect("transform")
+            .expect("transformed FAST source")
     }
 
     #[test]
@@ -882,10 +918,7 @@ mod tests {
             r#"<style>/* <f-template><template></template></f-template> */ .a{color:red}</style>"#,
         ] {
             assert!(contains_f_template_name(html.as_bytes()));
-            assert_eq!(
-                transform("plain-card", html).expect("transform"),
-                ComponentSourceResult::Unchanged
-            );
+            assert_eq!(transform("plain-card", html).expect("transform"), None);
         }
     }
 

@@ -60,8 +60,8 @@
 //!    compiles each tracked component into JSON metadata plus condition closures.
 
 use super::{
-    AttributeAction, ComponentTemplateArtifact, ComponentTemplateContext, ParserPlugin,
-    ParserPluginArtifacts, StateSurface,
+    AttributeAction, AttributeContext, ComponentBuildContext, ComponentTemplateArtifact,
+    ElementStartContext, FragmentContext, ParserPlugin, ParserPluginArtifacts, StateSurface,
 };
 use crate::comment_policy;
 use crate::component_policy::{parse_component_render_policy, ComponentRenderPolicy};
@@ -243,18 +243,33 @@ impl WebUIParserPlugin {
     #[cfg(test)]
     fn register_component_template(
         &mut self,
-        tag_name: &str,
+        _tag_name: &str,
         component: &Component,
         processed_template: &str,
     ) -> Result<()> {
-        <Self as ParserPlugin>::register_component_template(
+        <Self as ParserPlugin>::component_built(
             self,
-            tag_name,
-            component,
-            processed_template,
-            ComponentTemplateContext {
+            ComponentBuildContext {
+                component,
+                template: processed_template,
                 uses_shadow_dom: false,
                 style: None,
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn classify_attribute(&mut self, name: &str) -> AttributeAction {
+        <Self as ParserPlugin>::process_attribute(self, AttributeContext { name })
+    }
+
+    #[cfg(test)]
+    fn finish_element(&mut self, binding_count: u32) -> Option<Vec<u8>> {
+        <Self as ParserPlugin>::finish_opening_tag(
+            self,
+            ElementStartContext {
+                tag_name: "test-element",
+                binding_count,
             },
         )
     }
@@ -372,12 +387,13 @@ impl Default for WebUIParserPlugin {
 }
 
 impl ParserPlugin for WebUIParserPlugin {
-    fn start_fragment(&mut self, _fragment_id: &str) {
+    fn begin_fragment(&mut self, _context: FragmentContext<'_>) {
         self.element_events.set(0);
         self.next_event_idx.set(0);
     }
 
-    fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+    fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction {
+        let attr_name = context.name;
         if attr_name.starts_with('@') {
             self.element_events.set(self.element_events.get() + 1);
             return AttributeAction::Skip;
@@ -388,16 +404,12 @@ impl ParserPlugin for WebUIParserPlugin {
         AttributeAction::Keep
     }
 
-    fn register_component_template(
-        &mut self,
-        tag_name: &str,
-        component: &Component,
-        processed_template: &str,
-        context: ComponentTemplateContext<'_>,
-    ) -> Result<()> {
+    fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
+        let component = context.component;
+        let tag_name = component.tag_name.as_str();
         self.store_component_template(
             tag_name,
-            processed_template,
+            context.template,
             &component.html_content,
             TrackedClientContext {
                 client_module: ClientModule::from_component(component),
@@ -408,7 +420,8 @@ impl ParserPlugin for WebUIParserPlugin {
         Ok(())
     }
 
-    fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
+    fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> {
+        let binding_attribute_count = context.binding_count;
         let ev_count = self.element_events.get();
         let ev_start = self.next_event_idx.get();
 
@@ -432,7 +445,7 @@ impl ParserPlugin for WebUIParserPlugin {
         )
     }
 
-    fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+    fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {
         Ok(ParserPluginArtifacts::ComponentTemplates(
             self.take_component_templates()?,
         ))

@@ -8,15 +8,14 @@
 use crate::component_policy::{
     parse_component_render_policy, validate_policy_client_ownership, ComponentRenderPolicy,
 };
-use crate::plugin::{
-    ComponentSource, ComponentSourceResult, ComponentSourceTransform, TransformedComponentSource,
-};
+use crate::plugin::{ComponentSource, ComponentSourceTransform, TransformedComponentSource};
 use crate::{CssFallbackChain, CssParser, LegalComments, ParserError, Result};
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "fs")]
 use std::fs;
 #[cfg(feature = "fs")]
 use std::path::Path;
+use std::sync::Arc;
 #[cfg(feature = "fs")]
 use walkdir::WalkDir;
 
@@ -103,6 +102,8 @@ pub struct ComponentRegistry {
     policy_css: HashSet<String>,
     // Plugin-retained client sources keyed by resolved tag name.
     component_artifact_sources: HashMap<String, String>,
+    // Original authored sources retained only when a transform replaces them.
+    component_authored_sources: HashMap<String, Arc<str>>,
     // Optional source transform applied before component insertion.
     source_transform: Option<ComponentSourceTransform>,
     /// Reusable CSS parser for token extraction during registration.
@@ -147,6 +148,7 @@ impl ComponentRegistry {
             render_policies: HashMap::new(),
             policy_css: HashSet::new(),
             component_artifact_sources: HashMap::new(),
+            component_authored_sources: HashMap::new(),
             source_transform: None,
             css_parser: CssParser::new(),
             legal_comments,
@@ -168,12 +170,10 @@ impl ComponentRegistry {
         html_content: &str,
     ) -> Result<Option<TransformedComponentSource>> {
         if let Some(transform) = self.source_transform {
-            if let ComponentSourceResult::Transformed(transformed) = transform(ComponentSource {
+            return transform(ComponentSource {
                 tag_name,
                 html_content,
-            })? {
-                return Ok(Some(transformed));
-            }
+            });
         }
         Ok(None)
     }
@@ -240,21 +240,25 @@ impl ComponentRegistry {
             context: format!("Failed to read HTML file: {}", html_path.display()),
             source,
         })?;
-        let resolved = match self.resolve_component_source(tag_name, &html_content)? {
-            Some(transformed) => transformed,
-            None => {
-                // Ignore unclaimed non-component files during discovery.
-                if allow_skip_unresolved && !tag_name.contains('-') {
-                    return Ok(());
+        let (resolved, authored_source) =
+            match self.resolve_component_source(tag_name, &html_content)? {
+                Some(transformed) => (transformed, Some(Arc::<str>::from(html_content))),
+                None => {
+                    // Ignore unclaimed non-component files during discovery.
+                    if allow_skip_unresolved && !tag_name.contains('-') {
+                        return Ok(());
+                    }
+                    // Reuse the owned file contents for unchanged sources.
+                    (
+                        TransformedComponentSource {
+                            tag_name: tag_name.to_string(),
+                            parser_content: html_content,
+                            artifact_content: None,
+                        },
+                        None,
+                    )
                 }
-                // Reuse the owned file contents for unchanged sources.
-                TransformedComponentSource {
-                    tag_name: tag_name.to_string(),
-                    parser_content: html_content,
-                    artifact_content: None,
-                }
-            }
-        };
+            };
         Self::validate_component_name(&resolved.tag_name)?;
 
         // Check for duplicate component
@@ -308,6 +312,10 @@ impl ComponentRegistry {
             self.component_artifact_sources
                 .insert(component.tag_name.clone(), artifact);
         }
+        if let Some(authored_source) = authored_source {
+            self.component_authored_sources
+                .insert(component.tag_name.clone(), authored_source);
+        }
         self.components
             .insert(component.tag_name.clone(), component);
         Ok(())
@@ -325,16 +333,20 @@ impl ComponentRegistry {
             is_client_owned,
         } = registration;
 
-        let resolved = match self.resolve_component_source(tag_name, html_content)? {
-            Some(transformed) => transformed,
-            // No transform fired: allocate the owned parser view only now, not
-            // eagerly before the transform had a chance to replace it.
-            None => TransformedComponentSource {
-                tag_name: tag_name.to_string(),
-                parser_content: html_content.to_string(),
-                artifact_content: None,
-            },
-        };
+        let (resolved, authored_source) =
+            match self.resolve_component_source(tag_name, html_content)? {
+                Some(transformed) => (transformed, Some(Arc::<str>::from(html_content))),
+                // No transform fired: allocate the owned parser view only now, not
+                // eagerly before the transform had a chance to replace it.
+                None => (
+                    TransformedComponentSource {
+                        tag_name: tag_name.to_string(),
+                        parser_content: html_content.to_string(),
+                        artifact_content: None,
+                    },
+                    None,
+                ),
+            };
         Self::validate_component_name(&resolved.tag_name)?;
 
         // Check for duplicate component
@@ -376,6 +388,10 @@ impl ComponentRegistry {
         if let Some(artifact) = resolved.artifact_content {
             self.component_artifact_sources
                 .insert(component.tag_name.clone(), artifact);
+        }
+        if let Some(authored_source) = authored_source {
+            self.component_authored_sources
+                .insert(component.tag_name.clone(), authored_source);
         }
         self.components
             .insert(component.tag_name.clone(), component);
@@ -475,6 +491,10 @@ impl ComponentRegistry {
         self.component_artifact_sources
             .get(tag_name)
             .map(String::as_str)
+    }
+
+    pub(crate) fn component_authored_source(&self, tag_name: &str) -> Option<Arc<str>> {
+        self.component_authored_sources.get(tag_name).cloned()
     }
 
     /// Get all registered components.
@@ -584,6 +604,12 @@ mod tests {
         assert_eq!(
             registry.component_artifact_source("renamed-card"),
             Some("<template><span>artifact</span></template>")
+        );
+        assert_eq!(
+            registry
+                .component_authored_source("renamed-card")
+                .as_deref(),
+            Some(r#"<mock-template name="renamed-card"><template>x</template></mock-template>"#)
         );
     }
 
@@ -980,20 +1006,22 @@ mod tests {
         assert_eq!(component.html_content, html_content1);
     }
 
-    fn mock_rename_transform(source: ComponentSource<'_>) -> Result<ComponentSourceResult> {
+    fn mock_rename_transform(
+        source: ComponentSource<'_>,
+    ) -> Result<Option<TransformedComponentSource>> {
         if !source.html_content.contains("<mock-template") {
-            return Ok(ComponentSourceResult::Unchanged);
+            return Ok(None);
         }
-        Ok(ComponentSourceResult::Transformed(
-            TransformedComponentSource {
-                tag_name: "renamed-card".to_string(),
-                parser_content: "<template><span>parser</span></template>".to_string(),
-                artifact_content: Some("<template><span>artifact</span></template>".to_string()),
-            },
-        ))
+        Ok(Some(TransformedComponentSource {
+            tag_name: "renamed-card".to_string(),
+            parser_content: "<template><span>parser</span></template>".to_string(),
+            artifact_content: Some("<template><span>artifact</span></template>".to_string()),
+        }))
     }
 
-    fn mock_failing_transform(_source: ComponentSource<'_>) -> Result<ComponentSourceResult> {
+    fn mock_failing_transform(
+        _source: ComponentSource<'_>,
+    ) -> Result<Option<TransformedComponentSource>> {
         Err(ParserError::Component("mock transform failure".to_string()))
     }
 
@@ -1061,6 +1089,7 @@ mod tests {
             Some(html)
         );
         assert_eq!(registry.component_artifact_source("plain-card"), None);
+        assert_eq!(registry.component_authored_source("plain-card"), None);
     }
 
     #[test]

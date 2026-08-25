@@ -39,10 +39,6 @@ impl fmt::Display for ConvertError<'_> {
                 f,
                 "template validation error: '<f-template>' must contain exactly one inner '<template>' element"
             ),
-            ConvertErrorKind::MultipleInnerTemplates { count } => write!(
-                f,
-                "template validation error: '<f-template>' must contain exactly one inner '<template>' element, found {count}"
-            ),
             ConvertErrorKind::ContentOutsideTemplate => write!(
                 f,
                 "template validation error: '<f-template>' must be the only top-level authored content in the file"
@@ -104,9 +100,6 @@ pub(crate) enum ConvertErrorKind<'a> {
         count: usize,
     },
     MissingInnerTemplate,
-    MultipleInnerTemplates {
-        count: usize,
-    },
     ContentOutsideTemplate,
     ContentAroundInnerTemplate,
     UnclosedElement {

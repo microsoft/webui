@@ -3,7 +3,7 @@
 
 //! FAST-owned diagnostic codes and builders shared by versioned FAST plugins.
 
-use super::fast_convert::{ConvertError, ConvertErrorKind};
+use super::convert::{ConvertError, ConvertErrorKind};
 use crate::diagnostic::{codes, Diagnostic};
 use crate::ParserError;
 
@@ -35,8 +35,7 @@ pub(super) fn converter_error(
     }
 
     let help = match error.kind() {
-        ConvertErrorKind::MissingInnerTemplate
-        | ConvertErrorKind::MultipleInnerTemplates { .. } => {
+        ConvertErrorKind::MissingInnerTemplate => {
             "keep exactly one inner <template> element inside <f-template>"
         }
         ConvertErrorKind::ContentAroundInnerTemplate => {
@@ -113,7 +112,6 @@ fn converter_error_snippet(error: &ConvertErrorKind<'_>) -> String {
     match error {
         ConvertErrorKind::MultipleFTemplates { .. }
         | ConvertErrorKind::MissingInnerTemplate
-        | ConvertErrorKind::MultipleInnerTemplates { .. }
         | ConvertErrorKind::ContentOutsideTemplate => "<f-template>".to_string(),
         ConvertErrorKind::ContentAroundInnerTemplate => "<template>".to_string(),
         ConvertErrorKind::UnclosedElement { tag }

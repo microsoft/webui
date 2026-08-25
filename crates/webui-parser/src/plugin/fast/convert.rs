@@ -12,7 +12,9 @@ pub(super) use error::{ConvertError, ConvertErrorKind};
 use crate::html_parser::{
     find_comment_close, find_raw_text_end, is_raw_text_element, parse_tag, Tag,
 };
-use directive::{is_repeat_expression, parse_directive, validate_attributes, DirectiveKind};
+use directive::{
+    has_f_prefix, is_repeat_expression, parse_directive, validate_attributes, DirectiveKind,
+};
 use scan::{
     find_matching_end_skip_raw_text, find_tag_end, read_opening_tag_name, scan_named_open_tags,
 };
@@ -95,14 +97,6 @@ pub(super) fn convert_template(
             f_template_start,
         ));
     };
-    if inner_templates.count != 1 {
-        return Err(ConvertError::new(
-            ConvertErrorKind::MultipleInnerTemplates {
-                count: inner_templates.count,
-            },
-            f_template_start,
-        ));
-    }
 
     let inner_template = parse_tag(&source[inner_start..body.end]).ok_or_else(|| {
         ConvertError::new(
@@ -355,7 +349,7 @@ fn convert_opening_tag<'a>(
     if let Some(kind) = DirectiveKind::from_tag_name(tag.name) {
         return convert_directive(tag, kind, start, state);
     }
-    if tag.name.starts_with("f-") {
+    if has_f_prefix(tag.name) {
         return Err(ConvertError::new(
             ConvertErrorKind::UnsupportedFElement { tag: tag.name },
             start,
@@ -378,7 +372,7 @@ fn convert_closing_tag<'a>(
         // `</f-template>`) has no supported opening form and must not leak into
         // the SSR view; reject it at its own offset, mirroring the unsupported
         // opening-element rejection. Ordinary closing tags pass through.
-        if tag.name.starts_with("f-") {
+        if has_f_prefix(tag.name) {
             return Err(ConvertError::new(
                 ConvertErrorKind::UnsupportedFElement { tag: tag.name },
                 start,

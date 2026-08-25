@@ -29,6 +29,19 @@ function fastTemplate(html: string, name: string): string {
   return html.slice(start, end);
 }
 
+function openingTag(html: string): string {
+  const end = html.indexOf('>');
+  expect(end, 'expected opening tag terminator').toBeGreaterThanOrEqual(0);
+  return html.slice(0, end + 1);
+}
+
+function innerTemplateOpeningTag(template: string): string {
+  const wrapperEnd = template.indexOf('>') + 1;
+  const innerStart = template.indexOf('<template', wrapperEnd);
+  expect(innerStart, 'expected inner template').toBeGreaterThanOrEqual(wrapperEnd);
+  return openingTag(template.slice(innerStart));
+}
+
 test.describe('SSR rendering', () => {
   test('renders heading and initial state', async ({ page }) => {
     await page.goto('/');
@@ -52,8 +65,10 @@ test.describe('SSR rendering', () => {
     const itemTemplate = fastTemplate(html, 'todo-item');
 
     expect(html).not.toContain('shadowrootadoptedstylesheets');
-    expect(appTemplate).toContain('shadowrootmode="open"');
-    expect(itemTemplate).toContain('shadowrootmode="open"');
+    expect(openingTag(appTemplate)).toContain('shadowrootmode="open"');
+    expect(openingTag(itemTemplate)).toContain('shadowrootmode="open"');
+    expect(innerTemplateOpeningTag(appTemplate)).not.toContain('shadowrootmode');
+    expect(innerTemplateOpeningTag(itemTemplate)).not.toContain('shadowrootmode');
     expect(appTemplate).toContain('@toggle-item="{onToggleItem($e)}"');
     expect(appTemplate).toContain('@delete-item="{onDeleteItem($e)}"');
     expect(itemTemplate).toContain('@click="{onClick($e)}"');

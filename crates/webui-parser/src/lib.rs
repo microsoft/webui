@@ -39,7 +39,10 @@ use crate::component_policy::{
     RESERVE_BLOCK_SIZE_ATTR as COMPONENT_RESERVE_BLOCK_SIZE_ATTR,
 };
 use crate::html_parser::{self as html, Attrs, Element, Event, Walker};
-use crate::plugin::{AttributeAction, ParserPlugin, ParserPluginArtifacts};
+use crate::plugin::{
+    AttributeAction, AttributeContext, ComponentBuildContext, ComponentProcessing,
+    ElementStartContext, FragmentContext, ParserPlugin, ParserPluginArtifacts,
+};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use webui_protocol::{
@@ -596,6 +599,9 @@ pub struct HtmlParser {
     /// Optional parser plugin for framework-specific behavior.
     plugin: Option<Box<dyn ParserPlugin>>,
 
+    /// Static component behavior copied from the plugin at construction.
+    component_processing: ComponentProcessing,
+
     /// Declarative Shadow DOM analysis resolved once per component tag.
     component_dom_analyses: HashMap<String, ComponentDomAnalysis>,
 
@@ -707,8 +713,10 @@ impl BuiltComponentTemplate {
         self.artifact.as_deref().unwrap_or(&self.ssr)
     }
 
-    fn context(&self) -> plugin::ComponentTemplateContext<'_> {
-        plugin::ComponentTemplateContext {
+    fn plugin_context<'a>(&'a self, component: &'a Component) -> ComponentBuildContext<'a> {
+        ComponentBuildContext {
+            component,
+            template: self.artifact(),
             uses_shadow_dom: self.uses_shadow_dom,
             style: self.style.as_ref().map(|style| match style {
                 OwnedComponentStyle::Link(href) => plugin::ComponentStyleDelivery::Link { href },
@@ -741,10 +749,20 @@ struct ShadowRootModeOccurrence<'a> {
     value: Option<&'a str>,
 }
 
+#[cfg(test)]
 fn analyze_component_dom(
     tag_name: &str,
     source: &str,
     fallback: DomStrategy,
+) -> Result<ComponentDomAnalysis> {
+    analyze_component_dom_with_diagnostic_source(tag_name, source, fallback, None)
+}
+
+fn analyze_component_dom_with_diagnostic_source(
+    tag_name: &str,
+    source: &str,
+    fallback: DomStrategy,
+    diagnostic_source: Option<&str>,
 ) -> Result<ComponentDomAnalysis> {
     let mut ranges = Vec::with_capacity(8);
     ranges.push((0..source.len(), true));
@@ -780,8 +798,11 @@ fn analyze_component_dom(
                             if shadow_mode.is_some() {
                                 return Err(invalid_shadow_root_mode_error(
                                     tag_name,
-                                    source,
-                                    element.start + attr.raw_range.start,
+                                    DiagnosticSite::new(
+                                        source,
+                                        diagnostic_source,
+                                        element.start + attr.raw_range.start,
+                                    ),
                                     "a component may declare only one `shadowrootmode`",
                                     "keep one `shadowrootmode=\"open\"` attribute on the sole top-level `<template>`",
                                 ));
@@ -826,8 +847,7 @@ fn analyze_component_dom(
             if mode.dynamically_bound {
                 return Err(invalid_shadow_root_mode_error(
                     tag_name,
-                    source,
-                    mode.attr_offset,
+                    DiagnosticSite::new(source, diagnostic_source, mode.attr_offset),
                     "`shadowrootmode` must be a static attribute",
                     "replace the binding with `shadowrootmode=\"open\"` on the sole top-level `<template>`",
                 ));
@@ -835,8 +855,7 @@ fn analyze_component_dom(
             if value.is_some_and(|value| value.eq_ignore_ascii_case("closed")) {
                 return Err(invalid_shadow_root_mode_error(
                     tag_name,
-                    source,
-                    mode.attr_offset,
+                    DiagnosticSite::new(source, diagnostic_source, mode.attr_offset),
                     "`shadowrootmode=\"closed\"` is not supported",
                     "use `shadowrootmode=\"open\"`; WebUI requires an open root for hydration and style delivery",
                 ));
@@ -844,8 +863,7 @@ fn analyze_component_dom(
             if !value.is_some_and(|value| value.eq_ignore_ascii_case("open")) {
                 return Err(invalid_shadow_root_mode_error(
                     tag_name,
-                    source,
-                    mode.attr_offset,
+                    DiagnosticSite::new(source, diagnostic_source, mode.attr_offset),
                     "`shadowrootmode` must be `open`",
                     "set the attribute to `shadowrootmode=\"open\"`",
                 ));
@@ -858,8 +876,7 @@ fn analyze_component_dom(
             {
                 return Err(invalid_shadow_root_mode_error(
                     tag_name,
-                    source,
-                    mode.attr_offset,
+                    DiagnosticSite::new(source, diagnostic_source, mode.attr_offset),
                     "the declarative Shadow DOM wrapper must be the sole top-level element",
                     "wrap the complete component in one top-level `<template shadowrootmode=\"open\">`",
                 ));
@@ -880,7 +897,10 @@ fn analyze_component_dom(
         || (authored_light_root.is_none() && fallback == DomStrategy::Shadow);
     if !uses_shadow_dom {
         if let Some(offset) = slot_offset {
-            return Err(light_dom_slot_error(tag_name, source, offset));
+            return Err(light_dom_slot_error(
+                tag_name,
+                DiagnosticSite::new(source, diagnostic_source, offset),
+            ));
         }
     }
 
@@ -895,11 +915,11 @@ fn analyze_component_dom(
 #[inline(never)]
 fn invalid_shadow_root_mode_error(
     tag_name: &str,
-    source: &str,
-    offset: usize,
+    site: DiagnosticSite<'_>,
     title: &str,
     help: &str,
 ) -> ParserError {
+    let (source, offset) = site.resolve(DiagnosticTarget::Attribute("shadowrootmode"));
     Diagnostic::error(title)
         .code(codes::INVALID_SHADOW_ROOT_MODE)
         .component(tag_name)
@@ -911,7 +931,8 @@ fn invalid_shadow_root_mode_error(
 
 #[cold]
 #[inline(never)]
-fn light_dom_slot_error(tag_name: &str, source: &str, offset: usize) -> ParserError {
+fn light_dom_slot_error(tag_name: &str, site: DiagnosticSite<'_>) -> ParserError {
+    let (source, offset) = site.resolve(DiagnosticTarget::Element("slot"));
     Diagnostic::error("native `<slot>` projection requires Shadow DOM")
         .code(codes::LIGHT_DOM_SLOT)
         .component(tag_name)
@@ -924,10 +945,93 @@ fn light_dom_slot_error(tag_name: &str, source: &str, offset: usize) -> ParserEr
         .into()
 }
 
+#[derive(Clone, Copy)]
+struct DiagnosticSite<'a> {
+    source: &'a str,
+    authored_source: Option<&'a str>,
+    offset: usize,
+}
+
+impl<'a> DiagnosticSite<'a> {
+    fn new(source: &'a str, authored_source: Option<&'a str>, offset: usize) -> Self {
+        Self {
+            source,
+            authored_source,
+            offset,
+        }
+    }
+
+    fn resolve(self, target: DiagnosticTarget) -> (&'a str, usize) {
+        let Some(authored_source) = self.authored_source else {
+            return (self.source, self.offset);
+        };
+        let transformed_offsets = diagnostic_target_offsets(self.source, target);
+        let occurrence = transformed_offsets
+            .iter()
+            .position(|offset| *offset == self.offset)
+            .unwrap_or(0);
+        let authored_offsets = diagnostic_target_offsets(authored_source, target);
+        authored_offsets
+            .get(occurrence)
+            .copied()
+            .map_or((self.source, self.offset), |offset| {
+                (authored_source, offset)
+            })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum DiagnosticTarget {
+    Element(&'static str),
+    Attribute(&'static str),
+}
+
+#[cold]
+#[inline(never)]
+fn diagnostic_target_offsets(source: &str, target: DiagnosticTarget) -> Vec<usize> {
+    let mut offsets = Vec::new();
+    let mut ranges = Vec::with_capacity(4);
+    ranges.push(0..source.len());
+
+    while let Some(range) = ranges.pop() {
+        for event in Walker::new_range(source, range.start, range.end) {
+            let Event::Element(element) = event else {
+                continue;
+            };
+            match target {
+                DiagnosticTarget::Element(name) if element.name().eq_ignore_ascii_case(name) => {
+                    offsets.push(element.start);
+                }
+                DiagnosticTarget::Attribute(name) => {
+                    for attr in element.attrs() {
+                        let attr_name = attr.name.strip_prefix([':', '?']).unwrap_or(attr.name);
+                        if attr_name.eq_ignore_ascii_case(name) {
+                            offsets.push(element.start + attr.raw_range.start);
+                        }
+                    }
+                }
+                DiagnosticTarget::Element(_) => {}
+            }
+
+            let name = element.name();
+            let raw_text = name.eq_ignore_ascii_case("script")
+                || name.eq_ignore_ascii_case("style")
+                || name.eq_ignore_ascii_case("textarea")
+                || name.eq_ignore_ascii_case("title");
+            if element.content_end() > element.inner().start && !raw_text {
+                ranges.push(element.inner());
+            }
+        }
+    }
+    offsets.sort_unstable();
+    offsets
+}
+
 struct ComponentTemplateInput<'a> {
     tag_name: &'a str,
     html: &'a str,
     artifact_html: Option<&'a str>,
+    authored_html: Option<&'a str>,
     css_content: Option<&'a str>,
     artifact_needed: bool,
 }
@@ -1221,6 +1325,7 @@ impl HtmlParser {
             fragment_records: WebUIFragmentRecords::new(),
             options,
             plugin: None,
+            component_processing: ComponentProcessing::default(),
             component_dom_analyses: HashMap::new(),
             token_roots: Vec::new(),
             fragment_css_tokens: HashMap::new(),
@@ -1248,21 +1353,17 @@ impl HtmlParser {
     /// Create a new parser with a plugin and explicit parser options.
     #[must_use]
     pub fn with_plugin_options(
-        plugin: Box<dyn ParserPlugin>,
+        mut plugin: Box<dyn ParserPlugin>,
         options: impl Into<ParserOptions>,
     ) -> Self {
         let mut p = Self::with_options(options);
+        plugin.configure_parser(&p.options);
+        let component_processing = plugin.component_processing();
         p.component_registry
-            .set_component_source_transform(plugin.component_source_transform());
+            .set_component_source_transform(component_processing.source_transform);
+        p.component_processing = component_processing;
         p.plugin = Some(plugin);
-        p.configure_plugin();
         p
-    }
-
-    fn configure_plugin(&mut self) {
-        if let Some(ref mut plugin) = self.plugin {
-            plugin.configure(&self.options);
-        }
     }
 
     /// Get a mutable reference to the component registry.
@@ -1890,9 +1991,7 @@ impl HtmlParser {
     pub fn take_plugin_artifacts(&mut self) -> Result<ParserPluginArtifacts> {
         self.plugin
             .take()
-            .map_or(Ok(ParserPluginArtifacts::None), |plugin| {
-                plugin.into_artifacts()
-            })
+            .map_or(Ok(ParserPluginArtifacts::None), |plugin| plugin.finish())
     }
 
     /// Take the accumulated CSS tokens as a sorted, deduplicated `Vec`.
@@ -2159,7 +2258,7 @@ impl HtmlParser {
         // Reset sub-fragments for new parse
         self.raw_buffer.clear();
         if let Some(ref mut plugin) = self.plugin {
-            plugin.start_fragment(fragment_id);
+            plugin.begin_fragment(FragmentContext { id: fragment_id });
         }
 
         let mut entry_fragment: Vec<WebUIFragment> = Vec::new();
@@ -2539,7 +2638,10 @@ impl HtmlParser {
 
         let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
         if let Some(ref mut p) = self.plugin {
-            if let Some(data) = p.finish_element(binding_count) {
+            if let Some(data) = p.finish_opening_tag(ElementStartContext {
+                tag_name: element.name(),
+                binding_count,
+            }) {
                 self.add_fragment(WebUIFragment::plugin(data), fragments);
             }
         }
@@ -2636,7 +2738,10 @@ impl HtmlParser {
             self.add_raw_fragment(element.name());
             let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
             if let Some(ref mut p) = self.plugin {
-                if let Some(data) = p.finish_element(binding_count) {
+                if let Some(data) = p.finish_opening_tag(ElementStartContext {
+                    tag_name: element.name(),
+                    binding_count,
+                }) {
                     self.add_fragment(WebUIFragment::plugin(data), fragments);
                 }
             }
@@ -2668,7 +2773,10 @@ impl HtmlParser {
         self.add_raw_fragment(element.name());
         let binding_count = self.process_tag_attributes(element.attrs(), fragments, false)?;
         if let Some(ref mut p) = self.plugin {
-            if let Some(data) = p.finish_element(binding_count) {
+            if let Some(data) = p.finish_opening_tag(ElementStartContext {
+                tag_name: element.name(),
+                binding_count,
+            }) {
                 self.add_fragment(WebUIFragment::plugin(data), fragments);
             }
         }
@@ -3391,6 +3499,12 @@ impl HtmlParser {
             .component_registry
             .component_artifact_source(element.name())
             .is_some();
+        let authored_html = if needs_template_build || cached_dom_analysis.is_none() {
+            self.component_registry
+                .component_authored_source(element.name())
+        } else {
+            None
+        };
         let (dom_analysis, template_source) = {
             let component = self.component_registry.get(element.name()).ok_or_else(|| {
                 self.authoring_error_at(
@@ -3403,13 +3517,16 @@ impl HtmlParser {
             (
                 cached_dom_analysis.map_or_else(
                     || {
-                        let fast_html = has_plugin_artifact.then(|| {
-                            Self::append_shadow_mode_if_missing(component.html_content.clone())
-                        });
-                        analyze_component_dom(
+                        let fast_html = (has_plugin_artifact
+                            && self.options.dom_strategy == DomStrategy::Shadow)
+                            .then(|| {
+                                Self::append_shadow_mode_if_missing(component.html_content.clone())
+                            });
+                        analyze_component_dom_with_diagnostic_source(
                             element.name(),
                             fast_html.as_deref().unwrap_or(&component.html_content),
                             self.options.dom_strategy,
+                            authored_html.as_deref(),
                         )
                     },
                     Ok,
@@ -3444,7 +3561,10 @@ impl HtmlParser {
 
         let binding_count = self.process_tag_attributes(element.attrs(), fragments, true)?;
         if let Some(ref mut p) = self.plugin {
-            if let Some(data) = p.finish_element(binding_count) {
+            if let Some(data) = p.finish_opening_tag(ElementStartContext {
+                tag_name: element.name(),
+                binding_count,
+            }) {
                 self.add_fragment(WebUIFragment::plugin(data), fragments);
             }
         }
@@ -3478,11 +3598,11 @@ impl HtmlParser {
                 tag_name: element.name(),
                 html: &html_content,
                 artifact_html: artifact_html.as_deref(),
+                authored_html: authored_html.as_deref(),
                 css_content: css_content.as_deref(),
                 artifact_needed: self.plugin.is_some(),
             })?;
 
-            let context = built.context();
             if let Some(ref mut p) = self.plugin {
                 let component_data = self
                     .component_registry
@@ -3494,12 +3614,7 @@ impl HtmlParser {
                         ))
                     })?
                     .clone();
-                p.register_component_template(
-                    element.name(),
-                    &component_data,
-                    built.artifact(),
-                    context,
-                )?;
+                p.component_built(built.plugin_context(&component_data))?;
             }
 
             self.parse(element.name(), &built.ssr)?;
@@ -3528,11 +3643,17 @@ impl HtmlParser {
         &mut self,
         tag_name: &str,
         source: &str,
+        authored_source: Option<&str>,
     ) -> Result<ComponentDomAnalysis> {
         if let Some(analysis) = self.component_dom_analyses.get(tag_name) {
             return Ok(*analysis);
         }
-        let analysis = analyze_component_dom(tag_name, source, self.options.dom_strategy)?;
+        let analysis = analyze_component_dom_with_diagnostic_source(
+            tag_name,
+            source,
+            self.options.dom_strategy,
+            authored_source,
+        )?;
         self.component_dom_analyses
             .insert(tag_name.to_string(), analysis);
         Ok(analysis)
@@ -3630,7 +3751,7 @@ impl HtmlParser {
             let attr_name = attr.name;
 
             if let Some(ref mut p) = self.plugin {
-                match p.classify_attribute(attr_name) {
+                match p.process_attribute(AttributeContext { name: attr_name }) {
                     AttributeAction::Keep => {}
                     AttributeAction::Skip => continue,
                     AttributeAction::SkipAndCountBinding => {
@@ -4350,16 +4471,17 @@ impl HtmlParser {
             .component_registry
             .component_artifact_source(component)
             .map(str::to_string);
+        let authored_html = self.component_registry.component_authored_source(component);
 
         let built = self.build_component_templates(ComponentTemplateInput {
             tag_name: component,
             html: &component_data.html_content,
             artifact_html: artifact_html.as_deref(),
+            authored_html: authored_html.as_deref(),
             css_content: component_data.css_content.as_deref(),
             artifact_needed: self.plugin.is_some(),
         })?;
 
-        let context = built.context();
         if let Some(ref mut p) = self.plugin {
             let component_data = self
                 .component_registry
@@ -4370,7 +4492,7 @@ impl HtmlParser {
                     ))
                 })?
                 .clone();
-            p.register_component_template(component, &component_data, built.artifact(), context)?;
+            p.component_built(built.plugin_context(&component_data))?;
         }
 
         let saved_buffer = std::mem::take(&mut self.raw_buffer);
@@ -4405,12 +4527,13 @@ impl HtmlParser {
         input: ComponentTemplateInput<'_>,
     ) -> Result<BuiltComponentTemplate> {
         let tag_name = input.tag_name;
-        let fast_html = input
-            .artifact_html
-            .map(|_| Self::append_shadow_mode_if_missing(input.html.to_string()));
+        let synthesize_fast_shadow =
+            input.artifact_html.is_some() && self.options.dom_strategy == DomStrategy::Shadow;
+        let fast_html = synthesize_fast_shadow
+            .then(|| Self::append_shadow_mode_if_missing(input.html.to_string()));
         let html = fast_html.as_deref().unwrap_or(input.html);
         let css_content = input.css_content;
-        let dom_analysis = self.analyze_component_dom(tag_name, html)?;
+        let dom_analysis = self.analyze_component_dom(tag_name, html, input.authored_html)?;
         let is_light = !dom_analysis.uses_shadow_dom;
         let mut inline_style_ranges = Vec::new();
         if is_light {
@@ -4471,25 +4594,11 @@ impl HtmlParser {
         // generated CSS, so the wrapper itself must not survive into a Light
         // template, where its contents would never render.
         let policy_wrapper = parse_component_render_policy(tag_name, html)?.is_authored();
-        // When the active plugin owns client-only bindings on the root
-        // `<template>` (FAST), keep them in the SSR view so the parser
-        // classifies and counts them for hydration-marker alignment instead of
-        // the pre-parse strip dropping them uncounted. WebUI and the no-plugin
-        // path keep the strip fast path.
-        let preserve_root_bindings = self
-            .plugin
-            .as_ref()
-            .is_some_and(|plugin| plugin.classifies_root_template_bindings());
-        // Trail the Style-strategy `<style>` after the template body only when
-        // the active plugin's client runtime parses that body for `{`/`}`
-        // bindings (FAST). Link/Module carry no CSS braces into the body, so
-        // their placement is unchanged and other strategies keep the authored
-        // `{{styles}}` position.
+        // Keep root runtime attributes only when the plugin processes them.
+        let preserve_root_bindings = self.component_processing.process_root_template_attributes;
+        // Keep CSS braces after client bindings when requested by the plugin.
         let styles_at_end = matches!(self.options.css_strategy, CssStrategy::Style)
-            && self
-                .plugin
-                .as_ref()
-                .is_some_and(|plugin| plugin.styles_trail_template_body());
+            && self.component_processing.inline_styles_after_content;
         let ssr = self.process_component_template_with_mode(
             html,
             ComponentStyleInjection {
@@ -4505,12 +4614,15 @@ impl HtmlParser {
         )?;
         let artifact = match artifact_source {
             Some(source) => {
-                let fast_artifact = input
-                    .artifact_html
-                    .map(|_| Self::append_shadow_mode_if_missing(source.to_string()));
+                let fast_artifact = synthesize_fast_shadow
+                    .then(|| Self::append_shadow_mode_if_missing(source.to_string()));
                 let source = fast_artifact.as_deref().unwrap_or(source);
-                let artifact_dom_analysis =
-                    analyze_component_dom(tag_name, source, self.options.dom_strategy)?;
+                let artifact_dom_analysis = analyze_component_dom_with_diagnostic_source(
+                    tag_name,
+                    source,
+                    self.options.dom_strategy,
+                    input.authored_html,
+                )?;
                 Some(self.process_component_template_with_mode(
                     source,
                     ComponentStyleInjection {
@@ -4949,31 +5061,17 @@ mod tests {
     }
 
     impl ParserPlugin for ContextArtifactPlugin {
-        fn register_component_template(
-            &mut self,
-            tag_name: &str,
-            _component: &Component,
-            processed_template: &str,
-            context: crate::plugin::ComponentTemplateContext,
-        ) -> Result<()> {
+        fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
             self.artifacts
                 .push(crate::plugin::ComponentTemplateArtifact::template(
-                    tag_name.to_string(),
-                    processed_template.to_string(),
+                    context.component.tag_name.clone(),
+                    context.template.to_string(),
                     context.uses_shadow_dom,
                 ));
             Ok(())
         }
 
-        fn classify_attribute(&mut self, _attr_name: &str) -> AttributeAction {
-            AttributeAction::Keep
-        }
-
-        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
-            None
-        }
-
-        fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+        fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {
             Ok(ParserPluginArtifacts::ComponentTemplates(self.artifacts))
         }
     }
@@ -5185,27 +5283,13 @@ mod tests {
     }
 
     impl crate::plugin::ParserPlugin for StyleContextPlugin {
-        fn register_component_template(
-            &mut self,
-            _tag_name: &str,
-            _component: &Component,
-            processed_template: &str,
-            context: crate::plugin::ComponentTemplateContext<'_>,
-        ) -> Result<()> {
+        fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
             self.captured.borrow_mut().push((
                 context.uses_shadow_dom,
                 context.style.map(|style| format!("{style:?}")),
-                processed_template.to_string(),
+                context.template.to_string(),
             ));
             Ok(())
-        }
-
-        fn classify_attribute(&mut self, _attr_name: &str) -> AttributeAction {
-            AttributeAction::Keep
-        }
-
-        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
-            None
         }
     }
 
@@ -7649,6 +7733,7 @@ mod tests {
                 tag_name: "my-card",
                 html: "<style>.label{color:red}</style><p class=\"label\">content</p>",
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: false,
             })
@@ -7670,6 +7755,7 @@ mod tests {
                 tag_name: "my-card",
                 html: &html,
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: false,
             });
@@ -7715,6 +7801,7 @@ mod tests {
                 tag_name: "my-card",
                 html: "<style>:host{display:block}.label{color:red}</style><p class=\"label\">content</p>",
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: false,
             })
@@ -7927,6 +8014,7 @@ mod tests {
                 tag_name: "my-card",
                 html: "<template><div class=\"label\">hi</div></template>",
                 artifact_html: None,
+                authored_html: None,
                 css_content: Some(".label{color:red}"),
                 artifact_needed: false,
             })
@@ -7943,6 +8031,7 @@ mod tests {
                 tag_name: "my-card",
                 html: r#"<template data-purpose="content"><div>hi</div></template>"#,
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: false,
             })
@@ -8050,6 +8139,7 @@ mod tests {
                 tag_name: "my-comp",
                 html,
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8065,6 +8155,7 @@ mod tests {
                 tag_name: "my-comp",
                 html,
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8078,6 +8169,7 @@ mod tests {
                 tag_name: "my-comp",
                 html,
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8098,6 +8190,7 @@ mod tests {
                 tag_name: "my-comp",
                 html: shadow_html,
                 artifact_html: None,
+                authored_html: None,
                 css_content: None,
                 artifact_needed: true,
             })
@@ -8234,6 +8327,7 @@ mod tests {
                 tag_name: "my-comp",
                 html: r#"<template shadowrootmode="open" @click="{onClick()}">Hello</template>"#,
                 artifact_html: None,
+                authored_html: None,
                 css_content: Some(":host { color: red; }"),
                 artifact_needed: true,
             }) {
@@ -9609,17 +9703,8 @@ mod tests {
     }
 
     impl crate::plugin::ParserPlugin for BindingCountPlugin {
-        fn register_component_template(
-            &mut self,
-            _tag_name: &str,
-            _component: &Component,
-            _processed_template: &str,
-            _context: crate::plugin::ComponentTemplateContext,
-        ) -> Result<()> {
-            Ok(())
-        }
-
-        fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+        fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction {
+            let attr_name = context.name;
             if attr_name.starts_with('@') || attr_name == "f-ref" {
                 AttributeAction::SkipAndCountBinding
             } else {
@@ -9627,7 +9712,8 @@ mod tests {
             }
         }
 
-        fn finish_element(&mut self, binding_attribute_count: u32) -> Option<Vec<u8>> {
+        fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> {
+            let binding_attribute_count = context.binding_count;
             self.counts.push(binding_attribute_count);
             if binding_attribute_count > 0 {
                 Some(binding_attribute_count.to_le_bytes().to_vec())
@@ -9652,19 +9738,14 @@ mod tests {
     }
 
     impl crate::plugin::ParserPlugin for TemplateCapturePlugin {
-        fn register_component_template(
-            &mut self,
-            _tag_name: &str,
-            _component: &Component,
-            processed_template: &str,
-            context: crate::plugin::ComponentTemplateContext,
-        ) -> Result<()> {
-            self.template = Some(processed_template.to_string());
+        fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
+            self.template = Some(context.template.to_string());
             self.uses_shadow_dom = context.uses_shadow_dom;
             Ok(())
         }
 
-        fn classify_attribute(&mut self, attr_name: &str) -> AttributeAction {
+        fn process_attribute(&mut self, context: AttributeContext<'_>) -> AttributeAction {
+            let attr_name = context.name;
             if attr_name.starts_with('@') || attr_name == "f-ref" {
                 AttributeAction::SkipAndCountBinding
             } else {
@@ -9672,11 +9753,7 @@ mod tests {
             }
         }
 
-        fn finish_element(&mut self, _binding_attribute_count: u32) -> Option<Vec<u8>> {
-            None
-        }
-
-        fn into_artifacts(self: Box<Self>) -> Result<ParserPluginArtifacts> {
+        fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {
             match self.template {
                 Some(template) => Ok(ParserPluginArtifacts::ComponentTemplates(vec![
                     crate::plugin::ComponentTemplateArtifact::template(
