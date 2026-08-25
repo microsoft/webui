@@ -69,9 +69,22 @@ import type {
 } from './template-types.js';
 
 const WEBUI_DATA_ID = 'webui-data';
+const HYDRATION_COMPLETE_EVENT = 'webui:hydration-complete';
+const TEMPLATE_FN_COUNT = Symbol.for('microsoft.webui.templateFnCount');
 const normalizedTemplates = new WeakSet<TemplateMeta>();
 const assetNormalizedTemplates = new WeakSet<TemplateMeta>();
 let webuiDataLoaded = false;
+
+type RuntimeTemplateFns = Record<string, CompiledConditionFn[]>
+  & Record<symbol, number | undefined>;
+
+function runtimeTemplateFnCount(registry: RuntimeTemplateFns): number {
+  const count = registry[TEMPLATE_FN_COUNT];
+  if (typeof count === 'number') return count;
+  const initialized = Object.keys(registry).length;
+  registry[TEMPLATE_FN_COUNT] = initialized;
+  return initialized;
+}
 
 interface PendingTemplateDefinition {
   readonly ctor: Function;
@@ -94,14 +107,6 @@ function acceptTemplateData(
   const w = window as Window;
   if (!w.__webui) w.__webui = {};
   if (!w.__webui.templates) w.__webui.templates = {};
-  if (templateFns) {
-    if (!w.__webui.templateFns) w.__webui.templateFns = {};
-    const fnNames = Object.keys(templateFns);
-    for (let i = 0; i < fnNames.length; i++) {
-      const tag = fnNames[i];
-      w.__webui.templateFns[tag] = templateFns[tag];
-    }
-  }
   const names = Object.keys(templates);
   for (let i = 0; i < names.length; i++) {
     const tag = names[i];
@@ -136,6 +141,11 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     const ready = prepareRegisteredLinkStyles(detail.templates);
     if (ready) detail.waitUntil?.(ready);
   });
+  window.addEventListener(
+    HYDRATION_COMPLETE_EVENT,
+    releaseNonRoutedSSRBootstrapState,
+    { once: true },
+  );
 }
 
 declare global {
@@ -278,15 +288,57 @@ function loadWebUIDataBlock(): void {
   webuiDataLoaded = true;
 }
 
+/**
+ * Release the one-shot page state after every startup hydration consumer has
+ * copied the roots it owns. Template metadata remains available for future
+ * client-created blocks and route navigation.
+ *
+ * @internal
+ */
+export function releaseSSRBootstrapState(): void {
+  const runtime = window.__webui;
+  if (runtime?.state !== undefined) {
+    delete runtime.state;
+  }
+}
+
+/** Release only on non-routed pages; the router owns routed startup state. */
+export function releaseNonRoutedSSRBootstrapState(): void {
+  const runtime = window.__webui;
+  if (
+    runtime?.chain === undefined &&
+    runtime?.templateHostExclusions === undefined
+  ) {
+    releaseSSRBootstrapState();
+  }
+}
+
 function normalizeTemplate(
   name: string,
   meta: TemplateMeta,
   suppliedFns?: CompiledConditionFn[],
 ): void {
   if (normalizedTemplates.has(meta)) return;
-  const fns = suppliedFns ?? window.__webui?.templateFns?.[name] ?? [];
+  const runtimeFns = window.__webui?.templateFns as
+    | RuntimeTemplateFns
+    | undefined;
+  const fns = suppliedFns ?? runtimeFns?.[name] ?? [];
   normalizeTemplateConditions(name, meta, fns);
   normalizedTemplates.add(meta);
+  if (suppliedFns === undefined && runtimeFns?.[name] === fns) {
+    let remaining = runtimeTemplateFnCount(runtimeFns);
+    delete runtimeFns[name];
+    remaining--;
+    runtimeFns[TEMPLATE_FN_COUNT] = remaining;
+    if (remaining === 0 && window.__webui) {
+      const liveCount = Object.keys(runtimeFns).length;
+      if (liveCount === 0) {
+        delete window.__webui.templateFns;
+      } else {
+        runtimeFns[TEMPLATE_FN_COUNT] = liveCount;
+      }
+    }
+  }
 }
 
 function normalizeTemplateConditions(

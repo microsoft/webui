@@ -500,7 +500,7 @@ describe('component asset helpers', () => {
     }
   });
 
-  test('manifest preload registers template functions from the asset module', async () => {
+  test('manifest preload embeds template functions without retaining the closure array', async () => {
     const previousWindow = setGlobal('window', { __webui: {} });
     const previousDocument = setGlobal('document', {
       baseURI: 'https://example.test/app/',
@@ -525,7 +525,13 @@ describe('component asset helpers', () => {
             externalComponents: [],
             imports: [],
             componentStyles: { version: 1, strategy: 'style', resources: {}, closures: {} },
-            templates: { 'fn-card': { h: '<p>Fn</p>' } },
+            templates: {
+              'fn-card': {
+                h: '<!--wc:0--><!--/wc-->',
+                b: [{ h: '<p>Fn</p>' }],
+                c: [[[0, ['ready']], 0, [[], 0]]]
+              }
+            },
             templateFunctions: { 'fn-card': [function(v,s){return !!v('ready',s);}] }
           }`),
         },
@@ -533,9 +539,9 @@ describe('component asset helpers', () => {
 
       await assets.preload('fn-card').asset;
 
-      const fns = window.__webui?.templateFns?.['fn-card'];
-      assert.equal(typeof fns?.[0], 'function');
-      assert.equal(getTemplate('fn-card')?.h, '<p>Fn</p>');
+      const template = getTemplate('fn-card');
+      assert.equal(typeof template?.c?.[0][0][0], 'function');
+      assert.equal(window.__webui?.templateFns, undefined);
     } finally {
       restoreGlobal('window', previousWindow);
       restoreGlobal('document', previousDocument);

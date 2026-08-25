@@ -828,7 +828,13 @@ State seeding uses `window.__webui.state` loaded from the server-emitted
 `@observable` and `@attr` keys from reachable authored components select
 initial state; HTML-only dormant components and authored template-only roots
 contribute no startup keys. Without projection metadata, the server preserves
-full state. During `$mount()`, `$applySSRState()` writes matching decorated keys
+full state. The startup state is not a permanent application store. Eager
+components consume it during hydration, lazy components copy their projected
+roots before deferral, and the framework releases the global handoff when
+`webui:hydration-complete` fires on a page without a route chain. Routed pages
+retain it for router-owned lazy startup. Normalized template closure entries are
+released as soon as their functions are embedded in template metadata. During
+`$mount()`, `$applySSRState()` writes matching decorated keys
 directly to observable backing fields before any bindings are wired:
 
 ```mermaid

@@ -436,8 +436,15 @@ non-executable SSR metadata:
 </script>
 ```
 
-This is the single metadata startup contract. The client packages first read any existing `window.__webui`, then
-lazily parse and remove `#webui-data` into `window.__webui` when metadata is needed. Note that
+This is the single metadata startup contract. The client packages first read any
+existing `window.__webui`, then lazily parse and remove `#webui-data` into
+`window.__webui` when metadata is needed. The projected `state` object is a
+one-shot handoff: eager components consume it synchronously, lazy roots copy
+their owned roots before deferral, and the framework deletes it when the startup
+`webui:hydration-complete` cohort settles on a page without a route chain. Pages
+with a route chain retain the handoff for router-owned lazy startup instead.
+Template closure entries are likewise removed from `templateFns` after
+normalization embeds each function into its template metadata. Note that
 **CSS module definitions** are emitted for all **reachable** components (including those in false
 `<if>` blocks), not just rendered ones.
 

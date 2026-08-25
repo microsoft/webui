@@ -4,7 +4,13 @@
 import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
-import { getTemplate, registerTemplateData, type TemplateMeta } from './template.js';
+import {
+  getTemplate,
+  registerTemplateData,
+  releaseNonRoutedSSRBootstrapState,
+  releaseSSRBootstrapState,
+  type TemplateMeta,
+} from './template.js';
 
 describe('template registry helpers', () => {
   test('getTemplate returns registered metadata from window', () => {
@@ -55,6 +61,7 @@ describe('template registry helpers', () => {
       const registered = getTemplate('greeting')!;
       assert.equal((registered.c![0][0][0] as unknown), fn);
       assert.deepEqual(registered.c![0][0][1], ['ready']);
+      assert.equal(window.__webui!.templateFns, undefined);
     } finally {
       if (previousWindow) {
         Object.defineProperty(globalThis, 'window', previousWindow);
@@ -144,6 +151,53 @@ describe('template registry helpers', () => {
       assert.equal((registered.c![0][0][0] as unknown), fn);
       assert.equal(window.__webui!.inventory, '0c');
       assert.deepEqual(window.__webui!.state, { title: 'Hello' });
+      assert.equal(window.__webui!.templateFns, undefined);
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+    }
+  });
+
+  test('reconciles standalone closures added after the initial count', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const firstFn = (): boolean => true;
+    const secondFn = (): boolean => false;
+    const lateFn = (): boolean => true;
+    const template = (): TemplateMeta => ({
+      h: '<p></p>',
+      b: [{ h: '<span></span>' }],
+      c: [[[0, ['ready']], 0, [[], 0]]],
+    } as unknown as TemplateMeta);
+    const first = template();
+    const second = template();
+    const late = template();
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: {
+          __webui: {
+            templates: { first, second, late },
+            templateFns: { first: [firstFn], second: [secondFn] },
+          },
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      assert.equal(getTemplate('first'), first);
+      assert.deepEqual(Object.keys(window.__webui!.templateFns!), ['second']);
+      window.__webui!.templateFns!.late = [lateFn];
+      assert.equal(getTemplate('late'), late);
+      assert.deepEqual(
+        Object.keys(window.__webui!.templateFns!),
+        ['second'],
+        'a late direct registration must not make the count drop the remaining closure',
+      );
+      assert.equal(getTemplate('second'), second);
+      assert.equal(window.__webui!.templateFns, undefined);
     } finally {
       if (previousWindow) {
         Object.defineProperty(globalThis, 'window', previousWindow);
@@ -203,6 +257,70 @@ describe('template registry helpers', () => {
         Object.defineProperty(globalThis, 'document', previousDocument);
       } else {
         Reflect.deleteProperty(globalThis, 'document');
+      }
+    }
+  });
+
+  test('releases one-shot SSR state without dropping template metadata', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const template: TemplateMeta = { h: '<p>Hello</p>' };
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: {
+          __webui: {
+            state: { title: 'Hello' },
+            templates: { greeting: template },
+          },
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      releaseSSRBootstrapState();
+
+      assert.equal(window.__webui!.state, undefined);
+      assert.equal(window.__webui!.templates!.greeting, template);
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+    }
+  });
+
+  test('keeps one-shot state while the router owns startup', () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: {
+          __webui: {
+            chain: [{ component: 'lazy-route' }],
+            state: { title: 'Server title' },
+            templateHostExclusions: new Set(['lazy-route']),
+          },
+        },
+        configurable: true,
+        writable: true,
+      });
+
+      releaseNonRoutedSSRBootstrapState();
+      assert.deepEqual(window.__webui!.state, { title: 'Server title' });
+      delete window.__webui!.chain;
+      releaseNonRoutedSSRBootstrapState();
+      assert.deepEqual(
+        window.__webui!.state,
+        { title: 'Server title' },
+        'the durable router marker must outlive its one-shot chain snapshot',
+      );
+      delete window.__webui!.templateHostExclusions;
+      releaseNonRoutedSSRBootstrapState();
+      assert.equal(window.__webui!.state, undefined);
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
       }
     }
   });
