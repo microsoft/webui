@@ -191,6 +191,21 @@ fn rejects_invalid_declarations() {
 }
 
 #[test]
+fn ignores_commented_markers() -> TestResult {
+    let template = concat!(
+        "<!-- <webui-press-region name=\"ignored\" /> -->",
+        "<webui-press-region name=\"active\">Active</webui-press-region>"
+    );
+    let regions = RegionSet::load(&BTreeMap::new(), Path::new("."), template.to_string())?;
+
+    assert_eq!(
+        regions.render("doc"),
+        "<!-- <webui-press-region name=\"ignored\" /> -->Active"
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_undeclared_config_and_invalid_names() {
     let configs = BTreeMap::from([("missing".to_string(), region("<p>x</p>"))]);
     assert!(matches!(

@@ -1222,6 +1222,24 @@ x error: invalid <for> each expression [invalid-for-each]
 Full flag tables, exit codes, and the error-code list:
 [CLI Reference](/guide/cli/).
 
+### WebUI Press named regions
+
+In a WebUI Press template, use paired regions for fallback markup and
+self-closing regions for empty insertion points:
+
+```html
+<webui-press-region name="home.afterHero" layout="home">
+  <project-summary></project-summary>
+</webui-press-region>
+```
+
+A matching `regions` entry in `.webui-press/config.json` may replace or clear
+the HTML, add object state beneath the dotted `regions.*` path, and add a
+page-scoped `scriptFile`. Omit `html`/`htmlFile` to retain the fallback. Regions
+resolve before component discovery and compilation; do not manually register
+their components elsewhere. See [WebUI Press named regions](/guide/webui-press)
+for the stable built-in region list and full configuration contract.
+
 ```json
 {
   "scripts": {
@@ -1317,6 +1335,7 @@ Full detail: [Integrations](/guide/integrations/).
 | Routing, loaders, actions, caching | [/guide/concepts/routing](/guide/concepts/routing) |
 | Design tokens and theming | [/guide/concepts/css-tokens](/guide/concepts/css-tokens) |
 | CLI flags, diagnostics, exit codes | [/guide/cli/](/guide/cli/) |
+| WebUI Press named regions | [/guide/webui-press](/guide/webui-press) |
 | Rust, Node, Python, WASM, FFI, Electron | [/guide/integrations/](/guide/integrations/) |
 | Performance characteristics | [/guide/concepts/performance](/guide/concepts/performance) |
 | Build a first app | [/tutorials/hello-world/](/tutorials/hello-world/) |

@@ -70,4 +70,5 @@ those 2. The other 8 remain server-rendered HTML with zero client-side cost.
 - **[Playground](/playground/)** - Experiment in the browser with zero setup.
 - **[Installation Guide](./installation)** - Set up WebUI locally.
 - **[Hello World Tutorial](/tutorials/hello-world)** - Build your first WebUI app step by step.
+- **[WebUI Press named regions](./webui-press)** - Customize documentation layouts without forking the template.
 - **[Why WebUI?](./why)** - Understand the architecture and performance benefits in depth.

@@ -27,6 +27,10 @@ pub(super) fn parse_declarations(template: &str) -> Result<Vec<Region>> {
             cursor = name_end;
             continue;
         }
+        if inside_comment(template, start) {
+            cursor = name_end;
+            continue;
+        }
         let open_end = name_end
             + template[name_end..]
                 .find('>')
@@ -68,6 +72,13 @@ pub(super) fn parse_declarations(template: &str) -> Result<Vec<Region>> {
     }
 
     Ok(declarations)
+}
+
+fn inside_comment(template: &str, offset: usize) -> bool {
+    let prefix = &template[..offset];
+    prefix
+        .rfind("<!--")
+        .is_some_and(|open| prefix.rfind("-->").is_none_or(|close| open > close))
 }
 
 fn parse_attributes(raw: &str, self_closing: bool) -> Result<(String, Option<String>)> {

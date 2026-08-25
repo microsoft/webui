@@ -360,7 +360,7 @@ pub fn build_docs_with_cache(
 
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
-    let regions = RegionSet::load(&config.regions, config_dir, template_html.clone())?;
+    let regions = RegionSet::load(&config.regions, config_dir, template_html)?;
     let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
