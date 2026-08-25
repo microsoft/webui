@@ -85,9 +85,9 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
     // prototype avoids TemplateElement's per-instance state for empty hosts.
     customElements.define(tag, class extends HTMLElement {
       connectedCallback(): void {
-        applyPendingNoopHostState(this);
         // Match TemplateElement timing: an uncommitted streamed root installs
         // its styles when the boundary activates, not while its DOM is partial.
+        // Inspect the marker before queued property names can shadow DOM methods.
         if (
           isStreamingHydrationMode() &&
           this.hasAttribute(STREAMED_HOST_ATTR)
@@ -95,11 +95,14 @@ function defineTemplateHost(tag: string, meta: TemplateMeta): void {
           return;
         }
         installNoopHostStyles(this, tag);
+        applyPendingNoopHostState(this);
       }
 
       [STREAMING_BOUNDARY_ACTIVATE](): typeof ACTIVATION_STATIC_HOST_OPT_OUT {
-        applyPendingNoopHostState(this);
+        // Style resolution calls DOM methods such as getRootNode(), so complete
+        // it before exposing arbitrary queued property names on the instance.
         installNoopHostStyles(this, tag);
+        applyPendingNoopHostState(this);
         return ACTIVATION_STATIC_HOST_OPT_OUT;
       }
     });

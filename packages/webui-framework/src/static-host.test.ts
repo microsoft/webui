@@ -241,12 +241,10 @@ describe('dormant template host runtime', () => {
     const ownKeysBefore = Object.keys(child);
     const payload = { answer: 42 };
 
-    (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
-      child,
-      'payload',
-      payload,
-      false,
-    );
+    const writer = parent as unknown as ComplexPropertyWriter;
+    writer.$writeComplexProperty(child, 'payload', payload, false);
+    writer.$writeComplexProperty(child, 'hasAttribute', 'queued', false);
+    writer.$writeComplexProperty(child, 'getRootNode', 'queued', false);
     assert.equal(Object.hasOwn(child, 'payload'), false);
 
     installTemplateElementRuntime();
@@ -258,17 +256,43 @@ describe('dormant template host runtime', () => {
     assert.equal(child.payload, payload);
     assert.deepEqual(
       Object.keys(child).filter((key) => !ownKeysBefore.includes(key)),
-      ['payload'],
-      'only the queued key becomes instance state',
+      ['payload', 'hasAttribute', 'getRootNode'],
+      'only queued keys become instance state',
     );
 
+    writer.$writeComplexProperty(child, 'later', { answer: 43 }, false);
+    assert.deepEqual(child.later, { answer: 43 });
+  });
+
+  test('installs streamed styles before queued properties shadow DOM methods', () => {
+    const tag = `empty-pending-streamed-property-${Date.now()}`;
+    registerTemplate(tag, { h: '', th: 1 });
+    const parent = new TemplateElement();
+    const child = new HTMLElement();
+    (child as unknown as { localName: string }).localName = tag;
     (parent as unknown as ComplexPropertyWriter).$writeComplexProperty(
       child,
-      'later',
-      { answer: 43 },
+      'getRootNode',
+      'queued',
       false,
     );
-    assert.deepEqual(child.later, { answer: 43 });
+
+    installTemplateElementRuntime();
+    const ctor = registry.get(tag);
+    assert.ok(ctor);
+    Object.setPrototypeOf(child, ctor.prototype);
+    const activatable = child as HTMLElement & {
+      [STREAMING_BOUNDARY_ACTIVATE](): number;
+    };
+
+    assert.equal(
+      activatable[STREAMING_BOUNDARY_ACTIVATE](),
+      ACTIVATION_STATIC_HOST_OPT_OUT,
+    );
+    assert.equal(
+      (child as unknown as Record<string, unknown>)['getRootNode'],
+      'queued',
+    );
   });
 
   test('installs styles for connected and streamed empty hosts', () => {

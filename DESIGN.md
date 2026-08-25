@@ -4853,15 +4853,23 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
   apps that bundle their own client define the flag as `false` for production.
 - Scriptless components receive compiled `template_json` with `th: 1` but no
-  `hydration_keys` or initial bootstrap state. The framework registers a
-  compiler-owned `TemplateElement` host for each such tag. Existing SSR DOM is
-  not walked and bindings are not installed on startup. The host activates only
-  after `setState`, a compiled parent property write, or a later observed
-  attribute change. Activation wires the existing SSR markers against the new
-  state and replays only the roots supplied by the triggering write. Omitted
-  text, attribute, condition, and repeat roots keep their trusted SSR DOM until
-  explicitly supplied; an explicit empty collection removes repeat items.
-  Client-created instances mount immediately from the cached template.
+  `hydration_keys` or initial bootstrap state. A template with static DOM,
+  bindings, blocks, events, state roots, or Shadow DOM receives a compiler-owned
+  `TemplateElement` host. Existing SSR DOM is not walked and bindings are not
+  installed on startup. The host activates only after `setState`, a compiled
+  parent property write, or a later observed attribute change. Activation wires
+  the existing SSR markers against the new state and replays only the roots
+  supplied by the triggering write. Omitted text, attribute, condition, and
+  repeat roots keep their trusted SSR DOM until explicitly supplied; an explicit
+  empty collection removes repeat items. Client-created instances mount
+  immediately from the cached template.
+  - Metadata that proves the template has no DOM or reactive work receives a
+    minimal compiler-owned `HTMLElement` host instead. Component style closures
+    remain independent of template HTML and are still installed. Parent `:`
+    property writes queued before definition become own properties after upgrade.
+    The host implements the streaming static-opt-out hook but intentionally has
+    no `setState` or component lifecycle surface, so updatable boundaries do not
+    retain it as a later state target.
   `WebUIElement` remains the authored layer for events, `w-ref`, lifecycle code,
   decorators, and `$emit`. `$emit()` always dispatches a bubbling, cancelable,
   composed `CustomEvent`, so a Light component nested in an authored Shadow

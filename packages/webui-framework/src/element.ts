@@ -10,8 +10,9 @@
  * - `WebUIElement` adds authored interactivity: decorators, event handlers,
  *   root events, `w-ref`, and `$emit`.
  *
- * Scriptless components use the compiler-owned TemplateElement host and never
- * import this authored behavior layer.
+ * Scriptless components use compiler-owned hosts and never import this authored
+ * behavior layer. Templates with DOM or reactive work use TemplateElement;
+ * templates proven to have no such work use a minimal HTMLElement host.
  */
 
 import { TemplateElement } from './template-element.js';
