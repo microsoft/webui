@@ -343,7 +343,9 @@ Templates expose stable extension points without requiring a full template fork:
 <webui-press-region
   name="home.afterHero"
   layout="home"
-></webui-press-region>
+>
+  <h2>After the hero</h2>
+</webui-press-region>
 ```
 
 Sites provide the content in `config.json`:
@@ -359,17 +361,20 @@ Sites provide the content in `config.json`:
 }
 ```
 
-Use either `html` or `htmlFile`, and either `state` or `stateFile`. An optional
-`scriptFile` is bundled only on active pages. `layout` limits the marker to one
-page layout; omit it for every layout. Dotted names create nested state:
+Child markup is the default. A matching `regions` entry can replace it with
+`html` or `htmlFile`; omit both to keep the default while adding `state`,
+`stateFile`, or `scriptFile`. Use `html: ""` to clear it. `layout` limits the
+marker to one page layout; omit it for every layout. Dotted names create nested
+state:
 
 ```html
 <project-summary :data="{{regions.home.afterHero}}"></project-summary>
 ```
 
-Injected components participate normally in SSR, CSS, projection, and bundling.
-An unconfigured marker is empty; a configured but undeclared name fails the
-build. State-bearing dotted names cannot overlap as prefixes.
+Default and replacement components participate normally in SSR, CSS, projection,
+and bundling. A self-closing unconfigured marker is empty; a configured but
+undeclared name fails the build. State-bearing dotted names cannot overlap as
+prefixes.
 
 ### `head` injection
 

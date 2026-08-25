@@ -40,8 +40,8 @@ pub(super) fn parse_declarations(template: &str) -> Result<Vec<Region>> {
             )));
         }
 
-        let end = if self_closing {
-            open_end + 1
+        let (end, html) = if self_closing {
+            (open_end + 1, None)
         } else {
             let content_start = open_end + 1;
             let close_offset = template[content_start..]
@@ -50,19 +50,17 @@ pub(super) fn parse_declarations(template: &str) -> Result<Vec<Region>> {
                     Error::Build(format!("Template region '{name}' has no closing tag."))
                 })?;
             let close_start = content_start + close_offset;
-            if !template[content_start..close_start].trim().is_empty() {
-                return Err(Error::Build(format!(
-                    "Template region '{name}' must be empty; configure its content in config.json."
-                )));
-            }
-            close_start + REGION_CLOSE.len()
+            (
+                close_start + REGION_CLOSE.len(),
+                Some(template[content_start..close_start].to_string()),
+            )
         };
         declarations.push(Region {
             start,
             end,
             name,
             layout,
-            html: None,
+            html,
             state: None,
             script_file: None,
         });

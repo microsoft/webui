@@ -457,8 +457,9 @@ pub fn build_docs_with_cache(
     } else {
         None
     };
+    let template_shell = regions.template_shell();
     let root_component_scripts =
-        collect_component_scripts_for_html(&[template_html.as_str()], &component_script_index)?;
+        collect_component_scripts_for_html(&[template_shell.as_str()], &component_script_index)?;
     let root_bundle = if template_script.is_some() || !root_component_scripts.is_empty() {
         Some(RootBundleEntry {
             script_path: template_script,

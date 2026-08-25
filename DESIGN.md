@@ -4555,18 +4555,17 @@ Generated esbuild entries live in a targeted temporary directory beneath the
 site output, keeping projection inputs and outputs on the project volume. The
 directory is removed after that bundle completes.
 
-The WebUI Press template may declare compile-time extension regions with an
-empty `<webui-press-region name="..." layout="..."></webui-press-region>`
-marker. Site configuration supplies inline or file-backed HTML, optional
-page-local state, and an optional script for each named region. The builder
-validates declarations once and substitutes matching region HTML before
-component discovery and protocol compilation, so injected components retain
-ordinary SSR, CSS, projection, and bundling behavior. Dotted region names map
-state beneath the reserved `regions` object, and layout-qualified declarations
-inject only into pages of that layout. State-bearing names cannot overlap as
-dotted prefixes, while HTML-only prefix names remain valid. Full template
-replacement remains an escape hatch rather than the normal customization
-mechanism.
+The WebUI Press template may declare compile-time extension regions with
+`<webui-press-region name="..." layout="...">fallback HTML</webui-press-region>`.
+Child markup is the default; matching site configuration may replace it with
+inline or file-backed HTML, clear it with an empty inline value, or retain it
+while adding page-local state and an optional script. The builder substitutes
+regions before component discovery and protocol compilation, so default and
+replacement components retain ordinary SSR, CSS, projection, and bundling
+behavior. Dotted names map state beneath the reserved `regions` object, and
+layout-qualified declarations inject only into pages of that layout.
+State-bearing names cannot overlap as dotted prefixes, while HTML-only prefix
+names remain valid. Full template replacement remains an escape hatch.
 
 Before the projection barrier releases page rendering, press publishes the
 generated root/page output identities and an exact identity-to-served-URL map.

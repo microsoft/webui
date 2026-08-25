@@ -59,7 +59,9 @@ impl RegionSet {
             let Some(config) = configs.get(&region.name) else {
                 continue;
             };
-            region.html = Some(load_html(&region.name, config, config_dir)?);
+            if let Some(html) = load_html(&region.name, config, config_dir)? {
+                region.html = Some(html);
+            }
             region.state = load_state(&region.name, config, config_dir, &mut state_loader)?;
             region.script_file.clone_from(&config.script_file);
         }
@@ -87,6 +89,17 @@ impl RegionSet {
                     output.push_str(html);
                 }
             }
+            cursor = region.end;
+        }
+        output.push_str(&self.template[cursor..]);
+        output
+    }
+
+    pub(crate) fn template_shell(&self) -> String {
+        let mut output = String::with_capacity(self.template.len());
+        let mut cursor = 0;
+        for region in &self.regions {
+            output.push_str(&self.template[cursor..region.start]);
             cursor = region.end;
         }
         output.push_str(&self.template[cursor..]);
@@ -130,18 +143,16 @@ fn region_applies(region: &Region, layout: &str) -> bool {
     region.layout.as_deref().is_none_or(|value| value == layout)
 }
 
-fn load_html(name: &str, config: &RegionConfig, config_dir: &Path) -> Result<String> {
+fn load_html(name: &str, config: &RegionConfig, config_dir: &Path) -> Result<Option<String>> {
     match (&config.html, &config.html_file) {
         (Some(_), Some(_)) => Err(Error::Build(format!(
             "Region '{name}': 'html' and 'htmlFile' are mutually exclusive - pick one."
         ))),
-        (Some(html), None) => Ok(html.clone()),
+        (Some(html), None) => Ok(Some(html.clone())),
         (None, Some(path)) => {
-            read_relative_file(&format!("Region '{name}' htmlFile"), path, config_dir)
+            read_relative_file(&format!("Region '{name}' htmlFile"), path, config_dir).map(Some)
         }
-        (None, None) => Err(Error::Build(format!(
-            "Region '{name}' must define either 'html' or 'htmlFile'."
-        ))),
+        (None, None) => Ok(None),
     }
 }
 

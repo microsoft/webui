@@ -30,7 +30,8 @@ fn temp_dir() -> Result<PathBuf> {
 fn renders_layout_scoped_and_global_regions() -> TestResult {
     let template = concat!(
         "<main>",
-        "<webui-press-region name=\"home.panel\" layout=\"home\"></webui-press-region>",
+        "<webui-press-region name=\"home.panel\" layout=\"home\"><p>Default</p></webui-press-region>",
+        "<webui-press-region name=\"home.default\" layout=\"home\"><h1>After Hero</h1></webui-press-region>",
         "<webui-press-region name=\"shared.footer\" />",
         "<webui-press-region name=\"optional\" />",
         "</main>"
@@ -46,12 +47,13 @@ fn renders_layout_scoped_and_global_regions() -> TestResult {
 
     assert_eq!(
         regions.render("home"),
-        "<main><home-card></home-card><site-note></site-note></main>"
+        "<main><home-card></home-card><h1>After Hero</h1><site-note></site-note></main>"
     );
     assert_eq!(
         regions.render("doc"),
         "<main><site-note></site-note></main>"
     );
+    assert_eq!(regions.template_shell(), "<main></main>");
     Ok(())
 }
 
@@ -88,6 +90,26 @@ fn loads_files_and_namespaces_state() -> TestResult {
 }
 
 #[test]
+fn state_only_config_keeps_default_html() -> TestResult {
+    let template =
+        "<webui-press-region name=\"summary\"><summary-card></summary-card></webui-press-region>";
+    let mut config = region("");
+    config.html = None;
+    config.state = Some(Value::Object(Map::from_iter([(
+        "title".to_string(),
+        Value::String("Status".to_string()),
+    )])));
+    let regions = RegionSet::load(
+        &BTreeMap::from([("summary".to_string(), config)]),
+        Path::new("."),
+        template.to_string(),
+    )?;
+
+    assert_eq!(regions.render("doc"), "<summary-card></summary-card>");
+    Ok(())
+}
+
+#[test]
 fn rejects_invalid_declarations() {
     let cases = [
         (
@@ -96,10 +118,6 @@ fn rejects_invalid_declarations() {
                 "<webui-press-region name=\"same\" />"
             ),
             "more than once",
-        ),
-        (
-            "<webui-press-region name=\"x\"><p>owned</p></webui-press-region>",
-            "must be empty",
         ),
         (
             "<webui-press-region name=\"x\" layout />",
