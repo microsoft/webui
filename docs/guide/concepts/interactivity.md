@@ -314,6 +314,12 @@ focusInput(): void {
 (or the unquoted `w-ref={inputEl}`), never `w-ref="inputEl"`. The build fails
 with an actionable error otherwise.
 
+`w-ref` is scalar. Reusing a name inside `<for>` writes the same property, so
+the last wired occurrence wins; repeat keys and positions do not create an
+indexed ref collection. For lookup by item identity, author a stable `id` and
+use the owning document or shadow root's `getElementById()`, or move the ref
+into an item component.
+
 ### Conditional Rendering
 
 Render content based on expressions:

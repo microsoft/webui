@@ -296,6 +296,12 @@ Use `w-ref` only for imperative browser APIs - `focus()`, `scrollIntoView()`,
 `showModal()`, `showPopover()`, measurement. Never use it to read or write
 state that a template binding could express.
 
+`w-ref` is scalar. Reusing one ref name inside `<for>` overwrites the same
+property, so the last wired occurrence wins; repeat `key` and position do not
+create an indexed ref collection. For item lookup, use a stable authored `id`
+with `Document.getElementById()` / `ShadowRoot.getElementById()`, or put the ref
+inside an item component.
+
 ### The `<template>` tag
 
 Unwrapped components default to Shadow. In a `--dom light` build they use
