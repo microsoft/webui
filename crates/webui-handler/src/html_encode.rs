@@ -59,6 +59,30 @@ pub fn encode_safe(input: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+#[inline]
+fn is_style_end_tag(bytes: &[u8], index: usize) -> bool {
+    bytes[index] == b'<'
+        && bytes[index + 1] == b'/'
+        && bytes[index + 2].eq_ignore_ascii_case(&b's')
+        && bytes[index + 3].eq_ignore_ascii_case(&b't')
+        && bytes[index + 4].eq_ignore_ascii_case(&b'y')
+        && bytes[index + 5].eq_ignore_ascii_case(&b'l')
+        && bytes[index + 6].eq_ignore_ascii_case(&b'e')
+}
+
+/// Return whether CSS needs escaping before it is written into a `<style>`.
+pub(crate) fn style_text_needs_escape(css: &str) -> bool {
+    let bytes = css.as_bytes();
+    let mut index = 0usize;
+    while index + 7 <= bytes.len() {
+        if is_style_end_tag(bytes, index) {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
 /// Write CSS into an HTML `<style>` raw-text element without allowing an
 /// authored, case-insensitive `</style` sequence to terminate the element.
 ///
@@ -69,14 +93,7 @@ pub(crate) fn write_style_text(writer: &mut dyn ResponseWriter, css: &str) -> Re
     let mut chunk_start = 0usize;
     let mut index = 0usize;
     while index + 7 <= bytes.len() {
-        if bytes[index] == b'<'
-            && bytes[index + 1] == b'/'
-            && bytes[index + 2].eq_ignore_ascii_case(&b's')
-            && bytes[index + 3].eq_ignore_ascii_case(&b't')
-            && bytes[index + 4].eq_ignore_ascii_case(&b'y')
-            && bytes[index + 5].eq_ignore_ascii_case(&b'l')
-            && bytes[index + 6].eq_ignore_ascii_case(&b'e')
-        {
+        if is_style_end_tag(bytes, index) {
             writer.write(&css[chunk_start..index + 1])?;
             writer.write("\\/")?;
             chunk_start = index + 2;
@@ -249,5 +266,34 @@ mod tests {
             writer.output,
             ".a{content:'<\\/style>'}.b{content:'<\\/StYlE attr>'}"
         );
+    }
+
+    #[test]
+    fn style_text_escape_detection_matches_writer() {
+        let cases = [
+            ("", false),
+            ("</styl", false),
+            ("< /style", false),
+            ("<\\/style", false),
+            ("</style", true),
+            ("prefix</STYLE>suffix", true),
+            ("a</StYlE attr>b", true),
+        ];
+
+        for (css, expected) in cases {
+            assert_eq!(
+                style_text_needs_escape(css),
+                expected,
+                "unexpected detection for {css:?}"
+            );
+
+            let mut writer = StyleWriter::default();
+            write_style_text(&mut writer, css).unwrap();
+            assert_eq!(
+                writer.output != css,
+                expected,
+                "writer and detector diverged for {css:?}"
+            );
+        }
     }
 }

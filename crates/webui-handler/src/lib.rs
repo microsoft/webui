@@ -865,6 +865,11 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) component_index: &'protocol HashMap<String, u32>,
     /// Style-resource ID → request-local dedup bit built with [`Protocol`].
     pub(crate) style_resource_index: &'protocol HashMap<String, u32>,
+    /// Inline style resources whose CSS contains a case-insensitive `</style`.
+    ///
+    /// Computed once when [`Protocol`] loads so repeated component instances can
+    /// write ordinary CSS without rescanning identical bytes on every request.
+    pub(crate) style_resources_requiring_escape: &'protocol HashSet<String>,
     /// Component tag → covering bundle chunk, built once per render.
     ///
     /// Empty (and allocation-free) for unbundled builds. Every style delivery
@@ -2487,7 +2492,11 @@ impl WebUIHandler {
                             "style"
                         })?;
                     context.writer.write("\">")?;
-                    crate::html_encode::write_style_text(context.writer, resource)?;
+                    if context.style_resources_requiring_escape.contains(name) {
+                        crate::html_encode::write_style_text(context.writer, resource)?;
+                    } else {
+                        context.writer.write(resource)?;
+                    }
                     context.writer.write("</style>")?;
                 }
             }
@@ -3827,6 +3836,7 @@ impl WebUIHandler {
             component_asset_styles_emitted: false,
             component_index: protocol.component_index(),
             style_resource_index: protocol.style_resource_index(),
+            style_resources_requiring_escape: protocol.style_resources_requiring_escape(),
             style_chunk_index: protocol.protocol().style_chunk_index(),
             css_strategy: protocol.css_strategy(),
             body_end_emitted: false,

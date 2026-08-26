@@ -425,6 +425,7 @@ mod tests {
             nonce: None,
             component_index,
             style_resource_index: protocol.style_resource_index(),
+            style_resources_requiring_escape: protocol.style_resources_requiring_escape(),
             style_chunk_index: protocol.protocol().style_chunk_index(),
             css_strategy: protocol.css_strategy(),
             head_inject: None,
