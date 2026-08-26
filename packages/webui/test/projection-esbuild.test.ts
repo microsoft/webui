@@ -30,6 +30,14 @@ const FRAMEWORK_ENTRY = path.resolve(
   "index.ts"
 );
 
+interface ConcurrencyModule {
+  mapConcurrent<T, U>(
+    values: ReadonlyArray<T>,
+    maxConcurrency: number,
+    operation: (value: T, index: number, workerIndex: number) => Promise<U>
+  ): Promise<U[]>;
+}
+
 async function fixtureRoot(): Promise<string> {
   const root = await mkdtemp(
     path.join(process.cwd(), ".tmp-esbuild-projection-")
@@ -120,6 +128,260 @@ export const used = padding.length;
 }
 
 describe("esbuildProjection", () => {
+  test("bounds projection I/O concurrency and preserves order", async () => {
+    const moduleUrl = new URL(
+      "../projection/concurrency.js",
+      import.meta.url
+    );
+    const { mapConcurrent } = (await import(
+      moduleUrl.href
+    )) as ConcurrencyModule;
+    const values = Array.from({ length: 20 }, (_, index) => index);
+    let active = 0;
+    let peak = 0;
+
+    const results = await mapConcurrent(
+      values,
+      4,
+      async (value) => {
+        active++;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        active--;
+        return value * 2;
+      }
+    );
+
+    assert.equal(peak, 4);
+    assert.deepEqual(
+      results,
+      values.map((value) => value * 2)
+    );
+  });
+
+  test("settles active projection I/O before propagating errors", async () => {
+    const moduleUrl = new URL(
+      "../projection/concurrency.js",
+      import.meta.url
+    );
+    const { mapConcurrent } = (await import(
+      moduleUrl.href
+    )) as ConcurrencyModule;
+    const started: number[] = [];
+    let active = 0;
+
+    await assert.rejects(
+      mapConcurrent([0, 1, 2], 2, async (value) => {
+        started.push(value);
+        if (value === 1) throw new Error("read failed");
+        active++;
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        active--;
+        return value;
+      }),
+      /read failed/
+    );
+
+    assert.equal(active, 0);
+    assert.deepEqual(started, [0, 1]);
+  });
+
+  test("proves opaque assets through emitted bytes", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const weatherBytes = Uint8Array.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46,
+    ]);
+    await writeFile(path.join(root, "src", "weather.jpg"), weatherBytes);
+    await writeFile(
+      path.join(root, "src", "entry.ts"),
+      "import weather from './weather.jpg';\nexport { weather };\n"
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.ts"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".jpg": "file" },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.equal(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/weather.jpg")
+      ),
+      false
+    );
+    assert.ok(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/entry.ts")
+      )
+    );
+
+    const outputKey = Object.keys(manifest.outputs).find((key) =>
+      key.endsWith(".jpg")
+    );
+    assert.ok(outputKey);
+    assert.equal(
+      manifest.outputs[outputKey],
+      hashContent(await readFile(resolvedArtifact(root, manifest, outputKey)))
+    );
+  });
+
+  test("honors non-source loader overrides on source extensions", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const assetBytes = Uint8Array.from([0xff, 0x00, 0xfe, 0x01]);
+    await writeFile(path.join(root, "src", "asset.ts"), assetBytes);
+    await writeFile(
+      path.join(root, "src", "entry.js"),
+      "import asset from './asset.ts';\nexport { asset };\n"
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/entry.js"],
+      outdir: "dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".ts": "file" },
+      plugins: [esbuildProjection()],
+    });
+
+    const manifest = await readManifest(root);
+    assert.equal(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/asset.ts")
+      ),
+      false
+    );
+    assert.ok(
+      Object.keys(manifest.inputs).some((key) =>
+        key.endsWith("src/entry.js")
+      )
+    );
+  });
+
+  test("follows esbuild loader plugins and longest suffixes", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    await writeFile(
+      path.join(root, "src", "card.component.ts"),
+      `
+import { WebUIElement } from '@microsoft/webui-framework';
+class Card extends WebUIElement {}
+Card.define('suffix-card');
+`
+    );
+    await writeFile(
+      path.join(root, "src", "suffix-entry.js"),
+      "import './card.component.ts';\n"
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/suffix-entry.js"],
+      outdir: "suffix-dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".ts": "file", ".component.ts": "ts" },
+      external: ["@microsoft/webui-framework"],
+      plugins: [esbuildProjection()],
+    });
+    assert.ok(
+      (await readManifest(root, "suffix-dist")).components["suffix-card"]
+    );
+
+    await writeFile(
+      path.join(root, "src", "plugin-asset.ts"),
+      Uint8Array.from([0xff, 0x00, 0xfe, 0x01])
+    );
+    await writeFile(
+      path.join(root, "src", "plugin-entry.js"),
+      "import asset from './plugin-asset.ts';\nexport { asset };\n"
+    );
+    await esbuild.build({
+      absWorkingDir: root,
+      entryPoints: ["src/plugin-entry.js"],
+      outdir: "plugin-dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      plugins: [
+        {
+          name: "binary-ts-loader",
+          setup(build) {
+            build.onLoad(
+              { filter: /plugin-asset\.ts$/ },
+              async (args) => ({
+                contents: await readFile(args.path),
+                loader: "file",
+              })
+            );
+          },
+        },
+        esbuildProjection(),
+      ],
+    });
+    assert.equal(
+      Object.keys(
+        (await readManifest(root, "plugin-dist")).inputs
+      ).some((key) => key.endsWith("src/plugin-asset.ts")),
+      false
+    );
+  });
+
+  test("resolves the default stdin loader from its sourcefile", async (t) => {
+    const root = await fixtureRoot();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const source = "const value: number = 1;\nexport { value };\n";
+
+    await esbuild.build({
+      absWorkingDir: root,
+      stdin: {
+        contents: source,
+        sourcefile: "src/entry.ts",
+        loader: "default",
+        resolveDir: root,
+      },
+      outfile: "dist/index.js",
+      bundle: true,
+      format: "esm",
+      write: true,
+      plugins: [esbuildProjection()],
+    });
+    assert.equal(
+      Object.keys((await readManifest(root)).inputs).length,
+      1
+    );
+
+    await esbuild.build({
+      absWorkingDir: root,
+      stdin: {
+        contents: source,
+        sourcefile: "src/asset.ts",
+        loader: "default",
+        resolveDir: root,
+      },
+      outdir: "opaque-dist",
+      bundle: true,
+      format: "esm",
+      write: true,
+      loader: { ".ts": "file" },
+      plugins: [esbuildProjection()],
+    });
+    assert.deepEqual(
+      (await readManifest(root, "opaque-dist")).inputs,
+      {}
+    );
+  });
+
   test("treats stdin as virtual even when sourcefile exists on disk", async (t) => {
     const root = await fixtureRoot();
     t.after(() => rm(root, { recursive: true, force: true }));

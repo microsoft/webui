@@ -113,13 +113,16 @@ const result = build({
 esbuild runs once and emits both browser chunks and
 `webui-projection.json`; WebUI then embeds the exact initial/navigation
 surfaces into `protocol.bin`. The adapter uses esbuild's resolved graph and
-emitted output membership, so code splitting, dynamic imports, output hashes,
-and external bundles remain application-owned.
+emitted output membership. Source inputs and outputs receive exact hashes;
+opaque inputs rely on their emitted output proof. Code splitting, dynamic
+imports, output hashes, and external bundles remain application-owned.
 
 Other bundler adapters can use the exported `AdapterContext`,
 `compileProjection()`, and conformance fixtures without importing esbuild. The
 package currently ships and supports `esbuildProjection()` as its official
-adapter.
+adapter. Custom adapters provide a normalized JavaScript/TypeScript source
+graph and exact emitted output bytes. Non-source bundler inputs stay outside
+the semantic graph, so projection does not decode or hash their input bodies.
 
 With no manifest, WebUI performs no JavaScript analysis and preserves full
 state. Once any manifest is supplied, coverage is strict: every scripted

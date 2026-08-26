@@ -29,6 +29,7 @@ import type {
   ModuleNode,
   ResolvedImport,
 } from "../graph.js";
+import { mapConcurrent } from "../concurrency.js";
 import {
   ProjectionError,
   createDiagnostic,
@@ -62,6 +63,17 @@ interface InputRecord {
   readonly packageName: string | undefined;
 }
 
+const MAX_CONCURRENT_SOURCE_READS = 64;
+const SOURCE_EXTENSIONS = new Set([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
 let temporaryFileSequence = 0;
 
 /** Create the official esbuild projection plugin. */
@@ -242,9 +254,16 @@ async function loadInputRecords(
   metafile: Metafile,
   packageCache: Map<string, string | undefined>
 ): Promise<InputRecord[]> {
-  const entries = Object.keys(metafile.inputs);
-  const records = await Promise.all(
-    entries.map(async (metafileId) => {
+  const entries = Object.keys(metafile.inputs).filter(
+    (metafileId) =>
+      metafile.inputs[metafileId]?.format !== undefined &&
+      (isStdinMetafileId(metafileId, build) ||
+        isProjectionSourceId(metafileId))
+  );
+  const records = await mapConcurrent(
+    entries,
+    MAX_CONCURRENT_SOURCE_READS,
+    async (metafileId) => {
       const stdinSource = sourceForStdin(
         metafileId,
         build
@@ -278,7 +297,7 @@ async function loadInputRecords(
         source: undefined,
         packageName: undefined,
       };
-    })
+    }
   );
   const resolved: InputRecord[] = [];
   for (const record of records) {
@@ -315,13 +334,20 @@ function sourceForStdin(
 ): string | undefined {
   const stdin = build.initialOptions.stdin;
   if (!stdin) return undefined;
-  const sourcefile = stdin.sourcefile ?? "<stdin>";
-  if (metafileId !== sourcefile && metafileId !== "<stdin>") {
-    return undefined;
-  }
+  if (!isStdinMetafileId(metafileId, build)) return undefined;
   return typeof stdin.contents === "string"
     ? stdin.contents
     : Buffer.from(stdin.contents).toString("utf8");
+}
+
+function isStdinMetafileId(
+  metafileId: string,
+  build: PluginBuild
+): boolean {
+  const stdin = build.initialOptions.stdin;
+  if (!stdin) return false;
+  const sourcefile = stdin.sourcefile ?? "<stdin>";
+  return metafileId === sourcefile || metafileId === "<stdin>";
 }
 
 function buildModuleGraph(
@@ -363,10 +389,13 @@ function resolvedImport(
   const target = entry.external
     ? undefined
     : recordByMetafileId.get(entry.path);
+  // Non-source inputs stay in esbuild's graph but are external to projection's
+  // JavaScript/TypeScript symbol graph.
+  const external = entry.external === true || target === undefined;
   return {
     specifier: entry.original ?? entry.path,
-    resolvedId: target?.moduleId,
-    external: entry.external === true,
+    resolvedId: external ? undefined : target.moduleId,
+    external,
     kind:
       entry.kind === "dynamic-import" ? "dynamic" : "static",
     ...packageNameProperty(
@@ -374,6 +403,12 @@ function resolvedImport(
         (entry.external ? packageNameFromSpecifier(entry.path) : undefined)
     ),
   };
+}
+
+function isProjectionSourceId(
+  moduleId: string
+): boolean {
+  return SOURCE_EXTENSIONS.has(path.extname(moduleId));
 }
 
 function packageNameProperty(

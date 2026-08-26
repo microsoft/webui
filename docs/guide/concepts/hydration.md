@@ -512,10 +512,13 @@ The generated file has this shape (hashes abbreviated):
 Do not hand-author this file. It is a deterministic record of the completed
 bundle and becomes stale as soon as a declared input or output changes.
 
-The manifest records exact input hashes, emitted output hashes, code-split
-membership, component ownership, and sorted `@observable` plus `@attr` property
-names. WebUI validates those hashes and embeds only the resulting key surfaces
-in `protocol.bin`. Runtime handlers do not load the manifest, TypeScript, or a
+The manifest records exact analyzable-source hashes, emitted output hashes,
+code-split membership, component ownership, and sorted `@observable` plus
+`@attr` property names. Non-source inputs remain in esbuild's native graph but
+stay outside the normalized projection graph; their emitted outputs provide the
+byte proof instead of a duplicate input hash. WebUI validates the declared
+hashes and embeds only the resulting key surfaces in
+`protocol.bin`. Runtime handlers do not load the manifest, TypeScript, or a
 bundler.
 
 Behavior is intentionally strict:
@@ -528,8 +531,8 @@ Behavior is intentionally strict:
 - Shared controls supplied through `--components` remain application-owned
   bundles. If they are external to the main bundle, build them separately and
   pass each manifest fragment with another `--projection-manifest`.
-- Stale inputs or outputs fail the WebUI build. Re-run the client bundler before
-  rebuilding the protocol.
+- Stale source inputs or outputs fail the WebUI build. Re-run the client
+  bundler before rebuilding the protocol.
 - `@attr` entries use JavaScript property names. During hydration, an existing
   SSR host attribute wins; projected state seeds the property only when that
   attribute is absent.
@@ -541,7 +544,10 @@ imports, external modules, or output naming.
 Other bundlers are not coupled to esbuild. A Vite, Rollup, Rolldown, webpack,
 Rspack, or other adapter can construct the exported `AdapterContext`, call
 `compileProjection()`, and run the exported conformance suite. The official
-package currently ships and supports the esbuild adapter.
+package currently ships and supports the esbuild adapter. Custom adapters must
+provide a normalized JavaScript/TypeScript source graph and exact
+emitted-output bytes. Non-source bundler inputs stay outside the semantic
+graph, so projection does not decode or hash their input bodies.
 
 ## State Sent to the Browser
 

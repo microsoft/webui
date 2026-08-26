@@ -3911,11 +3911,14 @@ export interface AdapterContext {
   A specifier is treated as WebUI framework semantics only when the adapter
   proves `packageName: "@microsoft/webui-framework"`. Literal source text does
   not override adapter resolution.
+- The normalized graph contains only JavaScript/TypeScript modules that can
+  participate in projection semantics. Bundler inputs such as images, fonts,
+  and CSS are omitted; their incoming edges are external to this semantic graph.
 - Every physical module has raw source and every physical output has exact
   bytes. Disk outputs can never be represented as `"virtual"` to skip stale
   validation.
-- `rootDir` contains the manifest and every physical input/output. The compiler
-  rejects graph members outside it.
+- `rootDir` contains the manifest and every physical normalized input/output.
+  The compiler rejects graph members outside it.
 
 The compiler parses source lazily. It seeds modules containing a supported
 literal `.define(...)`/`customElements.define(...)` candidate (or a framework
@@ -4133,7 +4136,8 @@ export interface ProjectionManifest {
   readonly outputs: Record<string, string>;
 
   /**
-   * Every module in the adapter graph, including tree-shaken modules.
+   * Every module in the normalized adapter graph, including tree-shaken
+   * modules.
    * Key: canonical build-root-relative path, or `virtual:<hex-id>`.
    * Value: exact UTF-8 source SHA-256, or "virtual" only for a virtual key.
    */
@@ -4735,14 +4739,22 @@ The esbuild adapter:
    cannot substitute unrelated disk bytes. Other non-file namespace inputs are
    also represented as virtual graph nodes. A WebUI component whose defining
    source is unavailable fails strict coverage instead of being guessed.
-7. Hashes exact `result.outputFiles` bytes for `write: false`, or reads emitted
+7. Filters the metafile to supported JavaScript/TypeScript source extensions
+   that esbuild classified as ESM or CommonJS, then reads those sources through
+   a fixed 64-worker pool. This follows configured and plugin-provided loader
+   decisions, including longest-suffix loader overrides. Non-source bundler
+   inputs are omitted from the semantic graph and output membership; imports to
+   them are represented as external semantic edges. Their bytes remain covered
+   by emitted-output hashes without being read a second time as projection
+   inputs.
+8. Hashes exact `result.outputFiles` bytes for `write: false`, or reads emitted
    files during `onEnd` for `write: true` (esbuild has completed writes before
    `onEnd`).
-8. Chooses the common ancestor of the manifest, physical inputs, and outputs
+9. Chooses the common ancestor of the manifest, physical inputs, and outputs
    as `rootDir`, constructs `AdapterContext`, and calls the shared compiler.
-9. Writes canonical compact JSON to a same-directory temporary file, flushes
+10. Writes canonical compact JSON to a same-directory temporary file, flushes
    it, and atomically renames it over the manifest.
-10. If the build or projection compiler has errors, the manifest is **not**
+11. If the build or projection compiler has errors, the manifest is **not**
    written. An existing stale
    manifest from a prior run is left in place (not deleted).
 
