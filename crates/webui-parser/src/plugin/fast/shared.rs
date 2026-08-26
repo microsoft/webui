@@ -10,7 +10,7 @@ use crate::html_parser::{leading_content, parse_tag};
 use crate::Result;
 use webui_protocol::FastElementData;
 
-// Classify FAST-owned attributes that SSR skips but hydration counts.
+// Classify client-only FAST attributes that SSR skips but hydration counts.
 #[inline]
 pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
     if attr_name.starts_with('@')

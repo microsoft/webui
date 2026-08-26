@@ -4,6 +4,55 @@
 use super::*;
 
 #[test]
+fn property_bindings_populate_fast_component_render_scope() {
+    let app = create_app_dir(&[
+        (
+            "index.html",
+            r#"<html><body><todo-app :rendertodos="{{todos}}"></todo-app></body></html>"#,
+        ),
+        (
+            "todo-app.template.html",
+            r#"<f-template name="todo-app"><template><ul><f-repeat value="{{todo in rendertodos}}"><todo-item :todo="{{todo}}"></todo-item></f-repeat></ul></template></f-template>"#,
+        ),
+        (
+            "todo-item.template.html",
+            r#"<f-template name="todo-item"><template><li data-id="{{todo.id}}">{{todo.title}}</li></template></f-template>"#,
+        ),
+    ]);
+    let mut options = default_options(app.path());
+    options.plugin = Some(Plugin::FastV3);
+    let result = build(options).unwrap();
+    let protocol = Protocol::new(result.protocol);
+    let handler = WebUIHandler::with_plugin(|| {
+        Box::new(webui_handler::plugin::fast_v3::FastV3HydrationPlugin::new())
+    });
+    let todos: Vec<_> = (0..100)
+        .map(|index| {
+            serde_json::json!({
+                "id": format!("todo-{index}"),
+                "title": format!("Todo {index}"),
+            })
+        })
+        .collect();
+    let state = serde_json::json!({ "todos": todos });
+    let mut writer = StringWriter { buf: String::new() };
+
+    handler
+        .render(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+    let ssr = writer.buf.split("<f-template").next().unwrap_or_default();
+    assert_eq!(ssr.matches(r#"<li data-id="todo-"#).count(), 100);
+    assert!(!ssr.contains(":rendertodos"));
+    assert!(!ssr.contains(":todo"));
+}
+
+#[test]
 fn build_discovers_generated_local_template() {
     let app = create_app_dir(&[
         ("index.html", "<custom-button></custom-button>"),

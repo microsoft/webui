@@ -603,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_property_binding() {
+    fn skip_fast_property_binding() {
         let mut plugin = FastV2ParserPlugin::new();
         assert_eq!(
             plugin.classify_attribute(":title"),

@@ -2101,10 +2101,15 @@ parser view returned as `TransformedComponentSource::parser_content`:
   `unsupported-multiple-f-templates` for multiple wrappers,
   `invalid-fast-template` for unsupported or malformed FAST declarative syntax,
   and the shared `unclosed-html-tag` for unclosed markup.
-- The FAST plugins' `process_attribute` skips `@event`, `:property`, `f-ref`,
-  `f-slotted`, and `f-children` and counts each as a binding, so they are
-  absent from the SSR view while the hydration binding count still reflects
-  them. No parser-core marker or FAST-named branch is involved. FAST idiomatically
+- The FAST plugins' `process_attribute` skips `@event`, FAST single-brace
+  `:property="{expression}"`, `f-ref`, `f-slotted`, and `f-children` and counts
+  each as a binding, so they are absent from the SSR view while the hydration
+  binding count still reflects them. WebUI-owned
+  `:property="{{expression}}"` bypasses plugin classification and remains a
+  normal complex attribute fragment: the handler resolves it into the child
+  component's render scope without emitting an HTML attribute, and parser-core
+  binding accounting counts it once. No parser-core FAST-named branch is
+  involved. FAST idiomatically
   authors host-element bindings directly on the root `<template>` (e.g.
   `<template @click="{…}">`); because their `ComponentProcessing` enables root
   attribute processing, those bindings flow through the same

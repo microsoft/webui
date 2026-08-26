@@ -3749,19 +3749,27 @@ impl HtmlParser {
         let mut binding_count: u32 = 0;
         for attr in attrs {
             let attr_name = attr.name;
+            let attr_value = attr.value;
+            let is_property_binding = attr_name.starts_with(':')
+                && attr_value
+                    .and_then(Self::extract_single_handlebars)
+                    .is_some();
 
-            if let Some(ref mut p) = self.plugin {
-                match p.process_attribute(AttributeContext { name: attr_name }) {
-                    AttributeAction::Keep => {}
-                    AttributeAction::Skip => continue,
-                    AttributeAction::SkipAndCountBinding => {
-                        binding_count += 1;
-                        continue;
+            // `:property="{{expr}}"` is WebUI-owned syntax. Plugins may classify
+            // FAST's single-brace `:property="{expr}"`, but cannot discard the
+            // server-side scope transfer before parser-core processes it.
+            if !is_property_binding {
+                if let Some(ref mut p) = self.plugin {
+                    match p.process_attribute(AttributeContext { name: attr_name }) {
+                        AttributeAction::Keep => {}
+                        AttributeAction::Skip => continue,
+                        AttributeAction::SkipAndCountBinding => {
+                            binding_count += 1;
+                            continue;
+                        }
                     }
                 }
             }
-
-            let attr_value = attr.value;
 
             if let Some(bool_name) = attr_name.strip_prefix('?') {
                 if is_component {
