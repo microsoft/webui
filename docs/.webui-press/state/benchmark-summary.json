@@ -1,10 +1,10 @@
 {
   "benchmarks": {
-    "description": "Compare thirteen product paths by single-core server throughput or cold-navigation browser cost without collapsing unlike measurements into one score.",
+    "description": "Compare 14 product paths by single-core server throughput or cold-navigation browser cost without collapsing unlike measurements into one score.",
     "hasUnavailable": false,
     "link": "/webui/guide/concepts/performance/",
     "methodology": "100 todos · 12 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 7 × 10 s randomized rounds · dynamic SSR · natural bytes",
-    "metricSummary": "WebUI / Rust / Actix records the highest median, 32.0% ahead of WebUI / Shadow DOM / Rust / Actix; the 341.2 req/s gap exceeds their combined 7.9 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Rust / Actix is 148.2% higher; the 841.2 req/s gap exceeds their combined 18.1 req/s MAD.",
+    "metricSummary": "React records the highest median, 8.7% ahead of WebUI / FAST V3 / Rust / Actix; the 43.7 req/s gap exceeds their combined 42.9 req/s MAD.",
     "metrics": [
       {
         "available": true,
@@ -15,7 +15,7 @@
         "label": "Single-core RPS",
         "methodology": "100 todos · 12 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 7 × 10 s randomized rounds · dynamic SSR · natural bytes",
         "selected": true,
-        "summary": "WebUI / Rust / Actix records the highest median, 32.0% ahead of WebUI / Shadow DOM / Rust / Actix; the 341.2 req/s gap exceeds their combined 7.9 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Rust / Actix is 148.2% higher; the 841.2 req/s gap exceeds their combined 18.1 req/s MAD.",
+        "summary": "React records the highest median, 8.7% ahead of WebUI / FAST V3 / Rust / Actix; the 43.7 req/s gap exceeds their combined 42.9 req/s MAD.",
         "unit": "req/s"
       },
       {
@@ -25,9 +25,9 @@
         "directionLabel": "lower is better",
         "id": "firstContentfulPaintMs",
         "label": "FCP",
-        "methodology": "Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
+        "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Rust / Actix records the lowest median, 8.0% below Vue; the 8 ms gap is within their combined 12 ms MAD, so the measured ordering overlaps run noise.",
+        "summary": "Astro + Preact and Preact have the same median; the measured ordering is tied.",
         "unit": "ms"
       },
       {
@@ -37,9 +37,9 @@
         "directionLabel": "lower is better",
         "id": "largestContentfulPaintMs",
         "label": "LCP",
-        "methodology": "Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
+        "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Rust / Actix records the lowest median, 8.0% below Vue; the 8 ms gap is within their combined 12 ms MAD, so the measured ordering overlaps run noise.",
+        "summary": "Astro + Preact and Preact have the same median; the measured ordering is tied.",
         "unit": "ms"
       },
       {
@@ -49,9 +49,9 @@
         "directionLabel": "lower is better",
         "id": "jsHeapUsedBytes",
         "label": "JS Heap",
-        "methodology": "Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
+        "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Bun.serve records the lowest median, 1.1% below WebUI / Deno.serve; the 0.02 MiB gap exceeds their combined <0.01 MiB MAD.",
+        "summary": "WebUI / Shadow DOM / Rust / Actix records the lowest median, 1.0% below WebUI / Node node:http; the 0.02 MiB gap exceeds their combined 0.02 MiB MAD.",
         "unit": "MiB"
       },
       {
@@ -61,94 +61,94 @@
         "directionLabel": "lower is better",
         "id": "rendererPrivateBytes",
         "label": "Renderer Private MB",
-        "methodology": "Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
+        "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Deno.serve records the lowest median, 0.8% below WebUI / Rust / Actix; the 0.29 MiB gap is within their combined 0.92 MiB MAD, so the measured ordering overlaps run noise.",
+        "summary": "WebUI / Node node:http records the lowest median, 0.1% below WebUI / Rust / Actix; the 0.04 MiB gap is within their combined 2.41 MiB MAD, so the measured ordering overlaps run noise.",
         "unit": "MiB"
       }
     ],
     "rows": [
       {
         "activeAvailable": true,
-        "activeDetail": "webui-handler WebUIHandler (Rust) · actix-web · MAD 5.5 req/s · p95 47.84 ms · 332,831-333,536 B natural",
+        "activeDetail": "react-dom/server renderToString · node:http · MAD 30.1 req/s · p95 149.38 ms · 288,921-289,608 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "1,408.9",
+        "activeValueDisplay": "545.5",
         "activeWidth": "100.0%",
-        "caseId": "webui-rust-actix",
-        "label": "WebUI / Rust / Actix",
+        "caseId": "react",
+        "label": "React",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "react-dom/server renderToString · node:http · MAD 30.1 req/s · p95 149.38 ms · 288,921-289,608 B natural",
+            "value": 545.5,
+            "valueDisplay": "545.5"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 104 ms",
-            "value": 92.0,
-            "valueDisplay": "92"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB",
-            "value": 1767828.0,
-            "valueDisplay": "1.69"
+            "detail": "7 isolated runs · MAD 32 ms · p95 196 ms",
+            "value": 148,
+            "valueDisplay": "148"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 104 ms",
-            "value": 92.0,
-            "valueDisplay": "92"
+            "detail": "7 isolated runs · MAD 32 ms · p95 196 ms",
+            "value": 148,
+            "valueDisplay": "148"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.5 MiB",
+            "value": 2622688,
+            "valueDisplay": "2.5"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0.7 MiB · p95 38.08 MiB",
-            "value": 38588416.0,
-            "valueDisplay": "36.8"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "webui-handler WebUIHandler (Rust) · actix-web · MAD 5.5 req/s · p95 47.84 ms · 332,831-333,536 B natural",
-            "value": 1408.9,
-            "valueDisplay": "1,408.9"
+            "detail": "7 isolated runs · MAD 0.05 MiB · p95 45.14 MiB",
+            "value": 44695552,
+            "valueDisplay": "42.63"
           }
         },
-        "primary": true,
+        "primary": false,
         "rank": "1"
       },
       {
         "activeAvailable": true,
-        "activeDetail": "webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 2.4 req/s · p95 62.85 ms · 486,149-487,578 B natural",
+        "activeDetail": "webui-handler WebUIHandler (Rust, FAST V3) · actix-web · MAD 12.8 req/s · p95 146.88 ms · 467,162-468,473 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "1,067.7",
-        "activeWidth": "75.8%",
-        "caseId": "webui-shadowdom-rust-actix",
-        "label": "WebUI / Shadow DOM / Rust / Actix",
+        "activeValueDisplay": "501.8",
+        "activeWidth": "92.0%",
+        "caseId": "webui-fast-rust-actix",
+        "label": "WebUI / FAST V3 / Rust / Actix",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "webui-handler WebUIHandler (Rust, FAST V3) · actix-web · MAD 12.8 req/s · p95 146.88 ms · 467,162-468,473 B natural",
+            "value": 501.8,
+            "valueDisplay": "501.8"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 116 ms",
-            "value": 104.0,
-            "valueDisplay": "104"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.98 MiB",
-            "value": 2066280.0,
-            "valueDisplay": "1.97"
+            "detail": "7 isolated runs · MAD 32 ms · p95 196 ms",
+            "value": 152,
+            "valueDisplay": "152"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 116 ms",
-            "value": 104.0,
-            "valueDisplay": "104"
+            "detail": "7 isolated runs · MAD 32 ms · p95 196 ms",
+            "value": 152,
+            "valueDisplay": "152"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 4.57 MiB",
+            "value": 4788280,
+            "valueDisplay": "4.57"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0.88 MiB · p95 42.75 MiB",
-            "value": 43900928.0,
-            "valueDisplay": "41.87"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 2.4 req/s · p95 62.85 ms · 486,149-487,578 B natural",
-            "value": 1067.7,
-            "valueDisplay": "1,067.7"
+            "detail": "7 isolated runs · MAD 1.1 MiB · p95 50.03 MiB",
+            "value": 49659904,
+            "valueDisplay": "47.36"
           }
         },
         "primary": true,
@@ -156,42 +156,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.9 req/s · p95 102.41 ms · 332,831-333,536 B natural",
+        "activeDetail": "webui-handler WebUIHandler (Rust) · actix-web · MAD 13.1 req/s · p95 148.04 ms · 332,189-332,894 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "769.2",
-        "activeWidth": "54.6%",
-        "caseId": "webui-deno-serve",
-        "label": "WebUI / Deno.serve",
+        "activeValueDisplay": "461.9",
+        "activeWidth": "84.7%",
+        "caseId": "webui-rust-actix",
+        "label": "WebUI / Rust / Actix",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "webui-handler WebUIHandler (Rust) · actix-web · MAD 13.1 req/s · p95 148.04 ms · 332,189-332,894 B natural",
+            "value": 461.9,
+            "valueDisplay": "461.9"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 12 ms · p95 136 ms",
-            "value": 100.0,
-            "valueDisplay": "100"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB",
-            "value": 1767644.0,
-            "valueDisplay": "1.69"
+            "detail": "7 isolated runs · MAD 0 ms · p95 112 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 12 ms · p95 136 ms",
-            "value": 100.0,
-            "valueDisplay": "100"
+            "detail": "7 isolated runs · MAD 0 ms · p95 112 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB",
+            "value": 1762020,
+            "valueDisplay": "1.68"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0.21 MiB · p95 36.75 MiB",
-            "value": 38289408.0,
-            "valueDisplay": "36.52"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.9 req/s · p95 102.41 ms · 332,831-333,536 B natural",
-            "value": 769.2,
-            "valueDisplay": "769.2"
+            "detail": "7 isolated runs · MAD 0.45 MiB · p95 38 MiB",
+            "value": 37019648,
+            "valueDisplay": "35.3"
           }
         },
         "primary": true,
@@ -199,42 +199,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 8.1 req/s · p95 88.25 ms · 332,831-333,536 B natural",
+        "activeDetail": "webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 5.6 req/s · p95 144.7 ms · 423,078-424,207 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "744.5",
-        "activeWidth": "52.8%",
-        "caseId": "webui-node-http",
-        "label": "WebUI / Node node:http",
+        "activeValueDisplay": "460.3",
+        "activeWidth": "84.4%",
+        "caseId": "webui-shadowdom-rust-actix",
+        "label": "WebUI / Shadow DOM / Rust / Actix",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 5.6 req/s · p95 144.7 ms · 423,078-424,207 B natural",
+            "value": 460.29999999999995,
+            "valueDisplay": "460.3"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 136 ms",
-            "value": 112.0,
-            "valueDisplay": "112"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB",
-            "value": 1768600.0,
-            "valueDisplay": "1.69"
+            "detail": "7 isolated runs · MAD 24 ms · p95 196 ms",
+            "value": 136,
+            "valueDisplay": "136"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 136 ms",
-            "value": 112.0,
-            "valueDisplay": "112"
+            "detail": "7 isolated runs · MAD 24 ms · p95 196 ms",
+            "value": 136,
+            "valueDisplay": "136"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD 0.01 MiB · p95 1.7 MiB",
+            "value": 1737560,
+            "valueDisplay": "1.66"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.11 MiB · p95 39.3 MiB",
-            "value": 38850560.0,
-            "valueDisplay": "37.05"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 8.1 req/s · p95 88.25 ms · 332,831-333,536 B natural",
-            "value": 744.5,
-            "valueDisplay": "744.5"
+            "detail": "7 isolated runs · MAD 1.36 MiB · p95 41.61 MiB",
+            "value": 42086400,
+            "valueDisplay": "40.14"
           }
         },
         "primary": true,
@@ -242,85 +242,85 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 2.2 req/s · p95 96.35 ms · 332,831-333,536 B natural",
+        "activeDetail": "preact-render-to-string renderToString · node:http · MAD 90.3 req/s · p95 223.25 ms · 288,848-289,535 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "703.5",
-        "activeWidth": "49.9%",
-        "caseId": "webui-bun-serve",
-        "label": "WebUI / Bun.serve",
+        "activeValueDisplay": "433.6",
+        "activeWidth": "79.5%",
+        "caseId": "preact",
+        "label": "Preact",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "preact-render-to-string renderToString · node:http · MAD 90.3 req/s · p95 223.25 ms · 288,848-289,535 B natural",
+            "value": 433.6,
+            "valueDisplay": "433.6"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0 ms · p95 120 ms",
-            "value": 100.0,
-            "valueDisplay": "100"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB",
-            "value": 1748472.0,
-            "valueDisplay": "1.67"
+            "detail": "7 isolated runs · MAD 20 ms · p95 192 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0 ms · p95 120 ms",
-            "value": 100.0,
-            "valueDisplay": "100"
+            "detail": "7 isolated runs · MAD 20 ms · p95 192 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.16 MiB",
+            "value": 2264004,
+            "valueDisplay": "2.16"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.05 MiB · p95 39.95 MiB",
-            "value": 40779776.0,
-            "valueDisplay": "38.89"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 2.2 req/s · p95 96.35 ms · 332,831-333,536 B natural",
-            "value": 703.5,
-            "valueDisplay": "703.5"
+            "detail": "7 isolated runs · MAD 1.31 MiB · p95 43.86 MiB",
+            "value": 44412928,
+            "valueDisplay": "42.36"
           }
         },
-        "primary": true,
+        "primary": false,
         "rank": "5"
       },
       {
         "activeAvailable": true,
-        "activeDetail": "react-dom/server renderToString · node:http · MAD 12.6 req/s · p95 127.6 ms · 288,921-289,608 B natural",
+        "activeDetail": "@vue/server-renderer renderToString · node:http · MAD 7 req/s · p95 208.62 ms · 295,841-296,500 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "567.7",
-        "activeWidth": "40.3%",
-        "caseId": "react",
-        "label": "React",
+        "activeValueDisplay": "403.8",
+        "activeWidth": "74.0%",
+        "caseId": "vue",
+        "label": "Vue",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "@vue/server-renderer renderToString · node:http · MAD 7 req/s · p95 208.62 ms · 295,841-296,500 B natural",
+            "value": 403.79999999999995,
+            "valueDisplay": "403.8"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 124 ms",
-            "value": 104.0,
-            "valueDisplay": "104"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD 0 MiB · p95 2.52 MiB",
-            "value": 2638912.0,
-            "valueDisplay": "2.52"
+            "detail": "7 isolated runs · MAD 4 ms · p95 144 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 124 ms",
-            "value": 104.0,
-            "valueDisplay": "104"
+            "detail": "7 isolated runs · MAD 4 ms · p95 144 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.37 MiB",
+            "value": 2483496,
+            "valueDisplay": "2.37"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0.62 MiB · p95 45.66 MiB",
-            "value": 46256128.0,
-            "valueDisplay": "44.11"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "react-dom/server renderToString · node:http · MAD 12.6 req/s · p95 127.6 ms · 288,921-289,608 B natural",
-            "value": 567.7,
-            "valueDisplay": "567.7"
+            "detail": "7 isolated runs · MAD 0.68 MiB · p95 47.02 MiB",
+            "value": 44023808,
+            "valueDisplay": "41.98"
           }
         },
         "primary": false,
@@ -328,85 +328,85 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "preact-render-to-string renderToString · node:http · MAD 2.4 req/s · p95 134.71 ms · 288,848-289,535 B natural",
+        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 19.9 req/s · p95 190.78 ms · 332,189-332,894 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "526.1",
-        "activeWidth": "37.3%",
-        "caseId": "preact",
-        "label": "Preact",
+        "activeValueDisplay": "384.7",
+        "activeWidth": "70.5%",
+        "caseId": "webui-bun-serve",
+        "label": "WebUI / Bun.serve",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 19.9 req/s · p95 190.78 ms · 332,189-332,894 B natural",
+            "value": 384.7,
+            "valueDisplay": "384.7"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 120 ms",
-            "value": 112.0,
+            "detail": "7 isolated runs · MAD 4 ms · p95 176 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "7 isolated runs · MAD 4 ms · p95 176 ms",
+            "value": 112,
             "valueDisplay": "112"
           },
           "jsHeapUsedBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.17 MiB",
-            "value": 2280072.0,
-            "valueDisplay": "2.17"
-          },
-          "largestContentfulPaintMs": {
-            "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 120 ms",
-            "value": 112.0,
-            "valueDisplay": "112"
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB",
+            "value": 1758168,
+            "valueDisplay": "1.68"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.18 MiB · p95 46.25 MiB",
-            "value": 47263744.0,
-            "valueDisplay": "45.07"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "preact-render-to-string renderToString · node:http · MAD 2.4 req/s · p95 134.71 ms · 288,848-289,535 B natural",
-            "value": 526.0999999999999,
-            "valueDisplay": "526.1"
+            "detail": "7 isolated runs · MAD 0.48 MiB · p95 40.33 MiB",
+            "value": 39272448,
+            "valueDisplay": "37.45"
           }
         },
-        "primary": false,
+        "primary": true,
         "rank": "7"
       },
       {
         "activeAvailable": true,
-        "activeDetail": "@vue/server-renderer renderToString · node:http · MAD 2.4 req/s · p95 208.59 ms · 295,841-296,500 B natural",
+        "activeDetail": "solid-js/web renderToString · node:http · MAD 30.3 req/s · p95 226.85 ms · 332,104-332,905 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "403.6",
-        "activeWidth": "28.6%",
-        "caseId": "vue",
-        "label": "Vue",
+        "activeValueDisplay": "361.9",
+        "activeWidth": "66.3%",
+        "caseId": "solid",
+        "label": "Solid",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "solid-js/web renderToString · node:http · MAD 30.3 req/s · p95 226.85 ms · 332,104-332,905 B natural",
+            "value": 361.9,
+            "valueDisplay": "361.9"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 116 ms",
-            "value": 100.0,
-            "valueDisplay": "100"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.39 MiB",
-            "value": 2501204.0,
-            "valueDisplay": "2.39"
+            "detail": "7 isolated runs · MAD 4 ms · p95 184 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 116 ms",
-            "value": 100.0,
-            "valueDisplay": "100"
+            "detail": "7 isolated runs · MAD 4 ms · p95 184 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 4.35 MiB",
+            "value": 4563592,
+            "valueDisplay": "4.35"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.02 MiB · p95 45.4 MiB",
-            "value": 43606016.0,
-            "valueDisplay": "41.59"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "@vue/server-renderer renderToString · node:http · MAD 2.4 req/s · p95 208.59 ms · 295,841-296,500 B natural",
-            "value": 403.6,
-            "valueDisplay": "403.6"
+            "detail": "7 isolated runs · MAD 2.46 MiB · p95 51.38 MiB",
+            "value": 51294208,
+            "valueDisplay": "48.92"
           }
         },
         "primary": false,
@@ -414,128 +414,128 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "solid-js/web renderToString · node:http · MAD 4.8 req/s · p95 202.25 ms · 332,104-332,905 B natural",
+        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 5.8 req/s · p95 192.41 ms · 332,189-332,894 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "389.3",
-        "activeWidth": "27.6%",
-        "caseId": "solid",
-        "label": "Solid",
+        "activeValueDisplay": "355.1",
+        "activeWidth": "65.1%",
+        "caseId": "webui-node-http",
+        "label": "WebUI / Node node:http",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 5.8 req/s · p95 192.41 ms · 332,189-332,894 B natural",
+            "value": 355.1,
+            "valueDisplay": "355.1"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 120 ms",
-            "value": 116.0,
-            "valueDisplay": "116"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD 0 MiB · p95 4.38 MiB",
-            "value": 4592540.0,
-            "valueDisplay": "4.38"
+            "detail": "7 isolated runs · MAD 4 ms · p95 236 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 120 ms",
-            "value": 116.0,
-            "valueDisplay": "116"
+            "detail": "7 isolated runs · MAD 4 ms · p95 236 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB",
+            "value": 1755908,
+            "valueDisplay": "1.67"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.39 MiB · p95 50.39 MiB",
-            "value": 49598464.0,
-            "valueDisplay": "47.3"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "solid-js/web renderToString · node:http · MAD 4.8 req/s · p95 202.25 ms · 332,104-332,905 B natural",
-            "value": 389.2999999999999,
-            "valueDisplay": "389.3"
+            "detail": "7 isolated runs · MAD 1.97 MiB · p95 38.68 MiB",
+            "value": 36982784,
+            "valueDisplay": "35.27"
           }
         },
-        "primary": false,
+        "primary": true,
         "rank": "9"
       },
       {
         "activeAvailable": true,
-        "activeDetail": "SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 0.9 req/s · p95 262.63 ms · 263,490-264,001 B natural",
+        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.2 req/s · p95 191.87 ms · 332,189-332,894 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "276.7",
-        "activeWidth": "19.6%",
-        "caseId": "sveltekit",
-        "label": "SvelteKit",
+        "activeValueDisplay": "352.5",
+        "activeWidth": "64.6%",
+        "caseId": "webui-deno-serve",
+        "label": "WebUI / Deno.serve",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.2 req/s · p95 191.87 ms · 332,189-332,894 B natural",
+            "value": 352.5,
+            "valueDisplay": "352.5"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0 ms · p95 136 ms",
-            "value": 120.0,
-            "valueDisplay": "120"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD 0 MiB · p95 4.6 MiB",
-            "value": 4817900.0,
-            "valueDisplay": "4.59"
+            "detail": "7 isolated runs · MAD 24 ms · p95 160 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0 ms · p95 136 ms",
-            "value": 120.0,
-            "valueDisplay": "120"
+            "detail": "7 isolated runs · MAD 24 ms · p95 160 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB",
+            "value": 1756568,
+            "valueDisplay": "1.68"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.16 MiB · p95 51.74 MiB",
-            "value": 50450432.0,
-            "valueDisplay": "48.11"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 0.9 req/s · p95 262.63 ms · 263,490-264,001 B natural",
-            "value": 276.7,
-            "valueDisplay": "276.7"
+            "detail": "7 isolated runs · MAD 3.12 MiB · p95 42.73 MiB",
+            "value": 39571456,
+            "valueDisplay": "37.74"
           }
         },
-        "primary": false,
+        "primary": true,
         "rank": "10"
       },
       {
         "activeAvailable": true,
-        "activeDetail": "Next.js production App Router SSR · next start · MAD 0 req/s · p95 446.65 ms · 265,159-265,710 B natural",
+        "activeDetail": "SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 11.2 req/s · p95 277.77 ms · 263,491-264,002 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "160",
-        "activeWidth": "11.4%",
-        "caseId": "next",
-        "label": "Next.js",
+        "activeValueDisplay": "261",
+        "activeWidth": "47.8%",
+        "caseId": "sveltekit",
+        "label": "SvelteKit",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 11.2 req/s · p95 277.77 ms · 263,491-264,002 B natural",
+            "value": 261,
+            "valueDisplay": "261"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 152 ms",
-            "value": 136.0,
-            "valueDisplay": "136"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 3.3 MiB",
-            "value": 3450824.0,
-            "valueDisplay": "3.29"
+            "detail": "7 isolated runs · MAD 12 ms · p95 172 ms",
+            "value": 120,
+            "valueDisplay": "120"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 152 ms",
-            "value": 136.0,
-            "valueDisplay": "136"
+            "detail": "7 isolated runs · MAD 12 ms · p95 172 ms",
+            "value": 120,
+            "valueDisplay": "120"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 4.59 MiB",
+            "value": 4809024,
+            "valueDisplay": "4.59"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.23 MiB · p95 48.94 MiB",
-            "value": 48893952.0,
-            "valueDisplay": "46.63"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "Next.js production App Router SSR · next start · MAD 0 req/s · p95 446.65 ms · 265,159-265,710 B natural",
-            "value": 160.0,
-            "valueDisplay": "160"
+            "detail": "7 isolated runs · MAD 0.32 MiB · p95 50.64 MiB",
+            "value": 49831936,
+            "valueDisplay": "47.52"
           }
         },
         "primary": false,
@@ -543,42 +543,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0.7 req/s · p95 534.41 ms · 385,532-386,373 B natural",
+        "activeDetail": "Next.js production App Router SSR · next start · MAD 7.6 req/s · p95 465.11 ms · 265,159-265,710 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "130",
-        "activeWidth": "9.2%",
-        "caseId": "astro",
-        "label": "Astro + Preact",
+        "activeValueDisplay": "158.8",
+        "activeWidth": "29.1%",
+        "caseId": "next",
+        "label": "Next.js",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "Next.js production App Router SSR · next start · MAD 7.6 req/s · p95 465.11 ms · 265,159-265,710 B natural",
+            "value": 158.8,
+            "valueDisplay": "158.8"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 120 ms",
-            "value": 116.0,
-            "valueDisplay": "116"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.23 MiB",
-            "value": 2335544.0,
-            "valueDisplay": "2.23"
+            "detail": "7 isolated runs · MAD 0 ms · p95 144 ms",
+            "value": 140,
+            "valueDisplay": "140"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 4 ms · p95 120 ms",
-            "value": 116.0,
-            "valueDisplay": "116"
+            "detail": "7 isolated runs · MAD 0 ms · p95 144 ms",
+            "value": 140,
+            "valueDisplay": "140"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 3.28 MiB",
+            "value": 3442544,
+            "valueDisplay": "3.28"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 0.37 MiB · p95 46.76 MiB",
-            "value": 46096384.0,
-            "valueDisplay": "43.96"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0.7 req/s · p95 534.41 ms · 385,532-386,373 B natural",
-            "value": 130.0,
-            "valueDisplay": "130"
+            "detail": "7 isolated runs · MAD 1.39 MiB · p95 52.04 MiB",
+            "value": 49205248,
+            "valueDisplay": "46.93"
           }
         },
         "primary": false,
@@ -586,46 +586,89 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 1.8 req/s · p95 1,252.71 ms · 239,964-240,577 B natural",
+        "activeDetail": "Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 6.3 req/s · p95 574.72 ms · 385,533-386,373 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "83.4",
-        "activeWidth": "5.9%",
-        "caseId": "nuxt",
-        "label": "Nuxt",
+        "activeValueDisplay": "126.8",
+        "activeWidth": "23.2%",
+        "caseId": "astro",
+        "label": "Astro + Preact",
         "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 6.3 req/s · p95 574.72 ms · 385,533-386,373 B natural",
+            "value": 126.80000000000001,
+            "valueDisplay": "126.8"
+          },
           "firstContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 172 ms",
-            "value": 120.0,
-            "valueDisplay": "120"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "7 isolated runs · MAD <0.01 MiB · p95 3.42 MiB",
-            "value": 3584764.0,
-            "valueDisplay": "3.42"
+            "detail": "7 isolated runs · MAD 4 ms · p95 240 ms",
+            "value": 112,
+            "valueDisplay": "112"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "7 isolated runs · MAD 8 ms · p95 172 ms",
-            "value": 120.0,
-            "valueDisplay": "120"
+            "detail": "7 isolated runs · MAD 4 ms · p95 240 ms",
+            "value": 112,
+            "valueDisplay": "112"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 2.25 MiB",
+            "value": 2319768,
+            "valueDisplay": "2.21"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "7 isolated runs · MAD 1.83 MiB · p95 49.75 MiB",
-            "value": 49065984.0,
-            "valueDisplay": "46.79"
-          },
-          "requestsPerSecond": {
-            "available": true,
-            "detail": "Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 1.8 req/s · p95 1,252.71 ms · 239,964-240,577 B natural",
-            "value": 83.4,
-            "valueDisplay": "83.4"
+            "detail": "7 isolated runs · MAD 0.82 MiB · p95 49.79 MiB",
+            "value": 46157824,
+            "valueDisplay": "44.02"
           }
         },
         "primary": false,
         "rank": "13"
+      },
+      {
+        "activeAvailable": true,
+        "activeDetail": "Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 3.1 req/s · p95 1,248.18 ms · 239,964-240,577 B natural",
+        "activeUnit": "req/s",
+        "activeValueDisplay": "80.9",
+        "activeWidth": "14.8%",
+        "caseId": "nuxt",
+        "label": "Nuxt",
+        "metrics": {
+          "requestsPerSecond": {
+            "available": true,
+            "detail": "Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 3.1 req/s · p95 1,248.18 ms · 239,964-240,577 B natural",
+            "value": 80.9,
+            "valueDisplay": "80.9"
+          },
+          "firstContentfulPaintMs": {
+            "available": true,
+            "detail": "7 isolated runs · MAD 12 ms · p95 144 ms",
+            "value": 132,
+            "valueDisplay": "132"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "7 isolated runs · MAD 12 ms · p95 144 ms",
+            "value": 132,
+            "valueDisplay": "132"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD <0.01 MiB · p95 3.4 MiB",
+            "value": 3565160,
+            "valueDisplay": "3.4"
+          },
+          "rendererPrivateBytes": {
+            "available": true,
+            "detail": "7 isolated runs · MAD 2.13 MiB · p95 49.2 MiB",
+            "value": 47296512,
+            "valueDisplay": "45.11"
+          }
+        },
+        "primary": false,
+        "rank": "14"
       }
     ],
     "selectedMetric": "requestsPerSecond",
@@ -633,5 +676,5 @@
     "selectedMetricLabel": "Single-core RPS",
     "title": "Same workload. Choose the metric."
   },
-  "benchmarksJson": "{\"description\":\"Compare thirteen product paths by single-core server throughput or cold-navigation browser cost without collapsing unlike measurements into one score.\",\"hasUnavailable\":false,\"link\":\"/webui/guide/concepts/performance/\",\"methodology\":\"100 todos · 12 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 7 × 10 s randomized rounds · dynamic SSR · natural bytes\",\"metricSummary\":\"WebUI / Rust / Actix records the highest median, 32.0% ahead of WebUI / Shadow DOM / Rust / Actix; the 341.2 req/s gap exceeds their combined 7.9 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Rust / Actix is 148.2% higher; the 841.2 req/s gap exceeds their combined 18.1 req/s MAD.\",\"metrics\":[{\"available\":true,\"description\":\"Median dynamic SSR throughput across seven randomized ten-second rounds.\",\"direction\":\"higher\",\"directionLabel\":\"higher is better\",\"id\":\"requestsPerSecond\",\"label\":\"Single-core RPS\",\"methodology\":\"100 todos · 12 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 7 × 10 s randomized rounds · dynamic SSR · natural bytes\",\"selected\":true,\"summary\":\"WebUI / Rust / Actix records the highest median, 32.0% ahead of WebUI / Shadow DOM / Rust / Actix; the 341.2 req/s gap exceeds their combined 7.9 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Rust / Actix is 148.2% higher; the 841.2 req/s gap exceeds their combined 18.1 req/s MAD.\",\"unit\":\"req/s\"},{\"available\":true,\"description\":\"First contentful paint from navigation start across seven isolated Chromium runs.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"firstContentfulPaintMs\",\"label\":\"FCP\",\"methodology\":\"Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Rust / Actix records the lowest median, 8.0% below Vue; the 8 ms gap is within their combined 12 ms MAD, so the measured ordering overlaps run noise.\",\"unit\":\"ms\"},{\"available\":true,\"description\":\"Pre-interaction largest contentful paint from navigation start across seven isolated Chromium runs.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"largestContentfulPaintMs\",\"label\":\"LCP\",\"methodology\":\"Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Rust / Actix records the lowest median, 8.0% below Vue; the 8 ms gap is within their combined 12 ms MAD, so the measured ordering overlaps run noise.\",\"unit\":\"ms\"},{\"available\":true,\"description\":\"Post-readiness JavaScript heap used after an explicit Chromium garbage collection.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"jsHeapUsedBytes\",\"label\":\"JS Heap\",\"methodology\":\"Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Bun.serve records the lowest median, 1.1% below WebUI / Deno.serve; the 0.02 MiB gap exceeds their combined <0.01 MiB MAD.\",\"unit\":\"MiB\"},{\"available\":true,\"description\":\"Private bytes attributed to the isolated Chromium renderer process after readiness.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"rendererPrivateBytes\",\"label\":\"Renderer Private MB\",\"methodology\":\"Chromium 151.0.7922.34 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Deno.serve records the lowest median, 0.8% below WebUI / Rust / Actix; the 0.29 MiB gap is within their combined 0.92 MiB MAD, so the measured ordering overlaps run noise.\",\"unit\":\"MiB\"}],\"rows\":[{\"activeAvailable\":true,\"activeDetail\":\"webui-handler WebUIHandler (Rust) · actix-web · MAD 5.5 req/s · p95 47.84 ms · 332,831-333,536 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"1,408.9\",\"activeWidth\":\"100.0%\",\"caseId\":\"webui-rust-actix\",\"label\":\"WebUI / Rust / Actix\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 104 ms\",\"value\":92.0,\"valueDisplay\":\"92\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB\",\"value\":1767828.0,\"valueDisplay\":\"1.69\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 104 ms\",\"value\":92.0,\"valueDisplay\":\"92\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.7 MiB · p95 38.08 MiB\",\"value\":38588416.0,\"valueDisplay\":\"36.8\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler WebUIHandler (Rust) · actix-web · MAD 5.5 req/s · p95 47.84 ms · 332,831-333,536 B natural\",\"value\":1408.9,\"valueDisplay\":\"1,408.9\"}},\"primary\":true,\"rank\":\"1\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 2.4 req/s · p95 62.85 ms · 486,149-487,578 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"1,067.7\",\"activeWidth\":\"75.8%\",\"caseId\":\"webui-shadowdom-rust-actix\",\"label\":\"WebUI / Shadow DOM / Rust / Actix\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 116 ms\",\"value\":104.0,\"valueDisplay\":\"104\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.98 MiB\",\"value\":2066280.0,\"valueDisplay\":\"1.97\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 116 ms\",\"value\":104.0,\"valueDisplay\":\"104\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.88 MiB · p95 42.75 MiB\",\"value\":43900928.0,\"valueDisplay\":\"41.87\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 2.4 req/s · p95 62.85 ms · 486,149-487,578 B natural\",\"value\":1067.7,\"valueDisplay\":\"1,067.7\"}},\"primary\":true,\"rank\":\"2\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.9 req/s · p95 102.41 ms · 332,831-333,536 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"769.2\",\"activeWidth\":\"54.6%\",\"caseId\":\"webui-deno-serve\",\"label\":\"WebUI / Deno.serve\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 12 ms · p95 136 ms\",\"value\":100.0,\"valueDisplay\":\"100\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB\",\"value\":1767644.0,\"valueDisplay\":\"1.69\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 12 ms · p95 136 ms\",\"value\":100.0,\"valueDisplay\":\"100\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.21 MiB · p95 36.75 MiB\",\"value\":38289408.0,\"valueDisplay\":\"36.52\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.9 req/s · p95 102.41 ms · 332,831-333,536 B natural\",\"value\":769.2,\"valueDisplay\":\"769.2\"}},\"primary\":true,\"rank\":\"3\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 8.1 req/s · p95 88.25 ms · 332,831-333,536 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"744.5\",\"activeWidth\":\"52.8%\",\"caseId\":\"webui-node-http\",\"label\":\"WebUI / Node node:http\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 136 ms\",\"value\":112.0,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB\",\"value\":1768600.0,\"valueDisplay\":\"1.69\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 136 ms\",\"value\":112.0,\"valueDisplay\":\"112\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.11 MiB · p95 39.3 MiB\",\"value\":38850560.0,\"valueDisplay\":\"37.05\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 8.1 req/s · p95 88.25 ms · 332,831-333,536 B natural\",\"value\":744.5,\"valueDisplay\":\"744.5\"}},\"primary\":true,\"rank\":\"4\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 2.2 req/s · p95 96.35 ms · 332,831-333,536 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"703.5\",\"activeWidth\":\"49.9%\",\"caseId\":\"webui-bun-serve\",\"label\":\"WebUI / Bun.serve\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 120 ms\",\"value\":100.0,\"valueDisplay\":\"100\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.69 MiB\",\"value\":1748472.0,\"valueDisplay\":\"1.67\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 120 ms\",\"value\":100.0,\"valueDisplay\":\"100\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.05 MiB · p95 39.95 MiB\",\"value\":40779776.0,\"valueDisplay\":\"38.89\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 2.2 req/s · p95 96.35 ms · 332,831-333,536 B natural\",\"value\":703.5,\"valueDisplay\":\"703.5\"}},\"primary\":true,\"rank\":\"5\"},{\"activeAvailable\":true,\"activeDetail\":\"react-dom/server renderToString · node:http · MAD 12.6 req/s · p95 127.6 ms · 288,921-289,608 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"567.7\",\"activeWidth\":\"40.3%\",\"caseId\":\"react\",\"label\":\"React\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 124 ms\",\"value\":104.0,\"valueDisplay\":\"104\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 MiB · p95 2.52 MiB\",\"value\":2638912.0,\"valueDisplay\":\"2.52\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 124 ms\",\"value\":104.0,\"valueDisplay\":\"104\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.62 MiB · p95 45.66 MiB\",\"value\":46256128.0,\"valueDisplay\":\"44.11\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToString · node:http · MAD 12.6 req/s · p95 127.6 ms · 288,921-289,608 B natural\",\"value\":567.7,\"valueDisplay\":\"567.7\"}},\"primary\":false,\"rank\":\"6\"},{\"activeAvailable\":true,\"activeDetail\":\"preact-render-to-string renderToString · node:http · MAD 2.4 req/s · p95 134.71 ms · 288,848-289,535 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"526.1\",\"activeWidth\":\"37.3%\",\"caseId\":\"preact\",\"label\":\"Preact\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 120 ms\",\"value\":112.0,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.17 MiB\",\"value\":2280072.0,\"valueDisplay\":\"2.17\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 120 ms\",\"value\":112.0,\"valueDisplay\":\"112\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.18 MiB · p95 46.25 MiB\",\"value\":47263744.0,\"valueDisplay\":\"45.07\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"preact-render-to-string renderToString · node:http · MAD 2.4 req/s · p95 134.71 ms · 288,848-289,535 B natural\",\"value\":526.0999999999999,\"valueDisplay\":\"526.1\"}},\"primary\":false,\"rank\":\"7\"},{\"activeAvailable\":true,\"activeDetail\":\"@vue/server-renderer renderToString · node:http · MAD 2.4 req/s · p95 208.59 ms · 295,841-296,500 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"403.6\",\"activeWidth\":\"28.6%\",\"caseId\":\"vue\",\"label\":\"Vue\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 116 ms\",\"value\":100.0,\"valueDisplay\":\"100\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.39 MiB\",\"value\":2501204.0,\"valueDisplay\":\"2.39\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 116 ms\",\"value\":100.0,\"valueDisplay\":\"100\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.02 MiB · p95 45.4 MiB\",\"value\":43606016.0,\"valueDisplay\":\"41.59\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"@vue/server-renderer renderToString · node:http · MAD 2.4 req/s · p95 208.59 ms · 295,841-296,500 B natural\",\"value\":403.6,\"valueDisplay\":\"403.6\"}},\"primary\":false,\"rank\":\"8\"},{\"activeAvailable\":true,\"activeDetail\":\"solid-js/web renderToString · node:http · MAD 4.8 req/s · p95 202.25 ms · 332,104-332,905 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"389.3\",\"activeWidth\":\"27.6%\",\"caseId\":\"solid\",\"label\":\"Solid\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 120 ms\",\"value\":116.0,\"valueDisplay\":\"116\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 MiB · p95 4.38 MiB\",\"value\":4592540.0,\"valueDisplay\":\"4.38\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 120 ms\",\"value\":116.0,\"valueDisplay\":\"116\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.39 MiB · p95 50.39 MiB\",\"value\":49598464.0,\"valueDisplay\":\"47.3\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"solid-js/web renderToString · node:http · MAD 4.8 req/s · p95 202.25 ms · 332,104-332,905 B natural\",\"value\":389.2999999999999,\"valueDisplay\":\"389.3\"}},\"primary\":false,\"rank\":\"9\"},{\"activeAvailable\":true,\"activeDetail\":\"SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 0.9 req/s · p95 262.63 ms · 263,490-264,001 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"276.7\",\"activeWidth\":\"19.6%\",\"caseId\":\"sveltekit\",\"label\":\"SvelteKit\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 136 ms\",\"value\":120.0,\"valueDisplay\":\"120\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 MiB · p95 4.6 MiB\",\"value\":4817900.0,\"valueDisplay\":\"4.59\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 136 ms\",\"value\":120.0,\"valueDisplay\":\"120\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.16 MiB · p95 51.74 MiB\",\"value\":50450432.0,\"valueDisplay\":\"48.11\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 0.9 req/s · p95 262.63 ms · 263,490-264,001 B natural\",\"value\":276.7,\"valueDisplay\":\"276.7\"}},\"primary\":false,\"rank\":\"10\"},{\"activeAvailable\":true,\"activeDetail\":\"Next.js production App Router SSR · next start · MAD 0 req/s · p95 446.65 ms · 265,159-265,710 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"160\",\"activeWidth\":\"11.4%\",\"caseId\":\"next\",\"label\":\"Next.js\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 152 ms\",\"value\":136.0,\"valueDisplay\":\"136\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 3.3 MiB\",\"value\":3450824.0,\"valueDisplay\":\"3.29\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 152 ms\",\"value\":136.0,\"valueDisplay\":\"136\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.23 MiB · p95 48.94 MiB\",\"value\":48893952.0,\"valueDisplay\":\"46.63\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"Next.js production App Router SSR · next start · MAD 0 req/s · p95 446.65 ms · 265,159-265,710 B natural\",\"value\":160.0,\"valueDisplay\":\"160\"}},\"primary\":false,\"rank\":\"11\"},{\"activeAvailable\":true,\"activeDetail\":\"Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0.7 req/s · p95 534.41 ms · 385,532-386,373 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"130\",\"activeWidth\":\"9.2%\",\"caseId\":\"astro\",\"label\":\"Astro + Preact\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 120 ms\",\"value\":116.0,\"valueDisplay\":\"116\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.23 MiB\",\"value\":2335544.0,\"valueDisplay\":\"2.23\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 120 ms\",\"value\":116.0,\"valueDisplay\":\"116\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.37 MiB · p95 46.76 MiB\",\"value\":46096384.0,\"valueDisplay\":\"43.96\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0.7 req/s · p95 534.41 ms · 385,532-386,373 B natural\",\"value\":130.0,\"valueDisplay\":\"130\"}},\"primary\":false,\"rank\":\"12\"},{\"activeAvailable\":true,\"activeDetail\":\"Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 1.8 req/s · p95 1,252.71 ms · 239,964-240,577 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"83.4\",\"activeWidth\":\"5.9%\",\"caseId\":\"nuxt\",\"label\":\"Nuxt\",\"metrics\":{\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 172 ms\",\"value\":120.0,\"valueDisplay\":\"120\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 3.42 MiB\",\"value\":3584764.0,\"valueDisplay\":\"3.42\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 8 ms · p95 172 ms\",\"value\":120.0,\"valueDisplay\":\"120\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.83 MiB · p95 49.75 MiB\",\"value\":49065984.0,\"valueDisplay\":\"46.79\"},\"requestsPerSecond\":{\"available\":true,\"detail\":\"Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 1.8 req/s · p95 1,252.71 ms · 239,964-240,577 B natural\",\"value\":83.4,\"valueDisplay\":\"83.4\"}},\"primary\":false,\"rank\":\"13\"}],\"selectedMetric\":\"requestsPerSecond\",\"selectedMetricDescription\":\"Median dynamic SSR throughput across seven randomized ten-second rounds.\",\"selectedMetricLabel\":\"Single-core RPS\",\"title\":\"Same workload. Choose the metric.\"}"
+  "benchmarksJson": "{\"description\":\"Compare 14 product paths by single-core server throughput or cold-navigation browser cost without collapsing unlike measurements into one score.\",\"hasUnavailable\":false,\"link\":\"/webui/guide/concepts/performance/\",\"methodology\":\"100 todos · 12 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 7 × 10 s randomized rounds · dynamic SSR · natural bytes\",\"metricSummary\":\"React records the highest median, 8.7% ahead of WebUI / FAST V3 / Rust / Actix; the 43.7 req/s gap exceeds their combined 42.9 req/s MAD.\",\"metrics\":[{\"available\":true,\"description\":\"Median dynamic SSR throughput across seven randomized ten-second rounds.\",\"direction\":\"higher\",\"directionLabel\":\"higher is better\",\"id\":\"requestsPerSecond\",\"label\":\"Single-core RPS\",\"methodology\":\"100 todos · 12 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 7 × 10 s randomized rounds · dynamic SSR · natural bytes\",\"selected\":true,\"summary\":\"React records the highest median, 8.7% ahead of WebUI / FAST V3 / Rust / Actix; the 43.7 req/s gap exceeds their combined 42.9 req/s MAD.\",\"unit\":\"req/s\"},{\"available\":true,\"description\":\"First contentful paint from navigation start across seven isolated Chromium runs.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"firstContentfulPaintMs\",\"label\":\"FCP\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"Astro + Preact and Preact have the same median; the measured ordering is tied.\",\"unit\":\"ms\"},{\"available\":true,\"description\":\"Pre-interaction largest contentful paint from navigation start across seven isolated Chromium runs.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"largestContentfulPaintMs\",\"label\":\"LCP\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"Astro + Preact and Preact have the same median; the measured ordering is tied.\",\"unit\":\"ms\"},{\"available\":true,\"description\":\"Post-readiness JavaScript heap used after an explicit Chromium garbage collection.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"jsHeapUsedBytes\",\"label\":\"JS Heap\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Shadow DOM / Rust / Actix records the lowest median, 1.0% below WebUI / Node node:http; the 0.02 MiB gap exceeds their combined 0.02 MiB MAD.\",\"unit\":\"MiB\"},{\"available\":true,\"description\":\"Private bytes attributed to the isolated Chromium renderer process after readiness.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"rendererPrivateBytes\",\"label\":\"Renderer Private MB\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 7 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Node node:http records the lowest median, 0.1% below WebUI / Rust / Actix; the 0.04 MiB gap is within their combined 2.41 MiB MAD, so the measured ordering overlaps run noise.\",\"unit\":\"MiB\"}],\"rows\":[{\"activeAvailable\":true,\"activeDetail\":\"react-dom/server renderToString · node:http · MAD 30.1 req/s · p95 149.38 ms · 288,921-289,608 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"545.5\",\"activeWidth\":\"100.0%\",\"caseId\":\"react\",\"label\":\"React\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToString · node:http · MAD 30.1 req/s · p95 149.38 ms · 288,921-289,608 B natural\",\"value\":545.5,\"valueDisplay\":\"545.5\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 32 ms · p95 196 ms\",\"value\":148,\"valueDisplay\":\"148\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 32 ms · p95 196 ms\",\"value\":148,\"valueDisplay\":\"148\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.5 MiB\",\"value\":2622688,\"valueDisplay\":\"2.5\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.05 MiB · p95 45.14 MiB\",\"value\":44695552,\"valueDisplay\":\"42.63\"}},\"primary\":false,\"rank\":\"1\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler WebUIHandler (Rust, FAST V3) · actix-web · MAD 12.8 req/s · p95 146.88 ms · 467,162-468,473 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"501.8\",\"activeWidth\":\"92.0%\",\"caseId\":\"webui-fast-rust-actix\",\"label\":\"WebUI / FAST V3 / Rust / Actix\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler WebUIHandler (Rust, FAST V3) · actix-web · MAD 12.8 req/s · p95 146.88 ms · 467,162-468,473 B natural\",\"value\":501.8,\"valueDisplay\":\"501.8\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 32 ms · p95 196 ms\",\"value\":152,\"valueDisplay\":\"152\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 32 ms · p95 196 ms\",\"value\":152,\"valueDisplay\":\"152\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 4.57 MiB\",\"value\":4788280,\"valueDisplay\":\"4.57\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.1 MiB · p95 50.03 MiB\",\"value\":49659904,\"valueDisplay\":\"47.36\"}},\"primary\":true,\"rank\":\"2\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler WebUIHandler (Rust) · actix-web · MAD 13.1 req/s · p95 148.04 ms · 332,189-332,894 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"461.9\",\"activeWidth\":\"84.7%\",\"caseId\":\"webui-rust-actix\",\"label\":\"WebUI / Rust / Actix\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler WebUIHandler (Rust) · actix-web · MAD 13.1 req/s · p95 148.04 ms · 332,189-332,894 B natural\",\"value\":461.9,\"valueDisplay\":\"461.9\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 112 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 112 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB\",\"value\":1762020,\"valueDisplay\":\"1.68\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.45 MiB · p95 38 MiB\",\"value\":37019648,\"valueDisplay\":\"35.3\"}},\"primary\":true,\"rank\":\"3\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 5.6 req/s · p95 144.7 ms · 423,078-424,207 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"460.3\",\"activeWidth\":\"84.4%\",\"caseId\":\"webui-shadowdom-rust-actix\",\"label\":\"WebUI / Shadow DOM / Rust / Actix\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler WebUIHandler (Rust, Shadow DOM) · actix-web · MAD 5.6 req/s · p95 144.7 ms · 423,078-424,207 B natural\",\"value\":460.29999999999995,\"valueDisplay\":\"460.3\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 24 ms · p95 196 ms\",\"value\":136,\"valueDisplay\":\"136\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 24 ms · p95 196 ms\",\"value\":136,\"valueDisplay\":\"136\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.01 MiB · p95 1.7 MiB\",\"value\":1737560,\"valueDisplay\":\"1.66\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.36 MiB · p95 41.61 MiB\",\"value\":42086400,\"valueDisplay\":\"40.14\"}},\"primary\":true,\"rank\":\"4\"},{\"activeAvailable\":true,\"activeDetail\":\"preact-render-to-string renderToString · node:http · MAD 90.3 req/s · p95 223.25 ms · 288,848-289,535 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"433.6\",\"activeWidth\":\"79.5%\",\"caseId\":\"preact\",\"label\":\"Preact\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"preact-render-to-string renderToString · node:http · MAD 90.3 req/s · p95 223.25 ms · 288,848-289,535 B natural\",\"value\":433.6,\"valueDisplay\":\"433.6\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 20 ms · p95 192 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 20 ms · p95 192 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2264004,\"valueDisplay\":\"2.16\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.31 MiB · p95 43.86 MiB\",\"value\":44412928,\"valueDisplay\":\"42.36\"}},\"primary\":false,\"rank\":\"5\"},{\"activeAvailable\":true,\"activeDetail\":\"@vue/server-renderer renderToString · node:http · MAD 7 req/s · p95 208.62 ms · 295,841-296,500 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"403.8\",\"activeWidth\":\"74.0%\",\"caseId\":\"vue\",\"label\":\"Vue\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"@vue/server-renderer renderToString · node:http · MAD 7 req/s · p95 208.62 ms · 295,841-296,500 B natural\",\"value\":403.79999999999995,\"valueDisplay\":\"403.8\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 144 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 144 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.37 MiB\",\"value\":2483496,\"valueDisplay\":\"2.37\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.68 MiB · p95 47.02 MiB\",\"value\":44023808,\"valueDisplay\":\"41.98\"}},\"primary\":false,\"rank\":\"6\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 19.9 req/s · p95 190.78 ms · 332,189-332,894 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"384.7\",\"activeWidth\":\"70.5%\",\"caseId\":\"webui-bun-serve\",\"label\":\"WebUI / Bun.serve\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 19.9 req/s · p95 190.78 ms · 332,189-332,894 B natural\",\"value\":384.7,\"valueDisplay\":\"384.7\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 176 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 176 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB\",\"value\":1758168,\"valueDisplay\":\"1.68\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.48 MiB · p95 40.33 MiB\",\"value\":39272448,\"valueDisplay\":\"37.45\"}},\"primary\":true,\"rank\":\"7\"},{\"activeAvailable\":true,\"activeDetail\":\"solid-js/web renderToString · node:http · MAD 30.3 req/s · p95 226.85 ms · 332,104-332,905 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"361.9\",\"activeWidth\":\"66.3%\",\"caseId\":\"solid\",\"label\":\"Solid\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"solid-js/web renderToString · node:http · MAD 30.3 req/s · p95 226.85 ms · 332,104-332,905 B natural\",\"value\":361.9,\"valueDisplay\":\"361.9\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 184 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 184 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 4.35 MiB\",\"value\":4563592,\"valueDisplay\":\"4.35\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 2.46 MiB · p95 51.38 MiB\",\"value\":51294208,\"valueDisplay\":\"48.92\"}},\"primary\":false,\"rank\":\"8\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 5.8 req/s · p95 192.41 ms · 332,189-332,894 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"355.1\",\"activeWidth\":\"65.1%\",\"caseId\":\"webui-node-http\",\"label\":\"WebUI / Node node:http\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 5.8 req/s · p95 192.41 ms · 332,189-332,894 B natural\",\"value\":355.1,\"valueDisplay\":\"355.1\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 236 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 236 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB\",\"value\":1755908,\"valueDisplay\":\"1.67\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.97 MiB · p95 38.68 MiB\",\"value\":36982784,\"valueDisplay\":\"35.27\"}},\"primary\":true,\"rank\":\"9\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.2 req/s · p95 191.87 ms · 332,189-332,894 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"352.5\",\"activeWidth\":\"64.6%\",\"caseId\":\"webui-deno-serve\",\"label\":\"WebUI / Deno.serve\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 3.2 req/s · p95 191.87 ms · 332,189-332,894 B natural\",\"value\":352.5,\"valueDisplay\":\"352.5\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 24 ms · p95 160 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 24 ms · p95 160 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 1.68 MiB\",\"value\":1756568,\"valueDisplay\":\"1.68\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 3.12 MiB · p95 42.73 MiB\",\"value\":39571456,\"valueDisplay\":\"37.74\"}},\"primary\":true,\"rank\":\"10\"},{\"activeAvailable\":true,\"activeDetail\":\"SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 11.2 req/s · p95 277.77 ms · 263,491-264,002 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"261\",\"activeWidth\":\"47.8%\",\"caseId\":\"sveltekit\",\"label\":\"SvelteKit\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"SvelteKit production SSR (@sveltejs/kit) · @sveltejs/adapter-node · MAD 11.2 req/s · p95 277.77 ms · 263,491-264,002 B natural\",\"value\":261,\"valueDisplay\":\"261\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 12 ms · p95 172 ms\",\"value\":120,\"valueDisplay\":\"120\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 12 ms · p95 172 ms\",\"value\":120,\"valueDisplay\":\"120\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 4.59 MiB\",\"value\":4809024,\"valueDisplay\":\"4.59\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.32 MiB · p95 50.64 MiB\",\"value\":49831936,\"valueDisplay\":\"47.52\"}},\"primary\":false,\"rank\":\"11\"},{\"activeAvailable\":true,\"activeDetail\":\"Next.js production App Router SSR · next start · MAD 7.6 req/s · p95 465.11 ms · 265,159-265,710 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"158.8\",\"activeWidth\":\"29.1%\",\"caseId\":\"next\",\"label\":\"Next.js\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"Next.js production App Router SSR · next start · MAD 7.6 req/s · p95 465.11 ms · 265,159-265,710 B natural\",\"value\":158.8,\"valueDisplay\":\"158.8\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 144 ms\",\"value\":140,\"valueDisplay\":\"140\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0 ms · p95 144 ms\",\"value\":140,\"valueDisplay\":\"140\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 3.28 MiB\",\"value\":3442544,\"valueDisplay\":\"3.28\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 1.39 MiB · p95 52.04 MiB\",\"value\":49205248,\"valueDisplay\":\"46.93\"}},\"primary\":false,\"rank\":\"12\"},{\"activeAvailable\":true,\"activeDetail\":\"Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 6.3 req/s · p95 574.72 ms · 385,533-386,373 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"126.8\",\"activeWidth\":\"23.2%\",\"caseId\":\"astro\",\"label\":\"Astro + Preact\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"Astro production SSR + @astrojs/preact island · @astrojs/node standalone · MAD 6.3 req/s · p95 574.72 ms · 385,533-386,373 B natural\",\"value\":126.80000000000001,\"valueDisplay\":\"126.8\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 240 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 4 ms · p95 240 ms\",\"value\":112,\"valueDisplay\":\"112\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 2.25 MiB\",\"value\":2319768,\"valueDisplay\":\"2.21\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 0.82 MiB · p95 49.79 MiB\",\"value\":46157824,\"valueDisplay\":\"44.02\"}},\"primary\":false,\"rank\":\"13\"},{\"activeAvailable\":true,\"activeDetail\":\"Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 3.1 req/s · p95 1,248.18 ms · 239,964-240,577 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"80.9\",\"activeWidth\":\"14.8%\",\"caseId\":\"nuxt\",\"label\":\"Nuxt\",\"metrics\":{\"requestsPerSecond\":{\"available\":true,\"detail\":\"Nuxt production SSR (vue-bundle-renderer) · nitro node-server · MAD 3.1 req/s · p95 1,248.18 ms · 239,964-240,577 B natural\",\"value\":80.9,\"valueDisplay\":\"80.9\"},\"firstContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 12 ms · p95 144 ms\",\"value\":132,\"valueDisplay\":\"132\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 12 ms · p95 144 ms\",\"value\":132,\"valueDisplay\":\"132\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD <0.01 MiB · p95 3.4 MiB\",\"value\":3565160,\"valueDisplay\":\"3.4\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"7 isolated runs · MAD 2.13 MiB · p95 49.2 MiB\",\"value\":47296512,\"valueDisplay\":\"45.11\"}},\"primary\":false,\"rank\":\"14\"}],\"selectedMetric\":\"requestsPerSecond\",\"selectedMetricDescription\":\"Median dynamic SSR throughput across seven randomized ten-second rounds.\",\"selectedMetricLabel\":\"Single-core RPS\",\"title\":\"Same workload. Choose the metric.\"}"
 }
