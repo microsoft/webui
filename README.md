@@ -39,7 +39,7 @@ For Python server-side bindings:
 pip install ./microsoft_webui-<version>-cp311-abi3-<platform>.whl
 ```
 
-`microsoft-webui` is a native PyO3 binding (not `ctypes`) for CPython 3.11+, distributed as prebuilt wheels for Windows, macOS, and manylinux on x86_64 and ARM64, plus one sdist. It is runtime-only: render `webui build` output, but don't compile templates from Python.
+`microsoft-webui` is a native PyO3 binding (not `ctypes`) for CPython 3.11+, distributed as prebuilt x86_64/ARM64 wheels for Windows, macOS, and manylinux, alongside one sdist. It is runtime-only: render `webui build` output, but don't compile templates from Python.
 
 ## Learn
 

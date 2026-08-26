@@ -11,10 +11,9 @@ npm install @microsoft/webui
 ```
 
 The package automatically installs the correct platform-specific native binary
-for your OS and architecture (Windows, macOS, Linux - x64 and arm64). The Node
-API requires that native addon and surfaces loading errors directly. It never
-falls back to a subprocess. Use the `webui` CLI explicitly for filesystem
-builds.
+for Windows, macOS, and Linux on x64 or ARM64. The Node API requires that
+native addon and surfaces loading errors directly. It never falls back to a
+subprocess. Use the `webui` CLI explicitly for filesystem builds.
 
 ## Quick start
 

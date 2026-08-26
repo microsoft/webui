@@ -5380,10 +5380,10 @@ Zig.
 macOS legs require a legally obtained Apple SDK uploaded as the
 `WebUI-MacOSX-SDK.tar.xz` Azure secure file. Its expected digest comes from the
 required `WEBUI_APPLE_SDK_SHA256` pipeline/library variable. The pipeline
-validates the digest, extracts exactly one contained `*.sdk` below
+validates the digest, safely extracts exactly one contained `*.sdk` below
 `Agent.TempDirectory`, sets `SDKROOT` and the target-specific
-`MACOSX_DEPLOYMENT_TARGET` (10.12 for x64, 11.0 for ARM64), and removes the SDK
-after the leg. SDK contents are never cached or published; the digest participates
+`MACOSX_DEPLOYMENT_TARGET` (10.12 for x64 and 11.0 for ARM64), and removes the
+SDK after the leg. SDK contents are never cached or published; the digest participates
 in the macOS Cargo cache key. The pinned Zig archive is also checksum-verified.
 
 Each target leg runs `cargo xtask publish-build`, producing the CLI, FFI library,
