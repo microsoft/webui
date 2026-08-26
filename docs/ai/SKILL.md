@@ -1319,7 +1319,11 @@ a non-empty `name` sets the component tag (else the filename without
 `.template.html` is kept), `<f-repeat>` and `<f-when>` provide repetition and
 conditions, `<f-repeat>` may include `positioning`, and client bindings
 (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may be authored
-directly on the root `<template>`. The verbatim FAST filename
+directly on the root `<template>`. WebUI-owned complex properties such as
+`:items="{{items}}"` populate SSR component scope but are not transferred into
+FAST client state. FAST components must populate their own client properties
+before calling `super.connectedCallback()`; asynchronous initialization delays
+that call until state is ready. The verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
 registering under the authored `name`. In npm packages, the FAST discovery
 plugin uses Custom Elements Manifest declarations and generated sibling

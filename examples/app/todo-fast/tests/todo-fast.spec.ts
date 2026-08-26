@@ -99,6 +99,36 @@ test.describe('SSR rendering', () => {
 
     expect(totalDuration).toBeGreaterThanOrEqual(0);
   });
+
+  test('preserves SSR when component state is ready before FAST hydration', async ({ page }) => {
+    const response = await page.request.get('/');
+    const initialHtml = await response.text();
+    const ssrItemCount = initialHtml
+      .split('<f-template', 1)[0]
+      .match(/<todo-item\b/g)?.length ?? 0;
+
+    await gotoAndWaitForFastHydration(page);
+
+    const state = await page.evaluate(() => {
+      const app = document.querySelector('todo-app') as HTMLElement & {
+        items: Array<{ title: string }>;
+        remainingCount: number;
+      };
+      return {
+        hydratedItemCount: app.shadowRoot?.querySelectorAll('todo-item').length,
+        itemTitles: app.items.map(item => item.title),
+        remainingCount: app.remainingCount,
+      };
+    });
+    expect(state).toEqual({
+      hydratedItemCount: 3,
+      itemTitles: ['Buy groceries', 'Write documentation', 'Ship feature'],
+      remainingCount: 2,
+    });
+    expect(ssrItemCount).toBe(3);
+    expect(initialHtml).not.toContain('data-webui-fast-state');
+    expect(initialHtml).not.toContain(':items="{{items}}"');
+  });
 });
 
 test.describe('interactivity', () => {

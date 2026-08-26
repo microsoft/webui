@@ -195,7 +195,26 @@ unsupported FAST declarative syntax reports `invalid-fast-template`, while
 unclosed markup uses the shared `unclosed-html-tag` diagnostic.
 
 Both plugins produce hydration output compatible with their pinned FAST major
-version.
+version. WebUI-owned complex properties such as `:items="{{items}}"` populate
+component scope during SSR but are not serialized as HTML attributes or copied
+into FAST client state. FAST components must obtain their client state through
+their own store, request, or other application mechanism and assign properties
+used by the retained template before calling `super.connectedCallback()`.
+Components with asynchronous state should delay that call until the state is
+ready. Descendant property bindings then propagate those component-owned values
+during hydration.
+
+```ts
+connectedCallback(): void {
+  this.items = applicationStore.currentItems();
+  super.connectedCallback();
+}
+```
+
+For asynchronous sources, start loading from the component and call
+`super.connectedCallback()` only after the result is assigned and the element
+is still connected. Guard initialization so reconnection does not discard
+interactive state.
 
 ## Writing Custom Plugins
 

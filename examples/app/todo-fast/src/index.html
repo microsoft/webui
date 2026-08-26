@@ -34,7 +34,11 @@
 </head>
 
 <body>
-  <todo-app title="{{title}}"></todo-app>
+  <todo-app
+    title="{{title}}"
+    :items="{{items}}"
+    :remaining-count="{{remainingCount}}"
+  ></todo-app>
 
   <script type="module" src="./index.js"></script>
 </body>

@@ -13,44 +13,30 @@ interface TodoItemData {
 
 export class TodoApp extends FASTElement {
   @attr title = '';
-  @observable items!: TodoItemData[];
-  @observable remainingCount!: number;
+  @observable items: TodoItemData[] = [];
+  @observable remainingCount = 0;
 
   addInput!: HTMLInputElement;
 
   private nextId = 100;
+  private hasInitialState = false;
 
   connectedCallback(): void {
-    this.prepareFromDom();
+    if (!this.hasInitialState) {
+      this.items = [
+        { id: '1', title: 'Buy groceries', state: 'done' },
+        { id: '2', title: 'Write documentation', state: 'pending' },
+        { id: '3', title: 'Ship feature', state: 'pending' },
+      ];
+      this.remainingCount = 2;
+      this.hasInitialState = true;
+    }
     super.connectedCallback();
-    void this.$fastController.isPrerendered.then(() => {
-      this.prepareFromDom();
-    });
-    console.log('TodoApp connected');
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
     console.log('TodoApp disconnected');
-  }
-
-  private prepareFromDom(): void {
-    const root = this.shadowRoot;
-    if (!root) return;
-
-    const items: TodoItemData[] = [];
-    for (const el of root.querySelectorAll('todo-item')) {
-      items.push({
-        id: el.getAttribute('id') || '',
-        title: el.getAttribute('title') || '',
-        state: el.getAttribute('state') || 'pending',
-      });
-    }
-    this.items = items;
-    if (items.length > 0) {
-      this.nextId = Math.max(...items.map(i => Number(i.id) || 0)) + 1;
-    }
-    this.updateCount();
   }
 
   onToggleItem(e: CustomEvent<{id: string}>): void {

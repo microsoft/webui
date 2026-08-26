@@ -1400,7 +1400,9 @@ handler.render(&protocol, &state, &options, &mut writer)?;
   - **Boolean (with `condition_tree`):** Evaluate condition; if truthy, render attribute name only. If false, omit entirely.
   - **Simple dynamic (with `value`):** Resolve signal from state, render as `name="resolved_value"`.
   - **Template (with `template`):** Render `name="`, process referenced sub-stream, render closing `"`.
-  - **Pass-through / property (with `complex: true`):** Same as simple dynamic on the SSR output, but reserved for `:` prefixed direct pass-through/property bindings.
+  - **Pass-through / property (with `complex: true`):** Resolve the value into
+    the child component render scope without serializing it as an authored HTML
+    attribute.
 - **If fragments:**
   - Evaluate condition using `evaluate`
   - If true, process referenced fragment
@@ -2012,6 +2014,7 @@ The `fast_v2` and `fast_v3` parser implementations (selected as `fast-v2` and
 3, respectively, and share one source transform through `component_processing`.
 The legacy `fast` identifier remains a deprecated compatibility alias for
 `fast-v2`.
+
 Only when one of these plugins is selected does the component registry run that
 transform for each component, after reading the authored HTML but before name
 validation, duplicate checking, CSS processing, or insertion. With no plugin,
@@ -2019,6 +2022,14 @@ or with another plugin whose `ComponentProcessing::source_transform` is `None`,
 the registry never scans for or interprets
 `<f-template>` syntax — an `<f-template>`-shaped source passes through
 unchanged, exactly like any other component.
+
+WebUI-owned complex properties such as `:items="{{items}}"` populate component
+scope during SSR and are not serialized as HTML attributes or transferred into
+FAST client state. A FAST component owns its client-side state source and must
+populate properties used by its retained template before calling
+`super.connectedCallback()`. If state is asynchronous, the component delays
+that call until its state is ready. Descendant FAST property bindings then
+propagate the component-owned values during hydration.
 
 The shared FAST transform scans the authored source for an `<f-template>`. A
 source that has one must contain exactly one `<f-template>` with one direct
