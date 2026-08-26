@@ -51,6 +51,49 @@ test.describe('complex-prop: parent array changes propagate to child for-loop', 
     expect(result.shadowsAccessor).toBe(false);
   });
 
+  test(':prop passes the parent object without stringifying it', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      const child = host?.shadowRoot?.querySelector(
+        'test-property-child',
+      ) as any;
+      return {
+        sameObject: child?.prop === host?.passedProperty,
+        prop: child?.prop,
+        rendered: child?.shadowRoot?.querySelector('.property-label')
+          ?.textContent,
+      };
+    });
+
+    expect(result).toEqual({
+      sameObject: true,
+      prop: { label: 'Initial property' },
+      rendered: 'Initial property',
+    });
+  });
+
+  test('setState updates :prop and the child DOM synchronously', async ({ page }) => {
+    const result = await page.evaluate(() => {
+      const host = document.querySelector('#host') as any;
+      host.setState({ passedProperty: { label: 'Updated property' } });
+      const child = host?.shadowRoot?.querySelector(
+        'test-property-child',
+      ) as any;
+      return {
+        sameObject: child?.prop === host?.passedProperty,
+        prop: child?.prop,
+        rendered: child?.shadowRoot?.querySelector('.property-label')
+          ?.textContent,
+      };
+    });
+
+    expect(result).toEqual({
+      sameObject: true,
+      prop: { label: 'Updated property' },
+      rendered: 'Updated property',
+    });
+  });
+
   test('waits for a delayed custom-element accessor before assigning a property', async ({
     page,
   }) => {

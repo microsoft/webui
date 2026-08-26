@@ -1,1 +1,1 @@
-{ "sourceItems": [{ "name": "Alpha" }, { "name": "Beta" }, { "name": "Gamma" }], "delayedItems": [{ "name": "Alpha" }, { "name": "Beta" }, { "name": "Gamma" }], "condData": { "showHeader": true, "label": "Hello" } }
+{ "sourceItems": [{ "name": "Alpha" }, { "name": "Beta" }, { "name": "Gamma" }], "delayedItems": [{ "name": "Alpha" }, { "name": "Beta" }, { "name": "Gamma" }], "condData": { "showHeader": true, "label": "Hello" }, "passedProperty": { "label": "Initial property" } }
