@@ -139,10 +139,6 @@ export class WebUIRouter {
     }
   }
 
-  private clearPendingElements(): void {
-    this.pending?.clearElements();
-  }
-
   private abortPartialRequests(): void {
     for (const controller of this.partialControllers) {
       controller.abort();
@@ -157,11 +153,17 @@ export class WebUIRouter {
     this.partialCleanups.delete(controller);
   }
 
-  private invalidateBoundaryState(): number {
-    this.boundaryGeneration++;
+  private invalidateBoundaryState(expectedGeneration?: number): number | null {
+    if (
+      expectedGeneration !== undefined &&
+      expectedGeneration !== this.boundaryGeneration
+    ) {
+      return null;
+    }
+    const generation = ++this.boundaryGeneration;
     this.clearPendingTimer();
-    this.clearPendingElements();
-    return this.boundaryGeneration;
+    this.pending?.clearElements();
+    return generation === this.boundaryGeneration ? generation : null;
   }
 
   private destroyPending(): void {
@@ -472,123 +474,126 @@ export class WebUIRouter {
       this.actionController = null;
       const thisGen = ++this.navGeneration;
       const boundaryGen = this.invalidateBoundaryState();
-      this.abortPartialRequests();
-      const navCache = this.cacheEnabled ? await this.ensureNavigationCache() : null;
-      if (thisGen !== this.navGeneration) return;
-      navCache?.gc();
+      if (boundaryGen === null) return;
 
-      let partialData: StreamingPartialResponse | null = null;
-      const cached = navCache?.lookup(requestPath) ?? null;
-      if (cached) {
-        partialData = cached;
-      } else {
-        const pendingBoundary = findPendingComponent(this.activeChain, requestPath);
-        if (pendingBoundary) {
-          this.pendingTimer = setTimeout(() => {
-            if (boundaryGen !== this.boundaryGeneration) return;
-            this.pendingTimer = null;
-            void this.pendingState().then((pending) => {
-              if (
-                thisGen === this.navGeneration &&
-                boundaryGen === this.boundaryGeneration
-              ) {
-                pending.mountPending(
-                  pendingBoundary.component,
-                  pendingBoundary.container,
-                  pendingBoundary.keepAlive,
-                );
-              }
-            });
-          }, 150);
-        }
+      try {
+        if (thisGen !== this.navGeneration) return;
+        this.abortPartialRequests();
+        const navCache = this.cacheEnabled ? await this.ensureNavigationCache() : null;
+        if (thisGen !== this.navGeneration) return;
+        navCache?.gc();
 
-        try {
+        let partialData: StreamingPartialResponse | null = null;
+        const cached = navCache?.lookup(requestPath) ?? null;
+        if (cached) {
+          partialData = cached;
+        } else {
+          const pendingBoundary = findPendingComponent(this.activeChain, requestPath);
+          if (pendingBoundary && !pendingBoundary.keepAlive) {
+            this.pendingTimer = setTimeout(() => {
+              if (boundaryGen !== this.boundaryGeneration) return;
+              this.pendingTimer = null;
+              void this.pendingState().then((pending) => {
+                if (
+                  thisGen === this.navGeneration &&
+                  boundaryGen === this.boundaryGeneration
+                ) {
+                  pending.mountPending(
+                    pendingBoundary.component,
+                    pendingBoundary.container,
+                  );
+                }
+              });
+            }, 150);
+          }
+
           partialData =
             await this.takePreparedPartial(requestPath, signal)
             ?? await this.fetchPartial(requestPath, signal);
-        } finally {
-          if (
-            thisGen === this.navGeneration &&
-            boundaryGen === this.boundaryGeneration
-          ) {
-            this.invalidateBoundaryState();
-          }
-        }
 
-        if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
-          const errorBoundary = findErrorComponent(this.activeChain, requestPath);
-          if (errorBoundary) {
-            const errorBoundaryGen = this.boundaryGeneration;
-            const pending = await this.pendingState();
-            if (
-              thisGen !== this.navGeneration ||
-              errorBoundaryGen !== this.boundaryGeneration
-            ) {
+          if (!partialData && !signal?.aborted && thisGen === this.navGeneration) {
+            const errorBoundary = findErrorComponent(this.activeChain, requestPath);
+            if (errorBoundary) {
+              const errorBoundaryGen = this.invalidateBoundaryState(boundaryGen);
+              if (errorBoundaryGen === null) return;
+              const pending = await this.pendingState();
+              if (
+                thisGen !== this.navGeneration ||
+                errorBoundaryGen !== this.boundaryGeneration
+              ) {
+                return;
+              }
+              pending.mountError(
+                errorBoundary.component,
+                {
+                  error: 'Navigation failed',
+                  status: 0,
+                  path: requestPath,
+                },
+                errorBoundary.container,
+              );
               return;
             }
-            pending.mountError(
-              errorBoundary.component,
-              {
-                error: 'Navigation failed',
-                status: 0,
-                path: requestPath,
-              },
-              errorBoundary.container,
-            );
+            console.warn('[Router] Navigation fetch failed for:', requestPath);
             return;
           }
-          console.warn('[Router] Navigation fetch failed for:', requestPath);
-          return;
         }
-      }
 
-      const streaming = partialData?._deferredStream
-        ? await import('./streaming.js')
-        : undefined;
-      if (!partialData || signal?.aborted || thisGen !== this.navGeneration) {
-        if (partialData && streaming) {
-          await streaming.cancelDeferredStream(partialData);
-        }
-        this.preparedPreload?.release(requestPath);
-        return;
-      }
-
-      if (partialData.path) {
-        const requestPathname = requestPath.split('?')[0];
-        if (partialData.path !== requestPathname && partialData.path !== requestPath) {
-          console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
-          await streaming?.cancelDeferredStream(partialData);
+        const streaming = partialData?._deferredStream
+          ? await import('./streaming.js')
+          : undefined;
+        if (!partialData || signal?.aborted || thisGen !== this.navGeneration) {
+          this.invalidateBoundaryState(boundaryGen);
+          if (partialData && streaming) {
+            await streaming.cancelDeferredStream(partialData);
+          }
           this.preparedPreload?.release(requestPath);
           return;
         }
-      }
 
-      if (!cached) {
-        const isStreaming = streaming?.hasDeferredStream(partialData) ?? false;
-        navCache?.store(requestPath, partialData, undefined, isStreaming);
-        this.preparedPreload?.release(requestPath);
-      }
+        if (partialData.path) {
+          const requestPathname = requestPath.split('?')[0];
+          if (partialData.path !== requestPathname && partialData.path !== requestPath) {
+            console.warn(`[Router] Response path mismatch: expected ${requestPathname}, got ${partialData.path}`);
+            this.invalidateBoundaryState(boundaryGen);
+            await streaming?.cancelDeferredStream(partialData);
+            this.preparedPreload?.release(requestPath);
+            return;
+          }
+        }
 
-      let committed = false;
-      try {
-        committed = await this.commitWithData(
-          partialData,
-          requestPath,
-          query,
-          signal,
-          thisGen,
-        );
-      } catch (error) {
-        await streaming?.cancelDeferredStream(partialData);
-        if (!cached) navCache?.evict(requestPath);
-        throw error;
+        if (!cached) {
+          const isStreaming = streaming?.hasDeferredStream(partialData) ?? false;
+          navCache?.store(requestPath, partialData, undefined, isStreaming);
+          this.preparedPreload?.release(requestPath);
+        }
+
+        let committed = false;
+        try {
+          committed = await this.commitWithData(
+            partialData,
+            requestPath,
+            query,
+            thisGen,
+            boundaryGen,
+            signal,
+          );
+        } catch (error) {
+          this.invalidateBoundaryState(boundaryGen);
+          await streaming?.cancelDeferredStream(partialData);
+          if (!cached) navCache?.evict(requestPath);
+          throw error;
+        }
+        if (!committed || signal?.aborted || thisGen !== this.navGeneration) {
+          this.invalidateBoundaryState(boundaryGen);
+          await streaming?.cancelDeferredStream(partialData);
+          if (!cached) navCache?.evict(requestPath);
+          return;
+        }
+        streaming?.startDeferredStream(partialData);
+      } finally {
+        this.invalidateBoundaryState(boundaryGen);
       }
-      if (!committed || signal?.aborted || thisGen !== this.navGeneration) {
-        await streaming?.cancelDeferredStream(partialData);
-        if (!cached) navCache?.evict(requestPath);
-        return;
-      }
-      streaming?.startDeferredStream(partialData);
     }
 
     const leaf = this.activeChain[this.activeChain.length - 1];
@@ -937,8 +942,9 @@ export class WebUIRouter {
     partialData: PartialResponse & { inventory?: string },
     requestPath: string,
     query: Record<string, string>,
+    navigationGeneration: number,
+    boundaryGeneration: number,
     signal?: AbortSignal,
-    generation?: number,
   ): Promise<boolean> {
     const topState = partialData.state ?? null;
     const newChain: RouteChainEntry[] = (partialData.chain ?? []).map(e => ({
@@ -962,7 +968,7 @@ export class WebUIRouter {
     }
 
     // Pre-load component modules
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) {
+    if (signal?.aborted || navigationGeneration !== this.navGeneration) {
       return false;
     }
     const preload = Promise.all(
@@ -979,7 +985,7 @@ export class WebUIRouter {
     } else {
       await preload;
     }
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) {
+    if (signal?.aborted || navigationGeneration !== this.navGeneration) {
       return false;
     }
 
@@ -993,14 +999,23 @@ export class WebUIRouter {
     // Resolve static loader() methods on component constructors (pre-commit).
     // Loader results replace server state for those components.
     const loaderStates = await resolveLoaders(newChain, query, signal);
-    if (signal?.aborted || (generation !== undefined && generation !== this.navGeneration)) {
+    if (signal?.aborted || navigationGeneration !== this.navGeneration) {
       return false;
     }
 
     const changeLevel = findChangeLevel(this.activeChain, newChain);
     const isQueryOnlyChange = changeLevel === newChain.length && newChain.length > 0;
 
+    let committed = false;
     const commitNavigation = (): void => {
+      if (
+        signal?.aborted ||
+        navigationGeneration !== this.navGeneration ||
+        this.invalidateBoundaryState(boundaryGeneration) === null
+      ) {
+        return;
+      }
+
       // Deactivate old chain from leaf up. Preserve route-owned style markers,
       // but tear down component state when the declaration will not be reused.
       for (let i = this.activeChain.length - 1; i >= changeLevel; i--) {
@@ -1082,6 +1097,7 @@ export class WebUIRouter {
         activateRoute(routeEl, entry.params);
       }
       this.activeChain = newChain;
+      committed = true;
     };
 
     if (document.startViewTransition && !isQueryOnlyChange) {
@@ -1090,7 +1106,7 @@ export class WebUIRouter {
     } else {
       commitNavigation();
     }
-    return true;
+    return committed;
   }
 
 }

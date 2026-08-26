@@ -298,7 +298,9 @@ Show a loading component during slow navigations (>150ms):
 <route path="inbox" component="inbox-page" exact pending="mail-skeleton" />
 ```
 
-The `pending` component is validated at build time. Keep-alive and cached routes skip pending.
+The `pending` component is validated at build time. It remains visible through response
+validation, component loading, and route loaders, then is removed atomically with the settled
+route commit before `webui:route:navigated`. Keep-alive and cached routes skip pending setup.
 
 ### Error Boundaries
 

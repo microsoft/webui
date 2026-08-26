@@ -840,6 +840,94 @@ test.describe('pending UI', () => {
     await expect(page.locator('loading-skeleton')).toHaveCount(0);
   });
 
+  test('atomically settles pending UI across consecutive same-component commits', async ({ page }) => {
+    await page.goto('/items/0');
+    await page.waitForFunction(() => {
+      const shell = document.querySelector('route-shell');
+      return shell && (shell as { $ready?: boolean }).$ready === true;
+    });
+    await expect(page.locator('page-detail h2')).toHaveText('Item 0');
+
+    await page.evaluate(() => {
+      type DetailConstructor = CustomElementConstructor & {
+        loader?: (context: {
+          params: Record<string, string>;
+        }) => Promise<Record<string, unknown>>;
+      };
+      type PendingTestWindow = Window & {
+        __pendingCommitSnapshots?: number[];
+        __releaseDetailLoader?: () => void;
+      };
+
+      const runtime = window as PendingTestWindow;
+      const detail = customElements.get('page-detail') as DetailConstructor | undefined;
+      const startViewTransition = document.startViewTransition?.bind(document);
+      if (!detail || !startViewTransition) {
+        throw new Error('pending lifecycle test requires page-detail and View Transitions');
+      }
+
+      runtime.__pendingCommitSnapshots = [];
+      document.startViewTransition = ((update: () => void) =>
+        startViewTransition(() => {
+          update();
+          const root = document.querySelector('route-shell')?.shadowRoot;
+          runtime.__pendingCommitSnapshots?.push(
+            root?.querySelectorAll('[data-webui-pending]').length ?? -1,
+          );
+        })) as typeof document.startViewTransition;
+
+      detail.loader = ({ params }) => new Promise(resolve => {
+        runtime.__releaseDetailLoader = () => {
+          delete runtime.__releaseDetailLoader;
+          resolve({ itemId: params.itemId });
+        };
+      });
+    });
+
+    for (const itemId of ['1', '2']) {
+      const committed = page.evaluate((nextItemId) => {
+        return new Promise<{ heading: string | null; pendingAtEvent: number }>(resolve => {
+          window.addEventListener('webui:route:navigated', () => {
+            const root = document.querySelector('route-shell')?.shadowRoot;
+            const detail = root?.querySelector<HTMLElement>('page-detail');
+            resolve({
+              heading: detail?.shadowRoot?.querySelector('h2')?.textContent ?? null,
+              pendingAtEvent:
+                root?.querySelectorAll('[data-webui-pending]').length ?? -1,
+            });
+          }, { once: true });
+          window.navigation.navigate(`/items/${nextItemId}`);
+        });
+      }, itemId);
+
+      await page.waitForFunction(
+        () => typeof (window as Window & {
+          __releaseDetailLoader?: () => void;
+        }).__releaseDetailLoader === 'function',
+      );
+      await expect(page.locator('[data-webui-pending]')).toBeVisible();
+      await expect(page.locator('page-detail h2')).not.toHaveText(`Item ${itemId}`);
+
+      await page.evaluate(() => {
+        (window as Window & {
+          __releaseDetailLoader?: () => void;
+        }).__releaseDetailLoader?.();
+      });
+
+      expect(await committed).toEqual({
+        heading: `Item ${itemId}`,
+        pendingAtEvent: 0,
+      });
+      await expect(page.locator('[data-webui-pending]')).toHaveCount(0);
+    }
+
+    expect(await page.evaluate(
+      () => (window as Window & {
+        __pendingCommitSnapshots?: number[];
+      }).__pendingCommitSnapshots,
+    )).toEqual([0, 0]);
+  });
+
   test('shows the destination pending boundary after a prior route is active', async ({ page }) => {
     await page.goto('/alpha');
     await page.waitForFunction(() => {

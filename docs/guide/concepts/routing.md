@@ -403,9 +403,9 @@ Show a loading component during slow navigations. The component is validated at 
 
 | Behavior | Description |
 |----------|-------------|
-| **Threshold** | Pending component appears after 150ms - fast navigations never flash |
+| **Threshold** | Pending component appears when pre-commit navigation work exceeds 150ms - fast navigations never flash |
 | **Mount** | Rendered in the parent route's outlet area |
-| **Replace** | Real content replaces the skeleton when the fetch completes |
+| **Commit** | Removed atomically when settled route content commits, before `webui:route:navigated` |
 | **Keep-alive** | Skipped - keep-alive routes activate instantly from the DOM |
 | **Cached** | Skipped - cached navigations have no fetch delay |
 

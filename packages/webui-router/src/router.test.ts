@@ -317,6 +317,24 @@ describe('WebUIRouter', () => {
     });
   });
 
+  describe('boundary UI lifecycle', () => {
+    test('rejects a settle that synchronously starts a newer boundary generation', () => {
+      const router = new WebUIRouter();
+      const priv = router as any;
+      priv.pending = {
+        clearElements() {
+          priv.boundaryGeneration++;
+        },
+        destroy() {},
+      };
+
+      const generation = priv.boundaryGeneration as number;
+      assert.equal(priv.invalidateBoundaryState(generation), null);
+      assert.equal(priv.boundaryGeneration, generation + 2);
+      router.destroy();
+    });
+  });
+
   describe('template execution in fetchPartial', () => {
     test('split template registration stores data and condition closures', () => {
       const origCreateElement = (globalThis as any).document.createElement;
@@ -1088,7 +1106,7 @@ describe('WebUIRouter', () => {
       );
     });
 
-    test('handleNavigation checks signal.aborted after fetch and inside preload loop', () => {
+    test('handleNavigation checks signal.aborted after fetch and during commit', () => {
       // Verify the architectural contract: commitWithData has abort gates
       // after fetchPartial and inside the ensureComponentLoaded loop.
       const router = new WebUIRouter();
@@ -1132,11 +1150,41 @@ describe('WebUIRouter', () => {
       const clearIdx = source.indexOf('this.clearSsrPreloads()');
       const fetchIdx = source.indexOf('fetchPartial');
 
-      assert.ok(clearIdx > -1, 'handleNavigation should clear SSR preload links on SPA navigations');
+      assert.ok(clearIdx > -1, 'handleNavigation should clear SSR preload links');
       assert.ok(fetchIdx > -1, 'handleNavigation should fetch partial data');
       assert.ok(
         clearIdx < fetchIdx,
         'SSR preload links should be cleared before fetching the next partial route',
+      );
+    });
+
+    test('commit atomically settles pending UI before mutating route content', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).commitWithData.toString() as string;
+      const commitIdx = source.indexOf('const commitNavigation');
+      const settleIdx = source.indexOf('this.invalidateBoundaryState', commitIdx);
+      const deactivateIdx = source.indexOf('deactivateRoute', commitIdx);
+
+      assert.ok(commitIdx > -1, 'commitWithData should define a synchronous DOM commit');
+      assert.ok(settleIdx > commitIdx, 'the DOM commit should settle its pending boundary');
+      assert.ok(
+        settleIdx < deactivateIdx,
+        'pending UI must be removed before settled route content is mutated',
+      );
+    });
+
+    test('settles pending UI before awaiting deferred stream cancellation', () => {
+      const router = new WebUIRouter();
+      const source = (router as any).handleNavigation.toString() as string;
+      const mismatchIdx = source.indexOf('Response path mismatch');
+      const settleIdx = source.indexOf('this.invalidateBoundaryState', mismatchIdx);
+      const cancelIdx = source.indexOf('cancelDeferredStream', mismatchIdx);
+
+      assert.ok(mismatchIdx > -1, 'handleNavigation should reject mismatched responses');
+      assert.ok(settleIdx > mismatchIdx, 'mismatch cleanup should settle pending UI');
+      assert.ok(
+        settleIdx < cancelIdx,
+        'pending UI must settle before deferred stream cancellation can block',
       );
     });
   });
@@ -1923,6 +1971,9 @@ describe('WebUIRouter', () => {
       const tag = `missing-client-${Date.now()}`;
 
       try {
+        const navigationGeneration = (router as any).navGeneration as number;
+        const boundaryGeneration =
+          (router as any).invalidateBoundaryState() as number;
         await (router as any).commitWithData(
           {
             state: {},
@@ -1930,10 +1981,13 @@ describe('WebUIRouter', () => {
           },
           '/missing-client',
           {},
+          navigationGeneration,
+          boundaryGeneration,
         );
 
         assert.equal(window.location.href, '/missing-client');
       } finally {
+        router.destroy();
         window.location.href = originalHref;
       }
     });

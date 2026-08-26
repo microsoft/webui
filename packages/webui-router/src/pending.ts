@@ -40,11 +40,7 @@ export class PendingState {
   mountPending(
     componentTag: string,
     container: Element | ShadowRoot,
-    keepAlive: boolean,
   ): void {
-    // Don't show pending for keep-alive routes (they activate instantly)
-    if (keepAlive) return;
-
     if (this.pendingElement?.isConnected) return;
 
     const pending = document.createElement(componentTag);

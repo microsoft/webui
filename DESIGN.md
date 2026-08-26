@@ -364,7 +364,13 @@ the full invalidation graph - developers cannot forget to invalidate related dat
 
 **Pending component:** Declared via `pending="mail-skeleton"` on `<route>`. The compiler validates
 the component exists at build time. During slow navigations (>150ms), the router mounts this
-component as a loading indicator. Skip for keep-alive and cached routes.
+component as a loading indicator. The indicator remains owned by that navigation through response
+validation, component loading, route loaders, and view-transition preparation. A successful
+navigation removes its tracked pending element inside the synchronous DOM commit before settled
+route content is mutated or `webui:route:navigated` is dispatched. Aborted, superseded, failed,
+and destroyed navigations release pending UI through the same generation-checked O(1) ownership
+path, without scanning the document or authored shadow roots. Skip pending setup entirely for
+keep-alive and cached routes.
 
 **Error component:** Declared via `error="error-page"` on `<route>`. The compiler validates
 the component exists at build time. When a navigation fetch fails, the router mounts this
@@ -717,7 +723,7 @@ overlap with the invalidated tags.
 
 **Mutation actions:** Components can declare `static action(ctx: RouteActionContext)` as the write counterpart to `static loader()`. `Router.start({ actions: true })` opts into the action runtime; otherwise the router core does not import form interception code. When enabled, the router intercepts `<form method="post">` submissions, finds the nearest route component's `static action()`, calls it, and auto-invalidates the cache using both the action's returned tags and the route's build-time `invalidates` attribute. The owning chain entry is resolved by route-element identity, not by component tag, so two declarations that reuse one component cannot consume each other's invalidation metadata. Loader results are keyed by the same concrete chain entries. This ensures the compiler-declared invalidation graph is always respected — developers cannot forget.
 
-**Pending UI:** Routes with a `pending` attribute show a loading component during slow navigations (>150ms). The pending component is a normal WebUI component — SSR'd and build-time validated. Keep-alive and cached routes skip pending (no delay to show).
+**Pending UI:** Routes with a `pending` attribute show a loading component during slow navigations (>150ms). The pending component is a normal WebUI component - SSR'd and build-time validated. It remains visible through all pre-commit work and is removed atomically inside the successful DOM commit. Aborted, superseded, failed, and destroyed navigations remove only their generation-owned pending element in O(1). Keep-alive and cached routes skip pending setup entirely.
 
 **Error boundaries:** Routes with an `error` attribute show an error component when the navigation fetch fails. The error component receives `{ error, status, path }` as state and can call `Router.navigate()` to recover.
 
