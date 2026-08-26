@@ -95,6 +95,7 @@ These apply to `packages/webui-router` (the client-side SPA router).
 ```bash
 cargo bench -p microsoft-webui --bench contact_book_bench          # full run
 cargo bench -p microsoft-webui --bench contact_book_bench -- --test # quick validation
+cargo bench -p microsoft-webui --bench server_request_bench         # high-level request helper
 cargo xtask bench all                                               # all Rust crates
 cargo xtask bench node-addon                                        # Node/V8/N-API boundary
 ```

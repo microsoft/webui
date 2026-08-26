@@ -907,6 +907,24 @@ impl<'a> RenderOptions<'a> {
     pub fn with_body_inject(self, html: &'a str) -> Self;
 }
 
+/// One router-aware request handled by the high-level Rust server helper.
+pub struct ServeRequest<'a> { /* private fields */ }
+
+impl<'a> ServeRequest<'a> {
+    pub fn new(
+        render_options: RenderOptions<'a>,
+        accept_json: bool,
+        inventory_hex: &'a str,
+    ) -> Self;
+}
+
+pub fn serve_request(
+    protocol: &Protocol,
+    handler: &WebUIHandler,
+    state: Value,
+    request: &ServeRequest<'_>,
+) -> std::result::Result<ServeResponse, String>;
+
 impl WebUIHandler {
     pub fn new() -> Self;
     pub fn with_plugin(factory: fn() -> Box<dyn HandlerPlugin>) -> Self;
@@ -920,6 +938,13 @@ impl WebUIHandler {
     ) -> Result<()>;
 }
 ```
+
+`ServeRequest` owns the complete borrowed `RenderOptions` value. Full-document
+requests pass that exact value to `WebUIHandler::render`, so the request nonce
+and all other per-render controls cannot diverge from the lower-level handler
+API. JSON partial requests use its entry and request path together with the
+client inventory. Constructing the request performs no heap allocation, and the
+helper never scans or rewrites rendered HTML.
 
 #### Runtime Protocol
 

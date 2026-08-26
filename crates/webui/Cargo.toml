@@ -62,6 +62,10 @@ harness = false
 name = "component_assets_bench"
 harness = false
 
+[[bench]]
+name = "server_request_bench"
+harness = false
+
 [[example]]
 name = "streaming_resource_bench"
 path = "examples/streaming_resource_bench.rs"

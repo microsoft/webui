@@ -1354,6 +1354,17 @@ let handler = WebUIHandler::new();
 handler.render(&protocol, &state, &options, &mut writer)?;
 ```
 
+For one Rust endpoint that serves both initial documents and router partials,
+pass the complete per-response options through `ServeRequest`. Always attach a
+fresh document CSP nonce before calling the helper:
+
+```rust
+let options = RenderOptions::new("index.html", request_path)
+    .with_nonce(csp_nonce);
+let request = ServeRequest::new(options, accepts_json, inventory_header);
+let response = serve_request(&protocol, &handler, state, &request)?;
+```
+
 ```javascript
 const protocol = new Protocol(result.protocol, { plugin: 'webui' });
 const html = protocol.render(state, { entry: 'index.html', requestPath: req.url });

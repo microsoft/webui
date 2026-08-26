@@ -1,6 +1,6 @@
 # `microsoft-webui` benches
 
-Two criterion benches in this directory:
+Four criterion benches in this directory:
 
 * **`contact_book_bench.rs`** — end-to-end render of the
   contact-book-manager template at 10 / 100 / 1 000 contacts. Measures
@@ -12,6 +12,11 @@ Two criterion benches in this directory:
   hook) vs `String + post-injection` (the legacy livereload path the
   streaming module replaces). Includes a separate `ttfb` group that
   measures time-to-first-chunk for the streaming path.
+* **`component_assets_bench.rs`** — static component asset graph
+  generation and chunk rendering.
+* **`server_request_bench.rs`** — high-level router-aware request
+  handling for full documents with and without a CSP nonce, plus JSON
+  partial responses.
 
 Two **examples** (in `crates/webui/examples/`) round out the suite:
 

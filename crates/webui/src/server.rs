@@ -12,15 +12,16 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use webui::server::{serve_request, ServeRequest, ServeResponse};
-//!
-//! let request = ServeRequest {
-//!     path: "/email/thread-5",
-//!     accept_json: false,
-//!     inventory_hex: "",
+//! use webui::{
+//!     server::{serve_request, ServeRequest, ServeResponse},
+//!     RenderOptions,
 //! };
 //!
-//! match serve_request(&protocol, &handler, &state, "index.html", &request) {
+//! let options = RenderOptions::new("index.html", "/email/thread-5")
+//!     .with_nonce("request-csp-nonce");
+//! let request = ServeRequest::new(options, false, "");
+//!
+//! match serve_request(&protocol, &handler, state, &request) {
 //!     Ok(ServeResponse::Html(html)) => { /* serve HTML */ }
 //!     Ok(ServeResponse::Json(json)) => { /* serve JSON */ }
 //!     Err(e) => { /* handle error */ }
@@ -35,14 +36,30 @@ webui_handler::define_string_response_writer!(MemWriter, buf);
 
 /// A server request to be handled by [`serve_request`].
 pub struct ServeRequest<'a> {
-    /// The URL path (e.g., `"/email/thread-5"`, `"/folder/sent"`).
-    pub path: &'a str,
-    /// Whether the client accepts JSON (for partial navigation).
-    /// Check `Accept: application/json` in request headers.
-    pub accept_json: bool,
-    /// The client's current template inventory (hex bitmask).
-    /// Read from `X-WebUI-Inventory` request header. Empty string if not present.
-    pub inventory_hex: &'a str,
+    render_options: RenderOptions<'a>,
+    accept_json: bool,
+    inventory_hex: &'a str,
+}
+
+impl<'a> ServeRequest<'a> {
+    /// Create a server request from the complete per-render configuration.
+    ///
+    /// Set `accept_json` when the request accepts a partial-navigation response.
+    /// `inventory_hex` is the client's `X-WebUI-Inventory` value, or an empty
+    /// string when the header is absent.
+    #[must_use]
+    #[inline]
+    pub fn new(
+        render_options: RenderOptions<'a>,
+        accept_json: bool,
+        inventory_hex: &'a str,
+    ) -> Self {
+        Self {
+            render_options,
+            accept_json,
+            inventory_hex,
+        }
+    }
 }
 
 /// The response from [`serve_request`].
@@ -68,20 +85,30 @@ pub enum ServeResponse {
 /// - `state` — The state JSON to render. For HTML requests, this should be
 ///   the full app state. For JSON requests, the caller should provide
 ///   route-scoped state (only what the target page component needs).
-/// - `request` — The incoming request details
+/// - `request` — The incoming request details and complete [`RenderOptions`]
 ///
 /// # Route Parameters
 /// Route parameters (`:param` in route paths) are automatically extracted
 /// and injected into the state object.
+///
+/// # Content Security Policy
+/// Set the response nonce with [`RenderOptions::with_nonce`]. Full-document
+/// rendering forwards the options unchanged so every generated inline script
+/// and the `webui-nonce` metadata receive the request nonce.
 pub fn serve_request(
     protocol: &Protocol,
     handler: &WebUIHandler,
     state: serde_json::Value,
-    entry: &str,
     request: &ServeRequest<'_>,
 ) -> Result<ServeResponse, String> {
+    let options = &request.render_options;
+
     // Extract route params and inject into state
-    let params = route_handler::collect_nested_route_params(protocol, entry, request.path);
+    let params = route_handler::collect_nested_route_params(
+        protocol,
+        options.entry_id,
+        options.request_path,
+    );
     let mut data = state;
     if let Some(map) = data.as_object_mut() {
         for (k, v) in &params {
@@ -94,16 +121,20 @@ pub fn serve_request(
         let state_json =
             serde_json::to_string(&data).map_err(|e| format!("state serialization failed: {e}"))?;
         let partial = protocol
-            .render_partial(&state_json, entry, request.path, request.inventory_hex)
+            .render_partial(
+                &state_json,
+                options.entry_id,
+                options.request_path,
+                request.inventory_hex,
+            )
             .map_err(|e| format!("render_partial failed: {e}"))?;
         Ok(ServeResponse::Json(partial))
     } else {
         // Full HTML SSR — handler emits the consolidated window.__webui
         // script block (state, chain, inventory, templates) automatically.
         let mut writer = MemWriter::with_capacity(131_072);
-        let opts = RenderOptions::new(entry, request.path);
         handler
-            .render(protocol, &data, &opts, &mut writer)
+            .render(protocol, &data, options, &mut writer)
             .map_err(|e| format!("render failed: {e}"))?;
 
         Ok(ServeResponse::Html(writer.buf))
@@ -115,9 +146,18 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::HashMap;
+    use webui_handler::plugin::webui::WebUIHydrationPlugin;
     use webui_protocol::{
-        ComponentStyleClosure, CssStrategy, FragmentList, WebUIFragment, WebUIProtocol,
+        ComponentData, ComponentStyleClosure, CssStrategy, FragmentList, WebUIFragment,
+        WebUIProtocol,
     };
+
+    fn structural_fragment(value: &str) -> WebUIFragment {
+        let mut signal = String::with_capacity("}}}webui:".len() + value.len());
+        signal.push_str("}}}webui:");
+        signal.push_str(value);
+        WebUIFragment::signal(signal, true)
+    }
 
     fn add_page_style_closures(protocol: &mut WebUIProtocol) {
         let closure = ComponentStyleClosure {
@@ -139,6 +179,74 @@ mod tests {
             }
             ServeResponse::Html(_) => panic!("expected JSON partial response"),
         }
+    }
+
+    fn full_document_protocol() -> Protocol {
+        let fragments = HashMap::from([
+            (
+                "index.html".to_string(),
+                FragmentList {
+                    fragments: vec![
+                        WebUIFragment::raw("<!doctype html><html><head>"),
+                        structural_fragment("head_end"),
+                        WebUIFragment::raw("</head><body>"),
+                        WebUIFragment::component("my-page"),
+                        structural_fragment("body_end"),
+                        WebUIFragment::raw("</body></html>"),
+                    ],
+                    contains_boundary: false,
+                },
+            ),
+            (
+                "my-page".to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw("<main>ready</main>")],
+                    contains_boundary: false,
+                },
+            ),
+        ]);
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.components.insert(
+            "my-page".to_string(),
+            ComponentData {
+                template_json: r#"{"h":"<main>ready</main>","th":1}"#.to_string(),
+                template_functions: "[function(){return true}]".to_string(),
+                ..Default::default()
+            },
+        );
+        Protocol::new(protocol)
+    }
+
+    #[test]
+    fn serve_request_html_forwards_complete_render_options() {
+        let protocol = full_document_protocol();
+        let handler = WebUIHandler::with_plugin(|| Box::new(WebUIHydrationPlugin::new()));
+        let request = ServeRequest::new(
+            RenderOptions::new("index.html", "/")
+                .with_nonce("request-nonce")
+                .with_head_inject("<meta name=\"host-head\">")
+                .with_body_inject("<script src=\"host.js\"></script>"),
+            false,
+            "",
+        );
+
+        let response = serve_request(&protocol, &handler, json!({}), &request)
+            .expect("full-document response should succeed");
+        let html = match response {
+            ServeResponse::Html(html) => html,
+            ServeResponse::Json(_) => panic!("expected full-document response"),
+        };
+
+        let mut direct = MemWriter::with_capacity(131_072);
+        handler
+            .render(&protocol, &json!({}), &request.render_options, &mut direct)
+            .expect("direct render should succeed");
+
+        assert_eq!(html, direct.buf);
+        assert!(html.contains(r#"<meta name="webui-nonce" content="request-nonce">"#));
+        assert!(html.contains(r#"<script nonce="request-nonce">(function(){var w=window.__webui"#));
+        assert!(html.contains(r#"<meta name="host-head">"#));
+        assert!(html.contains(r#"<script src="host.js"></script>"#));
     }
 
     #[test]
@@ -171,13 +279,9 @@ mod tests {
         let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
-        let request = ServeRequest {
-            path: "/",
-            accept_json: true,
-            inventory_hex: "",
-        };
+        let request = ServeRequest::new(RenderOptions::new("index.html", "/"), true, "");
 
-        let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
+        let response = serve_request(&protocol, &handler, json!({}), &request)
             .expect("partial response should succeed");
 
         let json = response_json(response);
@@ -229,13 +333,9 @@ mod tests {
         let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
-        let request = ServeRequest {
-            path: "/",
-            accept_json: true,
-            inventory_hex: "",
-        };
+        let request = ServeRequest::new(RenderOptions::new("index.html", "/"), true, "");
 
-        let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
+        let response = serve_request(&protocol, &handler, json!({}), &request)
             .expect("partial response should succeed");
 
         let json = response_json(response);
@@ -280,13 +380,9 @@ mod tests {
         let protocol = Protocol::new(protocol);
 
         let handler = WebUIHandler::new();
-        let request = ServeRequest {
-            path: "/",
-            accept_json: true,
-            inventory_hex: "",
-        };
+        let request = ServeRequest::new(RenderOptions::new("index.html", "/"), true, "");
 
-        let response = serve_request(&protocol, &handler, json!({}), "index.html", &request)
+        let response = serve_request(&protocol, &handler, json!({}), &request)
             .expect("partial response should succeed");
 
         let json = response_json(response);

@@ -153,6 +153,40 @@ async fn main() {
 </webui-press-tab-panel>
 </webui-press-tabs>
 
+## Router-aware request helper
+
+Use `webui::server::serve_request` when one endpoint serves both initial HTML
+documents and `webui-router` JSON partials. Build the `ServeRequest` with the
+complete `RenderOptions` value for that HTTP response:
+
+```rust
+use webui::{
+    server::{serve_request, ServeRequest, ServeResponse},
+    RenderOptions,
+};
+
+let options = RenderOptions::new("index.html", request_path)
+    .with_nonce(csp_nonce);
+let request = ServeRequest::new(
+    options,
+    accepts_json,
+    inventory_header,
+);
+
+match serve_request(&protocol, &handler, state, &request)? {
+    ServeResponse::Html(html) => send_html(html),
+    ServeResponse::Json(json) => send_json(json),
+}
+```
+
+For a full document, the helper passes the complete options directly to
+`WebUIHandler::render`. The nonce therefore reaches the generated
+`templateFns` bootstrap, every other inline script, and
+`<meta name="webui-nonce">` without scanning or rewriting the rendered HTML.
+Use a fresh nonce for each document response and send the same value in the
+Content Security Policy header. JSON partial responses use the options' entry
+and request path plus the client inventory; they do not emit document scripts.
+
 ## Streaming SSR
 
 `webui::streaming::StreamingWriter` coalesces small writes, sends them over a
@@ -482,6 +516,13 @@ component.
 | `with_nonce(&str)` | builder | CSP nonce reflected onto inline `<script>` tags (including the `<script type="importmap">` tags that register Module-strategy CSS). Empty string normalises to `None`. |
 | `with_head_inject(&str)` | builder | Raw HTML emitted immediately before `</head>` at the parser's structural boundary (see [Streaming SSR](#streaming-ssr)). |
 | `with_body_inject(&str)` | builder | Raw HTML emitted immediately before `</body>`. Same structural-boundary contract. |
+
+### Router-aware server requests
+
+| API | Description |
+|---|---|
+| `ServeRequest::new(render_options, accept_json, inventory_hex)` | Store the complete borrowed render configuration and the client's partial-navigation metadata without a heap allocation |
+| `serve_request(protocol, handler, state, request)` | Inject route parameters, then return either a full `ServeResponse::Html` document rendered with the supplied options or a `ServeResponse::Json` partial |
 
 ### Host-driven streaming
 

@@ -95,6 +95,8 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
 * `crates/webui-state/benches/state_bench.rs`
 * `crates/webui/benches/contact_book_bench.rs` — end-to-end render
 * `crates/webui/benches/streaming_bench.rs` — writer-path wall-clock + TTFB
+* `crates/webui/benches/component_assets_bench.rs` — static asset graph rendering
+* `crates/webui/benches/server_request_bench.rs` — router-aware full HTML and JSON requests
 
 These integrate with criterion's HTML reports
 (`target/criterion/report/index.html`) and native baseline support
