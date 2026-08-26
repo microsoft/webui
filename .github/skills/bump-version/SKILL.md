@@ -52,7 +52,7 @@ Use `v<version>` only when comparing or creating Git tags.
    git --no-pager log --reverse --format='%s%x09%H' "${previous_tag}..HEAD"
    ```
 
-7. Build the PR release notes by grouping all commits into user-facing buckets.
+7. Build the PR release notes by grouping all commits into user-facing buckets and attributing every supporting PR to its contributor.
 8. Commit the version bump with an imperative message:
 
    ```text
@@ -80,13 +80,15 @@ Use these buckets, omitting empty buckets:
 
 Prefer concise, user-facing summaries over raw commit subjects. Combine related commits into one bullet when they describe the same release-note item.
 
-For each bullet, include the supporting PR title and number in parentheses:
+For each bullet, include the supporting PR title, number, and contributor handle in parentheses. Put the contributor immediately after the PR reference:
 
 ```text
-- summary sentence (PR title #number).
+- summary sentence (PR title #number by @contributor).
 ```
 
-Do not include commit SHAs in the PR release notes. If a commit subject already contains a PR number, use it. Otherwise, use `gh` to inspect the commit or associated PR when possible.
+Use the PR author's GitHub login as the contributor, not the commit author or a co-author. When one bullet combines multiple PRs, repeat `#number by @contributor` for each supporting PR.
+
+Do not include commit SHAs in the PR release notes. If a commit subject already contains a PR number, use it, then use `gh` to retrieve the PR title and `author.login`. Otherwise, use `gh` to inspect the commit or associated PR when possible.
 
 ## PR body template
 
@@ -101,19 +103,19 @@ Previous release tag: `<previous_tag>`
 
 Features:
 
-- <feature summary> (<PR title> #<number>).
+- <feature summary> (<PR title> #<number> by @<contributor>).
 
 Fixes:
 
-- <fix summary> (<PR title> #<number>).
+- <fix summary> (<PR title> #<number> by @<contributor>).
 
 Docs:
 
-- <docs summary> (<PR title> #<number>).
+- <docs summary> (<PR title> #<number> by @<contributor>).
 
 Maintenance:
 
-- <maintenance summary> (<PR title> #<number>).
+- <maintenance summary> (<PR title> #<number> by @<contributor>).
 
 ## Validation
 
@@ -127,16 +129,16 @@ Remove empty buckets before opening or updating the PR.
 ```markdown
 Features:
 
-- parser comment policy strips template/style comments while preserving legal comments, with CLI, Node, docs, and benchmark coverage (feat: strip template and style comments in parser and support legal comments #326).
-- CSS module delivery now emits import-map data URI modules and the commerce demo defaults to module styles (Emit style modules via importmap + dataURI instead of <style type="module"> #325, Switch default styles to module for commerce demo #327).
+- parser comment policy strips template/style comments while preserving legal comments, with CLI, Node, docs, and benchmark coverage (feat: strip template and style comments in parser and support legal comments #326 by @mohamedmansour).
+- CSS module delivery now emits import-map data URI modules and the commerce demo defaults to module styles (Emit style modules via importmap + dataURI instead of <style type="module"> #325 by @KurtCattiSchmidt, Switch default styles to module for commerce demo #327 by @KurtCattiSchmidt).
 
 Fixes:
 
-- repeat-scope event arguments hydrate correctly for framework bindings, including strict argument handling (Fix event handler args in repeat scopes #317, fix: hydrate strict event arguments in repeat scopes #322).
-- client binding lifecycle ordering preserves child updates across conditional and repeated DOM paths (fix: initialize child bindings before connection #329).
-- compiled templates preserve raw style text instead of altering author-provided CSS content (fix: preserve raw style text in compiled templates #330).
+- repeat-scope event arguments hydrate correctly for framework bindings, including strict argument handling (Fix event handler args in repeat scopes #317 by @jibin7jose, fix: hydrate strict event arguments in repeat scopes #322 by @mohamedmansour).
+- client binding lifecycle ordering preserves child updates across conditional and repeated DOM paths (fix: initialize child bindings before connection #329 by @mohamedmansour).
+- compiled templates preserve raw style text instead of altering author-provided CSS content (fix: preserve raw style text in compiled templates #330 by @mohamedmansour).
 
 Docs:
 
-- issue forms, contribution/support policy, framework rendering docs, CLI docs, and integration guides were refreshed (chore: clarify contribution and support policy #321, chore: add GitHub issue forms #328, plus docs in fix: hydrate strict event arguments in repeat scopes #322/Emit style modules via importmap + dataURI instead of <style type="module"> #325/feat: strip template and style comments in parser and support legal comments #326/fix: initialize child bindings before connection #329).
+- issue forms, contribution/support policy, framework rendering docs, CLI docs, and integration guides were refreshed (chore: clarify contribution and support policy #321 by @mohamedmansour, chore: add GitHub issue forms #328 by @mohamedmansour, plus docs in fix: hydrate strict event arguments in repeat scopes #322 by @mohamedmansour/Emit style modules via importmap + dataURI instead of <style type="module"> #325 by @KurtCattiSchmidt/feat: strip template and style comments in parser and support legal comments #326 by @mohamedmansour/fix: initialize child bindings before connection #329 by @mohamedmansour).
 ```
