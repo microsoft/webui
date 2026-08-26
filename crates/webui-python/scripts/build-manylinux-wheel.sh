@@ -27,8 +27,7 @@ if [[ "$(uname -m)" != x86_64 ]]; then
   exit 1
 fi
 
-rustup_init="target/rustup-init-${rustup_version}-x86_64-unknown-linux-gnu"
-mkdir -p target
+rustup_init="/tmp/rustup-init-${rustup_version}-x86_64-unknown-linux-gnu"
 trap 'rm -f "$rustup_init"' EXIT
 
 curl --proto "=https" --tlsv1.2 --fail --silent --show-error \
@@ -42,6 +41,9 @@ trap - EXIT
 
 export PATH="$HOME/.cargo/bin:$PATH"
 export RUSTUP_TOOLCHAIN="$rust_toolchain"
+# Do not reuse host objects linked against a newer glibc or leave root-owned
+# Cargo state in the bind-mounted workspace that Azure must archive.
+export CARGO_TARGET_DIR=/tmp/webui-target
 
 rustup toolchain install "$rust_toolchain" --profile minimal --target "$target"
 rustc --version

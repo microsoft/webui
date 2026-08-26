@@ -200,14 +200,17 @@ stages:
           # supplies the pinned old-glibc environment it must run inside.
           docker run --rm --platform linux/amd64 \
             -e SOURCE_DATE_EPOCH \
-            -v "$(pwd)":/io -w /io "$MANYLINUX_CROSS_IMAGE" \
+            -v "$(pwd)":/io \
+            -v "${BUILD_ARTIFACT_STAGING_DIRECTORY}:/out" \
+            -w /io "$MANYLINUX_CROSS_IMAGE" \
             bash crates/webui-python/scripts/build-manylinux-wheel.sh \
-              "$TARGET_TRIPLE" "$WHEEL_OUT"
+              "$TARGET_TRIPLE" "/out/$ARTIFACT_NAME"
       env:
+        ARTIFACT_NAME: $(artifactName)
+        BUILD_ARTIFACT_STAGING_DIRECTORY: $(Build.ArtifactStagingDirectory)
         MANYLINUX_CROSS_IMAGE: $(manylinuxCrossImage)
         SOURCE_DATE_EPOCH: $(sourceDateEpoch)
         TARGET_TRIPLE: $(targetTriple)
-        WHEEL_OUT: $(Build.ArtifactStagingDirectory)/$(artifactName)
     - task: PublishPipelineArtifact@1
       displayName: Upload $(targetTriple) artifact
       inputs:
@@ -270,6 +273,7 @@ stages:
             brew install protobuf
           fi
           rustup toolchain install 1.93 --profile minimal --target "$TARGET_TRIPLE"
+          python3.11 -m pip install --upgrade "maturin==1.14.1"
 
           CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-build \
             --target "$TARGET_TRIPLE" \
@@ -362,6 +366,7 @@ stages:
           }
 
           rustup toolchain install 1.93 --profile minimal --target $env:TARGET_TRIPLE
+          python -m pip install --upgrade "maturin==1.14.1"
 
           $env:CARGO_HOME = $env:CARGO_CACHE_HOME
           cargo +1.93 xtask publish-build `
