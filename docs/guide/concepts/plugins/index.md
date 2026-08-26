@@ -176,17 +176,18 @@ normal binding.
 
 Supported FAST authoring syntax includes:
 
-- `<f-repeat value="{{item in items}}">` for repetition.
+- `<f-repeat value="{{item in items}}">` for repetition. It may include
+  `positioning="true"` when the FAST client template uses positioning data.
 - `<f-when value="{{condition}}">` for conditions, including quoted string
   literals.
 - Text interpolation and boolean bindings.
 - Client bindings `@event`, `:property`, `f-ref`, `f-slotted`, and
   `f-children`, including bindings on the root `<template>`.
 
-Each FAST directive accepts only its required `value` attribute. Unsupported
-`f-*` constructs, additional directive attributes, and stray FAST closing tags
-fail the build. Markup-shaped text inside `<script>` and `<style>` is treated as
-text rather than FAST syntax. Element and attribute names are
+`<f-when>` accepts only `value`; `<f-repeat>` accepts `value` and optional
+`positioning`. Unsupported `f-*` constructs, other directive attributes, and
+stray FAST closing tags fail the build. Markup-shaped text inside `<script>`
+and `<style>` is treated as text rather than FAST syntax. Element and attribute names are
 ASCII-case-insensitive, matching HTML semantics.
 
 Multiple wrappers report `unsupported-multiple-f-templates`; malformed or

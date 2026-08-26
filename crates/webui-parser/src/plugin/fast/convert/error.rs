@@ -65,7 +65,7 @@ impl fmt::Display for ConvertError<'_> {
             ),
             ConvertErrorKind::UnexpectedDirectiveAttribute { tag, attribute } => write!(
                 f,
-                "directive '<{tag}>' does not support the '{attribute}' attribute; only 'value' is allowed"
+                "directive '<{tag}>' does not support the '{attribute}' attribute"
             ),
             ConvertErrorKind::UnsupportedWrapperAttribute { attribute } => write!(
                 f,

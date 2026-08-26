@@ -48,8 +48,12 @@ pub(super) fn converter_error(
         | ConvertErrorKind::InvalidDirectiveValue { .. } => {
             "add the required value=\"{{expression}}\" attribute to the FAST directive"
         }
-        ConvertErrorKind::UnexpectedDirectiveAttribute { .. } => {
-            "FAST directives (<f-when>/<f-repeat>) accept only a value=\"{{expression}}\" attribute; remove the others"
+        ConvertErrorKind::UnexpectedDirectiveAttribute { tag, .. } => {
+            if *tag == "f-repeat" {
+                "<f-repeat> accepts value=\"{{item in items}}\" and optional positioning; remove the other attribute"
+            } else {
+                "<f-when> accepts only value=\"{{condition}}\"; remove the other attribute"
+            }
         }
         ConvertErrorKind::UnsupportedWrapperAttribute { .. } => {
             "the <f-template> wrapper accepts only 'name' and 'shadowroot*' shadow options (e.g. shadowrootmode, shadowrootdelegatesfocus); remove the other attribute"

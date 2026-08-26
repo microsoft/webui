@@ -21,6 +21,9 @@ pub(super) fn parse_directive<'a>(
             }
             continue;
         }
+        if kind == DirectiveKind::Repeat && attr.name.eq_ignore_ascii_case("positioning") {
+            continue;
+        }
         // Report unsupported f-* attributes separately from other extras.
         let error_kind = if has_f_prefix(attr.name) {
             ConvertErrorKind::UnsupportedFAttribute {

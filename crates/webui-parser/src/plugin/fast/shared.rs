@@ -1098,9 +1098,8 @@ mod tests {
 
     #[test]
     fn ordinary_attributes_on_directives_are_rejected() {
-        // A FAST directive accepts only `value`; ordinary attributes such as
-        // `id`, `class`, and `data-*` must not be silently dropped. Covers both
-        // <f-when> and <f-repeat>, and the valid single-`value` counterpart.
+        // Ordinary attributes such as `id`, `class`, and `data-*` must not be
+        // silently dropped from FAST directives.
         for (attr, offending) in [
             (r#"id="x""#, "id"),
             (r#"class="c""#, "class"),
@@ -1140,6 +1139,22 @@ mod tests {
             result.parser_content,
             r#"<template><if condition="visible"><for each="item in items"><span>{{item.label}}</span></for></if></template>"#
         );
+    }
+
+    #[test]
+    fn repeat_positioning_is_retained_for_fast_and_omitted_from_ssr_syntax() {
+        let result = transformed(
+            "position-card",
+            r#"<f-template name="position-card"><template><f-repeat value="{{item in items}}" positioning="true"><span>{{$index}}: {{item.label}}</span></f-repeat></template></f-template>"#,
+        );
+        assert_eq!(
+            result.parser_content,
+            r#"<template><for each="item in items"><span>{{$index}}: {{item.label}}</span></for></template>"#
+        );
+        assert!(result
+            .artifact_content
+            .as_deref()
+            .is_some_and(|artifact| artifact.contains(r#"positioning="true""#)));
     }
 
     #[test]

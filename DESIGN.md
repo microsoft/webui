@@ -2088,10 +2088,12 @@ parser view returned as `TransformedComponentSource::parser_content`:
   `{{expression}}` bindings and `?boolean` bindings remain available to the
   WebUI parser; ordinary attributes are not treated as additional FAST
   declarative syntax.
-- A FAST directive (`<f-when>`/`<f-repeat>`) accepts only its `value`
-  attribute. Any other attribute — a framework `f-*` attribute or an ordinary
-  one such as `id`, `class`, or `data-*` — returns `invalid-fast-template` at
-  that attribute's offset, so it is never silently discarded.
+- `<f-when>` accepts only its `value` attribute. `<f-repeat>` accepts `value`
+  and optional `positioning`, which is retained for the FAST client template
+  and omitted from the WebUI SSR `<for>` view. Any other directive attribute -
+  a framework `f-*` attribute or an ordinary one such as `id`, `class`, or
+  `data-*` - returns `invalid-fast-template` at that attribute's offset, so it
+  is never silently discarded.
 - Unsupported `f-*` elements or attributes and malformed directive expressions
   return structured authoring diagnostics. A stray FAST closing tag — a
   `</f-when>`/`</f-repeat>` with no matching opening directive, or an

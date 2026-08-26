@@ -1317,16 +1317,17 @@ FAST major versions 2 and 3, respectively; `fast` is a deprecated alias for
 `<f-template name="...">` wrapping one direct inner `<template>` is recognized:
 a non-empty `name` sets the component tag (else the filename without
 `.template.html` is kept), `<f-repeat>` and `<f-when>` provide repetition and
-conditions, and client bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may
-be authored directly on the root `<template>`. The verbatim FAST filename
+conditions, `<f-repeat>` may include `positioning`, and client bindings
+(`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may be authored
+directly on the root `<template>`. The verbatim FAST filename
 `<component>.template.html` is discovered even though its stem has no hyphen,
 registering under the authored `name`. In npm packages, the FAST discovery
 plugin uses Custom Elements Manifest declarations and generated sibling
 `<component>.template.html` files; optional styles use
 `<component>.styles.css` or `<component>.css`. Wrapper shadow options include
 `shadowrootmode` and `shadowrootdelegatesfocus`. A leading generated
-`{{styles}}` marker is reserved for CSS injection. A directive takes only
-`value`; unsupported FAST syntax fails the build. Without a FAST plugin,
+`{{styles}}` marker is reserved for CSS injection. `<f-when>` takes only
+`value`; `<f-repeat>` also accepts optional `positioning`. Unsupported FAST syntax fails the build. Without a FAST plugin,
 `<f-template>` markup passes through unchanged. See
 [Plugins](/guide/concepts/plugins/) for the complete public authoring and
 package-layout contract.
