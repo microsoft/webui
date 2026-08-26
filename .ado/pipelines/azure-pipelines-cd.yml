@@ -271,9 +271,6 @@ extends:
               artifactName: standalone_release_assets
               targetPath: $(Build.SourcesDirectory)/publish_artifacts_standalone
           steps:
-          - checkout: self
-            clean: true
-
           - task: GitHubRelease@1
             displayName: Create GitHub Release
             inputs:
@@ -310,9 +307,6 @@ extends:
               artifactName: unsigned_npm_packages
               targetPath: $(Build.SourcesDirectory)/publish_artifacts_npm
           steps:
-          - checkout: self
-            clean: true
-
           # The template skips package types whose artifact directory is absent.
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines
 
@@ -326,8 +320,5 @@ extends:
               artifactName: unsigned_crate_packages
               targetPath: $(Build.SourcesDirectory)/publish_artifacts_crates
           steps:
-          - checkout: self
-            clean: true
-
           # The template skips package types whose artifact directory is absent.
           - template: WebUI.Release.PipelineTemplate.yml@webuiPipelines
