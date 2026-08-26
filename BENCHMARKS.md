@@ -78,20 +78,24 @@ The target list lives in `CRITERION_BENCHES` in `xtask/src/main.rs`. Add new
 ### Updating the homepage benchmark snapshot
 
 The docs homepage consumes only
-`docs/.webui-press/state/benchmark-summary.json`. After a complete official run
-in the benchmark repository, export the validated compact DTO:
+`docs/.webui-press/state/benchmark-summary.json`. From the
+`microsoft/webui-benchmarks` repository root, export the validated compact DTO
+after matching complete official SSR and browser runs:
 
 ```bash
 pnpm run export:summary -- \
   --input results/ssr-todo-<official-name>.json \
-  --output results/benchmark-summary.json
+  --browser-input results/ssr-todo-browser-outcomes-<official-name>.json \
+  --output results/benchmark-summary-combined.json
 ```
 
-The exporter rejects quick, incomplete, or noncanonical matrices. Copy only its
-generated `results/benchmark-summary.json` to
-`docs/.webui-press/state/benchmark-summary.json`. Keep full raw captures and
-machine evidence in `webui-benchmarks` or its CI artifacts; do not copy them
-into the WebUI documentation tree.
+Every `results/` path above belongs to `microsoft/webui-benchmarks`. The
+exporter rejects quick, incomplete, noncanonical, or mismatched captures and
+keeps browser outcomes as separate selectable metrics rather than SSR scoring.
+Copy only its generated `results/benchmark-summary-combined.json` to
+`webui/docs/.webui-press/state/benchmark-summary.json`. Keep full raw captures
+and machine evidence in `webui-benchmarks` or its CI artifacts; do not copy
+them into the WebUI documentation tree.
 
 ### Threshold guidance
 
