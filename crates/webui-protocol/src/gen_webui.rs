@@ -146,6 +146,44 @@ pub struct WebUiProtocol {
     pub component_asset_style_preloads: ::prost::alloc::vec::Vec<
         ComponentAssetStylePreload,
     >,
+    /// Build-time interned state paths. Every dotted path referenced by any
+    /// fragment appears here exactly once, pre-split, so rendering never scans or
+    /// splits a path string. Fragments reference entries by 1-based `path_id`.
+    /// Absent in protocols produced before path interning, which decode to
+    /// `path_id == 0` everywhere and take the string resolution fallback.
+    #[prost(message, optional, tag = "13")]
+    pub path_table: ::core::option::Option<PathTable>,
+}
+/// Build-time interned state paths for a whole protocol.
+///
+/// Only paths that resolve directly against request state are interned. A path
+/// whose first segment can be shadowed by a loop item or a component prop
+/// anywhere in the protocol, or that contains a synthetic `length` segment, is
+/// left out and keeps `path_id` 0, so a zero id is the single test a handler
+/// needs before taking the fast path.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct PathTable {
+    /// Distinct directly-resolvable dotted paths in path-id order. A fragment's
+    /// `path_id` is the 1-based index into this list; 0 means "resolve by name
+    /// through the scope hierarchy".
+    #[prost(message, repeated, tag = "1")]
+    pub paths: ::prost::alloc::vec::Vec<PathEntry>,
+}
+/// One interned dotted path that resolves directly against request state.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct PathEntry {
+    /// The full dotted path exactly as authored, e.g. "user.profile.name".
+    /// Retained verbatim so `webui inspect` and diagnostics stay readable.
+    #[prost(string, tag = "1")]
+    pub path: ::prost::alloc::string::String,
+    /// End offset of each dot-separated segment within `path`, so a handler
+    /// slices segments zero-copy instead of splitting at render time. For
+    /// "a.bb.c" this is \[1, 4, 6\]. A single-segment path has one entry equal to
+    /// the path length.
+    #[prost(uint32, repeated, tag = "2")]
+    pub segment_ends: ::prost::alloc::vec::Vec<u32>,
 }
 /// Compile-time component style resources for one CSS tree.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -359,6 +397,9 @@ pub struct WebUiFragmentSignal {
     /// not own replaceable HTML sibling ranges because comments parse as text.
     #[prost(bool, tag = "3")]
     pub raw_text_context: bool,
+    /// 1-based `PathTable` id for `value`; 0 when scope-dependent.
+    #[prost(uint32, tag = "4")]
+    pub path_id: u32,
 }
 /// Conditional rendering fragment.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -396,6 +437,9 @@ pub struct WebUiFragmentAttribute {
     /// For ?-prefixed boolean attributes, the condition tree.
     #[prost(message, optional, tag = "8")]
     pub condition_tree: ::core::option::Option<ConditionExpr>,
+    /// 1-based `PathTable` id for `value`; 0 when scope-dependent.
+    #[prost(uint32, tag = "9")]
+    pub path_id: u32,
 }
 /// A condition expression tree.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -429,6 +473,13 @@ pub struct Predicate {
     pub operator: i32,
     #[prost(string, tag = "3")]
     pub right: ::prost::alloc::string::String,
+    /// 1-based `PathTable` id for `left`; 0 when scope-dependent.
+    #[prost(uint32, tag = "4")]
+    pub left_path_id: u32,
+    /// 1-based `PathTable` id for `right` when `right` is a state path rather
+    /// than a literal; 0 for literals and when not interned.
+    #[prost(uint32, tag = "5")]
+    pub right_path_id: u32,
 }
 /// Negation wrapper.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -454,6 +505,9 @@ pub struct CompoundCondition {
 pub struct IdentifierCondition {
     #[prost(string, tag = "1")]
     pub value: ::prost::alloc::string::String,
+    /// 1-based `PathTable` id for `value`; 0 when scope-dependent.
+    #[prost(uint32, tag = "2")]
+    pub path_id: u32,
 }
 /// Per-component client work scheduling policy.
 #[derive(serde::Serialize, serde::Deserialize)]

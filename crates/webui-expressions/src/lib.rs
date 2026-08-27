@@ -78,24 +78,35 @@ pub type Result<T> = std::result::Result<T, ExpressionError>;
 /// [`ConditionExpr::validate_structure`], which `webui build` guarantees for
 /// parsed templates.
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
-    evaluate_with_resolver(condition, |path| find_value_by_dotted_path_ref(path, state))
+    evaluate_with_resolver(condition, |path, _| {
+        find_value_by_dotted_path_ref(path, state)
+    })
 }
 
 /// Evaluate a condition expression using a custom resolver for value lookups.
 ///
-/// The `resolver` closure takes a dotted path (e.g., `"contact.name"`) and
-/// returns the resolved value. This allows callers to provide merged views
-/// (e.g., local variables overlaid on global state) without cloning the
-/// entire state tree.
+/// The `resolver` closure receives a dotted path (e.g., `"contact.name"`) and
+/// that path's build-time id, and returns the resolved value. This allows
+/// callers to provide merged views (e.g., local variables overlaid on global
+/// state) without cloning the entire state tree.
+///
+/// The path id is the operand's 1-based index into the protocol's interned
+/// path table, or `0` when the operand was never interned. A caller holding
+/// that table resolves a non-zero id without touching the path string; one
+/// that does not can ignore the id and resolve by path as before.
 pub fn evaluate_with_resolver<'a, F>(condition: &ConditionExpr, resolver: F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
+    F: Fn(&str, u32) -> Option<Cow<'a, Value>>,
 {
     // Leaf conditions dominate real templates; dispatch them directly instead
     // of paying for the continuation stack.
     match &condition.expr {
         Some(condition_expr::Expr::Identifier(identifier)) => {
-            return Ok(resolve_truthiness(&identifier.value, &resolver));
+            return Ok(resolve_truthiness(
+                &identifier.value,
+                identifier.path_id,
+                &resolver,
+            ));
         }
         Some(condition_expr::Expr::Predicate(predicate)) => {
             return evaluate_predicate(predicate, &resolver);
@@ -109,7 +120,7 @@ where
 #[inline(never)]
 fn evaluate_tree<'a, F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
+    F: Fn(&str, u32) -> Option<Cow<'a, Value>>,
 {
     // Structural rules (operator count, no mixed `&&`/`||`) are invariant for a
     // given tree, so they are enforced once by `webui build` via
@@ -128,7 +139,7 @@ enum EvalTask<'a> {
 #[inline(never)]
 fn evaluate_expr<'a, F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
+    F: Fn(&str, u32) -> Option<Cow<'a, Value>>,
 {
     let mut tasks = InlineStack::<_, INLINE_EXPRESSION_STACK>::new(EvalTask::Evaluate(condition));
     let mut result = None;
@@ -162,7 +173,11 @@ where
                     tasks.push(EvalTask::Evaluate(left));
                 }
                 Some(condition_expr::Expr::Identifier(identifier)) => {
-                    result = Some(resolve_truthiness(&identifier.value, resolver));
+                    result = Some(resolve_truthiness(
+                        &identifier.value,
+                        identifier.path_id,
+                        resolver,
+                    ));
                 }
                 None => {
                     return Err(ExpressionError::Evaluation(
@@ -196,11 +211,11 @@ where
 }
 
 #[inline]
-fn resolve_truthiness<'a, F>(path: &str, resolver: &F) -> bool
+fn resolve_truthiness<'a, F>(path: &str, path_id: u32, resolver: &F) -> bool
 where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
+    F: Fn(&str, u32) -> Option<Cow<'a, Value>>,
 {
-    resolver(path).is_some_and(|value| match value.as_ref() {
+    resolver(path, path_id).is_some_and(|value| match value.as_ref() {
         Value::Bool(value) => *value,
         Value::Null => false,
         Value::Number(value) => !(value.as_f64() == Some(0.0)),
@@ -218,17 +233,17 @@ fn missing_evaluation_result_error() -> ExpressionError {
 
 fn evaluate_predicate<'a, F>(predicate: &Predicate, resolver: &F) -> Result<bool>
 where
-    F: Fn(&str) -> Option<Cow<'a, Value>>,
+    F: Fn(&str, u32) -> Option<Cow<'a, Value>>,
 {
-    let left_val = match resolver(&predicate.left) {
+    let left_val = match resolver(&predicate.left, predicate.left_path_id) {
         Some(val) => val,
         None => return Err(ExpressionError::MissingValue(predicate.left.clone())),
     };
 
-    let right = if is_literal(&predicate.right) {
+    let right = if Predicate::is_literal_operand(&predicate.right) {
         PredicateRight::Literal(parse_literal(&predicate.right)?)
     } else {
-        match resolver(&predicate.right) {
+        match resolver(&predicate.right, predicate.right_path_id) {
             Some(value) => PredicateRight::Resolved(value),
             None => return Err(ExpressionError::MissingValue(predicate.right.clone())),
         }
@@ -242,22 +257,6 @@ where
     })?;
 
     compare_values(left_val.as_ref(), &op, &right)
-}
-
-// Check if a string is a literal value
-fn is_literal(s: &str) -> bool {
-    // A string is a literal if:
-    // - It starts with a quote (single or double)
-    // - It's a number (starts with a digit or negative sign followed by a digit)
-    // - It's a boolean ("true" or "false")
-    s.starts_with('"')
-        || s.starts_with('\'')
-        || s.starts_with(|c: char| {
-            c.is_ascii_digit()
-                || (c == '-' && s.len() > 1 && s.chars().nth(1).is_some_and(|c| c.is_ascii_digit()))
-        })
-        || s == "true"
-        || s == "false"
 }
 
 enum PredicateLiteral<'a> {
@@ -646,7 +645,7 @@ mod tests {
         let condition = ConditionExpr::identifier("flag");
         let value = Value::Bool(true);
 
-        let result = evaluate_with_resolver(&condition, |path| {
+        let result = evaluate_with_resolver(&condition, |path, _| {
             if path == "flag" {
                 Some(Cow::Borrowed(&value))
             } else {
@@ -1110,7 +1109,7 @@ mod tests {
         let lookups = std::cell::Cell::new(0usize);
 
         let condition = ConditionExpr::predicate("status", ComparisonOperator::Equal, "'active'");
-        let result = evaluate_with_resolver(&condition, |path| {
+        let result = evaluate_with_resolver(&condition, |path, _| {
             lookups.set(lookups.get() + 1);
             if path == "status" {
                 Some(Cow::Borrowed(&value))

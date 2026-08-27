@@ -444,6 +444,42 @@ impl VisibleLoopScope {
     const EMPTY: Self = Self { start: 0, end: 0 };
 }
 
+/// Read a path that the build step proved resolves directly against request
+/// state, or `None` when it did not intern one.
+///
+/// A non-zero `path_id` means no loop item and no component prop anywhere in
+/// the protocol can bind the path's first segment, so reading state directly is
+/// equivalent to walking the whole scope hierarchy - minus the walk, and minus
+/// splitting the path, whose segment boundaries were computed once at build
+/// time.
+///
+/// Deliberately separate from [`resolve_value_from_sources`] rather than folded
+/// into it: bundling enough arguments to pass both down one function pushes the
+/// scope arguments over the size that fits in registers, which costs every
+/// loop-scoped lookup - the exact paths this can never answer - a stack round
+/// trip.
+#[inline]
+fn interned_value<'state>(
+    entries: &[webui_protocol::PathEntry],
+    path_id: u32,
+    state: &'state Value,
+) -> Option<&'state Value> {
+    // Ids are 1-based; 0 means "resolve by name". `checked_sub` folds both the
+    // absent marker and the index shift into one branch.
+    let entry = entries.get(usize::try_from(path_id.checked_sub(1)?).ok()?)?;
+    let mut current = state;
+    let mut start = 0usize;
+    for &end in &entry.segment_ends {
+        let segment = entry.path.get(start..end as usize)?;
+        match current {
+            Value::Object(map) => current = map.get(segment)?,
+            _ => return None,
+        }
+        start = end as usize + 1;
+    }
+    Some(current)
+}
+
 #[derive(Clone, Copy)]
 struct LocalValueSources<'ctx, 'protocol, 'state> {
     owned: &'ctx HashMap<String, Value>,
@@ -820,6 +856,9 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Deduplicated document-scoped component asset styles for Light DOM.
     pub(crate) component_asset_style_links: &'protocol str,
     pub(crate) state: &'state Value,
+    /// Build-time interned paths for this protocol. Empty for protocols
+    /// produced before path interning, which resolve entirely by string.
+    pub(crate) path_entries: &'protocol [webui_protocol::PathEntry],
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: HashMap<String, Value>,
     /// Component-local values that still point into immutable request state.
@@ -1802,11 +1841,15 @@ fn write_webui_template_json_map(
     writer.write("}")
 }
 
-fn resolve_value_from_sources<'ctx, 'state>(
+/// Resolve a state path for the current scope.
+///
+/// Callers that hold a build-time path id try [`interned_value`] first; this is
+/// the general route for paths a scope can bind.
+fn resolve_value_from_sources<'ctx, 'protocol, 'state>(
     path: &str,
-    loop_vars: &'ctx [LoopBinding<'_, 'state>],
+    loop_vars: &'ctx [LoopBinding<'protocol, 'state>],
     visible_loop_scope: VisibleLoopScope,
-    local_values: LocalValueSources<'ctx, '_, 'state>,
+    local_values: LocalValueSources<'ctx, 'protocol, 'state>,
     state: &'state Value,
 ) -> Option<Cow<'ctx, Value>>
 where
@@ -2918,6 +2961,8 @@ impl WebUIHandler {
         path: &str,
         context: &WebUIProcessContext<'_, '_, '_>,
     ) -> Option<Value> {
+        // This entry point takes an arbitrary path string with no fragment
+        // behind it, so there is no interned id to try.
         resolve_value_from_sources(
             path,
             &context.loop_vars,
@@ -2949,7 +2994,11 @@ impl WebUIHandler {
             borrowed: &context.local_borrowed_vars,
         };
         let state = context.state;
-        match evaluate_with_resolver(condition, |path| {
+        let path_entries = context.path_entries;
+        match evaluate_with_resolver(condition, |path, path_id| {
+            if path_id != 0 {
+                return interned_value(path_entries, path_id, state).map(Cow::Borrowed);
+            }
             resolve_value_from_sources(path, loop_vars, visible_loop_scope, local_values, state)
         }) {
             Ok(result) => Ok(result),
@@ -3456,16 +3505,21 @@ impl WebUIHandler {
             p.on_binding_start(&signal.value, owns_html_range, context.writer)?;
         }
 
-        if let Some(value) = resolve_value_from_sources(
-            &signal.value,
-            &context.loop_vars,
-            context.visible_loop_scope,
-            LocalValueSources {
-                owned: &context.local_vars,
-                borrowed: &context.local_borrowed_vars,
-            },
-            context.state,
-        ) {
+        let resolved = if signal.path_id != 0 {
+            interned_value(context.path_entries, signal.path_id, context.state).map(Cow::Borrowed)
+        } else {
+            resolve_value_from_sources(
+                &signal.value,
+                &context.loop_vars,
+                context.visible_loop_scope,
+                LocalValueSources {
+                    owned: &context.local_vars,
+                    borrowed: &context.local_borrowed_vars,
+                },
+                context.state,
+            )
+        };
+        if let Some(value) = resolved {
             self.write_signal_value(value.as_ref(), signal.raw, context.writer)?;
         }
 
@@ -3658,16 +3712,21 @@ impl WebUIHandler {
                 } else {
                     None
                 };
-                let value = resolve_value_from_sources(
-                    &attr.value,
-                    &context.loop_vars,
-                    context.visible_loop_scope,
-                    LocalValueSources {
-                        owned: &context.local_vars,
-                        borrowed: &context.local_borrowed_vars,
-                    },
-                    context.state,
-                );
+                let value = if attr.path_id != 0 {
+                    interned_value(context.path_entries, attr.path_id, context.state)
+                        .map(Cow::Borrowed)
+                } else {
+                    resolve_value_from_sources(
+                        &attr.value,
+                        &context.loop_vars,
+                        context.visible_loop_scope,
+                        LocalValueSources {
+                            owned: &context.local_vars,
+                            borrowed: &context.local_borrowed_vars,
+                        },
+                        context.state,
+                    )
+                };
                 // Always emit the attribute so FAST hydration markers
                 // (`data-fe`) match the DOM node structure.
                 match value.as_deref() {
@@ -3732,16 +3791,22 @@ impl WebUIHandler {
             match frag.fragment.as_ref() {
                 Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
                 Some(Fragment::Signal(signal)) => {
-                    if let Some(value) = resolve_value_from_sources(
-                        &signal.value,
-                        &context.loop_vars,
-                        context.visible_loop_scope,
-                        LocalValueSources {
-                            owned: &context.local_vars,
-                            borrowed: &context.local_borrowed_vars,
-                        },
-                        context.state,
-                    ) {
+                    let resolved = if signal.path_id != 0 {
+                        interned_value(context.path_entries, signal.path_id, context.state)
+                            .map(Cow::Borrowed)
+                    } else {
+                        resolve_value_from_sources(
+                            &signal.value,
+                            &context.loop_vars,
+                            context.visible_loop_scope,
+                            LocalValueSources {
+                                owned: &context.local_vars,
+                                borrowed: &context.local_borrowed_vars,
+                            },
+                            context.state,
+                        )
+                    };
+                    if let Some(value) = resolved {
                         match value.as_ref() {
                             Value::String(s) => raw_value.push_str(s),
                             _ => raw_value.push_str(&value.to_string()),
@@ -3802,6 +3867,7 @@ impl WebUIHandler {
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,
+            path_entries: document.path_entries(),
             writer,
             local_vars: HashMap::new(),
             local_borrowed_vars: BorrowedScope::default(),

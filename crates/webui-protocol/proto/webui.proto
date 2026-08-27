@@ -111,6 +111,9 @@ message WebUIProtocol {
   CssStrategy css_strategy = 4;
   reserved 5;
   reserved "dom_strategy";
+  // Field 8 held a removed streaming-boundary field. Old protocols may still
+  // carry it with an incompatible type, so it must never be reused.
+  reserved 8;
   // Whether initial SSR metadata contains full state or WebUI component
   // projection. Partial-navigation state remains component-driven.
   InitialStateStrategy initial_state_strategy = 6;
@@ -143,6 +146,38 @@ message WebUIProtocol {
   // Entries are sorted by root tag. Builds without component assets omit the
   // field from the wire.
   repeated ComponentAssetStylePreload component_asset_style_preloads = 12;
+  // Build-time interned state paths. Every dotted path referenced by any
+  // fragment appears here exactly once, pre-split, so rendering never scans or
+  // splits a path string. Fragments reference entries by 1-based `path_id`.
+  // Absent in protocols produced before path interning, which decode to
+  // `path_id == 0` everywhere and take the string resolution fallback.
+  PathTable path_table = 13;
+}
+
+// Build-time interned state paths for a whole protocol.
+//
+// Only paths that resolve directly against request state are interned. A path
+// whose first segment can be shadowed by a loop item or a component prop
+// anywhere in the protocol, or that contains a synthetic `length` segment, is
+// left out and keeps `path_id` 0, so a zero id is the single test a handler
+// needs before taking the fast path.
+message PathTable {
+  // Distinct directly-resolvable dotted paths in path-id order. A fragment's
+  // `path_id` is the 1-based index into this list; 0 means "resolve by name
+  // through the scope hierarchy".
+  repeated PathEntry paths = 1;
+}
+
+// One interned dotted path that resolves directly against request state.
+message PathEntry {
+  // The full dotted path exactly as authored, e.g. "user.profile.name".
+  // Retained verbatim so `webui inspect` and diagnostics stay readable.
+  string path = 1;
+  // End offset of each dot-separated segment within `path`, so a handler
+  // slices segments zero-copy instead of splitting at render time. For
+  // "a.bb.c" this is [1, 4, 6]. A single-segment path has one entry equal to
+  // the path length.
+  repeated uint32 segment_ends = 2;
 }
 
 // Compile-time component style resources for one CSS tree.
@@ -306,6 +341,8 @@ message WebUIFragmentSignal {
   // True inside an HTML raw-text context such as <style>. Raw-text signals do
   // not own replaceable HTML sibling ranges because comments parse as text.
   bool raw_text_context = 3;
+  // 1-based `PathTable` id for `value`; 0 when scope-dependent.
+  uint32 path_id = 4;
 }
 
 // Conditional rendering fragment.
@@ -331,6 +368,8 @@ message WebUIFragmentAttribute {
   bool raw_value = 7;
   // For ?-prefixed boolean attributes, the condition tree.
   ConditionExpr condition_tree = 8;
+  // 1-based `PathTable` id for `value`; 0 when scope-dependent.
+  uint32 path_id = 9;
 }
 
 // A condition expression tree.
@@ -348,6 +387,11 @@ message Predicate {
   string left = 1;
   ComparisonOperator operator = 2;
   string right = 3;
+  // 1-based `PathTable` id for `left`; 0 when scope-dependent.
+  uint32 left_path_id = 4;
+  // 1-based `PathTable` id for `right` when `right` is a state path rather
+  // than a literal; 0 for literals and when not interned.
+  uint32 right_path_id = 5;
 }
 
 // Negation wrapper.
@@ -365,6 +409,8 @@ message CompoundCondition {
 // Single identifier (variable name).
 message IdentifierCondition {
   string value = 1;
+  // 1-based `PathTable` id for `value`; 0 when scope-dependent.
+  uint32 path_id = 2;
 }
 
 enum LogicalOperator {

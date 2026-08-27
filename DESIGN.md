@@ -52,6 +52,9 @@ pub struct WebUIProtocol {
     /// Deterministic Link stylesheet metadata for component asset roots.
     /// Empty when the build does not emit component assets.
     pub component_asset_style_preloads: Vec<ComponentAssetStylePreload>,
+    /// Build-time interned state paths. `None` for protocols built before
+    /// path interning, which resolve every path by name.
+    pub path_table: Option<PathTable>,
 }
 
 pub struct ComponentStyleClosure {
@@ -226,7 +229,65 @@ stack-free.
 The compiler assigns `declaration_id`, records the authoring
 `owner_fragment_id`, and sets `contains_boundary` on every directly or
 transitively boundary-bearing `FragmentList`. Field 8 of `WebUIProtocol` and
-field 5 of `WebUIFragmentBoundary` are reserved and must not be reused.
+field 5 of `WebUIFragmentBoundary` are reserved and must not be reused; the
+`WebUIProtocol` reservation is now declared in `webui.proto` so the compiler
+enforces it.
+
+#### Path Table
+```rust
+pub struct PathTable {
+    /// Distinct directly-resolvable dotted paths, in path-id order.
+    pub paths: Vec<PathEntry>,
+}
+
+pub struct PathEntry {
+    /// The dotted path exactly as authored, e.g. "user.profile.name".
+    pub path: String,
+    /// End offset of each dot-separated segment within `path`. For "a.bb.c"
+    /// this is `[1, 4, 6]`.
+    pub segment_ends: Vec<u32>,
+}
+```
+
+Resolving a dotted path by name costs a `split('.')` scan plus a walk of the
+scope hierarchy on every render. Both are fully determined by the template, so
+`webui-protocol` computes them once while the protocol is assembled.
+
+`path_table::build` runs inside `WebUIProtocol::with_tokens`, so every
+construction path is covered. It visits fragment records in sorted id order,
+which makes the assigned ids - and therefore the emitted bytes - reproducible.
+Each fragment whose path is read per render (`Signal`, `Attribute`, and every
+identifier or predicate operand inside a condition tree) records a 1-based
+`path_id` into the table. A `ForLoop` collection is deliberately excluded: it
+resolves once per loop rather than once per item, so interning it would add
+wire bytes and a table entry for no measurable gain.
+
+A path is interned only when it provably resolves against request state and
+nothing else:
+
+- its first segment is not used as a loop item name or as a component attribute
+  name *anywhere* in the protocol, and
+- no segment is `length`, whose synthetic value short-circuits the remaining
+  segments and yields an owned `Cow`.
+
+Only the first segment can be shadowed, because the only scope writers are loop
+item names and component attribute names. Shadow collection normalises every
+spelling an attribute can take - kebab-case, camelCase, and the `:` complex
+binding prefix - so a prop named `data-title` correctly blocks the path
+`dataTitle`.
+
+Ineligible paths get no entry at all and keep `path_id == 0`. A zero id is
+therefore the single test a handler makes, with no memory traffic, before
+falling back to name resolution.
+
+The two routes are mutually exclusive, never chained: a non-zero `path_id`
+means the build proved no scope can shadow the path, so the scope walk could
+only reach the same state lookup. Trying the interned route and then falling
+back would resolve a genuinely absent value twice.
+
+Path id 0 doubles as the absent sentinel. Proto3 elides zero, so protocols
+produced before interning decode to `path_id == 0` and take the name-resolution
+fallback unchanged.
 
 #### For Loop Fragment
 ```rust

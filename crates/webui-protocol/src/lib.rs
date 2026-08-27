@@ -24,6 +24,8 @@ pub mod projection_manifest;
 /// Attribute-name ↔ property-name mapping for irregular HTML attributes.
 pub mod attrs;
 
+mod path_table;
+
 /// Generated protobuf types from `proto/webui.proto`.
 pub mod proto {
     include!("gen_webui.rs");
@@ -170,6 +172,7 @@ impl WebUiFragment {
                 value: value.into(),
                 raw,
                 raw_text_context: false,
+                path_id: 0,
             })),
         }
     }
@@ -199,6 +202,7 @@ impl WebUiFragment {
                 value: value.into(),
                 raw,
                 raw_text_context: true,
+                path_id: 0,
             })),
         }
     }
@@ -337,12 +341,37 @@ impl WebUiFragment {
     }
 }
 
+impl Predicate {
+    /// Whether a predicate operand is a literal value rather than a state path.
+    ///
+    /// This is the single definition of that distinction. The evaluator uses it
+    /// to decide whether to resolve the right operand against state, and the
+    /// build-time path interner uses it to decide whether the operand is a path
+    /// worth assigning an id. Keeping one implementation keeps those two
+    /// decisions from drifting apart, which would either leak a literal into
+    /// the path table or strip an id from a real path.
+    #[must_use]
+    pub fn is_literal_operand(operand: &str) -> bool {
+        operand.starts_with('"')
+            || operand.starts_with('\'')
+            || operand.starts_with(|c: char| {
+                c.is_ascii_digit()
+                    || (c == '-'
+                        && operand.len() > 1
+                        && operand[1..].starts_with(|c: char| c.is_ascii_digit()))
+            })
+            || operand == "true"
+            || operand == "false"
+    }
+}
+
 impl ConditionExpr {
     /// Create an identifier condition.
     pub fn identifier(value: impl Into<String>) -> Self {
         Self {
             expr: Some(condition_expr::Expr::Identifier(IdentifierCondition {
                 value: value.into(),
+                path_id: 0,
             })),
         }
     }
@@ -358,6 +387,8 @@ impl ConditionExpr {
                 left: left.into(),
                 operator: operator as i32,
                 right: right.into(),
+                left_path_id: 0,
+                right_path_id: 0,
             })),
         }
     }
@@ -784,26 +815,30 @@ impl WebUiProtocol {
         })
     }
 
+    /// Build-time interned state paths, indexed by `path_id - 1`.
+    ///
+    /// Empty for protocols produced before path interning, in which case every
+    /// fragment carries `path_id == 0` and resolution proceeds by string.
+    #[must_use]
+    pub fn path_entries(&self) -> &[PathEntry] {
+        self.path_table
+            .as_ref()
+            .map_or(&[], |table| table.paths.as_slice())
+    }
+
     /// Create a protocol from fragment records with no CSS tokens.
     pub fn new(fragments: WebUIFragmentRecords) -> Self {
-        Self {
-            fragments,
-            tokens: Vec::new(),
-            components: HashMap::new(),
-            css_strategy: 0,
-            initial_state_strategy: InitialStateStrategy::Full as i32,
-            module_preloads: Vec::new(),
-            component_render_css: String::new(),
-            style_closures: HashMap::new(),
-            style_chunks: Vec::new(),
-            component_asset_style_preloads: Vec::new(),
-        }
+        Self::with_tokens(fragments, Vec::new())
     }
 
     /// Create a protocol from fragment records with CSS tokens.
-    pub fn with_tokens(fragments: WebUIFragmentRecords, tokens: Vec<String>) -> Self {
+    pub fn with_tokens(mut fragments: WebUIFragmentRecords, tokens: Vec<String>) -> Self {
+        // Interning runs on every construction path so no caller can forget it
+        // and silently ship a protocol that renders on the slow path.
+        let path_table = path_table::build(&mut fragments);
         Self {
             fragments,
+            path_table: Some(path_table),
             tokens,
             components: HashMap::new(),
             css_strategy: 0,
