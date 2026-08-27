@@ -72,7 +72,12 @@ pub(crate) fn build(records: &mut WebUIFragmentRecords) -> PathTable {
             };
             match fragment {
                 Fragment::Signal(signal) => {
-                    signal.path_id = interner.intern(&signal.value);
+                    // Structural signals are intercepted by the handler before
+                    // any state lookup, so an id here would only add a table
+                    // entry and wire bytes that can never be read.
+                    if !signal.is_structural() {
+                        signal.path_id = interner.intern(&signal.value);
+                    }
                 }
                 Fragment::Attribute(attribute) => {
                     if !attribute.raw_value {
@@ -178,8 +183,10 @@ fn intern_condition(root: &mut ConditionExpr, interner: &mut Interner) {
 /// table entry to discover the path is unusable, so `0` carries that answer
 /// with no memory traffic at all.
 struct Interner {
+    /// Owns every interned path string exactly once.
     ids: HashMap<String, u32>,
-    paths: Vec<PathEntry>,
+    /// Segment boundaries for each interned path, indexed by `id - 1`.
+    segments: Vec<Vec<u32>>,
     /// First segments that a loop item or component prop binds somewhere in
     /// this protocol.
     shadowed: HashSet<String>,
@@ -189,7 +196,7 @@ impl Interner {
     fn new(shadowed: HashSet<String>) -> Self {
         Self {
             ids: HashMap::new(),
-            paths: Vec::new(),
+            segments: Vec::new(),
             shadowed,
         }
     }
@@ -217,20 +224,34 @@ impl Interner {
         }
         // Ids are 1-based so that `0` stays available as the absent marker and
         // stays off the wire under proto3 default-value elision.
-        let id = u32::try_from(self.paths.len() + 1).unwrap_or(0);
+        let id = u32::try_from(self.segments.len() + 1).unwrap_or(0);
         if id == 0 {
             return 0;
         }
-        self.paths.push(PathEntry {
-            path: path.to_owned(),
-            segment_ends,
-        });
+        // The path is allocated once here; `finish` moves that same string
+        // into the emitted entry rather than cloning it.
         self.ids.insert(path.to_owned(), id);
+        self.segments.push(segment_ends);
         id
     }
 
-    fn finish(self) -> PathTable {
-        PathTable { paths: self.paths }
+    fn finish(mut self) -> PathTable {
+        let mut paths: Vec<PathEntry> = self
+            .segments
+            .drain(..)
+            .map(|segment_ends| PathEntry {
+                path: String::new(),
+                segment_ends,
+            })
+            .collect();
+        // Move each owned path out of the index and into its id-ordered slot.
+        for (path, id) in self.ids {
+            let Some(slot) = id.checked_sub(1).and_then(|i| paths.get_mut(i as usize)) else {
+                continue;
+            };
+            slot.path = path;
+        }
+        PathTable { paths }
     }
 }
 
@@ -332,6 +353,41 @@ mod tests {
             &entry.path[ends[0] as usize + 1..ends[1] as usize],
             "profile"
         );
+    }
+
+    #[test]
+    fn structural_signals_are_not_interned() {
+        // Compiler-owned signals are intercepted before any state lookup, so
+        // interning them would only bloat the table and the emitted bytes.
+        let mut recs = records(vec![(
+            "index.html",
+            vec![
+                WebUIFragment::signal("}}}webui:head_start", true),
+                WebUIFragment::signal("}}}webui:shadow_styles:greeting-card", true),
+                WebUIFragment::signal("title", false),
+            ],
+        )]);
+        let table = build(&mut recs);
+
+        assert_eq!(
+            table
+                .paths
+                .iter()
+                .map(|e| e.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["title"],
+            "only the real state path is interned"
+        );
+
+        let fragments = &recs["index.html"].fragments;
+        for (index, fragment) in fragments.iter().enumerate().take(2) {
+            match fragment.fragment.as_ref() {
+                Some(Fragment::Signal(signal)) => {
+                    assert_eq!(signal.path_id, 0, "structural signal {index} kept id 0");
+                }
+                _ => unreachable!("fragment is a signal"),
+            }
+        }
     }
 
     #[test]

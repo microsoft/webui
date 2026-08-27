@@ -154,7 +154,7 @@ impl ConditionParser {
                 for operand in [left, right] {
                     if Self::has_malformed_quotes(operand) {
                         return Err(ParserError::Parse(format!(
-                            "unbalanced quotes in condition operand: '{operand}'"
+                            "unbalanced quotes in condition operand: {operand:?}"
                         )));
                     }
                 }

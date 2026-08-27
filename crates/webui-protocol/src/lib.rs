@@ -341,6 +341,23 @@ impl WebUiFragment {
     }
 }
 
+/// Prefix marking a signal the compiler owns rather than a state path.
+///
+/// These signals carry structural instructions (`head_start`,
+/// `shadow_styles:<component>`, ...) that the handler intercepts before any
+/// state lookup. This is the single definition of that prefix: the handler
+/// uses it to route the signal, and the path interner uses it to skip
+/// assigning an id that could never resolve against state.
+pub const STRUCTURAL_SIGNAL_PREFIX: &str = "}}}webui:";
+
+impl WebUIFragmentSignal {
+    /// Whether this signal is a compiler-owned structural instruction.
+    #[must_use]
+    pub fn is_structural(&self) -> bool {
+        self.raw && self.value.starts_with(STRUCTURAL_SIGNAL_PREFIX)
+    }
+}
+
 impl Predicate {
     /// Whether a predicate operand is a literal value rather than a state path.
     ///

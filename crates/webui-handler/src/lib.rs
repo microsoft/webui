@@ -993,12 +993,12 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
 
 /// Compiler-owned signal namespace. The leading `}}}` cannot be produced by
 /// authored double- or triple-brace expressions because it closes the binding.
-pub(crate) const STRUCTURAL_SIGNAL_PREFIX: &str = "}}}webui:";
+pub(crate) use webui_protocol::STRUCTURAL_SIGNAL_PREFIX;
 
 pub(crate) fn structural_signal_value(
     signal: &webui_protocol::WebUIFragmentSignal,
 ) -> Option<&str> {
-    if !signal.raw {
+    if !signal.is_structural() {
         return None;
     }
     signal.value.strip_prefix(STRUCTURAL_SIGNAL_PREFIX)

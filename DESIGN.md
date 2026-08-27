@@ -268,7 +268,13 @@ nothing else:
 - its first segment is not used as a loop item name or as a component attribute
   name *anywhere* in the protocol, and
 - no segment is `length`, whose synthetic value short-circuits the remaining
-  segments and yields an owned `Cow`.
+  segments and yields an owned `Cow`, and
+- it is not a structural signal. Raw signals prefixed with
+  `STRUCTURAL_SIGNAL_PREFIX` (`}}}webui:`) are compiler-owned instructions such
+  as `head_start` or `shadow_styles:<component>`. The handler routes them before
+  any state lookup, so an id would only add a table entry and wire bytes that
+  can never be read - and `shadow_styles:` and `streaming_root:` signals scale
+  with component count.
 
 Only the first segment can be shadowed, because the only scope writers are loop
 item names and component attribute names. Shadow collection normalises every

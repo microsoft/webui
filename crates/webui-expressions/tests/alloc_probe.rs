@@ -19,12 +19,22 @@ use webui_protocol::{ComparisonOperator, ConditionExpr, LogicalOperator};
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
 
 struct Counting;
+
+// SAFETY: `Counting` adds a relaxed counter increment and otherwise forwards
+// every call unchanged to `System`, so it inherits `System`'s guarantees and
+// introduces no invariants of its own. The inner `unsafe` blocks are kept
+// explicit rather than relying on the edition 2021 rule that an `unsafe fn`
+// body is itself an unsafe block, because that rule is removed in edition 2024.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCS.fetch_add(1, Ordering::Relaxed);
+        // SAFETY: `layout` is forwarded unchanged from the caller, who already
+        // owes `GlobalAlloc::alloc` a non-zero-sized layout.
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: `ptr` came from `Self::alloc`, which delegates to `System`,
+        // and `layout` is the same one used to allocate it.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
