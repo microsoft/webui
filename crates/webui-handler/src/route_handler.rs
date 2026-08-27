@@ -70,6 +70,7 @@ pub struct Protocol {
     component_asset_style_links: String,
     component_index: HashMap<String, u32>,
     style_resource_index: HashMap<String, u32>,
+    style_resources_requiring_escape: HashSet<String>,
     component_reachability: OnceLock<ComponentReachabilityIndex>,
     fragment_ids: Vec<Arc<str>>,
     fragment_slots: HashMap<Arc<str>, u32>,
@@ -132,6 +133,7 @@ impl Protocol {
         };
         let component_index = build_component_index(&protocol);
         let style_resource_index = build_style_resource_index(&protocol);
+        let style_resources_requiring_escape = build_style_escape_resources(&protocol);
         let route_index = CompiledRouteIndex::new(&protocol);
         let mut fragment_ids: Vec<Arc<str>> = protocol
             .fragments
@@ -159,6 +161,7 @@ impl Protocol {
             component_asset_style_links,
             component_index,
             style_resource_index,
+            style_resources_requiring_escape,
             component_reachability: OnceLock::new(),
             fragment_ids,
             fragment_slots,
@@ -209,6 +212,10 @@ impl Protocol {
         } else {
             &self.style_resource_index
         }
+    }
+
+    pub(crate) fn style_resources_requiring_escape(&self) -> &HashSet<String> {
+        &self.style_resources_requiring_escape
     }
 
     pub(crate) fn component_reachability(&self) -> &ComponentReachabilityIndex {
@@ -801,6 +808,25 @@ fn build_style_resource_index(protocol: &WebUIProtocol) -> HashMap<String, u32> 
         index.insert(name.to_string(), position);
     }
     index
+}
+
+fn build_style_escape_resources(protocol: &WebUIProtocol) -> HashSet<String> {
+    if protocol.css_strategy() == CssStrategy::Link {
+        return HashSet::new();
+    }
+
+    let mut resources = HashSet::new();
+    for (name, component) in &protocol.components {
+        if crate::html_encode::style_text_needs_escape(&component.css) {
+            resources.insert(name.clone());
+        }
+    }
+    for chunk in &protocol.style_chunks {
+        if crate::html_encode::style_text_needs_escape(&chunk.css) {
+            resources.insert(chunk.name.clone());
+        }
+    }
+    resources
 }
 
 /// Startup-built direct component dependency graph used by streaming
@@ -3114,6 +3140,43 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use webui_protocol::{FragmentList, WebUIFragment, WebUiFragmentRoute};
+
+    #[test]
+    fn protocol_caches_inline_style_resources_requiring_escape() {
+        let mut protocol = WebUIProtocol::new(HashMap::new());
+        protocol.set_css_strategy(CssStrategy::Style);
+        protocol.components.insert(
+            "safe-card".to_string(),
+            webui_protocol::ComponentData {
+                css: ".safe{color:green}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.components.insert(
+            "unsafe-card".to_string(),
+            webui_protocol::ComponentData {
+                css: ".unsafe{content:'</StYlE>'}".to_string(),
+                ..Default::default()
+            },
+        );
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-safe-card-2".to_string(),
+            css: ".safe{color:green}.other{color:blue}".to_string(),
+            ..Default::default()
+        });
+        protocol.style_chunks.push(webui_protocol::StyleChunk {
+            name: "_chunk-unsafe-card-2".to_string(),
+            css: ".unsafe{content:'</style>'}.other{color:blue}".to_string(),
+            ..Default::default()
+        });
+
+        let prepared = Protocol::new(protocol);
+        let resources = prepared.style_resources_requiring_escape();
+
+        assert_eq!(resources.len(), 2);
+        assert!(resources.contains("unsafe-card"));
+        assert!(resources.contains("_chunk-unsafe-card-2"));
+    }
 
     #[test]
     fn protocol_decodes_once_and_exposes_tokens() {

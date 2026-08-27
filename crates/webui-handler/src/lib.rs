@@ -901,6 +901,11 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) component_index: &'protocol HashMap<String, u32>,
     /// Style-resource ID → request-local dedup bit built with [`Protocol`].
     pub(crate) style_resource_index: &'protocol HashMap<String, u32>,
+    /// Inline style resources whose CSS contains a case-insensitive `</style`.
+    ///
+    /// Computed once when [`Protocol`] loads so repeated component instances can
+    /// write ordinary CSS without rescanning identical bytes on every request.
+    pub(crate) style_resources_requiring_escape: &'protocol HashSet<String>,
     /// Component tag → covering bundle chunk, built once per render.
     ///
     /// Empty (and allocation-free) for unbundled builds. Every style delivery
@@ -2527,7 +2532,11 @@ impl WebUIHandler {
                             "style"
                         })?;
                     context.writer.write("\">")?;
-                    crate::html_encode::write_style_text(context.writer, resource)?;
+                    if context.style_resources_requiring_escape.contains(name) {
+                        crate::html_encode::write_style_text(context.writer, resource)?;
+                    } else {
+                        context.writer.write(resource)?;
+                    }
                     context.writer.write("</style>")?;
                 }
             }
@@ -3714,11 +3723,17 @@ impl WebUIHandler {
                 } else {
                     None
                 };
-                let value = if attr.path_id != 0 {
-                    interned_value(context.protocol.path_entries(), attr.path_id, context.state)
-                        .map(Cow::Borrowed)
-                } else {
-                    resolve_value_from_sources(
+                // Reuse the immutable-state lookup for both HTML output and the
+                // child scope instead of resolving every component attribute twice.
+                // A non-zero `path_id` means the build proved no scope can shadow
+                // this path, so the two lookups stay mutually exclusive.
+                let value = match state_backed_value {
+                    Some(value) => Some(Cow::Borrowed(value)),
+                    None if attr.path_id != 0 => {
+                        interned_value(context.protocol.path_entries(), attr.path_id, context.state)
+                            .map(Cow::Borrowed)
+                    }
+                    None => resolve_value_from_sources(
                         &attr.value,
                         &context.loop_vars,
                         context.visible_loop_scope,
@@ -3727,7 +3742,7 @@ impl WebUIHandler {
                             borrowed: &context.local_borrowed_vars,
                         },
                         context.state,
-                    )
+                    ),
                 };
                 // Always emit the attribute so FAST hydration markers
                 // (`data-fe`) match the DOM node structure.
@@ -3898,6 +3913,7 @@ impl WebUIHandler {
             component_asset_styles_emitted: false,
             component_index: protocol.component_index(),
             style_resource_index: protocol.style_resource_index(),
+            style_resources_requiring_escape: protocol.style_resources_requiring_escape(),
             style_chunk_index: protocol.protocol().style_chunk_index(),
             css_strategy: protocol.css_strategy(),
             body_end_emitted: false,
@@ -4157,6 +4173,68 @@ mod tests {
             .as_deref()
             .and_then(Value::as_str),
             Some("global")
+        );
+    }
+
+    #[test]
+    fn state_backed_resolver_matches_general_borrowed_resolution() {
+        let state = test_json!({
+            "global": {"name": "global"},
+            "inner": {"fallback": "global fallback"},
+            "borrowed": {"name": "borrowed"},
+            "items": [1, 2, 3]
+        });
+        let loop_values = test_json!({
+            "outer": {"name": "outer"},
+            "inner": {"name": "inner"}
+        });
+        let loop_vars = vec![
+            LoopBinding {
+                name: "outer",
+                value: &loop_values["outer"],
+            },
+            LoopBinding {
+                name: "inner",
+                value: &loop_values["inner"],
+            },
+        ];
+        let mut local_borrowed_vars = BorrowedScope::default();
+        local_borrowed_vars.insert("borrowed", &state["borrowed"]);
+        let local_vars = HashMap::from([("owned".to_string(), test_json!({"name": "owned"}))]);
+        let sources = LocalValueSources {
+            owned: &local_vars,
+            borrowed: &local_borrowed_vars,
+        };
+        let scope = VisibleLoopScope { start: 0, end: 2 };
+
+        for path in [
+            "global.name",
+            "inner.name",
+            "inner.fallback",
+            "outer.name",
+            "borrowed.name",
+        ] {
+            let state_backed = resolve_state_backed_value(path, &loop_vars, scope, sources, &state)
+                .unwrap_or_else(|| panic!("{path} should resolve from immutable state"));
+            let resolved = resolve_value_from_sources(path, &loop_vars, scope, sources, &state)
+                .unwrap_or_else(|| panic!("{path} should resolve generally"));
+            let Cow::Borrowed(resolved) = resolved else {
+                panic!("{path} should remain borrowed");
+            };
+            assert!(
+                std::ptr::eq(state_backed, resolved),
+                "{path} resolved from different sources"
+            );
+        }
+
+        assert!(
+            resolve_state_backed_value("owned.name", &loop_vars, scope, sources, &state).is_none(),
+            "owned local values must use the general resolver"
+        );
+        assert!(
+            resolve_state_backed_value("items.length", &loop_vars, scope, sources, &state)
+                .is_none(),
+            "synthetic values must use the general resolver"
         );
     }
 
@@ -5836,7 +5914,7 @@ mod tests {
             },
         );
         let protocol = WebUIProtocol::new(fragments);
-        let state = test_json!({"var": "original"});
+        let state = test_json!({"var": "original<&"});
         let mut writer = TestWriter::new();
         handle(
             &protocol,
@@ -5847,7 +5925,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             writer.get_content(),
-            "<parent var=\"original\">Before: original<child foo var=\"replaced\">Label</child>After: original</parent>"
+            "<parent var=\"original&lt;&amp;\">Before: original&lt;&amp;<child foo var=\"replaced\">Label</child>After: original&lt;&amp;</parent>"
         );
     }
 
