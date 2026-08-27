@@ -856,9 +856,6 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Deduplicated document-scoped component asset styles for Light DOM.
     pub(crate) component_asset_style_links: &'protocol str,
     pub(crate) state: &'state Value,
-    /// Build-time interned paths for this protocol. Empty for protocols
-    /// produced before path interning, which resolve entirely by string.
-    pub(crate) path_entries: &'protocol [webui_protocol::PathEntry],
     pub(crate) writer: &'output mut dyn ResponseWriter,
     pub(crate) local_vars: HashMap<String, Value>,
     /// Component-local values that still point into immutable request state.
@@ -2994,7 +2991,7 @@ impl WebUIHandler {
             borrowed: &context.local_borrowed_vars,
         };
         let state = context.state;
-        let path_entries = context.path_entries;
+        let path_entries = context.protocol.path_entries();
         match evaluate_with_resolver(condition, |path, path_id| {
             if path_id != 0 {
                 return interned_value(path_entries, path_id, state).map(Cow::Borrowed);
@@ -3506,7 +3503,12 @@ impl WebUIHandler {
         }
 
         let resolved = if signal.path_id != 0 {
-            interned_value(context.path_entries, signal.path_id, context.state).map(Cow::Borrowed)
+            interned_value(
+                context.protocol.path_entries(),
+                signal.path_id,
+                context.state,
+            )
+            .map(Cow::Borrowed)
         } else {
             resolve_value_from_sources(
                 &signal.value,
@@ -3713,7 +3715,7 @@ impl WebUIHandler {
                     None
                 };
                 let value = if attr.path_id != 0 {
-                    interned_value(context.path_entries, attr.path_id, context.state)
+                    interned_value(context.protocol.path_entries(), attr.path_id, context.state)
                         .map(Cow::Borrowed)
                 } else {
                     resolve_value_from_sources(
@@ -3792,8 +3794,12 @@ impl WebUIHandler {
                 Some(Fragment::Raw(raw)) => raw_value.push_str(&raw.value),
                 Some(Fragment::Signal(signal)) => {
                     let resolved = if signal.path_id != 0 {
-                        interned_value(context.path_entries, signal.path_id, context.state)
-                            .map(Cow::Borrowed)
+                        interned_value(
+                            context.protocol.path_entries(),
+                            signal.path_id,
+                            context.state,
+                        )
+                        .map(Cow::Borrowed)
                     } else {
                         resolve_value_from_sources(
                             &signal.value,
@@ -3867,7 +3873,6 @@ impl WebUIHandler {
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,
-            path_entries: document.path_entries(),
             writer,
             local_vars: HashMap::new(),
             local_borrowed_vars: BorrowedScope::default(),

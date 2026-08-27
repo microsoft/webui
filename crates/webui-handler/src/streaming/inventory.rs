@@ -408,7 +408,6 @@ mod tests {
             component_asset_style_manifest: protocol.component_asset_style_manifest()?,
             component_asset_style_links: protocol.component_asset_style_links(),
             state: &state,
-            path_entries: protocol.protocol().path_entries(),
             writer: &mut writer,
             local_vars: HashMap::new(),
             local_borrowed_vars: crate::BorrowedScope::default(),

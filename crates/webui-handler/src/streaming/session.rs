@@ -537,7 +537,6 @@ impl SessionCore {
             component_asset_style_manifest,
             component_asset_style_links: protocol.component_asset_style_links(),
             state,
-            path_entries: protocol.protocol().path_entries(),
             writer,
             local_vars: std::mem::take(&mut self.local_vars),
             local_borrowed_vars: super::super::BorrowedScope::default(),
