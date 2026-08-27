@@ -475,7 +475,10 @@ test.describe('css link fixture', () => {
       const child = (host.shadowRoot ?? host).querySelector(
         'test-link-child',
       ) as HTMLElement | null;
+      const computed = child ? getComputedStyle(child) : null;
       return {
+        computedTransition: computed?.transitionProperty ?? null,
+        computedVisibility: computed?.visibility ?? null,
         duration: child?.style.getPropertyValue('transition-duration') ?? null,
         priority:
           child?.style.getPropertyPriority('transition-property') ?? null,
@@ -486,6 +489,8 @@ test.describe('css link fixture', () => {
           child?.style.getPropertyPriority('visibility') ?? null,
       };
     })).toEqual({
+      computedTransition: 'visibility',
+      computedVisibility: 'visible',
       duration: '10s',
       priority: 'important',
       transition: 'visibility',
