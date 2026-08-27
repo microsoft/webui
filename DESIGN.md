@@ -853,28 +853,57 @@ Existing JSON values are returned as `Cow::Borrowed` so handler and expression h
 ### Core Function
 ```rust
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool, ExpressionError>
+
+/// Structural rules, enforced once at build time rather than per render.
+pub fn validate(condition: &ConditionExpr) -> Result<(), ExpressionError>
 ```
 ### Evaluation Requirements
-- **No recursion:** All evaluation must be iterative
+- **No recursion:** All evaluation must be iterative. Compound, negation, and
+  validation traversals use an explicit continuation stack with a fixed-size
+  inline region that spills to a heap vector only for unusually deep trees.
 - **No parentheses:** Expression grouping is handled by the ConditionExpr structure
 - **Logical operators:** Support for && (AND) and || (OR) only
 - **Comparison operators:** Support for >, <, ==, !=, >=, <= only
 - **Negation:** Support for ! operator
 - **Missing identifiers:** Treat a missing identifier as a falsy operand before
   applying negation or logical operators
+- **No allocation on the valid path:** Evaluating a well-formed condition
+  performs no heap allocation. Comparison operands are borrowed from the
+  protocol buffers rather than materialised as owned strings.
+- **Never abort on malformed input:** A malformed operand that survives to
+  render time returns `TypeError`. Panicking is not acceptable because the
+  release profile sets `panic = "abort"`.
+- **Error handling:**  Clear, actionable error messages for invalid expressions
+
+### Structural Validation (build time)
+Two rules depend only on the shape of the expression tree, never on the state it
+is evaluated against, so they are invariant across renders:
+
 - **No mixed operators:**  Cannot mix AND and OR in the same expression level
 - **Operator limit:**  Maximum of 5 logical operators per expression
-- **Error handling:**  Clear, actionable error messages for invalid expressions
+  (`webui_protocol::MAX_LOGICAL_OPERATORS`)
+
+`ConditionExpr::validate_structure` lives in `webui-protocol` beside the type it
+constrains, and is enforced by `ConditionParser::parse` during `webui build`.
+Violations are reported as build diagnostics rather than per-request errors, and
+the render path does not re-derive them. Callers that construct a
+`ConditionExpr` programmatically instead of through the parser should call
+`ConditionExpr::validate_structure` themselves.
 
 ### Error Types
 ```rust
-pub enum ExpressionError {
+// webui-protocol: structural violations, surfaced at build time.
+pub enum ConditionStructureError {
     MixedOperators,
     TooManyOperators(usize),
-    ValueNotFound(String),
-    TypeMismatch { expected: String, found: String },
-    InvalidComparison(String),
-    // Other error types...
+}
+
+// webui-expressions: evaluation outcomes, surfaced at render time.
+// Structural violations are not repeated here: they cannot survive a build.
+pub enum ExpressionError {
+    Evaluation(String),
+    MissingValue(String),
+    TypeError(String),
 }
 ```
 

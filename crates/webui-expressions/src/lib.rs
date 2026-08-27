@@ -10,10 +10,49 @@ use std::borrow::Cow;
 use serde_json::Value;
 use thiserror::Error;
 use webui_protocol::{
-    condition_expr, ComparisonOperator, CompoundCondition, ConditionExpr, LogicalOperator,
-    Predicate,
+    condition_expr, ComparisonOperator, ConditionExpr, LogicalOperator, Predicate,
 };
 use webui_state::find_value_by_dotted_path_ref;
+
+const INLINE_EXPRESSION_STACK: usize = 16;
+
+struct InlineStack<T: Copy, const N: usize> {
+    inline: [Option<T>; N],
+    inline_len: usize,
+    overflow: Vec<T>,
+}
+
+impl<T: Copy, const N: usize> InlineStack<T, N> {
+    #[inline]
+    fn new(value: T) -> Self {
+        let mut inline = [None; N];
+        inline[0] = Some(value);
+        Self {
+            inline,
+            inline_len: 1,
+            overflow: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, value: T) {
+        if self.inline_len < N && self.overflow.is_empty() {
+            self.inline[self.inline_len] = Some(value);
+            self.inline_len += 1;
+        } else {
+            self.overflow.push(value);
+        }
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<T> {
+        if let Some(value) = self.overflow.pop() {
+            return Some(value);
+        }
+        self.inline_len = self.inline_len.checked_sub(1)?;
+        self.inline[self.inline_len].take()
+    }
+}
 
 /// Error types for expression evaluation.
 #[derive(Debug, Error)]
@@ -26,15 +65,6 @@ pub enum ExpressionError {
 
     #[error("Type error: {0}")]
     TypeError(String),
-
-    #[error("Mixed logical operators: Cannot mix AND and OR operators")]
-    MixedOperators,
-
-    #[error("Too many logical operators: Maximum of 5 allowed, found {0}")]
-    TooManyOperators(usize),
-
-    #[error("Value comparison error: {0}")]
-    Comparison(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExpressionError>;
@@ -43,6 +73,10 @@ pub type Result<T> = std::result::Result<T, ExpressionError>;
 ///
 /// Missing identifier paths are falsy operands. Missing values used by
 /// comparison predicates remain evaluation errors.
+///
+/// Assumes the expression already passed
+/// [`ConditionExpr::validate_structure`], which `webui build` guarantees for
+/// parsed templates.
 pub fn evaluate(condition: &ConditionExpr, state: &Value) -> Result<bool> {
     evaluate_with_resolver(condition, |path| find_value_by_dotted_path_ref(path, state))
 }
@@ -57,140 +91,129 @@ pub fn evaluate_with_resolver<'a, F>(condition: &ConditionExpr, resolver: F) -> 
 where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
-    // Single-term conditions carry no logical operators, so the traversal in
-    // `count_logical_operators` (and the allocation backing its stack) is pure
-    // overhead for the most common template conditions.
-    if matches!(
-        condition.expr,
-        Some(condition_expr::Expr::Identifier(_)) | Some(condition_expr::Expr::Predicate(_))
-    ) {
-        return evaluate_expr(condition, &resolver);
-    }
-
-    let (logical_op_count, has_mixed_ops) = count_logical_operators(condition);
-
-    if logical_op_count > 5 {
-        return Err(ExpressionError::TooManyOperators(logical_op_count));
-    }
-
-    if has_mixed_ops {
-        return Err(ExpressionError::MixedOperators);
-    }
-
-    evaluate_expr(condition, &resolver)
-}
-
-// Helper function to count logical operators and check if they're mixed
-fn count_logical_operators(condition: &ConditionExpr) -> (usize, bool) {
-    let mut count = 0;
-    let mut last_op: Option<i32> = None;
-    let mut has_mixed = false;
-
-    // We need to use a stack to avoid recursion
-    let mut stack = vec![condition];
-
-    while let Some(expr) = stack.pop() {
-        match &expr.expr {
-            Some(condition_expr::Expr::Compound(compound)) => {
-                count += 1;
-
-                // Check if we're mixing operators
-                if let Some(last) = last_op {
-                    if last != compound.op {
-                        has_mixed = true;
-                    }
-                } else {
-                    last_op = Some(compound.op);
-                }
-
-                // Push sub-expressions to stack
-                if let Some(right) = compound.right.as_ref() {
-                    stack.push(right);
-                }
-                if let Some(left) = compound.left.as_ref() {
-                    stack.push(left);
-                }
-            }
-            Some(condition_expr::Expr::Not(not_cond)) => {
-                if let Some(inner) = not_cond.condition.as_ref() {
-                    stack.push(inner);
-                }
-            }
-            _ => {} // Predicates and identifiers don't have logical operators
+    // Leaf conditions dominate real templates; dispatch them directly instead
+    // of paying for the continuation stack.
+    match &condition.expr {
+        Some(condition_expr::Expr::Identifier(identifier)) => {
+            return Ok(resolve_truthiness(&identifier.value, &resolver));
         }
+        Some(condition_expr::Expr::Predicate(predicate)) => {
+            return evaluate_predicate(predicate, &resolver);
+        }
+        _ => {}
     }
 
-    (count, has_mixed)
+    evaluate_tree(condition, &resolver)
 }
 
-// Iterative evaluation of expressions using a resolver closure
+#[inline(never)]
+fn evaluate_tree<'a, F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
+where
+    F: Fn(&str) -> Option<Cow<'a, Value>>,
+{
+    // Structural rules (operator count, no mixed `&&`/`||`) are invariant for a
+    // given tree, so they are enforced once by `webui build` via
+    // `ConditionExpr::validate_structure` rather than re-derived per render.
+    evaluate_expr(condition, resolver)
+}
+
+#[derive(Clone, Copy)]
+enum EvalTask<'a> {
+    Evaluate(&'a ConditionExpr),
+    Negate,
+    ApplyCompound { op: i32, right: &'a ConditionExpr },
+}
+
+// Iterative evaluation of expressions using a resolver closure.
+#[inline(never)]
 fn evaluate_expr<'a, F>(condition: &ConditionExpr, resolver: &F) -> Result<bool>
 where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
-    match &condition.expr {
-        Some(condition_expr::Expr::Predicate(pred)) => evaluate_predicate(pred, resolver),
-        Some(condition_expr::Expr::Not(not_cond)) => {
-            let inner = not_cond.condition.as_ref().ok_or_else(|| {
-                ExpressionError::Evaluation("Not condition missing inner expression".to_string())
-            })?;
-            let result = evaluate_expr(inner, resolver)?;
-            Ok(!result)
-        }
-        Some(condition_expr::Expr::Compound(compound)) => evaluate_compound(compound, resolver),
-        Some(condition_expr::Expr::Identifier(id)) => {
-            if let Some(val) = resolver(&id.value) {
-                match val.as_ref() {
-                    Value::Bool(b) => Ok(*b),
-                    Value::Null => Ok(false),
-                    Value::Number(n) => Ok(!(n.as_f64() == Some(0.0))),
-                    Value::String(s) => Ok(!s.is_empty()),
-                    Value::Array(a) => Ok(!a.is_empty()),
-                    Value::Object(o) => Ok(!o.is_empty()),
+    let mut tasks = InlineStack::<_, INLINE_EXPRESSION_STACK>::new(EvalTask::Evaluate(condition));
+    let mut result = None;
+
+    while let Some(task) = tasks.pop() {
+        match task {
+            EvalTask::Evaluate(condition) => match &condition.expr {
+                Some(condition_expr::Expr::Predicate(predicate)) => {
+                    result = Some(evaluate_predicate(predicate, resolver)?);
                 }
-            } else {
-                Ok(false)
+                Some(condition_expr::Expr::Not(not_condition)) => {
+                    let inner = not_condition.condition.as_ref().ok_or_else(|| {
+                        ExpressionError::Evaluation(
+                            "Not condition missing inner expression".to_string(),
+                        )
+                    })?;
+                    tasks.push(EvalTask::Negate);
+                    tasks.push(EvalTask::Evaluate(inner));
+                }
+                Some(condition_expr::Expr::Compound(compound)) => {
+                    let left = compound.left.as_ref().ok_or_else(|| {
+                        ExpressionError::Evaluation("Compound missing left expression".to_string())
+                    })?;
+                    let right = compound.right.as_ref().ok_or_else(|| {
+                        ExpressionError::Evaluation("Compound missing right expression".to_string())
+                    })?;
+                    tasks.push(EvalTask::ApplyCompound {
+                        op: compound.op,
+                        right,
+                    });
+                    tasks.push(EvalTask::Evaluate(left));
+                }
+                Some(condition_expr::Expr::Identifier(identifier)) => {
+                    result = Some(resolve_truthiness(&identifier.value, resolver));
+                }
+                None => {
+                    return Err(ExpressionError::Evaluation(
+                        "Empty condition expression".to_string(),
+                    ))
+                }
+            },
+            EvalTask::Negate => {
+                result = Some(!result.ok_or_else(missing_evaluation_result_error)?);
+            }
+            EvalTask::ApplyCompound { op, right } => {
+                let left = result.ok_or_else(missing_evaluation_result_error)?;
+                let op = LogicalOperator::try_from(op).map_err(|_| {
+                    ExpressionError::Evaluation(format!("Invalid logical operator: {op}"))
+                })?;
+                match op {
+                    LogicalOperator::And if left => tasks.push(EvalTask::Evaluate(right)),
+                    LogicalOperator::Or if !left => tasks.push(EvalTask::Evaluate(right)),
+                    LogicalOperator::And | LogicalOperator::Or => result = Some(left),
+                    LogicalOperator::Unspecified => {
+                        return Err(ExpressionError::Evaluation(
+                            "Unspecified logical operator".to_string(),
+                        ))
+                    }
+                }
             }
         }
-        None => Err(ExpressionError::Evaluation(
-            "Empty condition expression".to_string(),
-        )),
     }
+
+    result.ok_or_else(missing_evaluation_result_error)
 }
 
-fn evaluate_compound<'a, F>(compound: &CompoundCondition, resolver: &F) -> Result<bool>
+#[inline]
+fn resolve_truthiness<'a, F>(path: &str, resolver: &F) -> bool
 where
     F: Fn(&str) -> Option<Cow<'a, Value>>,
 {
-    let left = compound.left.as_ref().ok_or_else(|| {
-        ExpressionError::Evaluation("Compound missing left expression".to_string())
-    })?;
-    let right = compound.right.as_ref().ok_or_else(|| {
-        ExpressionError::Evaluation("Compound missing right expression".to_string())
-    })?;
+    resolver(path).is_some_and(|value| match value.as_ref() {
+        Value::Bool(value) => *value,
+        Value::Null => false,
+        Value::Number(value) => !(value.as_f64() == Some(0.0)),
+        Value::String(value) => !value.is_empty(),
+        Value::Array(value) => !value.is_empty(),
+        Value::Object(value) => !value.is_empty(),
+    })
+}
 
-    let left_result = evaluate_expr(left, resolver)?;
-    let op = LogicalOperator::try_from(compound.op).map_err(|_| {
-        ExpressionError::Evaluation(format!("Invalid logical operator: {}", compound.op))
-    })?;
-
-    match op {
-        LogicalOperator::And => {
-            if !left_result {
-                return Ok(false);
-            }
-            evaluate_expr(right, resolver)
-        }
-        LogicalOperator::Or => {
-            if left_result {
-                return Ok(true);
-            }
-            evaluate_expr(right, resolver)
-        }
-        LogicalOperator::Unspecified => Err(ExpressionError::Evaluation(
-            "Unspecified logical operator".to_string(),
-        )),
-    }
+#[cold]
+#[inline(never)]
+fn missing_evaluation_result_error() -> ExpressionError {
+    ExpressionError::Evaluation("Expression evaluation produced no result".to_string())
 }
 
 fn evaluate_predicate<'a, F>(predicate: &Predicate, resolver: &F) -> Result<bool>
@@ -202,11 +225,11 @@ where
         None => return Err(ExpressionError::MissingValue(predicate.left.clone())),
     };
 
-    let right_val = if is_literal(&predicate.right) {
-        Cow::Owned(parse_literal(&predicate.right)?)
+    let right = if is_literal(&predicate.right) {
+        PredicateRight::Literal(parse_literal(&predicate.right)?)
     } else {
         match resolver(&predicate.right) {
-            Some(val) => val,
+            Some(value) => PredicateRight::Resolved(value),
             None => return Err(ExpressionError::MissingValue(predicate.right.clone())),
         }
     };
@@ -218,7 +241,7 @@ where
         ))
     })?;
 
-    compare_values(left_val.as_ref(), &op, right_val.as_ref())
+    compare_values(left_val.as_ref(), &op, &right)
 }
 
 // Check if a string is a literal value
@@ -237,31 +260,44 @@ fn is_literal(s: &str) -> bool {
         || s == "false"
 }
 
-// Parse a literal string into a JSON value
-fn parse_literal(s: &str) -> Result<Value> {
+enum PredicateLiteral<'a> {
+    String(&'a str),
+    Number(serde_json::Number),
+    Bool(bool),
+}
+
+enum PredicateRight<'a> {
+    Literal(PredicateLiteral<'a>),
+    Resolved(Cow<'a, Value>),
+}
+
+// Parse a literal without allocating string values on the request path.
+fn parse_literal(s: &str) -> Result<PredicateLiteral<'_>> {
     // Handle quoted strings
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
         let content = &s[1..s.len() - 1];
-        return Ok(Value::String(content.to_string()));
+        return Ok(PredicateLiteral::String(content));
     }
 
     // Handle booleans
     if s == "true" {
-        return Ok(Value::Bool(true));
+        return Ok(PredicateLiteral::Bool(true));
     }
     if s == "false" {
-        return Ok(Value::Bool(false));
+        return Ok(PredicateLiteral::Bool(false));
     }
 
     // Handle numbers
     if let Ok(num) = s.parse::<i64>() {
-        return Ok(Value::Number(num.into()));
+        return Ok(PredicateLiteral::Number(num.into()));
     }
 
     if let Ok(num) = s.parse::<f64>() {
         // Create a JSON number from f64, handling error if it's not representable
         match serde_json::Number::from_f64(num) {
-            Some(n) => return Ok(Value::Number(n)),
+            Some(number) => return Ok(PredicateLiteral::Number(number)),
             None => {
                 return Err(ExpressionError::TypeError(format!(
                     "Cannot convert {} to JSON number",
@@ -279,10 +315,14 @@ fn parse_literal(s: &str) -> Result<Value> {
 }
 
 // Compare two JSON values based on the comparison operator
-fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Result<bool> {
+fn compare_values(
+    left: &Value,
+    op: &ComparisonOperator,
+    right: &PredicateRight<'_>,
+) -> Result<bool> {
     match op {
-        ComparisonOperator::Equal => Ok(left == right),
-        ComparisonOperator::NotEqual => Ok(left != right),
+        ComparisonOperator::Equal => Ok(values_equal(left, right)),
+        ComparisonOperator::NotEqual => Ok(!values_equal(left, right)),
 
         // Handle numeric comparisons
         ComparisonOperator::GreaterThan => compare_ordered(left, right, |a, b| a > b),
@@ -295,16 +335,44 @@ fn compare_values(left: &Value, op: &ComparisonOperator, right: &Value) -> Resul
     }
 }
 
+fn values_equal(left: &Value, right: &PredicateRight<'_>) -> bool {
+    match right {
+        PredicateRight::Resolved(value) => left == value.as_ref(),
+        PredicateRight::Literal(PredicateLiteral::String(value)) => left.as_str() == Some(*value),
+        PredicateRight::Literal(PredicateLiteral::Number(value)) => left.as_number() == Some(value),
+        PredicateRight::Literal(PredicateLiteral::Bool(value)) => left.as_bool() == Some(*value),
+    }
+}
+
 // Helper for ordered comparisons
-fn compare_ordered<F>(left: &Value, right: &Value, compare_fn: F) -> Result<bool>
+fn compare_ordered<F>(left: &Value, right: &PredicateRight<'_>, compare_fn: F) -> Result<bool>
 where
     F: Fn(&f64, &f64) -> bool,
 {
     // Extract numeric values
     let left_num = extract_number(left)?;
-    let right_num = extract_number(right)?;
+    let right_num = extract_right_number(right)?;
 
     Ok(compare_fn(&left_num, &right_num))
+}
+
+fn extract_right_number(right: &PredicateRight<'_>) -> Result<f64> {
+    match right {
+        PredicateRight::Resolved(value) => extract_number(value),
+        PredicateRight::Literal(PredicateLiteral::String(value)) => {
+            value.parse::<f64>().map_err(|_| {
+                ExpressionError::TypeError(format!("Cannot convert string to number: {value}"))
+            })
+        }
+        PredicateRight::Literal(PredicateLiteral::Number(value)) => {
+            value.as_f64().ok_or_else(|| {
+                ExpressionError::TypeError(format!("Cannot convert number to f64: {value:?}"))
+            })
+        }
+        PredicateRight::Literal(PredicateLiteral::Bool(value)) => {
+            Ok(if *value { 1.0 } else { 0.0 })
+        }
+    }
 }
 
 // Extract a numeric value from a JSON value
@@ -484,50 +552,6 @@ mod tests {
             "Expected Ok(true), got {:?}",
             result
         );
-    }
-
-    #[test]
-    fn test_mixed_operators_error() {
-        // Create a condition with mixed operators (AND and OR)
-        let condition = ConditionExpr::compound(
-            ConditionExpr::compound(
-                ConditionExpr::identifier("a"),
-                LogicalOperator::And,
-                ConditionExpr::identifier("b"),
-            ),
-            LogicalOperator::Or,
-            ConditionExpr::identifier("c"),
-        );
-
-        let state = test_json!({
-            "a": true, "b": true, "c": true
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(matches!(result, Err(ExpressionError::MixedOperators)));
-    }
-
-    #[test]
-    fn test_too_many_operators_error() {
-        // Create a condition with more than 5 operators
-        let mut condition = ConditionExpr::identifier("a");
-
-        // Add 6 logical operators (exceeding the limit of 5)
-        for i in 0..6 {
-            condition = ConditionExpr::compound(
-                condition,
-                LogicalOperator::And,
-                ConditionExpr::identifier(format!("var{}", i)),
-            );
-        }
-
-        let state = test_json!({
-            "a": true, "var0": true, "var1": true,
-            "var2": true, "var3": true, "var4": true, "var5": true
-        });
-
-        let result = evaluate(&condition, &state);
-        assert!(matches!(result, Err(ExpressionError::TooManyOperators(_))));
     }
 
     #[test]
@@ -1004,47 +1028,79 @@ mod tests {
     }
 
     #[test]
-    fn test_negated_tree_still_enforces_operator_limit() {
-        // A `Not` wrapper must not be mistaken for a single term: the operator
-        // guard has to keep walking the tree underneath it.
-        let mut inner = ConditionExpr::identifier("a");
-        for i in 0..6 {
-            inner = ConditionExpr::compound(
-                inner,
-                LogicalOperator::And,
-                ConditionExpr::identifier(format!("var{}", i)),
-            );
+    fn test_deep_negation_uses_overflow_stack_without_recursion() {
+        let mut condition = ConditionExpr::identifier("flag");
+        for _ in 0..64 {
+            condition = ConditionExpr::negated(condition);
         }
-        let condition = ConditionExpr::negated(inner);
+        let state = test_json!({ "flag": true });
 
-        let state = test_json!({
-            "a": true, "var0": true, "var1": true,
-            "var2": true, "var3": true, "var4": true, "var5": true
-        });
-
-        assert!(matches!(
-            evaluate(&condition, &state),
-            Err(ExpressionError::TooManyOperators(6))
-        ));
+        assert!(matches!(evaluate(&condition, &state), Ok(true)));
     }
 
     #[test]
-    fn test_negated_tree_still_rejects_mixed_operators() {
-        let condition = ConditionExpr::negated(ConditionExpr::compound(
-            ConditionExpr::compound(
-                ConditionExpr::identifier("a"),
-                LogicalOperator::And,
-                ConditionExpr::identifier("b"),
-            ),
-            LogicalOperator::Or,
-            ConditionExpr::identifier("c"),
-        ));
+    fn test_negation_depth_across_inline_stack_boundary() {
+        // The inline stack holds INLINE_EXPRESSION_STACK slots before spilling
+        // to the overflow Vec. Walk across that seam one level at a time so a
+        // regression in the spill logic cannot hide between the tested depths.
+        for depth in 0..=(INLINE_EXPRESSION_STACK + 2) {
+            let mut condition = ConditionExpr::identifier("flag");
+            for _ in 0..depth {
+                condition = ConditionExpr::negated(condition);
+            }
+            let state = test_json!({ "flag": true });
 
-        let state = test_json!({ "a": true, "b": true, "c": true });
+            // Each negation flips the result, so parity is the oracle.
+            let expected = depth % 2 == 0;
+            assert_eq!(
+                evaluate(&condition, &state).ok(),
+                Some(expected),
+                "negation depth {} must evaluate to {}",
+                depth,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_compound_tree_spills_to_overflow_stack() {
+        // A compound node pushes two continuations per level, so a right-leaning
+        // chain spills past the inline slots. This tree deliberately exceeds
+        // MAX_LOGICAL_OPERATORS: `evaluate` no longer validates structure, so
+        // the spill path must stay correct for callers that skip `validate`.
+        let depth = INLINE_EXPRESSION_STACK;
+        let mut condition = ConditionExpr::identifier("leaf0");
+        for i in 1..=depth {
+            condition = ConditionExpr::compound(
+                ConditionExpr::identifier(format!("leaf{}", i)),
+                LogicalOperator::And,
+                condition,
+            );
+        }
+
+        let mut all_true = serde_json::Map::new();
+        for i in 0..=depth {
+            all_true.insert(format!("leaf{}", i), Value::Bool(true));
+        }
+        let state = Value::Object(all_true.clone());
+        assert_eq!(evaluate(&condition, &state).ok(), Some(true));
+
+        // Flip the deepest leaf: the result must propagate back through every
+        // spilled continuation rather than being lost at the boundary.
+        let mut one_false = all_true;
+        one_false.insert("leaf0".to_string(), Value::Bool(false));
+        let state = Value::Object(one_false);
+        assert_eq!(evaluate(&condition, &state).ok(), Some(false));
+    }
+
+    #[test]
+    fn test_incomplete_quoted_literal_returns_error() {
+        let condition = ConditionExpr::predicate("name", ComparisonOperator::Equal, "'");
+        let state = test_json!({ "name": "" });
 
         assert!(matches!(
             evaluate(&condition, &state),
-            Err(ExpressionError::MixedOperators)
+            Err(ExpressionError::TypeError(_))
         ));
     }
 

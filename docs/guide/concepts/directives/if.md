@@ -67,6 +67,21 @@ Supported logical operators:
 - Parentheses for grouping are not supported
 - The condition is evaluated against the current state object
 
+Both operator rules depend only on the shape of the condition, so `webui build`
+checks them and fails the build with a diagnostic pointing at the offending
+template. They are never reported per request, which keeps the render path free
+of repeated validation work.
+
+```
+error: invalid <if> condition expression: too many logical operators: 9 (maximum is 5) [invalid-if-condition]
+  --> index.html:1:13
+    condition="a && b && c && d && e && f && g && h && i && j"
+  help: use a simple expression like "isActive", "count > 0", or "!hidden"
+```
+
+Quoted string literals must be closed. An unterminated literal such as
+`condition="name == 'Ada"` is also rejected at build time.
+
 ## Truthiness Rules
 
 The `<if>` condition evaluator follows JavaScript truthiness semantics for

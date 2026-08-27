@@ -383,6 +383,88 @@ impl ConditionExpr {
             ))),
         }
     }
+
+    /// Validate the structural rules a condition expression must satisfy.
+    ///
+    /// Both rules are properties of the expression *tree*, not of any state it
+    /// is evaluated against, so the result is invariant across renders. This is
+    /// enforced once at build time by `webui build`; the render path does not
+    /// re-derive it.
+    ///
+    /// Call this when constructing a [`ConditionExpr`] programmatically rather
+    /// than through the parser.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConditionStructureError`] when the expression mixes `&&` with
+    /// `||`, or exceeds [`MAX_LOGICAL_OPERATORS`].
+    pub fn validate_structure(&self) -> std::result::Result<(), ConditionStructureError> {
+        let mut count = 0usize;
+        let mut last_op: Option<i32> = None;
+        let mut has_mixed = false;
+
+        // Iterative walk with an explicit stack: template trees can nest deeply
+        // and recursion is prohibited on this path.
+        let mut stack = Vec::with_capacity(8);
+        stack.push(self);
+
+        while let Some(expr) = stack.pop() {
+            match &expr.expr {
+                Some(condition_expr::Expr::Compound(compound)) => {
+                    count += 1;
+
+                    match last_op {
+                        Some(last) if last != compound.op => has_mixed = true,
+                        Some(_) => {}
+                        None => last_op = Some(compound.op),
+                    }
+
+                    if let Some(right) = compound.right.as_ref() {
+                        stack.push(right);
+                    }
+                    if let Some(left) = compound.left.as_ref() {
+                        stack.push(left);
+                    }
+                }
+                Some(condition_expr::Expr::Not(not_condition)) => {
+                    if let Some(inner) = not_condition.condition.as_ref() {
+                        stack.push(inner);
+                    }
+                }
+                // Predicates and identifiers carry no logical operators.
+                _ => {}
+            }
+        }
+
+        if count > MAX_LOGICAL_OPERATORS {
+            return Err(ConditionStructureError::TooManyOperators(count));
+        }
+
+        if has_mixed {
+            return Err(ConditionStructureError::MixedOperators);
+        }
+
+        Ok(())
+    }
+}
+
+/// Maximum number of logical operators permitted in a single condition
+/// expression. Deeper expressions are rejected at build time.
+pub const MAX_LOGICAL_OPERATORS: usize = 5;
+
+/// Structural violations detected when validating a [`ConditionExpr`].
+///
+/// These are authoring mistakes surfaced by `webui build`, never runtime
+/// conditions.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ConditionStructureError {
+    /// `&&` and `||` were combined without explicit grouping.
+    #[error("cannot mix && and || in the same expression")]
+    MixedOperators,
+
+    /// The expression exceeded [`MAX_LOGICAL_OPERATORS`].
+    #[error("too many logical operators: {0} (maximum is {MAX_LOGICAL_OPERATORS})")]
+    TooManyOperators(usize),
 }
 
 // ── Constructors ────────────────────────────────────────────────────────
@@ -2163,5 +2245,87 @@ mod tests {
 
         assert_eq!(decoded.tokens, tokens);
         assert!(decoded.fragments.contains_key("index.html"));
+    }
+
+    fn and_chain(operator_count: usize) -> ConditionExpr {
+        let mut expr = ConditionExpr::identifier("a");
+        for i in 0..operator_count {
+            expr = ConditionExpr::compound(
+                expr,
+                LogicalOperator::And,
+                ConditionExpr::identifier(format!("var{}", i)),
+            );
+        }
+        expr
+    }
+
+    #[test]
+    fn test_validate_structure_accepts_leaves_and_uniform_operators() {
+        assert!(ConditionExpr::identifier("flag")
+            .validate_structure()
+            .is_ok());
+        assert!(
+            ConditionExpr::predicate("age", ComparisonOperator::GreaterThan, "18")
+                .validate_structure()
+                .is_ok()
+        );
+        assert!(and_chain(MAX_LOGICAL_OPERATORS)
+            .validate_structure()
+            .is_ok());
+    }
+
+    #[test]
+    fn test_validate_structure_rejects_too_many_operators() {
+        assert_eq!(
+            and_chain(MAX_LOGICAL_OPERATORS + 1).validate_structure(),
+            Err(ConditionStructureError::TooManyOperators(
+                MAX_LOGICAL_OPERATORS + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn test_validate_structure_rejects_mixed_operators() {
+        let expr = ConditionExpr::compound(
+            ConditionExpr::compound(
+                ConditionExpr::identifier("a"),
+                LogicalOperator::And,
+                ConditionExpr::identifier("b"),
+            ),
+            LogicalOperator::Or,
+            ConditionExpr::identifier("c"),
+        );
+
+        assert_eq!(
+            expr.validate_structure(),
+            Err(ConditionStructureError::MixedOperators)
+        );
+    }
+
+    #[test]
+    fn test_validate_structure_walks_through_negation() {
+        // A `Not` wrapper must not hide the operators underneath it.
+        let expr = ConditionExpr::negated(and_chain(MAX_LOGICAL_OPERATORS + 1));
+
+        assert_eq!(
+            expr.validate_structure(),
+            Err(ConditionStructureError::TooManyOperators(
+                MAX_LOGICAL_OPERATORS + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn test_validate_structure_is_iterative_for_deep_negation() {
+        // Recursion inside `validate_structure` would overflow the stack rather
+        // than return. The depth is capped well below the point where the
+        // prost-derived recursive `Drop` for this tree overflows on its own,
+        // which is a separate pre-existing limitation of the generated type.
+        let mut expr = ConditionExpr::identifier("flag");
+        for _ in 0..512 {
+            expr = ConditionExpr::negated(expr);
+        }
+
+        assert!(expr.validate_structure().is_ok());
     }
 }

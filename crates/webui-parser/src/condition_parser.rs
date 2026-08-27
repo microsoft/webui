@@ -20,6 +20,18 @@ impl ConditionParser {
 
     /// Parse a condition string into a ConditionExpr.
     pub fn parse(&self, input: &str) -> Result<ConditionExpr> {
+        let expr = self.parse_inner(input)?;
+
+        // Structural rules are invariant for a given tree, so they are enforced
+        // here at build time instead of on every render.
+        expr.validate_structure()
+            .map_err(|error| ParserError::Parse(error.to_string()))?;
+
+        Ok(expr)
+    }
+
+    /// Parse without structural validation, for recursive sub-expression parsing.
+    fn parse_inner(&self, input: &str) -> Result<ConditionExpr> {
         // Trim whitespace
         let input = input.trim();
 
@@ -36,7 +48,9 @@ impl ConditionParser {
             return Ok(expr);
         }
 
-        if let Ok(expr) = self.parse_predicate(input) {
+        // A malformed predicate is a hard error rather than a fall-through:
+        // silently retrying it as an identifier would hide the real mistake.
+        if let Some(expr) = self.parse_predicate(input)? {
             return Ok(expr);
         }
 
@@ -96,7 +110,7 @@ impl ConditionParser {
             let expr_str = expr_str.trim();
 
             // Parse the negated expression
-            let expr = self.parse(expr_str)?;
+            let expr = self.parse_inner(expr_str)?;
             return Ok(ConditionExpr::negated(expr));
         }
 
@@ -104,7 +118,12 @@ impl ConditionParser {
     }
 
     /// Parse a predicate (comparison).
-    fn parse_predicate(&self, input: &str) -> Result<ConditionExpr> {
+    ///
+    /// Returns `Ok(None)` when the input simply is not a predicate, and `Err`
+    /// when it *is* a predicate but carries a malformed operand. The two cases
+    /// are distinct: the first falls through to the other expression parsers,
+    /// while the second must fail the build rather than reach the evaluator.
+    fn parse_predicate(&self, input: &str) -> Result<Option<ConditionExpr>> {
         let input = input.trim();
 
         // Check if the input contains a comparison operator.
@@ -129,6 +148,17 @@ impl ConditionParser {
                     continue;
                 }
 
+                // Reject malformed quoted literals at build time. Letting one
+                // through would slice outside a character boundary during
+                // evaluation, aborting the render process at request time.
+                for operand in [left, right] {
+                    if Self::has_malformed_quotes(operand) {
+                        return Err(ParserError::Parse(format!(
+                            "unbalanced quotes in condition operand: '{operand}'"
+                        )));
+                    }
+                }
+
                 // Convert operator string to enum variant.
                 let operator = match *op_str {
                     ">=" => ComparisonOperator::GreaterThanOrEqual,
@@ -137,16 +167,36 @@ impl ConditionParser {
                     "!=" => ComparisonOperator::NotEqual,
                     ">" => ComparisonOperator::GreaterThan,
                     "<" => ComparisonOperator::LessThan,
-                    _ => unreachable!(),
+                    _ => return Err(ParserError::Parse("Unknown comparison".to_string())),
                 };
 
-                let predicate = ConditionExpr::predicate(left, operator, right);
-
-                return Ok(predicate);
+                return Ok(Some(ConditionExpr::predicate(left, operator, right)));
             }
         }
 
-        Err(ParserError::Parse("Not a predicate expression".to_string()))
+        Ok(None)
+    }
+
+    /// Detect operands whose quoting is unbalanced or degenerate.
+    ///
+    /// A bare `'` both opens and closes at the same byte, and `'abc` never
+    /// closes. Both used to be forwarded verbatim to the evaluator.
+    fn has_malformed_quotes(operand: &str) -> bool {
+        let bytes = operand.as_bytes();
+        let (Some(&first), Some(&last)) = (bytes.first(), bytes.last()) else {
+            return false;
+        };
+
+        let opens = first == b'"' || first == b'\'';
+        let closes = last == b'"' || last == b'\'';
+
+        match (opens, closes) {
+            // A quoted literal needs two distinct delimiter bytes that match.
+            (true, true) => bytes.len() < 2 || first != last,
+            // Opened without closing, or closed without opening.
+            (true, false) | (false, true) => true,
+            (false, false) => false,
+        }
     }
 
     /// Parse a compound expression (with logical operators AND/OR).
@@ -223,8 +273,8 @@ impl ConditionParser {
 
             if !left_str.is_empty() && !right_str.is_empty() {
                 // Parse the two sides of the operator
-                if let Ok(left) = self.parse(left_str) {
-                    if let Ok(right) = self.parse(right_str) {
+                if let Ok(left) = self.parse_inner(left_str) {
+                    if let Ok(right) = self.parse_inner(right_str) {
                         return Some(ConditionExpr::compound(left, op, right));
                     }
                 }
@@ -316,6 +366,48 @@ mod tests {
     }
 
     #[test]
+    fn test_malformed_quoted_literal_fails_at_build_time() {
+        let parser = ConditionParser::new();
+
+        // A bare quote opens and closes at the same byte. Forwarding it to the
+        // evaluator used to slice `&s[1..0]` and abort the render process.
+        for input in [
+            "name == '",
+            "name == \"",
+            "name == 'John",
+            "name == John'",
+            "name == \"John'",
+            "' == name",
+        ] {
+            assert!(
+                parser.parse(input).is_err(),
+                "expected `{input}` to be rejected at build time"
+            );
+        }
+    }
+
+    #[test]
+    fn test_well_formed_literals_still_parse() {
+        let parser = ConditionParser::new();
+
+        for input in [
+            "name == 'John'",
+            "name == \"John\"",
+            "name == \"it's\"",
+            "count > 0",
+            "ratio >= 1.5",
+            "flag == true",
+            "left == right",
+            "user.profile.name != 'anon'",
+        ] {
+            assert!(
+                parser.parse(input).is_ok(),
+                "expected `{input}` to parse cleanly"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_compound() {
         let parser = ConditionParser::new();
 
@@ -344,9 +436,9 @@ mod tests {
     fn test_complex_expressions() {
         let parser = ConditionParser::new();
 
-        // Complex AND/OR expression
+        // Complex expression with a uniform operator.
         let result = parser
-            .parse("age > 18 && isVerified || isAdmin")
+            .parse("age > 18 && isVerified && isAdmin")
             .expect("Failed to parse complex expression");
         assert!(matches!(&result.expr, Some(Expr::Compound(_))));
 
@@ -452,34 +544,35 @@ mod tests {
 
     #[test]
     fn test_reject_mixed_and_or() {
-        // The Rust parser handles mixed && and || by nesting (unlike NodeJS which rejects them).
-        // "a && b || c" is parsed as Compound(a, And, Compound(b, Or, c)).
+        // Mixing `&&` and `||` without explicit grouping is ambiguous, so it is
+        // rejected while building rather than surfacing per render. This also
+        // matches the NodeJS parser.
         let parser = ConditionParser::new();
-        let result = parser
-            .parse("a && b || c")
-            .expect("Rust parser handles mixed operators via nesting");
 
-        assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
-            matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "a") &&
-            LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&
-            matches!(compound.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Compound(inner)) if
-                matches!(inner.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "b") &&
-                LogicalOperator::try_from(inner.op) == Ok(LogicalOperator::Or) &&
-                matches!(inner.right.as_ref().and_then(|r| r.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "c")
-            )
-        ));
+        for input in ["a && b || c", "a || b && c", "!(a && b) || c"] {
+            assert!(
+                parser.parse(input).is_err(),
+                "expected `{input}` to be rejected at build time"
+            );
+        }
+
+        // Uniform operators of either kind remain valid.
+        assert!(parser.parse("a && b && c").is_ok());
+        assert!(parser.parse("a || b || c").is_ok());
     }
 
     #[test]
     fn test_reject_too_many_tokens() {
-        // The Rust parser has no explicit complexity limit but handles long chains
-        // by deeply nesting Compound nodes. Verify a long chain parses correctly.
+        // Chains longer than MAX_LOGICAL_OPERATORS are rejected while building.
         let parser = ConditionParser::new();
-        let result = parser
+        assert!(parser
             .parse("a && b && c && d && e && f && g && h && i && j")
-            .expect("Parser handles long chained expressions");
+            .is_err());
 
-        // The outermost should be a Compound with And
+        // A chain exactly at the limit still parses into nested Compound nodes.
+        let result = parser
+            .parse("a && b && c && d && e && f")
+            .expect("chain at the operator limit must parse");
         assert!(matches!(&result.expr, Some(Expr::Compound(compound)) if
             matches!(compound.left.as_ref().and_then(|l| l.expr.as_ref()), Some(Expr::Identifier(id)) if id.value == "a") &&
             LogicalOperator::try_from(compound.op) == Ok(LogicalOperator::And) &&

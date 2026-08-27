@@ -3049,12 +3049,20 @@ impl HtmlParser {
     }
 
     /// Build the error for a malformed `<if condition>` expression (cold path).
+    ///
+    /// `reason` carries the specific rule the expression violated so the
+    /// diagnostic names the actual problem instead of only the generic help.
     #[cold]
     #[inline(never)]
-    fn if_condition_invalid_error(&self, element: &Element<'_>, condition: &str) -> ParserError {
+    fn if_condition_invalid_error(
+        &self,
+        element: &Element<'_>,
+        condition: &str,
+        reason: &str,
+    ) -> ParserError {
         self.authoring_error_at(
             codes::INVALID_IF_CONDITION,
-            "invalid <if> condition expression",
+            format!("invalid <if> condition expression: {reason}"),
             element,
         )
         .element("if")
@@ -3078,7 +3086,15 @@ impl HtmlParser {
         let condition = self
             .condition_parser
             .parse(&condition_str)
-            .map_err(|_| self.if_condition_invalid_error(element, &condition_str))?;
+            .map_err(|error| {
+                // `ParserError::Parse` prefixes its own "Parse error:", which
+                // would read redundantly inside the diagnostic message.
+                let reason = match &error {
+                    ParserError::Parse(message) => message.clone(),
+                    other => other.to_string(),
+                };
+                self.if_condition_invalid_error(element, &condition_str, &reason)
+            })?;
 
         self.flush_raw_buffer(fragments);
         let parent = ParseContext {
