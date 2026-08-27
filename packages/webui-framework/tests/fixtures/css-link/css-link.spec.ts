@@ -300,6 +300,66 @@ test.describe('css link fixture', () => {
     expect(visibilityDuringPromotion?.every(value => value === '')).toBe(true);
   });
 
+  test('does not expose an effective shadow guard through host markup', async ({
+    page,
+  }) => {
+    let releaseLinks!: () => void;
+    let linkRequested!: () => void;
+    const linkGate = new Promise<void>(resolve => {
+      releaseLinks = resolve;
+    });
+    const requestSeen = new Promise<void>(resolve => {
+      linkRequested = resolve;
+    });
+    await page.route('**/*.css', async route => {
+      if (
+        route.request().resourceType() === 'stylesheet' &&
+        (route.request().url().endsWith('/child.css') ||
+          route.request().url().endsWith('/styles/relative.css'))
+      ) {
+        linkRequested();
+        await linkGate;
+      }
+      await route.continue();
+    });
+    await openFixture(page);
+
+    const authoredMarkup = await page.locator('test-link-host').evaluate((host) => {
+      const child = document.createElement('test-link-child');
+      child.id = 'serialized-link-child';
+      child.style.color = 'red';
+      child.style.transitionDuration = '10s';
+      const markup = child.outerHTML;
+      (host.shadowRoot ?? host).querySelector('.slot')?.appendChild(child);
+      return markup;
+    });
+    await requestSeen;
+
+    await expect(page.locator('#serialized-link-child').evaluate(async child => {
+      await new Promise<void>(resolve =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+      return {
+        markup: child.outerHTML,
+        visibility: getComputedStyle(child).visibility,
+      };
+    })).resolves.toEqual({
+      markup: authoredMarkup,
+      visibility: 'hidden',
+    });
+
+    releaseLinks();
+    await expect.poll(async () =>
+      page.locator('#serialized-link-child').evaluate(child => ({
+        markup: child.outerHTML,
+        ready: (child as HTMLElement & { $ready?: boolean }).$ready ?? false,
+      }))
+    ).toEqual({
+      markup: authoredMarkup,
+      ready: true,
+    });
+  });
+
   test('keeps the guard isolated from authored cascade layers', async ({ page }) => {
     let releaseRelative!: () => void;
     const relativeGate = new Promise<void>(resolve => {
@@ -383,10 +443,32 @@ test.describe('css link fixture', () => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child');
       const style = child ? getComputedStyle(child) : null;
       return {
-        transition: style?.transitionProperty ?? null,
-        visibility: style?.visibility ?? null,
+        computedTransition: style?.transitionProperty ?? null,
+        computedVisibility: style?.visibility ?? null,
+        inlineTransition:
+          (child as HTMLElement | null)?.style.getPropertyValue(
+            'transition-property',
+          ) ?? null,
+        inlineTransitionPriority:
+          (child as HTMLElement | null)?.style.getPropertyPriority(
+            'transition-property',
+          ) ?? null,
+        inlineVisibility:
+          (child as HTMLElement | null)?.style.getPropertyValue('visibility') ??
+          null,
+        inlineVisibilityPriority:
+          (child as HTMLElement | null)?.style.getPropertyPriority(
+            'visibility',
+          ) ?? null,
       };
-    })).resolves.toEqual({ transition: 'none', visibility: 'hidden' });
+    })).resolves.toEqual({
+      computedTransition: 'none',
+      computedVisibility: 'hidden',
+      inlineTransition: 'visibility',
+      inlineTransitionPriority: 'important',
+      inlineVisibility: 'visible',
+      inlineVisibilityPriority: 'important',
+    });
 
     releaseLinks();
     await expect.poll(async () => page.locator('test-link-host').evaluate((host) => {
@@ -400,12 +482,15 @@ test.describe('css link fixture', () => {
         transition:
           child?.style.getPropertyValue('transition-property') ?? null,
         visibility: child?.style.getPropertyValue('visibility') ?? null,
+        visibilityPriority:
+          child?.style.getPropertyPriority('visibility') ?? null,
       };
     })).toEqual({
       duration: '10s',
       priority: 'important',
       transition: 'visibility',
       visibility: 'visible',
+      visibilityPriority: 'important',
     });
   });
 
@@ -583,7 +668,16 @@ test.describe('css link fixture', () => {
     });
     await openFixture(page);
 
-    await page.locator('test-link-host .spawn').click();
+    await page.locator('test-link-host').evaluate((host) => {
+      const child = document.createElement('test-link-child');
+      child.style.setProperty(
+        'transition-property',
+        'opacity',
+        'important',
+      );
+      child.style.setProperty('visibility', 'visible', 'important');
+      (host.shadowRoot ?? host).querySelector('.slot')?.appendChild(child);
+    });
     await requestSeen;
     await page.locator('test-link-host').evaluate((host) => {
       const child = (host.shadowRoot ?? host).querySelector('test-link-child') as
@@ -601,12 +695,31 @@ test.describe('css link fixture', () => {
         links: child?.shadowRoot?.querySelectorAll('link[rel~="stylesheet"]').length ?? 0,
         ready:
           (child as HTMLElement & { $ready?: boolean } | null)?.$ready ?? false,
+        transition:
+          (child as HTMLElement | null)?.style.getPropertyValue(
+            'transition-property',
+          ) ?? null,
+        transitionPriority:
+          (child as HTMLElement | null)?.style.getPropertyPriority(
+            'transition-property',
+          ) ?? null,
+        visibility:
+          (child as HTMLElement | null)?.style.getPropertyValue('visibility') ??
+          null,
+        visibilityPriority:
+          (child as HTMLElement | null)?.style.getPropertyPriority(
+            'visibility',
+          ) ?? null,
       };
     })).resolves.toEqual({
       hasContent: false,
       hydratedCount: 0,
       links: 2,
       ready: false,
+      transition: 'none',
+      transitionPriority: 'important',
+      visibility: 'hidden',
+      visibilityPriority: 'important',
     });
 
     releaseLink();
@@ -625,6 +738,21 @@ test.describe('css link fixture', () => {
           hydratedHadContent: instance?.hydratedHadContent ?? false,
           ready: instance?.$ready ?? false,
           text: label?.textContent ?? null,
+          transition:
+            (child as HTMLElement | null)?.style.getPropertyValue(
+              'transition-property',
+            ) ?? null,
+          transitionPriority:
+            (child as HTMLElement | null)?.style.getPropertyPriority(
+              'transition-property',
+            ) ?? null,
+          visibility:
+            (child as HTMLElement | null)?.style.getPropertyValue('visibility') ??
+            null,
+          visibilityPriority:
+            (child as HTMLElement | null)?.style.getPropertyPriority(
+              'visibility',
+            ) ?? null,
         };
       });
     }).toEqual({
@@ -633,6 +761,10 @@ test.describe('css link fixture', () => {
       hydratedHadContent: true,
       ready: true,
       text: 'Child updated',
+      transition: 'opacity',
+      transitionPriority: 'important',
+      visibility: 'visible',
+      visibilityPriority: 'important',
     });
   });
 
@@ -783,12 +915,14 @@ test.describe('css link fixture', () => {
       return {
         content: child?.shadowRoot?.querySelectorAll('.child-label').length ?? 0,
         hydratedCount: child?.hydratedCount ?? 0,
+        style: child?.getAttribute('style') ?? null,
         text: label?.textContent ?? null,
         tracked: !!label && child?.$root?.nodes.includes(label),
       };
     })).toEqual({
       content: 1,
       hydratedCount: 1,
+      style: null,
       text: 'Child reconnected',
       tracked: true,
     });

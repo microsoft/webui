@@ -1771,11 +1771,13 @@ native request instead of exposing the component.
 Preload CORS, integrity, CSP `style-src`, or timeout failures likewise do not
 authorize CSS and do not weaken the authoritative native path. MIME enforcement
 belongs to the native stylesheet link because preload exposes no response
-headers. The framework
-installs an anonymous first-layer shadow guard with an inline backup before
-appending client content. The guard disables host transitions before forcing
-hidden visibility, then restores both inline properties only after every
-applicable native link fires `load`. If CSP blocks the temporary shadow guard,
+headers. The framework installs an anonymous first-layer shadow guard before
+appending client content. When CSSOM confirms that guard parsed, it is the sole
+guard and the framework does not mutate author-facing host inline styles. Only
+when the shadow guard is unavailable does an inline backup preserve and later
+restore both property values and priorities. The guard disables host transitions
+before forcing hidden visibility and is released only after every applicable
+native link fires `load`. If CSP blocks the temporary shadow guard,
 non-style content stays detached and `$ready` remains false. Immediately before
 append, the framework reconciles the staging instance from current reactive
 state; it then transfers structural containers to the live root and invokes

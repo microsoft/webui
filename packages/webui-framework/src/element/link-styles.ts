@@ -1048,6 +1048,23 @@ function installGuard(host: HTMLElement, root: ShadowRoot): InstalledGuard {
   } catch {
     effective = false;
   }
+  // Keep framework-owned declarations out of author-facing host markup when
+  // the stronger first-layer shadow rule is available.
+  const releaseInlineGuard = effective
+    ? undefined
+    : installInlineGuard(host);
+  return {
+    effective,
+    release: () => {
+      style.remove();
+      releaseInlineGuard?.();
+    },
+    style,
+  };
+}
+
+function installInlineGuard(host: HTMLElement): () => void {
+  const hadStyleAttribute = host.hasAttribute('style');
   const previousTransitionValue =
     host.style.getPropertyValue('transition-property');
   const previousTransitionPriority =
@@ -1056,36 +1073,34 @@ function installGuard(host: HTMLElement, root: ShadowRoot): InstalledGuard {
   const previousPriority = host.style.getPropertyPriority('visibility');
   host.style.setProperty('transition-property', 'none', 'important');
   host.style.setProperty('visibility', 'hidden', 'important');
-  return {
-    effective,
-    release: () => {
-      style.remove();
-      if (
-        host.style.getPropertyValue('visibility') === 'hidden' &&
-        host.style.getPropertyPriority('visibility') === 'important'
-      ) {
-        if (previousValue) {
-          host.style.setProperty('visibility', previousValue, previousPriority);
-        } else {
-          host.style.removeProperty('visibility');
-        }
+  return () => {
+    if (
+      host.style.getPropertyValue('visibility') === 'hidden' &&
+      host.style.getPropertyPriority('visibility') === 'important'
+    ) {
+      if (previousValue) {
+        host.style.setProperty('visibility', previousValue, previousPriority);
+      } else {
+        host.style.removeProperty('visibility');
       }
-      if (
-        host.style.getPropertyValue('transition-property') === 'none' &&
-        host.style.getPropertyPriority('transition-property') === 'important'
-      ) {
-        if (previousTransitionValue) {
-          host.style.setProperty(
-            'transition-property',
-            previousTransitionValue,
-            previousTransitionPriority,
-          );
-        } else {
-          host.style.removeProperty('transition-property');
-        }
+    }
+    if (
+      host.style.getPropertyValue('transition-property') === 'none' &&
+      host.style.getPropertyPriority('transition-property') === 'important'
+    ) {
+      if (previousTransitionValue) {
+        host.style.setProperty(
+          'transition-property',
+          previousTransitionValue,
+          previousTransitionPriority,
+        );
+      } else {
+        host.style.removeProperty('transition-property');
       }
-    },
-    style,
+    }
+    if (!hadStyleAttribute && host.getAttribute('style') === '') {
+      host.removeAttribute('style');
+    }
   };
 }
 
