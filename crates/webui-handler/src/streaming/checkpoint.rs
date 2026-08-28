@@ -3,7 +3,6 @@
 
 //! Checkpoint, update, span-completion, and terminal serialization.
 
-use super::error::component_style_payload_resources_missing_error;
 use super::inventory::{
     commit_checkpoint_inventory, expand_static_checkpoint_reachability,
     mark_streaming_style_resource_sent, mark_streaming_template_sent,
@@ -177,7 +176,6 @@ impl WebUIHandler {
                 }
             }
         }
-
         let template_payloads = context.plugin.as_ref().and_then(|plugin| {
             plugin.collect_template_payloads_slice(context.protocol, &new_template_tags)
         });
@@ -314,18 +312,15 @@ impl WebUIHandler {
             let style_inventory = context.streaming.as_ref().map_or(&[][..], |streaming| {
                 streaming.style_resource_inventory.as_slice()
             });
-            crate::route_handler::collect_component_style_delta(
+            crate::route_handler::collect_borrowed_component_style_delta(
                 context.protocol,
                 style_roots,
                 style_inventory,
                 context.style_resource_index,
+                &context.style_chunk_index,
             )?
         };
-        let resources = component_styles
-            .get("resources")
-            .and_then(serde_json::Value::as_object)
-            .ok_or_else(component_style_payload_resources_missing_error)?;
-        for resource in resources.keys() {
+        for resource in component_styles.resource_names() {
             let Some(&index) = context.style_resource_index.get(resource) else {
                 continue;
             };
@@ -415,7 +410,6 @@ impl WebUIHandler {
         }
         context.writer.write("<webui-hydrate></webui-hydrate>")?;
         flush_streaming_transport(context)?;
-
         let target = usize::try_from(record.target())
             .map_err(|_| invalid_record_target_error(record.target()))?;
         if let RangeRecord::Boundary {

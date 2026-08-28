@@ -16,12 +16,6 @@ pub(crate) fn streaming_boundary_error(signal: &str, reason: &str) -> HandlerErr
 
 #[cold]
 #[inline(never)]
-pub(super) fn component_style_payload_resources_missing_error() -> HandlerError {
-    HandlerError::Invariant("component style payload resources are missing".to_string())
-}
-
-#[cold]
-#[inline(never)]
 pub(super) fn component_style_inventory_error(reason: &'static str) -> HandlerError {
     HandlerError::Invariant(reason.to_string())
 }

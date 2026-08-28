@@ -1185,7 +1185,7 @@ pub(crate) enum WebUiBootstrapState<'a> {
     },
 }
 
-pub(crate) struct WebUiBootstrap<'a> {
+pub(crate) struct WebUiBootstrap<'a, ComponentStyles: Serialize + ?Sized = Value> {
     pub(crate) declaration_id: Option<u32>,
     pub(crate) enclosing_span_instance_id: Option<u32>,
     pub(crate) state: WebUiBootstrapState<'a>,
@@ -1194,7 +1194,7 @@ pub(crate) struct WebUiBootstrap<'a> {
     pub(crate) nonce: Option<&'a str>,
     pub(crate) css_hrefs: &'a [&'a str],
     pub(crate) style_specs: &'a [&'a str],
-    pub(crate) component_styles: &'a Value,
+    pub(crate) component_styles: &'a ComponentStyles,
     pub(crate) templates: &'a [WebUiTemplatePayload<'a>],
 }
 
@@ -1708,10 +1708,10 @@ fn collect_component_state_into<'a, 'b>(
     false
 }
 
-pub(crate) fn write_webui_bootstrap(
+pub(crate) fn write_webui_bootstrap<ComponentStyles: Serialize + ?Sized>(
     writer: &mut dyn ResponseWriter,
     scratch: &mut Vec<u8>,
-    bootstrap: WebUiBootstrap<'_>,
+    bootstrap: WebUiBootstrap<'_, ComponentStyles>,
 ) -> Result<()> {
     let mut wrote_field = false;
 
