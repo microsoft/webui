@@ -2846,7 +2846,7 @@ into `<f-repeat>` markup.
 
 ## Progressive Streaming Hydration
 
-Progressive streaming is one version-3 contract shared by the compiler, Rust
+Progressive streaming is one unversioned contract shared by the compiler, Rust
 handler, host bindings, CLI proxy, and browser coordinator. It discovers
 boundaries by executing the compiled fragment graph and hydrates complete
 regions while the document is still loading.
@@ -2931,7 +2931,7 @@ regions while the document is still loading.
     prior projection is a proven subset under the same server state revision.
     Global metadata merges additively. Boundary state remains ephemeral and is
     not published to `window.__webui.state`.
-11. **Fail closed.** Version, tuple arity, record sequence, occurrence sequence,
+11. **Fail closed.** Tuple arity, record sequence, occurrence sequence,
     target kind, marker closure, span ancestry, and all configured work and
     retention limits are mandatory. Malformed, truncated, stale, duplicate, or
     overflowing input halts the coordinator, suppresses successful completion,
@@ -2942,12 +2942,11 @@ regions while the document is still loading.
     partial navigation, and component-template operations do not emit streaming
     markers or browser records.
 
-### Stream contract (version 3, normative)
+### Stream contract (normative)
 
-Version 3 adds ordered range-state references and deltas. Version 2 made
-`componentStyles` mandatory on every checkpoint. Version 1 and version 2 peers
-are rejected at the envelope gate rather than interpreting an incompatible
-record.
+The four-field envelope below is the only supported streaming wire contract.
+There is no runtime compatibility branch; legacy versioned envelopes are
+rejected by the tuple-shape gate.
 
 These invariants are binding. Every one is enforced somewhere — by the
 compiler, by the coordinator, or by a test — and none may be relaxed without a
@@ -2960,11 +2959,11 @@ contract rather than introduce a parallel one.
    terminal record carries one response-local record sequence starting at `0`
    and increasing by exactly one. Any other value is rejected and halts the
    stream. There is no reordering buffer and no out-of-order tolerance.
-2. **Typed records and exactly one empty terminal.** The five-element envelope
-   is `[version, record_sequence, kind, target, payload]`. `kind` is `0` for a
+2. **Typed records and exactly one empty terminal.** The four-element envelope
+   is `[record_sequence, kind, target, payload]`. `kind` is `0` for a
    final boundary checkpoint, `1` for an updatable boundary checkpoint, `2`
    for a state update, and `4` for the terminal. Every response ends with
-   exactly one markerless `[3, sequence, 4, 0, {}]` after all scriptless tail
+   exactly one markerless `[sequence, 4, 0, {}]` after all scriptless tail
    bytes. A record arriving after it is corruption: it is rejected, its
    scaffolding released, and the stream is halted without disturbing the
    successful completion the terminal record already drove. The empty terminal
@@ -3122,27 +3121,25 @@ contract rather than introduce a parallel one.
     checkpoint, update, and terminal write flushes through the same transport,
     preserving its backpressure and disconnect errors.
 
-**Compatibility**
+**Wire shape**
 
-20. **The reader validates transport and version, not its own serializer.**
+20. **The reader validates transport shape, not its own serializer.**
     A record is written by this repository's handler and read back by this
     repository's coordinator, so the coordinator re-derives nothing the
-    serializer already guaranteed. Exactly three conditions are checked before
+    serializer already guaranteed. Exactly two conditions are checked before
     the tuple is trusted: `JSON.parse` success, which is a *complete*
     truncation detector because every proper prefix of a JSON array is invalid
-    JSON (rule 3 seen from the transport side); a five-element array, so
-    destructuring is total; and `version`. Everything past those is document
+    JSON (rule 3 seen from the transport side); and a four-element array, so
+    destructuring is total. Everything past those is document
     state rather than record shape, and is enforced where it is actually
     known — the coordinator halts the stream on a sequence or target mismatch,
     and commits inside an error boundary so any payload defect fails closed
     instead of hydrating partially.
-21. **`version` is the only compatibility mechanism.** Because rule 20 removes
-    per-field checks, a stale cached client reads an unrecognized `kind` as a
-    final checkpoint. Any new record kind, tuple shape, or incompatible payload
-    meaning must therefore bump `version`, which is gated before any element is
-    read. Purely additive payload fields do not bump it and are ignored by
-    older readers, which is what makes tolerating an unexpected terminal
-    payload (rule 2) safe rather than lax.
+21. **There is one clean-break contract.** The handler and coordinator change
+    together. A versioned or otherwise obsolete tuple is rejected by rule 20;
+    no compatibility parser or alternate serializer is retained. Any
+    incompatible change updates this contract, both endpoints, and their tests
+    in one release.
 
 ### Directive spelling and the structural signal namespace
 
@@ -3276,18 +3273,18 @@ produce:
 <search-box data-ws data-ws-enclosing="0">...</search-box>
 <!--/wb:0-->
 <script type="application/json" data-webui-boundary>
-  [3,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0,"state":{"todos":[]},"templates":{}}]
+  [0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0,"state":{"todos":[]},"templates":{}}]
 </script>
 <webui-hydrate></webui-hydrate>
 ...ntp-page tail...
 </ntp-page>
 <!--/ws:0-->
 <script type="application/json" data-webui-boundary>
-  [3,1,3,0,{"stateRef":0,"stateDelta":{"toolbar":{}},"templates":{}}]
+  [1,3,0,{"stateRef":0,"stateDelta":{"toolbar":{}},"templates":{}}]
 </script>
 <webui-hydrate></webui-hydrate>
 <script type="application/json" data-webui-boundary>
-  [3,2,4,0,{}]
+  [2,4,0,{}]
 </script>
 <webui-hydrate></webui-hydrate>
 ```
@@ -3296,7 +3293,7 @@ produce:
   existing `<!--wr-->` / `<!--wc-->` family documented under "Plugin data and
   SSR hydration markers" above — same removal-after-hydration contract.
 - The stream envelope is the script-safe tuple
-  `[version, record_sequence, kind, target, payload]`. A boundary checkpoint
+  `[record_sequence, kind, target, payload]`. A boundary checkpoint
   uses kind `0` (final) or `1` (updatable), its compiler-assigned boundary ID as
   `target`, and a bootstrap object as `payload`. The first reusable projection
   carries `state`; a later proven superset under the same revision may instead
@@ -3332,16 +3329,16 @@ produce:
   definitions are loaded (see races below).
 - The handler emits one marker pair, one payload, and one sentinel per boundary,
   then calls `flush()` (see "Flush contract"). State updates are markerless
-  `[3, record_sequence, 2, boundary_id, projected_state]` records followed by
+  `[record_sequence, 2, boundary_id, projected_state]` records followed by
   the same sentinel and flush; they resolve only through roots captured by the
   updatable checkpoint. The coordinator removes every payload and sentinel
   after processing and removes checkpoint markers after hydration commits.
 - At `body_end`, the handler writes any host-provided body injection and then
-  emits one empty markerless `[3,next_sequence,4,0,{}]` terminal record. The
+  emits one empty markerless `[next_sequence,4,0,{}]` terminal record. The
   terminal flush also commits preceding native/scriptless tail bytes, but those
   bytes never manufacture another state or template projection. A static
   streaming document with no boundaries therefore emits exactly
-  `[3,0,4,0,{}]`. Streaming mode does **not** also emit a page-wide
+  `[0,4,0,{}]`. Streaming mode does **not** also emit a page-wide
   `#webui-data` block. Boundary checkpoints share the existing `WebUiBootstrap`
   and `write_selected_state` paths, so there is no second state-selection
   implementation. A request-local key scratch vector is cleared and reused
@@ -3358,8 +3355,8 @@ produce:
   rendering ignores namespaced raw structural signals; ordinary element and
   fragment rendering is identical in both modes. Boundary emission is gated on
   session mode and reuses the existing per-signal dedup pattern.
-- Every browser record is the five-element tuple
-  `[3, sequence, kind, target, payload]`.
+- Every browser record is the four-element tuple
+  `[sequence, kind, target, payload]`.
 - Kinds are `0` final checkpoint, `1` updatable checkpoint, `2` state update,
   `3` generated span completion, and `4` terminal.
 - A checkpoint target is `BoundaryInstanceId`; a span-completion target is
@@ -3374,9 +3371,9 @@ produce:
   `enclosingSpanInstanceId`, projected `state`, and additive template,
   inventory, route, nonce, CSS, and style deltas as needed. Span completion
   payloads use the same bootstrap fields except declaration identity.
-- State updates are markerless `[3, sequence, 2, instanceId, patch]` records.
+- State updates are markerless `[sequence, 2, instanceId, patch]` records.
   They carry no templates and insert no application markup.
-- Exactly one markerless `[3, sequence, 4, 0, {}]` terminal follows the final
+- Exactly one markerless `[sequence, 4, 0, {}]` terminal follows the final
   tail bytes. A boundary-free streaming render emits the terminal from
   `start`.
 - Each record script is followed by one generated `<webui-hydrate>` sentinel.

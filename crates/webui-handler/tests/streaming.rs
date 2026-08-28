@@ -56,7 +56,7 @@ fn document(body: &str) -> String {
 }
 
 #[test]
-fn component_local_boundary_suspends_and_emits_v3_span_contract() {
+fn component_local_boundary_suspends_and_emits_span_contract() {
     let protocol = parsed_protocol(
         &document(r#"<shell-card title="frozen"></shell-card>"#),
         &[
@@ -87,7 +87,7 @@ fn component_local_boundary_suspends_and_emits_v3_span_contract() {
     assert!(!committed.done && committed.boundary.is_none());
     let html = String::from_utf8(committed.bytes).unwrap();
     assert!(html.contains(r#"<!--wb:0--><child-box label="frozen" data-ws data-ws-enclosing="0">"#));
-    assert!(html.contains(r#"<!--/wb:0--><script type="application/json" data-webui-boundary>[3,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0"#));
+    assert!(html.contains(r#"<!--/wb:0--><script type="application/json" data-webui-boundary>[0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0"#));
     // The committed step stops at its checkpoint: the component tail and the
     // span completion that follow belong to the next step.
     assert!(!html.contains("<footer>tail</footer>"));
@@ -98,9 +98,9 @@ fn component_local_boundary_suspends_and_emits_v3_span_contract() {
     let tail = String::from_utf8(end.bytes).unwrap();
     assert!(tail.contains("<footer>tail</footer>"));
     assert!(tail.contains(
-        r#"</shell-card><!--/ws:0--><script type="application/json" data-webui-boundary>[3,1,3,0,"#
+        r#"</shell-card><!--/ws:0--><script type="application/json" data-webui-boundary>[1,3,0,"#
     ));
-    assert!(tail.contains("[3,2,4,0,{}]"));
+    assert!(tail.contains("[2,4,0,{}]"));
     assert!(tail.contains("</script><webui-hydrate></webui-hydrate>"));
 }
 
@@ -145,7 +145,7 @@ fn span_completion_reuses_the_exact_prior_full_state() {
         "the span must reference rather than reserialize its parent's full state"
     );
     assert!(
-        html.contains(r#"[3,2,3,0,{"componentStyles":"#) && html.contains(r#""stateRef":0"#),
+        html.contains(r#"[2,3,0,{"componentStyles":"#) && html.contains(r#""stateRef":0"#),
         "the span completion must carry a backward reference: {html}"
     );
     assert!(
@@ -316,13 +316,13 @@ fn resume_writes_only_the_committed_boundary_and_advance_writes_the_tail() {
     assert!(bytes.starts_with("<!--wb:0--><p>results</p><!--/wb:0--><script"));
     assert!(bytes.ends_with("<webui-hydrate></webui-hydrate>"));
     assert!(!bytes.contains("<footer>tail</footer>"));
-    assert!(!bytes.contains("[3,1,4,0,{}]"));
+    assert!(!bytes.contains("[1,4,0,{}]"));
 
     let tail = session.advance().unwrap();
     assert!(tail.done);
     let tail = String::from_utf8(tail.bytes).unwrap();
     assert!(tail.starts_with("<footer>tail</footer>"));
-    assert!(tail.contains("[3,1,4,0,{}]"));
+    assert!(tail.contains("[1,4,0,{}]"));
     assert!(!tail.contains("<!--wb:0-->"));
 }
 
@@ -605,7 +605,7 @@ fn false_if_discovers_no_occurrence_and_boundary_free_start_completes() {
     let html = String::from_utf8(step.bytes).unwrap();
     assert!(!html.contains("<!--wb:"));
     assert!(html.contains("<p>done</p>"));
-    assert!(html.contains("[3,0,4,0,{}]"));
+    assert!(html.contains("[0,4,0,{}]"));
 }
 
 #[test]
@@ -625,9 +625,9 @@ fn component_false_if_emits_generated_span_without_occurrence() {
     assert!(hidden_html.contains("<!--ws:0--><conditional-card"));
     assert!(hidden_html.contains(r#"data-ws data-ws-span="0">"#));
     assert!(hidden_html.contains(
-        r#"</conditional-card><!--/ws:0--><script type="application/json" data-webui-boundary>[3,0,3,0,"#
+        r#"</conditional-card><!--/ws:0--><script type="application/json" data-webui-boundary>[0,3,0,"#
     ));
-    assert!(hidden_html.contains("[3,1,4,0,{}]"));
+    assert!(hidden_html.contains("[1,4,0,{}]"));
 
     let mut shown = new_session(protocol, "/");
     let shown = shown.start(&test_json!({ "show": true })).unwrap();
@@ -824,8 +824,8 @@ fn generated_route_false_if_emits_span_without_boundary_occurrence() {
     assert!(!html.contains("<!--wb:"));
     assert!(html.contains(r#"<!--ws:0--><route-page data-ws data-ws-span="0">"#));
     assert!(html.contains("</route-page><!--/ws:0-->"));
-    assert!(html.contains(r#"<script type="application/json" data-webui-boundary>[3,0,3,0,"#));
-    assert!(html.contains("[3,1,4,0,{}]"));
+    assert!(html.contains(r#"<script type="application/json" data-webui-boundary>[0,3,0,"#));
+    assert!(html.contains("[1,4,0,{}]"));
 }
 
 #[test]
@@ -876,8 +876,8 @@ fn nested_component_spans_are_outer_first_and_complete_inner_first() {
     let inner_end = html.find("<!--/ws:1-->").unwrap();
     let outer_end = html.find("<!--/ws:0-->").unwrap();
     assert!(inner_end < outer_end);
-    assert!(html[inner_end..].contains("[3,1,3,1,"));
-    assert!(html[outer_end..].contains("[3,2,3,0,"));
+    assert!(html[inner_end..].contains("[1,3,1,"));
+    assert!(html[outer_end..].contains("[2,3,0,"));
 }
 
 #[test]
@@ -908,7 +908,7 @@ fn update_targets_one_runtime_instance() {
             .unwrap(),
     )
     .unwrap();
-    assert!(update.contains("[3,1,2,0,{\"count\":2}]"));
+    assert!(update.contains("[1,2,0,{\"count\":2}]"));
 
     assert!(session.advance().unwrap().done);
     assert!(session
@@ -949,7 +949,7 @@ fn update_before_terminal_targets_the_runtime_occurrence() {
             .unwrap(),
     )
     .unwrap();
-    assert!(update.contains("[3,1,2,0,{\"count\":2}]"));
+    assert!(update.contains("[1,2,0,{\"count\":2}]"));
     assert!(session
         .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap()

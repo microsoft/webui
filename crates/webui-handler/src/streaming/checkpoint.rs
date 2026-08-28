@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Version-3 checkpoint, update, span-completion, and terminal serialization.
+//! Checkpoint, update, span-completion, and terminal serialization.
 
 use super::error::component_style_payload_resources_missing_error;
 use super::inventory::{
@@ -23,7 +23,6 @@ pub(super) const RECORD_KIND_UPDATABLE_CHECKPOINT: usize = 1;
 pub(super) const RECORD_KIND_STATE_UPDATE: usize = 2;
 pub(super) const RECORD_KIND_SPAN_COMPLETION: usize = 3;
 pub(super) const RECORD_KIND_TERMINAL: usize = 4;
-const STREAMING_PROTOCOL_VERSION: usize = 3;
 
 /// The range-bearing record currently being committed.
 pub(super) enum RangeRecord {
@@ -558,7 +557,7 @@ fn write_record_open(
     write_record_header(context.writer, record_sequence, kind, target)
 }
 
-/// Emit `>[<version>,<sequence>,<kind>,<target>,` in one writer call.
+/// Emit `>[<sequence>,<kind>,<target>,` in one writer call.
 fn write_record_header(
     writer: &mut dyn crate::ResponseWriter,
     record_sequence: usize,
@@ -567,8 +566,6 @@ fn write_record_header(
 ) -> Result<()> {
     let mut buffer = MarkerBuffer::new();
     buffer.push_str(">[")?;
-    buffer.push_usize(STREAMING_PROTOCOL_VERSION)?;
-    buffer.push_str(",")?;
     buffer.push_usize(record_sequence)?;
     buffer.push_str(",")?;
     buffer.push_usize(kind)?;

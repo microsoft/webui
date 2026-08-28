@@ -389,7 +389,7 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         assert!(
             streaming
                 .output
-                .contains(&format!("[3,{sequence},0,{sequence},")),
+                .contains(&format!("[{sequence},0,{sequence},")),
             "streaming output is missing boundary {sequence} envelope"
         );
     }
@@ -397,18 +397,18 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
     assert!(
         streaming
             .output
-            .contains(&format!("[3,{boundaries},4,0,{{}}]")),
+            .contains(&format!("[{boundaries},4,0,{{}}]")),
         "streaming output is missing the terminal envelope"
     ); // The empty terminal record is always the last envelope and never carries a
        // bootstrap, regardless of native or scriptless tail bytes.
        // Every envelope (each boundary commit plus the terminal) opens with the
        // boundary sentinel prefix, so the prefix count equals boundaries + 1.
     assert_eq!(
-        occurrences(&streaming.output, "data-webui-boundary>[3,"),
+        occurrences(&streaming.output, "data-webui-boundary>["),
         boundaries + 1,
         "each envelope opens with the boundary sentinel prefix"
     );
-    if let Some(terminal) = streaming.output.find(&format!("[3,{boundaries},4,0,{{}}]")) {
+    if let Some(terminal) = streaming.output.find(&format!("[{boundaries},4,0,{{}}]")) {
         if boundaries > 0 {
             match streaming
                 .output

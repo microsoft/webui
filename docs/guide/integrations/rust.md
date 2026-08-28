@@ -355,7 +355,7 @@ initially false conditions or empty repeats. Unrelated later boundaries remain
 excluded. Template metadata is sent only when first reachable, inventory still
 tracks only rendered SSR roots, and repeated instances receive checkpoint-local
 state without duplicate metadata. The final terminal envelope is always
-`[3,nextSequence,4,0,{}]`; its flush also commits preceding static tail bytes.
+`[nextSequence,4,0,{}]`; its flush also commits preceding static tail bytes.
 
 At `start`, WebUI freezes only projected top-level keys required to continue,
 plus lexical locals and route/component scope. Resume state overlays that frozen
@@ -366,7 +366,7 @@ When a boundary occurs inside a reusable component, WebUI emits a generated
 span for the unfinished parent. The early child checkpoint can hydrate across
 light or open shadow DOM before the parent tail. A later span-completion record
 activates the parent exactly once. The terminal envelope is
-`[3,nextSequence,4,0,{}]`.
+`[nextSequence,4,0,{}]`.
 
 The bounded channel limits bytes retained by a running render, but it does not
 bound how many requests can queue in Tokio's blocking pool. Acquire a

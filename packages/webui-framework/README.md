@@ -269,8 +269,8 @@ activation. The coordinator does not publish that state to
 scaffolding after commit. Updates apply state to retained roots and never insert
 markup or rerun hydration.
 
-The browser reads version-3
-`[3, sequence, kind, target, payload]` records for final checkpoints,
+The browser reads the single unversioned
+`[sequence, kind, target, payload]` contract for final checkpoints,
 updatable checkpoints, updates, span completions, and terminal. Every commit
 also emits a `performance.mark()` - `webui:boundary:<id>`,
 `webui:boundary:<id>:update`, `webui:span:<id>`, or

@@ -4,9 +4,6 @@
 import type { TemplateMeta } from './template.js';
 import type { ComponentStyles } from './element/styles.js';
 
-/** Clean-break component-local streaming protocol version. */
-export const STREAMING_PROTOCOL_VERSION = 3;
-
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {
   /** Compiler declaration that produced this runtime boundary occurrence. */
@@ -78,9 +75,8 @@ export type BoundaryRecordPayload =
   | SpanCompletionPayload
   | Record<string, unknown>;
 
-/** Compact versioned wire record for one streamed response operation. */
+/** Compact wire record for one streamed response operation. */
 export type BoundaryEnvelope = readonly [
-  version: number,
   recordSequence: number,
   kind: BoundaryRecordKind,
   target: number,
@@ -101,15 +97,11 @@ function invalid(reason: string): ParseBoundaryEnvelopeResult {
  * Only two failure modes are real, so only two are checked. A response cut off
  * mid-record leaves a proper prefix of a JSON array, and every proper prefix of
  * a JSON array is invalid JSON, which makes `JSON.parse` a complete truncation
- * detector. Separately, the client bundle is HTTP-cached and can therefore be
- * older than the server that produced the response, so the version is gated
- * before any element of the tuple is trusted.
+ * detector. A complete record must then have the one supported tuple shape.
  *
  * Past those checks the tuple was written by our own serializer and is not
- * re-validated. That makes `version` load-bearing: any new record kind or tuple
- * shape must bump it. Sequence, kind, and target ordering are document state
- * and are checked by the coordinator, which fails the stream closed on a
- * mismatch.
+ * re-validated. Sequence, kind, and target ordering are document state and are
+ * checked by the coordinator, which fails the stream closed on a mismatch.
  */
 export function parseBoundaryEnvelope(text: string): ParseBoundaryEnvelopeResult {
   let parsed: unknown;
@@ -119,14 +111,9 @@ export function parseBoundaryEnvelope(text: string): ParseBoundaryEnvelopeResult
     return invalid('boundary payload is not valid JSON');
   }
 
-  if (!Array.isArray(parsed) || parsed.length !== 5) {
+  if (!Array.isArray(parsed) || parsed.length !== 4) {
     return invalid(
-      'boundary envelope must be a 5-element [version, recordSequence, kind, target, payload] array',
-    );
-  }
-  if (parsed[0] !== STREAMING_PROTOCOL_VERSION) {
-    return invalid(
-      `unsupported boundary envelope version ${JSON.stringify(parsed[0])}`,
+      'boundary envelope must be a 4-element [recordSequence, kind, target, payload] array',
     );
   }
 

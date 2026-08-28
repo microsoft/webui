@@ -280,7 +280,7 @@ function processSentinel(sentinel: Element): void {
     return;
   }
 
-  const [, sequence, kind, target, payload] = parsed.envelope;
+  const [sequence, kind, target, payload] = parsed.envelope;
   if (sequence !== nextExpectedRecordSequence) {
     failBoundary(
       sentinel,

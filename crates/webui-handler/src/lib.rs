@@ -13646,7 +13646,7 @@ mod tests {
         assert!(boundary_flush.contains("<!--wb:0-->"));
         assert!(boundary_flush.contains("<!--/wb:0-->"));
         assert!(
-            boundary_flush.contains(r#"[3,0,0,0,{"declarationId":0,"componentStyles":"#),
+            boundary_flush.contains(r#"[0,0,0,{"declarationId":0,"componentStyles":"#),
             "boundary flush: {boundary_flush}"
         );
         assert!(boundary_flush.contains(r#""inventory":"01","state":{"count":1}"#));
@@ -13657,9 +13657,9 @@ mod tests {
         // another state/template projection.
         let terminal_flush = &writer.output[writer.flushes[1]..writer.flushes[2]];
         assert!(terminal_flush.contains("slow tail"));
-        assert!(writer.output.contains("[3,1,4,0,{}]"));
-        assert!(!writer.output.contains("[3,1,0,1,"));
-        assert!(!writer.output.contains("[3,2,4,0,{}]"));
+        assert!(writer.output.contains("[1,4,0,{}]"));
+        assert!(!writer.output.contains("[1,0,1,"));
+        assert!(!writer.output.contains("[2,4,0,{}]"));
 
         let marker = writer
             .output
@@ -13698,7 +13698,7 @@ mod tests {
             1,
             "full state belongs only to the interactive boundary"
         );
-        assert!(writer.output.contains("[3,1,4,0,{}]"));
+        assert!(writer.output.contains("[1,4,0,{}]"));
     }
 
     /// Streaming must place the reserved-state injects exactly where the
@@ -13834,7 +13834,7 @@ mod tests {
 
         assert_eq!(writer.flushes.len(), 1);
         assert!(writer.output.contains(STREAMING_MARKER));
-        assert!(writer.output.contains("[3,0,4,0,{}]"));
+        assert!(writer.output.contains("[0,4,0,{}]"));
         assert!(!writer.output.contains("serverOnly"));
         assert!(!writer.output.contains("id=\"webui-data\""));
         assert!(!writer.output.contains("<!--wb:"));
@@ -15033,7 +15033,7 @@ mod tests {
         assert!(b0.contains(r#""templates":{"comp-a":"#), "b0: {b0}");
         assert!(b0.contains(r#""a_count":1"#), "b0: {b0}");
         assert!(
-            b0.contains(r#"[3,0,0,0,{"declarationId":0,"componentStyles":"#),
+            b0.contains(r#"[0,0,0,{"declarationId":0,"componentStyles":"#),
             "b0: {b0}"
         );
         assert!(b0.contains(r#""inventory":"01""#), "b0: {b0}");
@@ -15044,7 +15044,7 @@ mod tests {
         assert!(b1.contains(r#""templates":{"comp-b":"#), "b1: {b1}");
         assert!(b1.contains(r#""b_count":2"#), "b1: {b1}");
         assert!(
-            b1.contains(r#"[3,1,0,1,{"declarationId":1,"componentStyles":"#),
+            b1.contains(r#"[1,0,1,{"declarationId":1,"componentStyles":"#),
             "b1: {b1}"
         );
         assert!(b1.contains(r#""inventory":"02""#), "b1: {b1}");
@@ -15057,7 +15057,7 @@ mod tests {
         // Boundary 2: comp-a reused — state present, template absent (empty delta).
         assert!(b2.contains(r#""a_count":1"#), "b2: {b2}");
         assert!(
-            b2.contains(r#"[3,2,0,2,{"declarationId":2,"componentStyles":"#),
+            b2.contains(r#"[2,0,2,{"declarationId":2,"componentStyles":"#),
             "b2: {b2}"
         );
         assert!(b2.contains(r#""inventory":"""#), "b2: {b2}");
@@ -15098,7 +15098,7 @@ mod tests {
                 payload_start + checkpoint[payload_start..].find("</script>").unwrap();
             let record: Value =
                 serde_json::from_str(&checkpoint[payload_start..payload_end]).unwrap();
-            record[4]["componentStyles"].clone()
+            record[3]["componentStyles"].clone()
         };
 
         let first = checkpoint_styles(segment(0));

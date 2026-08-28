@@ -15,7 +15,7 @@
  * coordinator (`packages/webui-framework/src/streaming.ts`) parses:
  *
  *   <!--wb:N--> <bench-island data-ws>...</bench-island> <!--/wb:N-->
- *   <script type="application/json" data-webui-boundary>[3,recordSequence,kind,target,payload]</script>
+ *   <script type="application/json" data-webui-boundary>[recordSequence,kind,target,payload]</script>
  *   <webui-hydrate></webui-hydrate>
  *
  * No whitespace is emitted between the `<!--/wb:N-->` end marker and the
@@ -37,7 +37,7 @@ export const TOTAL_ROOTS = 1500;
  * This counts only the bytes of the streamed `label` values (the dominant
  * projected state a real app would ship), summed across all boundaries. It
  * deliberately excludes the unavoidable per-boundary protocol/property overhead
- * — the v3 `[3,recordSequence,kind,target,{...}]` envelope framing, required
+ * — the `[recordSequence,kind,target,{...}]` envelope framing, required
  * `declarationId`, the `templates` block (first boundary only), and the tiny fixed
  * `note` property — because that overhead is inherent to having more boundaries
  * and is not "equal work" to hold constant. It is therefore projected-state
@@ -176,7 +176,6 @@ function boundaryFragment(
   };
   if (withTemplates) bootstrap.templates = { [ISLAND_TAG]: ISLAND_TEMPLATE };
   const envelope = JSON.stringify([
-    3,
     recordSequence,
     kind,
     boundaryInstanceId,
@@ -196,7 +195,6 @@ function stateUpdateFragment(
   label: string,
 ): string {
   const envelope = JSON.stringify([
-    3,
     recordSequence,
     2,
     boundaryId,
@@ -206,9 +204,9 @@ function stateUpdateFragment(
     + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
 }
 
-/** The v3 terminal envelope: no markers, terminal kind 4, empty payload. */
+/** The terminal envelope: no markers, terminal kind 4, empty payload. */
 function terminalFragment(recordSequence: number): string {
-  const envelope = JSON.stringify([3, recordSequence, 4, 0, {}]);
+  const envelope = JSON.stringify([recordSequence, 4, 0, {}]);
   return `<script type="application/json" data-webui-boundary>${envelope}</script>`
     + `<${'webui-hydrate'}></${'webui-hydrate'}>`;
 }
@@ -217,7 +215,6 @@ function terminalFragment(recordSequence: number): string {
  * content boundary parses roots after the class has the same template metadata. */
 function templateSetupFragment(): string {
   const envelope = JSON.stringify([
-    3,
     0,
     0,
     0,

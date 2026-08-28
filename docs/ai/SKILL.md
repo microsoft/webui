@@ -874,7 +874,7 @@ outlets, and selected route content.
   `resume_current` skips the overlay when retained state is authoritative.
   Owned sessions can move freshly decoded values through `start_owned` and
   `resume_owned`.
-- Version-3 range records may reference the exact prior range state by sequence
+- Range records may reference the exact prior range state by sequence
   and carry only a top-level delta. Missing, stale, forward, mismatched, or
   malformed references fail closed.
 - A component-local boundary uses generated parent spans. Its early marked child
