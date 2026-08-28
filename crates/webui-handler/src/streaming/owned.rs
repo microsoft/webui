@@ -141,6 +141,16 @@ impl StreamingSession {
         self.step(|core, call| core.start(call, state))
     }
 
+    /// Render to the first occurrence by moving caller-owned state into the
+    /// continuation snapshot.
+    ///
+    /// Async hosts that freshly decode or load state should prefer this method:
+    /// a full-state continuation takes ownership of the value without cloning
+    /// it, while a keyed continuation moves only its selected top-level values.
+    pub fn start_owned(&mut self, state: Value) -> Result<StreamStep> {
+        self.step(move |core, call| core.start_owned(call, state))
+    }
+
     /// Commit the pending occurrence through its checkpoint, then stop.
     ///
     /// The returned bytes hold that occurrence's record and nothing that
@@ -157,6 +167,35 @@ impl StreamingSession {
         mode: BoundaryMode,
     ) -> Result<StreamStep> {
         self.step(|core, call| core.resume(call, instance_id, state, mode))
+    }
+
+    /// Commit the pending occurrence by moving caller-owned state into the
+    /// retained continuation snapshot, then stop at its checkpoint flush.
+    ///
+    /// This is the preferred async-host path when the state was freshly decoded
+    /// or loaded for this occurrence. Moving changed top-level values avoids
+    /// cloning or deeply comparing their subtrees while preserving the same
+    /// patch semantics as [`Self::resume`].
+    pub fn resume_owned(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        state: Value,
+        mode: BoundaryMode,
+    ) -> Result<StreamStep> {
+        self.step(move |core, call| core.resume_owned(call, instance_id, state, mode))
+    }
+
+    /// Commit the pending occurrence against the session's retained state.
+    ///
+    /// The call still returns immediately after the checkpoint flush, preserving
+    /// the host's async pause point before [`Self::advance`], but avoids a state
+    /// overlay when no data changed since the preceding step.
+    pub fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        mode: BoundaryMode,
+    ) -> Result<StreamStep> {
+        self.step(|core, call| core.resume_current(call, instance_id, mode))
     }
 
     /// Write the ordinary parent bytes that follow a committed occurrence.

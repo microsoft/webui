@@ -57,6 +57,10 @@ import type {
 } from './streaming-protocol.js';
 import { applyStateUpdate } from './streaming-state.js';
 import {
+  clearRangeState,
+  resolveRangeState,
+} from './streaming-record-state.js';
+import {
   abandonOpenSpans,
   completeSpan,
   hasOpenSpans,
@@ -218,6 +222,7 @@ function fail(reason: string): void {
   abandonPendingWaiters();
   abandonOpenSpans();
   clearUpdatableBoundaries();
+  clearRangeState();
   settlePendingTerminal(false);
   for (let i = queueHead; i < queue.length; i++) {
     discardRejectedBoundary(queue[i]);
@@ -404,11 +409,13 @@ function commitRecord(
   markBoundaryPending();
   let committed = false;
   try {
+    const state = resolveRangeState(payload, sequence);
     if (span) {
-      hydrateSpanCompletion(payload as SpanCompletionPayload, range, target);
+      hydrateSpanCompletion(payload as SpanCompletionPayload, state, range, target);
     } else {
       hydrateCheckpoint(
         payload as BoundaryBootstrap,
+        state,
         range,
         target,
         updatable,
@@ -442,6 +449,7 @@ function commitRecord(
 
 function hydrateCheckpoint(
   bootstrap: BoundaryBootstrap,
+  state: Record<string, unknown> | undefined,
   range: HydrationRange,
   target: number,
   updatable: boolean,
@@ -465,7 +473,7 @@ function hydrateCheckpoint(
     activateRootsBetween(
       range.start,
       range.end,
-      bootstrap.state,
+      state,
       boundary,
       bypass,
     );
@@ -481,6 +489,7 @@ function newUpdatableBoundary(): UpdatableBoundary {
 
 function hydrateSpanCompletion(
   payload: SpanCompletionPayload,
+  state: Record<string, unknown> | undefined,
   range: HydrationRange,
   target: number,
 ): void {
@@ -488,7 +497,7 @@ function hydrateSpanCompletion(
   if (invalid) throw new Error(invalid);
   applyBoundaryBootstrap(payload);
   // `prepareSpanCompletion` already rejected a markerless range.
-  activateRootsBetween(range.start!, range.end!, payload.state);
+  activateRootsBetween(range.start!, range.end!, state);
   completeSpan(target);
 }
 
@@ -589,6 +598,7 @@ function commitTerminal(
   removeBoundaryScaffolding(sentinel, scriptEl, null, null);
   terminalCommitted = true;
   pendingTerminalSequence = sequence;
+  clearRangeState();
   clearUpdatableBoundaries(true);
   scheduleTerminalValidation();
 }
@@ -703,6 +713,7 @@ export function resetStreamingCoordinatorStateForTests(): void {
   abandonOpenSpans();
   settlePendingTerminal(false);
   clearUpdatableBoundaries();
+  clearRangeState();
   coordinatorGeneration++;
   queue.length = 0;
   queueHead = 0;

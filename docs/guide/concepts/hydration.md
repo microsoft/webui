@@ -393,14 +393,22 @@ markers, and temporary attributes. Final occurrences release roots immediately.
 Updatable occurrences retain only live roots and a pending shallow patch until
 terminal.
 
-The browser protocol is `[2, sequence, kind, target, payload]`. Kinds are final
+The browser protocol is `[3, sequence, kind, target, payload]`. Kinds are final
 checkpoint, updatable checkpoint, update, generated span completion, and
 terminal. A malformed, truncated, out-of-order, or over-limit stream fails
 closed, suppresses successful completion, and releases discoverable deferred
 state within fixed bounds.
 
+Range records normally carry their projected `state`. When the exact preceding
+range projection is a proven subset under the same server state revision, a
+record instead carries `stateRef` plus only its top-level `stateDelta`. The
+coordinator resolves the state before activation and keeps prior state immutable
+for delayed roots. Missing, stale, forward, mismatched, or malformed references
+fail closed. State-update records remain independent patches and never alter
+the range-state reference base.
+
 At `body_end`, the handler emits one markerless empty terminal envelope:
-`[2,nextSequence,4,0,{}]`. Its flush also commits any preceding native or static
+`[3,nextSequence,4,0,{}]`. Its flush also commits any preceding native or static
 tail HTML, but terminal records never repeat template metadata or state. A
 truncated or malformed stream, or one exceeding a client work bound such as the
 queued-boundary or marker-scan limit, logs an error, suppresses

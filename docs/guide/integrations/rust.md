@@ -294,11 +294,13 @@ The status states are exact: a descriptor requires `resume`; no descriptor with
 completed status has no descriptor, and the writer already contains the tail
 and terminal.
 
-`WebUIHandler::render_streaming` uses one state value for the complete response:
-it projects and freezes that value once, then resumes each occurrence directly
-against the same snapshot. The lower-level `stream_response` API keeps the
-public `resume` overlay because hosts may supply newly resolved state for each
-occurrence.
+`WebUIHandler::render_streaming` uses one prepared render context and borrows
+one state value for the complete response. It preserves every checkpoint flush
+without cloning the state or rebuilding the context between boundaries. The
+lower-level `stream_response` API keeps the public `resume` overlay because
+hosts may supply newly resolved state for each occurrence. When no state
+changed, `resume_current` skips that overlay while retaining the checkpoint
+pause before `advance`.
 
 Every descriptor contains `instance_id`, `declaration_id`, `owner`, `name`, and
 an optional string or numeric `key`. A component-owned declaration reached from
@@ -353,7 +355,7 @@ initially false conditions or empty repeats. Unrelated later boundaries remain
 excluded. Template metadata is sent only when first reachable, inventory still
 tracks only rendered SSR roots, and repeated instances receive checkpoint-local
 state without duplicate metadata. The final terminal envelope is always
-`[2,nextSequence,4,0,{}]`; its flush also commits preceding static tail bytes.
+`[3,nextSequence,4,0,{}]`; its flush also commits preceding static tail bytes.
 
 At `start`, WebUI freezes only projected top-level keys required to continue,
 plus lexical locals and route/component scope. Resume state overlays that frozen
@@ -364,7 +366,7 @@ When a boundary occurs inside a reusable component, WebUI emits a generated
 span for the unfinished parent. The early child checkpoint can hydrate across
 light or open shadow DOM before the parent tail. A later span-completion record
 activates the parent exactly once. The terminal envelope is
-`[2,nextSequence,4,0,{}]`.
+`[3,nextSequence,4,0,{}]`.
 
 The bounded channel limits bytes retained by a running render, but it does not
 bound how many requests can queue in Tokio's blocking pool. Acquire a
@@ -530,7 +532,10 @@ component.
 |---|---|
 | `WebUIHandler::stream_response(protocol, options, writer)` | Create one progressive response session |
 | `StreamingResponse::start(state)` | Render and flush through the first runtime occurrence or terminal |
+| `StreamingResponse::start_owned(state)` | Move freshly loaded state into the continuation, then render through the first occurrence or terminal |
 | `StreamingResponse::resume(instance_id, state, mode)` | Render and flush only the pending occurrence through its checkpoint |
+| `StreamingResponse::resume_owned(instance_id, state, mode)` | Move a newly loaded state overlay, then flush only the pending occurrence |
+| `StreamingResponse::resume_current(instance_id, mode)` | Commit with retained state and preserve the checkpoint pause |
 | `StreamingResponse::advance()` | Render following parent bytes through the next occurrence or terminal |
 | `StreamingResponse::update(instance_id, patch)` | Send projected object state to a committed updatable occurrence |
 | `StreamingResponse::is_done()` | Report whether terminal and writer end completed |
@@ -541,8 +546,8 @@ same language.
 
 When you would rather own the bytes - for example to feed a channel, a test
 harness, or a transport whose writer cannot be borrowed for that long —
-`StreamingSession` offers the same four operations and returns a `Vec<u8>` per
-call instead:
+`StreamingSession` offers the same step machine and returns a `Vec<u8>` per
+call instead. Its owned-state variants avoid copying freshly loaded values:
 
 ```rust
 let mut session = StreamingSession::new(
@@ -550,7 +555,7 @@ let mut session = StreamingSession::new(
     Arc::clone(&protocol),
     SessionOptions::new("index.html", "/"),
 )?;
-let mut step = session.start(&initial_state)?;
+let mut step = session.start_owned(initial_state)?;
 loop {
     sink.send(std::mem::take(&mut step.bytes))?;
     if step.done {
@@ -560,7 +565,7 @@ loop {
         Some(boundary) => {
             let state =
                 load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
-            session.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+            session.resume_owned(boundary.instance_id, state, BoundaryMode::Final)?
         }
         None => session.advance()?,
     };
@@ -568,7 +573,11 @@ loop {
 ```
 
 The session holds its own `Arc` clones, so it may outlive the bindings you
-created it from.
+created it from. `start_owned` and `resume_owned` move freshly decoded or loaded
+state into the continuation without cloning large subtrees. If no state changed,
+`resume_current` avoids both a clone and a deep equality walk. Every resume form
+still returns immediately after the checkpoint flush; `advance` remains a
+separate call after any async wait.
 
 This is the same type Node, WASM, C, and C# drive, so behaviour is identical
 across hosts. Prefer `stream_response` in Rust servers: it writes straight into

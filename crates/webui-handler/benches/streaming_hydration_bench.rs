@@ -15,12 +15,14 @@
 //! harness in `examples/integration/streaming-browser-bench` owns browser-side
 //! validation.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use serde_json::{json, Value};
 use std::hint::black_box;
+use std::sync::Arc;
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
 use webui_handler::{
-    BoundaryMode, FlushWriter, Protocol, RenderOptions, ResponseWriter, WebUIHandler,
+    BoundaryMode, FlushWriter, Protocol, RenderOptions, ResponseWriter, SessionOptions,
+    StreamingSession, WebUIHandler,
 };
 use webui_parser::plugin::webui::WebUIParserPlugin;
 use webui_parser::{ComponentRegistration, CssStrategy, HtmlParser};
@@ -194,6 +196,100 @@ fn render_streaming(
     }
 }
 
+fn render_split(
+    handler: &WebUIHandler,
+    protocol: &Protocol,
+    state: &Value,
+    writer: &mut BenchWriter,
+) {
+    let options = RenderOptions::new(ENTRY_ID, REQUEST_PATH);
+    let mut response = match handler.stream_response(protocol, &options, writer) {
+        Ok(response) => response,
+        Err(error) => panic!("starting split streaming response failed: {error}"),
+    };
+    let mut status = match response.start(state) {
+        Ok(status) => status,
+        Err(error) => panic!("starting split streaming traversal failed: {error}"),
+    };
+    while !status.done {
+        status = match status.boundary.as_ref() {
+            Some(boundary) => {
+                match response.resume_current(boundary.instance_id, BoundaryMode::Final) {
+                    Ok(status) => status,
+                    Err(error) => panic!("resuming split streaming traversal failed: {error}"),
+                }
+            }
+            None => match response.advance() {
+                Ok(status) => status,
+                Err(error) => panic!("advancing split streaming traversal failed: {error}"),
+            },
+        };
+    }
+}
+
+fn render_split_owned_state(
+    handler: &WebUIHandler,
+    protocol: &Protocol,
+    state: Value,
+    writer: &mut BenchWriter,
+) {
+    let options = RenderOptions::new(ENTRY_ID, REQUEST_PATH);
+    let mut response = match handler.stream_response(protocol, &options, writer) {
+        Ok(response) => response,
+        Err(error) => panic!("starting split streaming response failed: {error}"),
+    };
+    let mut status = match response.start_owned(state) {
+        Ok(status) => status,
+        Err(error) => panic!("starting owned-state streaming traversal failed: {error}"),
+    };
+    while !status.done {
+        status = match status.boundary.as_ref() {
+            Some(boundary) => {
+                match response.resume_current(boundary.instance_id, BoundaryMode::Final) {
+                    Ok(status) => status,
+                    Err(error) => panic!("resuming split streaming traversal failed: {error}"),
+                }
+            }
+            None => match response.advance() {
+                Ok(status) => status,
+                Err(error) => panic!("advancing split streaming traversal failed: {error}"),
+            },
+        };
+    }
+}
+
+fn render_owned_split(handler: Arc<WebUIHandler>, protocol: Arc<Protocol>, state: Value) -> usize {
+    let mut session = match StreamingSession::new(
+        handler,
+        protocol,
+        SessionOptions::new(ENTRY_ID, REQUEST_PATH),
+    ) {
+        Ok(session) => session,
+        Err(error) => panic!("creating owned streaming session failed: {error}"),
+    };
+    let mut step = match session.start_owned(state) {
+        Ok(step) => step,
+        Err(error) => panic!("starting owned streaming traversal failed: {error}"),
+    };
+    let mut bytes = step.bytes.len();
+    while !step.done {
+        step = match step.boundary.as_ref() {
+            Some(boundary) => {
+                match session.resume_current(boundary.instance_id, BoundaryMode::Final) {
+                    Ok(step) => step,
+                    Err(error) => panic!("resuming owned streaming traversal failed: {error}"),
+                }
+            }
+            None => match session.advance() {
+                Ok(step) => step,
+                Err(error) => panic!("advancing owned streaming traversal failed: {error}"),
+            },
+        };
+        bytes += step.bytes.len();
+    }
+    bytes
+}
+
 fn verify_streaming_case(boundaries: usize) -> StreamingCase {
     let protocol = parser_protocol(boundaries);
     let handler = hydration_handler();
@@ -293,7 +389,7 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
         assert!(
             streaming
                 .output
-                .contains(&format!("[2,{sequence},0,{sequence},")),
+                .contains(&format!("[3,{sequence},0,{sequence},")),
             "streaming output is missing boundary {sequence} envelope"
         );
     }
@@ -301,18 +397,18 @@ fn verify_streaming_case(boundaries: usize) -> StreamingCase {
     assert!(
         streaming
             .output
-            .contains(&format!("[2,{boundaries},4,0,{{}}]")),
+            .contains(&format!("[3,{boundaries},4,0,{{}}]")),
         "streaming output is missing the terminal envelope"
     ); // The empty terminal record is always the last envelope and never carries a
        // bootstrap, regardless of native or scriptless tail bytes.
        // Every envelope (each boundary commit plus the terminal) opens with the
        // boundary sentinel prefix, so the prefix count equals boundaries + 1.
     assert_eq!(
-        occurrences(&streaming.output, "data-webui-boundary>[2,"),
+        occurrences(&streaming.output, "data-webui-boundary>[3,"),
         boundaries + 1,
         "each envelope opens with the boundary sentinel prefix"
     );
-    if let Some(terminal) = streaming.output.find(&format!("[2,{boundaries},4,0,{{}}]")) {
+    if let Some(terminal) = streaming.output.find(&format!("[3,{boundaries},4,0,{{}}]")) {
         if boundaries > 0 {
             match streaming
                 .output
@@ -585,6 +681,8 @@ fn bench_large_state_boundaries(c: &mut Criterion) {
     for boundaries in LARGE_STATE_BOUNDARIES.iter().copied() {
         let protocol = full_state_protocol(boundaries);
         let handler = hydration_handler();
+        let mut legacy = BenchWriter::new(0);
+        render_legacy(&handler, &protocol, &state, &mut legacy);
         let mut writer = BenchWriter::new(boundaries + 2);
         render_streaming(&handler, &protocol, &state, &mut writer);
         let bytes = writer.output.len();
@@ -593,8 +691,14 @@ fn bench_large_state_boundaries(c: &mut Criterion) {
             boundaries + 1,
             "each boundary plus the terminal needs one envelope"
         );
+        assert_eq!(
+            occurrences(&writer.output, "\"rows\":["),
+            1,
+            "unchanged full state must be serialized once per response"
+        );
         println!(
-            "streaming_large_state boundaries={boundaries}: rows={LARGE_STATE_ROWS}, output_bytes={bytes}"
+            "streaming_large_state boundaries={boundaries}: rows={LARGE_STATE_ROWS}, buffered_bytes={}, streaming_bytes={bytes}",
+            legacy.output.len(),
         );
 
         group.throughput(Throughput::Bytes(bytes as u64));
@@ -618,6 +722,89 @@ fn bench_large_state_boundaries(c: &mut Criterion) {
         );
     }
     group.finish();
+
+    let boundaries = 8;
+    let protocol = full_state_protocol(boundaries);
+    let handler = hydration_handler();
+    let mut legacy = BenchWriter::new(0);
+    render_legacy(&handler, &protocol, &state, &mut legacy);
+    let mut streaming = BenchWriter::new(boundaries + 2);
+    render_streaming(&handler, &protocol, &state, &mut streaming);
+    let expected_streaming_bytes = streaming.output.len();
+    let mut compare = c.benchmark_group("streaming_large_state_compare");
+    compare.throughput(Throughput::Bytes(legacy.output.len() as u64));
+    compare.bench_function("buffered", |b| {
+        let handler = hydration_handler();
+        let mut writer = BenchWriter::new(0);
+        b.iter(|| {
+            writer.reset();
+            render_legacy(
+                &handler,
+                black_box(&protocol),
+                black_box(&state),
+                &mut writer,
+            );
+            black_box(writer.output.len());
+        });
+    });
+    compare.throughput(Throughput::Bytes(expected_streaming_bytes as u64));
+    compare.bench_function("streaming_fused", |b| {
+        let handler = hydration_handler();
+        let mut writer = BenchWriter::new(boundaries + 2);
+        b.iter(|| {
+            writer.reset();
+            render_streaming(
+                &handler,
+                black_box(&protocol),
+                black_box(&state),
+                &mut writer,
+            );
+            black_box(writer.output.len());
+        });
+    });
+    compare.bench_function("streaming_split", |b| {
+        let handler = hydration_handler();
+        let mut writer = BenchWriter::new(boundaries + 2);
+        b.iter(|| {
+            writer.reset();
+            render_split(
+                &handler,
+                black_box(&protocol),
+                black_box(&state),
+                &mut writer,
+            );
+            black_box(writer.output.len());
+        });
+    });
+    compare.bench_function("streaming_split_owned_state", |b| {
+        let handler = hydration_handler();
+        let mut writer = BenchWriter::new(boundaries + 2);
+        b.iter_batched(
+            || state.clone(),
+            |owned_state| {
+                writer.reset();
+                render_split_owned_state(&handler, black_box(&protocol), owned_state, &mut writer);
+                black_box(writer.output.len());
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    let owned_handler = Arc::new(hydration_handler());
+    let owned_protocol = Arc::new(full_state_protocol(boundaries));
+    compare.bench_function("streaming_owned_split", |b| {
+        b.iter_batched(
+            || state.clone(),
+            |owned_state| {
+                black_box(render_owned_split(
+                    Arc::clone(&owned_handler),
+                    Arc::clone(&owned_protocol),
+                    owned_state,
+                ));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    compare.finish();
 }
 
 /// Build the same authored page as [`parser_protocol`] with an island whose

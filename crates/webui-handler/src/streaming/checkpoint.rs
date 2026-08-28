@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Version-2 checkpoint, update, span-completion, and terminal serialization.
+//! Version-3 checkpoint, update, span-completion, and terminal serialization.
 
 use super::error::component_style_payload_resources_missing_error;
 use super::inventory::{
@@ -15,7 +15,7 @@ use crate::plugin::WebUiTemplatePayload;
 use crate::{
     collect_hydration_key_ids_into, write_selected_state, write_webui_bootstrap, HandlerError,
     HydrationKeySelection, Result, StateSelection, WebUIHandler, WebUIProcessContext,
-    WebUiBootstrap,
+    WebUiBootstrap, WebUiBootstrapState,
 };
 
 pub(super) const RECORD_KIND_FINAL_CHECKPOINT: usize = 0;
@@ -23,7 +23,7 @@ pub(super) const RECORD_KIND_UPDATABLE_CHECKPOINT: usize = 1;
 pub(super) const RECORD_KIND_STATE_UPDATE: usize = 2;
 pub(super) const RECORD_KIND_SPAN_COMPLETION: usize = 3;
 pub(super) const RECORD_KIND_TERMINAL: usize = 4;
-const STREAMING_PROTOCOL_VERSION: usize = 2;
+const STREAMING_PROTOCOL_VERSION: usize = 3;
 
 /// The range-bearing record currently being committed.
 pub(super) enum RangeRecord {
@@ -55,6 +55,45 @@ impl RangeRecord {
             } => RECORD_KIND_FINAL_CHECKPOINT,
             Self::Span { .. } => RECORD_KIND_SPAN_COMPLETION,
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum StateDelta {
+    Empty,
+    Keys,
+    FullExceptLast,
+}
+
+/// Build `current - base` while proving that the sorted base is a subset.
+fn collect_state_key_delta(base: &[u32], current: &[u32], delta: &mut Vec<u32>) -> bool {
+    let mut base_index = 0usize;
+    let mut current_index = 0usize;
+    while current_index < current.len() {
+        if base_index == base.len() {
+            delta.extend_from_slice(&current[current_index..]);
+            return true;
+        }
+        match current[current_index].cmp(&base[base_index]) {
+            std::cmp::Ordering::Less => {
+                delta.push(current[current_index]);
+                current_index += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                current_index += 1;
+                base_index += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                delta.clear();
+                return false;
+            }
+        }
+    }
+    if base_index == base.len() {
+        true
+    } else {
+        delta.clear();
+        false
     }
 }
 
@@ -156,6 +195,66 @@ impl WebUIHandler {
             checkpoint_tags.iter().copied(),
             &mut state_key_ids,
         );
+        let (
+            record_sequence,
+            state_revision,
+            last_state_record_sequence,
+            last_state_revision,
+            last_state_full,
+            mut last_state_key_ids,
+            mut state_delta_key_ids,
+        ) = {
+            let streaming = streaming_state(context)?;
+            (
+                streaming.next_record_sequence,
+                streaming.state_revision,
+                streaming.last_state_record_sequence,
+                streaming.last_state_revision,
+                streaming.last_state_full,
+                std::mem::take(&mut streaming.last_state_key_ids),
+                std::mem::take(&mut streaming.state_delta_key_ids),
+            )
+        };
+        state_delta_key_ids.clear();
+        let can_reference = context
+            .state
+            .as_object()
+            .is_some_and(|state| !state.is_empty())
+            && last_state_record_sequence.is_some()
+            && last_state_revision == state_revision;
+        let can_reference = can_reference && (last_state_full || !last_state_key_ids.is_empty());
+        let state_ref = last_state_record_sequence.and_then(|sequence| {
+            if !can_reference {
+                return None;
+            }
+            if requires_full_state {
+                return Some((
+                    sequence,
+                    if last_state_full {
+                        StateDelta::Empty
+                    } else {
+                        StateDelta::FullExceptLast
+                    },
+                ));
+            }
+            if last_state_full
+                || !collect_state_key_delta(
+                    &last_state_key_ids,
+                    &state_key_ids,
+                    &mut state_delta_key_ids,
+                )
+            {
+                return None;
+            }
+            Some((
+                sequence,
+                if state_delta_key_ids.is_empty() {
+                    StateDelta::Empty
+                } else {
+                    StateDelta::Keys
+                },
+            ))
+        });
         let chain = if first_checkpoint {
             crate::WebUIHandler::ensure_request_route_chain(context);
             match context.route_chain.as_deref() {
@@ -242,26 +341,50 @@ impl WebUIHandler {
             } => (Some(declaration_id), enclosing_span_instance_id),
             RangeRecord::Span { .. } => (None, None),
         };
-        let state_selection = if requires_full_state {
-            StateSelection::Full
-        } else {
-            StateSelection::KeyIds(HydrationKeySelection {
-                ids: &state_key_ids,
-                index: checkpoint_reachability,
-            })
-        };
         let inventory = context
             .streaming
             .as_ref()
             .map_or("", |streaming| streaming.inventory_hex.as_str());
+        let bootstrap_state = match state_ref {
+            Some((record_sequence, delta)) => {
+                let delta = match delta {
+                    StateDelta::Empty => None,
+                    StateDelta::Keys => Some(StateSelection::KeyIds(HydrationKeySelection {
+                        ids: &state_delta_key_ids,
+                        index: checkpoint_reachability,
+                    })),
+                    StateDelta::FullExceptLast => {
+                        Some(StateSelection::FullExceptKeyIds(HydrationKeySelection {
+                            ids: &last_state_key_ids,
+                            index: checkpoint_reachability,
+                        }))
+                    }
+                };
+                WebUiBootstrapState::Reference {
+                    record_sequence,
+                    value: context.state,
+                    delta,
+                }
+            }
+            _ => WebUiBootstrapState::Complete {
+                value: context.state,
+                selection: if requires_full_state {
+                    StateSelection::Full
+                } else {
+                    StateSelection::KeyIds(HydrationKeySelection {
+                        ids: &state_key_ids,
+                        index: checkpoint_reachability,
+                    })
+                },
+            },
+        };
         write_webui_bootstrap(
             context.writer,
             &mut context.json_scratch,
             WebUiBootstrap {
                 declaration_id,
                 enclosing_span_instance_id,
-                state: context.state,
-                state_selection,
+                state: bootstrap_state,
                 chain: &chain,
                 inventory,
                 nonce: context.nonce,
@@ -304,6 +427,7 @@ impl WebUIHandler {
             if streaming.update_plans.len() <= target {
                 streaming.update_plans.resize_with(target + 1, || None);
             }
+
             // Reuse the slot's existing key buffer so a boundary that commits
             // updatable more than once in a response does not re-allocate.
             let mut plan = streaming.update_plans[target]
@@ -318,6 +442,21 @@ impl WebUIHandler {
                 plan.key_ids.extend_from_slice(&state_key_ids);
             }
             streaming.update_plans[target] = Some(plan);
+        }
+        if requires_full_state {
+            last_state_key_ids.clear();
+        } else {
+            last_state_key_ids.clear();
+            last_state_key_ids.extend_from_slice(&state_key_ids);
+        }
+        state_delta_key_ids.clear();
+        {
+            let streaming = streaming_state(context)?;
+            streaming.last_state_record_sequence = Some(record_sequence);
+            streaming.last_state_revision = state_revision;
+            streaming.last_state_full = requires_full_state;
+            streaming.last_state_key_ids = last_state_key_ids;
+            streaming.state_delta_key_ids = state_delta_key_ids;
         }
         finish_capture(
             context,

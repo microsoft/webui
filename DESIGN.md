@@ -1124,10 +1124,22 @@ pub struct StreamStep {
 
 impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     pub fn start(&mut self, state: &Value) -> Result<StreamStatus>;
+    pub fn start_owned(&mut self, state: Value) -> Result<StreamStatus>;
     pub fn resume(
         &mut self,
         instance_id: BoundaryInstanceId,
         state: &Value,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus>;
+    pub fn resume_owned(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        state: Value,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus>;
+    pub fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
         mode: BoundaryMode,
     ) -> Result<StreamStatus>;
     pub fn advance(&mut self) -> Result<StreamStatus>;
@@ -1141,10 +1153,22 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
 
 impl StreamingSession {
     pub fn start(&mut self, state: &Value) -> Result<StreamStep>;
+    pub fn start_owned(&mut self, state: Value) -> Result<StreamStep>;
     pub fn resume(
         &mut self,
         instance_id: BoundaryInstanceId,
         state: &Value,
+        mode: BoundaryMode,
+    ) -> Result<StreamStep>;
+    pub fn resume_owned(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        state: Value,
+        mode: BoundaryMode,
+    ) -> Result<StreamStep>;
+    pub fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
         mode: BoundaryMode,
     ) -> Result<StreamStep>;
     pub fn advance(&mut self) -> Result<StreamStep>;
@@ -1194,8 +1218,14 @@ on the transport flush boundary that closed the step, so a host that writes and
 flushes once per step reproduces the borrowed writer's flush positions byte for
 byte.
 
-`WebUIHandler::render_streaming` drives the whole `start → resume → advance → …`
-cycle internally against one frozen state snapshot.
+`resume_current` preserves the checkpoint-only return and the pause before
+`advance`, but commits against the retained snapshot without comparing another
+state tree. Owned hosts that just decoded or loaded a `Value` use `start_owned`
+and `resume_owned` to move selected top-level values into the session rather
+than cloning them. `WebUIHandler::render_streaming` drives the whole response in
+one prepared render context while borrowing its one state value; it preserves
+the same flush positions without cloning the state or rebuilding that context
+between records.
 
 ### Per-Render HTML Injection
 
@@ -2816,7 +2846,7 @@ into `<f-repeat>` markup.
 
 ## Progressive Streaming Hydration
 
-Progressive streaming is one version-2 contract shared by the compiler, Rust
+Progressive streaming is one version-3 contract shared by the compiler, Rust
 handler, host bindings, CLI proxy, and browser coordinator. It discovers
 boundaries by executing the compiled fragment graph and hydrates complete
 regions while the document is still loading.
@@ -2895,9 +2925,12 @@ regions while the document is still loading.
    retained root activates is shallow-merged and replayed after activation.
 10. **Ordered, self-sufficient wire.** Records use a gapless response-local
     sequence starting at zero. Each checkpoint or span completion carries all
-    template, inventory, CSS, route, nonce, and projected-state deltas needed to
-    commit it after prior records. Global metadata merges additively. Boundary
-    state remains ephemeral and is not published to `window.__webui.state`.
+    template, inventory, CSS, route, nonce, and projected-state data needed to
+    commit it after prior records. A range may reference the exact preceding
+    range record by sequence and carry only a top-level state delta when that
+    prior projection is a proven subset under the same server state revision.
+    Global metadata merges additively. Boundary state remains ephemeral and is
+    not published to `window.__webui.state`.
 11. **Fail closed.** Version, tuple arity, record sequence, occurrence sequence,
     target kind, marker closure, span ancestry, and all configured work and
     retention limits are mandatory. Malformed, truncated, stale, duplicate, or
@@ -2909,11 +2942,12 @@ regions while the document is still loading.
     partial navigation, and component-template operations do not emit streaming
     markers or browser records.
 
-### Stream contract (version 2, normative)
+### Stream contract (version 3, normative)
 
-Version 2 makes `componentStyles` mandatory on every checkpoint. Version 1
-peers are rejected at the envelope gate rather than failing later with an
-apparently valid record whose required style-closure catalog is absent.
+Version 3 adds ordered range-state references and deltas. Version 2 made
+`componentStyles` mandatory on every checkpoint. Version 1 and version 2 peers
+are rejected at the envelope gate rather than interpreting an incompatible
+record.
 
 These invariants are binding. Every one is enforced somewhere — by the
 compiler, by the coordinator, or by a test — and none may be relaxed without a
@@ -2930,7 +2964,7 @@ contract rather than introduce a parallel one.
    is `[version, record_sequence, kind, target, payload]`. `kind` is `0` for a
    final boundary checkpoint, `1` for an updatable boundary checkpoint, `2`
    for a state update, and `4` for the terminal. Every response ends with
-   exactly one markerless `[2, sequence, 4, 0, {}]` after all scriptless tail
+   exactly one markerless `[3, sequence, 4, 0, {}]` after all scriptless tail
    bytes. A record arriving after it is corruption: it is rejected, its
    scaffolding released, and the stream is halted without disturbing the
    successful completion the terminal record already drove. The empty terminal
@@ -2938,18 +2972,26 @@ contract rather than introduce a parallel one.
    fields rather than halting a page that has already fully rendered (rule 21).
 3. **Self-sufficient records.** Given all prior records, a record carries
    everything needed to commit itself: its own template delta, component-style
-   closure delta, inventory delta, and projected state. A record never
-   forward-references a later one, so a truncated response is always a prefix of
-   a valid one.
+   closure delta, inventory delta, and projected state. A range record may carry
+   `stateRef: N` instead of complete `state`, where `N` must identify the exact
+   preceding range record, plus optional `stateDelta` additions/replacements.
+   The server uses this only when the referenced projection is a subset of the
+   current projection and the continuation state revision is unchanged. A
+   record never forward-references a later one, so a truncated response is
+   always a prefix of a valid one.
 4. **Additive global merge; ordered island state.** Global handoff merges
    accumulate only:
    inventory bits are OR-ed, CSS/style lists are appended with deduplication,
    component-style resources and closures are registered once, and templates
    are registered additively. No record may overwrite or invalidate an earlier
-   record's contribution. Boundary state is ephemeral and never published to
-   `window.__webui.state`. A state-update record is a shallow patch applied in
-   record order to one already-committed updatable boundary; repeated writes to
-   the same key are last-writer-wins.
+   record's contribution. The coordinator retains only the last resolved range
+   state as a reference base, creates a new top-level object when applying a
+   delta, and releases that base on terminal, cancellation, reset, or failure.
+   Missing, stale, forward, malformed, or non-object references fail closed.
+   Boundary state is ephemeral and never published to `window.__webui.state`.
+   A state-update record is a shallow patch applied in record order to one
+   already-committed updatable boundary; repeated writes to the same key are
+   last-writer-wins and never mutate the range-state reference base.
 5. **Identity is not placement.** A record never contains a selector, node
    path, or DOM position. Checkpoints carry the compiler-assigned integer
    boundary ID in `target`; state updates carry the same ID. The integer
@@ -3234,18 +3276,18 @@ produce:
 <search-box data-ws data-ws-enclosing="0">...</search-box>
 <!--/wb:0-->
 <script type="application/json" data-webui-boundary>
-  [2,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0,"state":{},"templates":{}}]
+  [3,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0,"state":{"todos":[]},"templates":{}}]
 </script>
 <webui-hydrate></webui-hydrate>
 ...ntp-page tail...
 </ntp-page>
 <!--/ws:0-->
 <script type="application/json" data-webui-boundary>
-  [2,1,3,0,{"state":{},"templates":{}}]
+  [3,1,3,0,{"stateRef":0,"stateDelta":{"toolbar":{}},"templates":{}}]
 </script>
 <webui-hydrate></webui-hydrate>
 <script type="application/json" data-webui-boundary>
-  [2,2,4,0,{}]
+  [3,2,4,0,{}]
 </script>
 <webui-hydrate></webui-hydrate>
 ```
@@ -3256,12 +3298,12 @@ produce:
 - The stream envelope is the script-safe tuple
   `[version, record_sequence, kind, target, payload]`. A boundary checkpoint
   uses kind `0` (final) or `1` (updatable), its compiler-assigned boundary ID as
-  `target`, and the existing bootstrap object as `payload`. `bootstrap`
-  reuses the existing object shape (`state`, `templates`, `inventory`, and
-  optional route/CSS/nonce fields), avoiding a second state-selection or
-  serialization implementation. Every checkpoint carries projected state and
-  template/CSS metadata for the transitive component surface reachable from the
-  tags rendered since the previous checkpoint. `Protocol::new` precomputes a
+  `target`, and a bootstrap object as `payload`. The first reusable projection
+  carries `state`; a later proven superset under the same revision may instead
+  carry `stateRef` and an optional `stateDelta`. Every checkpoint resolves to
+  exact projected state plus template/CSS metadata for the transitive component
+  surface reachable from the tags rendered since the previous checkpoint.
+  `Protocol::new` precomputes a
   compact, integer-indexed entry plan only for entries that declare boundary
   metadata; ordinary entries allocate no streaming plan. Hand-built protocols
   without compiler metadata use a request-local fallback plan. Route-free
@@ -3274,8 +3316,10 @@ produce:
   round-trip. Inventory remains exact and contains only tags with rendered SSR
   DOM. Template/CSS metadata is sent once when first reachable; a later rendered
   instance receives its inventory delta and checkpoint-local state without
-  resending metadata. Per-instance positional state tuples are not part of the
-  wire contract; state is carried as named keys.
+  resending metadata. State references are backward-only and identify the exact
+  preceding range-record sequence; state updates never become reference bases.
+  Per-instance positional state tuples are not part of the wire contract; state
+  is carried as named keys.
 - `data-ws` is a compiler-owned, streaming-only identity inserted into every
   streamed SSR component opening tag before browser upgrade. It is the sole
   parser-time deferral signal when the document also has the streaming mode
@@ -3288,16 +3332,16 @@ produce:
   definitions are loaded (see races below).
 - The handler emits one marker pair, one payload, and one sentinel per boundary,
   then calls `flush()` (see "Flush contract"). State updates are markerless
-  `[2, record_sequence, 2, boundary_id, projected_state]` records followed by
+  `[3, record_sequence, 2, boundary_id, projected_state]` records followed by
   the same sentinel and flush; they resolve only through roots captured by the
   updatable checkpoint. The coordinator removes every payload and sentinel
   after processing and removes checkpoint markers after hydration commits.
 - At `body_end`, the handler writes any host-provided body injection and then
-  emits one empty markerless `[2,next_sequence,4,0,{}]` terminal record. The
+  emits one empty markerless `[3,next_sequence,4,0,{}]` terminal record. The
   terminal flush also commits preceding native/scriptless tail bytes, but those
   bytes never manufacture another state or template projection. A static
   streaming document with no boundaries therefore emits exactly
-  `[2,0,4,0,{}]`. Streaming mode does **not** also emit a page-wide
+  `[3,0,4,0,{}]`. Streaming mode does **not** also emit a page-wide
   `#webui-data` block. Boundary checkpoints share the existing `WebUiBootstrap`
   and `write_selected_state` paths, so there is no second state-selection
   implementation. A request-local key scratch vector is cleared and reused
@@ -3315,7 +3359,7 @@ produce:
   fragment rendering is identical in both modes. Boundary emission is gated on
   session mode and reuses the existing per-signal dedup pattern.
 - Every browser record is the five-element tuple
-  `[2, sequence, kind, target, payload]`.
+  `[3, sequence, kind, target, payload]`.
 - Kinds are `0` final checkpoint, `1` updatable checkpoint, `2` state update,
   `3` generated span completion, and `4` terminal.
 - A checkpoint target is `BoundaryInstanceId`; a span-completion target is
@@ -3330,9 +3374,9 @@ produce:
   `enclosingSpanInstanceId`, projected `state`, and additive template,
   inventory, route, nonce, CSS, and style deltas as needed. Span completion
   payloads use the same bootstrap fields except declaration identity.
-- State updates are markerless `[2, sequence, 2, instanceId, patch]` records.
+- State updates are markerless `[3, sequence, 2, instanceId, patch]` records.
   They carry no templates and insert no application markup.
-- Exactly one markerless `[2, sequence, 4, 0, {}]` terminal follows the final
+- Exactly one markerless `[3, sequence, 4, 0, {}]` terminal follows the final
   tail bytes. A boundary-free streaming render emits the terminal from
   `start`.
 - Each record script is followed by one generated `<webui-hydrate>` sentinel.
@@ -3624,6 +3668,15 @@ the selected fragment path and uses `FragmentList::contains_boundary` to avoid
 probing boundary-free subgraphs. Capture buffers are swapped and recycled rather
 than rebuilt for nested spans.
 
+Range records keep one bounded prior-projection descriptor. Under an unchanged
+state revision, an equal projection emits only `stateRef`; a proven superset
+emits `stateRef` plus its top-level `stateDelta`. The descriptor stores compact
+interned key IDs rather than projected values, so eliminating repeated JSON does
+not clone the state tree. The synchronous helper borrows one state and retains
+one render context for the complete response. Async owned sessions can move
+fresh state through `start_owned` and `resume_owned`, or use `resume_current`
+when the retained snapshot is already authoritative.
+
 The browser performs no `MutationObserver`, polling, or document-wide query on
 a valid path. It resolves root-local markers, walks each committed range once,
 and retains root references only for updatable occurrences and pending
@@ -3683,6 +3736,11 @@ page.update(search.instance_id, &search_patch)?;
 ```
 
 The patch is projected through the update plan captured by that checkpoint.
+When no state changed, `resume_current` avoids an overlay while retaining the
+same checkpoint-only return. An owned `StreamingSession` additionally accepts
+`start_owned(Value)` and `resume_owned(..., Value, ...)`, allowing a host to
+transfer freshly loaded state into the continuation before returning its worker
+to the pool and awaiting the next operation.
 
 ### Host-owned streaming sessions
 

@@ -296,7 +296,7 @@ function parseBoundaryRecord(fragment: string): unknown[] {
 }
 
 test.describe('progressive streaming hydration matrix', () => {
-  test('generates gapless v2 checkpoint, update, and terminal records', () => {
+  test('generates gapless v3 checkpoint, update, and terminal records', () => {
     const checkpointScenario = buildStreamingScenario(3, 'flat', 'eager', true);
     const checkpointRecords = [
       ...checkpointScenario.boundaries,
@@ -304,7 +304,7 @@ test.describe('progressive streaming hydration matrix', () => {
     ].map(parseBoundaryRecord);
 
     expect(checkpointRecords.map((record) => record.length)).toEqual([5, 5, 5, 5, 5]);
-    expect(checkpointRecords.map((record) => record[0])).toEqual([2, 2, 2, 2, 2]);
+    expect(checkpointRecords.map((record) => record[0])).toEqual([3, 3, 3, 3, 3]);
     expect(checkpointRecords.map((record) => record[1])).toEqual([0, 1, 2, 3, 4]);
     expect(checkpointRecords.map((record) => record[2])).toEqual([0, 0, 0, 0, 4]);
     expect(checkpointRecords.map((record) => record[3])).toEqual([0, 1, 2, 3, 0]);
@@ -316,19 +316,19 @@ test.describe('progressive streaming hydration matrix', () => {
         'flat entry checkpoints omit enclosingSpanInstanceId',
       ).toBe(false);
     }
-    expect(checkpointRecords[4]).toEqual([2, 4, 4, 0, {}]);
+    expect(checkpointRecords[4]).toEqual([3, 4, 4, 0, {}]);
 
     const updateScenario = buildStateUpdateScenario(3, 100);
     const updateRecords = [
       ...updateScenario.boundaries,
       updateScenario.terminal,
     ].map(parseBoundaryRecord);
-    expect(updateRecords.map((record) => record[0])).toEqual([2, 2, 2, 2, 2]);
+    expect(updateRecords.map((record) => record[0])).toEqual([3, 3, 3, 3, 3]);
     expect(updateRecords.map((record) => record[1])).toEqual([0, 1, 2, 3, 4]);
     expect(updateRecords.map((record) => record[2])).toEqual([1, 2, 2, 2, 4]);
     expect(updateRecords.map((record) => record[3])).toEqual([0, 0, 0, 0, 0]);
     expect((updateRecords[0][4] as Record<string, unknown>).declarationId).toBe(0);
-    expect(updateRecords[4]).toEqual([2, 4, 4, 0, {}]);
+    expect(updateRecords[4]).toEqual([3, 4, 4, 0, {}]);
   });
 
   test('measures real coordinator + WebUIElement hydration across boundary counts', async ({ browser }) => {

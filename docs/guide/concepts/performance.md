@@ -200,8 +200,11 @@ Each layer of the architecture contributes to the overall performance profile:
   generated component spans instead of cloning full state for every boundary or
   prebuilding a request plan. A repeat body cannot reach a boundary, so each
   `<for>` finishes inside its current step and no repeat iterator survives a
-  host call. Full-state fallback snapshots once per response;
-  `render_streaming` reuses that snapshot for every occurrence. Boundary-free
+  host call. The synchronous `render_streaming` path borrows one state and uses
+  one prepared render context for the complete response. Ordered range records
+  reuse the exact prior projection by sequence and serialize only top-level
+  additions or replacements when the current projection is a proven superset
+  under the same state revision. Boundary-free
   fragment records are skipped through a build-time `contains_boundary` bit.
   Capture and projection scratch buffers retain capacity across checkpoints.
 - **Bounded browser activation.** Each checkpoint or generated span completion
@@ -215,7 +218,9 @@ Each layer of the architecture contributes to the overall performance profile:
   `StreamingSession` calls return one byte chunk for `start`, `resume`,
   `advance`, or `update`, so Node, WASM, Python, C, and .NET hosts write through
   their native backpressure APIs. A boundary-only `resume` can flush immediately;
-  `advance` carries the following parent and tail bytes. `webui serve
+  `advance` carries the following parent and tail bytes. Rust hosts can transfer
+  freshly loaded values through `start_owned` and `resume_owned`, or call
+  `resume_current` when the retained snapshot is unchanged. `webui serve
   --api-port` uses a capacity-one version-2 control channel over the same
   session.
   Hosts must also bound concurrent blocking renders before calling

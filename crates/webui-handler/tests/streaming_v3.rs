@@ -3,6 +3,8 @@
 
 #![allow(clippy::disallowed_methods)]
 
+//! Progressive streaming protocol integration coverage.
+
 use std::sync::Arc;
 
 use webui_handler::{
@@ -54,7 +56,7 @@ fn document(body: &str) -> String {
 }
 
 #[test]
-fn component_local_boundary_suspends_and_emits_v2_span_contract() {
+fn component_local_boundary_suspends_and_emits_v3_span_contract() {
     let protocol = parsed_protocol(
         &document(r#"<shell-card title="frozen"></shell-card>"#),
         &[
@@ -85,7 +87,7 @@ fn component_local_boundary_suspends_and_emits_v2_span_contract() {
     assert!(!committed.done && committed.boundary.is_none());
     let html = String::from_utf8(committed.bytes).unwrap();
     assert!(html.contains(r#"<!--wb:0--><child-box label="frozen" data-ws data-ws-enclosing="0">"#));
-    assert!(html.contains(r#"<!--/wb:0--><script type="application/json" data-webui-boundary>[2,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0"#));
+    assert!(html.contains(r#"<!--/wb:0--><script type="application/json" data-webui-boundary>[3,0,0,0,{"declarationId":0,"enclosingSpanInstanceId":0"#));
     // The committed step stops at its checkpoint: the component tail and the
     // span completion that follow belong to the next step.
     assert!(!html.contains("<footer>tail</footer>"));
@@ -96,10 +98,163 @@ fn component_local_boundary_suspends_and_emits_v2_span_contract() {
     let tail = String::from_utf8(end.bytes).unwrap();
     assert!(tail.contains("<footer>tail</footer>"));
     assert!(tail.contains(
-        r#"</shell-card><!--/ws:0--><script type="application/json" data-webui-boundary>[2,1,3,0,"#
+        r#"</shell-card><!--/ws:0--><script type="application/json" data-webui-boundary>[3,1,3,0,"#
     ));
-    assert!(tail.contains("[2,2,4,0,{}]"));
+    assert!(tail.contains("[3,2,4,0,{}]"));
     assert!(tail.contains("</script><webui-hydrate></webui-hydrate>"));
+}
+
+#[test]
+fn span_completion_reuses_the_exact_prior_full_state() {
+    let protocol = parsed_protocol(
+        &document("<shell-card></shell-card>"),
+        &[
+            (
+                "shell-card",
+                r#"<boundary name="inside"><child-box></child-box></boundary><tail-box></tail-box>"#,
+            ),
+            ("child-box", "<span>child</span>"),
+            ("tail-box", "<footer>tail</footer>"),
+        ],
+    );
+    let mut session = new_session(protocol, "/");
+    let state = test_json!({
+        "large": "the-state-value-must-appear-only-once",
+        "nested": { "count": 42 }
+    });
+
+    let start = session.start_owned(state).unwrap();
+    let boundary = start.boundary.unwrap();
+    let committed = session
+        .resume_current(boundary.instance_id, BoundaryMode::Updatable)
+        .unwrap();
+    let update = session
+        .update(
+            boundary.instance_id,
+            &test_json!({ "nested": { "count": 43 } }),
+        )
+        .unwrap();
+    let completed = session.advance().unwrap();
+    assert!(completed.done);
+
+    let html = String::from_utf8([committed.bytes, update, completed.bytes].concat()).unwrap();
+    assert_eq!(
+        html.matches("the-state-value-must-appear-only-once")
+            .count(),
+        1,
+        "the span must reference rather than reserialize its parent's full state"
+    );
+    assert!(
+        html.contains(r#"[3,2,3,0,{"componentStyles":"#) && html.contains(r#""stateRef":0"#),
+        "the span completion must carry a backward reference: {html}"
+    );
+    assert!(
+        html.contains(r#""inventory":"06","stateRef":0"#),
+        "boundary-free descendants after the checkpoint must stay in the span capture: {html}"
+    );
+}
+
+#[test]
+fn span_completion_reuses_a_subset_and_serializes_only_its_delta() {
+    let mut protocol = parsed_protocol_data(
+        &document("<shell-card></shell-card>"),
+        &[
+            (
+                "shell-card",
+                r#"<boundary name="inside"><child-box></child-box></boundary><footer>tail</footer>"#,
+            ),
+            ("child-box", "<span>child</span>"),
+        ],
+    );
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+    protocol.components.insert(
+        "shell-card".to_string(),
+        ComponentData {
+            hydration_mode: StateProjectionMode::Keys as i32,
+            hydration_keys: vec!["todos".to_string(), "toolbar".to_string()],
+            uses_shadow_dom: true,
+            ..Default::default()
+        },
+    );
+    protocol.components.insert(
+        "child-box".to_string(),
+        ComponentData {
+            hydration_mode: StateProjectionMode::Keys as i32,
+            hydration_keys: vec!["todos".to_string()],
+            uses_shadow_dom: true,
+            ..Default::default()
+        },
+    );
+    let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
+    let start = session
+        .start_owned(test_json!({
+            "todos": "large-shared-state",
+            "toolbar": "ready"
+        }))
+        .unwrap();
+    let boundary = start.boundary.unwrap();
+    let committed = session
+        .resume_owned(
+            boundary.instance_id,
+            test_json!({ "todos": "large-shared-state" }),
+            BoundaryMode::Final,
+        )
+        .unwrap();
+    let completed = session.advance().unwrap();
+
+    let html = String::from_utf8([committed.bytes, completed.bytes].concat()).unwrap();
+    assert_eq!(
+        html.matches("large-shared-state").count(),
+        1,
+        "the shared projection must be serialized only once"
+    );
+    assert!(html.contains(r#""state":{"todos":"large-shared-state"}"#));
+    assert!(html.contains(r#""stateRef":0,"stateDelta":{"toolbar":"ready"}"#));
+}
+
+#[test]
+fn changed_resume_state_starts_a_new_reference_base() {
+    let mut protocol = parsed_protocol_data(
+        &document(concat!(
+            r#"<boundary name="first"><child-box></child-box></boundary>"#,
+            r#"<boundary name="second"><child-box></child-box></boundary>"#,
+        )),
+        &[("child-box", "<span>child</span>")],
+    );
+    protocol.initial_state_strategy = InitialStateStrategy::Components as i32;
+    protocol.components.insert(
+        "child-box".to_string(),
+        ComponentData {
+            hydration_mode: StateProjectionMode::Keys as i32,
+            hydration_keys: vec!["todos".to_string()],
+            uses_shadow_dom: true,
+            ..Default::default()
+        },
+    );
+    let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
+    let first = session
+        .start_owned(test_json!({ "todos": "first" }))
+        .unwrap()
+        .boundary
+        .unwrap();
+    session
+        .resume_current(first.instance_id, BoundaryMode::Final)
+        .unwrap();
+    let second = session.advance().unwrap().boundary.unwrap();
+    let committed = session
+        .resume_owned(
+            second.instance_id,
+            test_json!({ "todos": "second" }),
+            BoundaryMode::Final,
+        )
+        .unwrap();
+    let html = String::from_utf8(committed.bytes).unwrap();
+
+    assert!(html.contains(r#""state":{"todos":"second"}"#));
+    assert!(
+        !html.contains("stateRef"),
+        "a state revision must not reference an older projection"
+    );
 }
 
 #[test]
@@ -161,13 +316,13 @@ fn resume_writes_only_the_committed_boundary_and_advance_writes_the_tail() {
     assert!(bytes.starts_with("<!--wb:0--><p>results</p><!--/wb:0--><script"));
     assert!(bytes.ends_with("<webui-hydrate></webui-hydrate>"));
     assert!(!bytes.contains("<footer>tail</footer>"));
-    assert!(!bytes.contains("[2,1,4,0,{}]"));
+    assert!(!bytes.contains("[3,1,4,0,{}]"));
 
     let tail = session.advance().unwrap();
     assert!(tail.done);
     let tail = String::from_utf8(tail.bytes).unwrap();
     assert!(tail.starts_with("<footer>tail</footer>"));
-    assert!(tail.contains("[2,1,4,0,{}]"));
+    assert!(tail.contains("[3,1,4,0,{}]"));
     assert!(!tail.contains("<!--wb:0-->"));
 }
 
@@ -450,7 +605,7 @@ fn false_if_discovers_no_occurrence_and_boundary_free_start_completes() {
     let html = String::from_utf8(step.bytes).unwrap();
     assert!(!html.contains("<!--wb:"));
     assert!(html.contains("<p>done</p>"));
-    assert!(html.contains("[2,0,4,0,{}]"));
+    assert!(html.contains("[3,0,4,0,{}]"));
 }
 
 #[test]
@@ -470,9 +625,9 @@ fn component_false_if_emits_generated_span_without_occurrence() {
     assert!(hidden_html.contains("<!--ws:0--><conditional-card"));
     assert!(hidden_html.contains(r#"data-ws data-ws-span="0">"#));
     assert!(hidden_html.contains(
-        r#"</conditional-card><!--/ws:0--><script type="application/json" data-webui-boundary>[2,0,3,0,"#
+        r#"</conditional-card><!--/ws:0--><script type="application/json" data-webui-boundary>[3,0,3,0,"#
     ));
-    assert!(hidden_html.contains("[2,1,4,0,{}]"));
+    assert!(hidden_html.contains("[3,1,4,0,{}]"));
 
     let mut shown = new_session(protocol, "/");
     let shown = shown.start(&test_json!({ "show": true })).unwrap();
@@ -669,8 +824,8 @@ fn generated_route_false_if_emits_span_without_boundary_occurrence() {
     assert!(!html.contains("<!--wb:"));
     assert!(html.contains(r#"<!--ws:0--><route-page data-ws data-ws-span="0">"#));
     assert!(html.contains("</route-page><!--/ws:0-->"));
-    assert!(html.contains(r#"<script type="application/json" data-webui-boundary>[2,0,3,0,"#));
-    assert!(html.contains("[2,1,4,0,{}]"));
+    assert!(html.contains(r#"<script type="application/json" data-webui-boundary>[3,0,3,0,"#));
+    assert!(html.contains("[3,1,4,0,{}]"));
 }
 
 #[test]
@@ -721,8 +876,8 @@ fn nested_component_spans_are_outer_first_and_complete_inner_first() {
     let inner_end = html.find("<!--/ws:1-->").unwrap();
     let outer_end = html.find("<!--/ws:0-->").unwrap();
     assert!(inner_end < outer_end);
-    assert!(html[inner_end..].contains("[2,1,3,1,"));
-    assert!(html[outer_end..].contains("[2,2,3,0,"));
+    assert!(html[inner_end..].contains("[3,1,3,1,"));
+    assert!(html[outer_end..].contains("[3,2,3,0,"));
 }
 
 #[test]
@@ -753,7 +908,7 @@ fn update_targets_one_runtime_instance() {
             .unwrap(),
     )
     .unwrap();
-    assert!(update.contains("[2,1,2,0,{\"count\":2}]"));
+    assert!(update.contains("[3,1,2,0,{\"count\":2}]"));
 
     assert!(session.advance().unwrap().done);
     assert!(session
@@ -794,7 +949,7 @@ fn update_before_terminal_targets_the_runtime_occurrence() {
             .unwrap(),
     )
     .unwrap();
-    assert!(update.contains("[2,1,2,0,{\"count\":2}]"));
+    assert!(update.contains("[3,1,2,0,{\"count\":2}]"));
     assert!(session
         .resume(second.instance_id, &test_json!({}), BoundaryMode::Final)
         .unwrap()
@@ -967,7 +1122,7 @@ fn borrowed_api_flushes_each_returned_semantic_step() {
     let first = response.start(&test_json!({})).unwrap();
     let boundary = first.boundary.unwrap();
     assert!(response
-        .resume(boundary.instance_id, &test_json!({}), BoundaryMode::Final)
+        .resume_current(boundary.instance_id, BoundaryMode::Final)
         .unwrap()
         .boundary
         .is_none());
@@ -984,6 +1139,51 @@ fn borrowed_api_flushes_each_returned_semantic_step() {
     assert!(!writer.output[..checkpoint].contains("<footer>tail</footer>"));
     assert!(writer.output[checkpoint..].starts_with("<footer>tail</footer>"));
     assert!(writer.ended);
+}
+
+#[test]
+fn borrowed_api_moves_owned_state_without_losing_the_async_pause() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<boundary name="first"><p>{{value}}</p></boundary>"#,
+            r#"<boundary name="second"><p>{{value}}</p></boundary>"#,
+        )),
+        &[],
+    );
+    let handler = WebUIHandler::new();
+    let mut writer = FlushStringWriter::default();
+    let mut response = handler
+        .stream_response(
+            &protocol,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+
+    let first = response
+        .start_owned(test_json!({ "value": "initial" }))
+        .unwrap()
+        .boundary
+        .unwrap();
+    let committed = response
+        .resume_owned(
+            first.instance_id,
+            test_json!({ "value": "resolved" }),
+            BoundaryMode::Final,
+        )
+        .unwrap();
+    assert!(committed.boundary.is_none() && !committed.done);
+
+    let second = response.advance().unwrap().boundary.unwrap();
+    let committed = response
+        .resume_current(second.instance_id, BoundaryMode::Final)
+        .unwrap();
+    assert!(committed.boundary.is_none() && !committed.done);
+    assert!(response.advance().unwrap().done);
+    drop(response);
+
+    assert!(writer.output.contains("<p>resolved</p>"));
+    assert_eq!(writer.flushes, 4);
 }
 
 #[test]

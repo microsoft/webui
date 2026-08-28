@@ -25,6 +25,8 @@ export function applyBoundaryBootstrap(
     if (
       key === 'templates' ||
       key === 'state' ||
+      key === 'stateRef' ||
+      key === 'stateDelta' ||
       key === 'componentStyles' ||
       key === 'declarationId' ||
       key === 'enclosingSpanInstanceId'

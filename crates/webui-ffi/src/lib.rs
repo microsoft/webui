@@ -808,7 +808,7 @@ pub unsafe extern "C" fn webui_streaming_session_start(
         let Some(state) = (unsafe { streaming_json_arg(state_json, "state_json") }) else {
             return std::ptr::null_mut();
         };
-        match context.session.start(&state) {
+        match context.session.start_owned(state) {
             Ok(step) => owned_streaming_step(step),
             Err(error) => {
                 set_last_error(error.to_string());
@@ -860,7 +860,7 @@ pub unsafe extern "C" fn webui_streaming_session_resume(
         };
         match context
             .session
-            .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
+            .resume_owned(BoundaryInstanceId::from_raw(instance_id), state, mode)
         {
             Ok(step) => owned_streaming_step(step),
             Err(error) => {

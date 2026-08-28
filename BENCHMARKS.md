@@ -91,6 +91,8 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
 * `crates/webui-parser/benches/parser_bench.rs`
 * `crates/webui-protocol/benches/protocol_bench.rs`
 * `crates/webui-handler/benches/handler_bench.rs`
+* `crates/webui-handler/benches/streaming_hydration_bench.rs` - buffered,
+  fused-streaming, and async-resumable split-path comparisons
 * `crates/webui-expressions/benches/expressions_bench.rs`
 * `crates/webui-state/benches/state_bench.rs`
 * `crates/webui/benches/contact_book_bench.rs` — end-to-end render

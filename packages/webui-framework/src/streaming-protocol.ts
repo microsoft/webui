@@ -5,7 +5,7 @@ import type { TemplateMeta } from './template.js';
 import type { ComponentStyles } from './element/styles.js';
 
 /** Clean-break component-local streaming protocol version. */
-export const STREAMING_PROTOCOL_VERSION = 2;
+export const STREAMING_PROTOCOL_VERSION = 3;
 
 /** Boundary-local data carried by one streamed hydration checkpoint. */
 export interface BoundaryBootstrap {
@@ -19,6 +19,10 @@ export interface BoundaryBootstrap {
    */
   enclosingSpanInstanceId?: number;
   state?: Record<string, unknown>;
+  /** Exact prior range-record sequence whose resolved state is the delta base. */
+  stateRef?: number;
+  /** Top-level additions or replacements over `stateRef`. */
+  stateDelta?: Record<string, unknown>;
   templates?: Record<string, TemplateMeta>;
   inventory?: string;
   nonce?: string;
@@ -56,6 +60,10 @@ export type BoundaryRecordKind =
  */
 export interface SpanCompletionPayload {
   state?: Record<string, unknown>;
+  /** Exact prior range-record sequence whose resolved state is the delta base. */
+  stateRef?: number;
+  /** Top-level additions or replacements over `stateRef`. */
+  stateDelta?: Record<string, unknown>;
   templates?: Record<string, TemplateMeta>;
   inventory?: string;
   nonce?: string;

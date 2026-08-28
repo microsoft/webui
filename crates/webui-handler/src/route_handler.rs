@@ -1419,7 +1419,9 @@ fn select_raw_state<'de>(
         // Key-ID projections are produced only by the streaming continuation,
         // which serializes through `write_selected_state` and never reaches
         // partial navigation's raw-JSON projection.
-        StateSelection::KeyIds(_) => return Err(unexpected_key_id_selection()),
+        StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
+            return Err(unexpected_key_id_selection());
+        }
     };
     project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
 }
@@ -2627,7 +2629,9 @@ fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
         StateSelection::Full => return state,
         StateSelection::Keys(keys) => keys.as_slice(),
         // Streaming's key-ID projection never reaches partial navigation.
-        StateSelection::KeyIds(_) => return Value::Object(Map::new()),
+        StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
+            return Value::Object(Map::new());
+        }
     };
     let Value::Object(mut source) = state else {
         return Value::Object(Map::new());

@@ -32,14 +32,14 @@ Available via all bindings: Rust (`Protocol::render_component_templates`), Node/
 
 ```rust
 let mut session = StreamingSession::new(handler, protocol, options)?;
-let mut step = session.start(&initial_state)?;
+let mut step = session.start_owned(initial_state)?;
 
 while !step.done {
     step = match step.boundary.as_ref() {
         Some(boundary) => {
             let state = load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
             // Writes only this occurrence, through its checkpoint.
-            session.resume(boundary.instance_id, &state, BoundaryMode::Final)?
+            session.resume_owned(boundary.instance_id, state, BoundaryMode::Final)?
         }
         // Writes the shell bytes up to the next occurrence or the terminal.
         None => session.advance()?,
@@ -61,6 +61,12 @@ and sentinel, then returns. `advance` writes the parent or shell bytes that
 follow through the next occurrence or terminal. This makes an early
 component-local child independently flushable without an authored sibling
 boundary.
+
+Use `start_owned` and `resume_owned` when state was freshly loaded or decoded;
+the session moves selected top-level values instead of cloning or deeply
+comparing them. Use `resume_current` when the retained snapshot is already
+authoritative. All three resume forms stop after the checkpoint flush, so an
+async host can release its worker before calling `advance`.
 
 Commit an occurrence as `BoundaryMode::Updatable` to call
 `update(instance_id, patch)` later, including between its `resume` and the

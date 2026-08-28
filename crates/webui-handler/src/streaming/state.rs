@@ -49,6 +49,15 @@ pub(crate) struct StreamingRenderState<'data> {
     pub(super) pending_root: Option<PendingStreamingRoot<'data>>,
     pub(super) generated_root_ready: bool,
     pub(super) next_record_sequence: usize,
+    /// Changes only when a host overlay changes the retained render snapshot.
+    pub(super) state_revision: usize,
+    /// Exact prior range record eligible as a browser state base.
+    pub(super) last_state_record_sequence: Option<usize>,
+    pub(super) last_state_revision: usize,
+    pub(super) last_state_full: bool,
+    pub(super) last_state_key_ids: Vec<u32>,
+    /// Reusable `current - prior` projection scratch.
+    pub(super) state_delta_key_ids: Vec<u32>,
     pub(super) bootstrap_sent: bool,
     pub(super) body_ended: bool,
     pub(super) inventory: Vec<u8>,
@@ -99,6 +108,12 @@ pub(crate) struct StreamingProgress {
     pub(super) pending_span_host: Option<u32>,
     pub(super) generated_root_ready: bool,
     pub(super) next_record_sequence: usize,
+    pub(super) state_revision: usize,
+    pub(super) last_state_record_sequence: Option<usize>,
+    pub(super) last_state_revision: usize,
+    pub(super) last_state_full: bool,
+    pub(super) last_state_key_ids: Vec<u32>,
+    pub(super) state_delta_key_ids: Vec<u32>,
     pub(super) bootstrap_sent: bool,
     pub(super) body_ended: bool,
     pub(super) inventory: Vec<u8>,
@@ -127,6 +142,12 @@ impl StreamingProgress {
             pending_span_host: None,
             generated_root_ready: false,
             next_record_sequence: 0,
+            state_revision: 0,
+            last_state_record_sequence: None,
+            last_state_revision: 0,
+            last_state_full: false,
+            last_state_key_ids: Vec::new(),
+            state_delta_key_ids: Vec::new(),
             bootstrap_sent: false,
             body_ended: false,
             inventory: vec![0; inventory_bytes],
@@ -165,6 +186,12 @@ impl<'data> StreamingRenderState<'data> {
             pending_span_host: progress.pending_span_host,
             generated_root_ready: progress.generated_root_ready,
             next_record_sequence: progress.next_record_sequence,
+            state_revision: progress.state_revision,
+            last_state_record_sequence: progress.last_state_record_sequence,
+            last_state_revision: progress.last_state_revision,
+            last_state_full: progress.last_state_full,
+            last_state_key_ids: progress.last_state_key_ids,
+            state_delta_key_ids: progress.state_delta_key_ids,
             bootstrap_sent: progress.bootstrap_sent,
             body_ended: progress.body_ended,
             inventory: progress.inventory,
@@ -190,6 +217,12 @@ impl<'data> StreamingRenderState<'data> {
             pending_span_host: self.pending_span_host,
             generated_root_ready: self.generated_root_ready,
             next_record_sequence: self.next_record_sequence,
+            state_revision: self.state_revision,
+            last_state_record_sequence: self.last_state_record_sequence,
+            last_state_revision: self.last_state_revision,
+            last_state_full: self.last_state_full,
+            last_state_key_ids: self.last_state_key_ids,
+            state_delta_key_ids: self.state_delta_key_ids,
             bootstrap_sent: self.bootstrap_sent,
             body_ended: self.body_ended,
             inventory: self.inventory,
@@ -263,6 +296,22 @@ pub(crate) fn selected_state_snapshot(
     serde_json::Value::Object(selected)
 }
 
+pub(crate) fn selected_state_snapshot_owned(
+    state: serde_json::Value,
+    keys: &[Box<str>],
+) -> serde_json::Value {
+    let serde_json::Value::Object(mut source) = state else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let mut selected = serde_json::Map::with_capacity(keys.len());
+    for key in keys {
+        if let Some(value) = source.remove(key.as_ref()) {
+            selected.insert(key.to_string(), value);
+        }
+    }
+    serde_json::Value::Object(selected)
+}
+
 /// Merge the caller's state for this step into the retained continuation
 /// snapshot.
 ///
@@ -280,15 +329,17 @@ pub(crate) fn overlay_selected_state(
     frozen: &mut serde_json::Value,
     state: &serde_json::Value,
     keys: &[Box<str>],
-) {
+) -> bool {
+    let mut changed = false;
     if !frozen.is_object() {
         *frozen = serde_json::Value::Object(serde_json::Map::new());
+        changed = true;
     }
     let serde_json::Value::Object(source) = state else {
-        return;
+        return changed;
     };
     let serde_json::Value::Object(target) = frozen else {
-        return;
+        return changed;
     };
     for key in keys {
         let Some(value) = source.get(key.as_ref()) else {
@@ -298,13 +349,16 @@ pub(crate) fn overlay_selected_state(
             Some(slot) => {
                 if slot != value {
                     slot.clone_from(value);
+                    changed = true;
                 }
             }
             None => {
                 target.insert(key.to_string(), value.clone());
+                changed = true;
             }
         }
     }
+    changed
 }
 
 /// Merge every top-level key of the caller's state into the retained snapshot.
@@ -312,28 +366,100 @@ pub(crate) fn overlay_selected_state(
 /// Same patch semantics as [`overlay_selected_state`]: omitted keys keep their
 /// snapshot value, nothing is removed, and an unchanged subtree is neither
 /// copied nor reallocated.
-pub(crate) fn overlay_full_state(frozen: &mut serde_json::Value, state: &serde_json::Value) {
+pub(crate) fn overlay_full_state(
+    frozen: &mut serde_json::Value,
+    state: &serde_json::Value,
+) -> bool {
     let serde_json::Value::Object(source) = state else {
-        return;
+        return false;
     };
+    let mut changed = false;
     if !frozen.is_object() {
         *frozen = serde_json::Value::Object(serde_json::Map::new());
+        changed = true;
     }
     let serde_json::Value::Object(target) = frozen else {
-        return;
+        return changed;
     };
     for (key, value) in source {
         match target.get_mut(key) {
             Some(slot) => {
                 if slot != value {
                     slot.clone_from(value);
+                    changed = true;
                 }
             }
             None => {
                 target.insert(key.clone(), value.clone());
+                changed = true;
             }
         }
     }
+    changed
+}
+
+/// Move selected caller-owned values into the continuation snapshot.
+///
+/// The owned path deliberately avoids deep equality checks. Supplying a key is
+/// treated as a new revision even when its value is equal, trading a cheap
+/// revision increment for avoiding an O(value size) comparison before moving
+/// the already-owned subtree.
+pub(crate) fn overlay_selected_state_owned(
+    frozen: &mut serde_json::Value,
+    state: serde_json::Value,
+    keys: &[Box<str>],
+) -> bool {
+    let serde_json::Value::Object(mut source) = state else {
+        return false;
+    };
+    if !frozen.is_object() {
+        *frozen = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let serde_json::Value::Object(target) = frozen else {
+        return false;
+    };
+    let mut changed = false;
+    for key in keys {
+        let Some(value) = source.remove(key.as_ref()) else {
+            continue;
+        };
+        target.insert(key.to_string(), value);
+        changed = true;
+    }
+    changed
+}
+
+/// Move every top-level caller-owned value into the continuation snapshot.
+pub(crate) fn overlay_full_state_owned(
+    frozen: &mut serde_json::Value,
+    state: serde_json::Value,
+) -> bool {
+    let serde_json::Value::Object(source) = state else {
+        return false;
+    };
+    if !frozen.is_object() {
+        *frozen = serde_json::Value::Object(serde_json::Map::new());
+    }
+    let serde_json::Value::Object(target) = frozen else {
+        return false;
+    };
+    let changed = !source.is_empty();
+    target.extend(source);
+    changed
+}
+
+pub(crate) fn increment_state_revision(progress: &mut StreamingProgress) -> Result<()> {
+    progress.state_revision = progress
+        .state_revision
+        .checked_add(1)
+        .ok_or_else(state_revision_overflow_error)?;
+    Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn state_revision_overflow_error() -> HandlerError {
+    HandlerError::Invariant("streaming state revision overflowed the platform limit".to_string())
 }
 
 pub(crate) fn protocol_fragment<'a>(

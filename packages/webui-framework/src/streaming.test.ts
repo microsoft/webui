@@ -20,13 +20,13 @@ const { parseBoundaryEnvelope } = await import('./streaming.js');
 describe('parseBoundaryEnvelope', () => {
   test('accepts a well-formed non-terminal boundary envelope', () => {
     const result = parseBoundaryEnvelope(
-      '[2,0,0,0,{"declarationId":7,"inventory":"01","state":{"count":1},"templates":{"my-counter":{"h":"<button></button>"}}}]',
+      '[3,0,0,0,{"declarationId":7,"inventory":"01","state":{"count":1},"templates":{"my-counter":{"h":"<button></button>"}}}]',
     );
     assert.equal(result.ok, true);
     if (!result.ok) return;
     const [version, sequence, kind, target, payload] = result.envelope;
     const bootstrap = payload as BoundaryBootstrap;
-    assert.equal(version, 2);
+    assert.equal(version, 3);
     assert.equal(sequence, 0);
     assert.equal(kind, 0);
     assert.equal(target, 0);
@@ -37,7 +37,7 @@ describe('parseBoundaryEnvelope', () => {
   });
 
   test('accepts the empty terminal boundary envelope', () => {
-    const result = parseBoundaryEnvelope('[2,2,4,0,{}]');
+    const result = parseBoundaryEnvelope('[3,2,4,0,{}]');
     assert.equal(result.ok, true);
     if (!result.ok) return;
     const [, sequence, kind, target, bootstrap] = result.envelope;
@@ -48,7 +48,7 @@ describe('parseBoundaryEnvelope', () => {
   });
 
   test('accepts a projected state update record', () => {
-    const result = parseBoundaryEnvelope('[2,2,2,0,{"forecast":"Sunny"}]');
+    const result = parseBoundaryEnvelope('[3,2,2,0,{"forecast":"Sunny"}]');
     assert.equal(result.ok, true);
     if (!result.ok) return;
     const [, sequence, kind, target, patch] = result.envelope;
@@ -60,7 +60,7 @@ describe('parseBoundaryEnvelope', () => {
 
   test('accepts a component span completion in its separate target namespace', () => {
     const result = parseBoundaryEnvelope(
-      '[2,3,3,0,{"state":{"parent":"complete"},"inventory":"03"}]',
+      '[3,3,3,0,{"state":{"parent":"complete"},"inventory":"03"}]',
     );
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -75,28 +75,28 @@ describe('parseBoundaryEnvelope', () => {
   });
 
   test('rejects invalid JSON', () => {
-    const result = parseBoundaryEnvelope('[2,0,0,0,{');
+    const result = parseBoundaryEnvelope('[3,0,0,0,{');
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.reason, /not valid JSON/);
   });
 
   test('rejects a non-array envelope', () => {
-    const result = parseBoundaryEnvelope('{"version":2}');
+    const result = parseBoundaryEnvelope('{"version":3}');
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.reason, /5-element/);
   });
 
   test('rejects an envelope with the wrong element count', () => {
-    const result = parseBoundaryEnvelope('[2,0,0,0]');
+    const result = parseBoundaryEnvelope('[3,0,0,0]');
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.reason, /5-element/);
   });
 
   test('rejects an unsupported version', () => {
-    const result = parseBoundaryEnvelope('[1,0,0,0,{}]');
+    const result = parseBoundaryEnvelope('[2,0,0,0,{}]');
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.reason, /unsupported boundary envelope version/);
@@ -108,11 +108,11 @@ describe('parseBoundaryEnvelope', () => {
   // coordinator instead, which is covered in streaming-pipeline.test.ts.
   test('passes malformed trailing fields through to the coordinator', () => {
     for (const record of [
-      '[2,-1,0,0,{}]',
-      '[2,0,9,0,{}]',
-      '[2,0,0,-1,{}]',
-      '[2,0,0,0,null]',
-      '[2,2,4,0,{"state":{"count":1}}]',
+      '[3,-1,0,0,{}]',
+      '[3,0,9,0,{}]',
+      '[3,0,0,-1,{}]',
+      '[3,0,0,0,null]',
+      '[3,2,4,0,{"state":{"count":1}}]',
     ]) {
       const result = parseBoundaryEnvelope(record);
       assert.equal(result.ok, true, `expected ${record} to parse`);

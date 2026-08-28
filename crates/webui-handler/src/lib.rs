@@ -260,6 +260,34 @@ pub trait ResponseWriter {
     }
 }
 
+/// Serialize every application state key except a sorted base projection.
+///
+/// Streaming uses this only when a prior keyed projection is a proven subset
+/// of the current full-state projection. The browser merges the emitted delta
+/// over that exact prior range state.
+struct StateWithoutSelectedKeys<'a> {
+    value: &'a Value,
+    keys: KeyView<'a>,
+}
+
+impl Serialize for StateWithoutSelectedKeys<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let Value::Object(map) = self.value else {
+            return serializer.serialize_map(Some(0))?.end();
+        };
+        let mut out = serializer.serialize_map(None)?;
+        for (key, value) in map {
+            if key != STATE_INJECT_KEY && !self.keys.contains(key) {
+                out.serialize_entry(key, value)?;
+            }
+        }
+        out.end()
+    }
+}
+
 /// A response writer that can hand buffered bytes to its transport immediately.
 ///
 /// Progressive hydration requires this semantic flush at every committed
@@ -547,6 +575,7 @@ pub(crate) struct RenderFragmentList<'protocol> {
     fragments: &'protocol [WebUIFragment],
     metadata: &'protocol [RenderFragmentMetadata],
     attr_names: &'protocol str,
+    contains_boundary: bool,
     /// True when this list contains at least one `<webui-route>` fragment.
     /// Renders skip the sibling route pre-scan entirely when it is false.
     has_routes: bool,
@@ -765,6 +794,7 @@ impl<'protocol> ResolvedRenderFragmentIndex<'protocol> {
             fragments: &fragment_list.fragments,
             metadata,
             attr_names: &self.index.attr_names,
+            contains_boundary: fragment_list.contains_boundary,
             has_routes,
         })
     }
@@ -1143,11 +1173,22 @@ fn recycle_borrowed_scope<'protocol, 'state>(
     }
 }
 
+pub(crate) enum WebUiBootstrapState<'a> {
+    Complete {
+        value: &'a Value,
+        selection: StateSelection<'a>,
+    },
+    Reference {
+        record_sequence: usize,
+        value: &'a Value,
+        delta: Option<StateSelection<'a>>,
+    },
+}
+
 pub(crate) struct WebUiBootstrap<'a> {
     pub(crate) declaration_id: Option<u32>,
     pub(crate) enclosing_span_instance_id: Option<u32>,
-    pub(crate) state: &'a Value,
-    pub(crate) state_selection: StateSelection<'a>,
+    pub(crate) state: WebUiBootstrapState<'a>,
     pub(crate) chain: &'a [Value],
     pub(crate) inventory: &'a str,
     pub(crate) nonce: Option<&'a str>,
@@ -1431,6 +1472,16 @@ pub(crate) fn write_selected_state(
         StateSelection::Full => return write_full_state(writer, scratch, state),
         StateSelection::Keys(keys) => KeyView::Borrowed(keys.as_slice()),
         StateSelection::KeyIds(selection) => KeyView::Ids(*selection),
+        StateSelection::FullExceptKeyIds(selection) => {
+            return write_script_safe_json(
+                writer,
+                scratch,
+                &StateWithoutSelectedKeys {
+                    value: state,
+                    keys: KeyView::Ids(*selection),
+                },
+            );
+        }
     };
     if keys.is_empty() {
         return writer.write("{}");
@@ -1473,6 +1524,8 @@ pub(crate) enum StateSelection<'a> {
     /// all — the streaming record keeps its scratch as plain integers that
     /// survive every semantic step.
     KeyIds(HydrationKeySelection<'a>),
+    /// Preserve full state except keys inherited from a referenced range state.
+    FullExceptKeyIds(HydrationKeySelection<'a>),
 }
 
 /// A projection expressed as interned hydration key IDs.
@@ -1712,8 +1765,29 @@ pub(crate) fn write_webui_bootstrap(
     if let Some(nonce) = bootstrap.nonce {
         write_json_field(writer, scratch, &mut wrote_field, "nonce", nonce)?;
     }
-    write_json_field_name(writer, &mut wrote_field, "state")?;
-    write_selected_state(writer, scratch, bootstrap.state, &bootstrap.state_selection)?;
+    match bootstrap.state {
+        WebUiBootstrapState::Complete { value, selection } => {
+            write_json_field_name(writer, &mut wrote_field, "state")?;
+            write_selected_state(writer, scratch, value, &selection)?;
+        }
+        WebUiBootstrapState::Reference {
+            record_sequence,
+            value,
+            delta,
+        } => {
+            write_json_field(
+                writer,
+                scratch,
+                &mut wrote_field,
+                "stateRef",
+                &record_sequence,
+            )?;
+            if let Some(delta) = delta {
+                write_json_field_name(writer, &mut wrote_field, "stateDelta")?;
+                write_selected_state(writer, scratch, value, &delta)?;
+            }
+        }
+    }
     if !bootstrap.style_specs.is_empty() {
         write_json_field(
             writer,
@@ -3392,8 +3466,10 @@ impl WebUIHandler {
                     WebUiBootstrap {
                         declaration_id: None,
                         enclosing_span_instance_id: None,
-                        state: context.state,
-                        state_selection,
+                        state: WebUiBootstrapState::Complete {
+                            value: context.state,
+                            selection: state_selection,
+                        },
                         chain: &chain_json,
                         inventory: &inventory_hex,
                         nonce: context.nonce,
@@ -3621,20 +3697,20 @@ impl WebUIHandler {
             } else if attr.complex {
                 // Complex attribute — resolve value, don't render to HTML, store as state
                 if context.collecting_component_attrs && !attr.attr_skip {
-                    let state_backed_value = if context.streaming.is_none() {
-                        resolve_state_backed_value(
-                            &attr.value,
-                            &context.loop_vars,
-                            context.visible_loop_scope,
-                            LocalValueSources {
-                                owned: &context.local_vars,
-                                borrowed: &context.local_borrowed_vars,
-                            },
-                            context.state,
-                        )
-                    } else {
-                        None
-                    };
+                    // Streaming starts borrowed too. The continuation VM
+                    // materializes these values only when the target component
+                    // can actually suspend; boundary-free components finish in
+                    // this call and retain the ordinary zero-copy path.
+                    let state_backed_value = resolve_state_backed_value(
+                        &attr.value,
+                        &context.loop_vars,
+                        context.visible_loop_scope,
+                        LocalValueSources {
+                            owned: &context.local_vars,
+                            borrowed: &context.local_borrowed_vars,
+                        },
+                        context.state,
+                    );
                     if let Some(value) = state_backed_value {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                         context.component_attrs.remove(name);
@@ -3647,13 +3723,9 @@ impl WebUIHandler {
                 }
             } else {
                 // Dynamic attribute — resolve and render
-                // Streaming continuations must own component locals across host
-                // calls, so borrowing there would add a second lookup before the
-                // VM materializes the same value.
-                let state_backed_value = if context.collecting_component_attrs
-                    && !attr.attr_skip
-                    && context.streaming.is_none()
-                {
+                // As above, a boundary-bearing continuation materializes a
+                // borrowed component scope before it can escape this call.
+                let state_backed_value = if context.collecting_component_attrs && !attr.attr_skip {
                     resolve_state_backed_value(
                         &attr.value,
                         &context.loop_vars,
@@ -12063,7 +12135,9 @@ mod tests {
 
         match collect_navigation_state(&protocol, ["app-shell"]) {
             StateSelection::Keys(keys) => assert_eq!(keys, vec!["selected"]),
-            StateSelection::Full | StateSelection::KeyIds(_) => {
+            StateSelection::Full
+            | StateSelection::KeyIds(_)
+            | StateSelection::FullExceptKeyIds(_) => {
                 panic!("legacy navigation keys should remain owned and projected")
             }
         }
@@ -13572,7 +13646,7 @@ mod tests {
         assert!(boundary_flush.contains("<!--wb:0-->"));
         assert!(boundary_flush.contains("<!--/wb:0-->"));
         assert!(
-            boundary_flush.contains(r#"[2,0,0,0,{"declarationId":0,"componentStyles":"#),
+            boundary_flush.contains(r#"[3,0,0,0,{"declarationId":0,"componentStyles":"#),
             "boundary flush: {boundary_flush}"
         );
         assert!(boundary_flush.contains(r#""inventory":"01","state":{"count":1}"#));
@@ -13583,9 +13657,9 @@ mod tests {
         // another state/template projection.
         let terminal_flush = &writer.output[writer.flushes[1]..writer.flushes[2]];
         assert!(terminal_flush.contains("slow tail"));
-        assert!(writer.output.contains("[2,1,4,0,{}]"));
-        assert!(!writer.output.contains("[2,1,0,1,"));
-        assert!(!writer.output.contains("[2,2,4,0,{}]"));
+        assert!(writer.output.contains("[3,1,4,0,{}]"));
+        assert!(!writer.output.contains("[3,1,0,1,"));
+        assert!(!writer.output.contains("[3,2,4,0,{}]"));
 
         let marker = writer
             .output
@@ -13624,7 +13698,7 @@ mod tests {
             1,
             "full state belongs only to the interactive boundary"
         );
-        assert!(writer.output.contains("[2,1,4,0,{}]"));
+        assert!(writer.output.contains("[3,1,4,0,{}]"));
     }
 
     /// Streaming must place the reserved-state injects exactly where the
@@ -13760,7 +13834,7 @@ mod tests {
 
         assert_eq!(writer.flushes.len(), 1);
         assert!(writer.output.contains(STREAMING_MARKER));
-        assert!(writer.output.contains("[2,0,4,0,{}]"));
+        assert!(writer.output.contains("[3,0,4,0,{}]"));
         assert!(!writer.output.contains("serverOnly"));
         assert!(!writer.output.contains("id=\"webui-data\""));
         assert!(!writer.output.contains("<!--wb:"));
@@ -14959,7 +15033,7 @@ mod tests {
         assert!(b0.contains(r#""templates":{"comp-a":"#), "b0: {b0}");
         assert!(b0.contains(r#""a_count":1"#), "b0: {b0}");
         assert!(
-            b0.contains(r#"[2,0,0,0,{"declarationId":0,"componentStyles":"#),
+            b0.contains(r#"[3,0,0,0,{"declarationId":0,"componentStyles":"#),
             "b0: {b0}"
         );
         assert!(b0.contains(r#""inventory":"01""#), "b0: {b0}");
@@ -14970,7 +15044,7 @@ mod tests {
         assert!(b1.contains(r#""templates":{"comp-b":"#), "b1: {b1}");
         assert!(b1.contains(r#""b_count":2"#), "b1: {b1}");
         assert!(
-            b1.contains(r#"[2,1,0,1,{"declarationId":1,"componentStyles":"#),
+            b1.contains(r#"[3,1,0,1,{"declarationId":1,"componentStyles":"#),
             "b1: {b1}"
         );
         assert!(b1.contains(r#""inventory":"02""#), "b1: {b1}");
@@ -14983,7 +15057,7 @@ mod tests {
         // Boundary 2: comp-a reused — state present, template absent (empty delta).
         assert!(b2.contains(r#""a_count":1"#), "b2: {b2}");
         assert!(
-            b2.contains(r#"[2,2,0,2,{"declarationId":2,"componentStyles":"#),
+            b2.contains(r#"[3,2,0,2,{"declarationId":2,"componentStyles":"#),
             "b2: {b2}"
         );
         assert!(b2.contains(r#""inventory":"""#), "b2: {b2}");
