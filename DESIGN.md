@@ -5397,8 +5397,11 @@ Inter-crate Cargo requirements use the exact `=<version>` form for hotfixes so
 the resolver cannot prefer the original stable package over its SemVer
 prerelease. Python package metadata maps
 `major.minor.patch-hotfix.number` to the PEP 440 post-release form
-`major.minor.patch.postnumber`, and artifact validation uses that mapped
-filename while release tags and metadata retain the requested SemVer value.
+`major.minor.patch.postnumber`. The unpublished Rust extension crate uses the
+equivalent Cargo- and PEP-440-compatible `major.minor.patch-post.number` form
+because maturin validates the Cargo package version before building Python
+metadata. Artifact validation uses the mapped Python filename while release
+tags and published non-Python package metadata retain the requested SemVer value.
 Because SemVer prereleases sort below their base stable release, registry
 consumers must request a hotfix version explicitly; ordinary stable/latest
 resolution does not select it.

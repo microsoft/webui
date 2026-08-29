@@ -15,26 +15,66 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+const PYTHON_CARGO_PACKAGE: &str = "microsoft-webui-python";
+
 // ── Target model ────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+enum VersionFormat {
+    Release,
+    Python,
+    PythonCargo,
+}
+
+struct VersionValues<'a> {
+    release: &'a str,
+    python: String,
+    python_cargo: String,
+}
+
+impl<'a> VersionValues<'a> {
+    fn new(release: &'a str, parsed: ReleaseVersion) -> Self {
+        Self {
+            release,
+            python: parsed.python_version(),
+            python_cargo: parsed.python_cargo_version(),
+        }
+    }
+
+    fn get(&self, format: VersionFormat) -> &str {
+        match format {
+            VersionFormat::Release => self.release,
+            VersionFormat::Python => &self.python,
+            VersionFormat::PythonCargo => &self.python_cargo,
+        }
+    }
+}
 
 /// How to update the version inside a given file.
 enum UpdateStrategy {
     /// Replace `version = "..."` inside a TOML `[section]`.
-    TomlSection(&'static str),
+    TomlSection {
+        section: &'static str,
+        format: VersionFormat,
+    },
     /// Replace `"version"` (and `@microsoft/webui-*` optional deps) in a
     /// `package.json`.
     PackageJson,
     /// Replace first-party package versions in `Cargo.lock`.
     CargoLock,
-    /// Replace inline `version = "..."` on `microsoft-webui-*` dependency
-    /// lines in a crate `Cargo.toml`.
-    CrateDeps,
+    /// Update one crate manifest's package and first-party dependency versions.
+    CrateManifest {
+        package_format: Option<VersionFormat>,
+    },
     /// Replace `<Version>…</Version>` in a .NET `Directory.Build.props`.
     DotnetProps,
     /// Replace PEP 621 project version metadata in `pyproject.toml`.
-    Pyproject,
+    Pyproject(VersionFormat),
     /// Replace a string constant in a Rust source file.
-    RustConst(&'static str),
+    RustConst {
+        name: &'static str,
+        format: VersionFormat,
+    },
 }
 
 /// A single file whose version must be updated.
@@ -53,7 +93,10 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
     // Workspace Cargo.toml (must contain [workspace.package].version)
     targets.push(VersionTarget {
         path: root.join("Cargo.toml"),
-        strategy: UpdateStrategy::TomlSection("[workspace.package]"),
+        strategy: UpdateStrategy::TomlSection {
+            section: "[workspace.package]",
+            format: VersionFormat::Release,
+        },
         required: true,
     });
 
@@ -92,7 +135,7 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
     if pyproject.exists() {
         targets.push(VersionTarget {
             path: pyproject,
-            strategy: UpdateStrategy::Pyproject,
+            strategy: UpdateStrategy::Pyproject(VersionFormat::Python),
             required: true,
         });
     }
@@ -104,16 +147,21 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
     if python_version_source.exists() {
         targets.push(VersionTarget {
             path: python_version_source,
-            strategy: UpdateStrategy::RustConst("PYTHON_PACKAGE_VERSION"),
+            strategy: UpdateStrategy::RustConst {
+                name: "PYTHON_PACKAGE_VERSION",
+                format: VersionFormat::Python,
+            },
             required: true,
         });
     }
 
-    // crates/*/Cargo.toml – inter-crate dependency versions
+    // crates/*/Cargo.toml - inter-crate dependencies and Python package metadata.
+    let python_cargo_manifest = root.join("crates").join("webui-python").join("Cargo.toml");
     for toml in find_crate_cargo_tomls(root) {
+        let package_format = (toml == python_cargo_manifest).then_some(VersionFormat::PythonCargo);
         targets.push(VersionTarget {
             path: toml,
-            strategy: UpdateStrategy::CrateDeps,
+            strategy: UpdateStrategy::CrateManifest { package_format },
             required: false,
         });
     }
@@ -131,22 +179,26 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
 }
 
 /// Dispatch a version update to the right updater function.
-fn execute_update(
-    target: &VersionTarget,
-    version: &str,
-    python_version: &str,
-) -> Result<bool, String> {
+fn execute_update(target: &VersionTarget, versions: &VersionValues<'_>) -> Result<bool, String> {
     match &target.strategy {
-        UpdateStrategy::TomlSection(section) => {
-            update_toml_section_version(&target.path, section, version)
+        UpdateStrategy::TomlSection { section, format } => {
+            update_toml_section_version(&target.path, section, versions.get(*format))
         }
-        UpdateStrategy::PackageJson => update_package_json(&target.path, version),
-        UpdateStrategy::CargoLock => update_cargo_lock_versions(&target.path, version),
-        UpdateStrategy::CrateDeps => update_crate_dep_versions(&target.path, version),
-        UpdateStrategy::DotnetProps => update_dotnet_version(&target.path, version),
-        UpdateStrategy::Pyproject => update_pyproject_version(&target.path, python_version),
-        UpdateStrategy::RustConst(name) => {
-            update_rust_string_const(&target.path, name, python_version)
+        UpdateStrategy::PackageJson => update_package_json(&target.path, versions.release),
+        UpdateStrategy::CargoLock => {
+            update_cargo_lock_versions(&target.path, versions.release, &versions.python_cargo)
+        }
+        UpdateStrategy::CrateManifest { package_format } => update_crate_manifest(
+            &target.path,
+            package_format.map(|format| versions.get(format)),
+            versions.release,
+        ),
+        UpdateStrategy::DotnetProps => update_dotnet_version(&target.path, versions.release),
+        UpdateStrategy::Pyproject(format) => {
+            update_pyproject_version(&target.path, versions.get(*format))
+        }
+        UpdateStrategy::RustConst { name, format } => {
+            update_rust_string_const(&target.path, name, versions.get(*format))
         }
     }
 }
@@ -198,25 +250,33 @@ fn update_toml_section_version(path: &Path, section: &str, version: &str) -> Res
 }
 
 /// Update first-party package versions in `Cargo.lock`.
-fn update_cargo_lock_versions(path: &Path, version: &str) -> Result<bool, String> {
+fn update_cargo_lock_versions(
+    path: &Path,
+    release_version: &str,
+    python_cargo_version: &str,
+) -> Result<bool, String> {
     let content =
         fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
     let mut result = String::with_capacity(content.len());
-    let mut first_party_package = false;
+    let mut package_version = None;
     let mut updated = false;
 
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed == "[[package]]" {
-            first_party_package = false;
+            package_version = None;
         } else if let Some(name) = trimmed
             .strip_prefix("name = \"")
             .and_then(|value| value.strip_suffix('"'))
         {
-            first_party_package = name.starts_with("microsoft-webui");
+            package_version = match name {
+                PYTHON_CARGO_PACKAGE => Some(python_cargo_version),
+                _ if name.starts_with("microsoft-webui") => Some(release_version),
+                _ => None,
+            };
         }
 
-        if first_party_package && trimmed.starts_with("version = \"") {
+        if let Some(version) = package_version.filter(|_| trimmed.starts_with("version = \"")) {
             if let Some(new_line) = replace_inline_version(line, version) {
                 result.push_str(&new_line);
                 result.push('\n');
@@ -317,6 +377,27 @@ fn update_crate_dep_versions(path: &Path, version: &str) -> Result<bool, String>
     }
 
     Ok(changed)
+}
+
+fn update_crate_manifest(
+    path: &Path,
+    package_version: Option<&str>,
+    dependency_version: &str,
+) -> Result<bool, String> {
+    let package_changed = match package_version {
+        Some(version) => {
+            if !update_toml_section_version(path, "[package]", version)? {
+                return Err(format!(
+                    "Could not find [package].version in {}",
+                    path.display()
+                ));
+            }
+            true
+        }
+        None => false,
+    };
+    let dependencies_changed = update_crate_dep_versions(path, dependency_version)?;
+    Ok(package_changed || dependencies_changed)
 }
 
 /// Replace the value of the first occurrence of a JSON field in raw content.
@@ -526,35 +607,50 @@ fn find_package_jsons(root: &Path) -> Vec<PathBuf> {
 pub fn read_version() -> Result<String, String> {
     let root = crate::util::workspace_root()?;
     let cargo_path = root.join("Cargo.toml");
-    let content =
-        fs::read_to_string(&cargo_path).map_err(|e| format!("Failed to read Cargo.toml: {e}"))?;
+    read_toml_section_version(&cargo_path, "[workspace.package]")
+}
 
-    let mut in_workspace_package = false;
+fn read_toml_section_version(path: &Path, section: &str) -> Result<String, String> {
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+
+    let mut in_section = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed == "[workspace.package]" {
-            in_workspace_package = true;
+        if trimmed == section {
+            in_section = true;
         } else if trimmed.starts_with('[') {
-            in_workspace_package = false;
+            in_section = false;
         }
-        if in_workspace_package && trimmed.starts_with("version") && trimmed.contains('=') {
-            // Extract the version value between quotes
-            if let Some(start) = trimmed.find('"') {
-                if let Some(end) = trimmed[start + 1..].find('"') {
-                    return Ok(trimmed[start + 1..start + 1 + end].to_string());
-                }
+        if in_section {
+            if let Some(version) = quoted_assignment(trimmed, "version") {
+                return Ok(version.to_string());
             }
         }
     }
 
-    Err("Could not find version in [workspace.package] of Cargo.toml".to_string())
+    Err(format!(
+        "Could not find version in {section} of {}",
+        path.display()
+    ))
 }
 
 /// Return the PEP 440 package version after verifying Python metadata is synchronized.
 pub(crate) fn python_package_version(root: &Path, release_version: &str) -> Result<String, String> {
-    let expected = ReleaseVersion::parse(release_version)
-        .ok_or_else(|| format!("Unsupported release version `{release_version}`"))?
-        .python_version();
+    let release = ReleaseVersion::parse(release_version)
+        .ok_or_else(|| format!("Unsupported release version `{release_version}`"))?;
+    let expected = release.python_version();
+    let expected_cargo = release.python_cargo_version();
+    let cargo_path = root.join("crates").join("webui-python").join("Cargo.toml");
+    let cargo_version = read_toml_section_version(&cargo_path, "[package]")?;
+    if cargo_version != expected_cargo {
+        return Err(format!(
+            "{} has version {cargo_version}, expected {expected_cargo}.\n  help: run `cargo xtask \
+             version {release_version}`",
+            cargo_path.display()
+        ));
+    }
+
     let pyproject_path = root
         .join("crates")
         .join("webui-python")
@@ -637,12 +733,12 @@ pub(crate) fn update_workspace(root: &Path, version: &str) -> Result<Vec<PathBuf
              major.minor.patch-hotfix.number"
         )
     })?;
-    let python_version = release.python_version();
+    let versions = VersionValues::new(version, release);
     let targets = discover_targets(root);
     let mut updated = Vec::with_capacity(targets.len());
 
     for target in &targets {
-        if apply_update(execute_update(target, version, &python_version), target)? {
+        if apply_update(execute_update(target, &versions), target)? {
             updated.push(target.path.clone());
         }
     }
@@ -857,14 +953,19 @@ version = "0.1.0"
 [[package]]
 name = "microsoft-webui-handler"
 version = "0.0.1"
+
+[[package]]
+name = "microsoft-webui-python"
+version = "0.0.1"
 "#,
         )
         .unwrap();
 
-        assert!(update_cargo_lock_versions(&lock, "0.0.1-hotfix.1").unwrap());
+        assert!(update_cargo_lock_versions(&lock, "0.0.1-hotfix.1", "0.0.1-post.1").unwrap());
 
         let content = fs::read_to_string(&lock).unwrap();
         assert_eq!(content.matches("version = \"0.0.1-hotfix.1\"").count(), 2);
+        assert!(content.contains("name = \"microsoft-webui-python\"\nversion = \"0.0.1-post.1\""));
         assert!(content.contains("name = \"serde\"\nversion = \"1.0.0\""));
         assert!(content.contains("name = \"xtask\"\nversion = \"0.1.0\""));
     }
@@ -1026,6 +1127,12 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         )
         .unwrap();
         fs::write(
+            python_root.join("Cargo.toml"),
+            "[package]\nname = \"microsoft-webui-python\"\nversion = \"1.2.3\"\n\n[dependencies]\n\
+             microsoft-webui-handler = { path = \"../webui-handler\", version = \"1.2.3\" }\n",
+        )
+        .unwrap();
+        fs::write(
             python_root.join("src").join("version.rs"),
             "pub(crate) const PYTHON_PACKAGE_VERSION: &str = \"1.2.3\";\n",
         )
@@ -1033,10 +1140,13 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
 
         let updated = update_workspace(dir.path(), "1.2.3-hotfix.4").unwrap();
 
-        assert_eq!(updated.len(), 3);
+        assert_eq!(updated.len(), 4);
         assert!(fs::read_to_string(dir.path().join("Cargo.toml"))
             .unwrap()
             .contains("version = \"1.2.3-hotfix.4\""));
+        let python_cargo = fs::read_to_string(python_root.join("Cargo.toml")).unwrap();
+        assert!(python_cargo.contains("version = \"1.2.3-post.4\""));
+        assert!(python_cargo.contains(r#"version = "=1.2.3-hotfix.4""#));
         assert!(fs::read_to_string(python_root.join("pyproject.toml"))
             .unwrap()
             .contains("version = \"1.2.3.post4\""));
@@ -1059,6 +1169,11 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
         fs::write(
             python_root.join("pyproject.toml"),
             "[project]\nversion = \"1.2.3\"\n",
+        )
+        .unwrap();
+        fs::write(
+            python_root.join("Cargo.toml"),
+            "[package]\nversion = \"1.2.3-post.1\"\n",
         )
         .unwrap();
         fs::write(

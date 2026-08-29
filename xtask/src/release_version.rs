@@ -78,6 +78,13 @@ impl ReleaseVersion {
             None => self.to_string(),
         }
     }
+
+    pub(crate) fn python_cargo_version(self) -> String {
+        match self.hotfix {
+            Some(number) => format!("{}.{}.{}-post.{number}", self.major, self.minor, self.patch),
+            None => self.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for ReleaseVersion {
@@ -141,6 +148,10 @@ mod tests {
         assert_eq!(
             ReleaseVersion::parse("1.2.3").map(ReleaseVersion::python_version),
             Some("1.2.3".to_string())
+        );
+        assert_eq!(
+            ReleaseVersion::parse("1.2.3-hotfix.4").map(ReleaseVersion::python_cargo_version),
+            Some("1.2.3-post.4".to_string())
         );
     }
 
