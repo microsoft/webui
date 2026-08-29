@@ -477,6 +477,7 @@ fn git_output(root: &Path, args: &[&str]) -> Result<String, String> {
         return Err(command_error(args, &output.stderr));
     }
     String::from_utf8(output.stdout)
+        .map(|value| value.trim_end_matches(['\r', '\n']).to_string())
         .map_err(|error| format!("Git returned non-UTF-8 output: {error}"))
 }
 
@@ -666,7 +667,18 @@ mod tests {
     }
 
     #[test]
-    fn release_pipelines_include_guarded_hotfix_branches() {
+    fn resolve_commit_removes_git_line_ending() {
+        let repository = HotfixRepository::create();
+
+        let resolved = resolve_commit(repository.root(), "HEAD").unwrap();
+        let expected = test_git(repository.root(), &["rev-parse", "HEAD"]);
+
+        assert_eq!(resolved, expected);
+        assert_eq!(resolved.len(), 40);
+    }
+
+    #[test]
+    fn release_pipelines_guard_hotfix_publication() {
         let build = include_str!("../../.ado/pipelines/azure-pipelines-build.yml");
         let cd = include_str!("../../.ado/pipelines/azure-pipelines-cd.yml");
         let publish_stage = cd
@@ -676,8 +688,15 @@ mod tests {
         assert!(build.contains("- hotfix/*"));
         assert!(build.contains(r#"refs/heads/hotfix/v${release_version}"#));
         assert!(build.contains(r#": "${PYTHON_VERSION:?PYTHON_VERSION is required}""#));
-        assert!(cd.contains("- hotfix/*"));
+        assert!(build.contains("- stage: ValidateHotfix"));
+        assert!(build.contains("cargo xtask check"));
+        assert!(build.contains("eq(dependencies.PrepareRelease.result, 'Succeeded')"));
+        assert!(build.contains(r#"git merge-base --is-ancestor "$stable_ref" "$release_commit""#));
+        assert!(!cd.contains("- hotfix/*"));
         assert!(cd.contains(r#"refs/heads/hotfix/v${release_version}"#));
+        assert!(cd.contains(
+            r#"git merge-base --is-ancestor "${stable_ref}^{commit}" "$release_commit""#
+        ));
         assert!(publish_stage.is_some_and(|stage| {
             stage.contains("releasePrerelease: $[ stageDependencies.SignArtifacts.Sign.outputs")
                 && stage
@@ -685,6 +704,8 @@ mod tests {
                 && stage.contains(
                     "releaseAddChangelog: $[ stageDependencies.SignArtifacts.Sign.outputs",
                 )
+                && stage.contains("npmDistTag: $[ stageDependencies.SignArtifacts.Sign.outputs")
+                && stage.contains("NPM_CONFIG_TAG: $(npmDistTag)")
                 && stage.contains("addChangeLog: $(releaseAddChangelog)")
         }));
     }

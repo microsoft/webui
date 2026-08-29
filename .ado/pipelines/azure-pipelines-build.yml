@@ -26,6 +26,8 @@ stages:
       vmImage: ubuntu-latest
     steps:
     - checkout: self
+      fetchDepth: 0
+      fetchTags: true
     - task: Bash@3
       displayName: Resolve release version
       name: release
@@ -47,11 +49,13 @@ stages:
           ' Cargo.toml)
 
           python_version="$release_version"
+          stable_tag=
           if [[ "$release_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
             expected_branch=refs/heads/main
           elif [[ "$release_version" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))-hotfix\.([1-9][0-9]*)$ ]]; then
             python_version="${BASH_REMATCH[1]}.post${BASH_REMATCH[5]}"
             expected_branch="refs/heads/hotfix/v${release_version}"
+            stable_tag="v${BASH_REMATCH[1]}"
           else
             echo "##vso[task.logissue type=error]Cargo.toml must contain a stable or major.minor.patch-hotfix.number workspace version."
             exit 1
@@ -63,8 +67,20 @@ stages:
             exit 1
           fi
 
-          release_tag="v${release_version}"
           release_commit="${BUILD_SOURCEVERSION:?BUILD_SOURCEVERSION is required}"
+          if [[ -n "$stable_tag" ]]; then
+            stable_ref="refs/tags/${stable_tag}^{commit}"
+            if ! git rev-parse --verify "$stable_ref" >/dev/null; then
+              echo "##vso[task.logissue type=error]Required base release tag ${stable_tag} does not exist."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$stable_ref" "$release_commit"; then
+              echo "##vso[task.logissue type=error]Hotfix commit ${release_commit} is not descended from ${stable_tag}."
+              exit 1
+            fi
+          fi
+          release_tag="v${release_version}"
+          release_tag="v${release_version}"
           if ! source_date_epoch=$(git show -s --format=%ct "$release_commit"); then
             echo "##vso[task.logissue type=error]Unable to read the commit timestamp for release commit ${release_commit}."
             exit 1
@@ -106,12 +122,79 @@ stages:
       env:
         ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
 
-- stage: BuildArtifacts
-  displayName: Build release artifacts
+- stage: ValidateHotfix
+  displayName: Validate hotfix release line
   dependsOn: PrepareRelease
   condition: |
     and(
       succeeded(),
+      eq(dependencies.PrepareRelease.outputs['SelectRelease.release.shouldBuild'], 'true'),
+      startsWith(variables['Build.SourceBranch'], 'refs/heads/hotfix/')
+    )
+  variables:
+    CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
+    PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
+  jobs:
+  - job: QualityGate
+    displayName: Run full quality gate
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: Cache@2
+      displayName: Restore Cargo cache
+      inputs:
+        key: 'hotfix-validation-cargo-home | "$(Agent.OS)" | Cargo.lock'
+        restoreKeys: |
+          hotfix-validation-cargo-home | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)
+    - task: Cache@2
+      displayName: Restore validation target cache
+      inputs:
+        key: 'hotfix-validation-target | "$(Agent.OS)" | Cargo.lock'
+        restoreKeys: |
+          hotfix-validation-target | "$(Agent.OS)"
+        path: $(Build.SourcesDirectory)/target
+    - task: Cache@2
+      displayName: Restore pnpm store
+      inputs:
+        key: 'pnpm | "$(Agent.OS)" | pnpm-lock.yaml'
+        restoreKeys: |
+          pnpm | "$(Agent.OS)"
+        path: $(PNPM_STORE_PATH)
+    - task: NodeTool@0
+      displayName: Install Node.js 22
+      inputs:
+        versionSpec: 22.x
+    - task: Bash@3
+      displayName: Run cargo xtask check
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler
+          rustup toolchain install 1.93 --profile minimal
+          rustup default 1.93
+          corepack enable
+          pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
+          export PATH="$CARGO_HOME/bin:$PATH"
+          cargo xtask check
+      env:
+        CARGO_HOME: $(CARGO_CACHE_HOME)
+        PNPM_STORE_PATH: $(PNPM_STORE_PATH)
+
+- stage: BuildArtifacts
+  displayName: Build release artifacts
+  dependsOn:
+  - PrepareRelease
+  - ValidateHotfix
+  condition: |
+    and(
+      eq(dependencies.PrepareRelease.result, 'Succeeded'),
+      in(dependencies.ValidateHotfix.result, 'Succeeded', 'Skipped'),
       eq(dependencies.PrepareRelease.outputs['SelectRelease.release.shouldBuild'], 'true')
     )
   variables:

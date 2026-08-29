@@ -26,24 +26,26 @@ enum VersionFormat {
     PythonCargo,
 }
 
-struct VersionValues<'a> {
-    release: &'a str,
+struct VersionValues {
+    release: String,
     python: String,
     python_cargo: String,
+    npm_dist_tag: String,
 }
 
-impl<'a> VersionValues<'a> {
-    fn new(release: &'a str, parsed: ReleaseVersion) -> Self {
+impl VersionValues {
+    fn new(parsed: ReleaseVersion) -> Self {
         Self {
-            release,
+            release: parsed.to_string(),
             python: parsed.python_version(),
             python_cargo: parsed.python_cargo_version(),
+            npm_dist_tag: parsed.npm_dist_tag(),
         }
     }
 
     fn get(&self, format: VersionFormat) -> &str {
         match format {
-            VersionFormat::Release => self.release,
+            VersionFormat::Release => &self.release,
             VersionFormat::Python => &self.python,
             VersionFormat::PythonCargo => &self.python_cargo,
         }
@@ -179,21 +181,23 @@ fn discover_targets(root: &Path) -> Vec<VersionTarget> {
 }
 
 /// Dispatch a version update to the right updater function.
-fn execute_update(target: &VersionTarget, versions: &VersionValues<'_>) -> Result<bool, String> {
+fn execute_update(target: &VersionTarget, versions: &VersionValues) -> Result<bool, String> {
     match &target.strategy {
         UpdateStrategy::TomlSection { section, format } => {
             update_toml_section_version(&target.path, section, versions.get(*format))
         }
-        UpdateStrategy::PackageJson => update_package_json(&target.path, versions.release),
+        UpdateStrategy::PackageJson => {
+            update_package_json(&target.path, &versions.release, &versions.npm_dist_tag)
+        }
         UpdateStrategy::CargoLock => {
-            update_cargo_lock_versions(&target.path, versions.release, &versions.python_cargo)
+            update_cargo_lock_versions(&target.path, &versions.release, &versions.python_cargo)
         }
         UpdateStrategy::CrateManifest { package_format } => update_crate_manifest(
             &target.path,
             package_format.map(|format| versions.get(format)),
-            versions.release,
+            &versions.release,
         ),
-        UpdateStrategy::DotnetProps => update_dotnet_version(&target.path, versions.release),
+        UpdateStrategy::DotnetProps => update_dotnet_version(&target.path, &versions.release),
         UpdateStrategy::Pyproject(format) => {
             update_pyproject_version(&target.path, versions.get(*format))
         }
@@ -424,12 +428,29 @@ fn replace_first_json_field(content: &str, field: &str, new_value: &str) -> Opti
     Some(result)
 }
 
+fn replace_json_object_string_field(
+    content: &str,
+    object: &str,
+    field: &str,
+    new_value: &str,
+) -> Option<String> {
+    let object_key = format!("\"{object}\"");
+    let object_start = content.find(&object_key)?;
+    let updated_suffix = replace_first_json_field(&content[object_start..], field, new_value)?;
+    let mut result =
+        String::with_capacity(content.len() - content[object_start..].len() + updated_suffix.len());
+    result.push_str(&content[..object_start]);
+    result.push_str(&updated_suffix);
+    Some(result)
+}
+
 /// Update version in a package.json file. Also updates optionalDependencies
-/// that reference @microsoft/webui-* packages.
+/// that reference @microsoft/webui-* packages and the registry dist-tag for
+/// public WebUI packages.
 ///
 /// Uses serde_json to read the structure, then performs surgical string
 /// replacement so only the version values change — all formatting is preserved.
-fn update_package_json(path: &Path, version: &str) -> Result<bool, String> {
+fn update_package_json(path: &Path, version: &str, npm_dist_tag: &str) -> Result<bool, String> {
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(_) => return Ok(false),
@@ -465,6 +486,34 @@ fn update_package_json(path: &Path, version: &str) -> Result<bool, String> {
                     }
                 }
             }
+        }
+    }
+
+    let is_public_webui_package = obj
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.starts_with("@microsoft/webui"))
+        && obj.get("private").and_then(serde_json::Value::as_bool) != Some(true);
+    if is_public_webui_package {
+        let configured_tag = obj
+            .get("publishConfig")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|config| config.get("tag"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "{} must define a string publishConfig.tag so hotfixes cannot acquire the \
+                     latest npm dist-tag",
+                    path.display()
+                )
+            })?;
+        if configured_tag != npm_dist_tag {
+            result =
+                replace_json_object_string_field(&result, "publishConfig", "tag", npm_dist_tag)
+                    .ok_or_else(|| {
+                        format!("Could not update publishConfig.tag in {}", path.display())
+                    })?;
+            changed = true;
         }
     }
 
@@ -733,7 +782,7 @@ pub(crate) fn update_workspace(root: &Path, version: &str) -> Result<Vec<PathBuf
              major.minor.patch-hotfix.number"
         )
     })?;
-    let versions = VersionValues::new(version, release);
+    let versions = VersionValues::new(release);
     let targets = discover_targets(root);
     let mut updated = Vec::with_capacity(targets.len());
 
@@ -836,7 +885,7 @@ mod tests {
         let pkg = dir.path().join("package.json");
         fs::write(&pkg, r#"{"name":"test","version":"0.0.1"}"#).unwrap();
 
-        update_package_json(&pkg, "1.2.3").unwrap();
+        update_package_json(&pkg, "1.2.3", "latest").unwrap();
 
         let content = fs::read_to_string(&pkg).unwrap();
         let val: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -849,7 +898,7 @@ mod tests {
         let pkg = dir.path().join("package.json");
         fs::write(&pkg, r#"{"name":"webui","version":"1.0.0","private":true}"#).unwrap();
 
-        update_package_json(&pkg, "2.0.0").unwrap();
+        update_package_json(&pkg, "2.0.0", "latest").unwrap();
 
         let content = fs::read_to_string(&pkg).unwrap();
         let val: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -867,7 +916,7 @@ mod tests {
         )
         .unwrap();
 
-        update_package_json(&pkg, "2.0.0").unwrap();
+        update_package_json(&pkg, "2.0.0", "latest").unwrap();
 
         let content = fs::read_to_string(&pkg).unwrap();
         let val: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -883,7 +932,7 @@ mod tests {
     #[test]
     fn test_update_package_json_missing_file() {
         let dir = tempfile::TempDir::new().unwrap();
-        let result = update_package_json(&dir.path().join("nope.json"), "1.0.0");
+        let result = update_package_json(&dir.path().join("nope.json"), "1.0.0", "latest");
         assert!(matches!(result, Ok(false)));
     }
 
@@ -895,12 +944,52 @@ mod tests {
             "{\n  \"name\": \"webui\",\n  \"version\": \"1.0.0\",\n  \"private\": true\n}\n";
         fs::write(&pkg, original).unwrap();
 
-        update_package_json(&pkg, "2.0.0").unwrap();
+        update_package_json(&pkg, "2.0.0", "latest").unwrap();
 
         let content = fs::read_to_string(&pkg).unwrap();
         let expected =
             "{\n  \"name\": \"webui\",\n  \"version\": \"2.0.0\",\n  \"private\": true\n}\n";
         assert_eq!(content, expected, "only version value should change");
+    }
+
+    #[test]
+    fn test_update_public_package_json_uses_release_line_hotfix_tag() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pkg = dir.path().join("package.json");
+        fs::write(
+            &pkg,
+            "{\n  \"name\": \"@microsoft/webui-router\",\n  \"version\": \"1.2.3\",\n  \
+             \"publishConfig\": {\n    \"tag\": \"latest\"\n  }\n}\n",
+        )
+        .unwrap();
+
+        update_package_json(&pkg, "1.2.3-hotfix.4", "hotfix-1.2.3").unwrap();
+
+        let content = fs::read_to_string(&pkg).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(value["version"], "1.2.3-hotfix.4");
+        assert_eq!(value["publishConfig"]["tag"], "hotfix-1.2.3");
+
+        update_package_json(&pkg, "1.2.4", "latest").unwrap();
+        let content = fs::read_to_string(&pkg).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(value["version"], "1.2.4");
+        assert_eq!(value["publishConfig"]["tag"], "latest");
+    }
+
+    #[test]
+    fn test_update_public_package_json_requires_dist_tag_policy() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let pkg = dir.path().join("package.json");
+        fs::write(
+            &pkg,
+            r#"{"name":"@microsoft/webui-router","version":"1.2.3"}"#,
+        )
+        .unwrap();
+
+        let error = update_package_json(&pkg, "1.2.3-hotfix.1", "hotfix-1.2.3").unwrap_err();
+
+        assert!(error.contains("must define a string publishConfig.tag"));
     }
 
     #[test]
@@ -1115,7 +1204,9 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
     fn test_update_workspace_maps_python_hotfix_version() {
         let dir = tempfile::TempDir::new().unwrap();
         let python_root = dir.path().join("crates").join("webui-python");
+        let npm_root = dir.path().join("packages").join("webui-router");
         fs::create_dir_all(python_root.join("src")).unwrap();
+        fs::create_dir_all(&npm_root).unwrap();
         fs::write(
             dir.path().join("Cargo.toml"),
             "[workspace]\nmembers = []\n\n[workspace.package]\nversion = \"1.2.3\"\n",
@@ -1137,10 +1228,15 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
             "pub(crate) const PYTHON_PACKAGE_VERSION: &str = \"1.2.3\";\n",
         )
         .unwrap();
+        fs::write(
+            npm_root.join("package.json"),
+            r#"{"name":"@microsoft/webui-router","version":"1.2.3","publishConfig":{"tag":"latest"}}"#,
+        )
+        .unwrap();
 
         let updated = update_workspace(dir.path(), "1.2.3-hotfix.4").unwrap();
 
-        assert_eq!(updated.len(), 4);
+        assert_eq!(updated.len(), 5);
         assert!(fs::read_to_string(dir.path().join("Cargo.toml"))
             .unwrap()
             .contains("version = \"1.2.3-hotfix.4\""));
@@ -1155,10 +1251,38 @@ microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
                 .unwrap()
                 .contains("PYTHON_PACKAGE_VERSION: &str = \"1.2.3.post4\"")
         );
+        let npm: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(npm_root.join("package.json")).unwrap())
+                .unwrap();
+        assert_eq!(npm["version"], "1.2.3-hotfix.4");
+        assert_eq!(npm["publishConfig"]["tag"], "hotfix-1.2.3");
         assert_eq!(
             python_package_version(dir.path(), "1.2.3-hotfix.4"),
             Ok("1.2.3.post4".to_string())
         );
+    }
+
+    #[test]
+    fn public_npm_packages_follow_release_dist_tag_policy() {
+        let root = crate::util::workspace_root().unwrap();
+        let release = ReleaseVersion::parse(&read_version().unwrap()).unwrap();
+        let expected_tag = release.npm_dist_tag();
+        for path in find_package_jsons(&root) {
+            let content = fs::read_to_string(&path).unwrap();
+            let package: serde_json::Value = serde_json::from_str(&content).unwrap();
+            let is_public = package["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("@microsoft/webui"))
+                && package["private"].as_bool() != Some(true);
+            if is_public {
+                assert_eq!(
+                    package["publishConfig"]["tag"],
+                    expected_tag,
+                    "{} must use the dist-tag for the current release",
+                    path.display()
+                );
+            }
+        }
     }
 
     #[test]

@@ -85,6 +85,13 @@ impl ReleaseVersion {
             None => self.to_string(),
         }
     }
+
+    pub(crate) fn npm_dist_tag(self) -> String {
+        match self.hotfix {
+            Some(_) => format!("hotfix-{}.{}.{}", self.major, self.minor, self.patch),
+            None => "latest".to_string(),
+        }
+    }
 }
 
 impl fmt::Display for ReleaseVersion {
@@ -98,7 +105,10 @@ impl fmt::Display for ReleaseVersion {
 }
 
 fn parse_number(value: &str) -> Option<u64> {
-    if value.is_empty() || (value.len() > 1 && value.starts_with('0')) {
+    if value.is_empty()
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
         return None;
     }
     value.parse().ok()
@@ -130,6 +140,10 @@ mod tests {
             "1.0.0-hotfix.01",
             "1.0.0-alpha.1",
             "1.0.0+build.1",
+            "+1.0.0",
+            "1.+0.0",
+            "1.0.+0",
+            "1.0.0-hotfix.+1",
             "v1.0.0",
         ] {
             assert!(
@@ -152,6 +166,18 @@ mod tests {
         assert_eq!(
             ReleaseVersion::parse("1.2.3-hotfix.4").map(ReleaseVersion::python_cargo_version),
             Some("1.2.3-post.4".to_string())
+        );
+    }
+
+    #[test]
+    fn maps_releases_to_safe_npm_dist_tags() {
+        assert_eq!(
+            ReleaseVersion::parse("1.2.3-hotfix.4").map(ReleaseVersion::npm_dist_tag),
+            Some("hotfix-1.2.3".to_string())
+        );
+        assert_eq!(
+            ReleaseVersion::parse("1.2.3").map(ReleaseVersion::npm_dist_tag),
+            Some("latest".to_string())
         );
     }
 

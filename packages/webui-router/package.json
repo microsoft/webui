@@ -40,5 +40,8 @@
     "typecheck": "tsc --noEmit"
   },
   "type": "module",
+  "publishConfig": {
+    "tag": "latest"
+  },
   "version": "0.0.27"
 }

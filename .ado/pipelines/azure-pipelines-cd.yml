@@ -17,11 +17,12 @@ resources:
     source: Web UI - CD Build
     # Manual Run Pipeline selection may intentionally override this default.
     branch: refs/heads/main
+    # Hotfix builds are selected manually so pushing an unprotected hotfix
+    # branch cannot authorize production publication by itself.
     trigger:
       branches:
         include:
         - main
-        - hotfix/*
       stages:
       - BuildArtifacts
   repositories:
@@ -80,6 +81,8 @@ extends:
         steps:
         - checkout: self
           clean: true
+          fetchDepth: 0
+          fetchTags: true
 
         - download: releaseBuild
           artifact: release-metadata
@@ -101,13 +104,17 @@ extends:
               release_prerelease=false
               release_make_latest=legacy
               release_add_changelog=true
+              npm_dist_tag=latest
+              stable_tag=
               if [[ "$release_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
                 expected_branch=refs/heads/main
-              elif [[ "$release_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-hotfix\.([1-9][0-9]*)$ ]]; then
+              elif [[ "$release_version" =~ ^((0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))-hotfix\.([1-9][0-9]*)$ ]]; then
                 expected_branch="refs/heads/hotfix/v${release_version}"
                 release_prerelease=true
                 release_make_latest=false
                 release_add_changelog=false
+                npm_dist_tag="hotfix-${BASH_REMATCH[1]}"
+                stable_tag="v${BASH_REMATCH[1]}"
               else
                 echo "##vso[task.logissue type=error]Release metadata contains an unsupported version."
                 exit 1
@@ -126,6 +133,19 @@ extends:
                 exit 1
               fi
 
+              if [[ -n "$stable_tag" ]]; then
+                stable_ref="refs/azure-release-tags/${stable_tag}"
+                git fetch --no-tags origin "$release_commit"
+                if ! git fetch --force origin "refs/tags/${stable_tag}:${stable_ref}"; then
+                  echo "##vso[task.logissue type=error]Required base release tag ${stable_tag} does not exist on origin."
+                  exit 1
+                fi
+                if ! git merge-base --is-ancestor "${stable_ref}^{commit}" "$release_commit"; then
+                  echo "##vso[task.logissue type=error]Hotfix commit ${release_commit} is not descended from ${stable_tag}."
+                  exit 1
+                fi
+              fi
+
               echo "##vso[build.updatebuildnumber]${release_tag}-cd-${BUILD_BUILDID}"
               echo "##vso[task.setvariable variable=releaseVersion;isOutput=true]${release_version}"
               echo "##vso[task.setvariable variable=releaseTag;isOutput=true]${release_tag}"
@@ -133,6 +153,7 @@ extends:
               echo "##vso[task.setvariable variable=releasePrerelease;isOutput=true]${release_prerelease}"
               echo "##vso[task.setvariable variable=releaseMakeLatest;isOutput=true]${release_make_latest}"
               echo "##vso[task.setvariable variable=releaseAddChangelog;isOutput=true]${release_add_changelog}"
+              echo "##vso[task.setvariable variable=npmDistTag;isOutput=true]${npm_dist_tag}"
           env:
             METADATA_INPUT_DIR: $(Pipeline.Workspace)/releaseBuild/release-metadata
             EXPECTED_VALIDATION_MODE: ${{ parameters.validationMode }}
@@ -270,6 +291,7 @@ extends:
           releasePrerelease: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releasePrerelease'] ]
           releaseMakeLatest: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseMakeLatest'] ]
           releaseAddChangelog: $[ stageDependencies.SignArtifacts.Sign.outputs['release.releaseAddChangelog'] ]
+          npmDistTag: $[ stageDependencies.SignArtifacts.Sign.outputs['release.npmDistTag'] ]
         jobs:
         - job: PublishGitHub
           displayName: Publish GitHub Release
@@ -321,6 +343,10 @@ extends:
 
         - job: PublishNpm
           displayName: Publish npm packages
+          variables:
+            # The release template publishes tarball paths. npm ignores a
+            # tarball's embedded publishConfig, so enforce the tag via config.
+            NPM_CONFIG_TAG: $(npmDistTag)
           templateContext:
             type: releaseJob
             isProduction: true
