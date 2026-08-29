@@ -80,19 +80,22 @@ The target list lives in `CRITERION_BENCHES` in `xtask/src/main.rs`. Add new
 The docs homepage consumes only
 `docs/.webui-press/state/benchmark-summary.json`. From the
 `microsoft/webui-benchmarks` repository root, export the validated compact DTO
-after matching complete official SSR and browser runs:
+after matching progressive SSR, complete SSR, and headed browser runs:
 
 ```bash
 pnpm run export:summary -- \
   --input results/ssr-todo-<official-name>.json \
+  --complete-input results/ssr-todo-<official-name>-complete.json \
   --browser-input results/ssr-todo-browser-outcomes-<official-name>.json \
-  --output results/benchmark-summary-combined.json
+  --output results/benchmark-summary.json
 ```
 
 Every `results/` path above belongs to `microsoft/webui-benchmarks`. The
 exporter rejects quick, incomplete, noncanonical, or mismatched captures and
-keeps browser outcomes as separate selectable metrics rather than SSR scoring.
-Copy only its generated `results/benchmark-summary-combined.json` to
+publishes exactly five selectors in this order: **No Streaming RPS**,
+**Streaming RPS**, **LCP**, **JS Heap**, and **Renderer Private MB**. **No
+Streaming RPS** is selected by default. Copy only the generated
+`results/benchmark-summary.json` to
 `webui/docs/.webui-press/state/benchmark-summary.json`. Keep full raw captures
 and machine evidence in `webui-benchmarks` or its CI artifacts; do not copy
 them into the WebUI documentation tree.
