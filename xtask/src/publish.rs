@@ -13,6 +13,7 @@
 //! - `publish/standalone/` — legacy direct-download native and WASM assets
 //! - `publish/python/`  — pre-staged wheels plus the generated source distribution
 
+use crate::release_version::ReleaseVersion;
 use crate::util::{build_command, run_command, run_command_quiet};
 use crate::version;
 use std::fs;
@@ -355,6 +356,13 @@ pub fn run_stage(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if let Err(error) = version::python_package_version(&root, &ver) {
+        eprintln!(
+            "  {} Invalid Python package version: {error}",
+            console::style("✘").red().bold(),
+        );
+        return ExitCode::FAILURE;
+    }
 
     eprintln!(
         "\n{} publish-stage v{}\n",
@@ -688,14 +696,15 @@ fn build_python_wheel(root: &Path, triple: &str, out_dir: &Path) -> Result<Strin
     let manifest_arg = manifest_path.to_string_lossy().into_owned();
     let out_arg = out_dir.to_string_lossy().into_owned();
     let maturin_args = maturin_build_args(&manifest_arg, triple, &out_arg);
+    let release_version = crate::version::read_version()
+        .map_err(|e| format!("failed to read the workspace version: {e}"))?;
+    let python_version = crate::version::python_package_version(root, &release_version)?;
 
     run_command_quiet(&interpreter, &maturin_args, Some(root))
         .map_err(|e| format!("maturin build failed: {e}"))?;
 
     let expected = format!(
-        "{PYTHON_DISTRIBUTION_NAME}-{}-{}.whl",
-        crate::version::read_version()
-            .map_err(|e| format!("failed to read the workspace version: {e}"))?,
+        "{PYTHON_DISTRIBUTION_NAME}-{python_version}-{}.whl",
         expected_python_wheel_tag(platform)
     );
     if !out_dir.join(&expected).is_file() {
@@ -1771,6 +1780,9 @@ fn count_files_with_extension(dir: &Path, ext: &str) -> u32 {
 
 fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), String> {
     let publish = root.join("publish");
+    let python_version = ReleaseVersion::parse(version)
+        .ok_or_else(|| format!("unsupported release version `{version}`"))?
+        .python_version();
     validate_artifact_count(
         count_files_with_extension(&publish.join("npm"), "tgz"),
         9,
@@ -1796,7 +1808,7 @@ fn validate_release_artifact_counts(root: &Path, version: &str) -> Result<(), St
         20,
         "standalone release assets",
     )?;
-    validate_python_release_artifacts(&publish, version)
+    validate_python_release_artifacts(&publish, &python_version)
 }
 
 fn validate_artifact_count(actual: u32, expected: u32, kind: &str) -> Result<(), String> {
@@ -2288,6 +2300,29 @@ mod tests {
         write_python_release_fixtures(&publish.join("python"), "1.2.3");
 
         assert!(validate_python_release_artifacts(&publish, "1.2.3").is_ok());
+    }
+
+    #[test]
+    fn release_artifact_validation_maps_hotfix_to_python_post_release() {
+        let root = tempfile::TempDir::new().expect("root should be created");
+        let publish = root.path().join("publish");
+        for (directory, extension, count) in [
+            ("npm", "tgz", 9),
+            ("crates", "crate", 15),
+            ("nuget", "nupkg", 8),
+            ("nuget", "snupkg", 2),
+            ("standalone", "bin", 20),
+        ] {
+            let output = publish.join(directory);
+            fs::create_dir_all(&output).expect("artifact directory should be created");
+            for index in 0..count {
+                fs::write(output.join(format!("{index}.{extension}")), "artifact")
+                    .expect("artifact fixture should be written");
+            }
+        }
+        write_python_release_fixtures(&publish.join("python"), "1.2.3.post4");
+
+        assert!(validate_release_artifact_counts(root.path(), "1.2.3-hotfix.4").is_ok());
     }
 
     #[test]

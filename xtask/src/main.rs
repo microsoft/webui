@@ -6,9 +6,11 @@ mod build_wasm;
 mod dev;
 mod e2e;
 mod e2e_approve;
+mod hotfix;
 mod license_headers;
 mod process;
 mod publish;
+mod release_version;
 mod util;
 mod version;
 mod windows_local;
@@ -77,6 +79,10 @@ fn main() -> ExitCode {
             let ver = args.get(2).map(|s| s.as_str());
             version::run(ver)
         }
+        Some("hotfix") => {
+            let extra: Vec<String> = args.iter().skip(2).cloned().collect();
+            hotfix::run(&extra)
+        }
         Some("publish-stage") => {
             let extra: Vec<String> = args.iter().skip(2).cloned().collect();
             publish::run_stage(&extra)
@@ -143,6 +149,7 @@ fn usage() -> ExitCode {
            e2e [--update-snapshots]  Run Playwright E2E tests for all example apps\n  \
            e2e-approve [run-id]  Download CI screenshot baselines and apply locally\n  \
            version <semver>  Update version across all Cargo.toml and package.json files\n  \
+           hotfix <commit> <oldest-tag> [--dry-run] [--support-commit <commit>]  Backport a commit and publish incremented hotfix branches\n  \
            publish-build --target <triple> [--profile release|debug] [--output <dir>] [--native-only|--python-only]  Build, stage, and optionally export one target's native artifacts and Python wheel\n  \
            publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]  Stage release artifacts into publish/\n  \
            build-windows-local [--target all|x64|arm64|<triple>]  Build and stage Windows MSVC artifacts locally with cargo-xwin\n  \

@@ -5,6 +5,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+mod version;
+
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
@@ -523,6 +525,6 @@ fn webui_python(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("StateError", py.get_type::<StateError>())?;
     module.add("RenderError", py.get_type::<RenderError>())?;
     module.add("StreamingError", py.get_type::<StreamingError>())?;
-    module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add("__version__", version::PYTHON_PACKAGE_VERSION)?;
     Ok(())
 }
