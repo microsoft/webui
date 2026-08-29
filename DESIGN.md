@@ -1123,18 +1123,14 @@ pub struct StreamStep {
 }
 
 impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
-    pub fn start(&mut self, state: &Value) -> Result<StreamStatus>;
-    pub fn start_owned(&mut self, state: Value) -> Result<StreamStatus>;
-    pub fn resume(
+    pub fn start<'state>(
         &mut self,
-        instance_id: BoundaryInstanceId,
-        state: &Value,
-        mode: BoundaryMode,
+        state: impl Into<StreamingState<'state>>,
     ) -> Result<StreamStatus>;
-    pub fn resume_owned(
+    pub fn resume<'state>(
         &mut self,
         instance_id: BoundaryInstanceId,
-        state: Value,
+        state: impl Into<StreamingState<'state>>,
         mode: BoundaryMode,
     ) -> Result<StreamStatus>;
     pub fn resume_current(
@@ -1152,18 +1148,14 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
 }
 
 impl StreamingSession {
-    pub fn start(&mut self, state: &Value) -> Result<StreamStep>;
-    pub fn start_owned(&mut self, state: Value) -> Result<StreamStep>;
-    pub fn resume(
+    pub fn start<'state>(
         &mut self,
-        instance_id: BoundaryInstanceId,
-        state: &Value,
-        mode: BoundaryMode,
+        state: impl Into<StreamingState<'state>>,
     ) -> Result<StreamStep>;
-    pub fn resume_owned(
+    pub fn resume<'state>(
         &mut self,
         instance_id: BoundaryInstanceId,
-        state: Value,
+        state: impl Into<StreamingState<'state>>,
         mode: BoundaryMode,
     ) -> Result<StreamStep>;
     pub fn resume_current(
@@ -1220,12 +1212,13 @@ byte.
 
 `resume_current` preserves the checkpoint-only return and the pause before
 `advance`, but commits against the retained snapshot without comparing another
-state tree. Owned hosts that just decoded or loaded a `Value` use `start_owned`
-and `resume_owned` to move selected top-level values into the session rather
-than cloning them. `WebUIHandler::render_streaming` drives the whole response in
-one prepared render context while borrowing its one state value; it preserves
-the same flush positions without cloning the state or rebuilding that context
-between records.
+state tree. `start` and `resume` accept either owned or borrowed state through
+`StreamingState`: owned values move changed top-level values into the session,
+while borrowed values let shared-state callers retain ownership. Equal values
+preserve the prior state-reference base.
+`WebUIHandler::render_streaming` drives the whole response in one prepared
+render context while borrowing its one state value; it preserves the same flush
+positions without cloning the state or rebuilding that context between records.
 
 ### Per-Render HTML Injection
 
@@ -3670,9 +3663,9 @@ state revision, an equal projection emits only `stateRef`; a proven superset
 emits `stateRef` plus its top-level `stateDelta`. The descriptor stores compact
 interned key IDs rather than projected values, so eliminating repeated JSON does
 not clone the state tree. The synchronous helper borrows one state and retains
-one render context for the complete response. Async owned sessions can move
-fresh state through `start_owned` and `resume_owned`, or use `resume_current`
-when the retained snapshot is already authoritative.
+one render context for the complete response. Async owned sessions pass `Value` to `start` and `resume` to move fresh state,
+pass `&Value` when retaining caller ownership, or use `resume_current` when the
+retained snapshot is already authoritative.
 
 The browser performs no `MutationObserver`, polling, or document-wide query on
 a valid path. It resolves root-local markers, walks each committed range once,
@@ -3734,10 +3727,10 @@ page.update(search.instance_id, &search_patch)?;
 
 The patch is projected through the update plan captured by that checkpoint.
 When no state changed, `resume_current` avoids an overlay while retaining the
-same checkpoint-only return. An owned `StreamingSession` additionally accepts
-`start_owned(Value)` and `resume_owned(..., Value, ...)`, allowing a host to
-transfer freshly loaded state into the continuation before returning its worker
-to the pool and awaiting the next operation.
+same checkpoint-only return. `StreamingSession::start` and `resume` accept owned
+`Value`s, allowing a host to transfer freshly loaded state into the continuation
+before returning its worker to the pool and awaiting the next operation. They
+also accept borrowed values for shared-state callers.
 
 ### Host-owned streaming sessions
 

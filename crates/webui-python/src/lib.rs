@@ -342,7 +342,7 @@ impl NativeStreamingSession {
             .detach(|| {
                 let state = parse_state(&input)?;
                 self.session_binding()?
-                    .start_owned(state)
+                    .start(state)
                     .map_err(streaming_binding_error)
             })
             .map_err(BindingError::into_py_error)?;
@@ -366,7 +366,7 @@ impl NativeStreamingSession {
                     BoundaryMode::Final
                 };
                 self.session_binding()?
-                    .resume_owned(BoundaryInstanceId::from_raw(instance_id), state, mode)
+                    .resume(BoundaryInstanceId::from_raw(instance_id), state, mode)
                     .map_err(streaming_binding_error)
             })
             .map_err(BindingError::into_py_error)?;

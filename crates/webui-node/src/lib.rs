@@ -551,7 +551,7 @@ impl StreamingSession {
     pub fn start(&mut self, state_json: String) -> napi::Result<JsStreamStep> {
         let state = parse_state_json(&state_json)?;
         self.inner
-            .start_owned(state)
+            .start(state)
             .and_then(stream_step)
             .map_err(streaming_error)
     }
@@ -570,7 +570,7 @@ impl StreamingSession {
         let state = parse_state_json(&state_json)?;
         let mode = parse_boundary_mode(mode.as_deref())?;
         self.inner
-            .resume_owned(BoundaryInstanceId::from_raw(instance_id), state, mode)
+            .resume(BoundaryInstanceId::from_raw(instance_id), state, mode)
             .and_then(stream_step)
             .map_err(streaming_error)
     }

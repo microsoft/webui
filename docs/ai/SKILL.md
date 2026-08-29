@@ -872,8 +872,8 @@ outlets, and selected route content.
   context for the complete response. Host-driven `stream_response` sessions use
   each `resume` state as an overlay for newly resolved occurrence data.
   `resume_current` skips the overlay when retained state is authoritative.
-  Owned sessions can move freshly decoded values through `start_owned` and
-  `resume_owned`.
+  `start` and `resume` move freshly decoded owned `Value`s or borrow shared
+  values through the same method names.
 - Range records may reference the exact prior range state by sequence
   and carry only a top-level delta. Missing, stale, forward, mismatched, or
   malformed references fail closed.

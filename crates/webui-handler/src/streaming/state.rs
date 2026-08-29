@@ -400,10 +400,9 @@ pub(crate) fn overlay_full_state(
 
 /// Move selected caller-owned values into the continuation snapshot.
 ///
-/// The owned path deliberately avoids deep equality checks. Supplying a key is
-/// treated as a new revision even when its value is equal, trading a cheap
-/// revision increment for avoiding an O(value size) comparison before moving
-/// the already-owned subtree.
+/// Exact equality checks keep the state revision stable when a binding supplies
+/// the same complete state on every resume. Changed subtrees are moved rather
+/// than cloned.
 pub(crate) fn overlay_selected_state_owned(
     frozen: &mut serde_json::Value,
     state: serde_json::Value,
@@ -423,8 +422,18 @@ pub(crate) fn overlay_selected_state_owned(
         let Some(value) = source.remove(key.as_ref()) else {
             continue;
         };
-        target.insert(key.to_string(), value);
-        changed = true;
+        match target.get_mut(key.as_ref()) {
+            Some(slot) => {
+                if slot != &value {
+                    *slot = value;
+                    changed = true;
+                }
+            }
+            None => {
+                target.insert(key.to_string(), value);
+                changed = true;
+            }
+        }
     }
     changed
 }
@@ -443,8 +452,21 @@ pub(crate) fn overlay_full_state_owned(
     let serde_json::Value::Object(target) = frozen else {
         return false;
     };
-    let changed = !source.is_empty();
-    target.extend(source);
+    let mut changed = false;
+    for (key, value) in source {
+        match target.get_mut(&key) {
+            Some(slot) => {
+                if slot != &value {
+                    *slot = value;
+                    changed = true;
+                }
+            }
+            None => {
+                target.insert(key, value);
+                changed = true;
+            }
+        }
+    }
     changed
 }
 

@@ -219,8 +219,8 @@ Each layer of the architecture contributes to the overall performance profile:
   `advance`, or `update`, so Node, WASM, Python, C, and .NET hosts write through
   their native backpressure APIs. A boundary-only `resume` can flush immediately;
   `advance` carries the following parent and tail bytes. Rust hosts can transfer
-  freshly loaded values through `start_owned` and `resume_owned`, or call
-  `resume_current` when the retained snapshot is unchanged. `webui serve
+  freshly loaded values by passing owned `Value`s to `start` and `resume`, or
+  call `resume_current` when the retained snapshot is unchanged. `webui serve
   --api-port` uses a capacity-one version-2 control channel over the same
   session.
   Hosts must also bound concurrent blocking renders before calling

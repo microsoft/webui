@@ -531,10 +531,8 @@ component.
 | API | Description |
 |---|---|
 | `WebUIHandler::stream_response(protocol, options, writer)` | Create one progressive response session |
-| `StreamingResponse::start(state)` | Render and flush through the first runtime occurrence or terminal |
-| `StreamingResponse::start_owned(state)` | Move freshly loaded state into the continuation, then render through the first occurrence or terminal |
-| `StreamingResponse::resume(instance_id, state, mode)` | Render and flush only the pending occurrence through its checkpoint |
-| `StreamingResponse::resume_owned(instance_id, state, mode)` | Move a newly loaded state overlay, then flush only the pending occurrence |
+| `StreamingResponse::start(state)` | Borrow or move state, then render and flush through the first runtime occurrence or terminal |
+| `StreamingResponse::resume(instance_id, state, mode)` | Borrow or move a state overlay, then flush only the pending occurrence |
 | `StreamingResponse::resume_current(instance_id, mode)` | Commit with retained state and preserve the checkpoint pause |
 | `StreamingResponse::advance()` | Render following parent bytes through the next occurrence or terminal |
 | `StreamingResponse::update(instance_id, patch)` | Send projected object state to a committed updatable occurrence |
@@ -555,7 +553,7 @@ let mut session = StreamingSession::new(
     Arc::clone(&protocol),
     SessionOptions::new("index.html", "/"),
 )?;
-let mut step = session.start_owned(initial_state)?;
+let mut step = session.start(initial_state)?;
 loop {
     sink.send(std::mem::take(&mut step.bytes))?;
     if step.done {
@@ -565,7 +563,7 @@ loop {
         Some(boundary) => {
             let state =
                 load_state(&boundary.owner, &boundary.name, boundary.key.as_ref())?;
-            session.resume_owned(boundary.instance_id, state, BoundaryMode::Final)?
+            session.resume(boundary.instance_id, state, BoundaryMode::Final)?
         }
         None => session.advance()?,
     };
@@ -573,11 +571,13 @@ loop {
 ```
 
 The session holds its own `Arc` clones, so it may outlive the bindings you
-created it from. `start_owned` and `resume_owned` move freshly decoded or loaded
-state into the continuation without cloning large subtrees. If no state changed,
-`resume_current` avoids both a clone and a deep equality walk. Every resume form
-still returns immediately after the checkpoint flush; `advance` remains a
-separate call after any async wait.
+created it from. `start` and `resume` accept either owned `Value`s or borrowed
+state: moving freshly decoded or loaded values avoids clones of changed
+subtrees, while borrowing lets shared-state callers retain ownership. Equal
+values keep the prior state-reference base. If the host already knows no state
+changed, `resume_current` also avoids the equality walk. Every resume form still
+returns immediately after the checkpoint flush; `advance` remains a separate
+call after any async wait.
 
 This is the same type Node, WASM, C, and C# drive, so behaviour is identical
 across hosts. Prefer `stream_response` in Rust servers: it writes straight into

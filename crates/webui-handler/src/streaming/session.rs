@@ -113,6 +113,42 @@ impl BoundaryKey {
     }
 }
 
+/// Borrowed or owned JSON state supplied to a streaming step.
+///
+/// `Value`, `&Value`, and references to smart pointers such as `&Arc<Value>`
+/// convert implicitly, so callers use one method name without losing ownership
+/// control.
+pub enum StreamingState<'a> {
+    /// State retained by the caller; the session clones only its projection.
+    Borrowed(&'a Value),
+    /// State transferred to the session so changed subtrees can move.
+    Owned(Value),
+}
+
+impl<'a, T> From<&'a T> for StreamingState<'a>
+where
+    T: std::borrow::Borrow<Value> + ?Sized,
+{
+    fn from(state: &'a T) -> Self {
+        Self::Borrowed(std::borrow::Borrow::borrow(state))
+    }
+}
+
+impl<'a, T> From<&'a mut T> for StreamingState<'a>
+where
+    T: std::borrow::Borrow<Value> + ?Sized,
+{
+    fn from(state: &'a mut T) -> Self {
+        Self::Borrowed(std::borrow::Borrow::borrow(&*state))
+    }
+}
+
+impl From<Value> for StreamingState<'_> {
+    fn from(state: Value) -> Self {
+        Self::Owned(state)
+    }
+}
+
 /// Runtime occurrence returned when traversal suspends.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoundaryDescriptor {
@@ -207,19 +243,18 @@ impl WebUIHandler {
 
 impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     /// Render until the first runtime boundary occurrence or terminal.
-    pub fn start(&mut self, state: &Value) -> Result<StreamStatus> {
-        let (core, call) = self.parts();
-        core.start(call, state)
-    }
-
-    /// Render to the first occurrence by moving caller-owned state into the
-    /// continuation snapshot.
     ///
-    /// This retains the writer-backed transport path while avoiding a full-state
-    /// clone when an async host already owns freshly decoded state.
-    pub fn start_owned(&mut self, state: Value) -> Result<StreamStatus> {
+    /// Pass an owned [`Value`] to move it into the continuation, or a reference
+    /// to retain caller ownership and clone only the required projection.
+    pub fn start<'state>(
+        &mut self,
+        state: impl Into<StreamingState<'state>>,
+    ) -> Result<StreamStatus> {
         let (core, call) = self.parts();
-        core.start_owned(call, state)
+        match state.into() {
+            StreamingState::Borrowed(state) => core.start(call, state),
+            StreamingState::Owned(state) => core.start_owned(call, state),
+        }
     }
 
     /// Commit the pending occurrence through its checkpoint, then stop.
@@ -232,26 +267,19 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     /// as many updatable occurrences as the browser retains. The refusal is
     /// raised before any byte or state moves, so the same occurrence stays
     /// pending and can be committed with [`BoundaryMode::Final`] instead.
-    pub fn resume(
+    /// Pass an owned [`Value`] to move changed subtrees, or a reference to retain
+    /// caller ownership. Use [`Self::resume_current`] when no state changed.
+    pub fn resume<'state>(
         &mut self,
         instance_id: BoundaryInstanceId,
-        state: &Value,
+        state: impl Into<StreamingState<'state>>,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
         let (core, call) = self.parts();
-        core.resume(call, instance_id, state, mode)
-    }
-
-    /// Commit the pending occurrence by moving caller-owned state into the
-    /// retained continuation snapshot, then stop after its checkpoint flush.
-    pub fn resume_owned(
-        &mut self,
-        instance_id: BoundaryInstanceId,
-        state: Value,
-        mode: BoundaryMode,
-    ) -> Result<StreamStatus> {
-        let (core, call) = self.parts();
-        core.resume_owned(call, instance_id, state, mode)
+        match state.into() {
+            StreamingState::Borrowed(state) => core.resume(call, instance_id, state, mode),
+            StreamingState::Owned(state) => core.resume_owned(call, instance_id, state, mode),
+        }
     }
 
     /// Commit the pending occurrence against the retained state snapshot.

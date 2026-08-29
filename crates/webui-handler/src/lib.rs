@@ -53,7 +53,7 @@ use streaming::{
 };
 pub use streaming::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, BufferSink, SessionOptions,
-    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession,
+    SpanInstanceId, StreamStatus, StreamStep, StreamingResponse, StreamingSession, StreamingState,
     MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
 };
 use thiserror::Error;

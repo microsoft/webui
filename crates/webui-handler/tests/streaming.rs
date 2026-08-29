@@ -123,7 +123,7 @@ fn span_completion_reuses_the_exact_prior_full_state() {
         "nested": { "count": 42 }
     });
 
-    let start = session.start_owned(state).unwrap();
+    let start = session.start(state).unwrap();
     let boundary = start.boundary.unwrap();
     let committed = session
         .resume_current(boundary.instance_id, BoundaryMode::Updatable)
@@ -187,14 +187,14 @@ fn span_completion_reuses_a_subset_and_serializes_only_its_delta() {
     );
     let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
     let start = session
-        .start_owned(test_json!({
+        .start(test_json!({
             "todos": "large-shared-state",
             "toolbar": "ready"
         }))
         .unwrap();
     let boundary = start.boundary.unwrap();
     let committed = session
-        .resume_owned(
+        .resume(
             boundary.instance_id,
             test_json!({ "todos": "large-shared-state" }),
             BoundaryMode::Final,
@@ -233,7 +233,7 @@ fn changed_resume_state_starts_a_new_reference_base() {
     );
     let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
     let first = session
-        .start_owned(test_json!({ "todos": "first" }))
+        .start(test_json!({ "todos": "first" }))
         .unwrap()
         .boundary
         .unwrap();
@@ -242,7 +242,7 @@ fn changed_resume_state_starts_a_new_reference_base() {
         .unwrap();
     let second = session.advance().unwrap().boundary.unwrap();
     let committed = session
-        .resume_owned(
+        .resume(
             second.instance_id,
             test_json!({ "todos": "second" }),
             BoundaryMode::Final,
@@ -255,6 +255,51 @@ fn changed_resume_state_starts_a_new_reference_base() {
         !html.contains("stateRef"),
         "a state revision must not reference an older projection"
     );
+}
+
+#[test]
+fn unchanged_owned_resume_preserves_the_reference_base() {
+    for strategy in [InitialStateStrategy::Full, InitialStateStrategy::Components] {
+        let mut protocol = parsed_protocol_data(
+            &document(concat!(
+                r#"<boundary name="first"><child-box></child-box></boundary>"#,
+                r#"<boundary name="second"><child-box></child-box></boundary>"#,
+            )),
+            &[("child-box", "<span>{{todos}}</span>")],
+        );
+        protocol.initial_state_strategy = strategy as i32;
+        protocol.components.insert(
+            "child-box".to_string(),
+            ComponentData {
+                hydration_mode: StateProjectionMode::Keys as i32,
+                hydration_keys: vec!["todos".to_string()],
+                uses_shadow_dom: true,
+                ..Default::default()
+            },
+        );
+        let state = test_json!({ "todos": "large-shared-state" });
+        let mut session = new_session(Arc::new(Protocol::new(protocol)), "/");
+        let first = session.start(state.clone()).unwrap().boundary.unwrap();
+        let first_commit = session
+            .resume(first.instance_id, state.clone(), BoundaryMode::Final)
+            .unwrap();
+        let second = session.advance().unwrap().boundary.unwrap();
+        let second_commit = session
+            .resume(second.instance_id, state, BoundaryMode::Final)
+            .unwrap();
+        let html = String::from_utf8([first_commit.bytes, second_commit.bytes].concat()).unwrap();
+
+        assert_eq!(
+            html.matches(r#""state":{"todos":"large-shared-state"}"#)
+                .count(),
+            1,
+            "unchanged projected state must be serialized once"
+        );
+        assert!(
+            html.contains(r#""stateRef":"#),
+            "the unchanged second resume must reference the first projection: {html}"
+        );
+    }
 }
 
 #[test]
@@ -1161,12 +1206,12 @@ fn borrowed_api_moves_owned_state_without_losing_the_async_pause() {
         .unwrap();
 
     let first = response
-        .start_owned(test_json!({ "value": "initial" }))
+        .start(test_json!({ "value": "initial" }))
         .unwrap()
         .boundary
         .unwrap();
     let committed = response
-        .resume_owned(
+        .resume(
             first.instance_id,
             test_json!({ "value": "resolved" }),
             BoundaryMode::Final,

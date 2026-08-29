@@ -227,38 +227,11 @@ fn render_split(
     }
 }
 
-fn render_split_owned_state(
-    handler: &WebUIHandler,
-    protocol: &Protocol,
-    state: Value,
-    writer: &mut BenchWriter,
-) {
-    let options = RenderOptions::new(ENTRY_ID, REQUEST_PATH);
-    let mut response = match handler.stream_response(protocol, &options, writer) {
-        Ok(response) => response,
-        Err(error) => panic!("starting split streaming response failed: {error}"),
-    };
-    let mut status = match response.start_owned(state) {
-        Ok(status) => status,
-        Err(error) => panic!("starting owned-state streaming traversal failed: {error}"),
-    };
-    while !status.done {
-        status = match status.boundary.as_ref() {
-            Some(boundary) => {
-                match response.resume_current(boundary.instance_id, BoundaryMode::Final) {
-                    Ok(status) => status,
-                    Err(error) => panic!("resuming split streaming traversal failed: {error}"),
-                }
-            }
-            None => match response.advance() {
-                Ok(status) => status,
-                Err(error) => panic!("advancing split streaming traversal failed: {error}"),
-            },
-        };
-    }
-}
-
-fn render_owned_split(handler: Arc<WebUIHandler>, protocol: Arc<Protocol>, state: Value) -> usize {
+fn render_owned_split(
+    handler: Arc<WebUIHandler>,
+    protocol: Arc<Protocol>,
+    states: Vec<Value>,
+) -> usize {
     let mut session = match StreamingSession::new(
         handler,
         protocol,
@@ -267,19 +240,31 @@ fn render_owned_split(handler: Arc<WebUIHandler>, protocol: Arc<Protocol>, state
         Ok(session) => session,
         Err(error) => panic!("creating owned streaming session failed: {error}"),
     };
-    let mut step = match session.start_owned(state) {
+    let mut states = states.into_iter();
+    let initial_state = match states.next() {
+        Some(state) => state,
+        None => panic!("owned streaming benchmark requires initial state"),
+    };
+    let mut step = match session.start(initial_state) {
         Ok(step) => step,
         Err(error) => panic!("starting owned streaming traversal failed: {error}"),
     };
     let mut bytes = step.bytes.len();
     while !step.done {
         step = match step.boundary.as_ref() {
-            Some(boundary) => {
-                match session.resume_current(boundary.instance_id, BoundaryMode::Final) {
-                    Ok(step) => step,
-                    Err(error) => panic!("resuming owned streaming traversal failed: {error}"),
+            Some(boundary) => match states.next() {
+                Some(state) => {
+                    match session.resume(boundary.instance_id, state, BoundaryMode::Final) {
+                        Ok(step) => step,
+                        Err(error) => {
+                            panic!("resuming owned streaming traversal failed: {error}")
+                        }
+                    }
                 }
-            }
+                None => {
+                    panic!("owned streaming benchmark requires state for every boundary")
+                }
+            },
             None => match session.advance() {
                 Ok(step) => step,
                 Err(error) => panic!("advancing owned streaming traversal failed: {error}"),
@@ -776,29 +761,21 @@ fn bench_large_state_boundaries(c: &mut Criterion) {
             black_box(writer.output.len());
         });
     });
-    compare.bench_function("streaming_split_owned_state", |b| {
-        let handler = hydration_handler();
-        let mut writer = BenchWriter::new(boundaries + 2);
-        b.iter_batched(
-            || state.clone(),
-            |owned_state| {
-                writer.reset();
-                render_split_owned_state(&handler, black_box(&protocol), owned_state, &mut writer);
-                black_box(writer.output.len());
-            },
-            BatchSize::SmallInput,
-        );
-    });
     let owned_handler = Arc::new(hydration_handler());
     let owned_protocol = Arc::new(full_state_protocol(boundaries));
     compare.bench_function("streaming_owned_split", |b| {
         b.iter_batched(
-            || state.clone(),
-            |owned_state| {
+            || {
+                let mut states = Vec::with_capacity(boundaries + 1);
+                states.push(state.clone());
+                states.resize_with(boundaries + 1, || Value::Object(serde_json::Map::new()));
+                states
+            },
+            |owned_states| {
                 black_box(render_owned_split(
                     Arc::clone(&owned_handler),
                     Arc::clone(&owned_protocol),
-                    owned_state,
+                    black_box(owned_states),
                 ));
             },
             BatchSize::SmallInput,

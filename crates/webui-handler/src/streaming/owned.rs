@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::session::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryMode, SessionCall, SessionCore, StreamStatus,
+    StreamingState,
 };
 use super::StreamingSink;
 use crate::route_handler::Protocol;
@@ -137,18 +138,19 @@ impl StreamingSession {
     }
 
     /// Render until the first runtime boundary occurrence or terminal.
-    pub fn start(&mut self, state: &Value) -> Result<StreamStep> {
-        self.step(|core, call| core.start(call, state))
-    }
-
-    /// Render to the first occurrence by moving caller-owned state into the
-    /// continuation snapshot.
     ///
-    /// Async hosts that freshly decode or load state should prefer this method:
-    /// a full-state continuation takes ownership of the value without cloning
-    /// it, while a keyed continuation moves only its selected top-level values.
-    pub fn start_owned(&mut self, state: Value) -> Result<StreamStep> {
-        self.step(move |core, call| core.start_owned(call, state))
+    /// Pass an owned [`Value`] to move it into the continuation, or a reference
+    /// to retain caller ownership and clone only the required projection.
+    pub fn start<'state>(
+        &mut self,
+        state: impl Into<StreamingState<'state>>,
+    ) -> Result<StreamStep> {
+        match state.into() {
+            StreamingState::Borrowed(state) => self.step(|core, call| core.start(call, state)),
+            StreamingState::Owned(state) => {
+                self.step(move |core, call| core.start_owned(call, state))
+            }
+        }
     }
 
     /// Commit the pending occurrence through its checkpoint, then stop.
@@ -160,29 +162,23 @@ impl StreamingSession {
     /// as many updatable occurrences as the browser retains. The refusal
     /// produces no bytes and leaves the occurrence pending, so it can be
     /// committed with [`BoundaryMode::Final`] instead.
-    pub fn resume(
+    /// Pass an owned [`Value`] to move changed subtrees, or a reference to retain
+    /// caller ownership. Equal values preserve the prior state-reference base.
+    /// Use [`Self::resume_current`] when no state changed.
+    pub fn resume<'state>(
         &mut self,
         instance_id: BoundaryInstanceId,
-        state: &Value,
+        state: impl Into<StreamingState<'state>>,
         mode: BoundaryMode,
     ) -> Result<StreamStep> {
-        self.step(|core, call| core.resume(call, instance_id, state, mode))
-    }
-
-    /// Commit the pending occurrence by moving caller-owned state into the
-    /// retained continuation snapshot, then stop at its checkpoint flush.
-    ///
-    /// This is the preferred async-host path when the state was freshly decoded
-    /// or loaded for this occurrence. Moving changed top-level values avoids
-    /// cloning or deeply comparing their subtrees while preserving the same
-    /// patch semantics as [`Self::resume`].
-    pub fn resume_owned(
-        &mut self,
-        instance_id: BoundaryInstanceId,
-        state: Value,
-        mode: BoundaryMode,
-    ) -> Result<StreamStep> {
-        self.step(move |core, call| core.resume_owned(call, instance_id, state, mode))
+        match state.into() {
+            StreamingState::Borrowed(state) => {
+                self.step(|core, call| core.resume(call, instance_id, state, mode))
+            }
+            StreamingState::Owned(state) => {
+                self.step(move |core, call| core.resume_owned(call, instance_id, state, mode))
+            }
+        }
     }
 
     /// Commit the pending occurrence against the session's retained state.
@@ -375,7 +371,7 @@ mod tests {
         )
         .expect("session");
 
-        let state = Value::Object(serde_json::Map::new());
+        let state = Arc::new(Value::Object(serde_json::Map::new()));
         let mut step = session.start(&state).expect("start");
         let mut steps = 1usize;
         while !step.done {
