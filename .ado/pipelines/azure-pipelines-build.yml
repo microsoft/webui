@@ -489,7 +489,9 @@ stages:
           sudo apt-get update -q
           sudo apt-get install -y -q protobuf-compiler
           rustup toolchain install 1.93 --profile minimal
-          corepack prepare pnpm@12.1.0 --activate
+          export PNPM_HOME="$HOME/.local/share/pnpm"
+          export PATH="$PNPM_HOME/bin:$PATH"
+          curl -fsSL https://get.pnpm.io/install.sh | env PNPM_VERSION=12.1.0 PNPM_HOME="$PNPM_HOME" sh -
           pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_PATH"
           # Needed for the `cargo xtask publish-stage --pack-only` sdist step
           # below; the six pre-built wheels were already downloaded above.
