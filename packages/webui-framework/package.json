@@ -1,6 +1,6 @@
 {
   "name": "@microsoft/webui-framework",
-  "version": "0.0.26",
+  "version": "0.0.27",
   "type": "module",
   "description": "WebUI Framework Next — Preact-inspired lightweight Web Component runtime with SSR hydration and compiled-template path mapping.",
   "license": "MIT",

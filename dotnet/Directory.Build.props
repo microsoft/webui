@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <Version>0.0.26</Version>
+    <Version>0.0.27</Version>
     <Authors>Microsoft</Authors>
     <Company>Microsoft</Company>
     <PackageOwners>Microsoft</PackageOwners>
