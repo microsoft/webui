@@ -584,6 +584,24 @@ impl ContinuationVm {
                     }));
                 }
                 Some(Fragment::Component(component)) => {
+                    let target = context
+                        .render_fragments
+                        .list(frame.render_slot)
+                        .and_then(|prepared| prepared.target(index));
+                    if target
+                        .and_then(|target| context.render_fragments.list(target))
+                        .is_some_and(|list| !list.contains_boundary)
+                    {
+                        self.render_boundary_free(context, |context| {
+                            handler.process_component(
+                                component,
+                                target,
+                                ComponentHostOrigin::ParserProduced,
+                                context,
+                            )
+                        })?;
+                        continue;
+                    }
                     self.push(Frame::Fragment(frame))?;
                     self.begin_component(
                         component,
@@ -594,11 +612,37 @@ impl ContinuationVm {
                     return Ok(None);
                 }
                 Some(Fragment::IfCond(if_cond)) => {
+                    let target = context
+                        .render_fragments
+                        .list(frame.render_slot)
+                        .and_then(|prepared| prepared.target(index));
+                    if target
+                        .and_then(|target| context.render_fragments.list(target))
+                        .is_some_and(|list| !list.contains_boundary)
+                    {
+                        self.render_boundary_free(context, |context| {
+                            handler.process_if(if_cond, target, context)
+                        })?;
+                        continue;
+                    }
                     self.push(Frame::Fragment(frame))?;
                     self.begin_if(if_cond, handler, protocol, context)?;
                     return Ok(None);
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
+                    let target = context
+                        .render_fragments
+                        .list(frame.render_slot)
+                        .and_then(|prepared| prepared.target(index));
+                    if target
+                        .and_then(|target| context.render_fragments.list(target))
+                        .is_some_and(|list| !list.contains_boundary)
+                    {
+                        self.render_boundary_free(context, |context| {
+                            handler.process_for_loop(for_loop, target, context)
+                        })?;
+                        continue;
+                    }
                     self.push(Frame::Fragment(frame))?;
                     self.begin_repeat(for_loop, handler, protocol, context)?;
                     return Ok(None);
@@ -620,6 +664,39 @@ impl ContinuationVm {
                 }
                 None => {}
             }
+        }
+    }
+
+    /// Run a proven boundary-free subgraph through the normal borrowed renderer.
+    ///
+    /// Outside an active authored boundary, rendered components belong to the
+    /// innermost generated span. Swap that span's capture into the context for
+    /// the duration of the atomic walk so its inventory and projection remain
+    /// local to the span completion record.
+    fn render_boundary_free<'data, 'state, 'output, T>(
+        &mut self,
+        context: &mut WebUIProcessContext<'data, 'state, 'output>,
+        operation: impl FnOnce(&mut WebUIProcessContext<'data, 'state, 'output>) -> Result<T>,
+    ) -> Result<T> {
+        let captures_span = context
+            .streaming
+            .as_ref()
+            .is_some_and(|streaming| streaming.active_boundary.is_none())
+            && !self.open_spans.is_empty();
+        if !captures_span {
+            return operation(context);
+        }
+        let Some(span) = self.open_spans.last_mut() else {
+            return operation(context);
+        };
+        streaming_state(context)?.swap_capture(&mut span.capture);
+        let result = operation(context);
+        let restored = streaming_state(context).map(|streaming| {
+            streaming.swap_capture(&mut span.capture);
+        });
+        match (result, restored) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) | (Ok(_), Err(error)) => Err(error),
         }
     }
 

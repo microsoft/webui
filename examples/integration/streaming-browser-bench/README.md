@@ -72,12 +72,12 @@ roots (1500) and the **same** total projected state value bytes (24 KiB of
 `label` values); only the boundary count (and marker layout) changes. "Projected
 state value bytes" counts the streamed `label` values a real app would ship, and
 deliberately excludes unavoidable per-boundary protocol/property overhead (the
-v2 `[2,recordSequence,kind,target,{...}]` envelope framing, required
+`[recordSequence,kind,target,{...}]` envelope framing, required
 `declarationId`, the first-boundary `templates` block, and the tiny fixed `note`
 property) - that overhead is inherent to having more boundaries, not equal work
 to hold constant. It is projected-state value bytes, not total wire bytes.
 
-Each streamed boundary uses the v2 browser contract - `<!--wb:N-->` markers + SSR
+Each streamed boundary uses the browser contract - `<!--wb:N-->` markers + SSR
 roots carrying `data-ws` + an inert `[data-webui-boundary]` JSON script + a
 `<webui-hydrate>` sentinel - appended one at a time, with the driver spinning the
 coordinator's microtask pump until that boundary's scaffolding is removed (a

@@ -494,6 +494,7 @@ impl StyleInventoryView<'_> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn collect_component_style_delta<'a>(
     protocol: &WebUIProtocol,
     roots: impl IntoIterator<Item = &'a str>,
@@ -509,6 +510,262 @@ pub(crate) fn collect_component_style_delta<'a>(
             chunks_are_indexed: true,
         }),
     )
+}
+
+pub(crate) struct BorrowedComponentStyleDelta<'a> {
+    strategy: webui_protocol::CssStrategy,
+    resources: Vec<BorrowedStyleResource<'a>>,
+    closures: Vec<BorrowedStyleClosure<'a>>,
+    ordered: Vec<&'a str>,
+}
+
+struct BorrowedStyleResource<'a> {
+    name: &'a str,
+    resource: &'a str,
+    members: Option<&'a [String]>,
+}
+
+struct BorrowedStyleClosure<'a> {
+    root: &'a str,
+    start: usize,
+    end: usize,
+}
+
+impl BorrowedComponentStyleDelta<'_> {
+    pub(crate) fn resource_names(&self) -> impl Iterator<Item = &str> {
+        self.resources.iter().map(|resource| resource.name)
+    }
+}
+
+impl Serialize for BorrowedComponentStyleDelta<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut payload = serializer.serialize_map(Some(4))?;
+        payload.serialize_entry(
+            "closures",
+            &BorrowedStyleClosures {
+                closures: &self.closures,
+                ordered: &self.ordered,
+            },
+        )?;
+        payload.serialize_entry(
+            "resources",
+            &BorrowedStyleResources {
+                strategy: self.strategy,
+                resources: &self.resources,
+            },
+        )?;
+        payload.serialize_entry("strategy", self.strategy.wire_name())?;
+        payload.serialize_entry("version", &1)?;
+        payload.end()
+    }
+}
+
+struct BorrowedStyleResources<'a> {
+    strategy: webui_protocol::CssStrategy,
+    resources: &'a [BorrowedStyleResource<'a>],
+}
+
+impl Serialize for BorrowedStyleResources<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut resources = serializer.serialize_map(Some(self.resources.len()))?;
+        for resource in self.resources {
+            resources.serialize_entry(
+                resource.name,
+                &BorrowedStyleResourceValue {
+                    strategy: self.strategy,
+                    resource,
+                },
+            )?;
+        }
+        resources.end()
+    }
+}
+
+struct BorrowedStyleResourceValue<'a> {
+    strategy: webui_protocol::CssStrategy,
+    resource: &'a BorrowedStyleResource<'a>,
+}
+
+impl Serialize for BorrowedStyleResourceValue<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let field_count = match (self.strategy, self.resource.members.is_some()) {
+            (webui_protocol::CssStrategy::Module, true) => 4,
+            (webui_protocol::CssStrategy::Module, false) | (_, true) => 3,
+            (_, false) => 2,
+        };
+        let mut resource = serializer.serialize_map(Some(field_count))?;
+        match self.strategy {
+            webui_protocol::CssStrategy::Link => {
+                resource.serialize_entry("href", self.resource.resource)?;
+                resource.serialize_entry("kind", "link")?;
+                if let Some(members) = self.resource.members {
+                    resource.serialize_entry("members", members)?;
+                }
+            }
+            webui_protocol::CssStrategy::Style => {
+                resource.serialize_entry("css", self.resource.resource)?;
+                resource.serialize_entry("kind", "style")?;
+                if let Some(members) = self.resource.members {
+                    resource.serialize_entry("members", members)?;
+                }
+            }
+            webui_protocol::CssStrategy::Module => {
+                resource.serialize_entry("css", self.resource.resource)?;
+                resource.serialize_entry("kind", "module")?;
+                if let Some(members) = self.resource.members {
+                    resource.serialize_entry("members", members)?;
+                }
+                resource.serialize_entry("specifier", self.resource.name)?;
+            }
+        }
+        resource.end()
+    }
+}
+
+struct BorrowedStyleClosures<'a> {
+    closures: &'a [BorrowedStyleClosure<'a>],
+    ordered: &'a [&'a str],
+}
+
+impl Serialize for BorrowedStyleClosures<'_> {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut closures = serializer.serialize_map(Some(self.closures.len()))?;
+        for closure in self.closures {
+            closures.serialize_entry(closure.root, &self.ordered[closure.start..closure.end])?;
+        }
+        closures.end()
+    }
+}
+
+pub(crate) fn collect_borrowed_component_style_delta<'a>(
+    protocol: &'a WebUIProtocol,
+    roots: impl IntoIterator<Item = &'a str>,
+    style_inventory: &[u8],
+    style_resource_index: &HashMap<String, u32>,
+    chunk_index: &HashMap<&str, u32>,
+) -> Result<BorrowedComponentStyleDelta<'a>, HandlerError> {
+    if protocol.style_closures.is_empty() {
+        if protocol
+            .components
+            .keys()
+            .any(|tag| protocol.component_style_resource(tag).is_some())
+        {
+            return Err(HandlerError::Invariant(
+                "component style closure metadata is required by this protocol".to_string(),
+            ));
+        }
+        return Ok(BorrowedComponentStyleDelta {
+            strategy: protocol.css_strategy(),
+            resources: Vec::new(),
+            closures: Vec::new(),
+            ordered: Vec::new(),
+        });
+    }
+
+    let mut seen_roots = HashSet::new();
+    let roots: Vec<&str> = roots
+        .into_iter()
+        .filter(|root| seen_roots.insert(*root))
+        .collect();
+    let client_inventory = StyleInventoryView {
+        bits: style_inventory,
+        index: style_resource_index,
+        chunks_are_indexed: true,
+    };
+    let covered_components = covered_components(protocol, &roots, Some(client_inventory));
+    let unit_capacity = roots
+        .iter()
+        .filter_map(|root| protocol.style_closures.get(*root))
+        .map(WebUIProtocol::style_closure_unit_count)
+        .sum();
+    let mut resources = Vec::with_capacity(unit_capacity);
+    let mut closures = Vec::with_capacity(roots.len());
+    let mut ordered = Vec::with_capacity(unit_capacity);
+    let mut emitted = HashSet::with_capacity(unit_capacity);
+    let mut serialized_resources = HashSet::with_capacity(unit_capacity);
+
+    for root in roots {
+        let Some(closure) = protocol.style_closures.get(root) else {
+            if !protocol.fragments.contains_key(root) && !protocol.components.contains_key(root) {
+                continue;
+            }
+            return Err(HandlerError::Invariant(format!(
+                "component style closure metadata is missing root `{root}`"
+            )));
+        };
+        if closure.style_chunks.is_empty()
+            && !closure.component_tags.is_empty()
+            && closure
+                .component_tags
+                .iter()
+                .all(|tag| covered_components.contains(tag.as_str()))
+        {
+            continue;
+        }
+
+        let start = ordered.len();
+        emitted.clear();
+        let unit_count = WebUIProtocol::style_closure_unit_count(closure);
+        for position in 0..unit_count {
+            let Some(unit) = protocol.style_closure_unit(closure, chunk_index, position) else {
+                continue;
+            };
+            let name = unit.name;
+            let resource = unit.resource.ok_or_else(|| match unit.chunk {
+                Some(index) => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing style chunk {index}"
+                )),
+                None => HandlerError::Invariant(format!(
+                    "component style closure `{root}` references missing resource `{name}`"
+                )),
+            })?;
+            if !emitted.insert(name) {
+                continue;
+            }
+
+            let (client_has_it, members) = match unit.chunk {
+                Some(index) => (
+                    client_inventory.contains_chunk(name),
+                    protocol.style_chunk_members(index),
+                ),
+                None => (client_inventory.contains_component(name), None),
+            };
+            if !client_has_it && serialized_resources.insert(name) {
+                resources.push(BorrowedStyleResource {
+                    name,
+                    resource,
+                    members: members.filter(|members| members.len() > 1),
+                });
+            }
+            ordered.push(name);
+        }
+        closures.push(BorrowedStyleClosure {
+            root,
+            start,
+            end: ordered.len(),
+        });
+    }
+
+    resources.sort_unstable_by_key(|resource| resource.name);
+    closures.sort_unstable_by_key(|closure| closure.root);
+    Ok(BorrowedComponentStyleDelta {
+        strategy: protocol.css_strategy(),
+        resources,
+        closures,
+        ordered,
+    })
 }
 
 fn collect_component_styles_for_inventory<'a>(
@@ -1419,7 +1676,9 @@ fn select_raw_state<'de>(
         // Key-ID projections are produced only by the streaming continuation,
         // which serializes through `write_selected_state` and never reaches
         // partial navigation's raw-JSON projection.
-        StateSelection::KeyIds(_) => return Err(unexpected_key_id_selection()),
+        StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
+            return Err(unexpected_key_id_selection());
+        }
     };
     project_raw_state(state_json, state_keys).map(SelectedRawState::Keys)
 }
@@ -2627,7 +2886,9 @@ fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
         StateSelection::Full => return state,
         StateSelection::Keys(keys) => keys.as_slice(),
         // Streaming's key-ID projection never reaches partial navigation.
-        StateSelection::KeyIds(_) => return Value::Object(Map::new()),
+        StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
+            return Value::Object(Map::new());
+        }
     };
     let Value::Object(mut source) = state else {
         return Value::Object(Map::new());
@@ -4905,6 +5166,75 @@ mod tests {
             serde_json::json!({}),
             "the exact style-resource inventory should suppress a registered chunk"
         );
+        let chunk_index = protocol.style_chunk_index();
+        let borrowed = collect_borrowed_component_style_delta(
+            &protocol,
+            ["index.html"],
+            &style_inventory,
+            &style_index,
+            &chunk_index,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&borrowed).unwrap(),
+            serde_json::to_string(&from_style_inventory).unwrap(),
+            "the borrowed streaming serializer must preserve the canonical style payload bytes"
+        );
+    }
+
+    #[test]
+    fn borrowed_streaming_style_payload_matches_owned_for_every_strategy() {
+        for strategy in [
+            webui_protocol::CssStrategy::Link,
+            webui_protocol::CssStrategy::Style,
+            webui_protocol::CssStrategy::Module,
+        ] {
+            let mut protocol = WebUIProtocol::default();
+            protocol.set_css_strategy(strategy);
+            protocol
+                .fragments
+                .insert("index.html".to_string(), FragmentList::default());
+            protocol.components.insert(
+                "a-card".to_string(),
+                webui_protocol::ComponentData {
+                    css: ".a-card{display:block}".to_string(),
+                    css_href: "/a-card.css".to_string(),
+                    ..Default::default()
+                },
+            );
+            protocol.style_closures.insert(
+                "index.html".to_string(),
+                webui_protocol::ComponentStyleClosure {
+                    component_tags: vec!["a-card".to_string()],
+                    style_chunks: Vec::new(),
+                },
+            );
+
+            let style_index = build_component_index(&protocol);
+            let style_inventory = vec![0u8; style_index.len().div_ceil(8)];
+            let owned = collect_component_style_delta(
+                &protocol,
+                ["index.html"],
+                &style_inventory,
+                &style_index,
+            )
+            .unwrap();
+            let chunk_index = protocol.style_chunk_index();
+            let borrowed = collect_borrowed_component_style_delta(
+                &protocol,
+                ["index.html"],
+                &style_inventory,
+                &style_index,
+                &chunk_index,
+            )
+            .unwrap();
+
+            assert_eq!(
+                serde_json::to_string(&borrowed).unwrap(),
+                serde_json::to_string(&owned).unwrap(),
+                "borrowed payload differs for {strategy:?}"
+            );
+        }
     }
 
     /// A closure that lists members must still deliver the chunk that ships

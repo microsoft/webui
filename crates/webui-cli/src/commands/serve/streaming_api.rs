@@ -1239,8 +1239,8 @@ mod tests {
             .iter()
             .position(|segment| {
                 segment
-                    .windows(b"[2,1,2,0,".len())
-                    .any(|window| window == b"[2,1,2,0,")
+                    .windows(b"[1,2,0,".len())
+                    .any(|window| window == b"[1,2,0,")
             })
             .unwrap_or_else(|| panic!("update segment is missing"));
         let tail = segments
@@ -1255,8 +1255,8 @@ mod tests {
             .iter()
             .position(|segment| {
                 segment
-                    .windows(b"[2,3,4,0,{}]".len())
-                    .any(|window| window == b"[2,3,4,0,{}]")
+                    .windows(b"[3,4,0,{}]".len())
+                    .any(|window| window == b"[3,4,0,{}]")
             })
             .unwrap_or_else(|| panic!("terminal segment is missing"));
         assert!(content < update);
@@ -1270,7 +1270,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("renderer produced invalid UTF-8: {error}"));
         assert!(html.contains("data-boundary=\"content\""));
         assert!(html.contains("data-boundary=\"tail\""));
-        assert!(html.contains("[2,3,4,0,{}]"));
+        assert!(html.contains("[3,4,0,{}]"));
     }
 
     #[test]
@@ -1311,8 +1311,8 @@ mod tests {
             .windows(b"<footer data-page-tail>".len())
             .any(|window| window == b"<footer data-page-tail>"));
         assert!(!segments[checkpoint]
-            .windows(b"[2,1,4,0,{}]".len())
-            .any(|window| window == b"[2,1,4,0,{}]"));
+            .windows(b"[1,4,0,{}]".len())
+            .any(|window| window == b"[1,4,0,{}]"));
         assert!(segments[checkpoint].ends_with(b"<webui-hydrate></webui-hydrate>"));
         assert!(segments[tail].starts_with(b"<footer data-page-tail>"));
     }
@@ -1384,7 +1384,7 @@ mod tests {
         let (result, segments) = run_commands(valid_streaming_config(Vec::new(), &[]), commands);
         result.unwrap_or_else(|error| panic!("boundary-free render failed: {error}"));
         let html = join_segments(&segments);
-        assert!(String::from_utf8_lossy(&html).contains("[2,0,4,0,{}]"));
+        assert!(String::from_utf8_lossy(&html).contains("[0,4,0,{}]"));
     }
 
     #[test]

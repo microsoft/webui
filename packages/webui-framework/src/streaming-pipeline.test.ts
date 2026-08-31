@@ -530,7 +530,6 @@ function buildBoundary(sequence: number, terminal: number, roots: FakeElement[],
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
       sequence,
       terminal === 1 ? 4 : 0,
       terminal === 1 ? 0 : sequence,
@@ -550,7 +549,6 @@ function buildMarkerless(sequence: number, terminal: number, bootstrap: object):
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
       sequence,
       terminal === 1 ? 4 : 0,
       0,
@@ -577,7 +575,6 @@ function buildUpdatableBoundary(
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
       recordSequence,
       1,
       boundaryId,
@@ -597,7 +594,7 @@ function buildStateUpdate(
 ): BuiltBoundary {
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
-    text: JSON.stringify([2, recordSequence, 2, boundaryId, patch]),
+    text: JSON.stringify([recordSequence, 2, boundaryId, patch]),
   });
   const sentinel = element('webui-hydrate');
   const root = body();
@@ -619,7 +616,6 @@ function buildSpanCompletion(
   const scriptEl = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
       recordSequence,
       3,
       spanId,
@@ -697,7 +693,6 @@ function buildSpanScenario(
   const boundaryScript = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
       boundarySequence,
       options.updatable ? 1 : 0,
       0,
@@ -732,7 +727,6 @@ function buildSpanScenario(
   const spanScript = element('script', {
     attrs: { 'data-webui-boundary': '' },
     text: JSON.stringify([
-      2,
       spanSequence,
       3,
       spanId,
@@ -1487,7 +1481,7 @@ describe('streaming coordinator pipeline', () => {
     const previousError = console.error;
     console.error = () => {};
     try {
-      const boundary = buildRawBoundary(0, '[2,0,0,0,{"state":{}}]', []);
+      const boundary = buildRawBoundary(0, '[0,0,0,{"state":{}}]', []);
       enqueue(boundary.sentinel);
       await flush();
 
@@ -1507,7 +1501,7 @@ describe('streaming coordinator pipeline', () => {
     try {
       const boundary = buildRawBoundary(
         0,
-        JSON.stringify([2, 0, 0, 0, null]),
+        JSON.stringify([0, 0, 0, null]),
         [],
       );
       enqueue(boundary.sentinel);
@@ -1515,6 +1509,31 @@ describe('streaming coordinator pipeline', () => {
 
       assert.equal(__isHaltedForTests(), true);
       assert.equal(__getLifecycleStateForTests().completed, false);
+    } finally {
+      console.error = previousError;
+    }
+  });
+
+  test('halts and cleans the range when a state reference has no prior range', async () => {
+    const previousError = console.error;
+    console.error = () => {};
+    try {
+      let activations = 0;
+      const root = element('missing-state-ref', {
+        hook() {
+          activations++;
+        },
+      });
+      predefine('missing-state-ref');
+      const boundary = buildBoundary(0, 0, [root], { stateRef: 9 });
+
+      enqueue(boundary.sentinel);
+      await flush();
+
+      assert.equal(activations, 0);
+      assert.equal(__isHaltedForTests(), true);
+      assertScaffoldCleaned(boundary);
+      assert.equal(hasStreamingAttrs(root), false);
     } finally {
       console.error = previousError;
     }
@@ -1661,7 +1680,7 @@ describe('streaming coordinator pipeline', () => {
       hook() {},
       abandon() { abandoned++; },
     });
-    const b = buildRawBoundary(0, '[2,0,0,{', [root0]);
+    const b = buildRawBoundary(0, '[0,0,{', [root0]);
 
     enqueue(b.sentinel);
     await flush();
@@ -1693,7 +1712,7 @@ describe('streaming coordinator pipeline', () => {
     const end = comment('/wb:0');
     const scriptEl = element('script', {
       attrs: { 'data-webui-boundary': '' },
-      text: JSON.stringify([2, 0, 0, 0, { declarationId: 0 }]),
+      text: JSON.stringify([0, 0, 0, { declarationId: 0 }]),
     });
     const sentinel = element('webui-hydrate');
     const root = body();
@@ -1811,7 +1830,6 @@ describe('streaming coordinator pipeline', () => {
     const innerScript = element('script', {
       attrs: { 'data-webui-boundary': '' },
       text: JSON.stringify([
-        2,
         0,
         3,
         1,
@@ -1832,7 +1850,6 @@ describe('streaming coordinator pipeline', () => {
     const outerScript = element('script', {
       attrs: { 'data-webui-boundary': '' },
       text: JSON.stringify([
-        2,
         1,
         3,
         0,
@@ -2305,7 +2322,6 @@ describe('streaming coordinator pipeline', () => {
     const boundaryScript = element('script', {
       attrs: { 'data-webui-boundary': '' },
       text: JSON.stringify([
-        2,
         0,
         0,
         0,
@@ -2330,7 +2346,6 @@ describe('streaming coordinator pipeline', () => {
     const innerScript = element('script', {
       attrs: { 'data-webui-boundary': '' },
       text: JSON.stringify([
-        2,
         1,
         3,
         1,
@@ -2351,7 +2366,6 @@ describe('streaming coordinator pipeline', () => {
     const outerScript = element('script', {
       attrs: { 'data-webui-boundary': '' },
       text: JSON.stringify([
-        2,
         2,
         3,
         0,
@@ -2794,7 +2808,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(__getLifecycleStateForTests().pendingLateActivations, 1);
 
     // Halt via a malformed boundary at the next sequence.
-    const bad = buildRawBoundary(1, '[2,1,0,{', []);
+    const bad = buildRawBoundary(1, '[1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
     assert.equal(__isHaltedForTests(), true);
@@ -2831,7 +2845,7 @@ describe('streaming coordinator pipeline', () => {
     await flush();
     detach(outer);
 
-    const bad = buildRawBoundary(1, '[2,1,0,{', []);
+    const bad = buildRawBoundary(1, '[1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
 
@@ -2983,7 +2997,7 @@ describe('streaming coordinator pipeline', () => {
 
   test('an illegal record queued behind terminal aborts before hydration-complete', async () => {
     const terminal = buildMarkerless(0, 1, {});
-    const post = buildRawBoundary(1, '[2,1,0,{}]', []);
+    const post = buildRawBoundary(1, '[1,0,{}]', []);
 
     // Both records are present before the single pump runs. The terminal must
     // remain tentative until the queue validates the record behind it.
@@ -3203,6 +3217,88 @@ describe('streaming coordinator pipeline', () => {
     assert.deepEqual(received, { seq: 0 }, 'the delayed root activates with the state its own boundary carried');
   });
 
+  test('reconstructs independently arriving state deltas without mutating an earlier delayed root', async () => {
+    let delayedState: Record<string, unknown> | undefined;
+    let currentState: Record<string, unknown> | undefined;
+    const delayed = element('state-ref-delayed', {
+      hook(state) {
+        delayedState = state;
+      },
+    });
+    const first = buildBoundary(0, 0, [delayed], {
+      state: { todos: [{ id: 1 }] },
+    });
+    enqueue(first.sentinel);
+    await flush();
+
+    const current = element('state-ref-current', {
+      hook(state) {
+        currentState = state;
+      },
+    });
+    predefine('state-ref-current');
+    const second = buildUpdatableBoundary(1, 1, [current], {
+      stateRef: 0,
+      stateDelta: { toolbar: { active: true } },
+    });
+    enqueue(second.sentinel);
+    await flush();
+
+    assert.deepEqual(currentState, {
+      todos: [{ id: 1 }],
+      toolbar: { active: true },
+    });
+    defineTag('state-ref-delayed');
+    await flush();
+    assert.deepEqual(
+      delayedState,
+      { todos: [{ id: 1 }] },
+      'a later delta must not mutate the referenced boundary state',
+    );
+  });
+
+  test('keeps range-state references independent from updatable boundary patches', async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const firstRoot = element('state-ref-updatable', {
+      hook() {},
+      setState(state) {
+        updates.push(state);
+      },
+    });
+    predefine('state-ref-updatable');
+    enqueue(buildUpdatableBoundary(
+      0,
+      0,
+      [firstRoot],
+      { state: { shared: 'base' } },
+    ).sentinel);
+    await flush();
+
+    enqueue(buildStateUpdate(1, 0, { shared: 'updated' }).sentinel);
+    await flush();
+
+    let secondState: Record<string, unknown> | undefined;
+    const secondRoot = element('state-ref-second', {
+      hook(state) {
+        secondState = state;
+      },
+    });
+    predefine('state-ref-second');
+    enqueue(buildUpdatableBoundary(
+      2,
+      1,
+      [secondRoot],
+      { stateRef: 0, stateDelta: { local: true } },
+    ).sentinel);
+    await flush();
+
+    assert.deepEqual(updates, [{ shared: 'updated' }]);
+    assert.deepEqual(secondState, { shared: 'base', local: true });
+    enqueue(buildMarkerless(3, 1, {}).sentinel);
+    await flush();
+    assert.equal(__isHaltedForTests(), false);
+  });
+
   test('a boundary carrying no state stashes presence and activates with undefined', async () => {
     let received: Record<string, unknown> | undefined | 'unset' = 'unset';
     const late = element('my-nostate', { hook(state) { received = state; } });
@@ -3225,7 +3321,7 @@ describe('streaming coordinator pipeline', () => {
   test('a rejected (malformed) boundary strips data-ws from its roots, keeping them', async () => {
     const root0 = element('my-ws', { attrs: { 'data-ws': '' }, hook() {} });
     assert.equal(hasWs(root0), true, 'root starts marked as a streamed host');
-    const b = buildRawBoundary(0, '[2,0,0,{', [root0]);
+    const b = buildRawBoundary(0, '[0,0,{', [root0]);
 
     enqueue(b.sentinel);
     await flush();
@@ -3256,7 +3352,7 @@ describe('streaming coordinator pipeline', () => {
     assert.equal(hasWs(late), true, 'a deferred undefined-tag root keeps data-ws until activation');
 
     // Halt via a malformed follow-up boundary.
-    const bad = buildRawBoundary(1, '[2,1,0,{', []);
+    const bad = buildRawBoundary(1, '[1,0,{', []);
     enqueue(bad.sentinel);
     await flush();
 

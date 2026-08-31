@@ -11,8 +11,10 @@ use serde_json::{Number, Value};
 
 use super::error::{boundary_order_error, state_update_type_error};
 use super::state::{
-    increment_streaming_record_sequence, overlay_full_state, overlay_selected_state,
-    selected_state_snapshot, StreamingProgress, StreamingRenderState,
+    increment_state_revision, increment_streaming_record_sequence, overlay_full_state,
+    overlay_full_state_owned, overlay_selected_state, overlay_selected_state_owned,
+    selected_state_snapshot, selected_state_snapshot_owned, StreamingProgress,
+    StreamingRenderState,
 };
 use super::vm::{ContinuationVm, StepGoal};
 use super::StreamingSink;
@@ -111,6 +113,42 @@ impl BoundaryKey {
     }
 }
 
+/// Borrowed or owned JSON state supplied to a streaming step.
+///
+/// `Value`, `&Value`, and references to smart pointers such as `&Arc<Value>`
+/// convert implicitly, so callers use one method name without losing ownership
+/// control.
+pub enum StreamingState<'a> {
+    /// State retained by the caller; the session clones only its projection.
+    Borrowed(&'a Value),
+    /// State transferred to the session so changed subtrees can move.
+    Owned(Value),
+}
+
+impl<'a, T> From<&'a T> for StreamingState<'a>
+where
+    T: std::borrow::Borrow<Value> + ?Sized,
+{
+    fn from(state: &'a T) -> Self {
+        Self::Borrowed(std::borrow::Borrow::borrow(state))
+    }
+}
+
+impl<'a, T> From<&'a mut T> for StreamingState<'a>
+where
+    T: std::borrow::Borrow<Value> + ?Sized,
+{
+    fn from(state: &'a mut T) -> Self {
+        Self::Borrowed(std::borrow::Borrow::borrow(&*state))
+    }
+}
+
+impl From<Value> for StreamingState<'_> {
+    fn from(state: Value) -> Self {
+        Self::Owned(state)
+    }
+}
+
 /// Runtime occurrence returned when traversal suspends.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BoundaryDescriptor {
@@ -205,9 +243,18 @@ impl WebUIHandler {
 
 impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     /// Render until the first runtime boundary occurrence or terminal.
-    pub fn start(&mut self, state: &Value) -> Result<StreamStatus> {
+    ///
+    /// Pass an owned [`Value`] to move it into the continuation, or a reference
+    /// to retain caller ownership and clone only the required projection.
+    pub fn start<'state>(
+        &mut self,
+        state: impl Into<StreamingState<'state>>,
+    ) -> Result<StreamStatus> {
         let (core, call) = self.parts();
-        core.start(call, state)
+        match state.into() {
+            StreamingState::Borrowed(state) => core.start(call, state),
+            StreamingState::Owned(state) => core.start_owned(call, state),
+        }
     }
 
     /// Commit the pending occurrence through its checkpoint, then stop.
@@ -220,14 +267,32 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
     /// as many updatable occurrences as the browser retains. The refusal is
     /// raised before any byte or state moves, so the same occurrence stays
     /// pending and can be committed with [`BoundaryMode::Final`] instead.
-    pub fn resume(
+    /// Pass an owned [`Value`] to move changed subtrees, or a reference to retain
+    /// caller ownership. Use [`Self::resume_current`] when no state changed.
+    pub fn resume<'state>(
         &mut self,
         instance_id: BoundaryInstanceId,
-        state: &Value,
+        state: impl Into<StreamingState<'state>>,
         mode: BoundaryMode,
     ) -> Result<StreamStatus> {
         let (core, call) = self.parts();
-        core.resume(call, instance_id, state, mode)
+        match state.into() {
+            StreamingState::Borrowed(state) => core.resume(call, instance_id, state, mode),
+            StreamingState::Owned(state) => core.resume_owned(call, instance_id, state, mode),
+        }
+    }
+
+    /// Commit the pending occurrence against the retained state snapshot.
+    ///
+    /// This preserves the checkpoint flush and async pause point while avoiding
+    /// an overlay when no top-level state changed since the preceding step.
+    pub fn resume_current(
+        &mut self,
+        instance_id: BoundaryInstanceId,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus> {
+        let (core, call) = self.parts();
+        core.resume_current(call, instance_id, mode)
     }
 
     /// Write the ordinary parent bytes that follow a committed occurrence.
@@ -249,18 +314,9 @@ impl<W: FlushWriter + ?Sized> StreamingResponse<'_, W> {
         core.update(call, instance_id, patch)
     }
 
-    /// Commit the pending occurrence and continue to the next one.
-    ///
-    /// Used by [`WebUIHandler::render_streaming`], which has no host to hand
-    /// the checkpoint bytes to between the two steps and drives every
-    /// occurrence from the single value it already snapshotted at start.
-    pub(crate) fn resume_current_and_advance(
-        &mut self,
-        instance_id: BoundaryInstanceId,
-        mode: BoundaryMode,
-    ) -> Result<StreamStatus> {
+    pub(crate) fn render_all(&mut self, state: &Value) -> Result<()> {
         let (core, call) = self.parts();
-        core.resume_current_and_advance(call, instance_id, mode)
+        core.render_all(call, state)
     }
 
     /// Whether the response has emitted its terminal and ended its writer.
@@ -393,6 +449,27 @@ impl SessionCore {
         self.run_step(call, StepGoal::NextBoundary, None)
     }
 
+    pub(crate) fn start_owned(
+        &mut self,
+        call: SessionCall<'_, '_>,
+        state: Value,
+    ) -> Result<StreamStatus> {
+        self.require_usable("start")?;
+        if self.started {
+            return Err(boundary_order_error(
+                "start",
+                "the streaming response has already started",
+            ));
+        }
+        self.frozen_state = if self.requires_full_state {
+            state
+        } else {
+            selected_state_snapshot_owned(state, &self.frozen_keys)
+        };
+        self.started = true;
+        self.run_step(call, StepGoal::NextBoundary, None)
+    }
+
     pub(crate) fn resume(
         &mut self,
         call: SessionCall<'_, '_>,
@@ -403,32 +480,35 @@ impl SessionCore {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
         self.vm.validate_resume_mode(mode)?;
-        if self.requires_full_state {
-            overlay_full_state(&mut self.frozen_state, state);
+        let changed = if self.requires_full_state {
+            overlay_full_state(&mut self.frozen_state, state)
         } else {
-            overlay_selected_state(&mut self.frozen_state, state, &self.frozen_keys);
-        }
+            overlay_selected_state(&mut self.frozen_state, state, &self.frozen_keys)
+        };
+        self.record_state_change(changed)?;
         self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
     }
 
-    pub(crate) fn advance(&mut self, call: SessionCall<'_, '_>) -> Result<StreamStatus> {
-        self.require_advanceable()?;
-        self.run_step(call, StepGoal::NextBoundary, None)
+    pub(crate) fn resume_owned(
+        &mut self,
+        call: SessionCall<'_, '_>,
+        instance_id: BoundaryInstanceId,
+        state: Value,
+        mode: BoundaryMode,
+    ) -> Result<StreamStatus> {
+        self.require_resumable()?;
+        self.vm.validate_resume(instance_id)?;
+        self.vm.validate_resume_mode(mode)?;
+        let changed = if self.requires_full_state {
+            overlay_full_state_owned(&mut self.frozen_state, state)
+        } else {
+            overlay_selected_state_owned(&mut self.frozen_state, state, &self.frozen_keys)
+        };
+        self.record_state_change(changed)?;
+        self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
     }
 
-    /// Commit the pending occurrence and continue to the next one in a single
-    /// continuation setup.
-    ///
-    /// The public step machine deliberately returns at the checkpoint so a host
-    /// can write and release that occurrence on its own. The one-shot
-    /// [`WebUIHandler::render_streaming`] helper has no host in between, and
-    /// splitting the work would cost a second continuation hand-off — every
-    /// retained scope map, inventory buffer, and scratch vector moving in and
-    /// back out — plus a re-resolution of the parked record the step-local
-    /// cache already holds. [`StepGoal::NextBoundary`] commits the active
-    /// occurrence and keeps walking, so the fused call emits exactly the bytes
-    /// and flushes the split steps would.
-    pub(crate) fn resume_current_and_advance(
+    pub(crate) fn resume_current(
         &mut self,
         call: SessionCall<'_, '_>,
         instance_id: BoundaryInstanceId,
@@ -437,7 +517,62 @@ impl SessionCore {
         self.require_resumable()?;
         self.vm.validate_resume(instance_id)?;
         self.vm.validate_resume_mode(mode)?;
-        self.run_step(call, StepGoal::NextBoundary, Some((instance_id, mode)))
+        self.run_step(call, StepGoal::CommitBoundary, Some((instance_id, mode)))
+    }
+
+    pub(crate) fn advance(&mut self, call: SessionCall<'_, '_>) -> Result<StreamStatus> {
+        self.require_advanceable()?;
+        self.run_step(call, StepGoal::NextBoundary, None)
+    }
+
+    /// Render a one-shot streaming response in one prepared process context.
+    ///
+    /// The synchronous helper has no async host handoff, so retaining the
+    /// caller's state borrow for the complete traversal avoids both a state clone
+    /// and per-boundary context teardown while preserving every transport flush.
+    pub(crate) fn render_all(&mut self, call: SessionCall<'_, '_>, state: &Value) -> Result<()> {
+        self.require_usable("render_streaming")?;
+        if self.started {
+            return Err(boundary_order_error(
+                "render_streaming",
+                "the streaming response has already started",
+            ));
+        }
+        self.started = true;
+        let handler = call.handler;
+        let protocol = call.protocol;
+        let result = self.with_context(call, state, |vm, context| {
+            let mut status = vm.advance(StepGoal::NextBoundary, handler, protocol, context)?;
+            while !status.done {
+                context.writer.stream_flush()?;
+                let Some(boundary) = status.boundary.as_ref() else {
+                    return Err(HandlerError::Invariant(
+                        "unfinished streaming step has no pending boundary".to_string(),
+                    ));
+                };
+                vm.validate_resume(boundary.instance_id)?;
+                vm.validate_resume_mode(BoundaryMode::Final)?;
+                vm.begin_resume(boundary.instance_id, BoundaryMode::Final, context)?;
+                status = vm.advance(StepGoal::NextBoundary, handler, protocol, context)?;
+            }
+            Ok(())
+        });
+        match result {
+            Ok(()) if !self.shadow_style_roots.is_empty() => {
+                self.failed = true;
+                Err(HandlerError::Invariant(
+                    "a Shadow CSS tree escaped its component instance".to_string(),
+                ))
+            }
+            Ok(()) => {
+                self.done = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn update(
@@ -510,6 +645,13 @@ impl SessionCore {
                 Err(error)
             }
         }
+    }
+
+    fn record_state_change(&mut self, changed: bool) -> Result<()> {
+        if changed {
+            increment_state_revision(self.streaming.as_mut().ok_or_else(missing_progress_error)?)?;
+        }
+        Ok(())
     }
 
     fn with_context<'data, 'state, T>(

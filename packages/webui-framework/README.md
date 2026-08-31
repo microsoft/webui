@@ -269,14 +269,20 @@ activation. The coordinator does not publish that state to
 scaffolding after commit. Updates apply state to retained roots and never insert
 markup or rerun hydration.
 
-The browser reads version-2
-`[2, sequence, kind, target, payload]` records for final checkpoints,
+The browser reads the single unversioned
+`[sequence, kind, target, payload]` contract for final checkpoints,
 updatable checkpoints, updates, span completions, and terminal. Every commit
 also emits a `performance.mark()` - `webui:boundary:<id>`,
 `webui:boundary:<id>:update`, `webui:span:<id>`, or
 `webui:streaming:terminal` - which needs no flag or listener.
 Set `window.__WEBUI_STREAMING_DEBUG__ = true` only when tooling needs the live
 `webui:boundary-hydrated` event as well.
+
+A range record can reuse the exact preceding range state with `stateRef` and
+carry only a top-level `stateDelta`. References are backward-only and resolved
+before activation; missing, stale, forward, or malformed references halt and
+clean up the stream. The reference base is released on terminal, cancellation,
+failure, or coordinator reset.
 
 Set `window.__WEBUI_STREAMING_SLICE_MS__` to a positive millisecond budget to
 make the coordinator yield between boundaries instead of draining its queue in

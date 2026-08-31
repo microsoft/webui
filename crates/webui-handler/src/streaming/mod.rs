@@ -30,8 +30,8 @@ pub(crate) use root::{
 };
 pub use session::{
     BoundaryDescriptor, BoundaryInstanceId, BoundaryKey, BoundaryMode, SpanInstanceId,
-    StreamStatus, StreamingResponse, MAX_BOUNDARY_OCCURRENCES, MAX_CONTINUATION_DEPTH,
-    MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
+    StreamStatus, StreamingResponse, StreamingState, MAX_BOUNDARY_OCCURRENCES,
+    MAX_CONTINUATION_DEPTH, MAX_KEYED_INSTANCES, MAX_SPAN_NESTING,
 };
 pub(crate) use state::StreamingRenderState;
 pub(crate) use vm::PreparedContinuationStatePlan;
@@ -355,16 +355,12 @@ impl WebUIHandler {
 
     /// Render every runtime boundary in document order as final.
     ///
-    /// Drives the same `start → resume → advance → …` cycle the public step
-    /// machine exposes, against one frozen snapshot: the value is snapshotted
-    /// when the response starts and every occurrence commits against that
-    /// snapshot, so a large state is projected once per response rather than
-    /// re-merged once per boundary. Having no host to hand bytes to between a
-    /// commit and the parent bytes that follow it, the helper fuses those two
-    /// goals into one continuation setup per boundary; the emitted bytes and
-    /// flush positions are identical to driving the steps separately. Hosts
-    /// that need asynchronous work — or genuinely new state — between
-    /// occurrences should use [`Self::stream_response`] or [`StreamingSession`].
+    /// Uses one prepared render context and borrows the caller's state for the
+    /// complete traversal. Every compiler-selected flush still reaches the
+    /// transport, but the synchronous convenience path does not clone the state
+    /// or rebuild the continuation context at each boundary. Hosts that need
+    /// asynchronous work between occurrences should use
+    /// [`Self::stream_response`] or [`StreamingSession`].
     pub fn render_streaming<'a, W: FlushWriter + ?Sized>(
         &self,
         protocol: &'a Protocol,
@@ -372,17 +368,7 @@ impl WebUIHandler {
         options: &RenderOptions<'a>,
         writer: &'a mut W,
     ) -> Result<()> {
-        let mut response = self.stream_response(protocol, options, writer)?;
-        let mut status = response.start(state)?;
-        while !status.done {
-            let Some(boundary) = status.boundary.as_ref() else {
-                return Err(HandlerError::Invariant(
-                    "unfinished streaming step has no pending boundary".to_string(),
-                ));
-            };
-            status =
-                response.resume_current_and_advance(boundary.instance_id, BoundaryMode::Final)?;
-        }
-        Ok(())
+        self.stream_response(protocol, options, writer)?
+            .render_all(state)
     }
 }

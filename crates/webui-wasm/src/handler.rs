@@ -263,7 +263,7 @@ impl StreamingSession {
     #[wasm_bindgen(js_name = start)]
     pub fn start(&mut self, state_json: &str) -> Result<Object, JsValue> {
         let state = session_state(state_json)?;
-        let step = self.inner.start(&state).map_err(streaming_error)?;
+        let step = self.inner.start(state).map_err(streaming_error)?;
         stream_step_object(step)
     }
 
@@ -282,7 +282,7 @@ impl StreamingSession {
         let mode = parse_boundary_mode(mode.as_deref())?;
         let step = self
             .inner
-            .resume(BoundaryInstanceId::from_raw(instance_id), &state, mode)
+            .resume(BoundaryInstanceId::from_raw(instance_id), state, mode)
             .map_err(streaming_error)?;
         stream_step_object(step)
     }
