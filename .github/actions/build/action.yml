@@ -83,7 +83,7 @@ runs:
         version: 12.1.0
         runtime: node@22
         install: false
-        cache: 'pnpm'
+        cache: true
 
     - name: Install dependencies
       shell: bash
