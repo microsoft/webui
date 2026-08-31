@@ -20,6 +20,16 @@ use super::v3::{
 use crate::component_registry::Component;
 use crate::html_parser::{find_element_end, find_tag_close, opening_tag_name};
 use crate::{CssLinkOptions, CssStrategy, Result};
+use webui_protocol::FastElementData;
+
+#[inline]
+fn finish_element(binding_count: u32, reset_child_index: bool) -> Option<Vec<u8>> {
+    (binding_count > 0).then(|| {
+        FastElementData { binding_count }
+            .encode_v2(reset_child_index)
+            .to_vec()
+    })
+}
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
@@ -46,7 +56,7 @@ pub struct FastV2ParserPlugin {
     /// Components tracked during parsing, in discovery order.
     components: Vec<TrackedComponent>,
     /// Whether the next root template carries the FAST 2 host-binding boundary.
-    reset_child_scope_after_root: bool,
+    reset_child_index_after_root: bool,
 }
 
 impl FastV2ParserPlugin {
@@ -55,7 +65,7 @@ impl FastV2ParserPlugin {
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
-            reset_child_scope_after_root: false,
+            reset_child_index_after_root: false,
         }
     }
 
@@ -154,7 +164,7 @@ impl ParserPlugin for FastV2ParserPlugin {
 
     fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
         require_fast_shadow_dom(context.component.tag_name.as_str(), context.uses_shadow_dom)?;
-        self.reset_child_scope_after_root = true;
+        self.reset_child_index_after_root = true;
         self.track_component(context);
         Ok(())
     }
@@ -164,12 +174,12 @@ impl ParserPlugin for FastV2ParserPlugin {
     }
 
     fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> {
-        let reset_child_scope =
-            self.reset_child_scope_after_root && context.tag_name.eq_ignore_ascii_case("template");
-        if reset_child_scope {
-            self.reset_child_scope_after_root = false;
+        let reset_child_index =
+            self.reset_child_index_after_root && context.tag_name.eq_ignore_ascii_case("template");
+        if reset_child_index {
+            self.reset_child_index_after_root = false;
         }
-        super::shared::finish_v2_element(context.binding_count, reset_child_scope)
+        finish_element(context.binding_count, reset_child_index)
     }
 
     fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {
@@ -554,7 +564,6 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::*;
-    use webui_protocol::FastElementData;
 
     fn make_component(tag: &str, html: &str, css: Option<&str>) -> Component {
         Component {

@@ -8,7 +8,6 @@ use super::convert::{convert_template, F_TEMPLATE_NAME};
 use super::diagnostic::converter_error;
 use crate::html_parser::{leading_content, parse_tag};
 use crate::Result;
-use webui_protocol::FastElementData;
 
 // Classify client-only FAST attributes that SSR skips but hydration counts.
 #[inline]
@@ -22,41 +21,6 @@ pub(crate) fn classify_attribute(attr_name: &str) -> AttributeAction {
         AttributeAction::SkipAndCountBinding
     } else {
         AttributeAction::Keep
-    }
-}
-
-// Encode binding metadata for dynamic attributes.
-#[inline]
-pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
-    if binding_attribute_count > 0 {
-        Some(
-            FastElementData {
-                binding_count: binding_attribute_count,
-            }
-            .encode()
-            .to_vec(),
-        )
-    } else {
-        None
-    }
-}
-
-// Encode FAST 2 binding metadata and its root lifecycle flag.
-#[inline]
-pub(crate) fn finish_v2_element(
-    binding_attribute_count: u32,
-    reset_child_scope: bool,
-) -> Option<Vec<u8>> {
-    if binding_attribute_count == 0 {
-        None
-    } else {
-        Some(
-            FastElementData {
-                binding_count: binding_attribute_count,
-            }
-            .encode_v2(reset_child_scope)
-            .to_vec(),
-        )
     }
 }
 

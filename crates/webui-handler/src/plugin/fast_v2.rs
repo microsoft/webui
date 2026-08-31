@@ -185,7 +185,7 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         if !self.is_active() {
             return Ok(());
         }
-        let (decoded, reset_child_scope) = FastElementData::decode_v2(data).map_err(|error| {
+        let (decoded, reset_child_index) = FastElementData::decode_v2(data).map_err(|error| {
             HandlerError::PluginData(format!(
                 "FAST v2 hydration plugin received invalid element data: {error}"
             ))
@@ -195,7 +195,7 @@ impl HandlerPlugin for FastV2HydrationPlugin {
             self.build_attribute_marker(binding_index, decoded.binding_count);
             writer.write(&self.buffer)?;
         }
-        if reset_child_scope {
+        if reset_child_index {
             if let Some(counter) = self.scopes.last_mut() {
                 *counter = 0;
             }

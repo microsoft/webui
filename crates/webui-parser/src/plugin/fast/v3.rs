@@ -18,6 +18,12 @@ use crate::html_parser::{
     find_element_end, find_tag_close, leading_content, opening_tag_name, starts_with_html_tag_name,
 };
 use crate::{CssLinkOptions, CssStrategy, Result};
+use webui_protocol::FastElementData;
+
+#[inline]
+fn finish_element(binding_count: u32) -> Option<Vec<u8>> {
+    (binding_count > 0).then(|| FastElementData { binding_count }.encode_v3().to_vec())
+}
 
 /// Information about a tracked component for `<f-template>` generation.
 struct TrackedComponent {
@@ -158,7 +164,7 @@ impl ParserPlugin for FastV3ParserPlugin {
     }
 
     fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> {
-        super::shared::finish_element(context.binding_count)
+        finish_element(context.binding_count)
     }
 
     fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {

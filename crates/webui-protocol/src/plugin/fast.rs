@@ -3,9 +3,10 @@
 
 use crate::{ProtocolError, Result};
 
-const FAST_ELEMENT_DATA_LEN: usize = 4;
-const FAST_V2_ELEMENT_DATA_LEN: usize = 5;
-const FAST_V2_RESET_CHILD_SCOPE: u8 = 1;
+const FAST_BINDING_COUNT_LEN: usize = 4;
+const FAST_V2_ELEMENT_DATA_LEN: usize = FAST_BINDING_COUNT_LEN + 1;
+const FAST_V3_ELEMENT_DATA_LEN: usize = FAST_BINDING_COUNT_LEN;
+const FAST_V2_RESET_CHILD_INDEX: u8 = 1;
 
 /// FAST hydration element metadata encoded in plugin fragments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,32 +16,32 @@ pub struct FastElementData {
 }
 
 impl FastElementData {
-    /// Encode this metadata using the FAST 4-byte little-endian wire format.
+    /// Encode this metadata using the FAST 3 four-byte little-endian wire format.
     #[must_use]
-    pub fn encode(self) -> [u8; FAST_ELEMENT_DATA_LEN] {
+    pub fn encode_v3(self) -> [u8; FAST_V3_ELEMENT_DATA_LEN] {
         self.binding_count.to_le_bytes()
     }
 
-    /// Encode FAST 2 metadata with an optional child-scope lifecycle flag.
+    /// Encode FAST 2 metadata with its child-index lifecycle flag.
     #[must_use]
-    pub fn encode_v2(self, reset_child_scope: bool) -> [u8; FAST_V2_ELEMENT_DATA_LEN] {
+    pub fn encode_v2(self, reset_child_index: bool) -> [u8; FAST_V2_ELEMENT_DATA_LEN] {
         let mut data = [0; FAST_V2_ELEMENT_DATA_LEN];
-        data[..FAST_ELEMENT_DATA_LEN].copy_from_slice(&self.binding_count.to_le_bytes());
-        if reset_child_scope {
-            data[FAST_ELEMENT_DATA_LEN] = FAST_V2_RESET_CHILD_SCOPE;
+        data[..FAST_BINDING_COUNT_LEN].copy_from_slice(&self.binding_count.to_le_bytes());
+        if reset_child_index {
+            data[FAST_BINDING_COUNT_LEN] = FAST_V2_RESET_CHILD_INDEX;
         }
         data
     }
 
-    /// Decode FAST hydration metadata from protocol bytes.
+    /// Decode FAST 3 hydration metadata from protocol bytes.
     ///
     /// # Errors
     ///
     /// Returns [`ProtocolError::Validation`] when the payload length is not 4 bytes.
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != FAST_ELEMENT_DATA_LEN {
+    pub fn decode_v3(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != FAST_V3_ELEMENT_DATA_LEN {
             return Err(ProtocolError::Validation(format!(
-                "FAST element data must be {FAST_ELEMENT_DATA_LEN} bytes, received {}",
+                "FAST 3 element data must be {FAST_V3_ELEMENT_DATA_LEN} bytes, received {}",
                 bytes.len()
             )));
         }
@@ -63,14 +64,14 @@ impl FastElementData {
             )));
         };
         let binding_count = u32::from_le_bytes([*a, *b, *c, *d]);
-        if *flags & !FAST_V2_RESET_CHILD_SCOPE != 0 {
+        if *flags & !FAST_V2_RESET_CHILD_INDEX != 0 {
             return Err(ProtocolError::Validation(format!(
                 "FAST 2 element data contains unsupported flags: 0x{flags:02x}"
             )));
         }
         Ok((
             Self { binding_count },
-            *flags & FAST_V2_RESET_CHILD_SCOPE != 0,
+            *flags & FAST_V2_RESET_CHILD_INDEX != 0,
         ))
     }
 }
@@ -81,15 +82,15 @@ mod tests {
     use crate::ProtocolError;
 
     #[test]
-    fn test_fast_element_data_roundtrip() {
-        let encoded = FastElementData { binding_count: 3 }.encode();
-        let decoded = FastElementData::decode(&encoded).expect("decode should succeed");
+    fn test_fast_v3_element_data_roundtrip() {
+        let encoded = FastElementData { binding_count: 3 }.encode_v3();
+        let decoded = FastElementData::decode_v3(&encoded).expect("decode should succeed");
         assert_eq!(decoded.binding_count, 3);
     }
 
     #[test]
-    fn test_fast_element_data_rejects_invalid_length() {
-        let result = FastElementData::decode(&[1, 2]);
+    fn test_fast_v3_element_data_rejects_invalid_length() {
+        let result = FastElementData::decode_v3(&[1, 2]);
         assert!(
             matches!(result, Err(ProtocolError::Validation(ref msg)) if msg.contains("4 bytes")),
             "invalid payload length should be rejected: {result:?}"

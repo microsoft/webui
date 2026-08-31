@@ -611,7 +611,7 @@ fn v3_counts_root_template_bindings() {
     let counts: Vec<_> = data
         .iter()
         .map(|bytes| {
-            webui_protocol::FastElementData::decode(bytes)
+            webui_protocol::FastElementData::decode_v3(bytes)
                 .expect("FAST 3 element data should decode")
                 .binding_count
         })
