@@ -41,7 +41,7 @@ pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     }
 }
 
-// Encode the FAST 2 root lifecycle only when host bindings need a marker.
+// Encode FAST 2 binding metadata and its root lifecycle flag.
 #[inline]
 pub(crate) fn finish_v2_element(
     binding_attribute_count: u32,
@@ -49,7 +49,7 @@ pub(crate) fn finish_v2_element(
 ) -> Option<Vec<u8>> {
     if binding_attribute_count == 0 {
         None
-    } else if reset_child_scope {
+    } else {
         Some(
             FastElementData {
                 binding_count: binding_attribute_count,
@@ -57,8 +57,6 @@ pub(crate) fn finish_v2_element(
             .encode_v2(reset_child_scope)
             .to_vec(),
         )
-    } else {
-        finish_element(binding_attribute_count)
     }
 }
 

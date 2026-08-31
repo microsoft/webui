@@ -309,7 +309,7 @@ fn plugin_build_leaves_ssr_output_style_free() {
     assert!(!ssr.contains("<style>"));
 }
 
-fn assert_component_source(plugin: Box<dyn ParserPlugin>) {
+fn assert_component_source(plugin: Box<dyn ParserPlugin>, fast_v2: bool) {
     let mut parser =
         HtmlParser::with_plugin_options(plugin, (CssStrategy::Style, DomStrategy::Shadow));
     parser
@@ -338,10 +338,17 @@ fn assert_component_source(plugin: Box<dyn ParserPlugin>) {
     );
     assert_stream!(records, "if-1", [for_loop("item", "items", "for-1"),]);
     let for_fragments = &records["for-1"].fragments;
+    let expected_element_data = if fast_v2 {
+        webui_protocol::FastElementData { binding_count: 5 }
+            .encode_v2(false)
+            .to_vec()
+    } else {
+        5u32.to_le_bytes().to_vec()
+    };
     assert!(for_fragments.iter().any(|fragment| {
         matches!(
             fragment.fragment.as_ref(),
-            Some(Fragment::Plugin(data)) if data.data == 5u32.to_le_bytes()
+            Some(Fragment::Plugin(data)) if data.data == expected_element_data
         )
     }));
     assert!(!for_fragments.iter().any(|fragment| {
@@ -375,18 +382,18 @@ fn assert_component_source(plugin: Box<dyn ParserPlugin>) {
 
 #[test]
 fn v2_uses_authored_component_source() {
-    assert_component_source(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+    assert_component_source(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()), true);
 }
 
 #[test]
 #[allow(deprecated)]
 fn compatibility_plugin_uses_authored_component_source() {
-    assert_component_source(Box::new(plugin::fast::FastParserPlugin::new()));
+    assert_component_source(Box::new(plugin::fast::FastParserPlugin::new()), true);
 }
 
 #[test]
 fn v3_uses_authored_component_source() {
-    assert_component_source(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+    assert_component_source(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()), false);
 }
 
 #[test]

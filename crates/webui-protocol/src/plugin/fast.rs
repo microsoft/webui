@@ -50,31 +50,27 @@ impl FastElementData {
         })
     }
 
-    /// Decode current or legacy FAST 2 element metadata.
+    /// Decode FAST 2 element metadata.
     ///
     /// # Errors
     ///
     /// Returns [`ProtocolError::Validation`] for unsupported payload lengths or flags.
     pub fn decode_v2(bytes: &[u8]) -> Result<(Self, bool)> {
-        let binding_count = match bytes {
-            [a, b, c, d] | [a, b, c, d, _] => u32::from_le_bytes([*a, *b, *c, *d]),
-            _ => {
-                return Err(ProtocolError::Validation(format!(
-                    "FAST 2 element data must be {FAST_ELEMENT_DATA_LEN} legacy bytes or \
-                     {FAST_V2_ELEMENT_DATA_LEN} bytes, received {}",
-                    bytes.len()
-                )));
-            }
+        let [a, b, c, d, flags] = bytes else {
+            return Err(ProtocolError::Validation(format!(
+                "FAST 2 element data must be {FAST_V2_ELEMENT_DATA_LEN} bytes, received {}",
+                bytes.len()
+            )));
         };
-        let flags = bytes.get(FAST_ELEMENT_DATA_LEN).copied().unwrap_or(0);
-        if flags & !FAST_V2_RESET_CHILD_SCOPE != 0 {
+        let binding_count = u32::from_le_bytes([*a, *b, *c, *d]);
+        if *flags & !FAST_V2_RESET_CHILD_SCOPE != 0 {
             return Err(ProtocolError::Validation(format!(
                 "FAST 2 element data contains unsupported flags: 0x{flags:02x}"
             )));
         }
         Ok((
             Self { binding_count },
-            flags & FAST_V2_RESET_CHILD_SCOPE != 0,
+            *flags & FAST_V2_RESET_CHILD_SCOPE != 0,
         ))
     }
 }
@@ -108,10 +104,12 @@ mod tests {
     }
 
     #[test]
-    fn test_fast_v2_element_data_accepts_legacy_count() {
-        let decoded =
-            FastElementData::decode_v2(&3u32.to_le_bytes()).expect("legacy data should decode");
-        assert_eq!(decoded, (FastElementData { binding_count: 3 }, false));
+    fn test_fast_v2_element_data_rejects_four_byte_count() {
+        let result = FastElementData::decode_v2(&3u32.to_le_bytes());
+        assert!(
+            matches!(result, Err(ProtocolError::Validation(ref msg)) if msg.contains("5 bytes")),
+            "four-byte FAST 2 data should be rejected: {result:?}"
+        );
     }
 
     #[test]

@@ -333,9 +333,10 @@ pub struct WebUIFragmentPlugin {
 ```
 
 FAST 3 element metadata is a four-byte little-endian binding count. FAST 2
-ordinary element metadata uses the same four-byte form; a root template with
-host bindings appends one lifecycle byte. Bit 0 tells the FAST 2 handler to
-restart child marker indexes after emitting the root host-binding marker.
+element metadata is always five bytes: the same count followed by lifecycle
+flags. Bit 0 tells the FAST 2 handler to restart child marker indexes after
+emitting the root host-binding marker. Four-byte FAST 2 payloads are rejected;
+there is no compatibility branch for the prior intermediate format.
 
 #### Route Fragment
 Route fragments define declarative URL-based routes linking path templates to fragment bodies.

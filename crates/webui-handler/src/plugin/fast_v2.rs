@@ -289,14 +289,14 @@ mod tests {
         let mut single = FastV2HydrationPlugin::new();
         single.push_scope();
         let mut writer = TestWriter::new();
-        let one = 1u32.to_le_bytes();
+        let one = FastElementData { binding_count: 1 }.encode_v2(false);
         single.on_element_data(&one, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-b-0");
 
         let mut multi = FastV2HydrationPlugin::new();
         multi.push_scope();
         writer.output.clear();
-        let three = 3u32.to_le_bytes();
+        let three = FastElementData { binding_count: 3 }.encode_v2(false);
         multi.on_element_data(&three, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-c-0-3");
     }
@@ -306,7 +306,7 @@ mod tests {
         let mut plugin = FastV2HydrationPlugin::new();
         plugin.push_scope();
         let mut writer = TestWriter::new();
-        let three = 3u32.to_le_bytes();
+        let three = FastElementData { binding_count: 3 }.encode_v2(false);
         plugin.on_element_data(&three, &mut writer).unwrap();
 
         writer.output.clear();
@@ -321,10 +321,22 @@ mod tests {
         let mut writer = TestWriter::new();
         let root = FastElementData { binding_count: 2 }.encode_v2(true);
         plugin.on_element_data(&root, &mut writer).unwrap();
-        plugin
-            .on_element_data(&1u32.to_le_bytes(), &mut writer)
-            .unwrap();
+        let child = FastElementData { binding_count: 1 }.encode_v2(false);
+        plugin.on_element_data(&child, &mut writer).unwrap();
         assert_eq!(writer.output, " data-fe-c-0-2 data-fe-b-0");
+    }
+
+    #[test]
+    fn test_fast_v2_rejects_four_byte_element_data() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        let result = plugin.on_element_data(&1u32.to_le_bytes(), &mut writer);
+        assert!(
+            matches!(result, Err(crate::HandlerError::PluginData(ref msg)) if msg.contains("5 bytes")),
+            "four-byte FAST 2 data should be rejected: {result:?}"
+        );
+        assert_eq!(writer.output, "");
     }
 
     #[test]
@@ -384,7 +396,7 @@ mod tests {
         plugin.on_binding_end("x", false, &mut writer).unwrap();
         plugin.on_repeat_item_start(0, &mut writer).unwrap();
         plugin.on_repeat_item_end(0, &mut writer).unwrap();
-        let data = 3u32.to_le_bytes();
+        let data = FastElementData { binding_count: 3 }.encode_v2(false);
         plugin.on_element_data(&data, &mut writer).unwrap();
         assert_eq!(writer.output, "");
     }

@@ -554,6 +554,8 @@ mod tests {
     #![allow(clippy::disallowed_methods)]
 
     use super::*;
+    use webui_protocol::FastElementData;
+
     fn make_component(tag: &str, html: &str, css: Option<&str>) -> Component {
         Component {
             tag_name: tag.to_string(),
@@ -650,7 +652,10 @@ mod tests {
         let data = plugin.finish_element(3);
         assert!(data.is_some());
         let bytes = data.as_deref().unwrap_or_default();
-        assert_eq!(bytes, &3u32.to_le_bytes());
+        assert_eq!(
+            bytes,
+            &FastElementData { binding_count: 3 }.encode_v2(false)
+        );
     }
 
     #[test]
@@ -659,7 +664,10 @@ mod tests {
         let data = plugin.finish_element(256);
         assert!(data.is_some());
         let bytes = data.as_deref().unwrap_or_default();
-        assert_eq!(bytes, &256u32.to_le_bytes());
+        assert_eq!(
+            bytes,
+            &FastElementData { binding_count: 256 }.encode_v2(false)
+        );
     }
 
     #[test]
