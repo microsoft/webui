@@ -332,6 +332,12 @@ pub struct WebUIFragmentPlugin {
 }
 ```
 
+FAST 3 element metadata is a four-byte little-endian binding count. FAST 2
+element metadata is always five bytes: the same count followed by lifecycle
+flags. Bit 0 tells the FAST 2 handler to restart child marker indexes after
+emitting the root host-binding marker. Four-byte FAST 2 payloads are rejected;
+there is no compatibility branch for the prior intermediate format.
+
 #### Route Fragment
 Route fragments define declarative URL-based routes linking path templates to fragment bodies.
 The parser emits these from `<route>` elements; the handler uses them for server-side route matching.
@@ -2139,8 +2145,10 @@ parser view returned as `TransformedComponentSource::parser_content`:
   `<template @click="{…}">`); because their `ComponentProcessing` enables root
   attribute processing, those bindings flow through the same
   `process_attribute`/`finish_opening_tag` count as any other element. The
-  server emits a `FastElementData` binding count for the root that keeps the
-  client hydration markers aligned with the client template's binding order.
+  server emits a FAST binding count for the root that keeps the client hydration
+  markers aligned with the client template's binding order. FAST 2 marks that
+  root metadata as the end of the separately consumed host-binding range, so
+  child marker indexes restart at zero instead of applying the host offset twice.
 
 The transform separately returns the authored inner `<template>` (with its
 client-only bindings) as `TransformedComponentSource::artifact_content`, rather

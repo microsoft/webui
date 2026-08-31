@@ -154,9 +154,9 @@ impl HandlerPlugin for FastV3HydrationPlugin {
         if !self.is_active() {
             return Ok(());
         }
-        let decoded = FastElementData::decode(data).map_err(|error| {
+        let decoded = FastElementData::decode_v3(data).map_err(|error| {
             HandlerError::PluginData(format!(
-                "FAST hydration plugin expected 4 bytes of element data: {error}"
+                "FAST 3 hydration plugin expected 4 bytes of element data: {error}"
             ))
         })?;
         if decoded.binding_count > 0 {
