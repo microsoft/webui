@@ -3,6 +3,9 @@
   "description": "WebUI — high-performance server-side rendering framework. Build-time protocol compiler and streaming renderer.",
   "license": "MIT",
   "version": "0.0.27",
+  "publishConfig": {
+    "tag": "latest"
+  },
   "type": "module",
   "repository": {
     "type": "git",

@@ -13,5 +13,8 @@
     "linux"
   ],
   "preferUnplugged": true,
+  "publishConfig": {
+    "tag": "latest"
+  },
   "version": "0.0.27"
 }

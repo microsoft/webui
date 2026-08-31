@@ -17,6 +17,21 @@ Ask for the release version if the user did not provide one. The input must be t
 
 Use `v<version>` only when comparing or creating Git tags.
 
+Hotfix releases use the repository hotfix command instead of the stable release
+PR workflow:
+
+```bash
+cargo xtask hotfix <commit> <oldest-tag> [--dry-run] [--support-commit <commit>]
+```
+
+`<oldest-tag>` may be written with or without the leading `v`. The command
+increments the `-hotfix.<number>` suffix independently for every stable release
+tag in range, creates each branch as `hotfix/v<version>`, and pushes it to queue
+the guarded Azure release pipeline. Run with `--dry-run` first when preparing
+more than one release line. Use `--support-commit` when an older release line
+needs a newer revision of the hotfix tooling than the commit that originally
+introduced it.
+
 ## Workflow
 
 1. Make sure the working branch is not `main`. If needed, create a release branch named `<user>/bump-v<version>`.
