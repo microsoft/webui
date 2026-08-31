@@ -185,15 +185,20 @@ impl HandlerPlugin for FastV2HydrationPlugin {
         if !self.is_active() {
             return Ok(());
         }
-        let decoded = FastElementData::decode(data).map_err(|error| {
+        let (decoded, reset_child_scope) = FastElementData::decode_v2(data).map_err(|error| {
             HandlerError::PluginData(format!(
-                "FAST v2 hydration plugin expected 4 bytes of element data: {error}"
+                "FAST v2 hydration plugin received invalid element data: {error}"
             ))
         })?;
         if decoded.binding_count > 0 {
             let binding_index = self.next_index_n(decoded.binding_count);
             self.build_attribute_marker(binding_index, decoded.binding_count);
             writer.write(&self.buffer)?;
+        }
+        if reset_child_scope {
+            if let Some(counter) = self.scopes.last_mut() {
+                *counter = 0;
+            }
         }
         Ok(())
     }
@@ -307,6 +312,68 @@ mod tests {
         writer.output.clear();
         plugin.on_binding_start("next", false, &mut writer).unwrap();
         assert_eq!(writer.output, "<!--fe-b$$start$$3$$next$$fe-b-->");
+    }
+
+    #[test]
+    fn test_fast_v2_root_host_bindings_reset_child_index() {
+        let mut plugin = FastV2HydrationPlugin::new();
+        plugin.push_scope();
+        let mut writer = TestWriter::new();
+        let root = FastElementData { binding_count: 2 }.encode_v2(true);
+        plugin.on_element_data(&root, &mut writer).unwrap();
+        plugin
+            .on_element_data(&1u32.to_le_bytes(), &mut writer)
+            .unwrap();
+        assert_eq!(writer.output, " data-fe-c-0-2 data-fe-b-0");
+    }
+
+    #[test]
+    fn test_fast_v2_parser_and_handler_keep_child_index_local() {
+        use crate::{RenderOptions, WebUIHandler};
+        use webui_parser::{
+            plugin::fast_v2::FastV2ParserPlugin, ComponentRegistration, HtmlParser,
+        };
+        use webui_protocol::WebUIProtocol;
+
+        let mut parser = HtmlParser::with_plugin(Box::new(FastV2ParserPlugin::new()));
+        parser
+            .component_registry_mut()
+            .register_component(ComponentRegistration::new(
+                "binding-card",
+                r#"<f-template name="binding-card" shadowrootmode="open"><template @click="{click($e)}" @keydown="{keydown($e)}"><slot f-ref="{slot}"></slot></template></f-template>"#,
+                None,
+                true,
+            ))
+            .unwrap();
+        parser
+            .parse("index.html", "<binding-card></binding-card>")
+            .unwrap();
+        let mut protocol = WebUIProtocol::new(parser.into_fragment_records());
+        protocol
+            .components
+            .entry("binding-card".to_string())
+            .or_default()
+            .uses_shadow_dom = true;
+        protocol.populate_style_closures(&["index.html"]);
+        let handler = WebUIHandler::with_plugin(|| Box::new(FastV2HydrationPlugin::new()));
+        let mut writer = TestWriter::new();
+        handler
+            .handle(
+                &protocol,
+                &serde_json::json!({}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+
+        assert!(
+            writer.output.contains(concat!(
+                r#"<template shadowrootmode="open" data-fe-c-0-2>"#,
+                r#"<slot data-fe-b-0></slot></template>"#
+            )),
+            "FAST 2 child markers should exclude consumed host bindings: {}",
+            writer.output
+        );
     }
 
     #[test]

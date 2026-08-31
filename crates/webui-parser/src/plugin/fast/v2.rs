@@ -45,6 +45,8 @@ struct TrackedComponent {
 pub struct FastV2ParserPlugin {
     /// Components tracked during parsing, in discovery order.
     components: Vec<TrackedComponent>,
+    /// Whether the next root template carries the FAST 2 host-binding boundary.
+    reset_child_scope_after_root: bool,
 }
 
 impl FastV2ParserPlugin {
@@ -53,6 +55,7 @@ impl FastV2ParserPlugin {
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
+            reset_child_scope_after_root: false,
         }
     }
 
@@ -151,6 +154,7 @@ impl ParserPlugin for FastV2ParserPlugin {
 
     fn component_built(&mut self, context: ComponentBuildContext<'_>) -> Result<()> {
         require_fast_shadow_dom(context.component.tag_name.as_str(), context.uses_shadow_dom)?;
+        self.reset_child_scope_after_root = true;
         self.track_component(context);
         Ok(())
     }
@@ -160,7 +164,12 @@ impl ParserPlugin for FastV2ParserPlugin {
     }
 
     fn finish_opening_tag(&mut self, context: ElementStartContext<'_>) -> Option<Vec<u8>> {
-        super::shared::finish_element(context.binding_count)
+        let reset_child_scope =
+            self.reset_child_scope_after_root && context.tag_name.eq_ignore_ascii_case("template");
+        if reset_child_scope {
+            self.reset_child_scope_after_root = false;
+        }
+        super::shared::finish_v2_element(context.binding_count, reset_child_scope)
     }
 
     fn finish(self: Box<Self>) -> Result<ParserPluginArtifacts> {

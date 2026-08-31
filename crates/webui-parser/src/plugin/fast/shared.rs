@@ -41,6 +41,27 @@ pub(crate) fn finish_element(binding_attribute_count: u32) -> Option<Vec<u8>> {
     }
 }
 
+// Encode the FAST 2 root lifecycle only when host bindings need a marker.
+#[inline]
+pub(crate) fn finish_v2_element(
+    binding_attribute_count: u32,
+    reset_child_scope: bool,
+) -> Option<Vec<u8>> {
+    if binding_attribute_count == 0 {
+        None
+    } else if reset_child_scope {
+        Some(
+            FastElementData {
+                binding_count: binding_attribute_count,
+            }
+            .encode_v2(reset_child_scope)
+            .to_vec(),
+        )
+    } else {
+        finish_element(binding_attribute_count)
+    }
+}
+
 // FAST reads these options from `<f-template>`; adopted styles remain inner.
 #[inline]
 pub(crate) fn is_hoisted_shadow_attr(name: &str) -> bool {

@@ -540,7 +540,7 @@ fn client_attributes_are_counted_in_source_order_without_markers() {
     assert!(!templates[0].template.contains("data-webui-internal-"));
 }
 
-fn assert_root_template_bindings_counted(plugin: Box<dyn ParserPlugin>) {
+fn root_template_binding_data(plugin: Box<dyn ParserPlugin>) -> Vec<Vec<u8>> {
     let mut parser = HtmlParser::with_plugin(plugin);
     parser
         .component_registry
@@ -555,17 +555,15 @@ fn assert_root_template_bindings_counted(plugin: Box<dyn ParserPlugin>) {
         .parse("index.html", "<root-binding-card></root-binding-card>")
         .expect("parse entry");
     let fragments = &parser.fragment_records["root-binding-card"].fragments;
-    let counts: Vec<u32> = fragments
+    let data: Vec<Vec<u8>> = fragments
         .iter()
         .filter_map(|fragment| {
             let Some(Fragment::Plugin(data)) = fragment.fragment.as_ref() else {
                 return None;
             };
-            (data.data.len() == 4)
-                .then(|| u32::from_le_bytes(data.data[..4].try_into().expect("four-byte count")))
+            Some(data.data.clone())
         })
         .collect();
-    assert_eq!(counts, vec![3, 1]);
 
     let raw: String = fragments
         .iter()
@@ -578,16 +576,40 @@ fn assert_root_template_bindings_counted(plugin: Box<dyn ParserPlugin>) {
         assert!(!raw.contains(client_attr));
     }
     assert!(raw.contains(r#"shadowrootmode="open""#));
+    data
 }
 
 #[test]
 fn v2_counts_root_template_bindings() {
-    assert_root_template_bindings_counted(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+    let data = root_template_binding_data(Box::new(plugin::fast_v2::FastV2ParserPlugin::new()));
+    let decoded: Vec<_> = data
+        .iter()
+        .map(|bytes| {
+            webui_protocol::FastElementData::decode_v2(bytes)
+                .expect("FAST 2 element data should decode")
+        })
+        .collect();
+    assert_eq!(
+        decoded,
+        vec![
+            (webui_protocol::FastElementData { binding_count: 3 }, true),
+            (webui_protocol::FastElementData { binding_count: 1 }, false),
+        ]
+    );
 }
 
 #[test]
 fn v3_counts_root_template_bindings() {
-    assert_root_template_bindings_counted(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+    let data = root_template_binding_data(Box::new(plugin::fast_v3::FastV3ParserPlugin::new()));
+    let counts: Vec<_> = data
+        .iter()
+        .map(|bytes| {
+            webui_protocol::FastElementData::decode(bytes)
+                .expect("FAST 3 element data should decode")
+                .binding_count
+        })
+        .collect();
+    assert_eq!(counts, vec![3, 1]);
 }
 
 #[test]
