@@ -1,15 +1,18 @@
 <section class="benchmark-showcase" aria-labelledby="benchmark-title">
   <div class="benchmark-showcase-header">
     <div>
-      <h2 id="benchmark-title">{{data.title}}</h2>
-      <p>{{data.description}}</p>
+      <h2 id="benchmark-title">Performance, measured.</h2>
+      <p>
+        Compare WebUI with production frameworks on the same workload across complete SSR, streaming SSR, LCP,
+        JavaScript heap, and renderer memory.
+      </p>
     </div>
-    <p class="benchmark-methodology">{{data.methodology}}</p>
+    <p class="benchmark-methodology">{{benchmarks.methodology}}</p>
   </div>
 
   <div class="benchmark-toolbar">
     <div class="benchmark-metrics" role="group" aria-label="Rank benchmarks by">
-      <for each="metric in data.metrics">
+      <for each="metric in benchmarks.metrics">
         <button
           type="button"
           class="benchmark-metric"
@@ -25,15 +28,13 @@
       </for>
     </div>
     <div class="benchmark-reading">
-      <strong>{{data.selectedMetricLabel}}</strong>
-      <span>{{data.selectedMetricDescription}}</span>
+      <strong>{{benchmarks.selectedMetricLabel}}</strong>
+      <span>{{benchmarks.selectedMetricDescription}}</span>
     </div>
   </div>
 
-  <p class="benchmark-summary" aria-live="polite">{{data.metricSummary}}</p>
-
-  <div class="benchmark-bars" role="list" aria-label="{{data.selectedMetricLabel}} ranking">
-    <for each="row in data.rows">
+  <div class="benchmark-bars" role="list" aria-label="{{benchmarks.selectedMetricLabel}} ranking">
+    <for each="row in benchmarks.rows">
       <div
         class="benchmark-row"
         role="listitem"
@@ -59,11 +60,11 @@
     </for>
   </div>
 
-  <if condition="data.hasUnavailable">
+  <if condition="benchmarks.hasUnavailable">
     <p class="benchmark-unavailable">
       Unavailable measurements remain visible at the end of the ranking and are never treated as zero.
     </p>
   </if>
 
-  <a class="benchmark-link" href="{{data.link}}">Performance guidance and benchmark source →</a>
+  <a class="benchmark-link" href="{{benchmarks.link}}">Performance guidance and benchmark source →</a>
 </section>

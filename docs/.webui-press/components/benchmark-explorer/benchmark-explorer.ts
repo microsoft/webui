@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-import { WebUIElement, attr, observable } from "@microsoft/webui-framework";
+import { WebUIElement, observable } from "@microsoft/webui-framework";
 
 interface MetricDefinition {
   id: string;
@@ -11,7 +11,6 @@ interface MetricDefinition {
   directionLabel: string;
   description: string;
   methodology: string;
-  summary: string;
   available: boolean;
   selected: boolean;
 }
@@ -37,41 +36,26 @@ interface BenchmarkRow {
 }
 
 interface BenchmarkData {
-  title: string;
-  description: string;
   methodology: string;
   link: string;
   selectedMetric: string;
   selectedMetricLabel: string;
   selectedMetricDescription: string;
-  metricSummary: string;
   hasUnavailable: boolean;
   metrics: MetricDefinition[];
   rows: BenchmarkRow[];
 }
 
 const EMPTY_DATA: BenchmarkData = {
-  title: "",
-  description: "",
   methodology: "",
   link: "",
   selectedMetric: "requestsPerSecond",
   selectedMetricLabel: "",
   selectedMetricDescription: "",
-  metricSummary: "",
   hasUnavailable: false,
   metrics: [],
   rows: [],
 };
-
-function isBenchmarkData(value: unknown): value is BenchmarkData {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<BenchmarkData>;
-  return typeof candidate.title === "string"
-    && typeof candidate.selectedMetric === "string"
-    && Array.isArray(candidate.metrics)
-    && Array.isArray(candidate.rows);
-}
 
 function metricValue(row: BenchmarkRow, metricId: string): MetricValue {
   return row.metrics[metricId] ?? {
@@ -139,43 +123,29 @@ function rankedRows(
 }
 
 export class BenchmarkExplorer extends WebUIElement {
-  @attr({ attribute: "data-json" }) dataJson = "";
-  @observable data: BenchmarkData = EMPTY_DATA;
-
-  connectedCallback(): void {
-    super.connectedCallback();
-    if (this.data.metrics.length > 0 || this.dataJson.length === 0) return;
-    const parsed: unknown = JSON.parse(this.dataJson);
-    if (!isBenchmarkData(parsed)) {
-      throw new TypeError(
-        "benchmark-explorer data-json must contain generated benchmark explorer state",
-      );
-    }
-    this.data = parsed;
-  }
+  @observable benchmarks: BenchmarkData = EMPTY_DATA;
 
   selectMetric(event: Event): void {
     const target = event.currentTarget;
     if (!(target instanceof HTMLButtonElement)) return;
     const metricId = target.dataset.metric;
-    if (!metricId || metricId === this.data.selectedMetric) return;
-    const metric = this.data.metrics.find((candidate) =>
+    if (!metricId || metricId === this.benchmarks.selectedMetric) return;
+    const metric = this.benchmarks.metrics.find((candidate) =>
       candidate.id === metricId && candidate.available
     );
     if (!metric) return;
 
-    const metrics = this.data.metrics.map((candidate) => ({
+    const metrics = this.benchmarks.metrics.map((candidate) => ({
       ...candidate,
       selected: candidate.id === metricId,
     }));
-    const rows = rankedRows(this.data.rows, metric);
-    this.data = {
-      ...this.data,
+    const rows = rankedRows(this.benchmarks.rows, metric);
+    this.benchmarks = {
+      ...this.benchmarks,
       methodology: metric.methodology,
       selectedMetric: metric.id,
       selectedMetricLabel: metric.label,
       selectedMetricDescription: metric.description,
-      metricSummary: metric.summary,
       hasUnavailable: rows.some((row) =>
         !metricValue(row, metric.id).available
       ),

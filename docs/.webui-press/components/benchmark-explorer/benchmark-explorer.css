@@ -118,19 +118,12 @@
 }
 
 .benchmark-reading span,
-.benchmark-summary,
 .benchmark-unavailable {
   color: var(--docs-color-text-2);
 }
 
 .benchmark-reading span {
   font-size: var(--docs-font-size-s);
-}
-
-.benchmark-summary {
-  max-width: 86ch;
-  margin: var(--docs-space-l) 0 0;
-  line-height: 1.55;
 }
 
 .benchmark-bars {
