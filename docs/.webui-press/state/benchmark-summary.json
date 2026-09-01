@@ -10,7 +10,7 @@
     "hasUnavailable": false,
     "link": "/webui/guide/concepts/performance/",
     "methodology": "100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes",
-    "metricSummary": "WebUI / Light DOM / Rust / Actix records the highest median, 28.7% ahead of WebUI / Shadow DOM / Rust / Actix; the 339.1 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 380.0% higher; the 1,204.45 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Vue, Solid, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.",
+    "metricSummary": "WebUI / Light DOM / Rust / Actix records the highest median, 26.2% ahead of WebUI / Shadow DOM / Rust / Actix; the 314.25 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 345.5% higher; the 1,175.1 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Nuxt, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.",
     "metrics": [
       {
         "available": true,
@@ -21,7 +21,7 @@
         "label": "No Streaming RPS",
         "methodology": "100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes",
         "selected": true,
-        "summary": "WebUI / Light DOM / Rust / Actix records the highest median, 28.7% ahead of WebUI / Shadow DOM / Rust / Actix; the 339.1 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 380.0% higher; the 1,204.45 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Vue, Solid, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.",
+        "summary": "WebUI / Light DOM / Rust / Actix records the highest median, 26.2% ahead of WebUI / Shadow DOM / Rust / Actix; the 314.25 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 345.5% higher; the 1,175.1 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Nuxt, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.",
         "unit": "req/s"
       },
       {
@@ -33,7 +33,7 @@
         "label": "Streaming RPS",
         "methodology": "100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes",
         "selected": false,
-        "summary": "WebUI / Light DOM / Rust / Actix records the highest median, 38.1% ahead of WebUI / Shadow DOM / Rust / Actix; the 309.1 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, Preact, WebUI / Light DOM / Rust / Actix is 223.3% higher; the 774.15 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Solid, Astro + Preact, WebUI / Node node:http, React, WebUI / Bun.serve, React + TanStack Router; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.",
+        "summary": "WebUI / Light DOM / Rust / Actix records the highest median, 26.8% ahead of WebUI / Shadow DOM / Rust / Actix; the 247.7 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, Preact, WebUI / Light DOM / Rust / Actix is 201.2% higher; the 782.7 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for WebUI / Node node:http; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.",
         "unit": "req/s"
       },
       {
@@ -45,7 +45,7 @@
         "label": "LCP",
         "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Bun.serve and WebUI / Deno.serve have the same median; the measured ordering is tied.",
+        "summary": "WebUI / Bun.serve and WebUI / Light DOM / Rust / Actix have the same median; the measured ordering is tied.",
         "unit": "ms"
       },
       {
@@ -57,7 +57,7 @@
         "label": "JS Heap",
         "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Deno.serve records the lowest median, 0.0% below WebUI / Bun.serve; the <0.01 MiB gap is within their combined <0.01 MiB MAD, so the measured ordering overlaps run noise.",
+        "summary": "WebUI / Deno.serve records the lowest median, 0.0% below WebUI / Light DOM / Rust / Actix; the <0.01 MiB gap exceeds their combined <0.01 MiB MAD.",
         "unit": "MiB"
       },
       {
@@ -69,49 +69,49 @@
         "label": "Renderer Private MB",
         "methodology": "Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling",
         "selected": false,
-        "summary": "WebUI / Bun.serve records the lowest median, 0.1% below WebUI / Node node:http; the 0.05 MiB gap is within their combined 0.52 MiB MAD, so the measured ordering overlaps run noise.",
+        "summary": "WebUI / Bun.serve records the lowest median, 2.0% below WebUI / Node node:http; the 0.82 MiB gap is within their combined 1.87 MiB MAD, so the measured ordering overlaps run noise.",
         "unit": "MiB"
       }
     ],
     "rows": [
       {
         "activeAvailable": true,
-        "activeDetail": "webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 51.54 ms · 329,988-330,685 B natural",
+        "activeDetail": "webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 45.01 ms · 329,988-330,685 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "1,521.45",
+        "activeValueDisplay": "1,515.25",
         "activeWidth": "100.0%",
         "caseId": "webui-rust-actix",
         "label": "WebUI / Light DOM / Rust / Actix",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 51.54 ms · 329,988-330,685 B natural",
-            "value": 1521.45,
-            "valueDisplay": "1,521.45"
+            "detail": "webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 45.01 ms · 329,988-330,685 B natural",
+            "value": 1515.25,
+            "valueDisplay": "1,515.25"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "webui-handler StreamingResponse (Rust) · actix-web · MAD 0 req/s · p95 68.33 ms · 337,914-338,643 B natural",
-            "value": 1120.8,
-            "valueDisplay": "1,120.8"
+            "detail": "webui-handler StreamingResponse (Rust) · actix-web · MAD 0 req/s · p95 55.38 ms · 337,914-338,643 B natural",
+            "value": 1171.6999999999998,
+            "valueDisplay": "1,171.7"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 12 ms · p95 200 ms",
-            "value": 156,
-            "valueDisplay": "156"
+            "detail": "10 isolated runs · MAD 0 ms · p95 140 ms",
+            "value": 140,
+            "valueDisplay": "140"
           },
           "jsHeapUsedBytes": {
             "available": true,
             "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB",
-            "value": 2262018,
-            "valueDisplay": "2.16"
+            "value": 2188984,
+            "valueDisplay": "2.09"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 0.59 MiB · p95 45.88 MiB",
-            "value": 44492800,
-            "valueDisplay": "42.43"
+            "detail": "10 isolated runs · MAD 1.29 MiB · p95 46.73 MiB",
+            "value": 44687360,
+            "valueDisplay": "42.62"
           }
         },
         "primary": true,
@@ -119,239 +119,24 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 72.37 ms · 483,598-485,019 B natural",
+        "activeDetail": "webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 56.54 ms · 483,598-485,019 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "1,182.35",
-        "activeWidth": "77.7%",
+        "activeValueDisplay": "1,201",
+        "activeWidth": "79.3%",
         "caseId": "webui-shadowdom-rust-actix",
         "label": "WebUI / Shadow DOM / Rust / Actix",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 72.37 ms · 483,598-485,019 B natural",
-            "value": 1182.35,
-            "valueDisplay": "1,182.35"
+            "detail": "webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 56.54 ms · 483,598-485,019 B natural",
+            "value": 1201,
+            "valueDisplay": "1,201"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "webui-handler StreamingResponse (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 113.77 ms · 491,524-492,977 B natural",
-            "value": 811.7,
-            "valueDisplay": "811.7"
-          },
-          "largestContentfulPaintMs": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 6 ms · p95 308 ms",
-            "value": 172,
-            "valueDisplay": "172"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.43 MiB",
-            "value": 2547544,
-            "valueDisplay": "2.43"
-          },
-          "rendererPrivateBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 0.85 MiB · p95 49.65 MiB",
-            "value": 50034688,
-            "valueDisplay": "47.72"
-          }
-        },
-        "primary": true,
-        "rank": "2"
-      },
-      {
-        "activeAvailable": true,
-        "activeDetail": "webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 125.11 ms · 596,601-598,231 B natural",
-        "activeUnit": "req/s",
-        "activeValueDisplay": "867.85",
-        "activeWidth": "57.0%",
-        "caseId": "webui-fast-rust-actix",
-        "label": "WebUI / FAST V3 / Rust / Actix",
-        "metrics": {
-          "noStreamingRequestsPerSecond": {
-            "available": true,
-            "detail": "webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 125.11 ms · 596,601-598,231 B natural",
-            "value": 867.85,
-            "valueDisplay": "867.85"
-          },
-          "streamingRequestsPerSecond": {
-            "available": true,
-            "detail": "webui-handler chunked ResponseWriter (Rust, FAST V3) · actix-web · MAD 0 req/s · p95 152.19 ms · 596,601-598,231 B natural",
-            "value": 487.2,
-            "valueDisplay": "487.2"
-          },
-          "largestContentfulPaintMs": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 16 ms · p95 240 ms",
-            "value": 172,
-            "valueDisplay": "172"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 5.14 MiB",
-            "value": 5390138,
-            "valueDisplay": "5.14"
-          },
-          "rendererPrivateBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 0.79 MiB · p95 61.2 MiB",
-            "value": 58365952,
-            "valueDisplay": "55.66"
-          }
-        },
-        "primary": true,
-        "rank": "3"
-      },
-      {
-        "activeAvailable": true,
-        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 181.89 ms · 329,988-330,685 B natural",
-        "activeUnit": "req/s",
-        "activeValueDisplay": "587.9",
-        "activeWidth": "38.6%",
-        "caseId": "webui-deno-serve",
-        "label": "WebUI / Deno.serve",
-        "metrics": {
-          "noStreamingRequestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 181.89 ms · 329,988-330,685 B natural",
-            "value": 587.9000000000001,
-            "valueDisplay": "587.9"
-          },
-          "streamingRequestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 215.36 ms · 337,914-338,643 B natural",
-            "value": 462.7,
-            "valueDisplay": "462.7"
-          },
-          "largestContentfulPaintMs": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 8 ms · p95 192 ms",
-            "value": 156,
-            "valueDisplay": "156"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB",
-            "value": 2260944,
-            "valueDisplay": "2.16"
-          },
-          "rendererPrivateBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 0.35 MiB · p95 46.36 MiB",
-            "value": 44003328,
-            "valueDisplay": "41.96"
-          }
-        },
-        "primary": true,
-        "rank": "4"
-      },
-      {
-        "activeAvailable": true,
-        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 157.01 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 43.9% faster",
-        "activeUnit": "req/s",
-        "activeValueDisplay": "456.95",
-        "activeWidth": "30.0%",
-        "caseId": "webui-node-http",
-        "label": "WebUI / Node node:http",
-        "metrics": {
-          "noStreamingRequestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 157.01 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 43.9% faster",
-            "value": 456.95000000000005,
-            "valueDisplay": "456.95"
-          },
-          "streamingRequestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 239.9 ms · 337,914-338,643 B natural · saturation warning: the 128-connection probe was 18.2% faster",
-            "value": 349.6,
-            "valueDisplay": "349.6"
-          },
-          "largestContentfulPaintMs": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 8 ms · p95 188 ms",
-            "value": 166,
-            "valueDisplay": "166"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB",
-            "value": 2260976,
-            "valueDisplay": "2.16"
-          },
-          "rendererPrivateBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 0.15 MiB · p95 43.92 MiB",
-            "value": 43917312,
-            "valueDisplay": "41.88"
-          }
-        },
-        "primary": true,
-        "rank": "5"
-      },
-      {
-        "activeAvailable": true,
-        "activeDetail": "react-dom/server renderToString · node:http · MAD 0 req/s · p95 241.41 ms · 334,118-334,824 B natural",
-        "activeUnit": "req/s",
-        "activeValueDisplay": "317",
-        "activeWidth": "20.8%",
-        "caseId": "react",
-        "label": "React",
-        "metrics": {
-          "noStreamingRequestsPerSecond": {
-            "available": true,
-            "detail": "react-dom/server renderToString · node:http · MAD 0 req/s · p95 241.41 ms · 334,118-334,824 B natural",
-            "value": 317,
-            "valueDisplay": "317"
-          },
-          "streamingRequestsPerSecond": {
-            "available": true,
-            "detail": "react-dom/server renderToReadableStream · node:http · MAD 0 req/s · p95 301.48 ms · 334,118-334,824 B natural · saturation warning: the 128-connection probe was 11.4% faster",
-            "value": 253.95,
-            "valueDisplay": "253.95"
-          },
-          "largestContentfulPaintMs": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 2 ms · p95 220 ms",
-            "value": 172,
-            "valueDisplay": "172"
-          },
-          "jsHeapUsedBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.9 MiB",
-            "value": 3040826,
-            "valueDisplay": "2.9"
-          },
-          "rendererPrivateBytes": {
-            "available": true,
-            "detail": "10 isolated runs · MAD 1.64 MiB · p95 53 MiB",
-            "value": 51337216,
-            "valueDisplay": "48.96"
-          }
-        },
-        "primary": false,
-        "rank": "6"
-      },
-      {
-        "activeAvailable": true,
-        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 1,221.79 ms · 329,988-330,685 B natural",
-        "activeUnit": "req/s",
-        "activeValueDisplay": "315.75",
-        "activeWidth": "20.8%",
-        "caseId": "webui-bun-serve",
-        "label": "WebUI / Bun.serve",
-        "metrics": {
-          "noStreamingRequestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 1,221.79 ms · 329,988-330,685 B natural",
-            "value": 315.75,
-            "valueDisplay": "315.75"
-          },
-          "streamingRequestsPerSecond": {
-            "available": true,
-            "detail": "@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 255.97 ms · 337,914-338,643 B natural · saturation warning: the 128-connection probe was 16.9% faster",
-            "value": 399.3,
-            "valueDisplay": "399.3"
+            "detail": "webui-handler StreamingResponse (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 70.59 ms · 491,524-492,977 B natural",
+            "value": 924,
+            "valueDisplay": "924"
           },
           "largestContentfulPaintMs": {
             "available": true,
@@ -361,58 +146,273 @@
           },
           "jsHeapUsedBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB",
-            "value": 2260950,
-            "valueDisplay": "2.16"
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.43 MiB",
+            "value": 2545576,
+            "valueDisplay": "2.43"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 0.37 MiB · p95 44.59 MiB",
-            "value": 43864064,
-            "valueDisplay": "41.83"
+            "detail": "10 isolated runs · MAD 0.57 MiB · p95 49.15 MiB",
+            "value": 48629760,
+            "valueDisplay": "46.38"
           }
         },
         "primary": true,
-        "rank": "7"
+        "rank": "2"
       },
       {
         "activeAvailable": true,
-        "activeDetail": "preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 301.82 ms · 333,940-334,646 B natural",
+        "activeDetail": "webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 72.38 ms · 596,601-598,231 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "297.9",
-        "activeWidth": "19.6%",
-        "caseId": "preact",
-        "label": "Preact",
+        "activeValueDisplay": "926.7",
+        "activeWidth": "61.2%",
+        "caseId": "webui-fast-rust-actix",
+        "label": "WebUI / FAST V3 / Rust / Actix",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 301.82 ms · 333,940-334,646 B natural",
-            "value": 297.9,
-            "valueDisplay": "297.9"
+            "detail": "webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 72.38 ms · 596,601-598,231 B natural",
+            "value": 926.7,
+            "valueDisplay": "926.7"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "preact-render-to-string renderToReadableStream · node:http · MAD 0 req/s · p95 223.26 ms · 333,940-334,646 B natural",
-            "value": 346.65,
-            "valueDisplay": "346.65"
+            "detail": "webui-handler chunked ResponseWriter (Rust, FAST V3) · actix-web · MAD 0 req/s · p95 153.22 ms · 596,601-598,231 B natural",
+            "value": 433.25,
+            "valueDisplay": "433.25"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 14 ms · p95 208 ms",
+            "detail": "10 isolated runs · MAD 0 ms · p95 156 ms",
+            "value": 156,
+            "valueDisplay": "156"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 5.15 MiB",
+            "value": 5390702,
+            "valueDisplay": "5.14"
+          },
+          "rendererPrivateBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0.48 MiB · p95 59.16 MiB",
+            "value": 57163776,
+            "valueDisplay": "54.52"
+          }
+        },
+        "primary": true,
+        "rank": "3"
+      },
+      {
+        "activeAvailable": true,
+        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 180.93 ms · 329,988-330,685 B natural",
+        "activeUnit": "req/s",
+        "activeValueDisplay": "590.9",
+        "activeWidth": "39.0%",
+        "caseId": "webui-deno-serve",
+        "label": "WebUI / Deno.serve",
+        "metrics": {
+          "noStreamingRequestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 180.93 ms · 329,988-330,685 B natural",
+            "value": 590.9000000000001,
+            "valueDisplay": "590.9"
+          },
+          "streamingRequestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 193.58 ms · 337,914-338,643 B natural",
+            "value": 505.54999999999995,
+            "valueDisplay": "505.55"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 6 ms · p95 256 ms",
+            "value": 146,
+            "valueDisplay": "146"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB",
+            "value": 2187908,
+            "valueDisplay": "2.09"
+          },
+          "rendererPrivateBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 1.67 MiB · p95 46.13 MiB",
+            "value": 44328960,
+            "valueDisplay": "42.28"
+          }
+        },
+        "primary": true,
+        "rank": "4"
+      },
+      {
+        "activeAvailable": true,
+        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 122.7 ms · 329,988-330,685 B natural",
+        "activeUnit": "req/s",
+        "activeValueDisplay": "577.65",
+        "activeWidth": "38.1%",
+        "caseId": "webui-bun-serve",
+        "label": "WebUI / Bun.serve",
+        "metrics": {
+          "noStreamingRequestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 122.7 ms · 329,988-330,685 B natural",
+            "value": 577.6500000000001,
+            "valueDisplay": "577.65"
+          },
+          "streamingRequestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 154.83 ms · 337,914-338,643 B natural",
+            "value": 460,
+            "valueDisplay": "460"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0 ms · p95 240 ms",
+            "value": 140,
+            "valueDisplay": "140"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0.03 MiB · p95 2.16 MiB",
+            "value": 2224312,
+            "valueDisplay": "2.12"
+          },
+          "rendererPrivateBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0.81 MiB · p95 43.59 MiB",
+            "value": 43337728,
+            "valueDisplay": "41.33"
+          }
+        },
+        "primary": true,
+        "rank": "5"
+      },
+      {
+        "activeAvailable": true,
+        "activeDetail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 148.25 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 16.1% faster",
+        "activeUnit": "req/s",
+        "activeValueDisplay": "458.5",
+        "activeWidth": "30.3%",
+        "caseId": "webui-node-http",
+        "label": "WebUI / Node node:http",
+        "metrics": {
+          "noStreamingRequestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 148.25 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 16.1% faster",
+            "value": 458.5,
+            "valueDisplay": "458.5"
+          },
+          "streamingRequestsPerSecond": {
+            "available": true,
+            "detail": "@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 200 ms · 337,914-338,643 B natural · saturation warning: the 128-connection probe was 13.1% faster",
+            "value": 370.35,
+            "valueDisplay": "370.35"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 8 ms · p95 156 ms",
+            "value": 148,
+            "valueDisplay": "148"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0.03 MiB · p95 2.16 MiB",
+            "value": 2224806,
+            "valueDisplay": "2.12"
+          },
+          "rendererPrivateBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 1.06 MiB · p95 46.46 MiB",
+            "value": 44199936,
+            "valueDisplay": "42.15"
+          }
+        },
+        "primary": true,
+        "rank": "6"
+      },
+      {
+        "activeAvailable": true,
+        "activeDetail": "react-dom/server renderToString · node:http · MAD 0 req/s · p95 224.44 ms · 334,118-334,824 B natural",
+        "activeUnit": "req/s",
+        "activeValueDisplay": "340.15",
+        "activeWidth": "22.4%",
+        "caseId": "react",
+        "label": "React",
+        "metrics": {
+          "noStreamingRequestsPerSecond": {
+            "available": true,
+            "detail": "react-dom/server renderToString · node:http · MAD 0 req/s · p95 224.44 ms · 334,118-334,824 B natural",
+            "value": 340.15,
+            "valueDisplay": "340.15"
+          },
+          "streamingRequestsPerSecond": {
+            "available": true,
+            "detail": "react-dom/server renderToReadableStream · node:http · MAD 0 req/s · p95 323.74 ms · 334,118-334,824 B natural",
+            "value": 249.85,
+            "valueDisplay": "249.85"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0 ms · p95 172 ms",
             "value": 172,
             "valueDisplay": "172"
           },
           "jsHeapUsedBytes": {
             "available": true,
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.9 MiB",
+            "value": 3041670,
+            "valueDisplay": "2.9"
+          },
+          "rendererPrivateBytes": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 0.46 MiB · p95 51.02 MiB",
+            "value": 49543168,
+            "valueDisplay": "47.25"
+          }
+        },
+        "primary": false,
+        "rank": "7"
+      },
+      {
+        "activeAvailable": true,
+        "activeDetail": "preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 216.6 ms · 333,940-334,646 B natural",
+        "activeUnit": "req/s",
+        "activeValueDisplay": "338.4",
+        "activeWidth": "22.3%",
+        "caseId": "preact",
+        "label": "Preact",
+        "metrics": {
+          "noStreamingRequestsPerSecond": {
+            "available": true,
+            "detail": "preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 216.6 ms · 333,940-334,646 B natural",
+            "value": 338.4,
+            "valueDisplay": "338.4"
+          },
+          "streamingRequestsPerSecond": {
+            "available": true,
+            "detail": "preact-render-to-string renderToReadableStream · node:http · MAD 0 req/s · p95 191.35 ms · 333,940-334,646 B natural",
+            "value": 389,
+            "valueDisplay": "389"
+          },
+          "largestContentfulPaintMs": {
+            "available": true,
+            "detail": "10 isolated runs · MAD 8 ms · p95 172 ms",
+            "value": 156,
+            "valueDisplay": "156"
+          },
+          "jsHeapUsedBytes": {
+            "available": true,
             "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.38 MiB",
-            "value": 2495158,
+            "value": 2494908,
             "valueDisplay": "2.38"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 0.35 MiB · p95 51.72 MiB",
-            "value": 49162240,
-            "valueDisplay": "46.88"
+            "detail": "10 isolated runs · MAD 1.39 MiB · p95 48.57 MiB",
+            "value": 49383424,
+            "valueDisplay": "47.1"
           }
         },
         "primary": false,
@@ -420,42 +420,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "solid-js/web renderToString · node:http · MAD 0 req/s · p95 277.98 ms · 378,043-378,863 B natural · saturation warning: the 128-connection probe was 5.7% faster",
+        "activeDetail": "solid-js/web renderToString · node:http · MAD 0 req/s · p95 256.71 ms · 378,043-378,863 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "281.7",
-        "activeWidth": "18.5%",
+        "activeValueDisplay": "301.6",
+        "activeWidth": "19.9%",
         "caseId": "solid",
         "label": "Solid",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "solid-js/web renderToString · node:http · MAD 0 req/s · p95 277.98 ms · 378,043-378,863 B natural · saturation warning: the 128-connection probe was 5.7% faster",
-            "value": 281.70000000000005,
-            "valueDisplay": "281.7"
+            "detail": "solid-js/web renderToString · node:http · MAD 0 req/s · p95 256.71 ms · 378,043-378,863 B natural",
+            "value": 301.6,
+            "valueDisplay": "301.6"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "solid-js/web renderToStream · node:http · MAD 0 req/s · p95 315.83 ms · 378,043-378,863 B natural · saturation warning: the 128-connection probe was 19.7% faster",
-            "value": 245.55,
-            "valueDisplay": "245.55"
+            "detail": "solid-js/web renderToStream · node:http · MAD 0 req/s · p95 297.38 ms · 378,043-378,863 B natural",
+            "value": 251.85,
+            "valueDisplay": "251.85"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 10 ms · p95 316 ms",
+            "detail": "10 isolated runs · MAD 0 ms · p95 272 ms",
             "value": 172,
             "valueDisplay": "172"
           },
           "jsHeapUsedBytes": {
             "available": true,
             "detail": "10 isolated runs · MAD <0.01 MiB · p95 4.61 MiB",
-            "value": 4830562,
+            "value": 4831520,
             "valueDisplay": "4.61"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 1.25 MiB · p95 64.24 MiB",
-            "value": 62400512,
-            "valueDisplay": "59.51"
+            "detail": "10 isolated runs · MAD 1.42 MiB · p95 61.89 MiB",
+            "value": 56750080,
+            "valueDisplay": "54.12"
           }
         },
         "primary": false,
@@ -463,42 +463,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 345.12 ms · 341,230-341,908 B natural · saturation warning: the 128-connection probe was 11.9% faster",
+        "activeDetail": "@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 266.94 ms · 341,230-341,908 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "252.45",
-        "activeWidth": "16.6%",
+        "activeValueDisplay": "287.75",
+        "activeWidth": "19.0%",
         "caseId": "vue",
         "label": "Vue",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 345.12 ms · 341,230-341,908 B natural · saturation warning: the 128-connection probe was 11.9% faster",
-            "value": 252.45,
-            "valueDisplay": "252.45"
+            "detail": "@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 266.94 ms · 341,230-341,908 B natural",
+            "value": 287.75,
+            "valueDisplay": "287.75"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "@vue/server-renderer renderToWebStream · node:http · MAD 0 req/s · p95 1,427.41 ms · 341,230-341,908 B natural",
-            "value": 53.7,
-            "valueDisplay": "53.7"
+            "detail": "@vue/server-renderer renderToWebStream · node:http · MAD 0 req/s · p95 1,711.29 ms · 341,230-341,908 B natural",
+            "value": 49.85,
+            "valueDisplay": "49.85"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 8 ms · p95 264 ms",
-            "value": 162,
-            "valueDisplay": "162"
+            "detail": "10 isolated runs · MAD 0 ms · p95 172 ms",
+            "value": 172,
+            "valueDisplay": "172"
           },
           "jsHeapUsedBytes": {
             "available": true,
             "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.49 MiB",
-            "value": 2612272,
+            "value": 2613330,
             "valueDisplay": "2.49"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 1.03 MiB · p95 51.18 MiB",
-            "value": 48664576,
-            "valueDisplay": "46.41"
+            "detail": "10 isolated runs · MAD 0.68 MiB · p95 50.16 MiB",
+            "value": 47779840,
+            "valueDisplay": "45.57"
           }
         },
         "primary": false,
@@ -506,42 +506,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 392.69 ms · 303,354-303,888 B natural · saturation warning: the 128-connection probe was 43.1% faster",
+        "activeDetail": "react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 276.55 ms · 334,661-335,367 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "200.95",
-        "activeWidth": "13.2%",
-        "caseId": "sveltekit",
-        "label": "SvelteKit",
+        "activeValueDisplay": "262.95",
+        "activeWidth": "17.4%",
+        "caseId": "react-tanstack",
+        "label": "React + TanStack Router",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 392.69 ms · 303,354-303,888 B natural · saturation warning: the 128-connection probe was 43.1% faster",
-            "value": 200.95,
-            "valueDisplay": "200.95"
+            "detail": "react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 276.55 ms · 334,661-335,367 B natural",
+            "value": 262.95,
+            "valueDisplay": "262.95"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 331.1 ms · 303,353-303,887 B natural",
-            "value": 217.95,
-            "valueDisplay": "217.95"
+            "detail": "react-dom/server stream + @tanstack/react-router renderRouterToStream · node:http · MAD 0 req/s · p95 389.03 ms · 334,661-335,367 B natural",
+            "value": 189.35,
+            "valueDisplay": "189.35"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 14 ms · p95 204 ms",
-            "value": 172,
-            "valueDisplay": "172"
+            "detail": "10 isolated runs · MAD 16 ms · p95 256 ms",
+            "value": 182,
+            "valueDisplay": "182"
           },
           "jsHeapUsedBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 4.86 MiB",
-            "value": 5080186,
-            "valueDisplay": "4.84"
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 3.34 MiB",
+            "value": 3442956,
+            "valueDisplay": "3.28"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 1.21 MiB · p95 54.46 MiB",
-            "value": 55541760,
-            "valueDisplay": "52.97"
+            "detail": "10 isolated runs · MAD 1.15 MiB · p95 52.17 MiB",
+            "value": 51046400,
+            "valueDisplay": "48.68"
           }
         },
         "primary": false,
@@ -549,42 +549,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 728.11 ms · 313,518-314,091 B natural",
+        "activeDetail": "SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 334.1 ms · 303,353-303,887 B natural · saturation warning: the 128-connection probe was 5.4% faster",
         "activeUnit": "req/s",
-        "activeValueDisplay": "126.4",
-        "activeWidth": "8.3%",
-        "caseId": "next",
-        "label": "Next.js",
+        "activeValueDisplay": "211.35",
+        "activeWidth": "13.9%",
+        "caseId": "sveltekit",
+        "label": "SvelteKit",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 728.11 ms · 313,518-314,091 B natural",
-            "value": 126.4,
-            "valueDisplay": "126.4"
+            "detail": "SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 334.1 ms · 303,353-303,887 B natural · saturation warning: the 128-connection probe was 5.4% faster",
+            "value": 211.35000000000002,
+            "valueDisplay": "211.35"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "Next.js production App Router streaming SSR · next start · MAD 0 req/s · p95 638.85 ms · 313,518-314,091 B natural",
-            "value": 142.3,
-            "valueDisplay": "142.3"
+            "detail": "SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 341.91 ms · 303,354-303,888 B natural",
+            "value": 213.5,
+            "valueDisplay": "213.5"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 4 ms · p95 308 ms",
-            "value": 208,
-            "valueDisplay": "208"
+            "detail": "10 isolated runs · MAD 0 ms · p95 172 ms",
+            "value": 156,
+            "valueDisplay": "156"
           },
           "jsHeapUsedBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 3.67 MiB",
-            "value": 3848870,
-            "valueDisplay": "3.67"
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 4.85 MiB",
+            "value": 5080782,
+            "valueDisplay": "4.85"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 0.68 MiB · p95 54.26 MiB",
-            "value": 53866496,
-            "valueDisplay": "51.37"
+            "detail": "10 isolated runs · MAD 1.24 MiB · p95 54 MiB",
+            "value": 53147648,
+            "valueDisplay": "50.69"
           }
         },
         "primary": false,
@@ -592,42 +592,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 1,882.65 ms · 334,661-335,367 B natural",
+        "activeDetail": "Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 507 ms · 313,520-314,093 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "123",
-        "activeWidth": "8.1%",
-        "caseId": "react-tanstack",
-        "label": "React + TanStack Router",
+        "activeValueDisplay": "140.8",
+        "activeWidth": "9.3%",
+        "caseId": "next",
+        "label": "Next.js",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 1,882.65 ms · 334,661-335,367 B natural",
-            "value": 123,
-            "valueDisplay": "123"
+            "detail": "Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 507 ms · 313,520-314,093 B natural",
+            "value": 140.8,
+            "valueDisplay": "140.8"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "react-dom/server stream + @tanstack/react-router renderRouterToStream · node:http · MAD 0 req/s · p95 383.29 ms · 334,661-335,367 B natural · saturation warning: the 128-connection probe was 22.8% faster",
-            "value": 193.2,
-            "valueDisplay": "193.2"
+            "detail": "Next.js production App Router streaming SSR · next start · MAD 0 req/s · p95 470.77 ms · 313,520-314,093 B natural",
+            "value": 153.05,
+            "valueDisplay": "153.05"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 0 ms · p95 188 ms",
-            "value": 172,
-            "valueDisplay": "172"
+            "detail": "10 isolated runs · MAD 0 ms · p95 304 ms",
+            "value": 156,
+            "valueDisplay": "156"
           },
           "jsHeapUsedBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 3.29 MiB",
-            "value": 3442944,
-            "valueDisplay": "3.28"
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 3.67 MiB",
+            "value": 3848304,
+            "valueDisplay": "3.67"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 0.75 MiB · p95 50.28 MiB",
-            "value": 50673664,
-            "valueDisplay": "48.33"
+            "detail": "10 isolated runs · MAD 0.96 MiB · p95 51.33 MiB",
+            "value": 51953664,
+            "valueDisplay": "49.55"
           }
         },
         "primary": false,
@@ -635,42 +635,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 1,173.39 ms · 280,229-280,941 B natural",
+        "activeDetail": "Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 834.51 ms · 280,229-280,941 B natural · saturation warning: the 128-connection probe was 11.6% faster",
         "activeUnit": "req/s",
-        "activeValueDisplay": "73.8",
-        "activeWidth": "4.9%",
+        "activeValueDisplay": "83.5",
+        "activeWidth": "5.5%",
         "caseId": "nuxt",
         "label": "Nuxt",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 1,173.39 ms · 280,229-280,941 B natural",
-            "value": 73.80000000000001,
-            "valueDisplay": "73.8"
+            "detail": "Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 834.51 ms · 280,229-280,941 B natural · saturation warning: the 128-connection probe was 11.6% faster",
+            "value": 83.5,
+            "valueDisplay": "83.5"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 785.39 ms · 280,229-280,941 B natural",
-            "value": 85,
-            "valueDisplay": "85"
+            "detail": "Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 792.19 ms · 280,229-280,941 B natural",
+            "value": 84.4,
+            "valueDisplay": "84.4"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 18 ms · p95 372 ms",
-            "value": 204,
-            "valueDisplay": "204"
+            "detail": "10 isolated runs · MAD 16 ms · p95 288 ms",
+            "value": 174,
+            "valueDisplay": "174"
           },
           "jsHeapUsedBytes": {
             "available": true,
             "detail": "10 isolated runs · MAD <0.01 MiB · p95 3.43 MiB",
-            "value": 3600216,
+            "value": 3599622,
             "valueDisplay": "3.43"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 1.41 MiB · p95 53.87 MiB",
-            "value": 53452800,
-            "valueDisplay": "50.98"
+            "detail": "10 isolated runs · MAD 0.25 MiB · p95 48.02 MiB",
+            "value": 50059264,
+            "valueDisplay": "47.74"
           }
         },
         "primary": false,
@@ -678,42 +678,42 @@
       },
       {
         "activeAvailable": true,
-        "activeDetail": "Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 937.77 ms · 462,725-463,583 B natural",
+        "activeDetail": "Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 914.4 ms · 462,724-463,582 B natural",
         "activeUnit": "req/s",
-        "activeValueDisplay": "72.8",
-        "activeWidth": "4.8%",
+        "activeValueDisplay": "75.8",
+        "activeWidth": "5.0%",
         "caseId": "astro",
         "label": "Astro + Preact",
         "metrics": {
           "noStreamingRequestsPerSecond": {
             "available": true,
-            "detail": "Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 937.77 ms · 462,725-463,583 B natural",
-            "value": 72.80000000000001,
-            "valueDisplay": "72.8"
+            "detail": "Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 914.4 ms · 462,724-463,582 B natural",
+            "value": 75.8,
+            "valueDisplay": "75.8"
           },
           "streamingRequestsPerSecond": {
             "available": true,
-            "detail": "Astro production streaming SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0 req/s · p95 870.19 ms · 462,724-463,581 B natural · saturation warning: the 128-connection probe was 12.3% faster",
-            "value": 79.19999999999999,
-            "valueDisplay": "79.2"
+            "detail": "Astro production streaming SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0 req/s · p95 853.22 ms · 462,723-463,582 B natural",
+            "value": 80.05,
+            "valueDisplay": "80.05"
           },
           "largestContentfulPaintMs": {
             "available": true,
-            "detail": "10 isolated runs · MAD 2 ms · p95 212 ms",
-            "value": 188,
-            "valueDisplay": "188"
+            "detail": "10 isolated runs · MAD 0 ms · p95 172 ms",
+            "value": 156,
+            "valueDisplay": "156"
           },
           "jsHeapUsedBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.43 MiB",
-            "value": 2516230,
+            "detail": "10 isolated runs · MAD <0.01 MiB · p95 2.4 MiB",
+            "value": 2517114,
             "valueDisplay": "2.4"
           },
           "rendererPrivateBytes": {
             "available": true,
-            "detail": "10 isolated runs · MAD 1.02 MiB · p95 52.04 MiB",
-            "value": 52762624,
-            "valueDisplay": "50.32"
+            "detail": "10 isolated runs · MAD 0.98 MiB · p95 52.8 MiB",
+            "value": 50317312,
+            "valueDisplay": "47.99"
           }
         },
         "primary": false,
@@ -724,24 +724,16 @@
     "saturationWarnings": {
       "noStreaming": [
         {
-          "caseId": "vue",
-          "gainPercent": 11.940298507462686,
-          "label": "Vue",
-          "measuredConnections": 64,
-          "probeConnections": 128,
-          "reason": "Throughput was still increasing at the largest connection count"
-        },
-        {
-          "caseId": "solid",
-          "gainPercent": 5.729166666666666,
-          "label": "Solid",
+          "caseId": "nuxt",
+          "gainPercent": 11.619718309859154,
+          "label": "Nuxt",
           "measuredConnections": 64,
           "probeConnections": 128,
           "reason": "Throughput was still increasing at the largest connection count"
         },
         {
           "caseId": "webui-node-http",
-          "gainPercent": 43.85493619879114,
+          "gainPercent": 16.079873883342092,
           "label": "WebUI / Node node:http",
           "measuredConnections": 64,
           "probeConnections": 128,
@@ -749,7 +741,7 @@
         },
         {
           "caseId": "sveltekit",
-          "gainPercent": 43.12977099236641,
+          "gainPercent": 5.4499366286438535,
           "label": "SvelteKit",
           "measuredConnections": 64,
           "probeConnections": 128,
@@ -758,49 +750,9 @@
       ],
       "streaming": [
         {
-          "caseId": "solid",
-          "gainPercent": 19.724137931034484,
-          "label": "Solid",
-          "measuredConnections": 64,
-          "probeConnections": 128,
-          "reason": "Throughput was still increasing at the largest connection count"
-        },
-        {
-          "caseId": "astro",
-          "gainPercent": 12.295081967213115,
-          "label": "Astro + Preact",
-          "measuredConnections": 64,
-          "probeConnections": 128,
-          "reason": "Throughput was still increasing at the largest connection count"
-        },
-        {
           "caseId": "webui-node-http",
-          "gainPercent": 18.181818181818183,
+          "gainPercent": 13.109128345916265,
           "label": "WebUI / Node node:http",
-          "measuredConnections": 64,
-          "probeConnections": 128,
-          "reason": "Throughput was still increasing at the largest connection count"
-        },
-        {
-          "caseId": "react",
-          "gainPercent": 11.38211382113821,
-          "label": "React",
-          "measuredConnections": 64,
-          "probeConnections": 128,
-          "reason": "Throughput was still increasing at the largest connection count"
-        },
-        {
-          "caseId": "webui-bun-serve",
-          "gainPercent": 16.90051020408163,
-          "label": "WebUI / Bun.serve",
-          "measuredConnections": 64,
-          "probeConnections": 128,
-          "reason": "Throughput was still increasing at the largest connection count"
-        },
-        {
-          "caseId": "react-tanstack",
-          "gainPercent": 22.80130293159609,
-          "label": "React + TanStack Router",
           "measuredConnections": 64,
           "probeConnections": 128,
           "reason": "Throughput was still increasing at the largest connection count"
@@ -816,5 +768,5 @@
       "progressive"
     ]
   },
-  "benchmarksJson": "{\"asyncDataBoundary\":{\"canonicalWebuiVersion\":\"0.0.27\",\"notes\":\"The progressive suite continues to measure each product's existing native progressive/streaming boundaries unchanged. A dedicated above-the-fold-shell / below-the-fold-async-list workload driven by WebUI's resumable StreamingSession boundary API is intentionally not implemented against canonical WebUI 0.0.27, because that API is not part of this release. This is disclosed capability metadata, not an active measurement.\",\"requiredCapability\":\"StreamingSession resumable async data-boundary API\",\"status\":\"deferred-pending-webui-release\"},\"description\":\"Compare the same product workload in complete and progressive response modes, then inspect the three browser cost metrics that matter most.\",\"hasUnavailable\":false,\"link\":\"/webui/guide/concepts/performance/\",\"methodology\":\"100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes\",\"metricSummary\":\"WebUI / Light DOM / Rust / Actix records the highest median, 28.7% ahead of WebUI / Shadow DOM / Rust / Actix; the 339.1 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 380.0% higher; the 1,204.45 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Vue, Solid, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.\",\"metrics\":[{\"available\":true,\"description\":\"Dynamic SSR throughput when each framework sends one fully collected HTML response without progressive boundaries.\",\"direction\":\"higher\",\"directionLabel\":\"higher is better\",\"id\":\"noStreamingRequestsPerSecond\",\"label\":\"No Streaming RPS\",\"methodology\":\"100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes\",\"selected\":true,\"summary\":\"WebUI / Light DOM / Rust / Actix records the highest median, 28.7% ahead of WebUI / Shadow DOM / Rust / Actix; the 339.1 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 380.0% higher; the 1,204.45 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Vue, Solid, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.\",\"unit\":\"req/s\"},{\"available\":true,\"description\":\"Dynamic SSR throughput while native progressive or streaming boundaries remain enabled.\",\"direction\":\"higher\",\"directionLabel\":\"higher is better\",\"id\":\"streamingRequestsPerSecond\",\"label\":\"Streaming RPS\",\"methodology\":\"100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes\",\"selected\":false,\"summary\":\"WebUI / Light DOM / Rust / Actix records the highest median, 38.1% ahead of WebUI / Shadow DOM / Rust / Actix; the 309.1 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, Preact, WebUI / Light DOM / Rust / Actix is 223.3% higher; the 774.15 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Solid, Astro + Preact, WebUI / Node node:http, React, WebUI / Bun.serve, React + TanStack Router; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.\",\"unit\":\"req/s\"},{\"available\":true,\"description\":\"Pre-interaction largest contentful paint from navigation start across ten isolated Chromium runs.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"largestContentfulPaintMs\",\"label\":\"LCP\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Bun.serve and WebUI / Deno.serve have the same median; the measured ordering is tied.\",\"unit\":\"ms\"},{\"available\":true,\"description\":\"Post-readiness JavaScript heap used after an explicit Chromium garbage collection.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"jsHeapUsedBytes\",\"label\":\"JS Heap\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Deno.serve records the lowest median, 0.0% below WebUI / Bun.serve; the <0.01 MiB gap is within their combined <0.01 MiB MAD, so the measured ordering overlaps run noise.\",\"unit\":\"MiB\"},{\"available\":true,\"description\":\"Private bytes attributed to the isolated Chromium renderer process after readiness.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"rendererPrivateBytes\",\"label\":\"Renderer Private MB\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Bun.serve records the lowest median, 0.1% below WebUI / Node node:http; the 0.05 MiB gap is within their combined 0.52 MiB MAD, so the measured ordering overlaps run noise.\",\"unit\":\"MiB\"}],\"rows\":[{\"activeAvailable\":true,\"activeDetail\":\"webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 51.54 ms · 329,988-330,685 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"1,521.45\",\"activeWidth\":\"100.0%\",\"caseId\":\"webui-rust-actix\",\"label\":\"WebUI / Light DOM / Rust / Actix\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 51.54 ms · 329,988-330,685 B natural\",\"value\":1521.45,\"valueDisplay\":\"1,521.45\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler StreamingResponse (Rust) · actix-web · MAD 0 req/s · p95 68.33 ms · 337,914-338,643 B natural\",\"value\":1120.8,\"valueDisplay\":\"1,120.8\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 12 ms · p95 200 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2262018,\"valueDisplay\":\"2.16\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.59 MiB · p95 45.88 MiB\",\"value\":44492800,\"valueDisplay\":\"42.43\"}},\"primary\":true,\"rank\":\"1\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 72.37 ms · 483,598-485,019 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"1,182.35\",\"activeWidth\":\"77.7%\",\"caseId\":\"webui-shadowdom-rust-actix\",\"label\":\"WebUI / Shadow DOM / Rust / Actix\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 72.37 ms · 483,598-485,019 B natural\",\"value\":1182.35,\"valueDisplay\":\"1,182.35\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler StreamingResponse (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 113.77 ms · 491,524-492,977 B natural\",\"value\":811.7,\"valueDisplay\":\"811.7\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 6 ms · p95 308 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.43 MiB\",\"value\":2547544,\"valueDisplay\":\"2.43\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.85 MiB · p95 49.65 MiB\",\"value\":50034688,\"valueDisplay\":\"47.72\"}},\"primary\":true,\"rank\":\"2\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 125.11 ms · 596,601-598,231 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"867.85\",\"activeWidth\":\"57.0%\",\"caseId\":\"webui-fast-rust-actix\",\"label\":\"WebUI / FAST V3 / Rust / Actix\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 125.11 ms · 596,601-598,231 B natural\",\"value\":867.85,\"valueDisplay\":\"867.85\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler chunked ResponseWriter (Rust, FAST V3) · actix-web · MAD 0 req/s · p95 152.19 ms · 596,601-598,231 B natural\",\"value\":487.2,\"valueDisplay\":\"487.2\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 16 ms · p95 240 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 5.14 MiB\",\"value\":5390138,\"valueDisplay\":\"5.14\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.79 MiB · p95 61.2 MiB\",\"value\":58365952,\"valueDisplay\":\"55.66\"}},\"primary\":true,\"rank\":\"3\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 181.89 ms · 329,988-330,685 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"587.9\",\"activeWidth\":\"38.6%\",\"caseId\":\"webui-deno-serve\",\"label\":\"WebUI / Deno.serve\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 181.89 ms · 329,988-330,685 B natural\",\"value\":587.9000000000001,\"valueDisplay\":\"587.9\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 215.36 ms · 337,914-338,643 B natural\",\"value\":462.7,\"valueDisplay\":\"462.7\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 8 ms · p95 192 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2260944,\"valueDisplay\":\"2.16\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.35 MiB · p95 46.36 MiB\",\"value\":44003328,\"valueDisplay\":\"41.96\"}},\"primary\":true,\"rank\":\"4\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 157.01 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 43.9% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"456.95\",\"activeWidth\":\"30.0%\",\"caseId\":\"webui-node-http\",\"label\":\"WebUI / Node node:http\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 157.01 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 43.9% faster\",\"value\":456.95000000000005,\"valueDisplay\":\"456.95\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 239.9 ms · 337,914-338,643 B natural · saturation warning: the 128-connection probe was 18.2% faster\",\"value\":349.6,\"valueDisplay\":\"349.6\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 8 ms · p95 188 ms\",\"value\":166,\"valueDisplay\":\"166\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2260976,\"valueDisplay\":\"2.16\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.15 MiB · p95 43.92 MiB\",\"value\":43917312,\"valueDisplay\":\"41.88\"}},\"primary\":true,\"rank\":\"5\"},{\"activeAvailable\":true,\"activeDetail\":\"react-dom/server renderToString · node:http · MAD 0 req/s · p95 241.41 ms · 334,118-334,824 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"317\",\"activeWidth\":\"20.8%\",\"caseId\":\"react\",\"label\":\"React\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToString · node:http · MAD 0 req/s · p95 241.41 ms · 334,118-334,824 B natural\",\"value\":317,\"valueDisplay\":\"317\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToReadableStream · node:http · MAD 0 req/s · p95 301.48 ms · 334,118-334,824 B natural · saturation warning: the 128-connection probe was 11.4% faster\",\"value\":253.95,\"valueDisplay\":\"253.95\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 2 ms · p95 220 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.9 MiB\",\"value\":3040826,\"valueDisplay\":\"2.9\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.64 MiB · p95 53 MiB\",\"value\":51337216,\"valueDisplay\":\"48.96\"}},\"primary\":false,\"rank\":\"6\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 1,221.79 ms · 329,988-330,685 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"315.75\",\"activeWidth\":\"20.8%\",\"caseId\":\"webui-bun-serve\",\"label\":\"WebUI / Bun.serve\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 1,221.79 ms · 329,988-330,685 B natural\",\"value\":315.75,\"valueDisplay\":\"315.75\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 255.97 ms · 337,914-338,643 B natural · saturation warning: the 128-connection probe was 16.9% faster\",\"value\":399.3,\"valueDisplay\":\"399.3\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 172 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2260950,\"valueDisplay\":\"2.16\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.37 MiB · p95 44.59 MiB\",\"value\":43864064,\"valueDisplay\":\"41.83\"}},\"primary\":true,\"rank\":\"7\"},{\"activeAvailable\":true,\"activeDetail\":\"preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 301.82 ms · 333,940-334,646 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"297.9\",\"activeWidth\":\"19.6%\",\"caseId\":\"preact\",\"label\":\"Preact\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 301.82 ms · 333,940-334,646 B natural\",\"value\":297.9,\"valueDisplay\":\"297.9\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"preact-render-to-string renderToReadableStream · node:http · MAD 0 req/s · p95 223.26 ms · 333,940-334,646 B natural\",\"value\":346.65,\"valueDisplay\":\"346.65\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 14 ms · p95 208 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.38 MiB\",\"value\":2495158,\"valueDisplay\":\"2.38\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.35 MiB · p95 51.72 MiB\",\"value\":49162240,\"valueDisplay\":\"46.88\"}},\"primary\":false,\"rank\":\"8\"},{\"activeAvailable\":true,\"activeDetail\":\"solid-js/web renderToString · node:http · MAD 0 req/s · p95 277.98 ms · 378,043-378,863 B natural · saturation warning: the 128-connection probe was 5.7% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"281.7\",\"activeWidth\":\"18.5%\",\"caseId\":\"solid\",\"label\":\"Solid\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"solid-js/web renderToString · node:http · MAD 0 req/s · p95 277.98 ms · 378,043-378,863 B natural · saturation warning: the 128-connection probe was 5.7% faster\",\"value\":281.70000000000005,\"valueDisplay\":\"281.7\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"solid-js/web renderToStream · node:http · MAD 0 req/s · p95 315.83 ms · 378,043-378,863 B natural · saturation warning: the 128-connection probe was 19.7% faster\",\"value\":245.55,\"valueDisplay\":\"245.55\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 10 ms · p95 316 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 4.61 MiB\",\"value\":4830562,\"valueDisplay\":\"4.61\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.25 MiB · p95 64.24 MiB\",\"value\":62400512,\"valueDisplay\":\"59.51\"}},\"primary\":false,\"rank\":\"9\"},{\"activeAvailable\":true,\"activeDetail\":\"@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 345.12 ms · 341,230-341,908 B natural · saturation warning: the 128-connection probe was 11.9% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"252.45\",\"activeWidth\":\"16.6%\",\"caseId\":\"vue\",\"label\":\"Vue\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 345.12 ms · 341,230-341,908 B natural · saturation warning: the 128-connection probe was 11.9% faster\",\"value\":252.45,\"valueDisplay\":\"252.45\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@vue/server-renderer renderToWebStream · node:http · MAD 0 req/s · p95 1,427.41 ms · 341,230-341,908 B natural\",\"value\":53.7,\"valueDisplay\":\"53.7\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 8 ms · p95 264 ms\",\"value\":162,\"valueDisplay\":\"162\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.49 MiB\",\"value\":2612272,\"valueDisplay\":\"2.49\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.03 MiB · p95 51.18 MiB\",\"value\":48664576,\"valueDisplay\":\"46.41\"}},\"primary\":false,\"rank\":\"10\"},{\"activeAvailable\":true,\"activeDetail\":\"SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 392.69 ms · 303,354-303,888 B natural · saturation warning: the 128-connection probe was 43.1% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"200.95\",\"activeWidth\":\"13.2%\",\"caseId\":\"sveltekit\",\"label\":\"SvelteKit\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 392.69 ms · 303,354-303,888 B natural · saturation warning: the 128-connection probe was 43.1% faster\",\"value\":200.95,\"valueDisplay\":\"200.95\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 331.1 ms · 303,353-303,887 B natural\",\"value\":217.95,\"valueDisplay\":\"217.95\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 14 ms · p95 204 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 4.86 MiB\",\"value\":5080186,\"valueDisplay\":\"4.84\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.21 MiB · p95 54.46 MiB\",\"value\":55541760,\"valueDisplay\":\"52.97\"}},\"primary\":false,\"rank\":\"11\"},{\"activeAvailable\":true,\"activeDetail\":\"Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 728.11 ms · 313,518-314,091 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"126.4\",\"activeWidth\":\"8.3%\",\"caseId\":\"next\",\"label\":\"Next.js\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 728.11 ms · 313,518-314,091 B natural\",\"value\":126.4,\"valueDisplay\":\"126.4\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Next.js production App Router streaming SSR · next start · MAD 0 req/s · p95 638.85 ms · 313,518-314,091 B natural\",\"value\":142.3,\"valueDisplay\":\"142.3\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 4 ms · p95 308 ms\",\"value\":208,\"valueDisplay\":\"208\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 3.67 MiB\",\"value\":3848870,\"valueDisplay\":\"3.67\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.68 MiB · p95 54.26 MiB\",\"value\":53866496,\"valueDisplay\":\"51.37\"}},\"primary\":false,\"rank\":\"12\"},{\"activeAvailable\":true,\"activeDetail\":\"react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 1,882.65 ms · 334,661-335,367 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"123\",\"activeWidth\":\"8.1%\",\"caseId\":\"react-tanstack\",\"label\":\"React + TanStack Router\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 1,882.65 ms · 334,661-335,367 B natural\",\"value\":123,\"valueDisplay\":\"123\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server stream + @tanstack/react-router renderRouterToStream · node:http · MAD 0 req/s · p95 383.29 ms · 334,661-335,367 B natural · saturation warning: the 128-connection probe was 22.8% faster\",\"value\":193.2,\"valueDisplay\":\"193.2\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 188 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 3.29 MiB\",\"value\":3442944,\"valueDisplay\":\"3.28\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.75 MiB · p95 50.28 MiB\",\"value\":50673664,\"valueDisplay\":\"48.33\"}},\"primary\":false,\"rank\":\"13\"},{\"activeAvailable\":true,\"activeDetail\":\"Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 1,173.39 ms · 280,229-280,941 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"73.8\",\"activeWidth\":\"4.9%\",\"caseId\":\"nuxt\",\"label\":\"Nuxt\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 1,173.39 ms · 280,229-280,941 B natural\",\"value\":73.80000000000001,\"valueDisplay\":\"73.8\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 785.39 ms · 280,229-280,941 B natural\",\"value\":85,\"valueDisplay\":\"85\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 18 ms · p95 372 ms\",\"value\":204,\"valueDisplay\":\"204\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 3.43 MiB\",\"value\":3600216,\"valueDisplay\":\"3.43\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.41 MiB · p95 53.87 MiB\",\"value\":53452800,\"valueDisplay\":\"50.98\"}},\"primary\":false,\"rank\":\"14\"},{\"activeAvailable\":true,\"activeDetail\":\"Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 937.77 ms · 462,725-463,583 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"72.8\",\"activeWidth\":\"4.8%\",\"caseId\":\"astro\",\"label\":\"Astro + Preact\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 937.77 ms · 462,725-463,583 B natural\",\"value\":72.80000000000001,\"valueDisplay\":\"72.8\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Astro production streaming SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0 req/s · p95 870.19 ms · 462,724-463,581 B natural · saturation warning: the 128-connection probe was 12.3% faster\",\"value\":79.19999999999999,\"valueDisplay\":\"79.2\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 2 ms · p95 212 ms\",\"value\":188,\"valueDisplay\":\"188\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.43 MiB\",\"value\":2516230,\"valueDisplay\":\"2.4\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.02 MiB · p95 52.04 MiB\",\"value\":52762624,\"valueDisplay\":\"50.32\"}},\"primary\":false,\"rank\":\"15\"}],\"responseMode\":\"comparison\",\"saturationWarnings\":{\"noStreaming\":[{\"caseId\":\"vue\",\"gainPercent\":11.940298507462686,\"label\":\"Vue\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"solid\",\"gainPercent\":5.729166666666666,\"label\":\"Solid\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"webui-node-http\",\"gainPercent\":43.85493619879114,\"label\":\"WebUI / Node node:http\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"sveltekit\",\"gainPercent\":43.12977099236641,\"label\":\"SvelteKit\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"}],\"streaming\":[{\"caseId\":\"solid\",\"gainPercent\":19.724137931034484,\"label\":\"Solid\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"astro\",\"gainPercent\":12.295081967213115,\"label\":\"Astro + Preact\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"webui-node-http\",\"gainPercent\":18.181818181818183,\"label\":\"WebUI / Node node:http\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"react\",\"gainPercent\":11.38211382113821,\"label\":\"React\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"webui-bun-serve\",\"gainPercent\":16.90051020408163,\"label\":\"WebUI / Bun.serve\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"react-tanstack\",\"gainPercent\":22.80130293159609,\"label\":\"React + TanStack Router\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"}]},\"selectedMetric\":\"noStreamingRequestsPerSecond\",\"selectedMetricDescription\":\"Dynamic SSR throughput when each framework sends one fully collected HTML response without progressive boundaries.\",\"selectedMetricLabel\":\"No Streaming RPS\",\"title\":\"Complete response or streaming boundaries. Choose the metric.\",\"responseModes\":[\"complete\",\"progressive\"]}"
+  "benchmarksJson": "{\"asyncDataBoundary\":{\"canonicalWebuiVersion\":\"0.0.27\",\"notes\":\"The progressive suite continues to measure each product's existing native progressive/streaming boundaries unchanged. A dedicated above-the-fold-shell / below-the-fold-async-list workload driven by WebUI's resumable StreamingSession boundary API is intentionally not implemented against canonical WebUI 0.0.27, because that API is not part of this release. This is disclosed capability metadata, not an active measurement.\",\"requiredCapability\":\"StreamingSession resumable async data-boundary API\",\"status\":\"deferred-pending-webui-release\"},\"description\":\"Compare the same product workload in complete and progressive response modes, then inspect the three browser cost metrics that matter most.\",\"hasUnavailable\":false,\"link\":\"/webui/guide/concepts/performance/\",\"methodology\":\"100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes\",\"metricSummary\":\"WebUI / Light DOM / Rust / Actix records the highest median, 26.2% ahead of WebUI / Shadow DOM / Rust / Actix; the 314.25 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 345.5% higher; the 1,175.1 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Nuxt, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.\",\"metrics\":[{\"available\":true,\"description\":\"Dynamic SSR throughput when each framework sends one fully collected HTML response without progressive boundaries.\",\"direction\":\"higher\",\"directionLabel\":\"higher is better\",\"id\":\"noStreamingRequestsPerSecond\",\"label\":\"No Streaming RPS\",\"methodology\":\"100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes\",\"selected\":true,\"summary\":\"WebUI / Light DOM / Rust / Actix records the highest median, 26.2% ahead of WebUI / Shadow DOM / Rust / Actix; the 314.25 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, React, WebUI / Light DOM / Rust / Actix is 345.5% higher; the 1,175.1 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for Nuxt, WebUI / Node node:http, SvelteKit; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.\",\"unit\":\"req/s\"},{\"available\":true,\"description\":\"Dynamic SSR throughput while native progressive or streaming boundaries remain enabled.\",\"direction\":\"higher\",\"directionLabel\":\"higher is better\",\"id\":\"streamingRequestsPerSecond\",\"label\":\"Streaming RPS\",\"methodology\":\"100 todos · 13 component types · 32 warm structural variants · current UTC state materialized per request · 64 connections from 2 load workers · 1 server process/worker pinned to 1 CPU · 1 × 20 s measured round · dynamic SSR · natural bytes\",\"selected\":false,\"summary\":\"WebUI / Light DOM / Rust / Actix records the highest median, 26.8% ahead of WebUI / Shadow DOM / Rust / Actix; the 247.7 req/s gap exceeds their combined 0 req/s MAD. Against the fastest non-WebUI row, Preact, WebUI / Light DOM / Rust / Actix is 201.2% higher; the 782.7 req/s gap exceeds their combined 0 req/s MAD. Fixed 64-connection results are retained for WebUI / Node node:http; their 128-connection saturation probes were still rising, so those throughput values are lower bounds.\",\"unit\":\"req/s\"},{\"available\":true,\"description\":\"Pre-interaction largest contentful paint from navigation start across ten isolated Chromium runs.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"largestContentfulPaintMs\",\"label\":\"LCP\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Bun.serve and WebUI / Light DOM / Rust / Actix have the same median; the measured ordering is tied.\",\"unit\":\"ms\"},{\"available\":true,\"description\":\"Post-readiness JavaScript heap used after an explicit Chromium garbage collection.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"jsHeapUsedBytes\",\"label\":\"JS Heap\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Deno.serve records the lowest median, 0.0% below WebUI / Light DOM / Rust / Actix; the <0.01 MiB gap exceeds their combined <0.01 MiB MAD.\",\"unit\":\"MiB\"},{\"available\":true,\"description\":\"Private bytes attributed to the isolated Chromium renderer process after readiness.\",\"direction\":\"lower\",\"directionLabel\":\"lower is better\",\"id\":\"rendererPrivateBytes\",\"label\":\"Renderer Private MB\",\"methodology\":\"Chromium 149.0.7827.55 · 1,440×900 viewport · 10 randomized cold-cache navigations · fresh foreground process/context/page per sample · native occlusion throttling disabled · no CPU or network throttling\",\"selected\":false,\"summary\":\"WebUI / Bun.serve records the lowest median, 2.0% below WebUI / Node node:http; the 0.82 MiB gap is within their combined 1.87 MiB MAD, so the measured ordering overlaps run noise.\",\"unit\":\"MiB\"}],\"rows\":[{\"activeAvailable\":true,\"activeDetail\":\"webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 45.01 ms · 329,988-330,685 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"1,515.25\",\"activeWidth\":\"100.0%\",\"caseId\":\"webui-rust-actix\",\"label\":\"WebUI / Light DOM / Rust / Actix\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler render (Rust) · actix-web · MAD 0 req/s · p95 45.01 ms · 329,988-330,685 B natural\",\"value\":1515.25,\"valueDisplay\":\"1,515.25\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler StreamingResponse (Rust) · actix-web · MAD 0 req/s · p95 55.38 ms · 337,914-338,643 B natural\",\"value\":1171.6999999999998,\"valueDisplay\":\"1,171.7\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 140 ms\",\"value\":140,\"valueDisplay\":\"140\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2188984,\"valueDisplay\":\"2.09\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.29 MiB · p95 46.73 MiB\",\"value\":44687360,\"valueDisplay\":\"42.62\"}},\"primary\":true,\"rank\":\"1\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 56.54 ms · 483,598-485,019 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"1,201\",\"activeWidth\":\"79.3%\",\"caseId\":\"webui-shadowdom-rust-actix\",\"label\":\"WebUI / Shadow DOM / Rust / Actix\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler render (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 56.54 ms · 483,598-485,019 B natural\",\"value\":1201,\"valueDisplay\":\"1,201\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler StreamingResponse (Rust, Shadow DOM) · actix-web · MAD 0 req/s · p95 70.59 ms · 491,524-492,977 B natural\",\"value\":924,\"valueDisplay\":\"924\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 172 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.43 MiB\",\"value\":2545576,\"valueDisplay\":\"2.43\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.57 MiB · p95 49.15 MiB\",\"value\":48629760,\"valueDisplay\":\"46.38\"}},\"primary\":true,\"rank\":\"2\"},{\"activeAvailable\":true,\"activeDetail\":\"webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 72.38 ms · 596,601-598,231 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"926.7\",\"activeWidth\":\"61.2%\",\"caseId\":\"webui-fast-rust-actix\",\"label\":\"WebUI / FAST V3 / Rust / Actix\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler render (Rust, FAST V3, single response) · actix-web · MAD 0 req/s · p95 72.38 ms · 596,601-598,231 B natural\",\"value\":926.7,\"valueDisplay\":\"926.7\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"webui-handler chunked ResponseWriter (Rust, FAST V3) · actix-web · MAD 0 req/s · p95 153.22 ms · 596,601-598,231 B natural\",\"value\":433.25,\"valueDisplay\":\"433.25\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 156 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 5.15 MiB\",\"value\":5390702,\"valueDisplay\":\"5.14\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.48 MiB · p95 59.16 MiB\",\"value\":57163776,\"valueDisplay\":\"54.52\"}},\"primary\":true,\"rank\":\"3\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 180.93 ms · 329,988-330,685 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"590.9\",\"activeWidth\":\"39.0%\",\"caseId\":\"webui-deno-serve\",\"label\":\"WebUI / Deno.serve\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 180.93 ms · 329,988-330,685 B natural\",\"value\":590.9000000000001,\"valueDisplay\":\"590.9\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Deno.serve · MAD 0 req/s · p95 193.58 ms · 337,914-338,643 B natural\",\"value\":505.54999999999995,\"valueDisplay\":\"505.55\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 6 ms · p95 256 ms\",\"value\":146,\"valueDisplay\":\"146\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.16 MiB\",\"value\":2187908,\"valueDisplay\":\"2.09\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.67 MiB · p95 46.13 MiB\",\"value\":44328960,\"valueDisplay\":\"42.28\"}},\"primary\":true,\"rank\":\"4\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 122.7 ms · 329,988-330,685 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"577.65\",\"activeWidth\":\"38.1%\",\"caseId\":\"webui-bun-serve\",\"label\":\"WebUI / Bun.serve\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 122.7 ms · 329,988-330,685 B natural\",\"value\":577.6500000000001,\"valueDisplay\":\"577.65\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · Bun.serve · MAD 0 req/s · p95 154.83 ms · 337,914-338,643 B natural\",\"value\":460,\"valueDisplay\":\"460\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 240 ms\",\"value\":140,\"valueDisplay\":\"140\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.03 MiB · p95 2.16 MiB\",\"value\":2224312,\"valueDisplay\":\"2.12\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.81 MiB · p95 43.59 MiB\",\"value\":43337728,\"valueDisplay\":\"41.33\"}},\"primary\":true,\"rank\":\"5\"},{\"activeAvailable\":true,\"activeDetail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 148.25 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 16.1% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"458.5\",\"activeWidth\":\"30.3%\",\"caseId\":\"webui-node-http\",\"label\":\"WebUI / Node node:http\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.render (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 148.25 ms · 329,988-330,685 B natural · saturation warning: the 128-connection probe was 16.1% faster\",\"value\":458.5,\"valueDisplay\":\"458.5\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@microsoft/webui Protocol.streamResponse (request-materialized Node-API state) · node:http · MAD 0 req/s · p95 200 ms · 337,914-338,643 B natural · saturation warning: the 128-connection probe was 13.1% faster\",\"value\":370.35,\"valueDisplay\":\"370.35\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 8 ms · p95 156 ms\",\"value\":148,\"valueDisplay\":\"148\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.03 MiB · p95 2.16 MiB\",\"value\":2224806,\"valueDisplay\":\"2.12\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.06 MiB · p95 46.46 MiB\",\"value\":44199936,\"valueDisplay\":\"42.15\"}},\"primary\":true,\"rank\":\"6\"},{\"activeAvailable\":true,\"activeDetail\":\"react-dom/server renderToString · node:http · MAD 0 req/s · p95 224.44 ms · 334,118-334,824 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"340.15\",\"activeWidth\":\"22.4%\",\"caseId\":\"react\",\"label\":\"React\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToString · node:http · MAD 0 req/s · p95 224.44 ms · 334,118-334,824 B natural\",\"value\":340.15,\"valueDisplay\":\"340.15\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToReadableStream · node:http · MAD 0 req/s · p95 323.74 ms · 334,118-334,824 B natural\",\"value\":249.85,\"valueDisplay\":\"249.85\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 172 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.9 MiB\",\"value\":3041670,\"valueDisplay\":\"2.9\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.46 MiB · p95 51.02 MiB\",\"value\":49543168,\"valueDisplay\":\"47.25\"}},\"primary\":false,\"rank\":\"7\"},{\"activeAvailable\":true,\"activeDetail\":\"preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 216.6 ms · 333,940-334,646 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"338.4\",\"activeWidth\":\"22.3%\",\"caseId\":\"preact\",\"label\":\"Preact\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"preact-render-to-string renderToString · node:http · MAD 0 req/s · p95 216.6 ms · 333,940-334,646 B natural\",\"value\":338.4,\"valueDisplay\":\"338.4\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"preact-render-to-string renderToReadableStream · node:http · MAD 0 req/s · p95 191.35 ms · 333,940-334,646 B natural\",\"value\":389,\"valueDisplay\":\"389\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 8 ms · p95 172 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.38 MiB\",\"value\":2494908,\"valueDisplay\":\"2.38\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.39 MiB · p95 48.57 MiB\",\"value\":49383424,\"valueDisplay\":\"47.1\"}},\"primary\":false,\"rank\":\"8\"},{\"activeAvailable\":true,\"activeDetail\":\"solid-js/web renderToString · node:http · MAD 0 req/s · p95 256.71 ms · 378,043-378,863 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"301.6\",\"activeWidth\":\"19.9%\",\"caseId\":\"solid\",\"label\":\"Solid\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"solid-js/web renderToString · node:http · MAD 0 req/s · p95 256.71 ms · 378,043-378,863 B natural\",\"value\":301.6,\"valueDisplay\":\"301.6\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"solid-js/web renderToStream · node:http · MAD 0 req/s · p95 297.38 ms · 378,043-378,863 B natural\",\"value\":251.85,\"valueDisplay\":\"251.85\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 272 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 4.61 MiB\",\"value\":4831520,\"valueDisplay\":\"4.61\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.42 MiB · p95 61.89 MiB\",\"value\":56750080,\"valueDisplay\":\"54.12\"}},\"primary\":false,\"rank\":\"9\"},{\"activeAvailable\":true,\"activeDetail\":\"@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 266.94 ms · 341,230-341,908 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"287.75\",\"activeWidth\":\"19.0%\",\"caseId\":\"vue\",\"label\":\"Vue\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@vue/server-renderer renderToString · node:http · MAD 0 req/s · p95 266.94 ms · 341,230-341,908 B natural\",\"value\":287.75,\"valueDisplay\":\"287.75\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"@vue/server-renderer renderToWebStream · node:http · MAD 0 req/s · p95 1,711.29 ms · 341,230-341,908 B natural\",\"value\":49.85,\"valueDisplay\":\"49.85\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 172 ms\",\"value\":172,\"valueDisplay\":\"172\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.49 MiB\",\"value\":2613330,\"valueDisplay\":\"2.49\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.68 MiB · p95 50.16 MiB\",\"value\":47779840,\"valueDisplay\":\"45.57\"}},\"primary\":false,\"rank\":\"10\"},{\"activeAvailable\":true,\"activeDetail\":\"react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 276.55 ms · 334,661-335,367 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"262.95\",\"activeWidth\":\"17.4%\",\"caseId\":\"react-tanstack\",\"label\":\"React + TanStack Router\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server renderToString + @tanstack/react-router renderRouterToString · node:http · MAD 0 req/s · p95 276.55 ms · 334,661-335,367 B natural\",\"value\":262.95,\"valueDisplay\":\"262.95\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"react-dom/server stream + @tanstack/react-router renderRouterToStream · node:http · MAD 0 req/s · p95 389.03 ms · 334,661-335,367 B natural\",\"value\":189.35,\"valueDisplay\":\"189.35\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 16 ms · p95 256 ms\",\"value\":182,\"valueDisplay\":\"182\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 3.34 MiB\",\"value\":3442956,\"valueDisplay\":\"3.28\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.15 MiB · p95 52.17 MiB\",\"value\":51046400,\"valueDisplay\":\"48.68\"}},\"primary\":false,\"rank\":\"11\"},{\"activeAvailable\":true,\"activeDetail\":\"SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 334.1 ms · 303,353-303,887 B natural · saturation warning: the 128-connection probe was 5.4% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"211.35\",\"activeWidth\":\"13.9%\",\"caseId\":\"sveltekit\",\"label\":\"SvelteKit\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 334.1 ms · 303,353-303,887 B natural · saturation warning: the 128-connection probe was 5.4% faster\",\"value\":211.35000000000002,\"valueDisplay\":\"211.35\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"SvelteKit production SSR (buffered synchronous route) · @sveltejs/adapter-node · MAD 0 req/s · p95 341.91 ms · 303,354-303,888 B natural\",\"value\":213.5,\"valueDisplay\":\"213.5\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 172 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 4.85 MiB\",\"value\":5080782,\"valueDisplay\":\"4.85\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 1.24 MiB · p95 54 MiB\",\"value\":53147648,\"valueDisplay\":\"50.69\"}},\"primary\":false,\"rank\":\"12\"},{\"activeAvailable\":true,\"activeDetail\":\"Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 507 ms · 313,520-314,093 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"140.8\",\"activeWidth\":\"9.3%\",\"caseId\":\"next\",\"label\":\"Next.js\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Next.js production App Router SSR (fully collected at the framework's own Node http.Server response boundary before the response completes) · next start · MAD 0 req/s · p95 507 ms · 313,520-314,093 B natural\",\"value\":140.8,\"valueDisplay\":\"140.8\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Next.js production App Router streaming SSR · next start · MAD 0 req/s · p95 470.77 ms · 313,520-314,093 B natural\",\"value\":153.05,\"valueDisplay\":\"153.05\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 304 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 3.67 MiB\",\"value\":3848304,\"valueDisplay\":\"3.67\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.96 MiB · p95 51.33 MiB\",\"value\":51953664,\"valueDisplay\":\"49.55\"}},\"primary\":false,\"rank\":\"13\"},{\"activeAvailable\":true,\"activeDetail\":\"Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 834.51 ms · 280,229-280,941 B natural · saturation warning: the 128-connection probe was 11.6% faster\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"83.5\",\"activeWidth\":\"5.5%\",\"caseId\":\"nuxt\",\"label\":\"Nuxt\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 834.51 ms · 280,229-280,941 B natural · saturation warning: the 128-connection probe was 11.6% faster\",\"value\":83.5,\"valueDisplay\":\"83.5\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Nuxt production SSR (buffered synchronous route) · nitro node-server · MAD 0 req/s · p95 792.19 ms · 280,229-280,941 B natural\",\"value\":84.4,\"valueDisplay\":\"84.4\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 16 ms · p95 288 ms\",\"value\":174,\"valueDisplay\":\"174\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 3.43 MiB\",\"value\":3599622,\"valueDisplay\":\"3.43\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.25 MiB · p95 48.02 MiB\",\"value\":50059264,\"valueDisplay\":\"47.74\"}},\"primary\":false,\"rank\":\"14\"},{\"activeAvailable\":true,\"activeDetail\":\"Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 914.4 ms · 462,724-463,582 B natural\",\"activeUnit\":\"req/s\",\"activeValueDisplay\":\"75.8\",\"activeWidth\":\"5.0%\",\"caseId\":\"astro\",\"label\":\"Astro + Preact\",\"metrics\":{\"noStreamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Astro production SSR + @astrojs/preact island (fully collected at the framework's own Node http.Server response boundary before the response completes) · @astrojs/node standalone · MAD 0 req/s · p95 914.4 ms · 462,724-463,582 B natural\",\"value\":75.8,\"valueDisplay\":\"75.8\"},\"streamingRequestsPerSecond\":{\"available\":true,\"detail\":\"Astro production streaming SSR + @astrojs/preact island · @astrojs/node standalone · MAD 0 req/s · p95 853.22 ms · 462,723-463,582 B natural\",\"value\":80.05,\"valueDisplay\":\"80.05\"},\"largestContentfulPaintMs\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0 ms · p95 172 ms\",\"value\":156,\"valueDisplay\":\"156\"},\"jsHeapUsedBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD <0.01 MiB · p95 2.4 MiB\",\"value\":2517114,\"valueDisplay\":\"2.4\"},\"rendererPrivateBytes\":{\"available\":true,\"detail\":\"10 isolated runs · MAD 0.98 MiB · p95 52.8 MiB\",\"value\":50317312,\"valueDisplay\":\"47.99\"}},\"primary\":false,\"rank\":\"15\"}],\"responseMode\":\"comparison\",\"saturationWarnings\":{\"noStreaming\":[{\"caseId\":\"nuxt\",\"gainPercent\":11.619718309859154,\"label\":\"Nuxt\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"webui-node-http\",\"gainPercent\":16.079873883342092,\"label\":\"WebUI / Node node:http\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"},{\"caseId\":\"sveltekit\",\"gainPercent\":5.4499366286438535,\"label\":\"SvelteKit\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"}],\"streaming\":[{\"caseId\":\"webui-node-http\",\"gainPercent\":13.109128345916265,\"label\":\"WebUI / Node node:http\",\"measuredConnections\":64,\"probeConnections\":128,\"reason\":\"Throughput was still increasing at the largest connection count\"}]},\"selectedMetric\":\"noStreamingRequestsPerSecond\",\"selectedMetricDescription\":\"Dynamic SSR throughput when each framework sends one fully collected HTML response without progressive boundaries.\",\"selectedMetricLabel\":\"No Streaming RPS\",\"title\":\"Complete response or streaming boundaries. Choose the metric.\",\"responseModes\":[\"complete\",\"progressive\"]}"
 }
