@@ -122,6 +122,15 @@ stages:
       env:
         ALLOW_EXISTING_RELEASE: ${{ parameters.validationMode }}
 
+    # A manual source-only scan takes precedence over the auto-injected scan.
+    # Running it before the matrix avoids rescanning restored Cargo caches in
+    # every release job.
+    - task: ComponentGovernanceComponentDetection@0
+      displayName: Scan source dependencies
+      inputs:
+        sourceScanPath: $(Build.SourcesDirectory)
+        directoryExclusionPatterns: '$(Build.SourcesDirectory)/target/**;$(Build.SourcesDirectory)/publish/**;$(Build.SourcesDirectory)/**/node_modules/**'
+
 - stage: ValidateHotfix
   displayName: Validate hotfix release line
   dependsOn: PrepareRelease
@@ -206,6 +215,47 @@ stages:
     CARGO_CACHE_HOME: $(Pipeline.Workspace)/.cargo
     PNPM_STORE_PATH: $(Pipeline.Workspace)/.pnpm-store
   jobs:
+  - job: BuildWasmAssets
+    displayName: Build WASM release assets
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+    - checkout: self
+      clean: true
+    - task: Cache@2
+      displayName: Restore Cargo cache
+      inputs:
+        key: 'cargo-home | "$(Agent.OS)" | wasm-release | Cargo.lock'
+        restoreKeys: |
+          cargo-home | "$(Agent.OS)" | wasm-release
+          cargo-home | "$(Agent.OS)"
+        path: $(CARGO_CACHE_HOME)
+    - task: Cache@2
+      displayName: Restore WASM target cache
+      inputs:
+        key: 'cargo-target | "$(Agent.OS)" | wasm-release | Cargo.lock'
+        restoreKeys: |
+          cargo-target | "$(Agent.OS)" | wasm-release
+        path: $(Build.SourcesDirectory)/target
+    - task: Bash@3
+      displayName: Build WASM release assets
+      inputs:
+        targetType: inline
+        workingDirectory: '$(Build.SourcesDirectory)'
+        script: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q protobuf-compiler
+          rustup toolchain install 1.93 --profile minimal
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask build-wasm
+      env:
+        CARGO_CACHE_HOME: $(CARGO_CACHE_HOME)
+    - task: PublishPipelineArtifact@1
+      displayName: Upload WASM release assets
+      inputs:
+        targetPath: '$(Build.SourcesDirectory)/docs/.webui-press/public/wasm'
+        artifactName: stage-wasm
+
   - job: BuildLinuxAssets
     displayName: Build Linux release asset
     strategy:
@@ -492,6 +542,7 @@ stages:
   - job: AssembleRelease
     displayName: Assemble release packages
     dependsOn:
+    - BuildWasmAssets
     - BuildLinuxAssets
     - BuildMacOSAssets
     - BuildWindowsAssets
@@ -521,6 +572,12 @@ stages:
         restoreKeys: |
           pnpm | "$(Agent.OS)"
         path: $(PNPM_STORE_PATH)
+    - task: DownloadPipelineArtifact@2
+      displayName: Download WASM release assets
+      inputs:
+        buildType: current
+        artifactName: stage-wasm
+        targetPath: $(Build.SourcesDirectory)/docs/.webui-press/public/wasm
     - task: DownloadPipelineArtifact@2
       displayName: Download Linux x64 release asset
       inputs:
@@ -591,7 +648,10 @@ stages:
           # Versioned package archives are outputs, not reusable compilation artifacts.
           rm -rf target/package
           trap 'rm -rf target/package' EXIT
-          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage --pack-only --profile release
+          CARGO_HOME="$CARGO_CACHE_HOME" cargo +1.93 xtask publish-stage \
+            --pack-only \
+            --prebuilt-wasm \
+            --profile release
           python crates/webui-python/tests/validate_artifacts.py \
             "publish/python/microsoft_webui-${PYTHON_VERSION}-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" \
             "publish/python/microsoft_webui-${PYTHON_VERSION}-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl" \
