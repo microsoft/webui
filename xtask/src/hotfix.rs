@@ -698,15 +698,37 @@ mod tests {
             r#"git merge-base --is-ancestor "${stable_ref}^{commit}" "$release_commit""#
         ));
         assert!(publish_stage.is_some_and(|stage| {
-            stage.contains("releasePrerelease: $[ stageDependencies.SignArtifacts.Sign.outputs")
-                && stage
-                    .contains("releaseMakeLatest: $[ stageDependencies.SignArtifacts.Sign.outputs")
+            stage
+                .contains("releasePrerelease: $[ stageDependencies.SignArtifacts.SignNuGet.outputs")
                 && stage.contains(
-                    "releaseAddChangelog: $[ stageDependencies.SignArtifacts.Sign.outputs",
+                    "releaseMakeLatest: $[ stageDependencies.SignArtifacts.SignNuGet.outputs",
                 )
-                && stage.contains("npmDistTag: $[ stageDependencies.SignArtifacts.Sign.outputs")
+                && stage.contains(
+                    "releaseAddChangelog: $[ stageDependencies.SignArtifacts.SignNuGet.outputs",
+                )
+                && stage
+                    .contains("npmDistTag: $[ stageDependencies.SignArtifacts.SignNuGet.outputs")
                 && stage.contains("NPM_CONFIG_TAG: $(npmDistTag)")
                 && stage.contains("addChangeLog: $(releaseAddChangelog)")
         }));
+    }
+
+    #[test]
+    fn release_pipelines_parallelize_release_work() {
+        let build = include_str!("../../.ado/pipelines/azure-pipelines-build.yml");
+        let cd = include_str!("../../.ado/pipelines/azure-pipelines-cd.yml");
+
+        assert!(build.contains("ComponentGovernanceComponentDetection@0"));
+        assert!(build.contains("sourceScanPath: $(Build.SourcesDirectory)"));
+        assert!(build.contains("- job: BuildWasmAssets"));
+        assert!(build.contains("artifactName: stage-wasm"));
+        assert!(build.contains("--prebuilt-wasm"));
+
+        assert!(cd.contains("- job: SignNuGet"));
+        assert!(cd.contains("- job: StageNpmAndCrates"));
+        assert!(cd.contains("- job: StagePythonAndStandalone"));
+        assert!(cd.contains(
+            "releaseTag: $[ stageDependencies.SignArtifacts.SignNuGet.outputs['release.releaseTag'] ]"
+        ));
     }
 }

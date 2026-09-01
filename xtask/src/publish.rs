@@ -179,6 +179,7 @@ struct StageOptions {
     target_triple: Option<String>,
     profile: String,
     mode: StageMode,
+    prebuilt_wasm: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,7 +313,7 @@ pub fn run_build(args: &[String]) -> ExitCode {
 
 /// Stage release artifacts into `publish/` and package directories.
 ///
-/// Usage: `cargo xtask publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only]`
+/// Usage: `cargo xtask publish-stage [--target <triple|all>] [--profile release] [--native-only|--pack-only] [--prebuilt-wasm]`
 ///
 /// Pass `--target all` to stage every platform whose build artifacts exist.
 /// If `--target` is omitted, detects the current host platform.
@@ -414,7 +415,7 @@ pub fn run_stage(args: &[String]) -> ExitCode {
         "\n{} Staging WASM artifacts",
         console::style("▸").cyan().bold(),
     );
-    if let Err(e) = stage_wasm_artifacts(&root) {
+    if let Err(e) = stage_wasm_artifacts(&root, !options.prebuilt_wasm) {
         eprintln!(
             "  {} WASM staging failed: {e}",
             console::style("✘").red().bold(),
@@ -590,6 +591,7 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
     let mut target_triple = None;
     let mut profile = String::from("release");
     let mut mode = StageMode::Full;
+    let mut prebuilt_wasm = false;
     let mut i = 0;
 
     while i < args.len() {
@@ -614,6 +616,9 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
             "--pack-only" => {
                 mode = set_stage_mode(mode, StageMode::PackOnly)?;
             }
+            "--prebuilt-wasm" => {
+                prebuilt_wasm = true;
+            }
             _ => {}
         }
         i += 1;
@@ -623,6 +628,7 @@ fn parse_stage_options(args: &[String]) -> Result<StageOptions, String> {
         target_triple,
         profile,
         mode,
+        prebuilt_wasm,
     })
 }
 
@@ -1619,10 +1625,18 @@ fn count_files_with_suffix(dir: &Path, suffix: &str) -> u32 {
 // ── Phase 5: WASM artifacts ─────────────────────────────────────────────
 
 /// Build WASM variants and stage them for npm packaging and direct inspection.
-fn stage_wasm_artifacts(root: &Path) -> Result<(), String> {
-    crate::build_wasm::run()?;
+fn stage_wasm_artifacts(root: &Path, build: bool) -> Result<(), String> {
+    if build {
+        crate::build_wasm::run()?;
+    }
 
     let wasm_source = root.join(crate::build_wasm::WASM_OUTPUT_DIR);
+    if !wasm_source.is_dir() {
+        return Err(format!(
+            "prebuilt WASM artifacts not found at {}; run `cargo xtask build-wasm` first or omit --prebuilt-wasm",
+            wasm_source.display()
+        ));
+    }
     let copied = stage_built_wasm_artifacts(root, &wasm_source)?;
     let standalone = stage_standalone_release_assets(root)?;
     eprintln!(
@@ -1916,6 +1930,7 @@ mod tests {
         assert_eq!(options.target_triple, None);
         assert_eq!(options.profile, "release");
         assert_eq!(options.mode, StageMode::Full);
+        assert!(!options.prebuilt_wasm);
     }
 
     #[test]
@@ -1926,6 +1941,26 @@ mod tests {
         assert_eq!(options.target_triple.as_deref(), Some("all"));
         assert_eq!(options.profile, "debug");
         assert_eq!(options.mode, StageMode::PackOnly);
+        assert!(!options.prebuilt_wasm);
+    }
+
+    #[test]
+    fn parse_stage_options_supports_prebuilt_wasm() {
+        let options =
+            parse(&["--pack-only", "--prebuilt-wasm"]).expect("prebuilt WASM options should parse");
+
+        assert_eq!(options.mode, StageMode::PackOnly);
+        assert!(options.prebuilt_wasm);
+    }
+
+    #[test]
+    fn prebuilt_wasm_requires_an_existing_build() {
+        let root = tempfile::tempdir().expect("temporary directory should be created");
+
+        let error = stage_wasm_artifacts(root.path(), false)
+            .expect_err("missing prebuilt WASM output should fail");
+
+        assert!(error.contains("run `cargo xtask build-wasm` first"));
     }
 
     #[test]
