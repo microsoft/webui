@@ -1,7 +1,7 @@
 [package]
 name = "microsoft-webui-python"
 description = "Python renderer bindings for the WebUI framework"
-version = "0.0.27"
+version = "0.0.28"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.28" }
 pyo3 = { workspace = true }
 serde_json = { workspace = true }
 

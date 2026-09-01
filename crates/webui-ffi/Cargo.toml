@@ -22,7 +22,7 @@ crate-type = ["cdylib", "staticlib", "lib"]
 regenerate-header = ["dep:cbindgen"]
 
 [dependencies]
-microsoft-webui-handler = { path = "../webui-handler", version = "0.0.27" }
+microsoft-webui-handler = { path = "../webui-handler", version = "0.0.28" }
 serde_json = { workspace = true }
 
 [build-dependencies]
@@ -30,7 +30,7 @@ cbindgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
-microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.27" }
+microsoft-webui-protocol = { path = "../webui-protocol", version = "0.0.28" }
 
 [[bench]]
 name = "protocol_bench"
