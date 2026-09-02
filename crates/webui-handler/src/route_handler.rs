@@ -2070,25 +2070,75 @@ fn has_template_payload(component: &webui_protocol::ComponentData) -> bool {
 }
 
 #[derive(Debug)]
-struct QueuedFragment {
-    id: String,
-    inventoryable: bool,
-    /// Base path for resolving relative route paths at this level.
-    route_base: String,
+/// Interning arena for the route-base paths produced during a graph walk.
+///
+/// A walk queues one entry per graph edge but descends through only a handful
+/// of nested route levels, so every queued fragment used to carry its own
+/// `String` copy of a path shared by many siblings. Storing each distinct base
+/// once and referencing it by index makes [`QueuedFragment`] `Copy` and removes
+/// a heap allocation per queued edge.
+struct RouteBaseArena {
+    bases: Vec<String>,
 }
 
+impl RouteBaseArena {
+    /// Index of the implicit `/` root base, present in every arena.
+    const ROOT: u32 = 0;
+
+    fn new() -> Self {
+        Self {
+            bases: vec!["/".to_string()],
+        }
+    }
+
+    /// Intern `base`, reusing an existing slot when the path is already known.
+    ///
+    /// The linear scan is deliberate: route nesting is shallow (a handful of
+    /// levels), so scanning beats hashing and keeps the arena allocation-free
+    /// after the first sighting of each level.
+    fn intern(&mut self, base: &str) -> u32 {
+        if let Some(position) = self.bases.iter().position(|known| known == base) {
+            // Arena length is bounded by route nesting depth.
+            #[allow(clippy::cast_possible_truncation)]
+            return position as u32;
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let id = self.bases.len() as u32;
+        self.bases.push(base.to_string());
+        id
+    }
+
+    fn get(&self, id: u32) -> &str {
+        self.bases.get(id as usize).map_or("/", String::as_str)
+    }
+}
+
+/// One pending node in a fragment-graph walk.
+///
+/// `id` borrows the protocol's fragment name and `route_base` indexes a
+/// [`RouteBaseArena`], so queueing an edge copies 16 bytes instead of
+/// allocating two `String`s.
+#[derive(Clone, Copy)]
+struct QueuedFragment<'protocol> {
+    id: &'protocol str,
+    inventoryable: bool,
+    /// Base path for resolving relative route paths at this level.
+    route_base: u32,
+}
+
+/// Key identifying an already-walked fragment.
+///
+/// Route-insensitive walks collapse every base into `None` so a fragment is
+/// visited once regardless of the path that reached it.
+type VisitedKey<'protocol> = (&'protocol str, Option<u32>);
+
 #[inline]
-fn mark_fragment_visited(
-    visited: &mut HashSet<(String, String)>,
-    queued: &QueuedFragment,
+fn mark_fragment_visited<'protocol>(
+    visited: &mut HashSet<VisitedKey<'protocol>>,
+    queued: &QueuedFragment<'protocol>,
     route_sensitive: bool,
 ) -> bool {
-    let route_base = if route_sensitive {
-        queued.route_base.clone()
-    } else {
-        String::new()
-    };
-    visited.insert((queued.id.clone(), route_base))
+    visited.insert((queued.id, route_sensitive.then_some(queued.route_base)))
 }
 
 /// Shared context for route child walkers, bundling common parameters
@@ -2109,19 +2159,26 @@ struct ChildWalkCtx<'a> {
 /// Components are marked `inventoryable` when they have a corresponding entry
 /// in `protocol.components` with a non-empty template payload — these are the
 /// components whose client metadata the browser may need during navigation.
-fn collect_inventoryable_components(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
+fn collect_inventoryable_components<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    entry_id: &'protocol str,
     request_path: Option<&str>,
     root_inventoryable: bool,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
+    let mut arena = RouteBaseArena::new();
     let stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
+        id: entry_id,
         inventoryable: root_inventoryable,
-        route_base: "/".to_string(),
+        route_base: RouteBaseArena::ROOT,
     }];
-    collect_inventoryable_components_from_stack(protocol, request_path, route_index, stack)
+    collect_inventoryable_components_from_stack(
+        protocol,
+        request_path,
+        route_index,
+        stack,
+        &mut arena,
+    )
 }
 
 /// Collect the transitive client component surface rooted in this checkpoint's
@@ -2131,32 +2188,44 @@ fn collect_inventoryable_components(
 /// Roots arrive as startup-built component indexes so the caller's capture stays
 /// free of any protocol borrow; names are resolved here, on the uncommon
 /// request-aware path that already converts every root to an owned string.
-pub(crate) fn collect_reachable_components_from_roots(
-    protocol: &WebUIProtocol,
+pub(crate) fn collect_reachable_components_from_roots<'protocol>(
+    protocol: &'protocol WebUIProtocol,
     roots: &[(u32, Option<Box<str>>)],
-    reachability: &ComponentReachabilityIndex,
+    reachability: &'protocol ComponentReachabilityIndex,
     request_path: &str,
     route_index: &CompiledRouteIndex,
 ) -> Vec<String> {
+    let mut arena = RouteBaseArena::new();
     let mut stack = Vec::with_capacity(roots.len());
     for (root, route_base) in roots.iter().rev() {
         let Some(name) = reachability.name(*root) else {
             continue;
         };
+        let route_base = match route_base.as_deref() {
+            Some(base) => arena.intern(base),
+            None => RouteBaseArena::ROOT,
+        };
         stack.push(QueuedFragment {
-            id: name.to_string(),
+            id: name,
             inventoryable: true,
-            route_base: route_base.as_deref().unwrap_or("/").to_string(),
+            route_base,
         });
     }
-    collect_inventoryable_components_from_stack(protocol, Some(request_path), route_index, stack)
+    collect_inventoryable_components_from_stack(
+        protocol,
+        Some(request_path),
+        route_index,
+        stack,
+        &mut arena,
+    )
 }
 
-fn collect_inventoryable_components_from_stack(
-    protocol: &WebUIProtocol,
+fn collect_inventoryable_components_from_stack<'protocol>(
+    protocol: &'protocol WebUIProtocol,
     request_path: Option<&str>,
     route_index: &CompiledRouteIndex,
-    mut stack: Vec<QueuedFragment>,
+    mut stack: Vec<QueuedFragment<'protocol>>,
+    arena: &mut RouteBaseArena,
 ) -> Vec<String> {
     let mut visited_fragments = HashSet::new();
     let route_sensitive = request_path.is_some();
@@ -2171,15 +2240,15 @@ fn collect_inventoryable_components_from_stack(
             continue;
         }
 
-        if queued.inventoryable && seen_components.insert(queued.id.clone()) {
-            component_ids.push(queued.id.clone());
+        if queued.inventoryable && seen_components.insert(queued.id) {
+            component_ids.push(queued.id.to_string());
         }
 
         if !mark_fragment_visited(&mut visited_fragments, &queued, route_sensitive) {
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
@@ -2187,7 +2256,7 @@ fn collect_inventoryable_components_from_stack(
             route_renderer::find_best_route_match(
                 &frag_list.fragments,
                 path,
-                &queued.route_base,
+                arena.get(queued.route_base),
                 route_index,
             )
         });
@@ -2198,31 +2267,31 @@ fn collect_inventoryable_components_from_stack(
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
                     stack.push(QueuedFragment {
-                        id: component.fragment_id.clone(),
+                        id: &component.fragment_id,
                         inventoryable: true,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     stack.push(QueuedFragment {
-                        id: for_loop.fragment_id.clone(),
+                        id: &for_loop.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
                     stack.push(QueuedFragment {
-                        id: if_cond.fragment_id.clone(),
+                        id: &if_cond.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
 
                 Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
                     stack.push(QueuedFragment {
-                        id: attr.template.clone(),
+                        id: &attr.template,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::Route(route_frag)) => {
@@ -2231,30 +2300,27 @@ fn collect_inventoryable_components_from_stack(
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.content_fragment_id.is_empty() {
                         stack.push(QueuedFragment {
-                            id: route_frag.content_fragment_id.clone(),
+                            id: &route_frag.content_fragment_id,
                             inventoryable: false,
-                            route_base: queued.route_base.clone(),
+                            route_base: queued.route_base,
                         });
                     }
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         // Compute new route base from consumed segments
-                        let child_route_base = if let Some((_, ref rm)) = matched_route {
-                            if let Some(path) = request_path {
-                                route_matcher::compute_route_base(path, rm.consumed_segments)
-                            } else {
-                                queued.route_base.clone()
-                            }
-                        } else {
-                            queued.route_base.clone()
+                        let child_route_base = match (&matched_route, request_path) {
+                            (Some((_, rm)), Some(path)) => arena.intern(
+                                &route_matcher::compute_route_base(path, rm.consumed_segments),
+                            ),
+                            _ => queued.route_base,
                         };
 
                         stack.push(QueuedFragment {
-                            id: route_frag.fragment_id.clone(),
+                            id: &route_frag.fragment_id,
                             inventoryable: protocol
                                 .components
                                 .get(&route_frag.fragment_id)
                                 .is_some_and(has_template_payload),
-                            route_base: child_route_base.clone(),
+                            route_base: child_route_base,
                         });
 
                         // Inventory pending/error components for the entire
@@ -2266,7 +2332,7 @@ fn collect_inventoryable_components_from_stack(
                         // the target route.
                         collect_route_boundary_components(
                             std::slice::from_ref(route_frag),
-                            &child_route_base,
+                            child_route_base,
                             protocol,
                             &mut stack,
                         );
@@ -2278,9 +2344,10 @@ fn collect_inventoryable_components_from_stack(
                             if let Some(path) = request_path {
                                 walk_route_children(
                                     &route_frag.children,
-                                    &child_route_base,
+                                    child_route_base,
                                     &mut stack,
-                                    &mut ChildWalkCtx {
+                                    arena,
+                                    &ChildWalkCtx {
                                         request_path: path,
                                         protocol,
                                         route_index,
@@ -2331,55 +2398,66 @@ fn select_best_child_route(
 
 /// Walk nested route children to find matched routes and add their
 /// components to the inventory stack. Mirrors the handler's outlet rendering.
-fn walk_route_children(
-    children: &[WebUIFragmentRoute],
-    route_base: &str,
-    stack: &mut Vec<QueuedFragment>,
-    ctx: &mut ChildWalkCtx<'_>,
+fn walk_route_children<'protocol>(
+    children: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
+    stack: &mut Vec<QueuedFragment<'protocol>>,
+    arena: &mut RouteBaseArena,
+    ctx: &ChildWalkCtx<'_>,
 ) {
     let mut current = children;
-    let mut base = route_base.to_string();
+    let mut base = route_base;
 
-    while let Some((idx, ref rm)) =
-        select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-    {
-        let matched = &current[idx];
+    loop {
+        // Resolve the base before interning below so the arena's immutable
+        // borrow ends before the mutable one begins.
+        let matched =
+            select_best_child_route(current, ctx.request_path, arena.get(base), ctx.route_index);
+        let Some((idx, rm)) = matched else {
+            break;
+        };
+        let Some(matched) = current.get(idx) else {
+            break;
+        };
         if matched.fragment_id.is_empty() {
             break;
         }
 
-        let child_base = route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
+        let child_base = arena.intern(&route_matcher::compute_route_base(
+            ctx.request_path,
+            rm.consumed_segments,
+        ));
 
         stack.push(QueuedFragment {
-            id: matched.fragment_id.clone(),
+            id: &matched.fragment_id,
             inventoryable: ctx
                 .protocol
                 .components
                 .get(&matched.fragment_id)
                 .is_some_and(has_template_payload),
-            route_base: child_base.clone(),
+            route_base: child_base,
         });
 
         if !matched.pending_component.is_empty() {
             stack.push(QueuedFragment {
-                id: matched.pending_component.clone(),
+                id: &matched.pending_component,
                 inventoryable: ctx
                     .protocol
                     .components
                     .get(&matched.pending_component)
                     .is_some_and(has_template_payload),
-                route_base: child_base.clone(),
+                route_base: child_base,
             });
         }
         if !matched.error_component.is_empty() {
             stack.push(QueuedFragment {
-                id: matched.error_component.clone(),
+                id: &matched.error_component,
                 inventoryable: ctx
                     .protocol
                     .components
                     .get(&matched.error_component)
                     .is_some_and(has_template_payload),
-                route_base: child_base.clone(),
+                route_base: child_base,
             });
         }
 
@@ -2399,25 +2477,25 @@ fn walk_route_children(
 /// renders if that fetch fails, so the client must already hold these templates
 /// for any navigable sibling — not only the currently active route. The walk is
 /// iterative because the framework forbids recursion in core paths.
-fn collect_route_boundary_components(
-    routes: &[WebUIFragmentRoute],
-    route_base: &str,
+fn collect_route_boundary_components<'protocol>(
+    routes: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
     protocol: &WebUIProtocol,
-    stack: &mut Vec<QueuedFragment>,
+    stack: &mut Vec<QueuedFragment<'protocol>>,
 ) {
-    let mut remaining: Vec<&WebUIFragmentRoute> = routes.iter().collect();
+    let mut remaining: Vec<&'protocol WebUIFragmentRoute> = routes.iter().collect();
     while let Some(route) = remaining.pop() {
         for component in [&route.pending_component, &route.error_component] {
             if component.is_empty() {
                 continue;
             }
             stack.push(QueuedFragment {
-                id: component.clone(),
+                id: component,
                 inventoryable: protocol
                     .components
                     .get(component)
                     .is_some_and(has_template_payload),
-                route_base: route_base.to_string(),
+                route_base,
             });
         }
         remaining.extend(route.children.iter());
@@ -2437,10 +2515,11 @@ pub fn collect_nested_route_params(
     let protocol = protocol.protocol();
     let mut all_params = HashMap::new();
     let mut visited_fragments = HashSet::new();
+    let mut arena = RouteBaseArena::new();
     let mut stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
+        id: entry_id,
         inventoryable: false,
-        route_base: "/".to_string(),
+        route_base: RouteBaseArena::ROOT,
     }];
 
     while let Some(queued) = stack.pop() {
@@ -2448,14 +2527,14 @@ pub fn collect_nested_route_params(
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
         let matched_route = route_renderer::find_best_route_match(
             &frag_list.fragments,
             request_path,
-            &queued.route_base,
+            arena.get(queued.route_base),
             route_index,
         );
 
@@ -2463,23 +2542,23 @@ pub fn collect_nested_route_params(
             match frag.fragment.as_ref() {
                 Some(Fragment::Component(component)) => {
                     stack.push(QueuedFragment {
-                        id: component.fragment_id.clone(),
+                        id: &component.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     stack.push(QueuedFragment {
-                        id: for_loop.fragment_id.clone(),
+                        id: &for_loop.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
                     stack.push(QueuedFragment {
-                        id: if_cond.fragment_id.clone(),
+                        id: &if_cond.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
 
@@ -2489,25 +2568,30 @@ pub fn collect_nested_route_params(
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         if let Some((_, ref rm)) = matched_route {
-                            // Collect params from this route level
-                            all_params.extend(rm.params.clone());
+                            // Collect params from this route level. Cloning
+                            // entry-wise avoids allocating a throwaway map to
+                            // move them out of.
+                            for (name, value) in &rm.params {
+                                all_params.insert(name.clone(), value.clone());
+                            }
 
-                            let child_route_base = route_matcher::compute_route_base(
-                                request_path,
-                                rm.consumed_segments,
-                            );
+                            let child_route_base =
+                                arena.intern(&route_matcher::compute_route_base(
+                                    request_path,
+                                    rm.consumed_segments,
+                                ));
 
                             stack.push(QueuedFragment {
-                                id: route_frag.fragment_id.clone(),
+                                id: &route_frag.fragment_id,
                                 inventoryable: false,
-                                route_base: child_route_base.clone(),
+                                route_base: child_route_base,
                             });
 
                             // Walk nested children to collect params from deeper levels
                             collect_params_from_children(
                                 &route_frag.children,
                                 request_path,
-                                &child_route_base,
+                                arena.get(child_route_base),
                                 &mut all_params,
                                 route_index,
                             );
@@ -2587,9 +2671,9 @@ fn resolve_tag_templates(templates: &[String], params: &HashMap<String, String>)
 /// Single-pass graph walk that collects both inventoryable component names
 /// and the matched route chain. Eliminates the duplicate graph traversal
 /// that previously existed in `render_partial`.
-fn collect_inventory_and_chain(
-    protocol: &WebUIProtocol,
-    entry_id: &str,
+fn collect_inventory_and_chain<'protocol>(
+    protocol: &'protocol WebUIProtocol,
+    entry_id: &'protocol str,
     request_path: &str,
     index: &mut RequestProtocolIndex<'_>,
 ) -> (Vec<String>, Vec<RouteChainEntry>) {
@@ -2601,10 +2685,11 @@ fn collect_inventory_and_chain(
     let mut seen_components = HashSet::new();
     let mut component_ids: Vec<String> = Vec::new();
     let mut chain = Vec::new();
+    let mut arena = RouteBaseArena::new();
     let mut stack = vec![QueuedFragment {
-        id: entry_id.to_string(),
+        id: entry_id,
         inventoryable: false,
-        route_base: "/".to_string(),
+        route_base: RouteBaseArena::ROOT,
     }];
 
     while let Some(queued) = stack.pop() {
@@ -2612,22 +2697,22 @@ fn collect_inventory_and_chain(
             continue;
         }
 
-        if queued.inventoryable && seen_components.insert(queued.id.clone()) {
-            component_ids.push(queued.id.clone());
+        if queued.inventoryable && seen_components.insert(queued.id) {
+            component_ids.push(queued.id.to_string());
         }
 
         if !mark_fragment_visited(&mut visited_fragments, &queued, true) {
             continue;
         }
 
-        let Some(frag_list) = protocol.fragments.get(&queued.id) else {
+        let Some(frag_list) = protocol.fragments.get(queued.id) else {
             continue;
         };
 
         let matched_route = route_renderer::find_best_route_match(
             &frag_list.fragments,
             request_path,
-            &queued.route_base,
+            arena.get(queued.route_base),
             index.route_index,
         );
 
@@ -2636,32 +2721,32 @@ fn collect_inventory_and_chain(
                 Some(Fragment::Component(component)) => {
                     // Inventory: components are inventoryable
                     stack.push(QueuedFragment {
-                        id: component.fragment_id.clone(),
+                        id: &component.fragment_id,
                         inventoryable: true,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::ForLoop(for_loop)) => {
                     // Inventory: follow control-flow edges conservatively
                     stack.push(QueuedFragment {
-                        id: for_loop.fragment_id.clone(),
+                        id: &for_loop.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::IfCond(if_cond)) => {
                     stack.push(QueuedFragment {
-                        id: if_cond.fragment_id.clone(),
+                        id: &if_cond.fragment_id,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
 
                 Some(Fragment::Attribute(attr)) if !attr.template.is_empty() => {
                     stack.push(QueuedFragment {
-                        id: attr.template.clone(),
+                        id: &attr.template,
                         inventoryable: false,
-                        route_base: queued.route_base.clone(),
+                        route_base: queued.route_base,
                     });
                 }
                 Some(Fragment::Route(route_frag)) => {
@@ -2670,9 +2755,9 @@ fn collect_inventory_and_chain(
                         .is_some_and(|(best_key, _)| best_key == route_frag.fragment_id.as_str());
                     if is_selected && !route_frag.content_fragment_id.is_empty() {
                         stack.push(QueuedFragment {
-                            id: route_frag.content_fragment_id.clone(),
+                            id: &route_frag.content_fragment_id,
                             inventoryable: false,
-                            route_base: queued.route_base.clone(),
+                            route_base: queued.route_base,
                         });
                     }
                     if is_selected && !route_frag.fragment_id.is_empty() {
@@ -2691,10 +2776,11 @@ fn collect_inventory_and_chain(
                                 error_component: route_frag.error_component.clone(),
                             });
 
-                            let child_route_base = route_matcher::compute_route_base(
-                                request_path,
-                                rm.consumed_segments,
-                            );
+                            let child_route_base =
+                                arena.intern(&route_matcher::compute_route_base(
+                                    request_path,
+                                    rm.consumed_segments,
+                                ));
 
                             // Inventory: follow matched route component
                             let is_inventoryable = protocol
@@ -2702,14 +2788,14 @@ fn collect_inventory_and_chain(
                                 .get(&route_frag.fragment_id)
                                 .is_some_and(has_template_payload);
                             stack.push(QueuedFragment {
-                                id: route_frag.fragment_id.clone(),
+                                id: &route_frag.fragment_id,
                                 inventoryable: is_inventoryable,
-                                route_base: child_route_base.clone(),
+                                route_base: child_route_base,
                             });
 
                             collect_route_boundary_components(
                                 std::slice::from_ref(route_frag),
-                                &child_route_base,
+                                child_route_base,
                                 protocol,
                                 &mut stack,
                             );
@@ -2718,10 +2804,13 @@ fn collect_inventory_and_chain(
                             if !route_frag.children.is_empty() {
                                 walk_children_for_inventory_and_chain(
                                     &route_frag.children,
-                                    &child_route_base,
-                                    &mut stack,
-                                    &mut chain,
-                                    &mut ChildWalkCtx {
+                                    child_route_base,
+                                    ChainWalkSinks {
+                                        stack: &mut stack,
+                                        chain: &mut chain,
+                                        arena: &mut arena,
+                                    },
+                                    &ChildWalkCtx {
                                         request_path,
                                         protocol,
                                         route_index: index.route_index,
@@ -2739,31 +2828,54 @@ fn collect_inventory_and_chain(
     (component_ids, chain)
 }
 
-/// Walk nested route children, collecting both inventory and chain entries.
-fn walk_children_for_inventory_and_chain(
-    children: &[WebUIFragmentRoute],
-    route_base: &str,
-    stack: &mut Vec<QueuedFragment>,
-    chain: &mut Vec<RouteChainEntry>,
-    ctx: &mut ChildWalkCtx<'_>,
-) {
-    let mut current = children;
-    let mut base = route_base.to_string();
+/// Mutable sinks threaded through the inventory + chain child walk.
+///
+/// Bundled so the walk stays within the workspace's five-argument limit.
+struct ChainWalkSinks<'walk, 'protocol> {
+    stack: &'walk mut Vec<QueuedFragment<'protocol>>,
+    chain: &'walk mut Vec<RouteChainEntry>,
+    arena: &'walk mut RouteBaseArena,
+}
 
-    while let Some((idx, ref rm)) =
-        select_best_child_route(current, ctx.request_path, &base, ctx.route_index)
-    {
-        let matched = &current[idx];
+/// Walk nested route children, collecting both inventory and chain entries.
+fn walk_children_for_inventory_and_chain<'protocol>(
+    children: &'protocol [WebUIFragmentRoute],
+    route_base: u32,
+    sinks: ChainWalkSinks<'_, 'protocol>,
+    ctx: &ChildWalkCtx<'_>,
+) {
+    let ChainWalkSinks {
+        stack,
+        chain,
+        arena,
+    } = sinks;
+    let mut current = children;
+    let mut base = route_base;
+
+    loop {
+        // Resolve the base before interning below so the arena's immutable
+        // borrow ends before the mutable one begins.
+        let matched =
+            select_best_child_route(current, ctx.request_path, arena.get(base), ctx.route_index);
+        let Some((idx, rm)) = matched else {
+            break;
+        };
+        let Some(matched) = current.get(idx) else {
+            break;
+        };
         if matched.fragment_id.is_empty() {
             break;
         }
 
-        let child_base = route_matcher::compute_route_base(ctx.request_path, rm.consumed_segments);
+        let child_base = arena.intern(&route_matcher::compute_route_base(
+            ctx.request_path,
+            rm.consumed_segments,
+        ));
 
         chain.push(RouteChainEntry {
             component: matched.fragment_id.clone(),
             path: matched.path.clone(),
-            params: rm.params.clone(),
+            params: rm.params,
             exact: matched.exact,
             allowed_query: matched.allowed_query.clone(),
             keep_alive: matched.keep_alive,
@@ -2774,13 +2886,13 @@ fn walk_children_for_inventory_and_chain(
         });
 
         stack.push(QueuedFragment {
-            id: matched.fragment_id.clone(),
+            id: &matched.fragment_id,
             inventoryable: ctx
                 .protocol
                 .components
                 .get(&matched.fragment_id)
                 .is_some_and(has_template_payload),
-            route_base: child_base.clone(),
+            route_base: child_base,
         });
 
         if matched.children.is_empty() {

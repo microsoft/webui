@@ -44,6 +44,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::cell::{Cell, OnceCell};
 use std::collections::{HashMap, HashSet};
+use std::fmt::{self, Write as _};
 use std::sync::Arc;
 use streaming::{
     consume_streaming_component_root, ensure_no_pending_streaming_root,
@@ -1252,6 +1253,83 @@ fn missing_component_attr_name_error() -> HandlerError {
     HandlerError::Invariant("prepared component attribute name is missing".to_string())
 }
 
+/// Fixed-capacity [`fmt::Write`] sink used to render JSON scalars on the stack.
+///
+/// `serde_json::Number` is backed by `i64`, `u64`, or `f64` (the crate is built
+/// without `arbitrary_precision`), so its longest rendering is the 24-byte
+/// `ryu` form of an extreme `f64`. The buffer is oversized well past that, and
+/// an overflow is reported rather than truncated so callers fall back to the
+/// allocating path instead of emitting a malformed value.
+struct ScalarBuffer {
+    buf: [u8; 48],
+    len: usize,
+}
+
+impl ScalarBuffer {
+    #[inline]
+    const fn new() -> Self {
+        Self {
+            buf: [0; 48],
+            len: 0,
+        }
+    }
+
+    #[inline]
+    fn as_str(&self) -> Option<&str> {
+        std::str::from_utf8(&self.buf[..self.len]).ok()
+    }
+}
+
+impl fmt::Write for ScalarBuffer {
+    #[inline]
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let bytes = s.as_bytes();
+        let end = self.len.checked_add(bytes.len()).ok_or(fmt::Error)?;
+        let slot = self.buf.get_mut(self.len..end).ok_or(fmt::Error)?;
+        slot.copy_from_slice(bytes);
+        self.len = end;
+        Ok(())
+    }
+}
+
+/// Render a JSON scalar that can never contain HTML-significant bytes.
+///
+/// Numbers, booleans, and `null` render identically escaped and unescaped, so
+/// this bypasses both the `Value::to_string` allocation and the `encode_safe`
+/// scan that the generic display path performs. Returns `None` when `value` is
+/// a string, array, or object, leaving those to the caller's fallback.
+fn format_plain_json_scalar<'buf>(
+    buffer: &'buf mut ScalarBuffer,
+    value: &Value,
+) -> Option<&'buf str> {
+    match value {
+        Value::Bool(true) => Some("true"),
+        Value::Bool(false) => Some("false"),
+        Value::Null => Some("null"),
+        Value::Number(number) => {
+            // `Display for Number` is the same serializer `Value::to_string`
+            // drives, so the bytes are identical to the allocating path.
+            write!(buffer, "{number}").ok()?;
+            buffer.as_str()
+        }
+        _ => None,
+    }
+}
+
+/// Write a JSON scalar straight to the sink, skipping escaping and allocation.
+///
+/// Returns `false` when `value` needs the caller's allocating fallback.
+fn write_plain_json_scalar(writer: &mut dyn ResponseWriter, value: &Value) -> Result<bool> {
+    let mut buffer = ScalarBuffer::new();
+    match format_plain_json_scalar(&mut buffer, value) {
+        Some(rendered) => {
+            writer.write(rendered)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// Write a usize as decimal digits directly to the writer, avoiding `format!` allocation.
 pub(crate) fn write_usize(writer: &mut dyn ResponseWriter, mut n: usize) -> Result<()> {
     if n == 0 {
@@ -2214,7 +2292,7 @@ impl WebUIHandler {
                 }
                 Some(Fragment::Component(component)) => {
                     self.process_component(
-                        component,
+                        &component.fragment_id,
                         fragment_list.target(index),
                         ComponentHostOrigin::ParserProduced,
                         context,
@@ -2300,15 +2378,14 @@ impl WebUIHandler {
             let comp = &matched_child.fragment_id;
 
             if !comp.is_empty() {
-                let saved_route_base = context.route_base.clone();
-                let saved_route_children = std::mem::take(&mut context.route_children);
-
-                if rm.consumed_segments > 0 {
-                    context.route_base = Cow::Owned(route_matcher::compute_route_base(
+                let saved_route_base = (rm.consumed_segments > 0).then(|| {
+                    let base = route_matcher::compute_route_base(
                         context.request_path,
                         rm.consumed_segments,
-                    ));
-                }
+                    );
+                    std::mem::replace(&mut context.route_base, Cow::Owned(base))
+                });
+                let saved_route_children = std::mem::take(&mut context.route_children);
 
                 context.route_children = grandchildren;
 
@@ -2351,21 +2428,16 @@ impl WebUIHandler {
                 prepare_generated_streaming_root(comp, context)?;
                 context.writer.write(">")?;
 
-                self.process_component(
-                    &webui_protocol::WebUIFragmentComponent {
-                        fragment_id: comp.clone(),
-                    },
-                    None,
-                    ComponentHostOrigin::HandlerGenerated,
-                    context,
-                )?;
+                self.process_component(comp, None, ComponentHostOrigin::HandlerGenerated, context)?;
 
                 context.writer.write("</")?;
                 context.writer.write(comp)?;
                 context.writer.write(">")?;
                 context.writer.write("</webui-route>")?;
 
-                context.route_base = saved_route_base;
+                if let Some(saved) = saved_route_base {
+                    context.route_base = saved;
+                }
                 context.route_children = saved_route_children;
             }
         }
@@ -2742,32 +2814,22 @@ impl WebUIHandler {
     ///
     /// Only components rendered on the current route get inline definitions;
     /// navigation responses carry later definitions in `componentStyles`.
-    fn emit_css_module(
-        &self,
-        component: &webui_protocol::WebUIFragmentComponent,
-        context: &mut WebUIProcessContext,
-    ) -> Result<()> {
+    fn emit_css_module(&self, fragment_id: &str, context: &mut WebUIProcessContext) -> Result<()> {
         if context.css_strategy != webui_protocol::CssStrategy::Module {
             return Ok(());
         }
         let metadata_already_streamed = context.streaming.as_ref().is_some_and(|streaming| {
-            streaming_template_already_sent(
-                streaming,
-                context.component_index,
-                &component.fragment_id,
-            )
+            streaming_template_already_sent(streaming, context.component_index, fragment_id)
         });
-        if !metadata_already_streamed
-            && !context.rendered_components.contains(&component.fragment_id)
-        {
+        if !metadata_already_streamed && !context.rendered_components.contains(fragment_id) {
             if let Some(css) = context
                 .protocol
                 .components
-                .get(&component.fragment_id)
+                .get(fragment_id)
                 .map(|c| c.css.as_str())
                 .filter(|s| !s.is_empty())
             {
-                self.emit_css_module_importmap(&component.fragment_id, css, context)?;
+                self.emit_css_module_importmap(fragment_id, css, context)?;
             }
         }
         Ok(())
@@ -2806,14 +2868,12 @@ impl WebUIHandler {
             write_usize(context.writer, ri)?;
             context.writer.write("\" active>")?;
 
-            let saved_route_base = context.route_base.clone();
+            let saved_route_base = best_route.as_ref().map(|(_, rm)| {
+                let base =
+                    route_matcher::compute_route_base(context.request_path, rm.consumed_segments);
+                std::mem::replace(&mut context.route_base, Cow::Owned(base))
+            });
             let saved_route_children = std::mem::take(&mut context.route_children);
-            if let Some((_, ref rm)) = best_route {
-                context.route_base = Cow::Owned(route_matcher::compute_route_base(
-                    context.request_path,
-                    rm.consumed_segments,
-                ));
-            }
             context.route_children = route_frag.children.clone();
 
             if !route_frag.content_fragment_id.is_empty() {
@@ -2828,10 +2888,6 @@ impl WebUIHandler {
                         context,
                     )?;
                 }
-                let comp = webui_protocol::WebUIFragmentComponent {
-                    fragment_id: route_frag.fragment_id.clone(),
-                };
-
                 context.writer.write("<")?;
                 context.writer.write(&route_frag.fragment_id)?;
                 if let Some(p) = &context.plugin {
@@ -2842,7 +2898,7 @@ impl WebUIHandler {
                 context.writer.write(">")?;
 
                 self.process_component(
-                    &comp,
+                    &route_frag.fragment_id,
                     None,
                     ComponentHostOrigin::HandlerGenerated,
                     context,
@@ -2852,7 +2908,9 @@ impl WebUIHandler {
                 context.writer.write(&route_frag.fragment_id)?;
                 context.writer.write(">")?;
             }
-            context.route_base = saved_route_base;
+            if let Some(saved) = saved_route_base {
+                context.route_base = saved;
+            }
             context.route_children = saved_route_children;
         } else {
             context.writer.write(" style=\"display:none\">")?;
@@ -2865,16 +2923,16 @@ impl WebUIHandler {
     /// Process a component fragment.
     fn process_component(
         &self,
-        component: &webui_protocol::WebUIFragmentComponent,
+        fragment_id: &str,
         target: Option<usize>,
         origin: ComponentHostOrigin,
         context: &mut WebUIProcessContext,
     ) -> Result<()> {
         if context.streaming.is_some() {
-            consume_streaming_component_root(&component.fragment_id, origin, context)?;
+            consume_streaming_component_root(fragment_id, origin, context)?;
             // Capture only after root parity succeeds, so malformed protocols
             // cannot contribute unmarked hosts to a checkpoint.
-            record_checkpoint_tag(context, &component.fragment_id);
+            record_checkpoint_tag(context, fragment_id);
         }
 
         // Emit the component's CSS module importmap into its light DOM and track
@@ -2882,16 +2940,14 @@ impl WebUIHandler {
         // is a set, so gating the `insert` (and its `String` clone) behind the
         // first-encounter check avoids allocating a throwaway `String` for every
         // duplicate instance while keeping the set contents identical.
-        if !context.rendered_components.contains(&component.fragment_id) {
-            self.emit_css_module(component, context)?;
-            context
-                .rendered_components
-                .insert(component.fragment_id.clone());
+        if !context.rendered_components.contains(fragment_id) {
+            self.emit_css_module(fragment_id, context)?;
+            context.rendered_components.insert(fragment_id.to_string());
         }
 
-        let owns_css_tree = Self::component_owns_css_tree(&component.fragment_id, context.protocol);
+        let owns_css_tree = Self::component_owns_css_tree(fragment_id, context.protocol);
         if owns_css_tree {
-            Self::push_shadow_style_root(&component.fragment_id, context)?;
+            Self::push_shadow_style_root(fragment_id, context)?;
         }
 
         // Save parent scope. `mem::take` leaves an alloc-free empty map behind.
@@ -2921,11 +2977,11 @@ impl WebUIHandler {
             p.push_scope();
         }
 
-        let render_result = self.process_fragment_target(target, &component.fragment_id, context);
+        let render_result = self.process_fragment_target(target, fragment_id, context);
         context.visible_loop_scope = saved_loop_scope;
 
         if owns_css_tree {
-            Self::pop_shadow_style_root(&component.fragment_id, context)?;
+            Self::pop_shadow_style_root(fragment_id, context)?;
         }
         render_result?;
 
@@ -3574,6 +3630,11 @@ impl WebUIHandler {
         raw: bool,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
+        // Numbers, booleans, and null render the same escaped or not, and never
+        // need a heap buffer to reach the writer.
+        if write_plain_json_scalar(writer, value)? {
+            return Ok(());
+        }
         if raw {
             match value {
                 Value::String(s) => writer.write(s),
@@ -3768,12 +3829,20 @@ impl WebUIHandler {
                         write_attr(context.writer, &attr.name, "")?;
                     }
                     Some(other) => {
-                        let s = other.to_string();
-                        write_attr(
-                            context.writer,
-                            &attr.name,
-                            &crate::html_encode::encode_safe(&s),
-                        )?;
+                        let mut scalar = ScalarBuffer::new();
+                        match format_plain_json_scalar(&mut scalar, other) {
+                            Some(rendered) => {
+                                write_attr(context.writer, &attr.name, rendered)?;
+                            }
+                            None => {
+                                let s = other.to_string();
+                                write_attr(
+                                    context.writer,
+                                    &attr.name,
+                                    &crate::html_encode::encode_safe(&s),
+                                )?;
+                            }
+                        }
                     }
                 }
 
@@ -3830,7 +3899,13 @@ impl WebUIHandler {
                     ) {
                         match value.as_ref() {
                             Value::String(s) => raw_value.push_str(s),
-                            _ => raw_value.push_str(&value.to_string()),
+                            other => {
+                                let mut scalar = ScalarBuffer::new();
+                                match format_plain_json_scalar(&mut scalar, other) {
+                                    Some(rendered) => raw_value.push_str(rendered),
+                                    None => raw_value.push_str(&other.to_string()),
+                                }
+                            }
                         }
                     }
                 }
@@ -3989,6 +4064,68 @@ fn handle(
 ) -> Result<()> {
     let handler = WebUIHandler::new();
     handler.handle(protocol, state, options, writer)
+}
+
+#[cfg(test)]
+mod scalar_buffer_tests {
+    use super::*;
+
+    /// Every scalar the stack formatter claims must serialize byte-identically
+    /// to the `Value::to_string` path it replaced.
+    #[test]
+    fn plain_scalars_match_value_to_string() {
+        let cases = [
+            Value::Null,
+            Value::Bool(true),
+            Value::Bool(false),
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::json!(42),
+            serde_json::json!(i64::MIN),
+            serde_json::json!(i64::MAX),
+            serde_json::json!(u64::MAX),
+            serde_json::json!(0.5),
+            serde_json::json!(-0.0_f64),
+            serde_json::json!(1.7976931348623157e308_f64),
+            serde_json::json!(-1.7976931348623157e308_f64),
+            serde_json::json!(f64::MIN_POSITIVE),
+        ];
+        for value in cases {
+            let mut buffer = ScalarBuffer::new();
+            let rendered = format_plain_json_scalar(&mut buffer, &value);
+            assert_eq!(
+                rendered,
+                Some(value.to_string().as_str()),
+                "scalar rendering diverged for {value:?}"
+            );
+        }
+    }
+
+    /// Strings, arrays, and objects must fall through to the caller's escaping
+    /// fallback rather than being emitted unescaped.
+    #[test]
+    fn non_plain_values_are_declined() {
+        let cases = [
+            serde_json::json!("<script>"),
+            serde_json::json!([1, 2]),
+            serde_json::json!({ "a": 1 }),
+        ];
+        for value in cases {
+            let mut buffer = ScalarBuffer::new();
+            assert_eq!(
+                format_plain_json_scalar(&mut buffer, &value),
+                None,
+                "expected fallback for {value:?}"
+            );
+        }
+    }
+
+    /// Overflow must be reported, never silently truncated into bad output.
+    #[test]
+    fn overflow_is_reported_instead_of_truncating() {
+        let mut buffer = ScalarBuffer::new();
+        assert!(write!(&mut buffer, "{}", "x".repeat(49)).is_err());
+    }
 }
 
 #[cfg(test)]
