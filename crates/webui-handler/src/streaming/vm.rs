@@ -243,7 +243,7 @@ enum Frame {
 }
 
 struct ComponentEndFrame {
-    saved_local_vars: crate::ScopeMap<'static>,
+    saved_local_vars: HashMap<String, Value>,
     component_slot: u32,
     owns_css_tree: bool,
 }
@@ -594,7 +594,7 @@ impl ContinuationVm {
                     {
                         self.render_boundary_free(context, |context| {
                             handler.process_component(
-                                Cow::Borrowed(&component.fragment_id),
+                                &component.fragment_id,
                                 target,
                                 ComponentHostOrigin::ParserProduced,
                                 context,
@@ -793,14 +793,11 @@ impl ContinuationVm {
             self.record_component(&component.fragment_id, context)?;
         }
 
-        if !context
-            .rendered_components
-            .contains(component.fragment_id.as_str())
-        {
+        if !context.rendered_components.contains(&component.fragment_id) {
             handler.emit_css_module(&component.fragment_id, context)?;
             context
                 .rendered_components
-                .insert(Cow::Owned(component.fragment_id.clone()));
+                .insert(component.fragment_id.clone());
         }
         let slot = fragment_slot(protocol, &component.fragment_id)?;
         let owns_css_tree =
@@ -808,11 +805,7 @@ impl ContinuationVm {
         if owns_css_tree {
             WebUIHandler::push_shadow_style_root(&component.fragment_id, context)?;
         }
-        let mut saved_local_vars = crate::ScopeMap::new();
-        crate::absorb_scope_map(
-            &mut saved_local_vars,
-            std::mem::take(&mut context.local_vars),
-        );
+        let saved_local_vars = std::mem::take(&mut context.local_vars);
         let mut saved_component_attrs = std::mem::replace(
             &mut context.component_attrs,
             crate::take_scope_map(&mut context.scope_pool),
@@ -906,11 +899,11 @@ impl ContinuationVm {
         if let Some(plugin) = context.plugin.as_mut() {
             plugin.on_for_start(&for_loop.fragment_id, context.writer)?;
         }
-        let saved_value = context.local_vars.remove(for_loop.item.as_str());
+        let saved_value = context.local_vars.remove(&for_loop.item);
         if !items.is_empty() {
             context
                 .local_vars
-                .insert(Cow::Owned(for_loop.item.clone()), Value::Null);
+                .insert(for_loop.item.clone(), Value::Null);
         }
         self.open_repeats = self
             .open_repeats
@@ -957,9 +950,7 @@ impl ContinuationVm {
         }
         match frame.saved_value {
             Some(value) => {
-                context
-                    .local_vars
-                    .insert(Cow::Owned(frame.item_name.into()), value);
+                context.local_vars.insert(frame.item_name.into(), value);
             }
             None => {
                 context.local_vars.remove(frame.item_name.as_ref());

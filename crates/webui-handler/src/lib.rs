@@ -475,49 +475,12 @@ impl VisibleLoopScope {
 
 #[derive(Clone, Copy)]
 struct LocalValueSources<'ctx, 'protocol, 'state> {
-    owned: &'ctx ScopeMap<'protocol>,
+    owned: &'ctx HashMap<String, Value>,
     borrowed: &'ctx BorrowedScope<'protocol, 'state>,
 }
 
-/// Name a render context binds a value or a render decision to.
-///
-/// Every name the handler records originates in the protocol, so the borrowed
-/// variant is what a render actually uses. The owned variant exists only for a
-/// suspended streaming continuation, whose parked scope outlives the borrow it
-/// was rendered from.
-pub(crate) type Name<'protocol> = Cow<'protocol, str>;
-
-/// Scope bindings materialized for one component or `<for>` body.
-pub(crate) type ScopeMap<'protocol> = HashMap<Name<'protocol>, Value>;
-
-/// Set of protocol names visited during a render.
-pub(crate) type NameSet<'protocol> = HashSet<Name<'protocol>>;
-
 /// Route level an `<outlet />` matches against.
 pub(crate) type RouteChildren<'protocol> = Cow<'protocol, [webui_protocol::WebUiFragmentRoute]>;
-
-/// Detach a scope map from the borrow it was rendered against.
-///
-/// Entries the render materialized are moved, not copied; only names still
-/// pointing into the protocol pay an allocation, and they pay it once because
-/// the result stays owned from then on. `target` keeps its bucket capacity, so
-/// a session that parks a scope on every suspension reuses one map.
-pub(crate) fn absorb_scope_map(target: &mut ScopeMap<'static>, source: ScopeMap<'_>) {
-    target.clear();
-    target.reserve(source.len());
-    for (name, value) in source {
-        target.insert(Cow::Owned(name.into_owned()), value);
-    }
-}
-
-/// Detach a name set from the borrow it was rendered against.
-pub(crate) fn absorb_name_set(target: &mut NameSet<'static>, source: NameSet<'_>) {
-    target.clear();
-    target.reserve(source.len());
-    for name in source {
-        target.insert(Cow::Owned(name.into_owned()));
-    }
-}
 
 #[derive(Default)]
 struct BorrowedScope<'protocol, 'state> {
@@ -596,12 +559,12 @@ impl<'protocol, 'state> BorrowedScope<'protocol, 'state> {
         self.overflow.clear();
     }
 
-    fn clone_into_owned(&self, target: &mut ScopeMap<'protocol>) {
+    fn clone_into_owned(&self, target: &mut HashMap<String, Value>) {
         for (name, value) in self.inline[..self.inline_len].iter().flatten() {
-            target.insert(Cow::Borrowed(name), (*value).clone());
+            target.insert((*name).to_owned(), (*value).clone());
         }
         for (name, value) in &self.overflow {
-            target.insert(Cow::Borrowed(name), (*value).clone());
+            target.insert((*name).to_owned(), (*value).clone());
         }
     }
 }
@@ -865,23 +828,6 @@ fn component_attr_source(attribute: &webui_protocol::WebUIFragmentAttribute) -> 
     }
 }
 
-/// Component a route level hosts at `index`, matching the level's own ownership.
-fn host_component_at<'protocol>(
-    children: &RouteChildren<'protocol>,
-    index: usize,
-) -> Name<'protocol> {
-    match children {
-        Cow::Borrowed(routes) => match routes.get(index) {
-            Some(route) => Cow::Borrowed(&route.fragment_id),
-            None => Cow::Borrowed(""),
-        },
-        Cow::Owned(routes) => match routes.get(index) {
-            Some(route) => Cow::Owned(route.fragment_id.clone()),
-            None => Cow::Borrowed(""),
-        },
-    }
-}
-
 /// Route level one step below `children[index]`.
 ///
 /// A borrowed level yields a borrowed sublevel, so descending through a route
@@ -930,7 +876,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) component_asset_style_links: &'protocol str,
     pub(crate) state: &'state Value,
     pub(crate) writer: &'output mut dyn ResponseWriter,
-    pub(crate) local_vars: ScopeMap<'protocol>,
+    pub(crate) local_vars: HashMap<String, Value>,
     /// Component-local values that still point into immutable request state.
     local_borrowed_vars: BorrowedScope<'protocol, 'state>,
     /// Borrowed loop bindings, in lexical order.
@@ -939,7 +885,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// bodies hide outer loop monikers while still allowing their own loops.
     visible_loop_scope: VisibleLoopScope,
     /// Accumulates component attribute values between attrStart and the component fragment.
-    pub(crate) component_attrs: ScopeMap<'protocol>,
+    pub(crate) component_attrs: HashMap<String, Value>,
     /// State-backed component attributes accumulated without cloning.
     component_borrowed_attrs: BorrowedScope<'protocol, 'state>,
     /// True only while parser-produced component opening-tag attributes are
@@ -957,7 +903,7 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// Component names visited during rendering (for selective f-template emission
     /// and CSS module dedup — only the first render of each component emits
     /// its `<script type="importmap">` data-URI tag).
-    pub(crate) rendered_components: NameSet<'protocol>,
+    pub(crate) rendered_components: HashSet<String>,
     /// Per-render plugin instance created from the handler's factory.
     pub(crate) plugin: Option<Box<dyn HandlerPlugin>>,
     /// Current position in the route tree for outlet-based rendering.
@@ -1060,10 +1006,10 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     /// local/attr map here instead of dropping it, so a sibling reuses the
     /// bucket capacity rather than reallocating a fresh `HashMap`. Bounded
     /// ([`SCOPE_POOL_CAP`]) and dropped with the context at request end.
-    pub(crate) scope_pool: Vec<ScopeMap<'protocol>>,
+    pub(crate) scope_pool: Vec<HashMap<String, Value>>,
     /// Resources delivered into the Document CSS tree. The empty set does not
     /// allocate, and streaming retains it across checkpoints.
-    pub(crate) document_style_resources: NameSet<'protocol>,
+    pub(crate) document_style_resources: HashSet<String>,
     /// Active Shadow roots and their route-activated resource indexes. The
     /// route vector allocates only when a matched Light route contributes CSS.
     pub(crate) shadow_style_roots: Vec<ShadowStyleRoot>,
@@ -1227,14 +1173,14 @@ fn push_escaped_html_attribute(output: &mut String, value: &str) {
 
 /// Take a cleared scope map from the pool, or a fresh empty one when the pool is
 /// empty. A fresh `HashMap` does not allocate until its first insert.
-fn take_scope_map<'protocol>(pool: &mut Vec<ScopeMap<'protocol>>) -> ScopeMap<'protocol> {
+fn take_scope_map(pool: &mut Vec<HashMap<String, Value>>) -> HashMap<String, Value> {
     pool.pop().unwrap_or_default()
 }
 
 /// Return a spent scope map to the pool, clearing it but retaining its bucket
 /// capacity for a sibling root to reuse. Drops the map once the pool is full so
 /// retained memory stays bounded.
-fn recycle_scope_map<'protocol>(pool: &mut Vec<ScopeMap<'protocol>>, mut map: ScopeMap<'protocol>) {
+fn recycle_scope_map(pool: &mut Vec<HashMap<String, Value>>, mut map: HashMap<String, Value>) {
     if pool.len() < SCOPE_POOL_CAP {
         map.clear();
         pool.push(map);
@@ -2375,7 +2321,7 @@ impl WebUIHandler {
                 }
                 Some(Fragment::Component(component)) => {
                     self.process_component(
-                        Cow::Borrowed(&component.fragment_id),
+                        &component.fragment_id,
                         fragment_list.target(index),
                         ComponentHostOrigin::ParserProduced,
                         context,
@@ -2459,8 +2405,7 @@ impl WebUIHandler {
             let Some(matched_child) = children.get(idx) else {
                 return Ok(());
             };
-            let host = host_component_at(&children, idx);
-            let comp = host.as_ref();
+            let comp = &matched_child.fragment_id;
 
             if !comp.is_empty() {
                 let saved_route_base = (rm.consumed_segments > 0).then(|| {
@@ -2511,12 +2456,7 @@ impl WebUIHandler {
                 prepare_generated_streaming_root(comp, context)?;
                 context.writer.write(">")?;
 
-                self.process_component(
-                    host.clone(),
-                    None,
-                    ComponentHostOrigin::HandlerGenerated,
-                    context,
-                )?;
+                self.process_component(comp, None, ComponentHostOrigin::HandlerGenerated, context)?;
 
                 context.writer.write("</")?;
                 context.writer.write(comp)?;
@@ -2661,7 +2601,7 @@ impl WebUIHandler {
                     "component style closure `{root}` references missing resource `{name}`"
                 )),
             })?;
-            if is_document_tree && !context.document_style_resources.insert(Cow::Borrowed(name)) {
+            if is_document_tree && !context.document_style_resources.insert(name.to_string()) {
                 continue;
             }
             if let Some(static_closure) = shadow_static_closure {
@@ -2991,7 +2931,7 @@ impl WebUIHandler {
                 context.writer.write(">")?;
 
                 self.process_component(
-                    Cow::Borrowed(&route_frag.fragment_id),
+                    &route_frag.fragment_id,
                     None,
                     ComponentHostOrigin::HandlerGenerated,
                     context,
@@ -3014,14 +2954,13 @@ impl WebUIHandler {
     }
 
     /// Process a component fragment.
-    fn process_component<'protocol>(
+    fn process_component(
         &self,
-        component: Name<'protocol>,
+        fragment_id: &str,
         target: Option<usize>,
         origin: ComponentHostOrigin,
-        context: &mut WebUIProcessContext<'protocol, '_, '_>,
+        context: &mut WebUIProcessContext,
     ) -> Result<()> {
-        let fragment_id = component.as_ref();
         if context.streaming.is_some() {
             consume_streaming_component_root(fragment_id, origin, context)?;
             // Capture only after root parity succeeds, so malformed protocols
@@ -3036,7 +2975,7 @@ impl WebUIHandler {
         // duplicate instance while keeping the set contents identical.
         if !context.rendered_components.contains(fragment_id) {
             self.emit_css_module(fragment_id, context)?;
-            context.rendered_components.insert(component.clone());
+            context.rendered_components.insert(fragment_id.to_string());
         }
 
         let owns_css_tree = Self::component_owns_css_tree(fragment_id, context.protocol);
@@ -3253,7 +3192,7 @@ impl WebUIHandler {
             }
         }
         if let Some(value) = saved_value {
-            context.local_vars.insert(Cow::Borrowed(item_name), value);
+            context.local_vars.insert(item_name.to_string(), value);
         }
         if let Some(value) = saved_borrowed_value {
             context.local_borrowed_vars.insert(item_name, value);
@@ -3290,19 +3229,23 @@ impl WebUIHandler {
             p.on_for_start(&for_loop.fragment_id, context.writer)?;
         }
 
-        // Hot-loop optimisation: the loop variable name is a protocol-owned
-        // `&str` key in `local_vars`, so installing it is allocation-free. The
-        // key is still installed ONCE with an empty placeholder and overwritten
-        // in-place each iteration via `get_mut`, which keeps the per-iteration
-        // work to a single O(1) value swap with no rehash.
+        // Hot-loop optimisation: the loop variable name is `String`-keyed
+        // in `local_vars`. The naive impl re-inserts (and so re-allocates
+        // the key) on every iteration — a 1000-item loop pays 2000 String
+        // clones for the key alone. Instead, we save the outer-scope
+        // value (if any) ONCE before the loop, install the key ONCE with
+        // an empty placeholder, then overwrite the value in-place each
+        // iteration via `get_mut`. Restoration at the end happens once.
         let item_name = for_loop.item.as_str();
         let saved_value = context.local_vars.remove(item_name);
         let saved_borrowed_value = context.local_borrowed_vars.remove(item_name);
         // Pre-insert the key so per-iteration `get_mut` is infallible.
+        // Cost: at most one `String::from(item_name)` for the lifetime
+        // of the loop, regardless of iteration count.
         if !items.is_empty() {
             context
                 .local_vars
-                .insert(Cow::Borrowed(item_name), Value::Null);
+                .insert(item_name.to_string(), Value::Null);
         }
         for (i, item) in items.into_iter().enumerate() {
             if let Some(p) = &mut context.plugin {
@@ -3324,7 +3267,7 @@ impl WebUIHandler {
         // Restore outer scope (or remove the placeholder we installed).
         match saved_value {
             Some(value) => {
-                context.local_vars.insert(Cow::Borrowed(item_name), value);
+                context.local_vars.insert(item_name.to_string(), value);
             }
             None => {
                 context.local_vars.remove(item_name);
@@ -3505,7 +3448,7 @@ impl WebUIHandler {
                 // condition flips true client-side.
                 if context.css_strategy == webui_protocol::CssStrategy::Module {
                     for name in &reachable {
-                        if !context.rendered_components.contains(name.as_str()) {
+                        if !context.rendered_components.contains(name) {
                             if let Some(css) = context
                                 .protocol
                                 .components
@@ -3806,7 +3749,7 @@ impl WebUIHandler {
                 context.component_borrowed_attrs.remove(name);
                 context
                     .component_attrs
-                    .insert(Cow::Borrowed(name), Value::Bool(condition_met));
+                    .insert(name.to_owned(), Value::Bool(condition_met));
             }
 
             if condition_met {
@@ -3828,7 +3771,7 @@ impl WebUIHandler {
                 context.component_borrowed_attrs.remove(name);
                 context
                     .component_attrs
-                    .insert(Cow::Borrowed(name), Value::String(raw_value));
+                    .insert(name.to_owned(), Value::String(raw_value));
             }
             return Ok(());
         }
@@ -3843,7 +3786,7 @@ impl WebUIHandler {
                     context.component_borrowed_attrs.remove(name);
                     context
                         .component_attrs
-                        .insert(Cow::Borrowed(name), Value::String(attr.value.clone()));
+                        .insert(name.to_owned(), Value::String(attr.value.clone()));
                 }
             } else if attr.complex {
                 // Complex attribute — resolve value, don't render to HTML, store as state
@@ -3869,7 +3812,7 @@ impl WebUIHandler {
                     } else if let Some(value) = self.resolve_value_owned(&attr.value, context) {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                         context.component_borrowed_attrs.remove(name);
-                        context.component_attrs.insert(Cow::Borrowed(name), value);
+                        context.component_attrs.insert(name.to_owned(), value);
                     }
                 }
             } else {
@@ -3945,7 +3888,7 @@ impl WebUIHandler {
                         let name = component_name.ok_or_else(missing_component_attr_name_error)?;
                         context.component_borrowed_attrs.remove(name);
                         context.component_attrs.insert(
-                            Cow::Borrowed(name),
+                            name.to_owned(),
                             value
                                 .map(Cow::into_owned)
                                 .unwrap_or(Value::String(String::new())),
@@ -4238,6 +4181,43 @@ mod tests {
     }
 
     #[test]
+    fn route_descent_borrows_protocol_children() {
+        let routes = vec![WebUiFragmentRoute {
+            children: vec![WebUiFragmentRoute {
+                fragment_id: "child".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let level = RouteChildren::Borrowed(&routes);
+
+        let descended = descend_into(&level, 0);
+
+        let Cow::Borrowed(children) = descended else {
+            panic!("protocol-owned route children should remain borrowed");
+        };
+        assert!(std::ptr::eq(children, routes[0].children.as_slice()));
+    }
+
+    #[test]
+    fn route_descent_keeps_parked_children_owned() {
+        let level = RouteChildren::Owned(vec![WebUiFragmentRoute {
+            children: vec![WebUiFragmentRoute {
+                fragment_id: "child".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+
+        let descended = descend_into(&level, 0);
+
+        let Cow::Owned(children) = descended else {
+            panic!("parked route children must not borrow session-owned storage");
+        };
+        assert_eq!(children[0].fragment_id, "child");
+    }
+
+    #[test]
     fn borrowed_collection_reuses_state_array() {
         let state = test_json!({
             "items": [
@@ -4245,7 +4225,7 @@ mod tests {
                 {"name": "second"}
             ]
         });
-        let local_vars = ScopeMap::new();
+        let local_vars = HashMap::new();
         let local_borrowed_vars = BorrowedScope::default();
         let loop_vars = Vec::new();
         let items = resolve_borrowed_collection(
@@ -4268,8 +4248,7 @@ mod tests {
     #[test]
     fn owned_local_collection_keeps_precedence() {
         let state = test_json!({"items": [{"name": "global"}]});
-        let local_vars =
-            ScopeMap::from([(Cow::Borrowed("items"), test_json!([{"name": "local"}]))]);
+        let local_vars = HashMap::from([("items".to_string(), test_json!([{"name": "local"}]))]);
         let local_borrowed_vars = BorrowedScope::default();
         assert!(resolve_borrowed_collection(
             "items",
@@ -4290,7 +4269,7 @@ mod tests {
         let contacts = &state["teams"][0]["contacts"];
         let mut local_borrowed_vars = BorrowedScope::default();
         local_borrowed_vars.insert("contacts", contacts);
-        let local_vars = ScopeMap::new();
+        let local_vars = HashMap::new();
         let items = resolve_borrowed_collection(
             "contacts",
             &[],
@@ -4323,7 +4302,7 @@ mod tests {
             name: "item",
             value: item,
         }];
-        let local_vars = ScopeMap::new();
+        let local_vars = HashMap::new();
         let local_borrowed_vars = BorrowedScope::default();
         let children = resolve_borrowed_collection(
             "item.children",
@@ -4359,7 +4338,7 @@ mod tests {
                 value: &state["inner"],
             },
         ];
-        let local_vars = ScopeMap::new();
+        let local_vars = HashMap::new();
         let local_borrowed_vars = BorrowedScope::default();
         let sources = LocalValueSources {
             owned: &local_vars,
@@ -4428,7 +4407,7 @@ mod tests {
         ];
         let mut local_borrowed_vars = BorrowedScope::default();
         local_borrowed_vars.insert("borrowed", &state["borrowed"]);
-        let local_vars = ScopeMap::from([(Cow::Borrowed("owned"), test_json!({"name": "owned"}))]);
+        let local_vars = HashMap::from([("owned".to_string(), test_json!({"name": "owned"}))]);
         let sources = LocalValueSources {
             owned: &local_vars,
             borrowed: &local_borrowed_vars,

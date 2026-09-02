@@ -1435,12 +1435,12 @@ pub fn encode_inventory(inv: &[u8]) -> String {
 
 /// Encode the inventory bitfield for a known set of rendered components.
 pub(crate) fn encode_component_inventory(
-    component_names: &crate::NameSet<'_>,
+    component_names: &HashSet<String>,
     index: &HashMap<String, u32>,
 ) -> String {
     let mut inventory = Vec::new();
     for name in component_names {
-        if let Some(&idx) = index.get(name.as_ref()) {
+        if let Some(&idx) = index.get(name.as_str()) {
             set_component(&mut inventory, idx);
         }
     }
