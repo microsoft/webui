@@ -420,7 +420,7 @@ mod tests {
             route_base: std::borrow::Cow::Borrowed("/account"),
             rendered_components: std::collections::HashSet::new(),
             plugin: None,
-            route_children: Vec::new(),
+            route_children: std::borrow::Cow::Borrowed(&[]),
             entry_id: "index.html",
             nonce: None,
             component_index,

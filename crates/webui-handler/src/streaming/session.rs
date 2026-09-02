@@ -358,14 +358,20 @@ pub(crate) struct SessionCore {
     /// True between a committed occurrence and the `advance` that writes the
     /// parent bytes following it.
     awaiting_advance: bool,
-    local_vars: HashMap<String, Value>,
-    component_attrs: HashMap<String, Value>,
+    /// Scope and render bookkeeping parked between host calls.
+    ///
+    /// A render borrows these names from the protocol; a suspended session
+    /// outlives that borrow, so what it parks is detached from it. Detaching
+    /// moves every entry and allocates only for names a render newly bound,
+    /// which is the same allocation the owned map used to pay on insert.
+    local_vars: crate::ScopeMap<'static>,
+    component_attrs: crate::ScopeMap<'static>,
     route_base: Option<String>,
-    rendered_components: HashSet<String>,
-    document_style_resources: HashSet<String>,
+    rendered_components: crate::NameSet<'static>,
+    document_style_resources: crate::NameSet<'static>,
     shadow_style_roots: Vec<crate::ShadowStyleRoot>,
     plugin: Option<Box<dyn HandlerPlugin>>,
-    route_children: Vec<webui_protocol::WebUiFragmentRoute>,
+    route_children: crate::RouteChildren<'static>,
     head_end_emitted: bool,
     body_start_emitted: bool,
     component_asset_styles_emitted: bool,
@@ -376,7 +382,6 @@ pub(crate) struct SessionCore {
     reachable_components: Option<Vec<String>>,
     streaming: Option<StreamingProgress>,
     json_scratch: Vec<u8>,
-    scope_pool: Vec<HashMap<String, Value>>,
 }
 
 pub(crate) struct SessionCall<'call, 'data> {
@@ -408,7 +413,7 @@ impl SessionCore {
             document_style_resources: HashSet::new(),
             shadow_style_roots: Vec::new(),
             plugin: handler.plugin_factory.map(|factory| factory()),
-            route_children: Vec::new(),
+            route_children: Cow::Owned(Vec::new()),
             head_end_emitted: false,
             body_start_emitted: false,
             component_asset_styles_emitted: false,
@@ -422,7 +427,6 @@ impl SessionCore {
                 protocol.style_resource_index().len(),
             )),
             json_scratch: Vec::new(),
-            scope_pool: Vec::new(),
         })
     }
 
@@ -716,21 +720,33 @@ impl SessionCore {
             reachable_components: std::mem::take(&mut self.reachable_components),
             streaming: Some(&mut streaming),
             json_scratch: std::mem::take(&mut self.json_scratch),
-            scope_pool: std::mem::take(&mut self.scope_pool),
+            // Sibling component scopes are recycled within a step. A parked
+            // scope is detached from the protocol borrow it was rendered
+            // against, so a pooled map cannot outlive the step that shaped it.
+            scope_pool: Vec::new(),
             document_style_resources: std::mem::take(&mut self.document_style_resources),
             shadow_style_roots: std::mem::take(&mut self.shadow_style_roots),
             borrowed_scope_pool: Vec::new(),
         };
         let result = operation(&mut self.vm, &mut context);
-        self.local_vars = std::mem::take(&mut context.local_vars);
-        self.component_attrs = std::mem::take(&mut context.component_attrs);
+        crate::absorb_scope_map(
+            &mut self.local_vars,
+            std::mem::take(&mut context.local_vars),
+        );
+        crate::absorb_scope_map(
+            &mut self.component_attrs,
+            std::mem::take(&mut context.component_attrs),
+        );
         self.route_base = match std::mem::replace(&mut context.route_base, Cow::Borrowed("/")) {
             Cow::Owned(base) => Some(base),
             Cow::Borrowed(_) => None,
         };
-        self.rendered_components = std::mem::take(&mut context.rendered_components);
+        crate::absorb_name_set(
+            &mut self.rendered_components,
+            std::mem::take(&mut context.rendered_components),
+        );
         self.plugin = context.plugin.take();
-        self.route_children = std::mem::take(&mut context.route_children);
+        self.route_children = Cow::Owned(std::mem::take(&mut context.route_children).into_owned());
         self.head_end_emitted = context.head_end_emitted;
         self.body_start_emitted = context.body_start_emitted;
         self.component_asset_styles_emitted = context.component_asset_styles_emitted;
@@ -741,9 +757,11 @@ impl SessionCore {
             std::mem::take(&mut context.route_document_style_targets);
         self.reachable_components = std::mem::take(&mut context.reachable_components);
         self.json_scratch = std::mem::take(&mut context.json_scratch);
-        self.scope_pool = std::mem::take(&mut context.scope_pool);
         self.shadow_style_roots = std::mem::take(&mut context.shadow_style_roots);
-        self.document_style_resources = std::mem::take(&mut context.document_style_resources);
+        crate::absorb_name_set(
+            &mut self.document_style_resources,
+            std::mem::take(&mut context.document_style_resources),
+        );
         self.streaming = Some(streaming.into_progress());
         result
     }
