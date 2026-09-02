@@ -137,7 +137,7 @@ fn server_request_bench(c: &mut Criterion) {
                     ServeResponse::Html(_) => panic!("partial request returned HTML"),
                 }
             },
-            BatchSize::SmallInput,
+            BatchSize::LargeInput,
         );
     });
 }

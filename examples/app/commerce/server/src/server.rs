@@ -86,7 +86,7 @@ async fn handle_frontend_request(
     }
 
     if context.wants_json() {
-        return Ok(partial_response(&context, data.get_ref(), &page_state));
+        return Ok(partial_response(&context, data.get_ref(), page_state));
     }
 
     let nonce = security::generate_nonce();
@@ -189,16 +189,12 @@ fn cart_mutation_input(payload: CartMutationPayload) -> CartMutationInput {
     }
 }
 
-fn partial_response(
-    context: &RequestContext,
-    state: &AppState,
-    page_state: &Value,
-) -> HttpResponse {
+fn partial_response(context: &RequestContext, state: &AppState, page_state: Value) -> HttpResponse {
     let payload = state.frontend().render_partial(
         context.route_path(),
         context.request_path(),
         context.inventory_hex(),
-        page_state.clone(),
+        page_state,
     );
 
     let mut builder = HttpResponse::Ok();

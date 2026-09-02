@@ -516,11 +516,13 @@ emit WebUI `templates` or `templateFns`.
 8. Mounts components at changed levels, creates `<webui-route>` stubs at outlet positions.
 9. Parent components and their state are preserved.
 
-**Partial response:** `Protocol::render_partial()` returns the complete response
-with projected top-level `state`. Raw-state input is validated
-with a streaming serde visitor that enforces `serde_json::Value` numeric limits,
-skips unselected values without materializing them, and borrows selected raw
-values into the response. FFI, Node, WASM, and .NET expose only the complete
+**Partial response:** `Protocol::render_partial()` accepts owned
+`serde_json::Value` state and returns the complete response with projected
+top-level `state`, moving selected values without a serialize/reparse cycle.
+`Protocol::render_partial_json()` accepts raw state and validates it with a
+streaming serde visitor that enforces `serde_json::Value` numeric limits, skips
+unselected values without materializing them, and borrows selected raw values
+into the response. FFI, Node, WASM, and .NET expose only the complete
 `renderPartial` contract.
 
 - `state`: route-scoped navigation data projected with each reachable component's `navigation_keys`; included by complete-response host APIs or supplied as NDJSON Chunk 2 by a streaming host. The router applies it to components via `setState()`
