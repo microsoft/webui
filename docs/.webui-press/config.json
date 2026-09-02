@@ -7,6 +7,7 @@
   "contentDir": ".",
   "outDir": "./dist",
   "publicDir": "./.webui-press/public",
+  "stateFile": "./state/benchmark-summary.json",
   "head": [
     {
       "tag": "link",
@@ -26,6 +27,11 @@
   "components": [
     "./.webui-press/components"
   ],
+  "regions": {
+    "home.features": {
+      "htmlFile": "./regions/home-features.html"
+    }
+  },
   "css": "./.webui-press/theme.css",
   "nav": [
     {
@@ -250,7 +256,7 @@
   "hero": {
     "text": "SSR without JavaScript on the server.",
     "tagline": "No virtual DOM. No JSX. Just HTML, streamed from any language.",
-    "manifesto": "HTML for structure. CSS for style. TypeScript for behavior. The way the web was meant to work.",
+    "manifesto": "HTML for structure. CSS for style. JavaScript only where behavior needs it.",
     "actions": [
       {
         "text": "Get Started →",
@@ -275,34 +281,34 @@
     ],
     "features": [
       {
-        "icon": "↯",
-        "title": "Compiled, not interpreted",
-        "description": "Templates and Web Components compile at build time into a binary Protocol Buffer. The server's hot path is just filling holes and streaming bytes. No template parsing, no AST walking, no interpretation at runtime."
+        "icon": "◇",
+        "title": "HTML-only by default",
+        "description": "Bindings, conditions, and loops render on the server without browser state or hydration. Add a sibling TypeScript or JavaScript class only when a component owns behavior."
       },
       {
         "icon": "◎",
-        "title": "Render from any language",
-        "description": "SSR has historically been a Node.js privilege. WebUI changes that. Stream pages from Rust, Go, Python, C#, Bun, Deno, Node.js, or WASM running at the edge or in the browser. The protocol is just bytes; any runtime that can read bytes and write strings can serve a site."
+        "title": "Hydrate only what matters",
+        "description": "Defer bindings and listeners until viewport relevance, or keep an optional application graph out of startup JavaScript until first interaction. One template policy declares the boundary."
       },
       {
         "icon": "⇄",
-        "title": "Isomorphic anywhere",
-        "description": "Same Web Components can render on a fast native server, at the edge, or in a service worker. Cache the compiled UI on a CDN, stream dynamic state through the lightweight handler, then hydrate against the existing DOM. Isomorphic apps without making Node.js the rendering boundary."
-      },
-      {
-        "icon": "◇",
-        "title": "webui-framework",
-        "description": "A tiny client runtime for Web Components, tuned for rendering speed and low memory. Built on authored global Light DOM, opt-in Declarative Shadow DOM, and native browser APIs. No virtual DOM, no proprietary component model, no JSX."
+        "title": "Stream interactivity early",
+        "description": "Place boundaries where readiness changes. WebUI flushes and hydrates a complete child region while its parent and slower content keep rendering, without a virtual DOM."
       },
       {
         "icon": "↗",
-        "title": "webui-router",
-        "description": "Routes declared in HTML and compiled at build time. The server matches every navigation and returns the route chain as JSON; the client diffs against the current chain and remounts only the level that changed. Tagged caching and invalidation graphs are validated by the compiler, not configured at runtime."
+        "title": "Low browser cost, measured",
+        "description": "HTML-only components hydrate nothing, exact state projection keeps payloads focused, and deferred policies postpone work. The benchmark below reports LCP, JavaScript heap, and renderer memory alongside throughput."
       },
       {
         "icon": "▤",
-        "title": "webui-press",
-        "description": "A blazing-fast static site generator powered by the framework itself. Compiles markdown and components in parallel into a fully static site. Perfect for GitHub Pages, CDNs, and anywhere that just serves files. (You are reading a site built with it.)"
+        "title": "Skip offscreen work",
+        "description": "Lazy rendering uses native content-visibility to defer offscreen style, layout, paint, raster, and hydration while preserving server-rendered content and scroll geometry."
+      },
+      {
+        "icon": "↯",
+        "title": "Compile once. Serve anywhere.",
+        "description": "Templates and Web Components compile into a binary protocol. Rust, Go, Python, C#, Bun, Deno, Node.js, WASM, service workers, and edge runtimes only fill holes and write bytes."
       }
     ]
   },

@@ -89,16 +89,22 @@ The result: dramatically less JavaScript, faster time-to-interactive, and better
 
 ## Performance
 
-Build-time compilation eliminates per-request template overhead. Islands Architecture eliminates unnecessary client-side JavaScript. Together, they produce measurable gains:
+Build-time compilation eliminates per-request template parsing. Islands
+Architecture avoids unnecessary client-side JavaScript. The first-party
+benchmark renders the same 100-item todo application through one product
+matrix. Every row performs dynamic SSR from warm structural input,
+materializes a unique current UTC timestamp into every todo inside the request,
+and keeps its natural response size, one process or worker, one pinned CPU, and
+the same randomized seven-round HTTP protocol.
 
-| Benchmark | Result |
-|-----------|--------|
-| vs. Fastify (raw SSR) | **4.3× faster** |
-| vs. React SSR | **8.2× faster** |
-| Small pages | **Sub-millisecond** rendering |
-| Large lists (1,000+ items) | **Linear scaling** |
-
-These numbers follow directly from the architecture:
+The matrix keeps product renderer APIs separate from HTTP transports. React and
+Next.js, and Vue and Nuxt therefore remain distinct rows. Products without a
+canonical server share one minimal `node:http` transport. The publication shows
+MAD, p95 latency, and natural response byte ranges beside throughput, and
+derives winner language from the measured gap rather than assuming a WebUI
+lead. See the
+[complete methodology](./concepts/performance).
+The architecture contributes through:
 
 - **Static fragments** are pre-serialized bytes copied directly to the output buffer. No string concatenation, no template interpretation.
 - **Dynamic fragments** resolve to simple key lookups against a flat state object. No expression compilation at runtime.
@@ -123,16 +129,20 @@ WebUI's Rust-native handler eliminates all of this:
 - **Minimal memory footprint** - the handler is a small, statically-linked binary
 - **Multi-threaded** - handles concurrent requests across all CPU cores without contention
 
-The practical result: fewer servers, lower memory consumption, more predictable latency, and lower cloud bills. A single WebUI server can handle the load that previously required multiple Node.js instances behind a load balancer.
+The practical result is a native SSR option without a required Node.js server.
+Capacity and cost still depend on the application and deployment, so measure
+the complete production stack under its expected load.
 
 ## Summary
 
-WebUI exists because modern web rendering does too much redundant work — on the server and in the browser.
+WebUI exists because modern web rendering does too much redundant work on the server and in the browser.
 
 | Problem | WebUI's Answer |
 |---------|----------------|
-| Full JS bundles shipped to browser | Islands Architecture — only interactive components ship JS |
+| Full JS bundles shipped to browser | Islands Architecture, so only interactive components ship JS |
 | Framework abstractions over the platform | Direct use of Web Components, Shadow DOM, Navigation API |
 | Node.js runtime required on server | Rust-native rendering, no JavaScript runtime, no GC pauses |
 
-The result is a framework that is extremely fast, renders pages in **sub-millisecond time**, ships **minimal JavaScript to the browser**, and works from **any backend language** — without a JavaScript runtime on the server.
+The result is a framework designed for **high-throughput native SSR**, **small
+browser runtimes**, and integration from **multiple backend languages** without
+requiring a JavaScript runtime on the server.

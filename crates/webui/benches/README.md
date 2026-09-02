@@ -46,6 +46,7 @@ For the cross-bench picture and recommended workflow, see
 | `cargo xtask bench streaming-resource` | run the resource-counting example |
 | `cargo xtask bench streaming-e2e-ttfb` | run the HTTP-level TTFB example |
 | `cargo xtask bench streaming-browser` | run the Playwright browser-metrics test |
+| `cargo xtask bench lazy-hydration` | run the Chromium offscreen work matrix |
 | `cargo xtask bench node-addon` | run the Node/V8/N-API addon benchmark |
 | `cargo xtask bench full` | run all four streaming-related benches in sequence |
 | `cargo xtask bench all` | run every criterion bench in the workspace |

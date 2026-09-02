@@ -333,93 +333,25 @@ onThemeChanged(): void {
 
 ## Route-Scoped State
 
-Each SSR route handler should return only the data that its template actually binds to. Sending the entire application state on every route wastes bandwidth and slows down rendering.
+Return only the state roots rendered by the active route. Do not send complete
+application collections to a page that binds one record.
 
-❌ **Anti-pattern - returning full app state:**
-
-```json
-{
-  "user": { "...full profile..." },
-  "products": [ "...all 500 products..." ],
-  "cart": { "...full cart..." },
-  "recommendations": [ "..." ],
-  "recentlyViewed": [ "..." ],
-  "notifications": [ "..." ]
-}
-```
-
-This might be 240 KB for a product detail page that only needs the product and user name.
-
-✅ **Correct - return only what the view binds to:**
-
-```json
-{
-  "user": { "name": "Alice" },
-  "product": {
-    "name": "Widget Pro",
-    "price": 29.99,
-    "description": "A professional widget.",
-    "inStock": true,
-    "reviews": [
-      { "text": "Great!", "author": "Bob", "rating": 5 }
-    ]
-  }
-}
-```
-
-This is roughly 15 KB - the handler renders faster, the network transfer is smaller, and the client parses less JSON.
-
-**Rule:** For each route, look at the template bindings and return exactly those keys. Nothing more.
+Validated projection manifests narrow browser hydration state automatically,
+but they are not a reason to over-fetch server data. See
+[Build-Time State Projection](/guide/concepts/hydration#build-time-state-projection)
+for payload mechanics and
+[Performance](/guide/concepts/performance#project-only-the-state-hydration-needs)
+for optimization guidance.
 
 ## Light DOM vs Shadow DOM
 
-Shadow is the default fallback for unwrapped component content. Build with
-`--dom light` to make unwrapped components Light with authored/global CSS in
-their owning CSS tree. Selectors and template elements receive no compiler
-ownership markers; normal CSS cascade and inheritance apply across Light
-components. Use deliberate
-tag/class names, `@layer`, and custom properties when composition needs
-predictable ordering.
+Use Light DOM when ordinary document composition, inheritance, and shared CSS
+are intentional. Use Shadow DOM when the component requires native `<slot>`
+projection, host selectors, or a real style boundary.
 
-A sole bare top-level `<template>` is an explicit Light-mode wrapper even in a
-`--dom shadow` build; WebUI removes the wrapper before rendering. A template
-with attributes, a `w-render`/`w-hydrate` policy wrapper, or a nested template
-does not select a mode. Use `<template shadowrootmode="open">` for explicit
-Shadow DOM.
-
-`:host`, `:host(...)`, `:host-context(...)`, and `::slotted(...)` are Shadow-only
-and fail with `unsupported-light-css` in Light components. Use an ordinary
-selector such as the component tag, or keep that component Shadow. Raw
-`{{{html}}}` bindings do not change the CSS behavior.
-
-### Performance Comparison
-
-Light generally reduces ShadowRoot/stylesheet-object count and improves
-bundling, SSR throughput, and document completion. Shadow supplies a native CSS
-tree boundary and can be faster when large repeated components recalculate
-styles frequently. Choose based on workload rather than assuming either mode is
-always faster.
-| Memory per Component | Baseline | Lower | No shadow root overhead |
-
-### When to Use Each
-
-**Light DOM** (`--dom light`, unwrapped templates):
-
-- Mostly static or moderately styled application composition
-- Components that benefit from normal inheritance and a flatter DOM
-- Components that benefit from shared bundled CSS
-
-**Shadow DOM**:
-
-- Components that use native `<slot>` composition
-- Third-party components embedded in unknown host pages
-- Components that specifically require a native Shadow boundary
-- CSS-heavy, highly repeated components with frequent class/attribute changes
-
-### Authoring Shadow DOM
-
-Shadow is the default. In a `--dom light` build, wrap a component that should
-remain Shadow in the sole top-level element:
+Do not use `<slot>`, `:host`, `:host-context`, or `::slotted` in an effective
+Light component; the compiler rejects those combinations. In a Light build,
+keep one component Shadow with a sole open wrapper:
 
 ```html
 <template shadowrootmode="open">
@@ -427,9 +359,13 @@ remain Shadow in the sole top-level element:
 </template>
 ```
 
-Only `open` is supported. A closed root or invalid wrapper placement/value is a
-build error. Native `<slot>` is valid in effective Shadow components and fails
-in effective Light components.
+Only `open` is supported. A policy wrapper such as `w-render` or `w-hydrate`
+does not select a DOM mode.
+
+See [Components](/guide/concepts/components) for the complete authoring
+contract and
+[Choose Light and Shadow DOM deliberately](/guide/concepts/performance#choose-light-and-shadow-dom-deliberately)
+for performance tradeoffs.
 
 ## Summary
 
