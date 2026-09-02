@@ -2426,8 +2426,10 @@ impl WebUIHandler {
         context: &mut WebUIProcessContext<'protocol, '_, '_>,
     ) -> Result<()> {
         // Moved out so the matched child can render with the context pointing
-        // at its grandchildren. An outlet consumes its route level, so the
-        // level is not put back: nothing after this point renders against it.
+        // at its grandchildren. The level is deliberately not put back, which
+        // preserves the previous behavior exactly: a second `<outlet />` at
+        // this level renders nothing. That is a latent bug tracked by #515, not
+        // a property this function needs; fixing it belongs in its own change.
         let children = std::mem::take(&mut context.route_children);
         if children.is_empty() {
             return Ok(());
@@ -2524,8 +2526,9 @@ impl WebUIHandler {
                 if let Some(saved) = saved_route_base {
                     context.route_base = saved;
                 }
-                // The level this outlet consumed does not come back, matching
-                // the empty level the matched child was rendered against.
+                // Restores the empty level the matched child was rendered
+                // against, rather than the level this outlet matched. See the
+                // note at the top of this function and #515.
                 context.route_children = Cow::Borrowed(&[]);
             }
         }
