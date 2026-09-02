@@ -831,10 +831,10 @@ fn component_attr_source(attribute: &webui_protocol::WebUIFragmentAttribute) -> 
 /// Route level one step below `children[index]`.
 ///
 /// A borrowed level yields a borrowed sublevel, so descending through a route
-/// tree during a render never copies a `WebUiFragmentRoute`. Only a level a
-/// streaming continuation already materialized is cloned.
+/// tree during a render never copies a `WebUiFragmentRoute`. A level a
+/// streaming continuation already materialized transfers its child level.
 fn descend_into<'protocol>(
-    children: &RouteChildren<'protocol>,
+    children: &mut RouteChildren<'protocol>,
     index: usize,
 ) -> RouteChildren<'protocol> {
     match children {
@@ -842,8 +842,8 @@ fn descend_into<'protocol>(
             Some(route) => Cow::Borrowed(&route.children),
             None => Cow::Borrowed(&[]),
         },
-        Cow::Owned(routes) => match routes.get(index) {
-            Some(route) => Cow::Owned(route.children.clone()),
+        Cow::Owned(routes) => match routes.get_mut(index) {
+            Some(route) => Cow::Owned(std::mem::take(&mut route.children)),
             None => Cow::Borrowed(&[]),
         },
     }
@@ -2376,7 +2376,7 @@ impl WebUIHandler {
         // preserves the previous behavior exactly: a second `<outlet />` at
         // this level renders nothing. That is a latent bug tracked by #515, not
         // a property this function needs; fixing it belongs in its own change.
-        let children = std::mem::take(&mut context.route_children);
+        let mut children = std::mem::take(&mut context.route_children);
         if children.is_empty() {
             return Ok(());
         }
@@ -2402,6 +2402,7 @@ impl WebUIHandler {
         }
 
         if let Some((idx, ref rm)) = best {
+            let descended = descend_into(&mut children, idx);
             let Some(matched_child) = children.get(idx) else {
                 return Ok(());
             };
@@ -2415,7 +2416,7 @@ impl WebUIHandler {
                     );
                     std::mem::replace(&mut context.route_base, Cow::Owned(base))
                 });
-                context.route_children = descend_into(&children, idx);
+                context.route_children = descended;
 
                 // Emit matched <webui-route>
                 context.writer.write("<webui-route")?;
@@ -4189,9 +4190,9 @@ mod tests {
             }],
             ..Default::default()
         }];
-        let level = RouteChildren::Borrowed(&routes);
+        let mut level = RouteChildren::Borrowed(&routes);
 
-        let descended = descend_into(&level, 0);
+        let descended = descend_into(&mut level, 0);
 
         let Cow::Borrowed(children) = descended else {
             panic!("protocol-owned route children should remain borrowed");
@@ -4200,8 +4201,8 @@ mod tests {
     }
 
     #[test]
-    fn route_descent_keeps_parked_children_owned() {
-        let level = RouteChildren::Owned(vec![WebUiFragmentRoute {
+    fn route_descent_moves_parked_children() {
+        let mut level = RouteChildren::Owned(vec![WebUiFragmentRoute {
             children: vec![WebUiFragmentRoute {
                 fragment_id: "child".to_string(),
                 ..Default::default()
@@ -4209,12 +4210,19 @@ mod tests {
             ..Default::default()
         }]);
 
-        let descended = descend_into(&level, 0);
+        let descended = descend_into(&mut level, 0);
 
         let Cow::Owned(children) = descended else {
             panic!("parked route children must not borrow session-owned storage");
         };
         assert_eq!(children[0].fragment_id, "child");
+        let Cow::Owned(source) = level else {
+            panic!("the parked source level must stay owned");
+        };
+        assert!(
+            source[0].children.is_empty(),
+            "owned route children must move out instead of being cloned"
+        );
     }
 
     #[test]

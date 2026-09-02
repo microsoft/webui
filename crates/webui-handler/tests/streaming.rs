@@ -740,6 +740,48 @@ fn selected_route_component_can_suspend_inside_generated_host() {
 }
 
 #[test]
+fn boundary_free_component_descends_owned_nested_routes() {
+    let protocol = parsed_protocol(
+        &document(concat!(
+            r#"<route path="/" component="route-shell">"#,
+            r#"<route path="sections/:sectionId" component="section-page">"#,
+            r#"<route path="topics/:topicId" component="topic-page">"#,
+            r#"<route path="lessons/:lessonId" component="lesson-page"></route>"#,
+            "</route></route></route>",
+        )),
+        &[
+            (
+                "route-shell",
+                concat!(
+                    "<layout-shell></layout-shell>",
+                    r#"<boundary name="ready"><p>ready</p></boundary>"#,
+                ),
+            ),
+            ("layout-shell", "<main><outlet /></main>"),
+            (
+                "section-page",
+                "<h2>Section</h2><section><outlet /></section>",
+            ),
+            ("topic-page", "<h3>Topic</h3><article><outlet /></article>"),
+            ("lesson-page", "<p>Lesson</p>"),
+        ],
+    );
+    let mut session = new_session(protocol, "/sections/alpha/topics/beta/lessons/gamma");
+
+    let start = session.start(&test_json!({})).unwrap();
+
+    assert_eq!(start.boundary.as_ref().unwrap().name.as_ref(), "ready");
+    let html = String::from_utf8(start.bytes).unwrap();
+    let section = html.find("<h2>Section</h2>").unwrap();
+    let topic = html.find("<h3>Topic</h3>").unwrap();
+    let lesson = html.find("<p>Lesson</p>").unwrap();
+    assert!(section < topic && topic < lesson, "{html}");
+    assert!(html.contains(r#"<webui-route path="sections/:sectionId""#));
+    assert!(html.contains(r#"<webui-route path="topics/:topicId""#));
+    assert!(html.contains(r#"<webui-route path="lessons/:lessonId""#));
+}
+
+#[test]
 fn selected_route_component_hydration_keys_survive_frozen_state() {
     let entry = document(concat!(
         r#"<route path="/selected" component="selected-page"></route>"#,
