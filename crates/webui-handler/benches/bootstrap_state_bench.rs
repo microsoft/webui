@@ -742,7 +742,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = full_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("full partial response serialization failed: {error}")
                         });
@@ -757,7 +757,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = projected_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("projected partial response serialization failed: {error}")
                         });
@@ -772,7 +772,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = scriptless_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("scriptless partial response serialization failed: {error}")
                         });
@@ -787,7 +787,7 @@ fn partial_state_serialization_bench(c: &mut Criterion) {
             |b, input| {
                 b.iter(|| {
                     let output = static_protocol
-                        .render_partial(black_box(input), "index.html", "/", "")
+                        .render_partial_json(black_box(input), "index.html", "/", "")
                         .unwrap_or_else(|error| {
                             panic!("static partial response serialization failed: {error}")
                         });

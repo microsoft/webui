@@ -186,6 +186,9 @@ For a full document, the helper passes the complete options directly to
 Use a fresh nonce for each document response and send the same value in the
 Content Security Policy header. JSON partial responses use the options' entry
 and request path plus the client inventory; they do not emit document scripts.
+The helper transfers its owned `serde_json::Value` to
+`Protocol::render_partial()`, so projection drops unselected values without
+first serializing the complete request state.
 
 ## Streaming SSR
 
@@ -525,6 +528,8 @@ component.
 |---|---|
 | `ServeRequest::new(render_options, accept_json, inventory_hex)` | Store the complete borrowed render configuration and the client's partial-navigation metadata without a heap allocation |
 | `serve_request(protocol, handler, state, request)` | Inject route parameters, then return either a full `ServeResponse::Html` document rendered with the supplied options or a `ServeResponse::Json` partial |
+| `Protocol::render_partial(state, entry_id, request_path, inventory_hex)` | Consume parsed Rust state and move its selected values into a complete JSON partial without a serialize/reparse cycle |
+| `Protocol::render_partial_json(state_json, entry_id, request_path, inventory_hex)` | Validate and project serialized state without materializing a duplicate state tree |
 
 ### Host-driven streaming
 

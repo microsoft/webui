@@ -16,7 +16,8 @@ Four criterion benches in this directory:
   generation and chunk rendering.
 * **`server_request_bench.rs`** — high-level router-aware request
   handling for full documents with and without a CSP nonce, plus JSON
-  partial responses.
+  partial responses including a large state with sparse navigation
+  projection.
 
 Two **examples** (in `crates/webui/examples/`) round out the suite:
 

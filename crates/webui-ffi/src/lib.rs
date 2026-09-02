@@ -473,7 +473,7 @@ pub unsafe extern "C" fn webui_protocol_render_partial(
             }
         };
 
-        let output = match protocol_context.protocol.render_partial(
+        let output = match protocol_context.protocol.render_partial_json(
             state_str,
             entry_str,
             request_path_str,

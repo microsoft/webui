@@ -179,12 +179,7 @@ fn routes_example_without_manifest_preserves_full_state() {
 
     let runtime_protocol = Protocol::new(protocol);
     let partial_json = runtime_protocol
-        .render_partial(
-            &serde_json::to_string(&state).expect("state should serialize"),
-            "index.html",
-            "/",
-            "",
-        )
+        .render_partial(state, "index.html", "/", "")
         .unwrap_or_else(|error| panic!("routes partial should render: {error}"));
     let partial: Value =
         serde_json::from_str(&partial_json).expect("partial response should be valid JSON");

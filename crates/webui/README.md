@@ -175,9 +175,18 @@ For servers handling client-side navigation, produce a complete JSON partial:
 
 ```rust
 let partial = protocol.render_partial(
-    state_json, "index.html", "/users/42", inventory_hex,
+    state, "index.html", "/users/42", inventory_hex,
 )?;
 // Returns: { state, templates, inventory, path, chain }
+```
+
+Serialized host boundaries can call `render_partial_json()` to validate and
+project raw JSON without materializing a duplicate state tree:
+
+```rust
+let partial = protocol.render_partial_json(
+    state_json, "index.html", "/users/42", inventory_hex,
+)?;
 ```
 
 ## Types

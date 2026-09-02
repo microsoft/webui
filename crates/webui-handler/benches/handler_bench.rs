@@ -100,7 +100,7 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::raw("</ul>"),
                 WebUIFragment::if_cond(ConditionExpr::identifier("show_footer"), "footer-frag"),
                 // Simulate parser-plugin payload consumed by FastV2HydrationPlugin.
-                WebUIFragment::plugin((3u32).to_le_bytes().to_vec()),
+                WebUIFragment::plugin(vec![3, 0, 0, 0, 0]),
                 WebUIFragment::raw("</x-card>"),
             ],
             contains_boundary: false,

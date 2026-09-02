@@ -776,9 +776,11 @@ bootstrap. The CSS list contains the matched route chain, not inactive siblings.
 ### Partial Navigation
 
 Rust `Protocol::render_partial()` and every host binding return the complete
-response, including the state needed by active-route components. Raw state
-input is validated in full while unneeded values are skipped without
-constructing a duplicate JSON tree.
+response, including the state needed by active-route components. The Rust API
+consumes a `serde_json::Value` and moves selected values into the response
+without serializing and reparsing the complete tree. Serialized host boundaries
+use `Protocol::render_partial_json()`; raw input is validated in full while
+unneeded values are skipped without constructing a duplicate JSON tree.
 
 After storing new template metadata, the router dispatches
 `webui:templates-registered`. Optional runtimes may synchronously add resource
@@ -796,7 +798,7 @@ For repeated Rust requests, load one `Protocol`:
 ```rust
 let protocol = Protocol::from_protobuf(&protocol_bytes)?;
 let json = protocol.render_partial(
-    state_json,
+    state,
     "index.html",
     request_path,
     inventory_hex,

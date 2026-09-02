@@ -993,6 +993,13 @@ impl Protocol {
     pub fn tokens(&self) -> &[String];
     pub fn render_partial(
         &self,
+        state: Value,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<String, HandlerError>;
+    pub fn render_partial_json(
+        &self,
         state_json: &str,
         entry_id: &str,
         request_path: &str,
@@ -2692,14 +2699,18 @@ not a secrecy boundary. Any state selected by exact metadata or preserved by a
 full fallback is client-facing. Hosts must not place secrets in browser render
 state.
 
-**Partial state.** `Protocol::render_partial()` accepts raw JSON and applies the
-active route's navigation surfaces with the same `None` / `Keys` / `All`
-rules. On `Keys`, a streaming JSON visitor validates the complete object,
-skips unselected values without materializing them, and borrows selected raw
-values into the response. On `All`, raw APIs validate and preserve the borrowed
-JSON object without materializing it. Scriptless routes therefore receive only
-template roots needed for the destination; uncertain routes receive complete
-state.
+**Partial state.** `Protocol::render_partial()` accepts an owned parsed
+`serde_json::Value` and applies the active route's navigation surfaces with the
+same `None` / `Keys` / `All` rules. Selected values move into the response, so
+Rust servers do not serialize and reparse the complete state tree. The
+high-level `serve_request()` helper uses this path.
+`Protocol::render_partial_json()` is the serialized-input boundary used by
+Node, FFI, WASM, and Python hosts. On `Keys`, a streaming JSON visitor validates
+the complete object, skips unselected values without materializing them, and
+borrows selected raw values into the response. On `All`, it validates and
+preserves the borrowed JSON object without materializing it. Scriptless routes
+therefore receive only template roots needed for the destination; uncertain
+routes receive complete state.
 
 `a[]` uses compact tuple forms to avoid runtime parsing:
 

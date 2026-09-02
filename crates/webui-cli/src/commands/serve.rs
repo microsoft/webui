@@ -1234,8 +1234,8 @@ async fn handle_json_partial(
                 &entry,
                 &paths.route_path,
             );
-            for (k, v) in &nested_params {
-                map.insert(k.clone(), Value::String(v.clone()));
+            for (key, value) in nested_params {
+                map.insert(key, Value::String(value));
             }
         }
     }
@@ -1250,17 +1250,7 @@ async fn handle_json_partial(
 
     // Build the complete partial response (componentStyles, templates, inventory, path, chain)
     let partial = if let Some(proto) = &protocol {
-        let state_json = match serde_json::to_string(&state_data) {
-            Ok(value) => value,
-            Err(error) => {
-                return HttpResponse::InternalServerError()
-                    .content_type("application/json")
-                    .body(format!(
-                        r#"{{"error":"state serialization failed: {error}"}}"#
-                    ));
-            }
-        };
-        match proto.render_partial(&state_json, &entry, &paths.route_path, &client_inv_hex) {
+        match proto.render_partial(state_data, &entry, &paths.route_path, &client_inv_hex) {
             Ok(value) => value,
             Err(e) => {
                 return HttpResponse::InternalServerError()
@@ -1286,7 +1276,12 @@ fn collect_needed_template_names(
 ) -> (Vec<String>, String) {
     let protocol = Protocol::new(protocol.clone());
     let json = protocol
-        .render_partial("{}", entry_fragment_id, request_path, inventory_hex)
+        .render_partial(
+            Value::Object(serde_json::Map::new()),
+            entry_fragment_id,
+            request_path,
+            inventory_hex,
+        )
         .unwrap();
     let response: Value = serde_json::from_str(&json).unwrap();
     let names = response["templates"]

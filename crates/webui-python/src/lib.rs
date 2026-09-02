@@ -240,7 +240,7 @@ impl NativeRenderer {
             .detach(|| {
                 let state_json = input.as_str()?;
                 self.protocol
-                    .render_partial(state_json, &options.0, &options.1, &options.2)
+                    .render_partial_json(state_json, &options.0, &options.1, &options.2)
                     .map(String::into_bytes)
                     .map_err(partial_binding_error)
             })
