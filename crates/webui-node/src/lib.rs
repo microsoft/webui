@@ -409,7 +409,7 @@ impl Protocol {
         inventory_hex: String,
     ) -> napi::Result<String> {
         self.inner
-            .render_partial(&state_json, &entry_id, &request_path, &inventory_hex)
+            .render_partial_json(&state_json, &entry_id, &request_path, &inventory_hex)
             .map_err(|e| NapiError::from_reason(format!("render_partial failed: {e}")))
     }
 

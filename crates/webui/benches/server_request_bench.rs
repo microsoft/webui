@@ -6,10 +6,11 @@
 use std::collections::HashMap;
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use webui::server::{serve_request, ServeRequest, ServeResponse};
 use webui::{Protocol, RenderOptions, WebUIHandler};
 use webui_handler::plugin::webui::WebUIHydrationPlugin;
+use webui_protocol::StateProjectionMode;
 use webui_protocol::{ComponentData, FragmentList, WebUIFragment, WebUIProtocol};
 
 const ENTRY_ID: &str = "index.html";
@@ -52,6 +53,8 @@ fn benchmark_protocol() -> Protocol {
         ComponentData {
             template_json: r#"{"h":"<main>ready</main>","th":1}"#.to_string(),
             template_functions: "[function(){return true}]".to_string(),
+            navigation_keys: vec!["selected".to_string()],
+            navigation_mode: Some(StateProjectionMode::Keys as i32),
             ..Default::default()
         },
     );
@@ -68,6 +71,7 @@ fn server_request_bench(c: &mut Criterion) {
         "",
     );
     let partial_request = ServeRequest::new(RenderOptions::new(ENTRY_ID, REQUEST_PATH), true, "");
+    let large_state = large_projected_state();
 
     c.bench_function("server_request/full_html_without_nonce", |b| {
         b.iter(|| {
@@ -116,6 +120,40 @@ fn server_request_bench(c: &mut Criterion) {
             }
         });
     });
+
+    c.bench_function("server_request/json_partial_large_projected_state", |b| {
+        b.iter_batched(
+            || large_state.clone(),
+            |state| {
+                let response = serve_request(
+                    black_box(&protocol),
+                    black_box(&handler),
+                    state,
+                    black_box(&partial_request),
+                )
+                .unwrap_or_else(|error| panic!("server request render failed: {error}"));
+                match response {
+                    ServeResponse::Json(json) => black_box(json.len()),
+                    ServeResponse::Html(_) => panic!("partial request returned HTML"),
+                }
+            },
+            BatchSize::LargeInput,
+        );
+    });
+}
+
+fn large_projected_state() -> serde_json::Value {
+    let mut unused = Vec::with_capacity(1_000);
+    for index in 0..1_000 {
+        unused.push(serde_json::json!({
+            "id": index,
+            "payload": "x".repeat(128),
+        }));
+    }
+    serde_json::json!({
+        "selected": "kept",
+        "unused": unused,
+    })
 }
 
 criterion_group!(benches, server_request_bench);

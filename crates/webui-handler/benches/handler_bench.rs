@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::hint::black_box;
 use webui_handler::plugin::fast_v2::FastV2HydrationPlugin;
 use webui_handler::{Protocol, RenderOptions, ResponseWriter, WebUIHandler};
+use webui_protocol::plugin::FastElementData;
 use webui_protocol::{
     ComparisonOperator, ConditionExpr, FragmentList, LogicalOperator, WebUIFragment, WebUIProtocol,
 };
@@ -99,8 +100,11 @@ fn build_mixed_protocol() -> Protocol {
                 WebUIFragment::for_loop("item", "items", "item-frag"),
                 WebUIFragment::raw("</ul>"),
                 WebUIFragment::if_cond(ConditionExpr::identifier("show_footer"), "footer-frag"),
-                // Simulate parser-plugin payload consumed by FastV2HydrationPlugin.
-                WebUIFragment::plugin((3u32).to_le_bytes().to_vec()),
+                WebUIFragment::plugin(
+                    FastElementData { binding_count: 3 }
+                        .encode_v2(false)
+                        .to_vec(),
+                ),
                 WebUIFragment::raw("</x-card>"),
             ],
             contains_boundary: false,

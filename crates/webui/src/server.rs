@@ -111,18 +111,16 @@ pub fn serve_request(
     );
     let mut data = state;
     if let Some(map) = data.as_object_mut() {
-        for (k, v) in &params {
-            map.insert(k.clone(), serde_json::Value::String(v.clone()));
+        for (key, value) in params {
+            map.insert(key, serde_json::Value::String(value));
         }
     }
 
     if request.accept_json {
         // JSON partial response for client-side navigation.
-        let state_json =
-            serde_json::to_string(&data).map_err(|e| format!("state serialization failed: {e}"))?;
         let partial = protocol
             .render_partial(
-                &state_json,
+                data,
                 options.entry_id,
                 options.request_path,
                 request.inventory_hex,

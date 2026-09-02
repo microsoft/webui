@@ -171,7 +171,7 @@ impl Protocol {
         inventory_hex: &str,
     ) -> Result<String, JsValue> {
         self.inner
-            .render_partial(state_json, entry_id, request_path, inventory_hex)
+            .render_partial_json(state_json, entry_id, request_path, inventory_hex)
             .map_err(|error| JsValue::from_str(&format!("render_partial failed: {error}")))
     }
 

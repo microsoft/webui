@@ -292,8 +292,12 @@ impl Protocol {
         &self.protocol.tokens
     }
 
-    /// Produce a complete partial-navigation response.
-    pub fn render_partial(
+    /// Produce a complete partial-navigation response from serialized state.
+    ///
+    /// This variant validates serialized host input while borrowing selected raw
+    /// values into the response. Rust callers that already own parsed state
+    /// should use [`Self::render_partial`] instead.
+    pub fn render_partial_json(
         &self,
         state_json: &str,
         entry_id: &str,
@@ -310,6 +314,30 @@ impl Protocol {
             &mut index,
         )?;
         serialize_partial_response(&response, state_json, &state_selection)
+    }
+
+    /// Produce a complete partial-navigation response from parsed state.
+    ///
+    /// This ownership-taking variant moves selected values into the response
+    /// instead of serializing and reparsing the complete state tree. Use it when
+    /// the caller already owns a [`serde_json::Value`] for the request.
+    pub fn render_partial(
+        &self,
+        state: Value,
+        entry_id: &str,
+        request_path: &str,
+        inventory_hex: &str,
+    ) -> Result<String, HandlerError> {
+        self.ensure_style_metadata()?;
+        let mut index = self.request_index();
+        let (response, state_selection) = render_partial_indexed_with_state(
+            self.protocol(),
+            entry_id,
+            request_path,
+            inventory_hex,
+            &mut index,
+        )?;
+        serialize_partial_value_response(&response, state, &state_selection)
     }
 
     /// Render component template payloads for requested component tags.
@@ -1471,6 +1499,19 @@ fn serialize_partial_response(
         .map_err(|error| partial_serialize_error(&error.to_string()))
 }
 
+fn serialize_partial_value_response(
+    response: &Value,
+    state: Value,
+    state_selection: &StateSelection<'_>,
+) -> Result<String, HandlerError> {
+    let response = response
+        .as_object()
+        .ok_or_else(partial_response_not_object)?;
+    let state = select_owned_state(state, state_selection);
+    serde_json::to_string(&PartialResponseWithState { response, state })
+        .map_err(|error| partial_serialize_error(&error.to_string()))
+}
+
 fn validate_json(json: &str) -> Result<(), HandlerError> {
     validate_json_inner(json).map_err(|error| invalid_state_json(&error.to_string()))
 }
@@ -1573,12 +1614,12 @@ impl<'de> Visitor<'de> for ValidJsonVisitor {
     }
 }
 
-struct PartialResponseWithState<'a, 'state> {
+struct PartialResponseWithState<'a, State> {
     response: &'a Map<String, Value>,
-    state: SelectedRawState<'state>,
+    state: State,
 }
 
-impl Serialize for PartialResponseWithState<'_, '_> {
+impl<State: Serialize> Serialize for PartialResponseWithState<'_, State> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -2880,10 +2921,15 @@ fn render_partial_indexed_with_state<'a>(
     Ok((Value::Object(result), state_selection))
 }
 
-#[cfg(test)]
 fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
     let state_keys = match selection {
-        StateSelection::Full => return state,
+        StateSelection::Full => {
+            let mut state = state;
+            if let Value::Object(state) = &mut state {
+                state.remove(crate::STATE_INJECT_KEY);
+            }
+            return state;
+        }
         StateSelection::Keys(keys) => keys.as_slice(),
         // Streaming's key-ID projection never reaches partial navigation.
         StateSelection::KeyIds(_) | StateSelection::FullExceptKeyIds(_) => {
@@ -2895,6 +2941,9 @@ fn select_owned_state(state: Value, selection: &StateSelection<'_>) -> Value {
     };
     let mut projected = Map::with_capacity(state_keys.len().min(source.len()));
     for &key in state_keys {
+        if key == crate::STATE_INJECT_KEY {
+            continue;
+        }
         if let Some(value) = source.remove(key) {
             projected.insert(key.to_owned(), value);
         }
@@ -3792,7 +3841,7 @@ mod tests {
     fn partial_state_serialization_preserves_validated_raw_json() {
         let prepared = prepared_partial_protocol(&["value"]);
         let output = prepared
-            .render_partial(
+            .render_partial_json(
                 r#"{"serverOnly":"drop","value":1e2}"#,
                 "index.html",
                 "/",
@@ -3810,7 +3859,7 @@ mod tests {
     fn partial_state_projection_strips_reserved_inject_key() {
         let prepared = prepared_partial_protocol(&[crate::STATE_INJECT_KEY, "value"]);
         let output = prepared
-            .render_partial(
+            .render_partial_json(
                 r#"{"$webui":{"bodyEnd":"<script>secret</script>"},"serverOnly":"drop","value":1}"#,
                 "index.html",
                 "/",
@@ -3824,10 +3873,35 @@ mod tests {
     }
 
     #[test]
+    fn parsed_partial_state_moves_selected_values_into_response() {
+        let prepared = prepared_partial_protocol(&[crate::STATE_INJECT_KEY, "value"]);
+        let output = prepared
+            .render_partial(
+                serde_json::json!({
+                    "$webui": {"bodyEnd": "<script>secret</script>"},
+                    "serverOnly": ["large", "discarded", "value"],
+                    "value": {"nested": "kept"}
+                }),
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(
+            parsed["state"],
+            serde_json::json!({"value": {"nested": "kept"}})
+        );
+        assert!(!output.contains("serverOnly"));
+        assert!(!output.contains("<script>secret</script>"), "{output}");
+    }
+
+    #[test]
     fn uncertain_partial_surface_preserves_complete_raw_state() {
         let prepared = prepared_full_state_partial_protocol();
         let output = prepared
-            .render_partial(
+            .render_partial_json(
                 r#"{"serverOnly":"keep","value":1e2}"#,
                 "index.html",
                 "/",
@@ -3845,7 +3919,7 @@ mod tests {
             r#"{"$\u0077\u0065\u0062\u0075\u0069":{"bodyEnd":"<script>secret</script>"},"serverOnly":"keep","value":1}"#,
         ] {
             let output = prepared
-                .render_partial(state, "index.html", "/", "")
+                .render_partial_json(state, "index.html", "/", "")
                 .unwrap();
             let parsed: Value = serde_json::from_str(&output).unwrap();
 
@@ -3858,10 +3932,34 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_partial_surface_preserves_nested_reserved_key_bytes() {
+    fn parsed_full_partial_state_strips_reserved_inject_key() {
         let prepared = prepared_full_state_partial_protocol();
         let output = prepared
             .render_partial(
+                serde_json::json!({
+                    "$webui": {"bodyEnd": "<script>secret</script>"},
+                    "serverOnly": "keep",
+                    "value": 1
+                }),
+                "index.html",
+                "/",
+                "",
+            )
+            .unwrap();
+        let parsed: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(
+            parsed["state"],
+            serde_json::json!({"serverOnly": "keep", "value": 1})
+        );
+        assert!(!output.contains("<script>secret</script>"), "{output}");
+    }
+
+    #[test]
+    fn uncertain_partial_surface_preserves_nested_reserved_key_bytes() {
+        let prepared = prepared_full_state_partial_protocol();
+        let output = prepared
+            .render_partial_json(
                 r#"{"outer": { "$webui": {"bodyEnd": "application data"} }, "value": 1e2}"#,
                 "index.html",
                 "/",
@@ -3881,7 +3979,7 @@ mod tests {
     fn partial_state_serialization_rejects_invalid_json() {
         let prepared = prepared_partial_protocol(&[]);
         let error = prepared
-            .render_partial(r#"{"broken":"#, "index.html", "/", "")
+            .render_partial_json(r#"{"broken":"#, "index.html", "/", "")
             .expect_err("invalid state JSON must fail");
         assert!(
             matches!(error, HandlerError::InvalidState(_)),
@@ -3894,7 +3992,7 @@ mod tests {
     fn partial_state_serialization_emits_empty_state_without_client_components() {
         let prepared = Protocol::new(WebUIProtocol::default());
         let output = prepared
-            .render_partial(r#"{"serverOnly":"drop"}"#, "index.html", "/", "")
+            .render_partial_json(r#"{"serverOnly":"drop"}"#, "index.html", "/", "")
             .unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"], serde_json::json!({}));
@@ -3905,7 +4003,7 @@ mod tests {
         let prepared = prepared_partial_protocol(&["value"]);
         for state in [r#"{"value":1e9999}"#, r#"{"serverOnly":1e9999,"value":1}"#] {
             let error = prepared
-                .render_partial(state, "index.html", "/", "")
+                .render_partial_json(state, "index.html", "/", "")
                 .expect_err("out-of-range state numbers must fail");
             assert!(
                 matches!(error, HandlerError::InvalidState(_)),
@@ -3919,7 +4017,7 @@ mod tests {
     fn partial_state_serialization_uses_last_duplicate_and_decodes_keys() {
         let prepared = prepared_partial_protocol(&["value"]);
         let output = prepared
-            .render_partial(r#"{"value":1,"va\u006cue":2}"#, "index.html", "/", "")
+            .render_partial_json(r#"{"value":1,"va\u006cue":2}"#, "index.html", "/", "")
             .unwrap();
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(parsed["state"], serde_json::json!({"value": 2}));

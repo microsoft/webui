@@ -116,17 +116,9 @@ impl FrontendRuntime {
         inventory_hex: &str,
         state: Value,
     ) -> Value {
-        let state_json = match serde_json::to_string(&state) {
-            Ok(value) => value,
-            Err(error) => {
-                return serde_json::json!({
-                    "error": format!("state serialization failed: {error}")
-                });
-            }
-        };
         match self
             .protocol
-            .render_partial(&state_json, &self.entry, route_path, inventory_hex)
+            .render_partial(state, &self.entry, route_path, inventory_hex)
         {
             Ok(json) => serde_json::from_str(&json).unwrap_or_else(|error| {
                 serde_json::json!({
