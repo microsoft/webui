@@ -50,6 +50,7 @@
 import { deferTemplateDefinition, getTemplate } from './template.js';
 import {
   cloneTemplateContent,
+  getTemplateFragment,
 } from './template-content.js';
 import type {
   TemplateMeta,
@@ -150,9 +151,6 @@ const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
 /** Cached root tag name extracted from meta.h before it's released. */
 const rootTagCache = new WeakMap<TemplateBlockMeta, string | null>();
-
-/** Parsed template DOM for SSR path mapping, keyed by TemplateBlockMeta. */
-const templateDOMCache = new WeakMap<TemplateBlockMeta, Element>();
 
 /** Per-child node-type ordinals used when a text slot has no dynamic boundary. */
 const tplOrdinalCache = new WeakMap<Node, Map<number, [nodeType: number, ordinal: number]>>();
@@ -356,17 +354,6 @@ function childNodesArray(parent: Node): Node[] {
   const result = new Array<Node>(len);
   for (let i = 0; i < len; i++) result[i] = children[i];
   return result;
-}
-
-// ── Helper: parse template HTML into a temp container ────────────
-
-function getTemplateDom(meta: TemplateBlockMeta): Element {
-  let cached = templateDOMCache.get(meta);
-  if (cached) return cached;
-  const div = document.createElement('div');
-  div.innerHTML = meta.h;
-  templateDOMCache.set(meta, div);
-  return div;
 }
 
 /**
@@ -856,7 +843,7 @@ export class TemplateElement extends HTMLElement {
       }
 
       if (isSSR) {
-        this.$root = this.$hydrate(root, meta, getTemplateDom(meta));
+        this.$root = this.$hydrate(root, meta, getTemplateFragment(meta));
 
       } else {
         clientRoot = this.$createStagingRoot(meta);
@@ -1941,7 +1928,7 @@ export class TemplateElement extends HTMLElement {
   private $hydrate(
     ssrRoot: Node,
     meta: TemplateBlockMeta,
-    tplDom: Element,
+    tplDom: DocumentFragment,
     scope?: ScopeFrame,
     pathStart = 0,
   ): TemplateInstance {
@@ -2129,7 +2116,7 @@ export class TemplateElement extends HTMLElement {
         const marker = repMarkers ? repMarkers[i] : null;
         const ssrParent = (marker ? marker.parentNode : ssrElements[parentIndex]) ?? ssrRoot;
         const blockMeta = this.$block(blockIndex);
-        const blockTplDom = blockMeta ? getTemplateDom(blockMeta) : null;
+        const blockTplDom = blockMeta ? getTemplateFragment(blockMeta) : null;
         const rootTag = blockMeta
           && blockTplDom?.childNodes.length === 1
           && blockTplDom.children.length === 1
@@ -2313,7 +2300,7 @@ export class TemplateElement extends HTMLElement {
     scope: ScopeFrame | undefined,
   ): TemplateInstance | null {
     const rootTag = this.$rootTag(blockMeta);
-    const tplDom = getTemplateDom(blockMeta);
+    const tplDom = getTemplateFragment(blockMeta);
     if (rootTag && tplDom.children.length === 1 && !this.$hasRootStructuralSlot(blockMeta)) {
       // Single-root optimisation: hydrate the element in-place (pathStart=1).
       const el = nextElement(condAnchor);
