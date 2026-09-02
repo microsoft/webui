@@ -2091,21 +2091,48 @@ impl RouteBaseArena {
         }
     }
 
-    /// Intern `base`, reusing an existing slot when the path is already known.
+    /// Position of `base` when it has already been interned.
     ///
     /// The linear scan is deliberate: route nesting is shallow (a handful of
     /// levels), so scanning beats hashing and keeps the arena allocation-free
     /// after the first sighting of each level.
-    fn intern(&mut self, base: &str) -> u32 {
-        if let Some(position) = self.bases.iter().position(|known| known == base) {
-            // Arena length is bounded by route nesting depth.
-            #[allow(clippy::cast_possible_truncation)]
-            return position as u32;
-        }
+    fn find(&self, base: &str) -> Option<u32> {
+        // Arena length is bounded by route nesting depth.
         #[allow(clippy::cast_possible_truncation)]
+        self.bases
+            .iter()
+            .position(|known| known == base)
+            .map(|position| position as u32)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn push(&mut self, base: String) -> u32 {
         let id = self.bases.len() as u32;
-        self.bases.push(base.to_string());
+        self.bases.push(base);
         id
+    }
+
+    /// Intern a borrowed `base`, reusing an existing slot when already known.
+    ///
+    /// Use [`Self::intern_owned`] when the caller already owns the path, so a
+    /// first sighting moves it instead of copying it.
+    fn intern(&mut self, base: &str) -> u32 {
+        match self.find(base) {
+            Some(id) => id,
+            None => self.push(base.to_string()),
+        }
+    }
+
+    /// Intern an owned `base`, moving it in on first sighting.
+    ///
+    /// `route_matcher::compute_route_base` already returns an owned `String`,
+    /// so taking it by value keeps a newly discovered level to the one
+    /// allocation the caller had to make anyway.
+    fn intern_owned(&mut self, base: String) -> u32 {
+        match self.find(&base) {
+            Some(id) => id,
+            None => self.push(base),
+        }
     }
 
     fn get(&self, id: u32) -> &str {
@@ -2308,8 +2335,8 @@ fn collect_inventoryable_components_from_stack<'protocol>(
                     if is_selected && !route_frag.fragment_id.is_empty() {
                         // Compute new route base from consumed segments
                         let child_route_base = match (&matched_route, request_path) {
-                            (Some((_, rm)), Some(path)) => arena.intern(
-                                &route_matcher::compute_route_base(path, rm.consumed_segments),
+                            (Some((_, rm)), Some(path)) => arena.intern_owned(
+                                route_matcher::compute_route_base(path, rm.consumed_segments),
                             ),
                             _ => queued.route_base,
                         };
@@ -2423,7 +2450,7 @@ fn walk_route_children<'protocol>(
             break;
         }
 
-        let child_base = arena.intern(&route_matcher::compute_route_base(
+        let child_base = arena.intern_owned(route_matcher::compute_route_base(
             ctx.request_path,
             rm.consumed_segments,
         ));
@@ -2576,7 +2603,7 @@ pub fn collect_nested_route_params(
                             }
 
                             let child_route_base =
-                                arena.intern(&route_matcher::compute_route_base(
+                                arena.intern_owned(route_matcher::compute_route_base(
                                     request_path,
                                     rm.consumed_segments,
                                 ));
@@ -2777,7 +2804,7 @@ fn collect_inventory_and_chain<'protocol>(
                             });
 
                             let child_route_base =
-                                arena.intern(&route_matcher::compute_route_base(
+                                arena.intern_owned(route_matcher::compute_route_base(
                                     request_path,
                                     rm.consumed_segments,
                                 ));
@@ -2867,7 +2894,7 @@ fn walk_children_for_inventory_and_chain<'protocol>(
             break;
         }
 
-        let child_base = arena.intern(&route_matcher::compute_route_base(
+        let child_base = arena.intern_owned(route_matcher::compute_route_base(
             ctx.request_path,
             rm.consumed_segments,
         ));
