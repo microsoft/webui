@@ -29,7 +29,12 @@ const templateContentCache = new WeakMap<TemplateBlockMeta, TemplateContent>();
 
 /** Clone cached template DOM for one client-created block instance. */
 export function cloneTemplateContent(meta: TemplateBlockMeta): DocumentFragment {
-  return getTemplateContent(meta).fragment.cloneNode(true) as DocumentFragment;
+  return getTemplateFragment(meta).cloneNode(true) as DocumentFragment;
+}
+
+/** Return cached, context-preserving template DOM for SSR path mapping. */
+export function getTemplateFragment(meta: TemplateBlockMeta): DocumentFragment {
+  return getTemplateContent(meta).fragment;
 }
 
 /** Return external stylesheet descriptors discovered during the template's single parse. */

@@ -1,1 +1,12 @@
-{}
+{
+  "previews": [
+    {
+      "preview_url": "/preview/running",
+      "can_view_logs": true
+    },
+    {
+      "preview_url": "",
+      "can_view_logs": true
+    }
+  ]
+}

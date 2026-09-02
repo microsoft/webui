@@ -1,1 +1,26 @@
-<template shadowrootmode="open"><div class="container"></div></template>
+<template shadowrootmode="open">
+  <div class="container"></div>
+  <table>
+    <tbody>
+      <for each="preview in previews">
+        <tr class="resource-row">
+          <td>
+            <mai-menu class="row-menu">
+              <mai-button slot="trigger">Actions</mai-button>
+              <mai-menu-list>
+                <if condition="preview.preview_url">
+                  <mai-menu-item class="preview-item">Open preview</mai-menu-item>
+                </if>
+                <if condition="preview.can_view_logs">
+                  <mai-menu-item class="logs-item">Logs</mai-menu-item>
+                </if>
+                <mai-menu-item class="restart-item">Restart</mai-menu-item>
+                <mai-menu-item class="stop-item">Stop</mai-menu-item>
+              </mai-menu-list>
+            </mai-menu>
+          </td>
+        </tr>
+      </for>
+    </tbody>
+  </table>
+</template>
