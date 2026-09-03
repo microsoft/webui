@@ -479,6 +479,9 @@ struct LocalValueSources<'ctx, 'protocol, 'state> {
     borrowed: &'ctx BorrowedScope<'protocol, 'state>,
 }
 
+/// Route level an `<outlet />` matches against.
+pub(crate) type RouteChildren<'protocol> = Cow<'protocol, [webui_protocol::WebUiFragmentRoute]>;
+
 #[derive(Default)]
 struct BorrowedScope<'protocol, 'state> {
     inline: [Option<(&'protocol str, &'state Value)>; INLINE_SCOPE_SLOTS],
@@ -825,6 +828,27 @@ fn component_attr_source(attribute: &webui_protocol::WebUIFragmentAttribute) -> 
     }
 }
 
+/// Route level one step below `children[index]`.
+///
+/// A borrowed level yields a borrowed sublevel, so descending through a route
+/// tree during a render never copies a `WebUiFragmentRoute`. A level a
+/// streaming continuation already materialized transfers its child level.
+fn descend_into<'protocol>(
+    children: &mut RouteChildren<'protocol>,
+    index: usize,
+) -> RouteChildren<'protocol> {
+    match children {
+        Cow::Borrowed(routes) => match routes.get(index) {
+            Some(route) => Cow::Borrowed(&route.children),
+            None => Cow::Borrowed(&[]),
+        },
+        Cow::Owned(routes) => match routes.get_mut(index) {
+            Some(route) => Cow::Owned(std::mem::take(&mut route.children)),
+            None => Cow::Borrowed(&[]),
+        },
+    }
+}
+
 /// Fragment ID a fragment descends into, or `None` when it renders inline.
 fn fragment_target_id(fragment: &WebUIFragment) -> Option<&str> {
     match fragment.fragment.as_ref()? {
@@ -884,7 +908,12 @@ pub(crate) struct WebUIProcessContext<'protocol, 'state, 'output> {
     pub(crate) plugin: Option<Box<dyn HandlerPlugin>>,
     /// Current position in the route tree for outlet-based rendering.
     /// Contains the children of the currently matched route fragment.
-    pub(crate) route_children: Vec<webui_protocol::WebUiFragmentRoute>,
+    ///
+    /// A matched route's `children` is a recursive prost subtree, so the
+    /// borrowed variant avoids deep-cloning the whole remaining route tree on
+    /// every matched route of every request. Only a suspended streaming
+    /// continuation, which outlives the borrow, materializes the owned variant.
+    pub(crate) route_children: RouteChildren<'protocol>,
     /// Entry fragment ID — used to compute the initial inventory at head_end.
     /// Borrowed from `RenderOptions<'a>::entry_id` — zero-copy.
     pub(crate) entry_id: &'protocol str,
@@ -2338,7 +2367,15 @@ impl WebUIHandler {
     /// Matches children from the currently active route's `children` field
     /// against the request path, renders the matched child `<webui-route>`
     /// elements directly at this position (no wrapper element).
-    fn process_outlet(&self, context: &mut WebUIProcessContext) -> Result<()> {
+    fn process_outlet<'protocol>(
+        &self,
+        context: &mut WebUIProcessContext<'protocol, '_, '_>,
+    ) -> Result<()> {
+        // Moved out so the matched child can render with the context pointing
+        // at its grandchildren. The level is deliberately not put back, which
+        // preserves the previous behavior exactly: a second `<outlet />` at
+        // this level renders nothing. That is a latent bug tracked by #515, not
+        // a property this function needs; fixing it belongs in its own change.
         let mut children = std::mem::take(&mut context.route_children);
         if children.is_empty() {
             return Ok(());
@@ -2364,17 +2401,11 @@ impl WebUIHandler {
             }
         }
 
-        // Extract grandchildren from the matched child to avoid cloning.
-        // We swap out the children vec so we can move it into context without
-        // cloning, then swap an empty vec back for the sibling rendering pass.
-        let grandchildren = if let Some((idx, _)) = &best {
-            std::mem::take(&mut children[*idx].children)
-        } else {
-            Vec::new()
-        };
-
         if let Some((idx, ref rm)) = best {
-            let matched_child = &children[idx];
+            let descended = descend_into(&mut children, idx);
+            let Some(matched_child) = children.get(idx) else {
+                return Ok(());
+            };
             let comp = &matched_child.fragment_id;
 
             if !comp.is_empty() {
@@ -2385,9 +2416,7 @@ impl WebUIHandler {
                     );
                     std::mem::replace(&mut context.route_base, Cow::Owned(base))
                 });
-                let saved_route_children = std::mem::take(&mut context.route_children);
-
-                context.route_children = grandchildren;
+                context.route_children = descended;
 
                 // Emit matched <webui-route>
                 context.writer.write("<webui-route")?;
@@ -2438,7 +2467,10 @@ impl WebUIHandler {
                 if let Some(saved) = saved_route_base {
                     context.route_base = saved;
                 }
-                context.route_children = saved_route_children;
+                // Restores the empty level the matched child was rendered
+                // against, rather than the level this outlet matched. See the
+                // note at the top of this function and #515.
+                context.route_children = Cow::Borrowed(&[]);
             }
         }
 
@@ -2836,11 +2868,11 @@ impl WebUIHandler {
     }
 
     /// Process a route fragment — renders `<webui-route>` with matched/hidden state.
-    fn process_route(
+    fn process_route<'protocol>(
         &self,
-        route_frag: &webui_protocol::WebUiFragmentRoute,
+        route_frag: &'protocol webui_protocol::WebUiFragmentRoute,
         best_route: &Option<(String, route_matcher::RouteMatch)>,
-        context: &mut WebUIProcessContext,
+        context: &mut WebUIProcessContext<'protocol, '_, '_>,
     ) -> Result<()> {
         let is_matched = best_route
             .as_ref()
@@ -2873,8 +2905,10 @@ impl WebUIHandler {
                     route_matcher::compute_route_base(context.request_path, rm.consumed_segments);
                 std::mem::replace(&mut context.route_base, Cow::Owned(base))
             });
-            let saved_route_children = std::mem::take(&mut context.route_children);
-            context.route_children = route_frag.children.clone();
+            let saved_route_children = std::mem::replace(
+                &mut context.route_children,
+                Cow::Borrowed(&route_frag.children),
+            );
 
             if !route_frag.content_fragment_id.is_empty() {
                 self.process_fragment_target(None, &route_frag.content_fragment_id, context)?;
@@ -3975,7 +4009,7 @@ impl WebUIHandler {
             route_base: Cow::Borrowed("/"),
             rendered_components: HashSet::new(),
             plugin: self.plugin_factory.map(|f| f()),
-            route_children: Vec::new(),
+            route_children: Cow::Borrowed(&[]),
             entry_id: options.entry_id,
             // Same defensive normalisation as `handle()`. See the
             // doc-comment there for the CSP-outage rationale.
@@ -4145,6 +4179,50 @@ mod tests {
             format!("{STRUCTURAL_SIGNAL_PREFIX}{}", value.as_ref()),
             true,
         )
+    }
+
+    #[test]
+    fn route_descent_borrows_protocol_children() {
+        let routes = vec![WebUiFragmentRoute {
+            children: vec![WebUiFragmentRoute {
+                fragment_id: "child".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let mut level = RouteChildren::Borrowed(&routes);
+
+        let descended = descend_into(&mut level, 0);
+
+        let Cow::Borrowed(children) = descended else {
+            panic!("protocol-owned route children should remain borrowed");
+        };
+        assert!(std::ptr::eq(children, routes[0].children.as_slice()));
+    }
+
+    #[test]
+    fn route_descent_moves_parked_children() {
+        let mut level = RouteChildren::Owned(vec![WebUiFragmentRoute {
+            children: vec![WebUiFragmentRoute {
+                fragment_id: "child".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+
+        let descended = descend_into(&mut level, 0);
+
+        let Cow::Owned(children) = descended else {
+            panic!("parked route children must not borrow session-owned storage");
+        };
+        assert_eq!(children[0].fragment_id, "child");
+        let Cow::Owned(source) = level else {
+            panic!("the parked source level must stay owned");
+        };
+        assert!(
+            source[0].children.is_empty(),
+            "owned route children must move out instead of being cloned"
+        );
     }
 
     #[test]

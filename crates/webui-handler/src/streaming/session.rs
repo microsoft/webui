@@ -365,7 +365,7 @@ pub(crate) struct SessionCore {
     document_style_resources: HashSet<String>,
     shadow_style_roots: Vec<crate::ShadowStyleRoot>,
     plugin: Option<Box<dyn HandlerPlugin>>,
-    route_children: Vec<webui_protocol::WebUiFragmentRoute>,
+    route_children: crate::RouteChildren<'static>,
     head_end_emitted: bool,
     body_start_emitted: bool,
     component_asset_styles_emitted: bool,
@@ -408,7 +408,7 @@ impl SessionCore {
             document_style_resources: HashSet::new(),
             shadow_style_roots: Vec::new(),
             plugin: handler.plugin_factory.map(|factory| factory()),
-            route_children: Vec::new(),
+            route_children: Cow::Owned(Vec::new()),
             head_end_emitted: false,
             body_start_emitted: false,
             component_asset_styles_emitted: false,
@@ -730,7 +730,7 @@ impl SessionCore {
         };
         self.rendered_components = std::mem::take(&mut context.rendered_components);
         self.plugin = context.plugin.take();
-        self.route_children = std::mem::take(&mut context.route_children);
+        self.route_children = Cow::Owned(std::mem::take(&mut context.route_children).into_owned());
         self.head_end_emitted = context.head_end_emitted;
         self.body_start_emitted = context.body_start_emitted;
         self.component_asset_styles_emitted = context.component_asset_styles_emitted;
@@ -951,6 +951,42 @@ mod tests {
 
     fn options<'a>() -> RenderOptions<'a> {
         RenderOptions::new("index.html", "/")
+    }
+
+    #[test]
+    fn session_parks_owned_routes_and_retains_scope_pool() -> Result<()> {
+        let protocol = boundary_protocol(2, StateProjectionMode::Keys);
+        let handler = WebUIHandler::new();
+        let state = test_json!({ "count": 3, "title": "pooled" });
+        let render_options = options();
+        let mut sink = TestSink {
+            output: String::new(),
+        };
+        let mut response = handler.stream_response(&protocol, &render_options, &mut sink)?;
+
+        let first = response.start(&state)?;
+        assert!(matches!(response.core.route_children, Cow::Owned(_)));
+        let Some(boundary) = first.boundary else {
+            panic!("the first boundary should suspend");
+        };
+
+        response.resume(boundary.instance_id, &state, BoundaryMode::Final)?;
+        assert!(matches!(response.core.route_children, Cow::Owned(_)));
+        let pooled_capacity = response
+            .core
+            .scope_pool
+            .first()
+            .map(HashMap::capacity)
+            .unwrap_or_else(|| panic!("the completed component should recycle its scope map"));
+
+        response.advance()?;
+        assert!(matches!(response.core.route_children, Cow::Owned(_)));
+        assert_eq!(
+            response.core.scope_pool.first().map(HashMap::capacity),
+            Some(pooled_capacity),
+            "a suspension step must preserve the scope-map pool"
+        );
+        Ok(())
     }
 
     #[test]

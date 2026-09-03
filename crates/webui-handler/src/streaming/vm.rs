@@ -456,7 +456,7 @@ impl ContinuationVm {
                 } => {
                     context.writer.write("</webui-route>")?;
                     context.route_base = Cow::Owned(saved_route_base.into_string());
-                    context.route_children = saved_route_children;
+                    context.route_children = Cow::Owned(saved_route_children);
                 }
                 Frame::Outlet(frame) => self.step_outlet(frame, handler, protocol, context)?,
             }
@@ -1319,8 +1319,11 @@ impl ContinuationVm {
         )
         .into_owned()
         .into_boxed_str();
-        let saved_route_children =
-            std::mem::replace(&mut context.route_children, route.children.clone());
+        let saved_route_children = std::mem::replace(
+            &mut context.route_children,
+            Cow::Owned(route.children.clone()),
+        )
+        .into_owned();
         self.push(Frame::RouteEnd {
             saved_route_base,
             saved_route_children,
@@ -1338,7 +1341,7 @@ impl ContinuationVm {
     }
 
     fn begin_outlet(&mut self, context: &mut WebUIProcessContext<'_, '_, '_>) -> Result<()> {
-        let routes = std::mem::take(&mut context.route_children);
+        let routes = std::mem::take(&mut context.route_children).into_owned();
         if routes.is_empty() {
             return Ok(());
         }
