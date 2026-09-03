@@ -12,7 +12,6 @@ pub mod fast_v3;
 pub mod webui;
 
 use crate::{ResponseWriter, Result};
-use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
 
 /// Split WebUI component template payload used by SSR bootstrap emission.
@@ -29,8 +28,10 @@ pub struct WebUiTemplatePayload<'a> {
 pub struct BootstrapExtensionContext<'a> {
     /// Full protocol for plugins that need additional component metadata.
     pub protocol: &'a WebUIProtocol,
-    /// Route-reachable component tags for this render.
-    pub components: &'a HashSet<String>,
+    /// Route-reachable component tags for this render, in deterministic
+    /// traversal order (not a `HashSet`, whose iteration order varies with
+    /// the process's randomized hash seed).
+    pub components: &'a [String],
     /// Split WebUI template payloads collected for this render.
     pub payloads: &'a [WebUiTemplatePayload<'a>],
     /// CSP nonce for executable scripts, when configured.
@@ -145,7 +146,7 @@ pub trait HandlerPlugin: Send {
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
-        components: &HashSet<String>,
+        components: &[String],
         _nonce: Option<&str>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
@@ -161,7 +162,7 @@ pub trait HandlerPlugin: Send {
     fn collect_template_payloads<'a>(
         &self,
         _protocol: &'a WebUIProtocol,
-        _components: &HashSet<String>,
+        _components: &[String],
     ) -> Option<Vec<WebUiTemplatePayload<'a>>> {
         None
     }
@@ -170,7 +171,7 @@ pub trait HandlerPlugin: Send {
     ///
     /// The streaming checkpoint path captures the exact component tags rendered
     /// since the previous checkpoint as a borrowed `&[&str]`, avoiding the owned
-    /// `HashSet<String>` the ordinary body-end path builds. The default forwards
+    /// `Vec<String>` the ordinary body-end path builds. The default forwards
     /// to [`emit_component_templates_slice`] (verbatim FAST `<f-template>`
     /// emission).
     fn emit_templates_slice(
@@ -200,7 +201,7 @@ pub trait HandlerPlugin: Send {
     /// path, given only the already-collected template payloads.
     ///
     /// Unlike [`HandlerPlugin::emit_bootstrap_extension`], this takes no
-    /// `HashSet<String>` component set — the streaming checkpoint has already
+    /// `Vec<String>` component set — the streaming checkpoint has already
     /// projected the exact per-checkpoint payloads. The default is a no-op.
     fn emit_bootstrap_extension_payloads(
         &self,
@@ -230,7 +231,7 @@ pub trait HandlerPlugin: Send {
 /// Used by FAST parser plugins for `<f-template>` tags.
 pub(crate) fn emit_component_templates(
     protocol: &WebUIProtocol,
-    components: &HashSet<String>,
+    components: &[String],
     writer: &mut dyn ResponseWriter,
 ) -> Result<()> {
     for name in components {
