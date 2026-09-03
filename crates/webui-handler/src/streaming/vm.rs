@@ -594,7 +594,7 @@ impl ContinuationVm {
                     {
                         self.render_boundary_free(context, |context| {
                             handler.process_component(
-                                component,
+                                &component.fragment_id,
                                 target,
                                 ComponentHostOrigin::ParserProduced,
                                 context,
@@ -794,7 +794,7 @@ impl ContinuationVm {
         }
 
         if !context.rendered_components.contains(&component.fragment_id) {
-            handler.emit_css_module(component, context)?;
+            handler.emit_css_module(&component.fragment_id, context)?;
             context
                 .rendered_components
                 .insert(component.fragment_id.clone());
