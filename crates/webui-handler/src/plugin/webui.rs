@@ -12,7 +12,6 @@
 
 use super::{BootstrapExtensionContext, HandlerPlugin};
 use crate::{ResponseWriter, Result};
-use std::collections::HashSet;
 use webui_protocol::WebUIProtocol;
 
 const REPEAT_START: &str = "<!--wr-->";
@@ -162,7 +161,7 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     fn emit_templates(
         &self,
         protocol: &WebUIProtocol,
-        components: &HashSet<String>,
+        components: &[String],
         nonce: Option<&str>,
         writer: &mut dyn ResponseWriter,
     ) -> Result<()> {
@@ -188,7 +187,7 @@ impl HandlerPlugin for WebUIHydrationPlugin {
     fn collect_template_payloads<'a>(
         &self,
         protocol: &'a WebUIProtocol,
-        components: &HashSet<String>,
+        components: &[String],
     ) -> Option<Vec<super::WebUiTemplatePayload<'a>>> {
         webui_collect_payloads(protocol, components.iter().map(String::as_str))
     }
@@ -221,7 +220,7 @@ impl HandlerPlugin for WebUIHydrationPlugin {
 
 /// Emit non-split WebUI component templates inside a single `<script>` tag.
 ///
-/// Shared by the `HashSet`-based ordinary path and the `&[&str]`-based streaming
+/// Shared by the ordinary slice-based path and the `&[&str]`-based streaming
 /// path; the lookup-key lifetime `'b` is independent of the protocol so both
 /// callers pass borrowed tags without cloning.
 fn webui_emit_templates<'b>(
@@ -265,7 +264,7 @@ fn webui_emit_templates<'b>(
 /// Collect split WebUI template payloads for the given component tags.
 ///
 /// Returned payloads borrow the protocol (`'a`); the lookup-key lifetime `'b`
-/// is independent so both the `HashSet` and slice callers share this helper.
+/// is independent so both the ordinary slice and streaming callers share this helper.
 fn webui_collect_payloads<'a, 'b>(
     protocol: &'a WebUIProtocol,
     tags: impl Iterator<Item = &'b str>,
@@ -551,8 +550,7 @@ mod tests {
             .or_default()
             .template = iife_template("comp-c", "h:\"c\"");
 
-        let mut components = std::collections::HashSet::new();
-        components.insert("comp-a".to_string());
+        let components = vec!["comp-a".to_string()];
 
         let plugin = WebUIHydrationPlugin::new();
         plugin
@@ -585,7 +583,7 @@ mod tests {
             .entry("comp-a".to_string())
             .or_default()
             .template = iife_template("comp-a", "h:\"a\"");
-        let components = std::collections::HashSet::new();
+        let components: Vec<String> = Vec::new();
         let plugin = WebUIHydrationPlugin::new();
         plugin
             .emit_templates(&protocol, &components, None, &mut writer)
@@ -609,9 +607,7 @@ mod tests {
             .or_default()
             .template = iife_template("comp-b", "h:\"b\"");
 
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("comp-a".to_string());
-        rendered.insert("comp-b".to_string());
+        let rendered = vec!["comp-a".to_string(), "comp-b".to_string()];
 
         let plugin = WebUIHydrationPlugin::new();
         plugin
@@ -637,8 +633,7 @@ mod tests {
             .entry("comp-a".to_string())
             .or_default()
             .template = String::new();
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("comp-a".to_string());
+        let rendered = vec!["comp-a".to_string()];
         let plugin = WebUIHydrationPlugin::new();
         plugin
             .emit_templates(&protocol, &rendered, None, &mut writer)
@@ -650,8 +645,7 @@ mod tests {
     fn test_on_render_complete_unknown_component() {
         let mut writer = TestWriter::new();
         let protocol = webui_protocol::WebUIProtocol::new(std::collections::HashMap::new());
-        let mut rendered = std::collections::HashSet::new();
-        rendered.insert("nonexistent-comp".to_string());
+        let rendered = vec!["nonexistent-comp".to_string()];
         let plugin = WebUIHydrationPlugin::new();
         plugin
             .emit_templates(&protocol, &rendered, None, &mut writer)

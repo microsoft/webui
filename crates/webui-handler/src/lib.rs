@@ -3428,19 +3428,19 @@ impl WebUIHandler {
                 // round-trip. The graph walker follows conditional and loop branches
                 // unconditionally, but only descends into the matched route chain —
                 // components on other routes are delivered via SPA partial navigation.
-                let reachable = context
-                    .reachable_components
-                    .take()
-                    .unwrap_or_else(|| {
-                        crate::route_handler::collect_reachable_component_order_for_request(
-                            context.protocol,
-                            context.entry_id,
-                            context.request_path,
-                            context.route_index,
-                        )
-                    })
-                    .into_iter()
-                    .collect::<HashSet<_>>();
+                // Kept as the traversal-ordered `Vec` produced upstream (already
+                // deduplicated) rather than collected into a `HashSet`: downstream
+                // `<head>` CSS `<link>`/style-module emission order must stay
+                // deterministic across renders, not vary with the process's
+                // randomized hash seed.
+                let reachable = context.reachable_components.take().unwrap_or_else(|| {
+                    crate::route_handler::collect_reachable_component_order_for_request(
+                        context.protocol,
+                        context.entry_id,
+                        context.request_path,
+                        context.route_index,
+                    )
+                });
                 let state_selection =
                     collect_hydration_state(context.protocol, reachable.iter().map(String::as_str));
 
@@ -10114,6 +10114,80 @@ mod tests {
         assert!(
             !html.contains(r#"<script type="importmap""#),
             "Link strategy should not emit CSS module importmaps: {html}"
+        );
+    }
+
+    #[test]
+    fn link_strategy_emits_stylesheets_in_deterministic_document_order() {
+        // Regression: `css_hrefs`/`style_specs` must follow the traversal-ordered
+        // `reachable` list (a `Vec<String>`), never a `HashSet<String>` — whose
+        // iteration order depends on the process's randomized hash seed and can
+        // silently reorder `<link>` tags between renders/process restarts, which
+        // in turn can flip cascade-order-sensitive CSS (e.g. same-specificity
+        // `order`/`position` rules) and move on-page elements around.
+        let mut fragments = HashMap::new();
+        fragments.insert(
+            "index.html".to_string(),
+            FragmentList {
+                fragments: vec![
+                    WebUIFragment::raw("<html><head>".to_string()),
+                    structural_fragment("head_end"),
+                    WebUIFragment::raw(
+                        "</head><body><comp-a></comp-a><comp-b></comp-b><comp-c></comp-c>"
+                            .to_string(),
+                    ),
+                    WebUIFragment::component("comp-a"),
+                    WebUIFragment::component("comp-b"),
+                    WebUIFragment::component("comp-c"),
+                    structural_fragment("body_end"),
+                    WebUIFragment::raw("</body></html>".to_string()),
+                ],
+                contains_boundary: false,
+            },
+        );
+        for tag in ["comp-a", "comp-b", "comp-c"] {
+            fragments.insert(
+                tag.to_string(),
+                FragmentList {
+                    fragments: vec![WebUIFragment::raw(format!("<div>{tag}</div>"))],
+                    contains_boundary: false,
+                },
+            );
+        }
+
+        let mut protocol = WebUIProtocol::new(fragments);
+        protocol.set_css_strategy(webui_protocol::CssStrategy::Link);
+        for tag in ["comp-a", "comp-b", "comp-c"] {
+            let comp = protocol.components.entry(tag.to_string()).or_default();
+            comp.css_href = format!("{tag}.css");
+            comp.template_json = format!(r#"{{"h":"<div>{tag}</div>"}}"#);
+        }
+        protocol.populate_style_closures(&["index.html"]);
+
+        let state = test_json!({});
+        let mut writer = TestWriter::new();
+        handle(
+            &protocol,
+            &state,
+            &RenderOptions::new("index.html", "/"),
+            &mut writer,
+        )
+        .unwrap();
+        let html = writer.get_content();
+
+        let pos_a = html
+            .find(r#"href="comp-a.css""#)
+            .expect("comp-a.css link missing");
+        let pos_b = html
+            .find(r#"href="comp-b.css""#)
+            .expect("comp-b.css link missing");
+        let pos_c = html
+            .find(r#"href="comp-c.css""#)
+            .expect("comp-c.css link missing");
+        assert!(
+            pos_a < pos_b && pos_b < pos_c,
+            "stylesheet <link> tags must follow document/traversal order \
+             (comp-a, comp-b, comp-c), got positions {pos_a}, {pos_b}, {pos_c}: {html}"
         );
     }
 
