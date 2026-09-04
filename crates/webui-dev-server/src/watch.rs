@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::{
+    event::{AccessKind, AccessMode},
     Event, EventHandler, EventKind, RecommendedWatcher, RecursiveMode, Watcher, WatcherKind,
 };
 use notify_debouncer_mini::{
@@ -38,7 +39,7 @@ impl Watcher for ContentChangeWatcher {
     fn new<F: EventHandler>(mut event_handler: F, config: notify::Config) -> notify::Result<Self> {
         RecommendedWatcher::new(
             move |event| {
-                if matches!(&event, Ok(event) if is_access_event(event)) {
+                if matches!(&event, Ok(event) if is_read_only_access_event(event)) {
                     return;
                 }
                 event_handler.handle_event(event);
@@ -65,8 +66,15 @@ impl Watcher for ContentChangeWatcher {
     }
 }
 
-fn is_access_event(event: &Event) -> bool {
-    matches!(event.kind, EventKind::Access(_))
+fn is_read_only_access_event(event: &Event) -> bool {
+    matches!(
+        event.kind,
+        EventKind::Access(
+            AccessKind::Read
+                | AccessKind::Open(AccessMode::Read)
+                | AccessKind::Close(AccessMode::Read)
+        )
+    )
 }
 
 /// Configuration for [`spawn_watcher`].
@@ -428,13 +436,28 @@ mod tests {
     }
 
     #[test]
-    fn access_events_are_not_content_changes() {
-        use notify::event::{AccessKind, ModifyKind};
+    fn read_only_access_events_are_not_content_changes() {
+        use notify::event::ModifyKind;
 
-        assert!(is_access_event(&Event::new(EventKind::Access(
-            AccessKind::Any
-        ))));
-        assert!(!is_access_event(&Event::new(EventKind::Modify(
+        for kind in [
+            AccessKind::Read,
+            AccessKind::Open(AccessMode::Read),
+            AccessKind::Close(AccessMode::Read),
+        ] {
+            assert!(is_read_only_access_event(&Event::new(EventKind::Access(
+                kind
+            ))));
+        }
+        for kind in [
+            AccessKind::Any,
+            AccessKind::Open(AccessMode::Write),
+            AccessKind::Close(AccessMode::Write),
+        ] {
+            assert!(!is_read_only_access_event(&Event::new(EventKind::Access(
+                kind
+            ))));
+        }
+        assert!(!is_read_only_access_event(&Event::new(EventKind::Modify(
             ModifyKind::Any
         ))));
     }
