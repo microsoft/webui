@@ -33,6 +33,18 @@
     </div>
   </div>
 
+  <if
+    condition="benchmarks.selectedMetric == 'noStreamingRequestsPerSecond' || benchmarks.selectedMetric == 'streamingRequestsPerSecond'"
+  >
+    <div class="benchmark-telemetry-header" aria-hidden="true">
+      <div class="benchmark-telemetry-header-values">
+        <span>Peak RSS <small>MiB</small></span>
+        <span>CPU / req <small>ms</small></span>
+        <span></span>
+      </div>
+    </div>
+  </if>
+
   <div class="benchmark-bars" role="list" aria-label="{{benchmarks.selectedMetricLabel}} ranking">
     <for each="row in benchmarks.rows">
       <div
@@ -41,10 +53,7 @@
         aria-label="{{row.rank}}. {{row.label}}, {{row.activeDetail}}: {{row.activeValueDisplay}} {{row.activeUnit}}"
       >
         <span class="benchmark-rank" aria-hidden="true">{{row.rank}}</span>
-        <span class="benchmark-label">
-          <span>{{row.label}}</span>
-          <small>{{row.activeDetail}}</small>
-        </span>
+        <span class="benchmark-label">{{row.label}}</span>
         <span class="benchmark-track" aria-hidden="true">
           <if condition="row.activeAvailable">
             <if condition="row.primary">
@@ -56,6 +65,190 @@
           </if>
         </span>
         <span class="benchmark-value">{{row.activeValueDisplay}} {{row.activeUnit}}</span>
+
+        <if condition="benchmarks.selectedMetric == 'noStreamingRequestsPerSecond'">
+          <div class="benchmark-server-telemetry">
+            <if condition="row.metrics.noStreamingRequestsPerSecond.serverTelemetry.available">
+              <div class="benchmark-memory-summary">
+                <span class="benchmark-server-stat">
+                  <span>Peak</span>
+                  <strong>
+                    {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.peakRssBytes.valueDisplay}}
+                  </strong>
+                  <small>MiB</small>
+                </span>
+                <span class="benchmark-server-stat">
+                  <span>CPU</span>
+                  <strong>
+                    {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.cpuMillisecondsPerRequest.valueDisplay}}
+                  </strong>
+                  <small>ms/req</small>
+                </span>
+              </div>
+              <details class="benchmark-telemetry-details benchmark-server-details">
+                <summary>Details</summary>
+                <div class="benchmark-detail-panel">
+                  <dl class="benchmark-run-profile" data-benchmark-detail>
+                    <div
+                      class="benchmark-detail-part benchmark-detail-part-wide benchmark-detail-fallback"
+                    >
+                      <dt>Benchmark data</dt>
+                      <dd>{{row.activeDetail}}</dd>
+                    </div>
+                  </dl>
+                  <p class="benchmark-detail-heading">Server resource lifecycle</p>
+                  <dl class="benchmark-lifecycle-values" aria-label="Server resource lifecycle">
+                    <div>
+                      <dt>Startup</dt>
+                      <dd>
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.startupRssBytes.valueDisplay}}
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.startupRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Post-warmup</dt>
+                      <dd>
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.postWarmupRssBytes.valueDisplay}}
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.postWarmupRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Peak</dt>
+                      <dd>
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.peakRssBytes.valueDisplay}}
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.peakRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Post-settle</dt>
+                      <dd>
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.postSettleRssBytes.valueDisplay}}
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.postSettleRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>CPU / request</dt>
+                      <dd>
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.cpuMillisecondsPerRequest.valueDisplay}}
+                        {{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.cpuMillisecondsPerRequest.unit}}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              </details>
+            </if>
+            <if condition="!row.metrics.noStreamingRequestsPerSecond.serverTelemetry.available">
+              <p
+                class="benchmark-telemetry-unavailable"
+                title="{{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.reason}}"
+              >
+                <strong>Server telemetry unavailable</strong>
+                <span>{{row.metrics.noStreamingRequestsPerSecond.serverTelemetry.reason}}</span>
+              </p>
+            </if>
+          </div>
+        </if>
+
+        <if condition="benchmarks.selectedMetric == 'streamingRequestsPerSecond'">
+          <div class="benchmark-server-telemetry">
+            <if condition="row.metrics.streamingRequestsPerSecond.serverTelemetry.available">
+              <div class="benchmark-memory-summary">
+                <span class="benchmark-server-stat">
+                  <span>Peak</span>
+                  <strong>
+                    {{row.metrics.streamingRequestsPerSecond.serverTelemetry.peakRssBytes.valueDisplay}}
+                  </strong>
+                  <small>MiB</small>
+                </span>
+                <span class="benchmark-server-stat">
+                  <span>CPU</span>
+                  <strong>
+                    {{row.metrics.streamingRequestsPerSecond.serverTelemetry.cpuMillisecondsPerRequest.valueDisplay}}
+                  </strong>
+                  <small>ms/req</small>
+                </span>
+              </div>
+              <details class="benchmark-telemetry-details benchmark-server-details">
+                <summary>Details</summary>
+                <div class="benchmark-detail-panel">
+                  <dl class="benchmark-run-profile" data-benchmark-detail>
+                    <div
+                      class="benchmark-detail-part benchmark-detail-part-wide benchmark-detail-fallback"
+                    >
+                      <dt>Benchmark data</dt>
+                      <dd>{{row.activeDetail}}</dd>
+                    </div>
+                  </dl>
+                  <p class="benchmark-detail-heading">Server resource lifecycle</p>
+                  <dl class="benchmark-lifecycle-values" aria-label="Server resource lifecycle">
+                    <div>
+                      <dt>Startup</dt>
+                      <dd>
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.startupRssBytes.valueDisplay}}
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.startupRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Post-warmup</dt>
+                      <dd>
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.postWarmupRssBytes.valueDisplay}}
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.postWarmupRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Peak</dt>
+                      <dd>
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.peakRssBytes.valueDisplay}}
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.peakRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Post-settle</dt>
+                      <dd>
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.postSettleRssBytes.valueDisplay}}
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.postSettleRssBytes.unit}}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>CPU / request</dt>
+                      <dd>
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.cpuMillisecondsPerRequest.valueDisplay}}
+                        {{row.metrics.streamingRequestsPerSecond.serverTelemetry.cpuMillisecondsPerRequest.unit}}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+              </details>
+            </if>
+            <if condition="!row.metrics.streamingRequestsPerSecond.serverTelemetry.available">
+              <p
+                class="benchmark-telemetry-unavailable"
+                title="{{row.metrics.streamingRequestsPerSecond.serverTelemetry.reason}}"
+              >
+                <strong>Server telemetry unavailable</strong>
+                <span>{{row.metrics.streamingRequestsPerSecond.serverTelemetry.reason}}</span>
+              </p>
+            </if>
+          </div>
+        </if>
+
+        <if
+          condition="benchmarks.selectedMetric != 'noStreamingRequestsPerSecond' && benchmarks.selectedMetric != 'streamingRequestsPerSecond'"
+        >
+          <details class="benchmark-telemetry-details benchmark-metric-details">
+            <summary>Details</summary>
+            <div class="benchmark-detail-panel">
+              <dl class="benchmark-run-profile" data-benchmark-detail>
+                <div
+                  class="benchmark-detail-part benchmark-detail-part-wide benchmark-detail-fallback"
+                >
+                  <dt>Benchmark data</dt>
+                  <dd>{{row.activeDetail}}</dd>
+                </div>
+              </dl>
+            </div>
+          </details>
+        </if>
       </div>
     </for>
   </div>

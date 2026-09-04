@@ -46,16 +46,67 @@ interface BenchmarkData {
   rows: BenchmarkRow[];
 }
 
+interface BenchmarkDetailPart {
+  label: string;
+  value: string;
+  wide: boolean;
+}
+
 const EMPTY_DATA: BenchmarkData = {
   methodology: "",
   link: "",
-  selectedMetric: "requestsPerSecond",
+  selectedMetric: "noStreamingRequestsPerSecond",
   selectedMetricLabel: "",
   selectedMetricDescription: "",
   hasUnavailable: false,
   metrics: [],
   rows: [],
 };
+
+const DETAIL_SEPARATOR = " · ";
+const MAD_PREFIX = "MAD ";
+const P95_PREFIX = "p95 ";
+const SATURATION_PREFIX = "saturation warning: ";
+
+function benchmarkDetailParts(detail: string): BenchmarkDetailPart[] {
+  const segments = detail.split(DETAIL_SEPARATOR);
+  return segments.map((segment, index) => {
+    if (segment.startsWith(MAD_PREFIX)) {
+      return {
+        label: "Variability (MAD)",
+        value: segment.slice(MAD_PREFIX.length),
+        wide: false,
+      };
+    }
+    if (segment.startsWith(P95_PREFIX)) {
+      return {
+        label: "Tail latency (p95)",
+        value: segment.slice(P95_PREFIX.length),
+        wide: false,
+      };
+    }
+    if (segment.startsWith(SATURATION_PREFIX)) {
+      return {
+        label: "Saturation warning",
+        value: segment.slice(SATURATION_PREFIX.length),
+        wide: true,
+      };
+    }
+    if (segment.includes(" B natural")) {
+      return { label: "Response size", value: segment, wide: false };
+    }
+    if (segment.includes(" isolated runs")) {
+      return { label: "Samples", value: segment, wide: false };
+    }
+    if (segments.length >= 5 && index === 0) {
+      return { label: "Renderer", value: segment, wide: false };
+    }
+    if (segments.length >= 5 && index === 1) {
+      return { label: "Server", value: segment, wide: false };
+    }
+    return { label: "Benchmark data", value: segment, wide: false };
+  });
+}
 
 function metricValue(row: BenchmarkRow, metricId: string): MetricValue {
   return row.metrics[metricId] ?? {
@@ -125,6 +176,11 @@ function rankedRows(
 export class BenchmarkExplorer extends WebUIElement {
   @observable benchmarks: BenchmarkData = EMPTY_DATA;
 
+  connectedCallback(): void {
+    super.connectedCallback();
+    this.enhanceBenchmarkDetails();
+  }
+
   selectMetric(event: Event): void {
     const target = event.currentTarget;
     if (!(target instanceof HTMLButtonElement)) return;
@@ -152,6 +208,49 @@ export class BenchmarkExplorer extends WebUIElement {
       metrics,
       rows,
     };
+    this.$flushUpdates();
+    this.enhanceBenchmarkDetails();
+  }
+
+  private enhanceBenchmarkDetails(): void {
+    const profiles = this.shadowRoot?.querySelectorAll<HTMLElement>(
+      "[data-benchmark-detail]",
+    );
+    if (!profiles) return;
+
+    for (const profile of profiles) {
+      const detail = profile
+        .querySelector(".benchmark-detail-fallback dd")
+        ?.textContent
+        ?.trim();
+      if (!detail) continue;
+
+      for (
+        const generated of profile.querySelectorAll(
+          ".benchmark-detail-generated",
+        )
+      ) {
+        generated.remove();
+      }
+
+      const fragment = document.createDocumentFragment();
+      for (const part of benchmarkDetailParts(detail)) {
+        const group = document.createElement("div");
+        group.className = part.wide
+          ? "benchmark-detail-part benchmark-detail-part-wide benchmark-detail-generated"
+          : "benchmark-detail-part benchmark-detail-generated";
+
+        const term = document.createElement("dt");
+        term.textContent = part.label;
+        const description = document.createElement("dd");
+        description.textContent = part.value;
+        group.append(term, description);
+        fragment.append(group);
+      }
+
+      profile.append(fragment);
+      profile.dataset.enhanced = "true";
+    }
   }
 }
 
