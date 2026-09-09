@@ -35,13 +35,23 @@ async function createFixture(t: TestContext) {
 
 const readReference = "require('node:fs').readFileSync(require.resolve('@microsoft/webui/ai.md'), 'utf8')";
 
-test("build and pack refresh the reference from the canonical document", async (t) => {
+test("dependency build hooks do not rewrite the package-only reference", async () => {
+  const manifest = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
+  for (const hook of ["prebuild", "build", "postbuild"]) {
+    assert.doesNotMatch(
+      manifest.scripts[hook] ?? "",
+      /prepare-ai/,
+      `${hook} must not race parallel dependency builds for ai.md`,
+    );
+  }
+});
+
+test("prepack refreshes the reference from the canonical document", async (t) => {
   const { root, packageRoot, script, source } = await createFixture(t);
   const manifest = JSON.parse(
     await readFile(path.join(packageRoot, "package.json"), "utf8"),
   );
   assert.ok(manifest.files.includes("ai.md"));
-  assert.ok(manifest.scripts.build.includes("node scripts/prepare-ai.js"));
   assert.equal(manifest.scripts.prepack, "node scripts/prepare-ai.js");
   const canonical = await readFile(path.resolve("../../docs/ai.md"));
   await writeFile(source, canonical);

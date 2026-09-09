@@ -82,8 +82,8 @@ Keep protocol internals out of general user docs. The `docs/ai.md` file is the s
 `docs/ai.md` is authoring-first by design. Keep deep reference material (full CLI flag tables, error-code lists, per-language integration snippets) in its canonical page and link to it from `docs/ai.md` rather than duplicating it there.
 
 `ai/SKILL.md` is only the stable loader. Update `docs/ai.md` for authoring changes,
-not the loader or the generated `packages/webui/ai.md`. Package build and prepack
-steps refresh the generated reference.
+not the loader or the generated `packages/webui/ai.md`. The package prepack step
+refreshes the generated reference; ordinary builds do not write it.
 
 ## Validation
 

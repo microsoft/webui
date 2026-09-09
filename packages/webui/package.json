@@ -24,7 +24,7 @@
     "wasm/"
   ],
   "scripts": {
-    "build": "tsc && node scripts/prepare-ai.js",
+    "build": "tsc",
     "postbuild": "node dist/install.js",
     "prepack": "node scripts/prepare-ai.js",
     "postinstall": "node --input-type=module -e \"try{await import('./dist/install.js')}catch{}\"",

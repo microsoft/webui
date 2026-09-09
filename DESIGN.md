@@ -5422,11 +5422,13 @@ The `@microsoft/webui` npm package follows the esbuild single-package model:
 #### Versioned AI reference
 
 `docs/ai.md` is the canonical application-authoring reference and is served at
-`/ai` on the documentation site. The npm build and prepack steps copy it verbatim
+`/ai` on the documentation site. The npm prepack step copies it verbatim
 to `packages/webui/ai.md`; this generated copy is ignored by Git and included in
 the package's `files` allowlist. The `@microsoft/webui/ai.md` export allows
 application-relative package resolution without importing the native runtime.
-Packaging fails if the canonical reference is unavailable.
+Packaging fails if the canonical reference is unavailable. Ordinary dependency
+builds do not generate this package-only file: parallel example builds share the
+same package directory and must not race to overwrite the reference.
 
 `ai/SKILL.md`, discovered through `.claude-plugin/plugin.json`, is a stable loader
 installed once rather than a snapshot of the reference. It instructs agents to
