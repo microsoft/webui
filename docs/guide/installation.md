@@ -224,7 +224,12 @@ See the [Routing guide](/guide/concepts/routing) for setup and usage.
 
 ## AI Coding Agents
 
-WebUI publishes its framework reference as an installable [agent skill](https://agentskills.io). Installing it gives GitHub Copilot, Claude Code, Cursor, Codex, and other supported agents the authoring rules WebUI expects — template-first structure, CSS-owned styling, opt-in JavaScript — so generated code follows them instead of falling back to React habits.
+WebUI ships its framework reference inside `@microsoft/webui` as `ai.md`.
+The small `webui-reference` [agent skill](https://agentskills.io) tells GitHub
+Copilot, Claude Code, Cursor, Codex, and other supported agents to read that
+installed reference before working on WebUI code.
+
+**Install the loader once**, after adding `@microsoft/webui` to your project:
 
 <webui-press-tabs>
 <webui-press-tab slot="tab" active>npm</webui-press-tab>
@@ -253,7 +258,21 @@ pnpm dlx skills add microsoft/webui --skill webui-reference
 </webui-press-tab-panel>
 </webui-press-tabs>
 
-The skill lands in `.agents/skills/webui-reference/`, which GitHub Copilot reads directly. Agents that keep their own folder, such as Claude Code, also get a copy in theirs. Useful flags:
+The skill lands in `.agents/skills/webui-reference/`, which GitHub Copilot reads
+directly. The installer also sets it up in agent-specific skill directories
+where needed.
+
+The loader asks the agent to read `node_modules/@microsoft/webui/ai.md` from
+the application's installed dependencies.
+Upgrading `@microsoft/webui` updates the guidance with it. You do not need to
+rerun `skills add` for reference updates. If you upgrade during an agent session,
+ask the agent to reread the installed reference.
+
+If you previously installed the full reference as a skill, run the install
+command above once more in the same scope (project or `-g`) to replace it with
+the loader. Commit a project-local installation to share it with your team.
+
+Useful flags:
 
 | Flag | Effect |
 | ---- | ------ |
@@ -267,8 +286,15 @@ To try the reference in a single session without installing it:
 npx skills use microsoft/webui@webui-reference | copilot
 ```
 
+This also uses the reference from your installed package. Releases predating
+bundled `ai.md`, and Rust-only toolchains without `@microsoft/webui`, need a
+reference from their matching release instead. The loader reports missing
+guidance rather than silently using a newer version.
+
 <webui-blockquote appearance="tip" title="Read it yourself" icon="💡">
 
-The skill is the same document served at [AI Reference](/ai). Read it directly when you want the rules and the anti-patterns without wiring up an agent.
+Read the installed `ai.md` directly, or use [AI Reference](/ai) for the current
+release's rules and anti-patterns without wiring up an agent. The website may
+describe a newer version than your project uses.
 
 </webui-blockquote>

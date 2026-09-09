@@ -218,7 +218,7 @@ Shadow DOM components can react to the layout via `:host-context([data-layout="f
   "nav": [
     { "text": "Guide",      "link": "/guide/" },
     { "text": "Tutorials",  "link": "/tutorials/" },
-    { "text": "AI",         "link": "/ai", "source": "ai/SKILL.md" },
+    { "text": "AI",         "link": "/ai" },
     { "text": "GitHub",     "link": "https://github.com/me/proj" }
   ],
 
@@ -299,13 +299,13 @@ the URL, point a `nav` entry at the file with `source` (a path relative to
 `contentDir`, using forward slashes):
 
 ```json
-{ "text": "AI", "link": "/ai", "source": "ai/SKILL.md" }
+{ "text": "Reference", "link": "/reference", "source": "reference/README.md" }
 ```
 
-That serves `ai/SKILL.md` at `/ai` instead of `/ai/SKILL`. This is what keeps a
-page installable as an agent skill — the [agent-skill
-spec](https://agentskills.io) requires the file be named `SKILL.md` — while
-keeping its published docs URL stable.
+That serves `reference/README.md` at `/reference` instead of
+`/reference/README`, preserving the source filename while keeping the published
+docs URL stable. Ordinary pages such as `ai.md` already map to `/ai` and do not
+need a `source` override.
 
 ### Shared state
 

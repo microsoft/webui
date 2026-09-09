@@ -1,6 +1,5 @@
 ---
 layout: page
-name: webui-reference
 description: Authoritative WebUI framework reference for generating correct application code - template-first authoring rules, template syntax, styling, interactivity, routing, state JSON, and anti-patterns.
 ---
 
@@ -10,9 +9,15 @@ description: Authoritative WebUI framework reference for generating correct appl
 > generate correct WebUI code. Read the Rules first - they are the constraints
 > that most often get violated. Deep-dive links are indexed at the bottom.
 >
-> Install this reference into your agent with
+> Install the loader skill **once** with
 > `npx skills add microsoft/webui --skill webui-reference` - see
 > [AI Coding Agents](/guide/installation#ai-coding-agents).
+> It reads `node_modules/@microsoft/webui/ai.md`, so upgrading `@microsoft/webui`
+> updates the reference without reinstalling the skill.
+>
+> Links starting with `/guide/` or `/tutorials/` refer to the
+> [documentation site](https://microsoft.github.io/webui/), which tracks the
+> current release rather than your installed version.
 
 ## Rules
 
@@ -763,8 +768,6 @@ navigation adopts the response without refetching or parsing templates early.
 Non-router apps use `installInteractionHydration({ load })`. This policy trades
 first-interaction latency for lower startup JS/heap and cannot preserve
 transient user activation or closed-shadow click targets.
-The router remains framework-agnostic: FAST or any other runtime starts through
-`onIntent` and passes the same prepared handle after its own hydration is ready.
 
 | Decorator | Purpose | SSR? | Triggers DOM update? |
 |---|---|---|---|
@@ -1018,9 +1021,6 @@ the router for routed components.
   Document is applied before `</head>`. ShadowRoot-targeted Link CSS is preloaded
   from the head and applied inside its owning root. Static request-reachable
   Shadow roots are preloaded the same way.
-- FAST 2/3 plugins require effective Shadow components. Any effective Light
-  component fails with `fast-light-dom-unsupported`; use the WebUI plugin for
-  global Light DOM.
 
 | Attribute | Example | Description |
 |---|---|---|
@@ -1342,26 +1342,6 @@ page-scoped `scriptFile`. Omit `html`/`htmlFile` to retain the fallback. Regions
 resolve before component discovery and compilation; do not manually register
 their components elsewhere. See [WebUI Press named regions](/guide/webui-press)
 for the stable built-in region list and full configuration contract.
-
-**FAST authored templates.** The `fast-v2` and `fast-v3` plugins are pinned to
-FAST major versions 2 and 3, respectively; `fast` is a deprecated alias for
-`fast-v2`. With either versioned plugin, a component file authored as one
-`<f-template name="...">` wrapping one direct inner `<template>` is recognized:
-a non-empty `name` sets the component tag (else the filename without
-`.template.html` is kept), `<f-repeat>` and `<f-when>` provide repetition and
-conditions, and client bindings (`@event`, `:property`, `f-ref`, `f-slotted`, `f-children`) may
-be authored directly on the root `<template>`. The verbatim FAST filename
-`<component>.template.html` is discovered even though its stem has no hyphen,
-registering under the authored `name`. In npm packages, the FAST discovery
-plugin uses Custom Elements Manifest declarations and generated sibling
-`<component>.template.html` files; optional styles use
-`<component>.styles.css` or `<component>.css`. Wrapper shadow options include
-`shadowrootmode` and `shadowrootdelegatesfocus`. A leading generated
-`{{styles}}` marker is reserved for CSS injection. A directive takes only
-`value`; unsupported FAST syntax fails the build. Without a FAST plugin,
-`<f-template>` markup passes through unchanged. See
-[Plugins](/guide/concepts/plugins/) for the complete public authoring and
-package-layout contract.
 
 ```json
 {
