@@ -235,14 +235,6 @@ Packages without component sources are skipped; failures in declared components
 are reported rather than silently omitted.
 `@scope/*` and `@scope/package/*` can also be used as collection spellings.
 
-**Migration:** Default discovery no longer interprets
-`exports["./template-webui.html"]`, `exports["./styles.css"]`, or `customElements`
-to identify components. Name templates `<component-name>.html` and styles
-`<component-name>.css` instead. Those metadata fields may remain for other
-consumers but do not rename or select default WebUI templates.
-FAST keeps its separate CEM-based naming and special template/style conventions;
-see [Plugins](/guide/concepts/plugins/).
-
 ### Local Paths
 
 You can also point to directories outside your app folder:

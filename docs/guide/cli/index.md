@@ -724,9 +724,9 @@ Matching `.css` supplies styles; a matching `.ts` or `.js` sibling marks that
 component as authored. Package exports and CEM metadata do not select or rename
 native templates, and no manifest is required.
 
-FAST retains its separate metadata-based discovery rules. See
+See
 [External components](/guide/concepts/components#external-component-sources)
-for the native package layout and migration from legacy export-based discovery.
+for the native package layout.
 **Resolution:** The CLI searches ancestor `node_modules/` directories for the
 requested package or scope, not merely the nearest `node_modules/`. Symlinks
 (pnpm, npm workspaces) are resolved automatically. A bare scope searches its
