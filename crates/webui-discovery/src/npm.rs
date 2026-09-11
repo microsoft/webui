@@ -8,6 +8,8 @@
 //! support metadata-based discovery such as FAST.
 
 use anyhow::{bail, Context, Result};
+use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
+use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -29,7 +31,18 @@ pub struct PackageContext<'a> {
 pub(crate) struct ComponentDeclaration {
     pub(crate) tag_name: String,
     pub(crate) name: Option<String>,
-    pub(crate) module_path: Option<PathBuf>,
+    pub(crate) module_specifier: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolvedPackageModule {
+    pub(crate) name: String,
+    pub(crate) root: PathBuf,
+    pub(crate) relative_path: PathBuf,
+    pub(crate) package_json: PathBuf,
+    pub(crate) manifest: serde_json::Value,
+    pub(crate) ordered_manifest: OrderedJson,
+    pub(crate) resolution_dependencies: Vec<PathBuf>,
 }
 
 /// Maximum file size for package.json and custom elements manifests (10 MB).
@@ -44,6 +57,119 @@ const SCRIPTLESS_ASSET_EXPORTS: &[&str] = &[
     "./styles.css",
     "./component-asset.js",
 ];
+
+const ACTIVE_EXPORT_CONDITIONS: &[&str] = &["browser", "import", "default"];
+
+enum ExportTarget {
+    Target(String),
+    Blocked,
+    NoMatch,
+    Invalid,
+}
+
+#[derive(Debug)]
+pub(crate) enum OrderedJson {
+    String(String),
+    Object(Vec<(String, OrderedJson)>),
+    Null,
+    Other,
+}
+
+struct OrderedJsonSeed;
+
+impl<'de> DeserializeSeed<'de> for OrderedJsonSeed {
+    type Value = OrderedJson;
+
+    fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(OrderedJsonVisitor)
+    }
+}
+
+struct OrderedJsonVisitor;
+
+impl<'de> Visitor<'de> for OrderedJsonVisitor {
+    type Value = OrderedJson;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON value")
+    }
+
+    fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::String(value.to_string()))
+    }
+
+    fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::String(value))
+    }
+
+    fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::Null)
+    }
+
+    fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::Null)
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::Other)
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::Other)
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::Other)
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> std::result::Result<Self::Value, E> {
+        Ok(OrderedJson::Other)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while sequence.next_element_seed(OrderedJsonSeed)?.is_some() {}
+        Ok(OrderedJson::Other)
+    }
+
+    fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut entries = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            entries.push((key, map.next_value_seed(OrderedJsonSeed)?));
+        }
+        Ok(OrderedJson::Object(entries))
+    }
+}
+
+impl OrderedJson {
+    fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            Self::Object(entries) => entries
+                .iter()
+                .find_map(|(candidate, value)| (candidate == key).then_some(value)),
+            _ => None,
+        }
+    }
+}
+
+fn parse_ordered_json(content: &str, path: &Path) -> Result<OrderedJson> {
+    let mut deserializer = serde_json::Deserializer::from_str(content);
+    let value = OrderedJsonSeed
+        .deserialize(&mut deserializer)
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    deserializer
+        .end()
+        .with_context(|| format!("Failed to parse {}", path.display()))?;
+    Ok(value)
+}
 
 /// Check if a package name is a bare scope (e.g., `@reactive-ui` without a sub-package).
 fn is_bare_scope(name: &str) -> bool {
@@ -141,18 +267,8 @@ pub fn resolve(
 
 fn find_package_node_modules(name: &str, primary: &Path, fallback: &Path) -> Result<PathBuf> {
     for start in [primary, fallback] {
-        for directory in start.ancestors() {
-            let node_modules = directory.join("node_modules");
-            let candidate = node_modules.join(name);
-            match fs::symlink_metadata(&candidate) {
-                Ok(_) => return Ok(node_modules),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("Failed to inspect package {}", candidate.display())
-                    });
-                }
-            }
+        if let Some(resolution) = find_package_node_modules_from(name, start)? {
+            return Ok(resolution.node_modules);
         }
     }
     bail!(
@@ -161,6 +277,37 @@ fn find_package_node_modules(name: &str, primary: &Path, fallback: &Path) -> Res
         primary.display(),
         fallback.display()
     );
+}
+
+struct PackageNodeModulesResolution {
+    node_modules: PathBuf,
+    probes: Vec<PathBuf>,
+}
+
+fn find_package_node_modules_from(
+    name: &str,
+    start: &Path,
+) -> Result<Option<PackageNodeModulesResolution>> {
+    let mut probes = Vec::new();
+    for directory in start.ancestors() {
+        let node_modules = directory.join("node_modules");
+        let candidate = node_modules.join(name);
+        probes.push(candidate.clone());
+        match fs::symlink_metadata(&candidate) {
+            Ok(_) => {
+                return Ok(Some(PackageNodeModulesResolution {
+                    node_modules,
+                    probes,
+                }));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to inspect package {}", candidate.display()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Enumerate all sub-packages under a scoped directory (e.g., `@reactive-ui/*`).
@@ -285,28 +432,354 @@ pub(crate) fn package_export_path(
     package: PackageContext<'_>,
     key: &str,
 ) -> Result<Option<PathBuf>> {
-    let Some(value) = package_metadata(package)?
-        .get("exports")
-        .and_then(|exports| exports.get(key))
-    else {
+    let package_json = package.root.join("package.json");
+    let content = read_to_string_limited(&package_json, MAX_MANIFEST_SIZE)?;
+    let ordered_manifest = parse_ordered_json(&content, &package_json)?;
+    package_export_path_from_metadata(package.name, package.root, &ordered_manifest, key)
+}
+
+pub(crate) fn package_export_path_from_metadata(
+    package_name: &str,
+    package_root: &Path,
+    manifest: &OrderedJson,
+    key: &str,
+) -> Result<Option<PathBuf>> {
+    let Some(exports) = manifest.get("exports") else {
         return Ok(None);
     };
-    let target = value
-        .as_str()
-        .or_else(|| {
-            ["default", "import", "require"]
+    let target = match resolve_export_target(exports, key) {
+        ExportTarget::Target(target) => target,
+        ExportTarget::Blocked | ExportTarget::NoMatch => return Ok(None),
+        ExportTarget::Invalid => {
+            bail!(
+                "Package '{package_name}' export '{key}' must be a relative file path string \
+                 or a supported conditional object"
+            );
+        }
+    };
+    validate_package_export_target(&target, key)?;
+    let relative = Path::new(&target);
+    validate_package_path_boundary(package_root, relative, key).with_context(|| {
+        format!("Package '{package_name}' export '{key}' leaves the package boundary")
+    })?;
+    Ok(Some(package_root.join(relative)))
+}
+
+pub(crate) fn resolve_bare_module_specifier(
+    specifier: &str,
+    from: &Path,
+) -> Result<Option<ResolvedPackageModule>> {
+    let Some((package_name, subpath)) = bare_package_specifier(specifier)? else {
+        return Ok(None);
+    };
+    let Some(resolution) = find_package_node_modules_from(package_name, from)? else {
+        if package_name.starts_with('@') {
+            bail!(
+                "Package '{package_name}' referenced by CEM module specifier '{specifier}' \
+                 was not found in node_modules"
+            );
+        }
+        return Ok(None);
+    };
+    let node_modules = resolution.node_modules;
+    let root = fs::canonicalize(node_modules.join(package_name)).with_context(|| {
+        format!(
+            "Package not found or broken symlink: {} (looked in {})",
+            package_name,
+            node_modules.display()
+        )
+    })?;
+    if !root.is_dir() {
+        bail!("Package path is not a directory: {}", root.display());
+    }
+    let package_json = root.join("package.json");
+    let content = read_to_string_limited(&package_json, MAX_MANIFEST_SIZE)?;
+    let manifest: serde_json::Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse {}", package_json.display()))?;
+    let ordered_manifest = parse_ordered_json(&content, &package_json)?;
+    let relative_path =
+        resolve_package_module_path(package_name, &root, subpath, &manifest, &ordered_manifest)
+            .with_context(|| format!("Failed to resolve CEM module specifier '{specifier}'"))?;
+    Ok(Some(ResolvedPackageModule {
+        name: package_name.to_string(),
+        root,
+        relative_path,
+        package_json,
+        manifest,
+        ordered_manifest,
+        resolution_dependencies: resolution.probes,
+    }))
+}
+
+pub(crate) fn bare_module_package_name(specifier: &str) -> Result<Option<&str>> {
+    bare_package_specifier(specifier).map(|parsed| parsed.map(|(package_name, _)| package_name))
+}
+
+pub(crate) fn resolve_self_module_specifier(
+    package_name: &str,
+    package_root: &Path,
+    specifier: &str,
+    manifest: &serde_json::Value,
+) -> Result<PathBuf> {
+    let Some((specifier_package, subpath)) = bare_package_specifier(specifier)? else {
+        bail!("CEM module specifier is not a bare package reference: {specifier}");
+    };
+    if specifier_package != package_name {
+        bail!(
+            "CEM module specifier '{specifier}' does not reference containing package '{package_name}'"
+        );
+    }
+    let package_json = package_root.join("package.json");
+    let content = read_to_string_limited(&package_json, MAX_MANIFEST_SIZE)?;
+    let ordered_manifest = parse_ordered_json(&content, &package_json)?;
+    resolve_package_module_path(
+        package_name,
+        package_root,
+        subpath,
+        manifest,
+        &ordered_manifest,
+    )
+}
+
+fn bare_package_specifier(specifier: &str) -> Result<Option<(&str, Option<&str>)>> {
+    if specifier.starts_with("./")
+        || specifier.starts_with("../")
+        || specifier.starts_with('/')
+        || specifier.starts_with('\\')
+    {
+        return Ok(None);
+    }
+    validate_relative_path(specifier, "customElements modules[].path")?;
+
+    if specifier.starts_with('@') {
+        let Some(scope_end) = specifier.find('/') else {
+            bail!("Invalid scoped CEM module specifier: {specifier}");
+        };
+        let remainder = &specifier[scope_end + 1..];
+        let (package, subpath) = remainder
+            .split_once('/')
+            .map_or((remainder, None), |(package, subpath)| {
+                (package, Some(subpath))
+            });
+        let package_name = &specifier[..scope_end + 1 + package.len()];
+        validate_package_source(package_name)?;
+        validate_package_subpath(subpath, specifier)?;
+        return Ok(Some((package_name, subpath)));
+    }
+
+    let (package_name, subpath) = specifier
+        .split_once('/')
+        .map_or((specifier, None), |(package, subpath)| {
+            (package, Some(subpath))
+        });
+    if !is_package_segment(package_name) {
+        return Ok(None);
+    }
+    validate_package_subpath(subpath, specifier)?;
+    Ok(Some((package_name, subpath)))
+}
+
+fn validate_package_subpath(subpath: Option<&str>, specifier: &str) -> Result<()> {
+    if subpath.is_some_and(|path| {
+        path.is_empty()
+            || path.starts_with('/')
+            || path.ends_with('/')
+            || path.contains('\\')
+            || contains_encoded_separator(path)
+            || path
+                .split('/')
+                .any(|segment| segment.is_empty() || matches!(segment, "." | ".." | "node_modules"))
+    }) {
+        bail!("Invalid CEM module specifier: {specifier}");
+    }
+    Ok(())
+}
+
+fn resolve_package_module_path(
+    package_name: &str,
+    package_root: &Path,
+    subpath: Option<&str>,
+    manifest: &serde_json::Value,
+    ordered_manifest: &OrderedJson,
+) -> Result<PathBuf> {
+    let export_key = subpath.map_or_else(|| ".".to_string(), |path| format!("./{path}"));
+    let (target, is_export) = if let Some(exports) = ordered_manifest.get("exports") {
+        let target = match resolve_export_target(exports, &export_key) {
+            ExportTarget::Target(target) => target,
+            ExportTarget::Blocked => {
+                bail!("Package '{package_name}' blocks export '{export_key}'")
+            }
+            ExportTarget::NoMatch => {
+                bail!("Package '{package_name}' does not export '{export_key}'")
+            }
+            ExportTarget::Invalid => {
+                bail!("Package '{package_name}' has an invalid export '{export_key}'")
+            }
+        };
+        (target, true)
+    } else if let Some(subpath) = subpath {
+        (subpath.to_string(), false)
+    } else {
+        (
+            ["module", "main", "browser"]
                 .into_iter()
-                .find_map(|condition| value.get(condition).and_then(serde_json::Value::as_str))
-        })
-        .with_context(|| {
+                .find_map(|field| manifest.get(field).and_then(serde_json::Value::as_str))
+                .unwrap_or("index.js")
+                .to_string(),
+            false,
+        )
+    };
+    if is_export {
+        validate_package_export_target(&target, &export_key)?;
+    } else {
+        validate_relative_path(&target, "package module path")?;
+    }
+    let relative = PathBuf::from(target);
+    validate_package_path_boundary(package_root, &relative, "package module path")?;
+    Ok(relative)
+}
+
+fn resolve_export_target(exports: &OrderedJson, key: &str) -> ExportTarget {
+    match exports {
+        OrderedJson::Object(entries)
+            if entries
+                .iter()
+                .any(|(candidate, _)| candidate.starts_with('.')) =>
+        {
+            if let Some(value) = exports.get(key) {
+                resolve_export_value(value)
+            } else {
+                resolve_pattern_export_target(entries, key)
+            }
+        }
+        _ if key == "." => resolve_export_value(exports),
+        _ => ExportTarget::NoMatch,
+    }
+}
+
+fn resolve_export_value(value: &OrderedJson) -> ExportTarget {
+    match value {
+        OrderedJson::String(target) => ExportTarget::Target(target.clone()),
+        OrderedJson::Null => ExportTarget::Blocked,
+        OrderedJson::Object(entries) => {
+            for (condition, target) in entries {
+                if ACTIVE_EXPORT_CONDITIONS.contains(&condition.as_str()) {
+                    match resolve_export_value(target) {
+                        ExportTarget::NoMatch => {}
+                        resolved => return resolved,
+                    }
+                }
+            }
+            ExportTarget::NoMatch
+        }
+        _ => ExportTarget::Invalid,
+    }
+}
+
+fn resolve_pattern_export_target(exports: &[(String, OrderedJson)], key: &str) -> ExportTarget {
+    let mut selected = None;
+    for (pattern, value) in exports {
+        let Some((prefix, suffix)) = pattern.split_once('*') else {
+            continue;
+        };
+        if suffix.contains('*')
+            || key.len() < prefix.len() + suffix.len()
+            || !key.starts_with(prefix)
+            || !key.ends_with(suffix)
+        {
+            continue;
+        }
+        let matched = &key[prefix.len()..key.len() - suffix.len()];
+        let score = (prefix.len(), suffix.len());
+        if selected
+            .as_ref()
+            .is_none_or(|(best_score, _, _)| score > *best_score)
+        {
+            selected = Some((score, value, matched));
+        }
+    }
+    let Some((_, value, matched)) = selected else {
+        return ExportTarget::NoMatch;
+    };
+    match resolve_export_value(value) {
+        ExportTarget::Target(target) => ExportTarget::Target(target.replace('*', matched)),
+        resolved => resolved,
+    }
+}
+
+fn validate_package_export_target(target: &str, key: &str) -> Result<()> {
+    let Some(relative) = target.strip_prefix("./") else {
+        bail!("Package export '{key}' target must start with './': {target}");
+    };
+    if relative.is_empty()
+        || target.contains('\\')
+        || contains_encoded_separator(target)
+        || relative
+            .split('/')
+            .any(|segment| segment.is_empty() || matches!(segment, "." | ".." | "node_modules"))
+    {
+        bail!("Invalid package export '{key}' target: {target}");
+    }
+    validate_relative_path(target, key)
+}
+
+fn contains_encoded_separator(value: &str) -> bool {
+    value.as_bytes().windows(3).any(|bytes| {
+        bytes[0] == b'%'
+            && ((bytes[1] == b'2' && bytes[2].eq_ignore_ascii_case(&b'f'))
+                || (bytes[1] == b'5' && bytes[2].eq_ignore_ascii_case(&b'c')))
+    })
+}
+
+pub(crate) fn validate_package_asset_path(
+    root: &Path,
+    path: &Path,
+    field_name: &str,
+) -> Result<()> {
+    let relative = path.strip_prefix(root).with_context(|| {
+        format!(
+            "{field_name} is outside package root {}: {}",
+            root.display(),
+            path.display()
+        )
+    })?;
+    validate_package_path_boundary(root, relative, field_name)
+}
+
+fn validate_package_path_boundary(root: &Path, relative: &Path, field_name: &str) -> Result<()> {
+    let canonical_root = fs::canonicalize(root)
+        .with_context(|| format!("Failed to resolve package root {}", root.display()))?;
+    let target = root.join(relative);
+    let mut existing = target.as_path();
+    loop {
+        match fs::symlink_metadata(existing) {
+            Ok(_) => {
+                let canonical = fs::canonicalize(existing).with_context(|| {
+                    format!("Failed to resolve {field_name}: {}", existing.display())
+                })?;
+                if !canonical.starts_with(&canonical_root) {
+                    bail!(
+                        "{field_name} resolves outside package root {}: {}",
+                        root.display(),
+                        target.display()
+                    );
+                }
+                return Ok(());
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed to inspect {field_name}: {}", existing.display())
+                });
+            }
+        }
+        existing = existing.parent().with_context(|| {
             format!(
-                "Package '{}' export '{key}' must be a relative file path string, \
-         or provide one under default/import/require.",
-                package.name
+                "Could not validate {field_name} within package root {}",
+                root.display()
             )
         })?;
-    validate_relative_path(target, key)?;
-    Ok(Some(package.root.join(target)))
+    }
 }
 
 pub(crate) fn custom_elements_manifest_path(package: PackageContext<'_>) -> Result<PathBuf> {
@@ -316,7 +789,15 @@ pub(crate) fn custom_elements_manifest_path(package: PackageContext<'_>) -> Resu
         .and_then(serde_json::Value::as_str)
         .with_context(|| format!("No 'customElements' field in {}", package_json.display()))?;
     validate_relative_path(relative, "customElements")?;
-    Ok(package.root.join(relative))
+    let path = package.root.join(relative);
+    validate_package_asset_path(package.root, &path, "customElements").with_context(|| {
+        format!(
+            "Custom elements manifest leaves package '{}': {}",
+            package.name,
+            path.display()
+        )
+    })?;
+    Ok(path)
 }
 
 pub(crate) fn read_required_file(path: &Path, kind: &str) -> Result<String> {
@@ -416,7 +897,7 @@ fn parse_custom_elements_manifest(path: &Path) -> Result<Vec<ComponentDeclaratio
                                 .get("name")
                                 .and_then(|value| value.as_str())
                                 .map(str::to_string),
-                            module_path: module_path.map(PathBuf::from),
+                            module_specifier: module_path.map(str::to_string),
                         });
                     }
                 }
@@ -433,6 +914,26 @@ mod tests {
     use crate::{FastDiscoveryPlugin, WebUIDiscoveryPlugin};
     use std::fs;
     use tempfile::TempDir;
+
+    fn ordered_json(source: &str) -> OrderedJson {
+        parse_ordered_json(source, Path::new("package.json")).unwrap()
+    }
+
+    fn resolve_test_package_module_path(
+        root: &Path,
+        subpath: Option<&str>,
+        source: &str,
+    ) -> Result<PathBuf> {
+        let manifest = serde_json::from_str(source).unwrap();
+        let ordered_manifest = ordered_json(source);
+        resolve_package_module_path(
+            "external-module",
+            root,
+            subpath,
+            &manifest,
+            &ordered_manifest,
+        )
+    }
 
     fn create_npm_package(dir: &Path, name: &str, tag_name: &str, html: &str, css: Option<&str>) {
         let pkg_dir = dir.join(name);
@@ -524,6 +1025,53 @@ mod tests {
         let primary = TempDir::new().unwrap();
         let fallback = TempDir::new().unwrap();
         assert!(find_package_node_modules("fixture-pkg", primary.path(), fallback.path()).is_err());
+    }
+
+    #[test]
+    fn test_bare_module_resolution_tracks_all_ancestor_probes() {
+        let tmp = TempDir::new().unwrap();
+        let app = tmp.path().join("packages/app");
+        fs::create_dir_all(&app).unwrap();
+        let plain = tmp.path().join("node_modules/plain-module");
+        fs::create_dir_all(&plain).unwrap();
+        fs::write(
+            plain.join("package.json"),
+            r#"{"exports":{"./component.js":"./component.js"}}"#,
+        )
+        .unwrap();
+        let scoped = tmp.path().join("node_modules/@fixture/scoped-module");
+        fs::create_dir_all(&scoped).unwrap();
+        fs::write(
+            scoped.join("package.json"),
+            r#"{"exports":{"./component.js":"./component.js"}}"#,
+        )
+        .unwrap();
+
+        let plain_resolution = resolve_bare_module_specifier("plain-module/component.js", &app)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plain_resolution.resolution_dependencies,
+            [
+                app.join("node_modules/plain-module"),
+                tmp.path().join("packages/node_modules/plain-module"),
+                tmp.path().join("node_modules/plain-module"),
+            ]
+        );
+
+        let scoped_resolution =
+            resolve_bare_module_specifier("@fixture/scoped-module/component.js", &app)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            scoped_resolution.resolution_dependencies,
+            [
+                app.join("node_modules/@fixture/scoped-module"),
+                tmp.path()
+                    .join("packages/node_modules/@fixture/scoped-module"),
+                tmp.path().join("node_modules/@fixture/scoped-module"),
+            ]
+        );
     }
 
     #[test]
@@ -793,6 +1341,224 @@ mod tests {
         assert!(validate_relative_path("./dist/template.html", "exports").is_ok());
         assert!(validate_relative_path("custom-elements.json", "customElements").is_ok());
         assert!(validate_relative_path("dist/nested/file.css", "exports").is_ok());
+    }
+
+    #[test]
+    fn test_bare_module_export_cannot_escape_package() {
+        let tmp = TempDir::new().unwrap();
+        let package = tmp.path().join("node_modules/external-module");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"exports":{"./component.js":"./dist/../outside.js"}}"#,
+        )
+        .unwrap();
+
+        let error =
+            resolve_bare_module_specifier("external-module/component.js", tmp.path()).unwrap_err();
+        assert!(format!("{error:#}").contains(".."));
+    }
+
+    #[test]
+    fn test_bare_module_resolves_pattern_export() {
+        let tmp = TempDir::new().unwrap();
+        let path = resolve_test_package_module_path(
+            tmp.path(),
+            Some("components/button"),
+            r#"{
+            "exports": {
+                "./components/*": {
+                    "default": "./dist/*.js"
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("./dist/button.js"));
+    }
+
+    #[test]
+    fn test_bare_module_uses_first_active_export_condition() {
+        let tmp = TempDir::new().unwrap();
+        let path = resolve_test_package_module_path(
+            tmp.path(),
+            Some("component.js"),
+            r#"{
+            "exports": {
+                "./component.js": {
+                    "default": "./dist/default.js",
+                    "import": "./dist/import.js"
+                }
+            }
+        }"#,
+        )
+        .unwrap();
+
+        assert_eq!(path, PathBuf::from("./dist/default.js"));
+    }
+
+    #[test]
+    fn test_active_null_condition_blocks_later_default() {
+        let tmp = TempDir::new().unwrap();
+        let error = resolve_test_package_module_path(
+            tmp.path(),
+            Some("component.js"),
+            r#"{
+            "exports": {
+                "./component.js": {
+                    "import": null,
+                    "default": "./dist/default.js"
+                }
+            }
+        }"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("blocks export"));
+    }
+
+    #[test]
+    fn test_exact_null_export_blocks_pattern_fallback() {
+        let tmp = TempDir::new().unwrap();
+        assert!(resolve_test_package_module_path(
+            tmp.path(),
+            Some("component.js"),
+            r#"{
+            "exports": {
+                "./component.js": null,
+                "./*": "./dist/*.js"
+            }
+        }"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_package_exports_reject_invalid_target_segments() {
+        let tmp = TempDir::new().unwrap();
+        for target in [
+            "dist/component.js",
+            "./node_modules/component.js",
+            "./dist/./component.js",
+            "./dist%2fcomponent.js",
+            "./dist%5Ccomponent.js",
+        ] {
+            let source = serde_json::json!({
+                "exports": {"./component.js": target}
+            })
+            .to_string();
+            assert!(
+                resolve_test_package_module_path(tmp.path(), Some("component.js"), &source,)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_package_export_symlink_cannot_escape_root() {
+        let tmp = TempDir::new().unwrap();
+        let package = tmp.path().join("package");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("component.js"), "export {};").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, package.join("link")).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&outside, package.join("link")).unwrap();
+        let error = resolve_test_package_module_path(
+            &package,
+            Some("component.js"),
+            r#"{"exports":{"./component.js":"./link/component.js"}}"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("outside package root"));
+    }
+
+    #[test]
+    fn test_asset_exports_support_patterns_and_exact_blocks() {
+        let tmp = TempDir::new().unwrap();
+        let manifest = ordered_json(
+            r#"{
+            "exports": {
+                "./*.html": "./assets/*.html",
+                "./*.css": "./assets/*.css"
+            }
+        }"#,
+        );
+
+        let template = package_export_path_from_metadata(
+            "fixture-package",
+            tmp.path(),
+            &manifest,
+            "./template-webui.html",
+        )
+        .unwrap();
+        let styles = package_export_path_from_metadata(
+            "fixture-package",
+            tmp.path(),
+            &manifest,
+            "./styles.css",
+        )
+        .unwrap();
+
+        assert_eq!(
+            template,
+            Some(tmp.path().join("./assets/template-webui.html"))
+        );
+        assert_eq!(styles, Some(tmp.path().join("./assets/styles.css")));
+
+        let blocked = ordered_json(
+            r#"{
+            "exports": {
+                "./template-webui.html": null,
+                "./*.html": "./assets/*.html"
+            }
+        }"#,
+        );
+        assert!(package_export_path_from_metadata(
+            "fixture-package",
+            tmp.path(),
+            &blocked,
+            "./template-webui.html",
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn test_custom_elements_manifest_symlink_cannot_escape_root() {
+        let tmp = TempDir::new().unwrap();
+        let package = tmp.path().join("package");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("custom-elements.json"), r#"{"modules":[]}"#).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            outside.join("custom-elements.json"),
+            package.join("custom-elements.json"),
+        )
+        .unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(
+            outside.join("custom-elements.json"),
+            package.join("custom-elements.json"),
+        )
+        .unwrap();
+        let manifest = serde_json::json!({
+            "customElements": "./custom-elements.json"
+        });
+        let context = PackageContext {
+            name: "fixture-package",
+            root: &package,
+            manifest: Some(&manifest),
+        };
+
+        let error = custom_elements_manifest_path(context).unwrap_err();
+
+        assert!(format!("{error:#}").contains("leaves package"));
     }
 
     #[test]

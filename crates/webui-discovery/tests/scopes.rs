@@ -136,7 +136,10 @@ fn fast_scope_skips_non_components_but_reports_declared_missing_assets() -> Test
     fs::write(
         component.join("custom-elements.json"),
         r#"{
-        "modules":[{"declarations":[{"name":"Button","tagName":"fast-button"}]}]
+        "modules":[{
+            "path":"button.js",
+            "declarations":[{"name":"Button","tagName":"fast-button"}]
+        }]
     }"#,
     )?;
     fs::write(
@@ -153,6 +156,34 @@ fn fast_scope_skips_non_components_but_reports_declared_missing_assets() -> Test
         .err()
         .ok_or("scope must surface missing declared templates")?;
     assert!(format!("{error:#}").contains("button.template-webui.html"));
+    Ok(())
+}
+
+#[test]
+fn fast_scope_aborts_for_unresolved_bare_manifest_modules() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let aggregate = package(
+        root.path(),
+        "@fixture/aggregate",
+        r#"{"customElements":"custom-elements.json"}"#,
+    )?;
+    fs::write(
+        aggregate.join("custom-elements.json"),
+        r#"{
+        "modules":[{
+            "path":"@missing/module/component.js",
+            "declarations":[{"name":"Card","tagName":"fixture-card"}]
+        }]
+    }"#,
+    )?;
+    package(root.path(), "@fixture/utility", r#"{"main":"./index.js"}"#)?;
+
+    let error = discover_source_with_plugin("@fixture", root.path(), &FastDiscoveryPlugin::new())
+        .err()
+        .ok_or("scope must abort for an unresolved bare module")?;
+    let message = format!("{error:#}");
+    assert!(message.contains("@fixture/aggregate"));
+    assert!(message.contains("@missing/module"));
     Ok(())
 }
 
@@ -247,7 +278,10 @@ fn fast_manifest_components_take_precedence_and_plain_components_fill_gaps() -> 
     fs::write(
         mixed.join("custom-elements.json"),
         r#"{
-        "modules":[{"declarations":[{"name":"Button","tagName":"fast-button"}]}]
+        "modules":[{
+            "path":"dist/button.js",
+            "declarations":[{"name":"Button","tagName":"fast-button"}]
+        }]
     }"#,
     )?;
     fs::write(

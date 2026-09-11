@@ -90,12 +90,32 @@ impl DiscoveryCache {
             .chain(dependencies.iter().map(PathBuf::as_path))
         {
             path.hash(&mut hasher);
-            match fs::File::open(path) {
-                Ok(mut file) => {
+            match fs::symlink_metadata(path) {
+                Ok(metadata) => {
                     true.hash(&mut hasher);
-                    hash_contents(&mut file, &mut buffer)
-                        .with_context(|| format!("Failed to read for hashing: {}", path.display()))?
-                        .hash(&mut hasher);
+                    metadata.file_type().is_symlink().hash(&mut hasher);
+                    if metadata.file_type().is_symlink() {
+                        fs::read_link(path)
+                            .with_context(|| {
+                                format!("Failed to read symlink for hashing: {}", path.display())
+                            })?
+                            .hash(&mut hasher);
+                    }
+                    let followed = fs::metadata(path).with_context(|| {
+                        format!("Failed to inspect for hashing: {}", path.display())
+                    })?;
+                    followed.is_file().hash(&mut hasher);
+                    followed.is_dir().hash(&mut hasher);
+                    if followed.is_file() {
+                        let mut file = fs::File::open(path).with_context(|| {
+                            format!("Failed to read for hashing: {}", path.display())
+                        })?;
+                        hash_contents(&mut file, &mut buffer)
+                            .with_context(|| {
+                                format!("Failed to read for hashing: {}", path.display())
+                            })?
+                            .hash(&mut hasher);
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     false.hash(&mut hasher);
@@ -357,5 +377,18 @@ mod tests {
             .get(&lookup("test-pkg", &pkg_json, changed_fingerprint))
             .unwrap();
         assert!(cached.is_none());
+    }
+
+    #[test]
+    fn test_fingerprint_tracks_directory_probe_appearance() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let candidate = tmp.path().join("node_modules/fixture-package");
+        let dependencies = vec![candidate.clone()];
+        let missing = DiscoveryCache::fingerprint(None, &dependencies).unwrap();
+
+        fs::create_dir_all(&candidate).unwrap();
+
+        let present = DiscoveryCache::fingerprint(None, &dependencies).unwrap();
+        assert_ne!(present, missing);
     }
 }
