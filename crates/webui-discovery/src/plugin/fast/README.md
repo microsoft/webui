@@ -10,9 +10,11 @@ script ownership analysis is performed only for FAST manifest declarations.
 
 A single-component package can export `./template-webui.html` and optionally
 `./styles.css`. Paths are relative to the package root, including symlinked
-packages. Direct strings and `default`/`import`/`require` conditional exports
-are supported. The selected template path must end in `.template-webui.html`.
-Raw `.template.html` files and their export are never selected.
+packages. Direct strings and conditional objects preserve declaration order
+with `browser`, `import`, and `default` as active conditions. An active `null`
+blocks the export. Export arrays are not supported. The selected template path
+must end in `.template-webui.html`. Raw `.template.html` files and their export
+are never selected.
 
 The manifest supplies the inventory and names; these exports are only optional
 asset-location hints.
@@ -21,6 +23,14 @@ Without a package-level template export, FAST uses CEM module-relative
 template/style lookup and virtual-module fallbacks, then checks parent
 directories within the package when needed. This supports multi-component
 packages with templates beside their JavaScript modules.
+
+CEM module paths may also be bare npm specifiers. Scoped package subpaths and
+unscoped packages declared through `dependencies`, `peerDependencies`, or
+`optionalDependencies` resolve from `node_modules`, including package export
+maps. The current package name is also recognized for self-references. Prefix
+an ambiguous package-relative path with `./`; existing paths backed by local
+modules or templates remain package-relative. Asset lookup stays within the
+resolved package and honors its explicit converted template and style exports.
 
 An explicit missing or invalid asset is an error, not a reason to select a
 different template. Packages shipping only `.template.html` must also provide
