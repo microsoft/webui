@@ -37,7 +37,7 @@ use webui_dev_server::{
 };
 
 use crate::build::{build_docs_with_cache, BuildCache};
-use crate::types::DocsConfig;
+use crate::types::{DocsConfig, ShowMode};
 
 /// Filesystem-event debounce window. Editors often save in multiple bursts;
 /// a single rebuild per burst feels right.
@@ -55,6 +55,8 @@ pub struct ServeConfig {
     pub config_path: PathBuf,
     pub host: String,
     pub port: u16,
+    /// Explicit CLI display-mode override, reapplied after each config reload.
+    pub show_override: Option<ShowMode>,
 }
 
 /// Run the dev server until interrupted.
@@ -66,6 +68,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         config_path,
         host,
         port,
+        show_override,
     } = opts;
     let base_path = normalize_base_path(&config.base_path);
     // Match `build_docs` semantics: `out_dir`, `content_dir`, and
@@ -95,7 +98,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
     // amortizing across rebuilds — every other build step runs from
     // scratch).
     let initial_cache: BuildCache = {
-        let cfg = clone_config_via_reparse(&config_path)?;
+        let cfg = clone_config_via_reparse(&config_path, show_override)?;
         let cd = config_dir.clone();
         let td = template_dir.clone();
         tokio::task::spawn_blocking(move || -> Result<BuildCache> {
@@ -130,7 +133,7 @@ pub async fn run_serve(opts: ServeConfig) -> Result<()> {
         let template_dir = template_dir.clone();
         let cache = cache.clone();
         spawn_rebuild_worker(livereload.clone(), move || {
-            let cfg = clone_config_via_reparse(&config_path)
+            let cfg = clone_config_via_reparse(&config_path, show_override)
                 .map_err(|e| format!("config reload failed: {e}"))?;
             let mut guard = cache
                 .lock()
@@ -284,10 +287,18 @@ fn projection_manifest_paths(config_dir: &Path, manifests: &[String]) -> Vec<Pat
 
 /// Re-read and parse `config.json`. Used both to seed the initial build
 /// and inside the rebuild worker so live edits to the config take effect.
-fn clone_config_via_reparse(config_path: &Path) -> Result<DocsConfig> {
+fn clone_config_via_reparse(
+    config_path: &Path,
+    show_override: Option<ShowMode>,
+) -> Result<DocsConfig> {
     let s = std::fs::read_to_string(config_path)
         .with_context(|| format!("Cannot read {}", config_path.display()))?;
-    serde_json::from_str(&s).with_context(|| format!("Invalid JSON in {}", config_path.display()))
+    let mut config: DocsConfig = serde_json::from_str(&s)
+        .with_context(|| format!("Invalid JSON in {}", config_path.display()))?;
+    if let Some(show) = show_override {
+        config.show = show;
+    }
+    Ok(config)
 }
 
 #[cfg(test)]

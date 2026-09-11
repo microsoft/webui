@@ -3,11 +3,25 @@
 
 use serde::Deserialize;
 
+/// Which parts of the documentation site to generate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ShowMode {
+    /// Generate the complete site, including its navigation and other shell regions.
+    #[default]
+    All,
+    /// Generate only authored page content in a complete, shell-free document.
+    Content,
+}
+
 /// Documentation site configuration (read from config.json).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocsConfig {
     pub site: SiteConfig,
+    /// Display mode, overridden by an explicit CLI `--show` value.
+    #[serde(default)]
+    pub show: ShowMode,
     pub base_path: String,
     pub content_dir: String,
     #[serde(default = "default_out_dir")]
@@ -291,6 +305,23 @@ pub struct BuildStats {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn show_mode_defaults_to_all_and_rejects_unknown_values() -> Result<(), serde_json::Error> {
+        let json = r#"{
+            "site": {"title": "Docs"}, "basePath": "/", "contentDir": ".",
+            "nav": [], "sidebar": []
+        }"#;
+        let config: DocsConfig = serde_json::from_str(json)?;
+        assert_eq!(config.show, ShowMode::All);
+        assert_eq!(
+            serde_json::from_str::<ShowMode>("\"content\"")?,
+            ShowMode::Content
+        );
+        assert_eq!(serde_json::from_str::<ShowMode>("\"all\"")?, ShowMode::All);
+        assert!(serde_json::from_str::<ShowMode>("\"invalid\"").is_err());
+        Ok(())
+    }
 
     // --- HeadTag::to_html ------------------------------------------------
 

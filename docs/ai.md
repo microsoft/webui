@@ -1339,7 +1339,16 @@ Catalog script ownership follows matching `.ts`/`.js` siblings per component;
 package exports and `.spec.ts` files do not make unrelated scriptless tags
 require registration imports or projection entries.
 
-### WebUI Press named regions
+### WebUI Press
+
+Use native `webui-press build --show=content` or `webui-press serve --show=content`
+to generate Markdown/examples/API panels without Press shell UI. Default mode
+is `all`; explicit CLI values override config `show` across live reloads.
+Content mode retains the complete document, themes, SSR, and hydration.
+Content colors follow the OS, including live preference changes, without
+reading the full site's saved manual theme. Full mode retains its persisted
+theme control and applies that choice to native theme tokens and controls.
+See [WebUI Press](/guide/webui-press) for layout and asset behavior.
 
 In a WebUI Press template, use paired regions for fallback markup and
 self-closing regions for empty insertion points:

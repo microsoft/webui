@@ -226,6 +226,7 @@ mod tests {
 
     fn empty_config() -> DocsConfig {
         DocsConfig {
+            show: Default::default(),
             site: SiteConfig {
                 title: "Docs".to_string(),
                 description: String::new(),

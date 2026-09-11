@@ -125,12 +125,39 @@ Every `.md` file under `contentDir` becomes a page automatically. The sidebar/na
 
 ```
 webui-press build [OPTIONS]
+webui-press serve [OPTIONS]
 
 Options:
   -c, --config <PATH>      Path to config.json [default: .webui-press/config.json]
   -t, --template <PATH>    Override the bundled template directory
+      --show <MODE>        all or content [default: config show, otherwise all]
   -h, --help               Print help
 ```
+
+Use `webui-press build --show=content` or `webui-press serve --show=content`
+for a shell-free gallery or documentation view. Omit the flag for the complete
+site, or set `"show": "content"` in config to make content mode the default.
+An explicit flag overrides config, including after live config reloads.
+
+Content mode keeps a complete HTML document, metadata/base URL, themes, SSR,
+hydration, Markdown, examples, API panels, custom-page content, and page scripts.
+It omits Press template regions, hero/features, header/navigation,
+sidebars/TOC, mobile navigation, previous/next links, and footer before
+compilation. Authored header/side-pane examples are not filtered. Home Markdown
+is rendered in this mode; doc, page, full, custom, and 404 pages all use normal
+document scrolling without reserved shell columns or viewport-fill behavior.
+
+Content mode uses the bundled `main`/`article` scaffold even with `--template`.
+Its colors follow the OS preference, including live changes, without reading
+or changing the full site's saved theme selection. Full mode retains its
+persisted theme control; manual light/dark selection applies to native theme
+tokens and browser controls even when the OS preference differs. Forced-colors
+styles retain precedence over manual theme overrides.
+
+The full template's regions are still validated but are inactive, as are its
+CSS and entry script. Configure `head`, `css`, `theme`, `components`, and page
+scripts for assets that should apply in both modes. In the bundled full template,
+shared `docs.css` and layout-only `shell.css` are combined into one output file.
 
 The build pipeline:
 
