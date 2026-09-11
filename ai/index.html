@@ -727,7 +727,17 @@ the message. <code>--format json</code> emits one JSON object per error on stdou
     each="person inpeople"
   help: use the form each="item in collection", e.g. each="todo in todos"
 </code></pre></code-block><p>Full flag tables, exit codes, and the error-code list:
-<a href="/webui/guide/cli/">CLI Reference</a>.</p><h3 id="webui-press-named-regions">WebUI Press named regions <a class="header-anchor" href="/webui/ai/#webui-press-named-regions" aria-label="Link to WebUI Press named regions">#</a></h3><p>In a WebUI Press template, use paired regions for fallback markup and
+<a href="/webui/guide/cli/">CLI Reference</a>.</p><h3 id="external-component-discovery">External component discovery <a class="header-anchor" href="/webui/ai/#external-component-discovery" aria-label="Link to External component discovery">#</a></h3><p>Native <code>--components</code> discovery derives names from <code>&lt;component-name&gt;.html</code>,
+scanning a package's <code>components/</code> directory when present or its root otherwise.
+Template/style exports and CEM names are not interpreted by default discovery;
+FAST's special metadata-based layouts remain separate.
+Npm collection spellings <code>@scope/*</code> and <code>@scope/package/*</code> are accepted.
+Package subpaths and traversal are not package identifiers; use <code>./components</code>
+or another explicit local path for filesystem discovery.
+Import browser registrations through the package's module exports separately.
+Catalog script ownership follows matching <code>.ts</code>/<code>.js</code> siblings per component;
+package exports and <code>.spec.ts</code> files do not make unrelated scriptless tags
+require registration imports or projection entries.</p><h3 id="webui-press-named-regions">WebUI Press named regions <a class="header-anchor" href="/webui/ai/#webui-press-named-regions" aria-label="Link to WebUI Press named regions">#</a></h3><p>In a WebUI Press template, use paired regions for fallback markup and
 self-closing regions for empty insertion points:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>&lt;<span class="hl-tag">webui-press-region</span> <span class="hl-attr">name</span>=<span class="hl-string">"</span><span class="hl-string">home.afterHero</span><span class="hl-string">"</span> <span class="hl-attr">layout</span>=<span class="hl-string">"</span><span class="hl-string">home</span><span class="hl-string">"</span>&gt;
   &lt;<span class="hl-tag">project-summary</span>&gt;&lt;/<span class="hl-tag">project-summary</span>&gt;
 &lt;/<span class="hl-tag">webui-press-region</span>&gt;
