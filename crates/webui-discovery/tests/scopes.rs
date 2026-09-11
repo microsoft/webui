@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use webui_discovery::{
     discover_source, discover_source_with_plugin, DiscoveredComponent, DiscoveryPlugin,
-    FastDiscoveryPlugin, PackageContext,
+    FastDiscoveryPlugin, PackageContext, WebUIDiscoveryPlugin,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -16,6 +16,81 @@ fn package(root: &Path, name: &str, manifest: &str) -> std::io::Result<PathBuf> 
     fs::create_dir_all(&package)?;
     fs::write(package.join("package.json"), manifest)?;
     Ok(package)
+}
+
+#[test]
+fn npm_sources_reject_traversal_before_loading_an_outside_package() -> TestResult {
+    let root = tempfile::tempdir()?;
+    package(root.path(), "foo", "{}")?;
+    package(root.path(), "@fixture/button", "{}")?;
+    let outside = root.path().join("outside");
+    fs::create_dir(&outside)?;
+    fs::write(outside.join("package.json"), "{}")?;
+    fs::write(outside.join("outside-card.html"), "<span>Outside</span>")?;
+    let plugins: [&dyn DiscoveryPlugin; 2] =
+        [&WebUIDiscoveryPlugin::new(), &FastDiscoveryPlugin::new()];
+    for plugin in plugins {
+        for source in [
+            "foo/../../outside",
+            "foo/../../outside/*",
+            "@fixture/../../outside",
+            "@fixture/button/../../../outside",
+        ] {
+            let result = discover_source_with_plugin(source, root.path(), plugin);
+            assert!(result.is_err(), "{source} loaded an unrelated package");
+        }
+        let explicit = discover_source_with_plugin("./outside", root.path(), plugin)?;
+        assert_eq!(explicit.components[0].tag_name, "outside-card");
+    }
+    Ok(())
+}
+
+#[test]
+fn npm_sources_reject_invalid_identifier_forms_with_actionable_errors() -> TestResult {
+    let root = tempfile::tempdir()?;
+    for source in [
+        "",
+        "@",
+        "@scope/",
+        "@scope//button",
+        "@scope/./button",
+        "@scope/../button",
+        "@scope/button/extra",
+        "@scope\\button",
+        "foo/bar",
+        "foo\\..\\outside",
+        "foo//bar",
+        "foo@1.0.0",
+        "foo%2fbar",
+        "foo:bar",
+        "foo bar",
+        "foo/*/bar",
+        "foo\0bar",
+    ] {
+        let error = discover_source(source, root.path())
+            .err()
+            .ok_or("invalid npm source was accepted")?;
+        let message = error.to_string();
+        assert!(
+            message.contains("Invalid npm component source"),
+            "{source:?}: {message}"
+        );
+        assert!(message.contains("./"), "missing local-path guidance");
+    }
+    Ok(())
+}
+
+#[test]
+fn npm_sources_accept_package_and_collection_identifiers() -> TestResult {
+    let root = tempfile::tempdir()?;
+    for name in ["my-widget", "my_widget", "my.widget", "@fixture/ui-kit"] {
+        let directory = package(root.path(), name, "{}")?;
+        fs::write(directory.join("test-card.html"), "<span>Card</span>")?;
+        for source in [name.to_string(), format!("{name}/*")] {
+            assert_eq!(discover_source(&source, root.path())?.components.len(), 1);
+        }
+    }
+    Ok(())
 }
 
 #[test]

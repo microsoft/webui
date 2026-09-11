@@ -12,12 +12,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::DiscoveredComponent;
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const HASH_BUFFER_SIZE: usize = 8 * 1024;
 
 pub(crate) struct CacheKey<'a> {
     pub(crate) namespace: &'a str,
@@ -82,15 +84,18 @@ impl DiscoveryCache {
         dependencies: &[PathBuf],
     ) -> Result<u64> {
         let mut hasher = DefaultHasher::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
         for path in package_json
             .into_iter()
             .chain(dependencies.iter().map(PathBuf::as_path))
         {
             path.hash(&mut hasher);
-            match fs::read(path) {
-                Ok(content) => {
+            match fs::File::open(path) {
+                Ok(mut file) => {
                     true.hash(&mut hasher);
-                    content.hash(&mut hasher);
+                    hash_contents(&mut file, &mut buffer)
+                        .with_context(|| format!("Failed to read for hashing: {}", path.display()))?
+                        .hash(&mut hasher);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     false.hash(&mut hasher);
@@ -185,6 +190,22 @@ impl DiscoveryCache {
         Ok(())
     }
 }
+
+fn hash_contents(reader: &mut impl Read, buffer: &mut [u8; HASH_BUFFER_SIZE]) -> io::Result<u64> {
+    let mut hasher = DefaultHasher::new();
+    loop {
+        match reader.read(buffer) {
+            Ok(0) => return Ok(hasher.finish()),
+            Ok(count) => hasher.write(&buffer[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "cache_stream_tests.rs"]
+mod stream_tests;
 
 #[cfg(test)]
 mod tests {

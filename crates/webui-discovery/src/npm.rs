@@ -50,6 +50,38 @@ fn is_bare_scope(name: &str) -> bool {
     name.starts_with('@') && !name.contains('/')
 }
 
+fn validate_package_source(name: &str) -> Result<()> {
+    let valid = match name.strip_prefix('@') {
+        Some(scoped) => match scoped.split_once('/') {
+            Some((scope, package)) => is_package_segment(scope) && is_package_segment(package),
+            None => is_package_segment(scoped),
+        },
+        None => is_package_segment(name),
+    };
+    if !valid {
+        return Err(invalid_package_source(name));
+    }
+    Ok(())
+}
+
+fn is_package_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && !segment.starts_with(['.', '_'])
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_package_source(name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Invalid npm component source '{name}'. Use a package name, @scope, or @scope/package \
+         with an optional trailing /*. For local directories, use an explicit path such as \
+         ./components instead of a package subpath."
+    )
+}
+
 /// Validate that a relative path from package.json does not escape the package directory.
 ///
 /// Rejects absolute paths, root-relative paths, and any `..` components
@@ -92,6 +124,7 @@ pub fn resolve(
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
     let name = name.strip_suffix("/*").unwrap_or(name);
+    validate_package_source(name)?;
     // Walk up from the build's app directory first, then fall back to the
     // process working directory. The fallback covers callers whose app
     // directory lives outside the project (e.g. a system-temp scratch dir),

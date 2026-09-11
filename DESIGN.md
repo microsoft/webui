@@ -1541,6 +1541,12 @@ pub struct DiscoveredComponent {
 ```
 
 #### npm Package Resolution
+Package sources are validated before constructing any `node_modules` candidate:
+only an unscoped package, `@scope`, or `@scope/package` is accepted, optionally
+followed by `/*`. Empty segments, traversal, backslashes, absolute components,
+and package subpaths are rejected with guidance to use an explicit local path.
+This validates the requested identifier, not the canonical symlink target.
+
 1. Walk up from the search directory to find the requested package or scope in
    `node_modules/` (Node.js-style resolution), then fall back to the process
    working directory for synthesized app roots. An unrelated nearer
@@ -1569,16 +1575,19 @@ and includes it in the application manifest; external/separately built packages
 provide their own fragment.
 
 #### Security
-- **Path traversal**: FAST manifest and asset-export paths are validated; absolute paths and `..` components are rejected. Native discovery never follows template/CEM export paths.
+- **Path traversal**: npm source identifiers are validated before filesystem lookup. FAST manifest and asset-export paths are also validated; absolute paths and `..` components are rejected. Native discovery never follows template/CEM export paths.
 - **Symlink resolution**: Package symlinks are resolved via `fs::canonicalize()` to support pnpm, npm workspaces, and yarn link layouts. Metadata path validation does not restrict the package symlink target.
 - **File size limits**: Manifests and templates are capped at 10 MB to prevent denial-of-service
 
 #### Discovery Cache
 - Location: `~/.webui/cache/components/`
 - Cache key: hash of source identifier + resolved path
-- Invalidation: hash of `package.json` plus every source declared by the
-  discovery plugin, including missing optional candidates (re-discover on
-  content changes or file creation/removal)
+- Invalidation: hash every source declared by the discovery plugin, including
+  missing optional candidates (re-discover on content changes or file
+  creation/removal). Include `package.json` contents only when the plugin opts
+  into `requires_package_metadata()`; default/WebUI/none does not hash metadata.
+- Dependency contents are hashed incrementally with one reusable 8 KiB buffer,
+  including script siblings that are not subject to template size limits.
 - Atomic writes: temp file + rename to prevent corruption from concurrent builds
 - Corrupt cache files are silently ignored (graceful fallback)
 

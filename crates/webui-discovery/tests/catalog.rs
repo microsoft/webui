@@ -4,7 +4,10 @@
 use std::fs;
 use std::path::Path;
 
-use webui_discovery::{discover_source, discover_source_with_plugin, FastDiscoveryPlugin};
+use webui_discovery::{
+    discover_source, discover_source_with_plugin, DiscoveryPlugin, FastDiscoveryPlugin,
+    WebUIDiscoveryPlugin,
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -12,6 +15,28 @@ fn write_component(root: &Path, tag: &str) -> std::io::Result<()> {
     let dir = root.join("components").join(tag);
     fs::create_dir_all(&dir)?;
     fs::write(dir.join(format!("{tag}.html")), "<button>Example</button>")
+}
+
+#[test]
+fn large_script_siblings_preserve_discovery_and_ownership() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let package = root.path().join("node_modules/large-catalog");
+    fs::create_dir_all(&package)?;
+    fs::write(package.join("package.json"), "{}")?;
+    fs::write(package.join("test-card.html"), "<span>Card</span>")?;
+    let script = package.join("test-card.js");
+    fs::File::create(&script)?.set_len(64 * 1024 * 1024)?;
+    let plugins: [&dyn DiscoveryPlugin; 2] =
+        [&WebUIDiscoveryPlugin::new(), &FastDiscoveryPlugin::new()];
+    for plugin in plugins {
+        let result = discover_source_with_plugin("large-catalog", root.path(), plugin)?;
+        assert_eq!(result.components.len(), 1);
+        assert_eq!(result.components[0].html_content, "<span>Card</span>");
+        assert!(result.components[0].is_client_owned);
+    }
+    fs::remove_file(script)?;
+    assert!(!discover_source("large-catalog", root.path())?.components[0].is_client_owned);
+    Ok(())
 }
 
 #[test]

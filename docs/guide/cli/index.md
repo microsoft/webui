@@ -698,6 +698,9 @@ The `--components` flag lets you discover components from npm packages or local 
 ### npm Packages
 
 Pass an npm package name. The package must already be installed in `node_modules/`.
+Use an unscoped name, `@scope`, or `@scope/package`, optionally followed by `/*`.
+Package subpaths, traversal, and backslashes are not valid package identifiers.
+For a filesystem directory, pass an explicit local path such as `./shared/components`.
 
 ```bash
 # Single package
@@ -757,7 +760,13 @@ webui build ./my-app --out ./dist \
 
 ### Caching
 
-Discovered npm package components are cached at `~/.webui/cache/components/` to avoid re-traversing on every build. The cache is automatically invalidated when `package.json` or any template, stylesheet, or manifest used by the selected discovery plugin changes. Local path sources are always re-scanned.
+Discovered npm package components are cached at `~/.webui/cache/components/`.
+Changes to the selected plugin's templates, stylesheets, scripts, or manifests
+invalidate its cached result, including optional file creation and removal.
+Default/WebUI/none discovery does not use package metadata, so metadata-only
+`package.json` edits do not invalidate its cache. Plugins that use package
+metadata, such as FAST, also invalidate on `package.json` changes.
+Local path sources are always re-scanned.
 
 ## Next Steps
 
