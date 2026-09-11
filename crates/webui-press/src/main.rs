@@ -15,6 +15,8 @@ mod build;
 mod bundler;
 mod content;
 mod error;
+#[cfg(test)]
+mod extraction_tests;
 mod markdown;
 mod regions;
 mod serve;
@@ -147,12 +149,15 @@ fn load_config(
 /// crash) never leaves a half-written cache: the next run sees no `.complete`
 /// sentinel and re-extracts.
 fn extract_embedded_assets() -> Result<PathBuf> {
+    extract_embedded_assets_in(&std::env::temp_dir())
+}
+
+fn extract_embedded_assets_in(tmp: &Path) -> Result<PathBuf> {
     let dir_name = format!(
         "webui-press-{}-{:016x}",
         env!("CARGO_PKG_VERSION"),
         embedded_assets_hash()
     );
-    let tmp = std::env::temp_dir();
     let root = tmp.join(&dir_name);
     let template_dir = root.join("template");
 
@@ -168,6 +173,8 @@ fn extract_embedded_assets() -> Result<PathBuf> {
         .truncate(false)
         .open(tmp.join(format!("{dir_name}.lock")))
         .map_err(|e| anyhow::anyhow!("Cannot open embedded asset cache lock: {e}"))?;
+    #[cfg(test)]
+    extraction_tests::checkpoint("cold")?;
     cache_lock
         .lock()
         .map_err(|e| anyhow::anyhow!("Cannot lock embedded asset cache: {e}"))?;
@@ -183,6 +190,8 @@ fn extract_embedded_assets() -> Result<PathBuf> {
     fs::create_dir_all(staging.join("template"))
         .and_then(|()| fs::create_dir_all(staging.join("components")))
         .map_err(|e| anyhow::anyhow!("Cannot create embedded asset directories: {e}"))?;
+    #[cfg(test)]
+    extraction_tests::checkpoint("staged")?;
     EMBEDDED_TEMPLATE
         .extract(staging.join("template"))
         .map_err(|e| anyhow::anyhow!("Cannot extract embedded template: {e}"))?;

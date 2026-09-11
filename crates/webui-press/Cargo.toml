@@ -50,3 +50,6 @@ microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.28" 
 actix-web = { workspace = true }
 tokio = { workspace = true }
 include_dir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
