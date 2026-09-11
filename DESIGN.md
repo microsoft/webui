@@ -2825,6 +2825,14 @@ Both outlet spellings compile as one empty directive element. The compiler
 consumes the paired closing tag before assigning later binding slots, preserving
 the authored parent hierarchy for siblings after the outlet.
 
+`<if>` and `<for>` recognition, attribute extraction, and closing-tag matching
+use the same quote-aware HTML scanner as SSR compilation. HTML whitespace
+(space, tab, LF, CR, and form feed), including CRLF inside opening tags and
+whitespace before a closing tag's `>`, does not change block ownership, keys,
+bindings, events, or element-index mappings. Matching consumes the scanned
+closing-tag range, not a fixed-length spelling. Directive wrappers are removed
+from client `h`; unrelated literal text and native elements are preserved.
+
 The finalizer matches native HTML void tags ASCII-case-insensitively and counts
 the browser-implied `<colgroup>` / `<tbody>` parents around direct `<col>` /
 `<tr>` runs. Compiler-owned structural marker comments and trailing HTML
