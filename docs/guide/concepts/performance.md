@@ -162,6 +162,11 @@ Use `<boundary>` when early shell bytes or independently resolving regions
 improve user-visible completion. Keep ordinary pages buffered when one render
 already completes quickly.
 
+For Rust streaming integrations, move freshly loaded state into
+`StreamingResponse::start` and `resume` when the caller no longer needs it.
+Passing owned state avoids cloning its retained projection. Keep borrowed
+state when caller ownership is required. See [Rust streaming SSR](/guide/integrations/rust#streaming-ssr).
+
 ## Measure the path you are optimizing
 
 Server and browser measurements answer different questions:
