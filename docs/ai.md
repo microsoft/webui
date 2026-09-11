@@ -1327,6 +1327,16 @@ Full flag tables, exit codes, and the error-code list:
 
 ### WebUI Press named regions
 
+Native `components` discovery derives names from `<component-name>.html`,
+scanning a package's `components/` directory when present or its root otherwise.
+Template/style exports and CEM names are not interpreted by default discovery;
+FAST's special metadata-based layouts remain separate.
+Npm collection spellings `@scope/*` and `@scope/package/*` are accepted.
+Import browser registrations through the package's module exports separately.
+Catalog script ownership follows matching `.ts`/`.js` siblings per component;
+package exports and `.spec.ts` files do not make unrelated scriptless tags
+require registration imports or projection entries.
+
 In a WebUI Press template, use paired regions for fallback markup and
 self-closing regions for empty insertion points:
 

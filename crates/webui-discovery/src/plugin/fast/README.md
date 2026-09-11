@@ -1,0 +1,42 @@
+# FAST Component Discovery
+
+FAST reads each package's `customElements` manifest as its component inventory
+and loads converted `*.template-webui.html` files for those declarations.
+It explicitly opts into package metadata loading. Other discovery plugins do
+not incur this metadata work unless they independently opt in. Package-level
+script ownership analysis is performed only for FAST manifest declarations.
+
+## Package assets
+
+A single-component package can export `./template-webui.html` and optionally
+`./styles.css`. Paths are relative to the package root, including symlinked
+packages. Direct strings and `default`/`import`/`require` conditional exports
+are supported. The selected template path must end in `.template-webui.html`.
+Raw `.template.html` files and their export are never selected.
+
+The manifest supplies the inventory and names; these exports are only optional
+asset-location hints.
+
+Without a package-level template export, FAST uses CEM module-relative
+template/style lookup and virtual-module fallbacks, then checks parent
+directories within the package when needed. This supports multi-component
+packages with templates beside their JavaScript modules.
+
+An explicit missing or invalid asset is an error, not a reason to select a
+different template. Packages shipping only `.template.html` must also provide
+the converted `.template-webui.html` variant for this discovery plugin.
+
+## Default fallback
+
+FAST also includes ordinary `<component-name>.html` files not declared in the
+manifest, using default filename, CSS, and script-ownership rules. This fallback
+also works when the manifest is absent or contains no component declarations.
+
+Manifest declarations win name conflicts. Generated `.template.html` and
+`.template-webui.html` assets are not accidentally registered as default names.
+Malformed declared metadata still reports an error.
+Ordinary `<component-name>.html` files in the application folder remain supported
+under both FAST parser versions, including sibling CSS and authored scripts.
+
+See the [discovery crate README](../../../README.md) for shared package lookup
+and scope behavior.
