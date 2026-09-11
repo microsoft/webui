@@ -1202,7 +1202,8 @@ fn normalized_alias_target(config_dir: &Path, target: &str) -> String {
     target.replace('\\', "/")
 }
 
-fn build_aliases(opts: &BundleOptions<'_>) -> BTreeMap<String, String> {
+fn build_aliases(opts: &BundleOptions<'_>) -> Result<BTreeMap<String, String>> {
+    let config_dir = absolute_path(opts.config_dir)?;
     let mut aliases: BTreeMap<String, String> = BTreeMap::new();
     if let Some(node_modules) = opts.node_modules {
         if let Some(path) = default_framework_alias(node_modules) {
@@ -1212,11 +1213,11 @@ fn build_aliases(opts: &BundleOptions<'_>) -> BTreeMap<String, String> {
 
     if let Some(cfg) = opts.bundler_config {
         for (from, to) in &cfg.alias {
-            aliases.insert(from.clone(), normalized_alias_target(opts.config_dir, to));
+            aliases.insert(from.clone(), normalized_alias_target(&config_dir, to));
         }
     }
 
-    aliases
+    Ok(aliases)
 }
 
 #[cfg(test)]
@@ -1238,8 +1239,8 @@ fn esbuild_args(
     opts: &BundleOptions<'_>,
     entry_files: &[(String, PathBuf)],
     bundle_tmp: &Path,
-) -> Vec<String> {
-    let aliases = build_aliases(opts);
+) -> Result<Vec<String>> {
+    let aliases = build_aliases(opts)?;
     let target = opts
         .bundler_config
         .and_then(|cfg| cfg.target.as_deref())
@@ -1275,7 +1276,7 @@ fn esbuild_args(
     for (_, path) in entry_files {
         args.push(path_for_js(path));
     }
-    args
+    Ok(args)
 }
 
 fn esbuild_build_config(
@@ -1288,7 +1289,7 @@ fn esbuild_build_config(
     let working_dir = absolute_path(opts.config_dir)?;
     let site_dir = absolute_path(opts.site_dir)?;
     let manifest_path = absolute_path(manifest_path)?;
-    let aliases = build_aliases(opts);
+    let aliases = build_aliases(opts)?;
     let target = opts
         .bundler_config
         .and_then(|cfg| cfg.target.as_deref())
@@ -2051,7 +2052,7 @@ mod tests {
     }
 
     #[test]
-    fn esbuild_args_force_webui_decorator_semantics() {
+    fn esbuild_args_force_webui_decorator_semantics() -> TestResult {
         let site_dir = Path::new("/site");
         let config_dir = Path::new("/site/.webui-press");
         let opts = BundleOptions {
@@ -2065,13 +2066,14 @@ mod tests {
             config_dir,
             content_dir: Path::new("/site"),
         };
-        let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"));
+        let args = esbuild_args(&opts, &[], Path::new("/tmp/webui-press-bundle"))?;
 
         assert!(args.contains(&format!("--tsconfig-raw={WEBUI_TSCONFIG_RAW}")));
+        Ok(())
     }
 
     #[test]
-    fn esbuild_args_folds_webui_dev_flag_for_production_only() {
+    fn esbuild_args_folds_webui_dev_flag_for_production_only() -> TestResult {
         fn opts<'a>(
             site_dir: &'a Path,
             config_dir: &'a Path,
@@ -2097,12 +2099,12 @@ mod tests {
 
         // Production build: the flag is folded to `false` so the framework's
         // dev-only diagnostics (and the module gating them) tree-shake out.
-        let prod = esbuild_args(&opts(site_dir, config_dir, false, None), &[], tmp);
+        let prod = esbuild_args(&opts(site_dir, config_dir, false, None), &[], tmp)?;
         assert!(prod.contains(&define));
 
         // Development build (`webui-press serve`): the flag is left undefined so
         // the `typeof` guard defaults it to on and diagnostics run.
-        let dev = esbuild_args(&opts(site_dir, config_dir, true, None), &[], tmp);
+        let dev = esbuild_args(&opts(site_dir, config_dir, true, None), &[], tmp)?;
         assert!(!dev.iter().any(|arg| arg.contains("__WEBUI_DEV__")));
 
         // A user-supplied define wins: esbuild honors the last `--define` for a
@@ -2110,7 +2112,7 @@ mod tests {
         let mut cfg = BundlerConfig::default();
         cfg.define
             .insert("__WEBUI_DEV__".to_string(), "true".to_string());
-        let overridden = esbuild_args(&opts(site_dir, config_dir, false, Some(&cfg)), &[], tmp);
+        let overridden = esbuild_args(&opts(site_dir, config_dir, false, Some(&cfg)), &[], tmp)?;
         let ours = overridden.iter().position(|arg| arg == &define);
         let theirs = overridden
             .iter()
@@ -2121,6 +2123,7 @@ mod tests {
             ours < theirs,
             "framework default must precede the user override so esbuild's last-wins keeps the user's value",
         );
+        Ok(())
     }
 
     #[test]

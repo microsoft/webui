@@ -28,7 +28,7 @@ use crate::error::{Error, Result};
 use crate::markdown::Highlighter;
 use crate::regions::RegionSet;
 use crate::state::{load_render_states, merge_page_state};
-use crate::types::{BuildStats, DocsConfig, PageDescriptor};
+use crate::types::{BuildStats, DocsConfig, PageDescriptor, ShowMode};
 
 webui_handler::define_string_response_writer!(StringWriter, buf);
 
@@ -39,6 +39,27 @@ fn region_layout(page: &PageDescriptor) -> &str {
     } else {
         layout
     }
+}
+
+fn template_css(template_dir: &Path, show: ShowMode) -> Result<String> {
+    if show == ShowMode::Content {
+        return Ok(include_str!("../template/docs.css").to_string());
+    }
+    let mut css = String::new();
+    for name in ["docs.css", "shell.css"] {
+        let path = template_dir.join(name);
+        match fs::read_to_string(&path) {
+            Ok(source) => css.push_str(&source),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Io(format!(
+                    "Cannot read {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(css)
 }
 
 /// Persistent state held by the dev server across rebuilds. The dev
@@ -298,8 +319,8 @@ pub fn build_docs_with_cache(
     // the link tags change. We don't write the CSS files yet — that
     // happens after content processing succeeds, so a content failure
     // can't corrupt the previous valid output.
-    let base_css_src = template_dir.join("docs.css");
-    let has_base_css = base_css_src.exists();
+    let base_css = template_css(template_dir, config.show)?;
+    let has_base_css = !base_css.is_empty();
     let base_css_link = if has_base_css {
         format!("<link rel=\"stylesheet\" href=\"{base_path}docs.css\">")
     } else {
@@ -361,6 +382,17 @@ pub fn build_docs_with_cache(
     let template_html = fs::read_to_string(template_dir.join("index.html"))
         .map_err(|e| Error::Build(format!("Failed to read template: {e}")))?;
     let regions = RegionSet::load(&config.regions, config_dir, template_html)?;
+    // Validate configured region names even when the selected presentation
+    // makes every shell region inactive. Authored page content is never filtered.
+    let regions = if config.show == ShowMode::Content {
+        RegionSet::load(
+            &Default::default(),
+            config_dir,
+            include_str!("../template/content.html").to_string(),
+        )?
+    } else {
+        regions
+    };
     let component_script_index = discover_component_scripts(&component_sources)?;
 
     // Step 3: Wipe the previous output and recreate the site root.
@@ -379,8 +411,8 @@ pub fn build_docs_with_cache(
     // because we clean before processing — but that order means a
     // failure leaves no output at all, never half-output).
     if has_base_css {
-        fs::copy(&base_css_src, site_dir.join("docs.css"))
-            .map_err(|e| Error::Io(format!("Cannot copy docs.css: {e}")))?;
+        fs::write(site_dir.join("docs.css"), &base_css)
+            .map_err(|e| Error::Io(format!("Cannot write docs.css: {e}")))?;
     }
     if has_theme_css {
         fs::write(site_dir.join("theme.css"), &custom_css)
@@ -453,7 +485,7 @@ pub fn build_docs_with_cache(
     );
 
     let template_script_path = template_dir.join("index.ts");
-    let template_script = if template_script_path.exists() {
+    let template_script = if config.show == ShowMode::All && template_script_path.exists() {
         Some(
             template_script_path
                 .canonicalize()
@@ -663,7 +695,7 @@ pub fn build_docs_with_cache(
             projection_manifests: vec![projection_source.clone()],
             ..BuildOptions::default()
         })
-        .map_err(|e| Error::Build(format!("{}: {e}", page.path)))?;
+        .map_err(|e| Error::Build(format!("{}: {}", page.path, e.chain_message())))?;
         let preloads = generated_preloads.get().ok_or_else(|| {
             Error::Build("Generated preload metadata was not published".to_string())
         })?;
@@ -807,7 +839,7 @@ pub fn build_docs_with_cache(
         projection_manifests: vec![projection_source],
         ..BuildOptions::default()
     })
-    .map_err(|e| Error::Build(format!("404 build failed: {e}")))?;
+    .map_err(|e| Error::Build(format!("404 build failed: {}", e.chain_message())))?;
     let preloads = generated_preloads
         .get()
         .ok_or_else(|| Error::Build("Generated preload metadata was not published".to_string()))?;

@@ -204,51 +204,84 @@ In addition to discovering components in your app directory, WebUI can load comp
 
 ### npm Packages
 
-Components published as npm packages can be discovered automatically. The package must:
+Install the package into `node_modules/`. Default WebUI discovery derives the
+component name from each hyphenated `<component-name>.html` filename, exactly as
+for local components. It scans the package's `components/` directory when present,
+otherwise the package root. Nested directories are supported; a directory does
+not need to repeat the component name.
 
-1. Be installed via npm, pnpm, or yarn (present in `node_modules/`)
-2. Include a `package.json` with:
-   - `exports["./template-webui.html"]` - the component's HTML template
-   - `exports["./styles.css"]` - the component's CSS (optional)
-   - `customElements` - path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file
-
-The Custom Elements Manifest provides the component's tag name:
-
-```json
-{
-  "schemaVersion": "1.0.0",
-  "modules": [{
-    "kind": "javascript-module",
-    "declarations": [{
-      "kind": "class",
-      "name": "MyButton",
-      "tagName": "my-button"
-    }]
-  }]
-}
+```text
+package.json
+components/
+  my-button.html
+  my-button.css
+  my-button.ts
 ```
 
-**Example `package.json`:**
+This registers `<my-button>`. Matching `.css` provides styles; a matching `.ts`
+or `.js` sibling marks only that component as authored. `.spec.ts` files and
+package JavaScript exports do not make unrelated components scripted. Import
+authored browser registrations through the package's module exports separately.
+Scriptless components need neither a registration import nor a projection entry.
+
+When `components/` exists, other package directories such as `dist/` are not
+scanned for duplicate source templates. Hidden directories and nested
+`node_modules/` are skipped.
+
+**Scoped packages:** A bare scope such as `@reactive-ui` checks each installed
+sub-package in the nearest matching scope directory for named HTML components.
+An unrelated nearer `node_modules/` does not hide an ancestor's scope.
+Packages without component sources are skipped; failures in declared components
+are reported rather than silently omitted.
+`@scope/*` and `@scope/package/*` can also be used as collection spellings.
+
+**Migration:** Default discovery no longer interprets
+`exports["./template-webui.html"]`, `exports["./styles.css"]`, or `customElements`
+to identify components. Name templates `<component-name>.html` and styles
+`<component-name>.css` instead. Those metadata fields may remain for other
+consumers but do not rename or select default WebUI templates.
+FAST keeps its separate CEM-based naming and special template/style conventions;
+see [Plugins](/guide/concepts/plugins/).
+
+### FAST Package Assets
+
+The `fast-v2` and `fast-v3` plugins read each package's Custom Elements Manifest
+to identify declared components and use standard `*.template.html` files for
+their templates. A single-component
+package may declare its assets explicitly:
 
 ```json
 {
-  "name": "@reactive-ui/button",
-  "version": "1.0.0",
   "customElements": "./custom-elements.json",
   "exports": {
-    "./template-webui.html": "./dist/template-webui.html",
-    "./styles.css": "./dist/styles.css"
+    "./template.html": "./dist/button.template.html",
+    "./styles.css": "./dist/button.styles.css"
   }
 }
 ```
 
-**Scoped packages:** When you pass a bare scope like `@reactive-ui`, all sub-packages under `node_modules/@reactive-ui/` are discovered and each is checked for WebUI component exports.
+The manifest must declare one component for this package-level template export.
+Paths are relative to the resolved package root, so the JavaScript module can
+live elsewhere, such as `dist/esm/button.js`. Direct strings and conditional
+paths under `default`, `import`, or `require` are accepted. FAST does not select
+the `template-webui.html` variant.
 
-Packages that also expose a root JavaScript entry (`exports["."]`, `main`,
-`module`, or `browser`) are treated as authored custom-element packages. Packages
-with only WebUI template/style exports are treated as HTML-only component
-libraries; dynamic bindings render on the server and remain inactive until the
-framework needs them.
+The CEM supplies the inventory and names; exports only provide optional asset
+locations. Without a package-level template export, FAST uses module-relative
+template/style conventions, virtual-module fallbacks, and parent directories
+within the package for split JS/HTML layouts. Multi-component libraries with a
+template beside each JavaScript module remain supported. Missing or malformed
+explicit assets fail discovery.
+FAST also discovers ordinary `<component-name>.html` files whose names are not
+declared in the manifest, using the default CSS and script-sibling rules.
+Missing or empty component metadata permits this fallback; malformed manifests
+or missing assets for declared components do not. Manifest declarations take
+precedence over ordinary files with the same name.
+
+Scoped searches such as `--components="@mai-ui/*"` read the separate manifest in
+each component package. A single package such as
+`--components="@fluentui/web-components/*"` uses its shared manifest.
+Token-only packages without component sources are skipped.
 
 ### Local Paths
 

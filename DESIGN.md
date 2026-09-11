@@ -1541,29 +1541,36 @@ pub struct DiscoveredComponent {
 ```
 
 #### npm Package Resolution
-1. Walk up from the search directory to find `node_modules/` (Node.js-style resolution)
-2. For scoped packages (`@scope`), enumerate all sub-directories
-3. For each package, read `package.json`:
-   - `exports["./template-webui.html"]` → template HTML path
-   - `exports["./styles.css"]` → styles CSS path (optional)
-   - `customElements` → path to Custom Elements Manifest
-   - root JS entry (`exports["."]`, `main`, `module`, or `browser`) → authored component ownership
-4. Parse the Custom Elements Manifest for `modules[].declarations[].tagName`
-5. Return `DiscoveredComponent` structs with `is_client_owned` set from source metadata (callers handle registration)
+1. Walk up from the search directory to find the requested package or scope in
+   `node_modules/` (Node.js-style resolution), then fall back to the process
+   working directory for synthesized app roots. An unrelated nearer
+   `node_modules/` does not hide packages installed in ancestors. A found but
+   invalid package fails rather than falling back to a different installation.
+2. For bare scopes (`@scope`), enumerate sub-packages in the nearest matching
+   scope directory, in filename order. `supports_package` identifies unrelated
+   packages that may be skipped. Errors from declared component packages propagate
+   with the failing scope member's name; they are never silently dropped.
+   A trailing `/*` is a collection spelling: `@scope/*` resolves the scope and
+   `@scope/package/*` resolves that package. It is normalized before npm lookup,
+   not applied to local filesystem sources.
+3. Read `package.json` and delegate the canonical package root to the selected
+   discovery plugin.
+4. Default WebUI scans `components/` when present, otherwise the package root,
+   deriving component names only from hyphenated `<component-name>.html` filenames.
+   Matching CSS and TS/JS siblings provide styling and authored ownership.
+   It does not interpret template/style exports or Custom Elements Manifest names.
+5. FAST retains its separate `customElements` manifest and special template/style
+   resolution, including package-metadata-based script ownership.
+6. Return `DiscoveredComponent` structs; callers handle registration.
 
-Conditional exports are resolved with deterministic priority: `default` → `import` → `require`.
-
-Script ownership is metadata-only: discovery never scans package JavaScript to find
-`customElements.define()` calls. Packages without a root JS entry are treated as
-compiler-owned template libraries. Packages with a root JS entry own their custom
-elements and are never replaced by compiler-owned hosts. Package source is not
-scanned by Rust. If the package is bundled with the application, the bundler
-projection adapter analyzes its source and includes it in the application
-manifest; external/separately built packages provide their own fragment.
+Discovery does not scan package JavaScript for `customElements.define()` calls.
+For bundled authored components, the projection adapter analyzes their source
+and includes it in the application manifest; external/separately built packages
+provide their own fragment.
 
 #### Security
-- **Path traversal**: Export paths are validated — absolute paths and `..` components are rejected
-- **Symlink resolution**: Package symlinks are resolved via `fs::canonicalize()` to support pnpm, npm workspaces, and yarn link layouts. Path traversal safety is enforced on `package.json` export paths (not on the symlink target)
+- **Path traversal**: FAST manifest and asset-export paths are validated; absolute paths and `..` components are rejected. Native discovery never follows template/CEM export paths.
+- **Symlink resolution**: Package symlinks are resolved via `fs::canonicalize()` to support pnpm, npm workspaces, and yarn link layouts. Metadata path validation does not restrict the package symlink target.
 - **File size limits**: Manifests and templates are capped at 10 MB to prevent denial-of-service
 
 #### Discovery Cache
@@ -1937,10 +1944,14 @@ package-relative manifest paths, determines client ownership from package
 metadata, and owns cache invalidation. The selected discovery plugin maps that
 validated root to normalized `DiscoveredComponent` values:
 
+`plugin/mod.rs` owns the discovery contract and default filename-based behavior.
+`plugin/fast.rs` contains FAST's special naming, manifest, and style rules.
+
 ```rust
 pub trait DiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str;
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>>;
+    fn supports_package(&self, package: PackageContext<'_>) -> Result<bool>;
     fn package_cache_files(
         &self,
         package: PackageContext<'_>,
@@ -1966,13 +1977,38 @@ invalidates the cache. Cache writes use process- and sequence-qualified
 temporary paths before atomic rename, preventing concurrent builds from
 clobbering one another.
 
-`WebUIDiscoveryPlugin` preserves the native layout: hyphenated local
-`<tag-name>.html` files and npm packages exporting
-`./template-webui.html`, optionally `./styles.css`, with tag names supplied by
-`customElements`. `FastDiscoveryPlugin` also admits local
-`<component>.template.html` files. For npm packages, it reads CEM module
-declarations and first maps each declaration to a sibling
-`<component>.template.html`. If the declared module is virtual (the package
+`supports_package` defaults to `true` for custom plugins. In scoped searches,
+default discovery claims packages with named HTML templates; FAST claims packages
+with a `customElements` field or ordinary named HTML sources. Explicit package requests still diagnose missing
+component inputs rather than returning an empty success.
+
+`WebUIDiscoveryPlugin` uses hyphenated `<tag-name>.html` filenames for both local
+and npm sources. Native npm packages use `components/` as their source root when
+present, otherwise the package root. Traversal is filename-sorted and skips hidden
+directories and nested `node_modules`; directory names do not determine tags.
+Selecting `components/` excludes duplicate artifacts elsewhere in the package.
+Template/style exports and CEM naming are not part of default discovery.
+Ownership is component-local: a matching `.ts` or `.js`
+sibling makes that component authored; package-level JS exports do not make
+unrelated scriptless components authored. `.spec.ts`, documentation, and JSON
+sidecars do not imply authored code. Scriptless catalog components retain normal
+compiler-owned SSR and do not require a projection entry. Native discovery uses
+a `webui-filenames` cache namespace so legacy metadata-derived names and ownership
+are never reused. This namespace is internal, not a framework or plugin version.
+The current template list and all CSS/TS/JS candidates participate in the cache
+fingerprint, including missing optional files.
+`FastDiscoveryPlugin` also admits local
+`<component>.template.html` files. For single-component npm packages, a
+`./template.html` export selects the standard template relative to the canonical
+package root; `./styles.css` may select its stylesheet independently of the JS
+module location. Export values accept strings or deterministic
+`default`/`import`/`require` conditions. The `./template-webui.html` export is not
+used. A package-level template export must have exactly one CEM component.
+Invalid or missing declared assets are errors, never fallbacks to another file.
+Selected exports and inferred optional styles participate in cache invalidation.
+
+Without a package-level template export, FAST reads CEM module declarations and
+maps each declaration to a sibling `<component>.template.html`. If the declared module is virtual (the package
 does not contain that JavaScript path), discovery also checks component-root
 directories derived from the class name: kebab-case, compact lowercase, then
 the terminal class noun. Candidate priority is deterministic and every
@@ -1981,6 +2017,15 @@ candidate participates in cache invalidation. Discovery associates
 subsequently resolves the final registry key from the authored
 `<f-template name>`. FAST 2 and FAST 3 share this discovery layout and retain
 separate parser and handler behavior.
+If those module-local candidates do not exist, FAST also tries standard
+module/class-named templates in ancestor directories bounded by the package root.
+The CEM is the declared-component inventory; template exports are only location
+hints. FAST adds ordinary named HTML files not covered by that inventory using
+default CSS/script-sibling rules. Missing or empty CEM inventory enables this
+fallback; malformed metadata and missing declared assets remain errors.
+Declared tags win conflicts, and generated `.template.html`/`.template-webui.html`
+files are excluded from the ordinary fallback. Cache inputs include the selected
+ordinary files and their CSS/TS/JS siblings.
 
 `discover_source` remains the WebUI-native convenience API.
 `discover_source_with_plugin` selects another layout. Cache keys include the
@@ -4875,8 +4920,43 @@ The adapter handles all outputs in one `onEnd` pass.
 
 ### webui-press integration
 
+`DocsConfig.show` is a typed `ShowMode` (`all` or `content`), defaulting to
+`all`. Both native `build` and `serve` accept `--show`; an explicit CLI value
+overrides configuration on the initial build and every serve config reload.
+Page and 404 build errors retain the core error's complete source chain,
+including parser diagnostic codes, locations, snippets, and help when present.
+
+Content mode selects the bundled content document before region expansion,
+component/script reachability, compilation, and SSR. It retains document
+metadata, base URL, configured head tags, themes, authored page modules, state,
+and semantic `main`/`article` wrappers. Markdown (including home Markdown),
+custom-page HTML, examples, and API panels are content, regardless of their
+element names. No template regions, navigation, sidebar/TOC, mobile context,
+previous/next links, hero/features, footer, or shell scripts are generated.
+Configured regions remain validated against the selected full template, but
+their state and scripts are inactive. This also applies to the 404 document.
+
+The bundled `docs.css` contains shared tokens and content typography;
+`shell.css` contains full-site layout constraints. All mode concatenates both
+into one served stylesheet, preserving the existing layout without an extra
+request. Content mode uses only the bundled content styles, normal document
+scrolling, and no shell width/height constraints. A custom full template and
+its styles/entry script do not replace the content-mode scaffold; configured
+head tags, CSS/theme, components, and custom pages continue to apply.
+
+Full-site manual light/dark selection overrides the OS preference for both
+native theme tokens and `color-scheme`. Manual overrides are inactive under
+forced colors so site-authored forced-colors token rules retain precedence.
+Content mode has no shell theme control, does not read or snapshot a persisted
+theme into `data-theme`, and uses only the light default and system dark media
+query. It follows live OS preference changes without JavaScript and leaves the
+stored full-site preference untouched.
+
 `webui-press` invokes esbuild's JavaScript API once through
 `@microsoft/webui/projection.js`, then validates the generated manifest once.
+Filesystem alias targets are resolved against an absolute config directory
+before passing them to esbuild. Relative and absolute CLI config paths retain
+the same config-relative alias semantics, independent of the invocation cwd.
 The resulting `PreparedProjectionManifests` is reused by every page and the 404
 build; page builds never re-open or re-hash bundle files. The prepared handle
 is an `Arc`-backed immutable snapshot containing both component surfaces and

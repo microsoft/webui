@@ -196,6 +196,94 @@ fn css_public_base_keeps_shadow_template_styled() {
 }
 
 #[test]
+fn exported_fast_template_builds_and_renders_for_both_fast_versions() {
+    let project = TempDir::new().unwrap();
+    let app = project.path().join("src");
+    let package = project.path().join("node_modules/custom-button");
+    fs::create_dir_all(&app).unwrap();
+    fs::create_dir_all(package.join("dist/esm")).unwrap();
+    fs::write(
+        app.join("index.html"),
+        "<html><body><custom-button></custom-button><custom-note></custom-note></body></html>",
+    )
+    .unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{
+        "name":"custom-button", "customElements":"custom-elements.json",
+        "exports":{
+            ".":"./dist/esm/button.js",
+            "./template.html":"./dist/button.template.html",
+            "./template-webui.html":"./dist/button.template-webui.html",
+            "./styles.css":"./dist/button.styles.css"
+        }
+    }"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("custom-elements.json"),
+        r#"{
+        "modules":[{"path":"dist/esm/button.js",
+            "declarations":[{"name":"Button","tagName":"custom-button"}]}]
+    }"#,
+    )
+    .unwrap();
+    fs::write(package.join("dist/esm/button.js"), "export {};").unwrap();
+    fs::write(package.join("dist/button.template.html"),
+        r#"<f-template name="custom-button" shadowrootmode="open"><template><button>{{label}}</button></template></f-template>"#).unwrap();
+    fs::write(
+        package.join("dist/button.template-webui.html"),
+        "<template>Wrong variant</template>",
+    )
+    .unwrap();
+    fs::write(
+        package.join("dist/button.styles.css"),
+        "button { color: blue; }",
+    )
+    .unwrap();
+    fs::write(package.join("custom-note.html"), "<span>{{note}}</span>").unwrap();
+    fs::write(package.join("custom-button.html"), "Wrong duplicate").unwrap();
+
+    for (plugin, handler) in [
+        (
+            Plugin::FastV2,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v2::FastV2HydrationPlugin::new())
+            }),
+        ),
+        (
+            Plugin::FastV3,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v3::FastV3HydrationPlugin::new())
+            }),
+        ),
+    ] {
+        let mut options = default_options(&app);
+        options.plugin = Some(plugin);
+        options.components = vec!["custom-button".to_string()];
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+        let component = &result.protocol.components["custom-button"];
+        assert!(component.template.contains("<button>{{label}}</button>"));
+        assert!(component.template.contains("color: blue"));
+        assert!(!component.template.contains("Wrong variant"));
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .render(
+                &Protocol::new(result.protocol),
+                &serde_json::json!({"label":"Server label","note":"Default fallback"}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        let ssr = writer.buf.split("<f-template").next().unwrap_or_default();
+        assert!(ssr.contains("Server label"));
+        assert!(ssr.contains("Default fallback"));
+        assert!(!ssr.contains("Wrong duplicate"));
+    }
+}
+
+#[test]
 fn authored_template_light_build_is_rejected() {
     let app = create_app_dir(&[
         ("index.html", "<my-card>Hello</my-card>"),
