@@ -391,7 +391,7 @@ fn run(args: &ServeArgs) -> Result<()> {
         // 256 buffers × 5 KiB ≈ 1.25 MiB peak pool memory — bounded.
         chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
             256,
-            StreamingWriter::CHUNK_TARGET + 1024,
+            StreamingWriter::CHUNK_TARGET,
         )),
     });
     let lr_data = livereload.map(web::Data::new);
@@ -1529,7 +1529,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         })
     }
@@ -1553,7 +1553,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         })
     }
@@ -2138,7 +2138,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         })
     }
@@ -2443,7 +2443,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         });
 
@@ -2517,7 +2517,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         });
 
@@ -2585,7 +2585,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         });
 
@@ -2658,7 +2658,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         });
 
@@ -3053,7 +3053,7 @@ mod tests {
             base_path: None,
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         });
 

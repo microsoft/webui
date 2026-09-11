@@ -47,7 +47,7 @@ impl AppState {
         let image_cache = ImageCache::load(&app_root.join("images"))?;
         let chunk_pool = Arc::new(webui::streaming::ChunkPool::new(
             256,
-            webui::streaming::StreamingWriter::CHUNK_TARGET + 1024,
+            webui::streaming::StreamingWriter::CHUNK_TARGET,
         ));
         Ok(Self {
             catalog,

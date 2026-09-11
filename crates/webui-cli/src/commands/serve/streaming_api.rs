@@ -85,6 +85,7 @@ pub(super) struct RenderConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
 enum ApiStreamCommand {
     Start {
@@ -133,11 +134,13 @@ impl ApiStreamCommand {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApiBoundaryTarget {
     owner: String,
     name: String,
     #[serde(default, deserialize_with = "deserialize_boundary_key")]
+    #[cfg_attr(test, serde(skip_serializing_if = "Option::is_none"))]
     key: Option<ApiBoundaryKey>,
     #[serde(default)]
     declaration_id: Option<u32>,
@@ -155,6 +158,7 @@ impl ApiBoundaryTarget {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(untagged)]
 enum ApiBoundaryKey {
     String(String),
@@ -184,6 +188,7 @@ impl ApiBoundaryKeyOptionExt for Option<ApiBoundaryKey> {
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
 #[serde(rename_all = "lowercase")]
 enum ApiBoundaryMode {
     #[default]
@@ -231,6 +236,8 @@ enum ApiStreamError {
 #[derive(Debug, Error)]
 enum StreamInitializationError {
     #[error("{0}")]
+    Command(String),
+    #[error("{0}")]
     Render(String),
     #[error("WebUI streaming renderer stopped during start")]
     RendererStopped,
@@ -242,6 +249,8 @@ enum StreamInitializationError {
 
 #[derive(Debug, Error)]
 enum RendererError {
+    #[error(transparent)]
+    Command(#[from] ApiStreamError),
     #[error(transparent)]
     Handler(#[from] HandlerError),
     #[error("WebUI API stream renderer expected the validated initial start record")]
@@ -347,9 +356,17 @@ fn record_too_large(record: usize) -> ApiStreamError {
 }
 
 struct CommandIngest {
-    sender: mpsc::Sender<ApiStreamRecord>,
-    state_defaults: StateDefaults,
+    sender: mpsc::Sender<EncodedRecord>,
     record: usize,
+}
+
+struct EncodedRecord {
+    index: usize,
+    bytes: Bytes,
+}
+
+struct CommandDecoder {
+    state_defaults: StateDefaults,
     start_seen: bool,
 }
 
@@ -359,21 +376,37 @@ struct ApiStreamRecord {
 }
 
 impl CommandIngest {
-    async fn dispatch(&mut self, bytes: &[u8]) -> Result<(), ApiStreamError> {
+    async fn dispatch(&mut self, bytes: Bytes) -> Result<(), ApiStreamError> {
         let record = self.record;
         self.record += 1;
-        let mut command = serde_json::from_slice::<ApiStreamCommand>(bytes)
+        self.sender
+            .send(EncodedRecord {
+                index: record,
+                bytes,
+            })
+            .await
+            .map_err(|_| ApiStreamError::RendererStopped { record })
+    }
+}
+
+impl CommandDecoder {
+    fn new(state_defaults: StateDefaults) -> Self {
+        Self {
+            state_defaults,
+            start_seen: false,
+        }
+    }
+
+    fn decode(&mut self, encoded: EncodedRecord) -> Result<ApiStreamRecord, ApiStreamError> {
+        let record = encoded.index;
+        let mut command = serde_json::from_slice::<ApiStreamCommand>(&encoded.bytes)
             .map_err(|source| ApiStreamError::InvalidJson { record, source })?;
         self.validate_order(&command, record)?;
         command.prepare(&self.state_defaults, record)?;
-        self.sender
-            .send(ApiStreamRecord {
-                index: record,
-                command,
-            })
-            .await
-            .map_err(|_| ApiStreamError::RendererStopped { record })?;
-        Ok(())
+        Ok(ApiStreamRecord {
+            index: record,
+            command,
+        })
     }
 
     fn validate_order(
@@ -488,9 +521,7 @@ where
     let mut decoder = RecordDecoder::new();
     let mut ingest = CommandIngest {
         sender: command_tx,
-        state_defaults,
         record: 0,
-        start_seen: false,
     };
 
     if let Err(error) = ingest_first(&mut backend, &mut decoder, &mut ingest).await {
@@ -503,7 +534,8 @@ where
     actix_web::rt::task::spawn_blocking(move || {
         let mut writer = StreamingWriter::new_pooled(html_tx, Arc::clone(&config.chunk_pool))
             .with_flush_timeout(Duration::from_secs(30));
-        if let Err(error) = run_renderer(config, command_rx, &mut writer, ready_tx) {
+        if let Err(error) = run_renderer(config, command_rx, &mut writer, ready_tx, state_defaults)
+        {
             log::error!("streaming API render failed for {render_route_path}: {error}");
             // Drop the writer without `end()`: its pending buffer may contain a
             // partial HTML or JSON record. Already-flushed boundaries remain
@@ -518,7 +550,11 @@ where
             log::error!(
                 "streaming API initialization failed for {initialization_route_path}: {error}"
             );
-            return HttpResponse::InternalServerError()
+            let mut response = match error {
+                StreamInitializationError::Command(_) => HttpResponse::BadGateway(),
+                _ => HttpResponse::InternalServerError(),
+            };
+            return response
                 .content_type("text/plain; charset=utf-8")
                 .body(error.to_string());
         }
@@ -546,7 +582,7 @@ where
 }
 
 async fn stage_precommit_output(
-    mut ready: oneshot::Receiver<Result<(), String>>,
+    mut ready: oneshot::Receiver<Result<(), StreamInitializationError>>,
     mut html: mpsc::Receiver<Bytes>,
 ) -> Result<(Vec<Bytes>, mpsc::Receiver<Bytes>), StreamInitializationError> {
     let mut initial = Vec::with_capacity(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
@@ -572,11 +608,11 @@ async fn stage_precommit_output(
 }
 
 fn validate_renderer_ready(
-    result: Result<Result<(), String>, oneshot::error::RecvError>,
+    result: Result<Result<(), StreamInitializationError>, oneshot::error::RecvError>,
 ) -> Result<(), StreamInitializationError> {
     match result {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(StreamInitializationError::Render(error)),
+        Ok(Err(error)) => Err(error),
         Err(_) => Err(StreamInitializationError::RendererStopped),
     }
 }
@@ -597,10 +633,19 @@ fn stage_initial_chunk(
 
 fn run_renderer(
     config: RenderConfig,
-    mut commands: mpsc::Receiver<ApiStreamRecord>,
+    mut commands: mpsc::Receiver<EncodedRecord>,
     writer: &mut StreamingWriter,
-    ready: oneshot::Sender<Result<(), String>>,
+    ready: oneshot::Sender<Result<(), StreamInitializationError>>,
+    state_defaults: StateDefaults,
 ) -> Result<(), RendererError> {
+    let mut decoder = CommandDecoder::new(state_defaults);
+    let first = match receive_command(&mut commands, &mut decoder) {
+        Ok(record) => record,
+        Err(error) => {
+            let _ = ready.send(Err(StreamInitializationError::Command(error.to_string())));
+            return Err(error.into());
+        }
+    };
     let handler = create_handler(config.plugin);
     let options = RenderOptions::new(&config.entry, &config.route_path);
     let options = match config.body_inject.as_deref() {
@@ -610,37 +655,37 @@ fn run_renderer(
     let mut response = match handler.stream_response(&config.protocol, &options, writer) {
         Ok(response) => response,
         Err(error) => {
-            let _ = ready.send(Err(error.to_string()));
+            let _ = ready.send(Err(StreamInitializationError::Render(error.to_string())));
             return Err(error.into());
         }
     };
     let mut committed = Vec::with_capacity(8);
-    let mut status = match commands.blocking_recv() {
+    let mut status = match first {
         Some(ApiStreamRecord {
             command: ApiStreamCommand::Start { state, .. },
             ..
-        }) => match response.start(&state) {
+        }) => match response.start(state) {
             Ok(status) => status,
             Err(error) => {
-                let _ = ready.send(Err(error.to_string()));
+                let _ = ready.send(Err(StreamInitializationError::Render(error.to_string())));
                 return Err(error.into());
             }
         },
         Some(_) => {
             let error = RendererError::ExpectedStart;
-            let _ = ready.send(Err(error.to_string()));
+            let _ = ready.send(Err(StreamInitializationError::Render(error.to_string())));
             return Err(error);
         }
         None => {
             let error = RendererError::MissingStart;
-            let _ = ready.send(Err(error.to_string()));
+            let _ = ready.send(Err(StreamInitializationError::Render(error.to_string())));
             return Err(error);
         }
     };
     let _ = ready.send(Ok(()));
 
     loop {
-        let Some(record) = commands.blocking_recv() else {
+        let Some(record) = receive_command(&mut commands, &mut decoder)? else {
             advance_committed_cursor(&mut response, &mut status)?;
             if status.done {
                 return Ok(());
@@ -687,7 +732,7 @@ fn run_renderer(
                 }
                 let descriptor = pending.clone();
                 let mode = BoundaryMode::from(mode);
-                status = response.resume(descriptor.instance_id, &state, mode)?;
+                status = response.resume(descriptor.instance_id, state, mode)?;
                 committed.push(CommittedBoundary { descriptor, mode });
             }
             ApiStreamCommand::Update { boundary, state } => {
@@ -696,6 +741,16 @@ fn run_renderer(
             }
         }
     }
+}
+
+fn receive_command(
+    commands: &mut mpsc::Receiver<EncodedRecord>,
+    decoder: &mut CommandDecoder,
+) -> Result<Option<ApiStreamRecord>, ApiStreamError> {
+    commands
+        .blocking_recv()
+        .map(|encoded| decoder.decode(encoded))
+        .transpose()
 }
 
 fn advance_committed_cursor(
@@ -832,12 +887,12 @@ where
 {
     loop {
         if let Some(record) = decoder.next()? {
-            ingest.dispatch(&record).await?;
+            ingest.dispatch(record).await?;
             return Ok(());
         }
         let Some(chunk) = backend.next().await else {
             if let Some(record) = decoder.finish()? {
-                ingest.dispatch(&record).await?;
+                ingest.dispatch(record).await?;
                 return Ok(());
             }
             return Err(missing_start(0));
@@ -855,18 +910,18 @@ where
     S: Stream<Item = Result<Bytes, String>> + Unpin,
 {
     while let Some(record) = decoder.next()? {
-        ingest.dispatch(&record).await?;
+        ingest.dispatch(record).await?;
     }
     while let Some(chunk) = backend.next().await {
         let chunk = chunk.map_err(ApiStreamError::Backend)?;
         decoder.push(&chunk);
         while let Some(record) = decoder.next()? {
-            ingest.dispatch(&record).await?;
+            ingest.dispatch(record).await?;
         }
     }
 
     if let Some(record) = decoder.finish()? {
-        ingest.dispatch(&record).await?;
+        ingest.dispatch(record).await?;
     }
     Ok(())
 }
@@ -874,19 +929,13 @@ where
 #[cfg(test)]
 async fn ingest<S>(
     mut backend: S,
-    sender: mpsc::Sender<ApiStreamRecord>,
-    state_defaults: StateDefaults,
+    sender: mpsc::Sender<EncodedRecord>,
 ) -> Result<(), ApiStreamError>
 where
     S: Stream<Item = Result<Bytes, String>> + Unpin,
 {
     let mut decoder = RecordDecoder::new();
-    let mut ingest = CommandIngest {
-        sender,
-        state_defaults,
-        record: 0,
-        start_seen: false,
-    };
+    let mut ingest = CommandIngest { sender, record: 0 };
     ingest_first(&mut backend, &mut decoder, &mut ingest).await?;
     ingest_remaining(backend, decoder, ingest).await
 }
@@ -988,7 +1037,7 @@ mod tests {
             body_inject: None,
             chunk_pool: Arc::new(ChunkPool::new(
                 StreamingWriter::DEFAULT_CHANNEL_CAPACITY,
-                StreamingWriter::CHUNK_TARGET + 1024,
+                StreamingWriter::CHUNK_TARGET,
             )),
         }
     }
@@ -1039,14 +1088,17 @@ mod tests {
         let (command_tx, command_rx) = mpsc::channel(commands.len().max(1));
         for (index, command) in commands.into_iter().enumerate() {
             command_tx
-                .try_send(ApiStreamRecord { index, command })
+                .try_send(EncodedRecord {
+                    index,
+                    bytes: Bytes::from(serde_json::to_vec(&command).unwrap()),
+                })
                 .unwrap_or_else(|error| panic!("failed to stage test command: {error}"));
         }
         drop(command_tx);
         let (html_tx, mut html_rx) = mpsc::channel(32);
         let mut writer = StreamingWriter::new(html_tx);
         let (ready_tx, _ready_rx) = oneshot::channel();
-        let result = run_renderer(config, command_rx, &mut writer, ready_tx);
+        let result = run_renderer(config, command_rx, &mut writer, ready_tx, defaults());
         drop(writer);
         let mut segments = Vec::new();
         while let Ok(chunk) = html_rx.try_recv() {
@@ -1099,33 +1151,34 @@ mod tests {
 "#,
         ))]);
         let (sender, mut receiver) = mpsc::channel(4);
-        ingest(chunks, sender, defaults())
+        ingest(chunks, sender)
             .await
             .unwrap_or_else(|error| panic!("ingest failed: {error}"));
+        let mut decoder = CommandDecoder::new(defaults());
 
         assert!(matches!(
-            receiver.recv().await,
-            Some(ApiStreamRecord {
+            decoder.decode(receiver.recv().await.unwrap()).unwrap(),
+            ApiStreamRecord {
                 command: ApiStreamCommand::Start {
                     version: VERSION,
                     ..
                 },
                 index: 0
-            })
+            }
         ));
         assert!(matches!(
-            receiver.recv().await,
-            Some(ApiStreamRecord {
+            decoder.decode(receiver.recv().await.unwrap()).unwrap(),
+            ApiStreamRecord {
                 command: ApiStreamCommand::Resume { .. },
                 index: 1
-            })
+            }
         ));
         assert!(matches!(
-            receiver.recv().await,
-            Some(ApiStreamRecord {
+            decoder.decode(receiver.recv().await.unwrap()).unwrap(),
+            ApiStreamRecord {
                 command: ApiStreamCommand::Update { .. },
                 index: 2
-            })
+            }
         ));
     }
 
@@ -1135,9 +1188,10 @@ mod tests {
             br#"{"type":"resume","boundary":{"owner":"index.html","name":"ready"},"state":{}}
 "#,
         ))]);
-        let (sender, _receiver) = mpsc::channel(1);
-        let error = ingest(chunks, sender, defaults())
-            .await
+        let (sender, mut receiver) = mpsc::channel(1);
+        ingest(chunks, sender).await.unwrap();
+        let error = CommandDecoder::new(defaults())
+            .decode(receiver.recv().await.unwrap())
             .err()
             .unwrap_or_else(|| panic!("command before start was accepted"));
         assert!(matches!(error, ApiStreamError::MissingStart { record: 0 }));
@@ -1149,9 +1203,10 @@ mod tests {
             br#"{"type":"start","version":3,"state":{}}
 "#,
         ))]);
-        let (sender, _receiver) = mpsc::channel(1);
-        let error = ingest(chunks, sender, defaults())
-            .await
+        let (sender, mut receiver) = mpsc::channel(1);
+        ingest(chunks, sender).await.unwrap();
+        let error = CommandDecoder::new(defaults())
+            .decode(receiver.recv().await.unwrap())
             .err()
             .unwrap_or_else(|| panic!("unsupported version was accepted"));
         assert!(matches!(
@@ -1167,7 +1222,7 @@ mod tests {
     async fn empty_stream_is_rejected_before_rendering() {
         let chunks = tokio_stream::empty();
         let (sender, _receiver) = mpsc::channel(1);
-        let error = ingest(chunks, sender, defaults())
+        let error = ingest(chunks, sender)
             .await
             .err()
             .unwrap_or_else(|| panic!("empty stream was accepted"));
@@ -1543,5 +1598,129 @@ mod tests {
             decoder.next(),
             Err(ApiStreamError::RecordTooLarge { record: 0 })
         ));
+    }
+
+    #[tokio::test]
+    async fn ingestion_moves_raw_records_and_waits_for_worker_capacity() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let mut ingest = CommandIngest { sender, record: 0 };
+        let bytes = Bytes::from_static(b"not JSON");
+        let original = bytes.clone();
+        ingest.dispatch(bytes).await.unwrap();
+
+        let second = ingest.dispatch(Bytes::from_static(b"another record"));
+        tokio::pin!(second);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut second)
+            .await
+            .is_err());
+        let first = receiver.recv().await.unwrap();
+        assert_eq!(first.index, 0);
+        assert_eq!(first.bytes.as_ptr(), original.as_ptr());
+        assert_eq!(first.bytes, original);
+        second.await.unwrap();
+        assert_eq!(receiver.recv().await.unwrap().index, 1);
+        assert!(matches!(
+            CommandDecoder::new(defaults()).decode(first),
+            Err(ApiStreamError::InvalidJson { record: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn worker_prepares_start_and_resume_but_leaves_updates_unchanged() {
+        let defaults = StateDefaults::new(
+            None,
+            "/app".to_owned(),
+            HashMap::from([("id".to_owned(), "42".to_owned())]),
+        );
+        let mut decoder = CommandDecoder::new(defaults);
+        let commands = [
+            br#"{"type":"start","version":2,"state":{}}"#.as_slice(),
+            br#"{"type":"resume","boundary":{"owner":"page","name":"ready"},"state":{}}"#,
+            br#"{"type":"update","boundary":{"owner":"page","name":"ready"},"state":{}}"#,
+        ];
+        for (index, bytes) in commands.into_iter().enumerate() {
+            let record = decoder
+                .decode(EncodedRecord {
+                    index,
+                    bytes: Bytes::from_static(bytes),
+                })
+                .unwrap();
+            match record.command {
+                ApiStreamCommand::Start { state, .. } | ApiStreamCommand::Resume { state, .. } => {
+                    assert_eq!(state, serde_json::json!({ "basePath": "/app", "id": "42" }));
+                }
+                ApiStreamCommand::Update { state, .. } => {
+                    assert_eq!(state, serde_json::json!({}));
+                }
+            }
+        }
+        assert!(matches!(
+            decoder.decode(EncodedRecord {
+                index: 3,
+                bytes: Bytes::from_static(commands[0]),
+            }),
+            Err(ApiStreamError::DuplicateStart { record: 3 })
+        ));
+    }
+
+    #[actix_web::test]
+    async fn invalid_initial_commands_remain_bad_gateway_responses() {
+        for (command, message) in [
+            (b"not JSON".as_slice(), "not valid JSON"),
+            (
+                br#"{"type":"start","version":3,"state":{}}"#,
+                "unsupported version 3",
+            ),
+            (
+                br#"{"type":"start","version":2,"state":[]}"#,
+                "object-valued state",
+            ),
+            (
+                br#"{"type":"resume","boundary":{"owner":"page","name":"ready"},"state":{}}"#,
+                "initial start record",
+            ),
+        ] {
+            let response = render(
+                tokio_stream::iter([Ok::<_, String>(Bytes::from_static(command))]),
+                start_render_failure_config(),
+                defaults(),
+            )
+            .await;
+            assert_eq!(response.status(), actix_web::http::StatusCode::BAD_GATEWAY);
+            let body = to_bytes(response.into_body()).await.unwrap();
+            assert!(String::from_utf8_lossy(&body).contains(message));
+        }
+    }
+
+    #[actix_web::test]
+    async fn worker_parse_error_cancels_a_stalled_backend_without_a_terminal() {
+        let (dropped_tx, dropped_rx) = oneshot::channel();
+        let backend = StalledBackend {
+            start: Some(Bytes::from_static(
+                b"{\"type\":\"start\",\"version\":2,\"state\":{}}\nnot JSON\n",
+            )),
+            dropped: Some(dropped_tx),
+        };
+        let response = render(
+            backend,
+            valid_streaming_config(Vec::new(), &["content"]),
+            defaults(),
+        )
+        .await;
+        assert_eq!(response.status(), actix_web::http::StatusCode::OK);
+        let body = tokio::time::timeout(Duration::from_secs(2), to_bytes(response.into_body()))
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), dropped_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!body
+            .windows(b"<footer".len())
+            .any(|bytes| bytes == b"<footer"));
+        assert!(!body
+            .windows(b",4,0,{}]".len())
+            .any(|bytes| bytes == b",4,0,{}]"));
     }
 }

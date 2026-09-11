@@ -834,7 +834,7 @@ fn main() {
 
     // One pool shared across the whole bench — this is exactly how the
     // production server uses it (constructed at startup, lives forever).
-    let pool = Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET + 1024));
+    let pool = Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET));
 
     let paths: &[(&str, fn(&Protocol, &Value, usize) -> usize)] = &[
         (

@@ -183,7 +183,7 @@ async fn main() -> Result<()> {
     let ctx = AppCtx {
         head: Arc::from(head),
         body: Arc::from(body),
-        pool: Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET + 1024)),
+        pool: Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET)),
     };
     let data = web::Data::new(ctx);
     let port = args.port;
