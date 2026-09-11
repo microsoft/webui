@@ -18,4 +18,4 @@ pub mod types;
 
 pub use build::build_docs;
 pub use serve::run_serve;
-pub use types::DocsConfig;
+pub use types::{DocsConfig, ShowMode};

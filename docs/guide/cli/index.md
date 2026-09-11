@@ -18,6 +18,11 @@ cargo install microsoft-webui-cli
 
 ## Commands
 
+WebUI Press is a separate native binary. Both `webui-press build` and
+`webui-press serve` accept `--show=all|content` (default `all`) to generate
+the complete site or only page content. See [WebUI Press](/guide/webui-press)
+for configuration, content-mode behavior, and template regions.
+
 ### Global options
 
 These flags work with any command:

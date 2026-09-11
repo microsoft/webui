@@ -4945,8 +4945,43 @@ The adapter handles all outputs in one `onEnd` pass.
 
 ### webui-press integration
 
+`DocsConfig.show` is a typed `ShowMode` (`all` or `content`), defaulting to
+`all`. Both native `build` and `serve` accept `--show`; an explicit CLI value
+overrides configuration on the initial build and every serve config reload.
+Page and 404 build errors retain the core error's complete source chain,
+including parser diagnostic codes, locations, snippets, and help when present.
+
+Content mode selects the bundled content document before region expansion,
+component/script reachability, compilation, and SSR. It retains document
+metadata, base URL, configured head tags, themes, authored page modules, state,
+and semantic `main`/`article` wrappers. Markdown (including home Markdown),
+custom-page HTML, examples, and API panels are content, regardless of their
+element names. No template regions, navigation, sidebar/TOC, mobile context,
+previous/next links, hero/features, footer, or shell scripts are generated.
+Configured regions remain validated against the selected full template, but
+their state and scripts are inactive. This also applies to the 404 document.
+
+The bundled `docs.css` contains shared tokens and content typography;
+`shell.css` contains full-site layout constraints. All mode concatenates both
+into one served stylesheet, preserving the existing layout without an extra
+request. Content mode uses only the bundled content styles, normal document
+scrolling, and no shell width/height constraints. A custom full template and
+its styles/entry script do not replace the content-mode scaffold; configured
+head tags, CSS/theme, components, and custom pages continue to apply.
+
+Full-site manual light/dark selection overrides the OS preference for both
+native theme tokens and `color-scheme`. Manual overrides are inactive under
+forced colors so site-authored forced-colors token rules retain precedence.
+Content mode has no shell theme control, does not read or snapshot a persisted
+theme into `data-theme`, and uses only the light default and system dark media
+query. It follows live OS preference changes without JavaScript and leaves the
+stored full-site preference untouched.
+
 `webui-press` invokes esbuild's JavaScript API once through
 `@microsoft/webui/projection.js`, then validates the generated manifest once.
+Filesystem alias targets are resolved against an absolute config directory
+before passing them to esbuild. Relative and absolute CLI config paths retain
+the same config-relative alias semantics, independent of the invocation cwd.
 The resulting `PreparedProjectionManifests` is reused by every page and the 404
 build; page builds never re-open or re-hash bundle files. The prepared handle
 is an `Arc`-backed immutable snapshot containing both component surfaces and

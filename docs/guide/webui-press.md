@@ -1,4 +1,49 @@
-# WebUI Press named regions
+# WebUI Press
+
+## Content-only sites
+
+The native `webui-press` binary supports the same display modes for static
+builds and live development:
+
+```bash
+webui-press build --show=content
+webui-press serve --show=content
+```
+
+The default is `all`. Set `"show": "content"` in `.webui-press/config.json`
+to change that default; an explicit `--show=all` or `--show=content` wins,
+including after serve reloads the config.
+
+Content mode retains a complete document with metadata, base URL, themes,
+semantic main/article content, SSR and hydration. Markdown, component examples,
+API panels, custom-page HTML, and bundled page scripts remain. Home Markdown is
+rendered too. All layouts and the 404 page use ordinary document scrolling,
+without reserved sidebar columns, header offsets, or full-layout viewport fill.
+
+Full mode remembers the theme control's light/dark selection and applies it to
+native theme tokens and browser controls regardless of the OS preference.
+Content mode has no shell theme control: it ignores the saved full-site choice
+without changing it, follows OS light/dark changes through CSS, and works without
+JavaScript. Forced-colors styles retain precedence over manual theme overrides.
+
+Press header/navigation, sidebars/TOC, mobile navigation, previous/next links,
+hero/features, footer, and template regions are not generated. Authored examples
+are never removed based on their tag names. Region names/configuration are still
+validated, but region state and scripts are inactive.
+
+Even with `--template`, content mode uses the bundled shell-free scaffold and
+content typography, not the full template's CSS or entry script. Configured
+`head`, `css`, `theme`, `components`, and page scripts still apply. Put shared
+assets there rather than in shell regions. Component discovery continues to
+accept npm packages alongside local roots; browser registration imports can use
+the existing `<script type="module" bundle>` syntax and bundler aliases.
+Native npm discovery names components from `<tag>.html` files, using the package's
+`components/` directory when present or the package root otherwise. Folder names,
+template exports, and CEM names do not determine native component names. Use
+package module exports for browser registrations. See
+[External components](/guide/concepts/components#external-component-sources).
+
+## Named regions
 
 WebUI Press templates expose compile-time named regions that a site can keep,
 replace, clear, or augment with state and browser code. Regions are resolved

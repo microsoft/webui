@@ -36,8 +36,16 @@
       }
     }
 
-    :root[data-theme="dark"] {
-      /*{{{tokens.dark}}}*/
+    @media not (forced-colors: active) {
+      :root[data-theme="light"] {
+        color-scheme: light;
+        /*{{{tokens.light}}}*/
+      }
+
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        /*{{{tokens.dark}}}*/
+      }
     }
   </style>
   {{{headTags}}}

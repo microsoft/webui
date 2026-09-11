@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use serde_json::{Map, Value};
-use webui_docs::{build_docs, DocsConfig};
+use webui_docs::{build_docs, DocsConfig, ShowMode};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -74,7 +74,7 @@ fn builds_layout_scoped_regions_for_pages_and_404() -> TestResult {
         "globalThis.__docRegionScript = true;",
     )?;
 
-    let config: DocsConfig = serde_json::from_value(object([
+    let mut config: DocsConfig = serde_json::from_value(object([
         ("site", object([("title", string("Regions"))])),
         ("basePath", string("/fixture/")),
         ("contentDir", path_value(&content_dir)),
@@ -127,6 +127,36 @@ fn builds_layout_scoped_regions_for_pages_and_404() -> TestResult {
     assert!(!doc_script.contains("__homeRegionScript"));
     assert!(not_found_script.contains("__docRegionScript"));
 
+    config.show = ShowMode::Content;
+    build_docs(&config, &root, &template_dir)?;
+    for page in ["index.html", "guide/index.html", "404.html"] {
+        let raw = fs::read_to_string(out_dir.join(page))?;
+        let html = html_escape::decode_html_entities(&raw);
+        assert!(html.contains("<main "));
+        assert!(html.contains("<article "));
+        assert!(html.contains("<base href=\"/fixture/\""));
+        assert!(!html.contains("<home-region"));
+        assert!(!html.contains("<doc-region"));
+        assert!(!html.contains("<script type=\"module\""));
+    }
+    let home = fs::read_to_string(out_dir.join("index.html"))?;
+    assert!(
+        home.contains("<h1 id=\"home\">Home "),
+        "home markdown must be rendered"
+    );
+    let css = fs::read_to_string(out_dir.join("docs.css"))?;
+    assert!(!css.contains("overflow: hidden"));
+    assert!(!css.contains(".main-content"));
+
+    config.regions.insert(
+        "unknown".to_string(),
+        serde_json::from_str(r#"{"html": "<p>Unknown</p>"}"#)?,
+    );
+    let error = build_docs(&config, &root, &template_dir)
+        .err()
+        .ok_or("unknown region must still fail in content mode")?;
+    assert!(error.to_string().contains("does not declare it"));
+
     fs::remove_dir_all(root).ok();
     Ok(())
 }
@@ -144,6 +174,45 @@ fn ensure_projection_package(workspace: &Path) -> TestResult {
     if !status.success() {
         return Err("failed to build @microsoft/webui projection package".into());
     }
+    Ok(())
+}
+
+#[test]
+fn not_found_build_preserves_underlying_parser_error() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("not-found-diagnostic-{}", std::process::id()));
+    let template = root.join("template");
+    let content = root.join("content");
+    fs::create_dir_all(&template)?;
+    fs::create_dir_all(&content)?;
+    fs::write(
+        template.join("index.html"),
+        concat!(
+            "<html><body>",
+            "<webui-press-region name=\"doc.invalid\" layout=\"doc\">",
+            "<input :value=\"{{count}}\">",
+            "</webui-press-region><main>{{{page.content}}}</main></body></html>"
+        ),
+    )?;
+    fs::write(content.join("index.md"), "---\nlayout: home\n---\n# Home")?;
+    let config: DocsConfig = serde_json::from_value(object([
+        ("site", object([("title", string("Diagnostics"))])),
+        ("basePath", string("/")),
+        ("contentDir", path_value(&content)),
+        ("outDir", path_value(&root.join("dist"))),
+        ("publicDir", path_value(&root.join("public"))),
+        ("nav", Value::Array(Vec::new())),
+        ("sidebar", Value::Array(Vec::new())),
+    ]))?;
+    let error = build_docs(&config, &root, &template)
+        .err()
+        .ok_or("invalid 404 template must fail")?;
+    let message = error.to_string();
+    assert!(message.contains("404 build failed: Failed to parse index.html"));
+    assert!(message.contains(":value complex binding is only allowed on custom elements"));
+    assert!(message.contains("Use value="));
+    fs::remove_dir_all(root)?;
     Ok(())
 }
 

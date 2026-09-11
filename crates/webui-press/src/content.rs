@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use crate::error::{Error, Result};
 use crate::markdown::{render_markdown, Highlighter};
 use crate::state::{load_render_states, merge_page_state, LoadedStates};
-use crate::types::{DocsConfig, NavLink, PageDescriptor, SidebarItem, SidebarSection};
+use crate::types::{DocsConfig, NavLink, PageDescriptor, ShowMode, SidebarItem, SidebarSection};
 
 /// Normalize a config link (e.g. `/guide/intro/` or `/guide/intro`) to a
 /// canonical URL path that includes the site's `base_path` prefix and
@@ -518,7 +518,7 @@ pub(crate) fn process_content_with_states(
                         fm.layout.unwrap_or_else(|| "doc".to_string())
                     };
 
-                    if !is_home {
+                    if !is_home || config.show == ShowMode::Content {
                         // Canonical page URL: every page is written as
                         // `<dir>/index.html`, so it is served with a trailing
                         // slash. In-page anchors need this exact path so they

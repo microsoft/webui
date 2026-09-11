@@ -30,7 +30,7 @@ use clap::{Parser, Subcommand};
 use console::style;
 use include_dir::{include_dir, Dir, DirEntry};
 
-use crate::types::DocsConfig;
+use crate::types::{DocsConfig, ShowMode};
 
 static EMBEDDED_TEMPLATE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/template");
 static EMBEDDED_COMPONENTS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/components");
@@ -38,7 +38,11 @@ const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
 #[derive(Parser)]
-#[command(name = "webui-press", about = "WebUI documentation site builder")]
+#[command(
+    name = "webui-press",
+    version,
+    about = "WebUI documentation site builder"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -55,6 +59,10 @@ enum Commands {
         /// Path to the template directory (overrides bundled assets)
         #[arg(short, long)]
         template: Option<String>,
+
+        /// Generate the complete site or only page content (default: all)
+        #[arg(long, value_enum)]
+        show: Option<ShowMode>,
     },
 
     /// Build, watch sources, and serve with live reload (dev only)
@@ -66,6 +74,10 @@ enum Commands {
         /// Path to the template directory (overrides bundled assets)
         #[arg(short, long)]
         template: Option<String>,
+
+        /// Generate the complete site or only page content (default: all)
+        #[arg(long, value_enum)]
+        show: Option<ShowMode>,
 
         /// Port to bind
         #[arg(short, long, default_value_t = 3333)]
@@ -80,13 +92,18 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
-        Commands::Build { config, template } => run_build(&config, template.as_deref()),
+        Commands::Build {
+            config,
+            template,
+            show,
+        } => run_build(&config, template.as_deref(), show),
         Commands::Serve {
             config,
             template,
+            show,
             port,
             host,
-        } => run_serve_blocking(&config, template.as_deref(), &host, port),
+        } => run_serve_blocking(&config, template.as_deref(), &host, port, show),
     };
 
     if let Err(e) = result {
@@ -143,11 +160,29 @@ fn extract_embedded_assets() -> Result<PathBuf> {
         return Ok(template_dir);
     }
 
+    // Concurrent cold builds must not remove one another's staging directory.
+    let cache_lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(tmp.join(format!("{dir_name}.lock")))
+        .map_err(|e| anyhow::anyhow!("Cannot open embedded asset cache lock: {e}"))?;
+    cache_lock
+        .lock()
+        .map_err(|e| anyhow::anyhow!("Cannot lock embedded asset cache: {e}"))?;
+    if is_complete_cache(&root) {
+        return Ok(template_dir);
+    }
+
     // A `root` that isn't complete is a stale or interrupted extraction. Clear
     // it and any leftover staging dir, extract into staging, then publish.
     let staging = tmp.join(format!("{dir_name}.staging"));
     let _ = fs::remove_dir_all(&staging);
     let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(staging.join("template"))
+        .and_then(|()| fs::create_dir_all(staging.join("components")))
+        .map_err(|e| anyhow::anyhow!("Cannot create embedded asset directories: {e}"))?;
     EMBEDDED_TEMPLATE
         .extract(staging.join("template"))
         .map_err(|e| anyhow::anyhow!("Cannot extract embedded template: {e}"))?;
@@ -200,8 +235,11 @@ fn hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
-fn run_build(config_path: &str, template_dir: Option<&str>) -> Result<()> {
-    let (docs_config, config_dir, template) = load_config(config_path, template_dir)?;
+fn run_build(config_path: &str, template_dir: Option<&str>, show: Option<ShowMode>) -> Result<()> {
+    let (mut docs_config, config_dir, template) = load_config(config_path, template_dir)?;
+    if let Some(show) = show {
+        docs_config.show = show;
+    }
     let _stats = build::build_docs(&docs_config, &config_dir, &template)?;
     Ok(())
 }
@@ -211,6 +249,7 @@ fn run_serve_blocking(
     template_dir: Option<&str>,
     host: &str,
     port: u16,
+    show_override: Option<ShowMode>,
 ) -> Result<()> {
     let (docs_config, config_dir, template) = load_config(config_path, template_dir)?;
     let config_path_buf = Path::new(config_path).to_path_buf();
@@ -224,12 +263,32 @@ fn run_serve_blocking(
         config_path: config_path_buf,
         host: host.to_string(),
         port,
+        show_override,
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_mode_is_typed_for_both_commands() -> Result<()> {
+        for command in ["build", "serve"] {
+            for (flag, expected) in [
+                ("--show=all", ShowMode::All),
+                ("--show=content", ShowMode::Content),
+            ] {
+                let cli = Cli::try_parse_from(["webui-press", command, flag])?;
+                let (Commands::Build { show, .. } | Commands::Serve { show, .. }) = cli.command;
+                assert_eq!(show, Some(expected));
+            }
+            let cli = Cli::try_parse_from(["webui-press", command])?;
+            let (Commands::Build { show, .. } | Commands::Serve { show, .. }) = cli.command;
+            assert_eq!(show, None);
+            assert!(Cli::try_parse_from(["webui-press", command, "--show=invalid"]).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn embedded_assets_extract_template_and_components() -> Result<()> {
