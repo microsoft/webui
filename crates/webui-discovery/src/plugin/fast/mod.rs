@@ -1,11 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! Component discovery plugin contracts and built-in layouts.
+//! FAST manifest naming and converted template/style layouts.
 
+use super::DiscoveryPlugin;
 use crate::npm::{
-    package_component_declarations, read_optional_file, read_required_file, resolve_webui_assets,
-    PackageContext,
+    package_component_declarations, package_export_path, package_has_authored_script,
+    package_metadata, read_optional_file, read_required_file, ComponentDeclaration, PackageContext,
 };
 use crate::{has_sibling_script, DiscoveredComponent};
 use anyhow::{bail, Context, Result};
@@ -13,100 +14,8 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
 
-// Module + five templates + two style candidates per template.
+// Initial estimate for module, template, and style dependencies.
 const FAST_CACHE_FILES_PER_COMPONENT: usize = 16;
-
-/// Maps a resolved local or npm package layout to WebUI component registrations.
-pub trait DiscoveryPlugin {
-    /// Stable cache namespace for this discovery layout.
-    fn cache_namespace(&self) -> &'static str;
-
-    /// Discover components below a local source root.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a claimed component source cannot be read.
-    fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>>;
-
-    /// Return every package file whose contents or existence affects discovery.
-    ///
-    /// Paths must be deterministic. Missing optional candidates should still be
-    /// included so creating one invalidates a prior cache entry.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when package metadata needed to identify dependencies
-    /// is invalid.
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>>;
-
-    /// Discover components in a validated npm package.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when required package metadata or component sources are
-    /// missing or invalid.
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>>;
-}
-
-/// Discovery for WebUI's native component package layout.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct WebUIDiscoveryPlugin;
-
-impl WebUIDiscoveryPlugin {
-    /// Create WebUI native discovery.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl DiscoveryPlugin for WebUIDiscoveryPlugin {
-    fn cache_namespace(&self) -> &'static str {
-        "webui"
-    }
-
-    fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
-        discover_local_templates(root, webui_local_tag)
-    }
-
-    fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
-        let assets = resolve_webui_assets(package)?;
-        let mut files = Vec::with_capacity(3);
-        files.push(assets.manifest_path);
-        files.push(assets.template_path);
-        if let Some(styles) = assets.styles_path {
-            files.push(styles);
-        }
-        Ok(files)
-    }
-
-    fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
-        let assets = resolve_webui_assets(package)?;
-        let html_content = read_required_file(&assets.template_path, "component template")?;
-        let css_content = read_optional_file(assets.styles_path.as_deref(), "component styles")?;
-        let tag_names = package_component_declarations(package)?
-            .into_iter()
-            .map(|declaration| declaration.tag_name)
-            .collect::<Vec<_>>();
-        if tag_names.is_empty() {
-            bail!(
-                "No component tag names found in custom elements manifest: {}",
-                assets.manifest_path.display()
-            );
-        }
-
-        Ok(tag_names
-            .into_iter()
-            .map(|tag_name| DiscoveredComponent {
-                tag_name,
-                html_content: html_content.clone(),
-                css_content: css_content.clone(),
-                is_client_owned: package.is_client_owned,
-                source: package.name.to_string(),
-            })
-            .collect())
-    }
-}
 
 /// Discovery for FAST generated component layouts.
 #[derive(Debug, Default, Clone, Copy)]
@@ -125,14 +34,53 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
         "fast"
     }
 
+    fn requires_package_metadata(&self) -> bool {
+        true
+    }
+
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
         discover_local_templates(root, fast_local_tag)
     }
 
+    fn supports_package(&self, package: PackageContext<'_>) -> Result<bool> {
+        if package_metadata(package)?.get("customElements").is_some() {
+            return Ok(true);
+        }
+        crate::catalog::has_templates_matching(&crate::catalog::root(package)?, ordinary_html)
+    }
+
     fn package_cache_files(&self, package: PackageContext<'_>) -> Result<Vec<PathBuf>> {
-        let declarations = package_component_declarations(package)?;
-        let mut files = Vec::with_capacity(1 + declarations.len() * FAST_CACHE_FILES_PER_COMPONENT);
-        files.push(crate::npm::custom_elements_manifest_path(package)?);
+        let declarations = declarations(package)?;
+        let names: HashSet<_> = declarations
+            .iter()
+            .map(|item| item.tag_name.as_str())
+            .collect();
+        let mut files =
+            crate::catalog::cache_files_matching(&crate::catalog::root(package)?, |path| {
+                fallback_html(path, &names)
+            })?;
+        if package_metadata(package)?.get("customElements").is_some() {
+            files.push(crate::npm::custom_elements_manifest_path(package)?);
+        }
+        if declarations.is_empty() {
+            return Ok(files);
+        }
+        let assets = exported_assets(package, declarations.len())?;
+        let capacity = if assets.template.is_some() {
+            4
+        } else {
+            1 + declarations.len() * FAST_CACHE_FILES_PER_COMPONENT
+        };
+        files.reserve(capacity);
+        if let Some(template) = assets.template {
+            if let Some(styles) = assets.styles {
+                files.push(styles);
+            } else {
+                files.extend(fast_style_candidates(&template));
+            }
+            files.push(template);
+            return Ok(files);
+        }
         for declaration in declarations {
             let module_path = declaration.module_path.as_deref().with_context(|| {
                 format!(
@@ -149,38 +97,48 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
             let declaration_name = declaration.name.as_deref().unwrap_or(&declaration.tag_name);
             for candidate in fast_template_candidates(package.root, module_path, declaration_name) {
                 files.push(candidate.clone());
-                files.extend(fast_style_candidates(&candidate));
+                if assets.styles.is_none() {
+                    files.extend(fast_style_candidates(&candidate));
+                }
             }
         }
+        files.extend(assets.styles);
         Ok(files)
     }
 
     fn discover_package(&self, package: PackageContext<'_>) -> Result<Vec<DiscoveredComponent>> {
-        let declarations = package_component_declarations(package)?;
+        let declarations = declarations(package)?;
+        let mut components = {
+            let names: HashSet<_> = declarations
+                .iter()
+                .map(|item| item.tag_name.as_str())
+                .collect();
+            crate::catalog::discover_matching(
+                package.name,
+                &crate::catalog::root(package)?,
+                |path| fallback_html(path, &names),
+            )?
+        };
         if declarations.is_empty() {
-            bail!(
-                "No component declarations found in package '{}'",
-                package.name
-            );
+            if components.is_empty() {
+                bail!(
+                    "No components found in package '{}'. Declare FAST components through \
+                     customElements or provide <component-name>.html files.",
+                    package.name
+                );
+            }
+            return Ok(components);
         }
 
-        let mut components = Vec::with_capacity(declarations.len());
+        let assets = exported_assets(package, declarations.len())?;
+        components.reserve(declarations.len());
+        let is_client_owned = package_has_authored_script(package_metadata(package)?);
         let mut seen_templates = HashSet::with_capacity(declarations.len());
         for declaration in declarations {
-            let module_path = declaration.module_path.as_deref().with_context(|| {
-                format!(
-                    "FAST component <{}> in package '{}' has no CEM module path",
-                    declaration.tag_name, package.name
-                )
-            })?;
-            let declaration_name = declaration.name.as_deref().unwrap_or(&declaration.tag_name);
-            let template_path = resolve_fast_template(package.root, module_path, declaration_name)
-                .with_context(|| {
-                    format!(
-                        "Failed to locate FAST template for <{}> in package '{}'",
-                        declaration.tag_name, package.name
-                    )
-                })?;
+            let template_path = match &assets.template {
+                Some(path) => path.clone(),
+                None => inferred_template(package, &declaration)?,
+            };
             if !seen_templates.insert(template_path.clone()) {
                 bail!(
                     "FAST template {} maps to multiple component declarations",
@@ -188,20 +146,96 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                 );
             }
             let html_content = read_required_file(&template_path, "FAST component template")?;
-            let css_content = read_optional_file(
-                resolve_fast_styles(&template_path).as_deref(),
-                "FAST component styles",
-            )?;
+            let css_content = match &assets.styles {
+                Some(path) => Some(read_required_file(path, "FAST component styles")?),
+                None => read_optional_file(
+                    resolve_fast_styles(&template_path).as_deref(),
+                    "FAST component styles",
+                )?,
+            };
             components.push(DiscoveredComponent {
                 tag_name: declaration.tag_name,
                 html_content,
                 css_content,
-                is_client_owned: package.is_client_owned,
+                is_client_owned,
                 source: package.name.to_string(),
             });
         }
         Ok(components)
     }
+}
+
+fn declarations(package: PackageContext<'_>) -> Result<Vec<ComponentDeclaration>> {
+    if package_metadata(package)?.get("customElements").is_some() {
+        package_component_declarations(package)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn ordinary_html(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            !name.ends_with(".template.html") && !name.ends_with(".template-webui.html")
+        })
+}
+
+fn fallback_html(path: &Path, names: &HashSet<&str>) -> bool {
+    ordinary_html(path)
+        && crate::catalog::template_tag(path).is_some_and(|name| !names.contains(name))
+}
+
+struct ExportedAssets {
+    template: Option<PathBuf>,
+    styles: Option<PathBuf>,
+}
+
+fn exported_assets(package: PackageContext<'_>, declarations: usize) -> Result<ExportedAssets> {
+    let template = package_export_path(package, "./template-webui.html")?;
+    if template.as_ref().is_some_and(|path| {
+        !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".template-webui.html"))
+    }) {
+        bail!(
+            "Package '{}' must export a .template-webui.html file for FAST discovery.",
+            package.name
+        );
+    }
+    if template.is_some() && declarations != 1 {
+        bail!(
+            "Package '{}' exports one './template-webui.html' but declares {declarations} components. \
+             Use one component declaration or per-module .template-webui.html files.",
+            package.name
+        );
+    }
+    let styles = if declarations == 1 {
+        package_export_path(package, "./styles.css")?
+    } else {
+        None
+    };
+    Ok(ExportedAssets { template, styles })
+}
+
+fn inferred_template(
+    package: PackageContext<'_>,
+    declaration: &ComponentDeclaration,
+) -> Result<PathBuf> {
+    let module_path = declaration.module_path.as_deref().with_context(|| {
+        format!(
+            "FAST component <{}> in package '{}' has no CEM module path",
+            declaration.tag_name, package.name
+        )
+    })?;
+    let name = declaration.name.as_deref().unwrap_or(&declaration.tag_name);
+    resolve_fast_template(package.root, module_path, name).with_context(|| {
+        format!(
+            "Failed to locate FAST template for <{}> in package '{}'",
+            declaration.tag_name, package.name
+        )
+    })
 }
 
 fn discover_local_templates(
@@ -237,17 +271,14 @@ fn discover_local_templates(
     Ok(components)
 }
 
-fn webui_local_tag(path: &Path) -> Option<&str> {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| stem.contains('-'))
-}
-
 fn fast_local_tag(path: &Path) -> Option<&str> {
     let file_name = path.file_name()?.to_str()?;
+    if file_name.ends_with(".template.html") {
+        return None;
+    }
     file_name
-        .strip_suffix(".template.html")
-        .or_else(|| webui_local_tag(path))
+        .strip_suffix(".template-webui.html")
+        .or_else(|| crate::catalog::template_tag(path))
 }
 
 fn resolve_local_styles(template_path: &Path) -> Option<PathBuf> {
@@ -268,7 +299,7 @@ fn fast_style_candidates(template_path: &Path) -> Vec<PathBuf> {
     let Some(file_name) = template_path.file_name().and_then(|name| name.to_str()) else {
         return Vec::new();
     };
-    let Some(prefix) = file_name.strip_suffix(".template.html") else {
+    let Some(prefix) = file_name.strip_suffix(".template-webui.html") else {
         return Vec::new();
     };
     let Some(parent) = template_path.parent() else {
@@ -318,6 +349,20 @@ fn fast_template_candidates(
             push_nested_template_candidate(&mut candidates, component_root, suffix);
         }
     }
+    if !candidates.iter().any(|candidate| candidate.is_file()) {
+        for directory in parent
+            .ancestors()
+            .skip(1)
+            .take_while(|path| path.starts_with(root))
+        {
+            for stem in module_stem
+                .into_iter()
+                .chain(std::iter::once(declaration_stem.as_str()))
+            {
+                push_template_candidate(&mut candidates, directory, stem);
+            }
+        }
+    }
     candidates
 }
 
@@ -336,7 +381,7 @@ fn package_path(root: &Path, relative: &Path) -> Option<PathBuf> {
 }
 
 fn push_template_candidate(candidates: &mut Vec<PathBuf>, parent: &Path, stem: &str) {
-    let candidate = parent.join(format!("{stem}.template.html"));
+    let candidate = parent.join(format!("{stem}.template-webui.html"));
     if !candidates.contains(&candidate) {
         candidates.push(candidate);
     }
@@ -356,7 +401,7 @@ fn resolve_fast_template(
             return Ok(candidate);
         }
     }
-    bail!("no sibling <component>.template.html file found")
+    bail!("no matching <component>.template-webui.html file found; raw .template.html assets are not used")
 }
 
 fn to_kebab_case(name: &str) -> String {
@@ -375,44 +420,4 @@ fn to_kebab_case(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    fn fast_local_template_uses_component_filename_prefix() {
-        let root = tempfile::TempDir::new().unwrap();
-        fs::write(
-            root.path().join("todo-item.template.html"),
-            "<f-template><template>item</template></f-template>",
-        )
-        .unwrap();
-
-        let components = FastDiscoveryPlugin::new()
-            .discover_local(root.path())
-            .unwrap();
-
-        assert_eq!(components.len(), 1);
-        assert_eq!(components[0].tag_name, "todo-item");
-    }
-
-    #[test]
-    fn virtual_root_module_candidates_stay_inside_package() {
-        let root = tempfile::TempDir::new().unwrap();
-        let candidates = fast_template_candidates(root.path(), Path::new("index.js"), "MyButton");
-
-        assert!(candidates
-            .iter()
-            .all(|candidate| candidate.starts_with(root.path())));
-        assert!(candidates.contains(
-            &root
-                .path()
-                .join("my-button")
-                .join("my-button.template.html")
-        ));
-        assert!(
-            fast_template_candidates(root.path(), Path::new("../escape/index.js"), "Escape")
-                .is_empty()
-        );
-    }
-}
+mod tests;

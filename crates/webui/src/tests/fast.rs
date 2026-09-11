@@ -11,11 +11,11 @@ fn property_bindings_populate_fast_component_render_scope() {
             r#"<html><body><todo-app :rendertodos="{{todos}}"></todo-app></body></html>"#,
         ),
         (
-            "todo-app.template.html",
+            "todo-app.template-webui.html",
             r#"<f-template name="todo-app"><template><ul><f-repeat value="{{todo in rendertodos}}"><todo-item :todo="{{todo}}"></todo-item></f-repeat></ul></template></f-template>"#,
         ),
         (
-            "todo-item.template.html",
+            "todo-item.template-webui.html",
             r#"<f-template name="todo-item"><template><li data-id="{{todo.id}}">{{todo.title}}</li></template></f-template>"#,
         ),
     ]);
@@ -57,7 +57,7 @@ fn build_discovers_generated_local_template() {
     let app = create_app_dir(&[
         ("index.html", "<custom-button></custom-button>"),
         (
-            "custom-button.template.html",
+            "custom-button.template-webui.html",
             r#"<f-template><template><button>{{label}}</button></template></f-template>"#,
         ),
         ("custom-button.styles.css", "button { color: red; }"),
@@ -72,6 +72,64 @@ fn build_discovers_generated_local_template() {
     assert!(component
         .template
         .contains("<style>button { color: red; }</style>"));
+}
+
+#[test]
+fn fast_versions_discover_default_named_html_in_the_app_folder() {
+    let app = create_app_dir(&[
+        (
+            "index.html",
+            "<html><body><app-card>Slotted text</app-card></body></html>",
+        ),
+        (
+            "app-card.html",
+            "<div class=\"card\">{{message}}<slot></slot></div>",
+        ),
+        ("app-card.css", ".card { color: blue; }"),
+        ("app-card.ts", "export class AppCard {}"),
+        (
+            "package.json",
+            r#"{"customElements":"custom-elements.json"}"#,
+        ),
+        (
+            "custom-elements.json",
+            "App discovery must not read package CEM data",
+        ),
+    ]);
+    for (plugin, handler) in [
+        (
+            Plugin::FastV2,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v2::FastV2HydrationPlugin::new())
+            }),
+        ),
+        (
+            Plugin::FastV3,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v3::FastV3HydrationPlugin::new())
+            }),
+        ),
+    ] {
+        let mut options = default_options(app.path());
+        options.plugin = Some(plugin);
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+        assert!(result.protocol.components["app-card"]
+            .template
+            .contains("color: blue"));
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .render(
+                &Protocol::new(result.protocol),
+                &serde_json::json!({"message":"Plain app component"}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        let ssr = writer.buf.split("<f-template").next().unwrap_or_default();
+        assert!(ssr.contains("Plain app component"));
+        assert!(ssr.contains("Slotted text"));
+    }
 }
 
 #[test]
@@ -130,7 +188,7 @@ fn build_discovers_fast_npm_package_layout() {
     )
     .unwrap();
     fs::write(
-        package.join("components/button/button.template.html"),
+        package.join("components/button/button.template-webui.html"),
         r#"<f-template name="custom-button"><template><button>{{label}}</button></template></f-template>"#,
     )
     .unwrap();
@@ -140,12 +198,12 @@ fn build_discovers_fast_npm_package_layout() {
     )
     .unwrap();
     fs::write(
-        package.join("components/item/item.template.html"),
+        package.join("components/item/item.template-webui.html"),
         r#"<f-template name="custom-item"><template><span>{{value}}</span></template></f-template>"#,
     )
     .unwrap();
     fs::write(
-        package.join("components/textarea/textarea.template.html"),
+        package.join("components/textarea/textarea.template-webui.html"),
         r#"<f-template name="custom-textarea"><template><textarea>{{value}}</textarea></template></f-template>"#,
     )
     .unwrap();
@@ -196,11 +254,102 @@ fn css_public_base_keeps_shadow_template_styled() {
 }
 
 #[test]
+fn exported_fast_template_builds_and_renders_for_both_fast_versions() {
+    let project = TempDir::new().unwrap();
+    let app = project.path().join("src");
+    let package = project.path().join("node_modules/custom-button");
+    fs::create_dir_all(&app).unwrap();
+    fs::create_dir_all(package.join("dist/esm")).unwrap();
+    fs::write(
+        app.join("index.html"),
+        "<html><body><custom-button></custom-button><custom-note></custom-note></body></html>",
+    )
+    .unwrap();
+    fs::write(
+        package.join("package.json"),
+        r#"{
+        "name":"custom-button", "customElements":"custom-elements.json",
+        "exports":{
+            ".":"./dist/esm/button.js",
+            "./template.html":"./dist/button.template.html",
+            "./template-webui.html":"./dist/button.template-webui.html",
+            "./styles.css":"./dist/button.styles.css"
+        }
+    }"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("custom-elements.json"),
+        r#"{
+        "modules":[{"path":"dist/esm/button.js",
+            "declarations":[{"name":"Button","tagName":"custom-button"}]}]
+    }"#,
+    )
+    .unwrap();
+    fs::write(package.join("dist/esm/button.js"), "export {};").unwrap();
+    fs::write(
+        package.join("dist/button.template-webui.html"),
+        r#"<template shadowrootmode="open"><button>{{label}}</button></template>"#,
+    )
+    .unwrap();
+    fs::write(
+        package.join("dist/button.template.html"),
+        "<template>Wrong variant</template>",
+    )
+    .unwrap();
+    fs::write(
+        package.join("dist/button.styles.css"),
+        "button { color: blue; }",
+    )
+    .unwrap();
+    fs::write(package.join("custom-note.html"), "<span>{{note}}</span>").unwrap();
+    fs::write(package.join("custom-button.html"), "Wrong duplicate").unwrap();
+
+    for (plugin, handler) in [
+        (
+            Plugin::FastV2,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v2::FastV2HydrationPlugin::new())
+            }),
+        ),
+        (
+            Plugin::FastV3,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v3::FastV3HydrationPlugin::new())
+            }),
+        ),
+    ] {
+        let mut options = default_options(&app);
+        options.plugin = Some(plugin);
+        options.components = vec!["custom-button".to_string()];
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+        let component = &result.protocol.components["custom-button"];
+        assert!(component.template.contains("<button>{{label}}</button>"));
+        assert!(component.template.contains("color: blue"));
+        assert!(!component.template.contains("Wrong variant"));
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .render(
+                &Protocol::new(result.protocol),
+                &serde_json::json!({"label":"Server label","note":"Default fallback"}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        let ssr = writer.buf.split("<f-template").next().unwrap_or_default();
+        assert!(ssr.contains("Server label"));
+        assert!(ssr.contains("Default fallback"));
+        assert!(!ssr.contains("Wrong duplicate"));
+    }
+}
+
+#[test]
 fn authored_template_light_build_is_rejected() {
     let app = create_app_dir(&[
         ("index.html", "<my-card>Hello</my-card>"),
         (
-            "my-card.template.html",
+            "my-card.template-webui.html",
             r#"<f-template><template><div>card</div></template></f-template>"#,
         ),
         ("my-card.css", ".card { color: red; }"),
@@ -226,7 +375,7 @@ fn authored_template_dom_diagnostic_uses_original_location() {
     let app = create_app_dir(&[
         ("index.html", "<my-card></my-card>"),
         (
-            "my-card.template.html",
+            "my-card.template-webui.html",
             "<f-template\n  name=\"my-card\"\n  shadowrootmode=\"closed\">\n  <template><div>card</div></template>\n</f-template>",
         ),
     ]);
@@ -250,7 +399,7 @@ fn authored_template_duplicate_shadow_diagnostic_uses_second_location() {
     let app = create_app_dir(&[
         ("index.html", "<my-card></my-card>"),
         (
-            "my-card.template.html",
+            "my-card.template-webui.html",
             "<f-template name=\"my-card\" shadowrootmode=\"open\">\n  <template shadowrootmode=\"open\"><div>card</div></template>\n</f-template>",
         ),
     ]);
@@ -273,7 +422,7 @@ fn authored_template_slot_diagnostic_uses_original_location() {
     let app = create_app_dir(&[
         ("index.html", "<my-card></my-card>"),
         (
-            "my-card.template.html",
+            "my-card.template-webui.html",
             "<f-template name=\"my-card\">\n  <template>\n    <slot name=\"label\"></slot>\n  </template>\n</f-template>",
         ),
     ]);

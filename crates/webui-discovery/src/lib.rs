@@ -11,6 +11,7 @@
 //! logic reusable by CLI, FFI, and other host integrations.
 
 mod cache;
+mod catalog;
 mod npm;
 mod plugin;
 

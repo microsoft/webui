@@ -698,6 +698,9 @@ The `--components` flag lets you discover components from npm packages or local 
 ### npm Packages
 
 Pass an npm package name. The package must already be installed in `node_modules/`.
+Use an unscoped name, `@scope`, or `@scope/package`, optionally followed by `/*`.
+Package subpaths, traversal, and backslashes are not valid package identifiers.
+For a filesystem directory, pass an explicit local path such as `./shared/components`.
 
 ```bash
 # Single package
@@ -710,25 +713,25 @@ webui build ./my-app --out ./dist --components @reactive-ui
 webui build ./my-app --out ./dist --components @reactive-ui/button
 ```
 
-**npm package requirements:**
+**Default WebUI package requirements:**
 
-The package's `package.json` must have:
+Provide `<component-name>.html` files beneath the package's `components/`
+directory, or the package root when no `components/` directory exists.
+The filename determines the component name, including in nested directories.
+Matching `.css` supplies styles; a matching `.ts` or `.js` sibling marks that
+component as authored. Package exports and CEM metadata do not select or rename
+native templates, and no manifest is required.
 
-| Field | Purpose |
-|-------|---------|
-| `exports["./template-webui.html"]` | Path to the component's HTML template |
-| `exports["./styles.css"]` | Path to the component's CSS (optional) |
-| `customElements` | Path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file |
-
-The Custom Elements Manifest provides the component tag name via `modules[].declarations[].tagName`.
-
-If the package also exposes a root JavaScript entry (`exports["."]`, `main`,
-`module`, or `browser`), WebUI treats those components as authored custom
-elements. Packages with only template/style exports are HTML-only component
-libraries. Their templates render on the server and the framework can activate
-them later when needed.
-
-**Resolution:** The CLI searches for `node_modules/` by walking up from the app directory, matching Node.js module resolution behavior. Symlinks (pnpm, npm workspaces) are resolved automatically.
+See
+[External components](/guide/concepts/components#external-component-sources)
+for the native package layout.
+**Resolution:** The CLI searches ancestor `node_modules/` directories for the
+requested package or scope, not merely the nearest `node_modules/`. Symlinks
+(pnpm, npm workspaces) are resolved automatically. A bare scope searches its
+nearest matching directory, skips unrelated packages, and reports failures
+in declared component packages.
+Collection spellings `@scope/*` and `@scope/package/*` select the same sources as
+`@scope` and `@scope/package`; quote them to avoid shell glob expansion.
 
 ### Local Paths
 
@@ -757,7 +760,13 @@ webui build ./my-app --out ./dist \
 
 ### Caching
 
-Discovered npm package components are cached at `~/.webui/cache/components/` to avoid re-traversing on every build. The cache is automatically invalidated when `package.json` or any template, stylesheet, or manifest used by the selected discovery plugin changes. Local path sources are always re-scanned.
+Discovered npm package components are cached at `~/.webui/cache/components/`.
+Changes to the selected plugin's templates, stylesheets, scripts, or manifests
+invalidate its cached result, including optional file creation and removal.
+Default/WebUI/none discovery does not use package metadata, so metadata-only
+`package.json` edits do not invalidate its cache. Plugins that use package
+metadata, such as FAST, also invalidate on `package.json` changes.
+Local path sources are always re-scanned.
 
 ## Next Steps
 

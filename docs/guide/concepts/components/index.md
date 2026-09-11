@@ -204,51 +204,36 @@ In addition to discovering components in your app directory, WebUI can load comp
 
 ### npm Packages
 
-Components published as npm packages can be discovered automatically. The package must:
+Install the package into `node_modules/`. Default WebUI discovery derives the
+component name from each hyphenated `<component-name>.html` filename, exactly as
+for local components. It scans the package's `components/` directory when present,
+otherwise the package root. Nested directories are supported; a directory does
+not need to repeat the component name.
 
-1. Be installed via npm, pnpm, or yarn (present in `node_modules/`)
-2. Include a `package.json` with:
-   - `exports["./template-webui.html"]` - the component's HTML template
-   - `exports["./styles.css"]` - the component's CSS (optional)
-   - `customElements` - path to a [Custom Elements Manifest](https://github.com/webcomponents/custom-elements-manifest) JSON file
-
-The Custom Elements Manifest provides the component's tag name:
-
-```json
-{
-  "schemaVersion": "1.0.0",
-  "modules": [{
-    "kind": "javascript-module",
-    "declarations": [{
-      "kind": "class",
-      "name": "MyButton",
-      "tagName": "my-button"
-    }]
-  }]
-}
+```text
+package.json
+components/
+  my-button.html
+  my-button.css
+  my-button.ts
 ```
 
-**Example `package.json`:**
+This registers `<my-button>`. Matching `.css` provides styles; a matching `.ts`
+or `.js` sibling marks only that component as authored. `.spec.ts` files and
+package JavaScript exports do not make unrelated components scripted. Import
+authored browser registrations through the package's module exports separately.
+Scriptless components need neither a registration import nor a projection entry.
 
-```json
-{
-  "name": "@reactive-ui/button",
-  "version": "1.0.0",
-  "customElements": "./custom-elements.json",
-  "exports": {
-    "./template-webui.html": "./dist/template-webui.html",
-    "./styles.css": "./dist/styles.css"
-  }
-}
-```
+When `components/` exists, other package directories such as `dist/` are not
+scanned for duplicate source templates. Hidden directories and nested
+`node_modules/` are skipped.
 
-**Scoped packages:** When you pass a bare scope like `@reactive-ui`, all sub-packages under `node_modules/@reactive-ui/` are discovered and each is checked for WebUI component exports.
-
-Packages that also expose a root JavaScript entry (`exports["."]`, `main`,
-`module`, or `browser`) are treated as authored custom-element packages. Packages
-with only WebUI template/style exports are treated as HTML-only component
-libraries; dynamic bindings render on the server and remain inactive until the
-framework needs them.
+**Scoped packages:** A bare scope such as `@reactive-ui` checks each installed
+sub-package in the nearest matching scope directory for named HTML components.
+An unrelated nearer `node_modules/` does not hide an ancestor's scope.
+Packages without component sources are skipped; failures in declared components
+are reported rather than silently omitted.
+`@scope/*` and `@scope/package/*` can also be used as collection spellings.
 
 ### Local Paths
 
@@ -264,9 +249,8 @@ and a sibling `.ts` or `.js` file marks that component as authored/interactive.
 
 ### Caching
 
-npm package discovery results are cached at `~/.webui/cache/components/`. The
-cache invalidates automatically when `package.json` or any template, stylesheet,
-or manifest used by the selected discovery plugin changes. Local path sources
-are always re-scanned.
+npm package discovery results are cached at `~/.webui/cache/components/` and
+updated automatically when the selected discovery plugin's source inputs change.
+Local path sources are always re-scanned.
 
 See the [CLI Reference](/guide/cli/) for full `--components` usage.

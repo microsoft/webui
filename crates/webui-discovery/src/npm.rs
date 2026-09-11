@@ -4,8 +4,8 @@
 //! npm package resolution for external component discovery.
 //!
 //! Resolves npm packages from `node_modules/` using Node.js-style upward
-//! traversal. Reads `package.json` exports for template and styles, and
-//! parses the Custom Elements Manifest for component tag names.
+//! traversal. Plugins own component naming and layout; the manifest helpers
+//! support metadata-based discovery such as FAST.
 
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -21,10 +21,9 @@ pub struct PackageContext<'a> {
     pub name: &'a str,
     /// Canonical package root.
     pub root: &'a Path,
-    /// Parsed `package.json`.
-    pub manifest: &'a serde_json::Value,
-    /// Whether package metadata exposes authored browser code.
-    pub is_client_owned: bool,
+    /// Parsed `package.json`, present only when the plugin opts into
+    /// [`DiscoveryPlugin::requires_package_metadata`].
+    pub manifest: Option<&'a serde_json::Value>,
 }
 
 pub(crate) struct ComponentDeclaration {
@@ -33,66 +32,54 @@ pub(crate) struct ComponentDeclaration {
     pub(crate) module_path: Option<PathBuf>,
 }
 
-pub(crate) struct WebUIAssets {
-    pub(crate) template_path: PathBuf,
-    pub(crate) styles_path: Option<PathBuf>,
-    pub(crate) manifest_path: PathBuf,
-}
-
 /// Maximum file size for package.json and custom elements manifests (10 MB).
 const MAX_MANIFEST_SIZE: u64 = 10 * 1024 * 1024;
-
-/// Conditional export keys in priority order for fallback resolution.
-const EXPORT_PRIORITY: &[&str] = &["default", "import", "require"];
 
 /// Package fields that conventionally point to a browser/module entry.
 const SCRIPT_ENTRY_FIELDS: &[&str] = &["main", "module", "browser"];
 
-/// WebUI asset exports that do not imply authored browser code.
-const WEBUI_ASSET_EXPORTS: &[&str] = &[
+/// Resource-only exports do not imply registration scripts for metadata-based plugins.
+const SCRIPTLESS_ASSET_EXPORTS: &[&str] = &[
     "./template-webui.html",
     "./styles.css",
     "./component-asset.js",
 ];
 
-/// Find `node_modules/` by walking up from `start` directory.
-fn find_node_modules(start: &Path) -> Result<PathBuf> {
-    let mut current = Some(start);
-    while let Some(dir) = current {
-        let candidate = dir.join("node_modules");
-        if candidate.is_dir() {
-            return Ok(candidate);
-        }
-        current = dir.parent();
-    }
-    bail!(
-        "Could not find node_modules/ directory \
-         (searched upward from {})",
-        start.display()
-    );
-}
-
-/// Find `node_modules/` by walking up from `primary`, falling back to a
-/// walk up from `fallback` when the primary search comes up empty.
-///
-/// The fallback rescues callers whose primary search root lives outside
-/// any project tree. For example, `webui-press` builds each docs page in a
-/// synthesized scratch directory under the system temp folder, which has no
-/// `node_modules` ancestor; the project's `node_modules` is instead reached
-/// from the process working directory the command was invoked in. The error
-/// from the primary search is preserved when both roots fail.
-fn find_node_modules_with_fallback(primary: &Path, fallback: &Path) -> Result<PathBuf> {
-    find_node_modules(primary).or_else(|primary_err| {
-        if fallback == primary {
-            return Err(primary_err);
-        }
-        find_node_modules(fallback).map_err(|_| primary_err)
-    })
-}
-
 /// Check if a package name is a bare scope (e.g., `@reactive-ui` without a sub-package).
 fn is_bare_scope(name: &str) -> bool {
     name.starts_with('@') && !name.contains('/')
+}
+
+fn validate_package_source(name: &str) -> Result<()> {
+    let valid = match name.strip_prefix('@') {
+        Some(scoped) => match scoped.split_once('/') {
+            Some((scope, package)) => is_package_segment(scope) && is_package_segment(package),
+            None => is_package_segment(scoped),
+        },
+        None => is_package_segment(name),
+    };
+    if !valid {
+        return Err(invalid_package_source(name));
+    }
+    Ok(())
+}
+
+fn is_package_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && !segment.starts_with(['.', '_'])
+        && segment
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_package_source(name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Invalid npm component source '{name}'. Use a package name, @scope, or @scope/package \
+         with an optional trailing /*. For local directories, use an explicit path such as \
+         ./components instead of a package subpath."
+    )
 }
 
 /// Validate that a relative path from package.json does not escape the package directory.
@@ -136,19 +123,44 @@ pub fn resolve(
     plugin: &dyn DiscoveryPlugin,
     cache: &mut DiscoveryCache,
 ) -> Result<Vec<DiscoveredComponent>> {
+    let name = name.strip_suffix("/*").unwrap_or(name);
+    validate_package_source(name)?;
     // Walk up from the build's app directory first, then fall back to the
     // process working directory. The fallback covers callers whose app
     // directory lives outside the project (e.g. a system-temp scratch dir),
     // where the project's `node_modules` is only reachable from the cwd the
     // command was invoked in.
     let fallback = std::env::current_dir().unwrap_or_else(|_| search_dir.to_path_buf());
-    let node_modules = find_node_modules_with_fallback(search_dir, &fallback)?;
-
+    let node_modules = find_package_node_modules(name, search_dir, &fallback)?;
     if is_bare_scope(name) {
         resolve_scoped(name, &node_modules, plugin, cache)
     } else {
-        resolve_single(name, &node_modules, plugin, cache)
+        resolve_single(name, &node_modules, plugin, cache, false)
     }
+}
+
+fn find_package_node_modules(name: &str, primary: &Path, fallback: &Path) -> Result<PathBuf> {
+    for start in [primary, fallback] {
+        for directory in start.ancestors() {
+            let node_modules = directory.join("node_modules");
+            let candidate = node_modules.join(name);
+            match fs::symlink_metadata(&candidate) {
+                Ok(_) => return Ok(node_modules),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("Failed to inspect package {}", candidate.display())
+                    });
+                }
+            }
+        }
+    }
+    bail!(
+        "Package or scope '{name}' not found in node_modules (searched upward from {} and {}). \
+         Install the required packages in the project before building.",
+        primary.display(),
+        fallback.display()
+    );
 }
 
 /// Enumerate all sub-packages under a scoped directory (e.g., `@reactive-ui/*`).
@@ -166,20 +178,21 @@ fn resolve_scoped(
         );
     }
 
-    let mut all = Vec::new();
-    for entry in fs::read_dir(&scope_dir)
+    let mut entries = fs::read_dir(&scope_dir)
         .with_context(|| format!("Failed to read scope directory: {}", scope_dir.display()))?
-    {
-        let entry = entry?;
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_cached_key(fs::DirEntry::file_name);
+    let mut all = Vec::new();
+    for entry in entries {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
         let sub_name = format!("{}/{}", scope, entry.file_name().to_string_lossy());
-        // Sub-packages without WebUI exports are expected — skip silently.
-        if let Ok(components) = resolve_single(&sub_name, node_modules, plugin, cache) {
-            all.extend(components);
-        }
+        all.extend(
+            resolve_single(&sub_name, node_modules, plugin, cache, true)
+                .with_context(|| format!("Failed to discover scope member '{sub_name}'"))?,
+        );
     }
 
     Ok(all)
@@ -191,6 +204,7 @@ fn resolve_single(
     node_modules: &Path,
     plugin: &dyn DiscoveryPlugin,
     cache: &mut DiscoveryCache,
+    scope_member: bool,
 ) -> Result<Vec<DiscoveredComponent>> {
     let pkg_dir = node_modules.join(name);
 
@@ -212,20 +226,26 @@ fn resolve_single(
         bail!("No package.json found at {}", pkg_json_path.display());
     }
 
-    // Read and parse package.json
-    let pkg_json_content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
-    let pkg_json: serde_json::Value = serde_json::from_str(&pkg_json_content)
-        .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?;
-
-    let is_client_owned = package_has_authored_script(&pkg_json);
+    let pkg_json = if plugin.requires_package_metadata() {
+        let content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
+        Some(
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?,
+        )
+    } else {
+        None
+    };
+    let metadata_path = pkg_json.as_ref().map(|_| pkg_json_path.as_path());
     let package = PackageContext {
         name,
         root: &pkg_dir,
-        manifest: &pkg_json,
-        is_client_owned,
+        manifest: pkg_json.as_ref(),
     };
+    if scope_member && !plugin.supports_package(package)? {
+        return Ok(Vec::new());
+    }
     let cache_files = plugin.package_cache_files(package)?;
-    let fingerprint = DiscoveryCache::fingerprint(&pkg_json_path, &cache_files)?;
+    let fingerprint = DiscoveryCache::fingerprint(metadata_path, &cache_files)?;
     let cache_key = CacheKey {
         namespace: plugin.cache_namespace(),
         source: name,
@@ -238,57 +258,11 @@ fn resolve_single(
     let components = plugin.discover_package(package)?;
 
     // Do not persist a mixed snapshot if package files changed during discovery.
-    if DiscoveryCache::fingerprint(&pkg_json_path, &cache_files)? == fingerprint {
+    if DiscoveryCache::fingerprint(metadata_path, &cache_files)? == fingerprint {
         cache.put(&cache_key, &components)?;
     }
 
     Ok(components)
-}
-
-/// Resolve an export path from the `exports` field in `package.json`.
-///
-/// Handles two common formats:
-/// - Direct string: `"./template-webui.html": "./dist/template.html"`
-/// - Conditional object: `"./template-webui.html": { "default": "./dist/template.html" }`
-fn resolve_export(exports: &serde_json::Value, key: &str) -> Option<String> {
-    match exports.get(key)? {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Object(obj) => {
-            for key in EXPORT_PRIORITY {
-                if let Some(serde_json::Value::String(s)) = obj.get(*key) {
-                    return Some(s.clone());
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn resolve_webui_assets(package: PackageContext<'_>) -> Result<WebUIAssets> {
-    let package_json = package.root.join("package.json");
-    let exports = package
-        .manifest
-        .get("exports")
-        .with_context(|| format!("No 'exports' field in {}", package_json.display()))?;
-    let template_rel = resolve_export(exports, "./template-webui.html").with_context(|| {
-        format!(
-            "No './template-webui.html' export in {}",
-            package_json.display()
-        )
-    })?;
-    validate_relative_path(&template_rel, "exports[\"./template-webui.html\"]")?;
-    let styles_path = if let Some(relative) = resolve_export(exports, "./styles.css") {
-        validate_relative_path(&relative, "exports[\"./styles.css\"]")?;
-        Some(package.root.join(relative))
-    } else {
-        None
-    };
-    Ok(WebUIAssets {
-        template_path: package.root.join(template_rel),
-        styles_path,
-        manifest_path: custom_elements_manifest_path(package)?,
-    })
 }
 
 pub(crate) fn package_component_declarations(
@@ -298,10 +272,46 @@ pub(crate) fn package_component_declarations(
     parse_custom_elements_manifest(&path)
 }
 
+pub(crate) fn package_metadata(package: PackageContext<'_>) -> Result<&serde_json::Value> {
+    package.manifest.with_context(|| {
+        format!(
+            "Discovery of '{}' needs package metadata. Opt in with requires_package_metadata().",
+            package.name
+        )
+    })
+}
+
+pub(crate) fn package_export_path(
+    package: PackageContext<'_>,
+    key: &str,
+) -> Result<Option<PathBuf>> {
+    let Some(value) = package_metadata(package)?
+        .get("exports")
+        .and_then(|exports| exports.get(key))
+    else {
+        return Ok(None);
+    };
+    let target = value
+        .as_str()
+        .or_else(|| {
+            ["default", "import", "require"]
+                .into_iter()
+                .find_map(|condition| value.get(condition).and_then(serde_json::Value::as_str))
+        })
+        .with_context(|| {
+            format!(
+                "Package '{}' export '{key}' must be a relative file path string, \
+         or provide one under default/import/require.",
+                package.name
+            )
+        })?;
+    validate_relative_path(target, key)?;
+    Ok(Some(package.root.join(target)))
+}
+
 pub(crate) fn custom_elements_manifest_path(package: PackageContext<'_>) -> Result<PathBuf> {
     let package_json = package.root.join("package.json");
-    let relative = package
-        .manifest
+    let relative = package_metadata(package)?
         .get("customElements")
         .and_then(serde_json::Value::as_str)
         .with_context(|| format!("No 'customElements' field in {}", package_json.display()))?;
@@ -321,7 +331,7 @@ pub(crate) fn read_optional_file(path: Option<&Path>, kind: &str) -> Result<Opti
     }
 }
 
-fn package_has_authored_script(pkg_json: &serde_json::Value) -> bool {
+pub(crate) fn package_has_authored_script(pkg_json: &serde_json::Value) -> bool {
     for field in SCRIPT_ENTRY_FIELDS {
         match pkg_json.get(*field) {
             Some(serde_json::Value::String(path)) if is_script_path(path) => return true,
@@ -343,7 +353,7 @@ fn package_has_authored_script(pkg_json: &serde_json::Value) -> bool {
                 return export_value_has_script(root);
             }
             map.iter()
-                .any(|(key, value)| !is_webui_asset_export(key) && export_value_has_script(value))
+                .any(|(key, value)| !is_resource_export(key) && export_value_has_script(value))
         }
         _ => false,
     }
@@ -358,8 +368,8 @@ fn export_value_has_script(value: &serde_json::Value) -> bool {
     }
 }
 
-fn is_webui_asset_export(key: &str) -> bool {
-    WEBUI_ASSET_EXPORTS.contains(&key)
+fn is_resource_export(key: &str) -> bool {
+    SCRIPTLESS_ASSET_EXPORTS.contains(&key)
 }
 
 fn is_script_path(path: &str) -> bool {
@@ -420,7 +430,7 @@ fn parse_custom_elements_manifest(path: &Path) -> Result<Vec<ComponentDeclaratio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WebUIDiscoveryPlugin;
+    use crate::{FastDiscoveryPlugin, WebUIDiscoveryPlugin};
     use std::fs;
     use tempfile::TempDir;
 
@@ -429,44 +439,16 @@ mod tests {
         fs::create_dir_all(&pkg_dir).unwrap();
 
         // Create template
-        fs::write(pkg_dir.join("template-webui.html"), html).unwrap();
+        fs::write(pkg_dir.join(format!("{tag_name}.html")), html).unwrap();
 
         // Create styles (optional)
         if let Some(css_content) = css {
-            fs::write(pkg_dir.join("styles.css"), css_content).unwrap();
+            fs::write(pkg_dir.join(format!("{tag_name}.css")), css_content).unwrap();
         }
 
-        // Create custom elements manifest
-        let manifest = serde_json::json!({
-            "schemaVersion": "1.0.0",
-            "modules": [{
-                "kind": "javascript-module",
-                "path": "src/index.js",
-                "declarations": [{
-                    "kind": "class",
-                    "name": "MyComponent",
-                    "tagName": tag_name
-                }]
-            }]
-        });
-        fs::write(
-            pkg_dir.join("custom-elements.json"),
-            serde_json::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-
-        // Create package.json with exports
-        let mut exports = serde_json::json!({
-            "./template-webui.html": "./template-webui.html",
-        });
-        if css.is_some() {
-            exports["./styles.css"] = serde_json::json!("./styles.css");
-        }
         let pkg_json = serde_json::json!({
             "name": name,
-            "version": "1.0.0",
-            "customElements": "./custom-elements.json",
-            "exports": exports
+            "version": "1.0.0"
         });
         fs::write(
             pkg_dir.join("package.json"),
@@ -479,9 +461,9 @@ mod tests {
     fn test_find_node_modules_in_cwd() {
         let tmp = TempDir::new().unwrap();
         let nm = tmp.path().join("node_modules");
-        fs::create_dir(&nm).unwrap();
+        fs::create_dir_all(nm.join("fixture-pkg")).unwrap();
 
-        let result = find_node_modules(tmp.path());
+        let result = find_package_node_modules("fixture-pkg", tmp.path(), tmp.path());
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap().canonicalize().unwrap(),
@@ -493,11 +475,11 @@ mod tests {
     fn test_find_node_modules_walks_up() {
         let tmp = TempDir::new().unwrap();
         let nm = tmp.path().join("node_modules");
-        fs::create_dir(&nm).unwrap();
+        fs::create_dir_all(nm.join("fixture-pkg")).unwrap();
         let sub = tmp.path().join("packages").join("my-app");
         fs::create_dir_all(&sub).unwrap();
 
-        let result = find_node_modules(&sub);
+        let result = find_package_node_modules("fixture-pkg", &sub, &sub);
         assert!(result.is_ok());
         assert_eq!(
             result.unwrap().canonicalize().unwrap(),
@@ -508,7 +490,7 @@ mod tests {
     #[test]
     fn test_find_node_modules_not_found() {
         let tmp = TempDir::new().unwrap();
-        let result = find_node_modules(tmp.path());
+        let result = find_package_node_modules("fixture-pkg", tmp.path(), tmp.path());
         assert!(result.is_err());
     }
 
@@ -517,9 +499,10 @@ mod tests {
         let primary = TempDir::new().unwrap();
         let project = TempDir::new().unwrap();
         let nm = project.path().join("node_modules");
-        fs::create_dir_all(&nm).unwrap();
+        fs::create_dir_all(nm.join("fixture-pkg")).unwrap();
 
-        let found = find_node_modules_with_fallback(primary.path(), project.path()).unwrap();
+        let found =
+            find_package_node_modules("fixture-pkg", primary.path(), project.path()).unwrap();
         assert_eq!(found, nm);
     }
 
@@ -527,11 +510,12 @@ mod tests {
     fn test_find_node_modules_fallback_prefers_primary() {
         let primary = TempDir::new().unwrap();
         let nm_primary = primary.path().join("node_modules");
-        fs::create_dir_all(&nm_primary).unwrap();
+        fs::create_dir_all(nm_primary.join("fixture-pkg")).unwrap();
         let project = TempDir::new().unwrap();
-        fs::create_dir_all(project.path().join("node_modules")).unwrap();
+        fs::create_dir_all(project.path().join("node_modules/fixture-pkg")).unwrap();
 
-        let found = find_node_modules_with_fallback(primary.path(), project.path()).unwrap();
+        let found =
+            find_package_node_modules("fixture-pkg", primary.path(), project.path()).unwrap();
         assert_eq!(found, nm_primary);
     }
 
@@ -539,7 +523,7 @@ mod tests {
     fn test_find_node_modules_fallback_errors_when_neither_has_it() {
         let primary = TempDir::new().unwrap();
         let fallback = TempDir::new().unwrap();
-        assert!(find_node_modules_with_fallback(primary.path(), fallback.path()).is_err());
+        assert!(find_package_node_modules("fixture-pkg", primary.path(), fallback.path()).is_err());
     }
 
     #[test]
@@ -585,24 +569,20 @@ mod tests {
     }
 
     #[test]
-    fn test_package_script_ownership_uses_manifest_entrypoints() {
+    fn test_fast_package_script_ownership_uses_manifest_entrypoints() {
         let static_pkg = serde_json::json!({
             "exports": {
-                "./template-webui.html": "./template-webui.html",
+                "./component-asset.js": "./component-asset.js",
                 "./styles.css": "./styles.css"
             }
         });
         let interactive_pkg = serde_json::json!({
             "exports": {
-                ".": { "import": "./dist/index.js" },
-                "./template-webui.html": "./template-webui.html"
+                ".": { "import": "./dist/index.js" }
             }
         });
         let module_pkg = serde_json::json!({
-            "module": "./dist/index.mjs",
-            "exports": {
-                "./template-webui.html": "./template-webui.html"
-            }
+            "module": "./dist/index.mjs"
         });
 
         assert!(!package_has_authored_script(&static_pkg));
@@ -663,47 +643,6 @@ mod tests {
             &mut cache,
         );
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resolve_export_direct_string() {
-        let exports = serde_json::json!({
-            "./template-webui.html": "./dist/template.html"
-        });
-        let result = resolve_export(&exports, "./template-webui.html");
-        assert_eq!(result, Some("./dist/template.html".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_export_conditional_default() {
-        let exports = serde_json::json!({
-            "./template-webui.html": {
-                "import": "./dist/template.mjs",
-                "default": "./dist/template.html"
-            }
-        });
-        let result = resolve_export(&exports, "./template-webui.html");
-        assert_eq!(result, Some("./dist/template.html".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_export_conditional_fallback() {
-        let exports = serde_json::json!({
-            "./template-webui.html": {
-                "import": "./dist/template.mjs"
-            }
-        });
-        let result = resolve_export(&exports, "./template-webui.html");
-        assert_eq!(result, Some("./dist/template.mjs".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_export_missing() {
-        let exports = serde_json::json!({
-            "./other.html": "./dist/other.html"
-        });
-        let result = resolve_export(&exports, "./template-webui.html");
-        assert!(result.is_none());
     }
 
     #[test]
@@ -852,7 +791,7 @@ mod tests {
     #[test]
     fn test_validate_relative_path_accepts_valid() {
         assert!(validate_relative_path("./dist/template.html", "exports").is_ok());
-        assert!(validate_relative_path("template-webui.html", "exports").is_ok());
+        assert!(validate_relative_path("custom-elements.json", "customElements").is_ok());
         assert!(validate_relative_path("dist/nested/file.css", "exports").is_ok());
     }
 
@@ -956,20 +895,17 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_rejects_path_traversal_in_exports() {
+    fn test_fast_resolve_rejects_path_traversal_in_manifest() {
         let tmp = TempDir::new().unwrap();
         let nm = tmp.path().join("node_modules");
         let pkg_dir = nm.join("evil-pkg");
         fs::create_dir_all(&pkg_dir).unwrap();
 
-        // Malicious package.json with path traversal in exports
+        // FAST still validates metadata paths before reading them.
         let pkg_json = serde_json::json!({
             "name": "evil-pkg",
             "version": "1.0.0",
-            "customElements": "./custom-elements.json",
-            "exports": {
-                "./template-webui.html": "../../../etc/passwd"
-            }
+            "customElements": "../../../etc/passwd"
         });
         fs::write(
             pkg_dir.join("package.json"),
@@ -981,7 +917,7 @@ mod tests {
         let result = resolve(
             "evil-pkg",
             tmp.path(),
-            &WebUIDiscoveryPlugin::new(),
+            &FastDiscoveryPlugin::new(),
             &mut cache,
         );
         assert!(result.is_err());

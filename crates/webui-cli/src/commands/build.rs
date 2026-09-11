@@ -969,36 +969,15 @@ mod tests {
 
         // Create the npm package files
         fs::write(
-            pkg_dir.join("template-webui.html"),
+            pkg_dir.join("test-widget.html"),
             r#"<template shadowrootmode="open"><button><slot></slot></button></template>"#,
         )
         .unwrap();
-        fs::write(pkg_dir.join("styles.css"), ".btn { padding: 4px; }").unwrap();
-
-        let manifest = serde_json::json!({
-            "schemaVersion": "1.0.0",
-            "modules": [{
-                "kind": "javascript-module",
-                "declarations": [{
-                    "kind": "class",
-                    "tagName": "test-widget"
-                }]
-            }]
-        });
-        fs::write(
-            pkg_dir.join("custom-elements.json"),
-            serde_json::to_string(&manifest).unwrap(),
-        )
-        .unwrap();
+        fs::write(pkg_dir.join("test-widget.css"), ".btn { padding: 4px; }").unwrap();
 
         let pkg_json = serde_json::json!({
             "name": "test-widget",
-            "version": "1.0.0",
-            "customElements": "./custom-elements.json",
-            "exports": {
-                "./template-webui.html": "./template-webui.html",
-                "./styles.css": "./styles.css"
-            }
+            "version": "1.0.0"
         });
         fs::write(
             pkg_dir.join("package.json"),
@@ -1069,28 +1048,11 @@ mod tests {
             let pkg_dir = scope_dir.join(sub);
             fs::create_dir_all(&pkg_dir).unwrap();
 
-            fs::write(pkg_dir.join("template-webui.html"), html).unwrap();
-
-            let manifest = serde_json::json!({
-                "schemaVersion": "1.0.0",
-                "modules": [{
-                    "kind": "javascript-module",
-                    "declarations": [{ "kind": "class", "tagName": tag }]
-                }]
-            });
-            fs::write(
-                pkg_dir.join("custom-elements.json"),
-                serde_json::to_string(&manifest).unwrap(),
-            )
-            .unwrap();
+            fs::write(pkg_dir.join(format!("{tag}.html")), html).unwrap();
 
             let pkg_json = serde_json::json!({
                 "name": format!("@myui/{sub}"),
-                "version": "1.0.0",
-                "customElements": "./custom-elements.json",
-                "exports": {
-                    "./template-webui.html": "./template-webui.html"
-                }
+                "version": "1.0.0"
             });
             fs::write(
                 pkg_dir.join("package.json"),
