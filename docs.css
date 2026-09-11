@@ -178,158 +178,17 @@
   }
 }
 
-html {
-  /* Keep browser chrome stable: docs pages scroll inside `.main-content`
-     while the sidebar keeps an independent scrollbar. */
-  height: 100%;
-  overflow: hidden;
-}
-
 * {
   box-sizing: border-box;
 }
 
 body {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
   margin: 0;
-  overflow: hidden;
   font-family: var(--docs-font-sans);
   color: var(--docs-color-text);
   background: var(--docs-color-bg);
   line-height: var(--docs-line-height);
   -webkit-font-smoothing: antialiased;
-}
-
-.skip-link {
-  position: fixed;
-  top: var(--docs-space-s);
-  left: var(--docs-space-s);
-  z-index: 400;
-  padding: 10px var(--docs-space-m);
-  border-radius: var(--docs-radius-m);
-  background: var(--docs-btn-brand-bg);
-  color: var(--docs-btn-brand-text);
-  font-weight: var(--docs-font-weight-semibold);
-  text-decoration: none;
-  transform: translateY(calc(-100% - var(--docs-space-l)));
-  transition: transform 0.15s ease;
-}
-
-.skip-link:focus {
-  transform: translateY(0);
-}
-
-.sidebar,
-.main-content {
-  scrollbar-color: var(--docs-scrollbar-thumb) var(--docs-scrollbar-track);
-}
-
-.main-content:focus {
-  outline: none;
-}
-
-.sidebar::-webkit-scrollbar,
-.main-content::-webkit-scrollbar {
-  width: 12px;
-}
-
-.sidebar::-webkit-scrollbar-track,
-.main-content::-webkit-scrollbar-track {
-  background: var(--docs-scrollbar-track);
-}
-
-.sidebar::-webkit-scrollbar-thumb,
-.main-content::-webkit-scrollbar-thumb {
-  background: var(--docs-scrollbar-thumb);
-  border: 3px solid var(--docs-scrollbar-track);
-  border-radius: 999px;
-}
-
-.sidebar::-webkit-scrollbar-thumb:hover,
-.main-content::-webkit-scrollbar-thumb:hover {
-  background: var(--docs-scrollbar-thumb-hover);
-}
-
-/* ── Navigation ────────────────────────────────────── */
-
-.nav-bar {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 var(--docs-space-l);
-  height: var(--docs-nav-height);
-  flex: 0 0 var(--docs-nav-height);
-  border-bottom: 1px solid var(--docs-color-border);
-  background: var(--docs-nav-bg);
-  backdrop-filter: var(--docs-nav-backdrop);
-  -webkit-backdrop-filter: var(--docs-nav-backdrop);
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  gap: var(--docs-space-s);
-  text-decoration: none;
-  color: var(--docs-color-text);
-  font-weight: var(--docs-font-weight-semibold);
-  font-size: var(--docs-font-size-base);
-}
-
-.logo img {
-  height: 28px;
-  width: 28px;
-}
-
-/* ── Layout ────────────────────────────────────────── */
-
-.layout {
-  display: flex;
-  flex: 1;
-  width: 100%;
-  max-width: var(--docs-max-width);
-  margin: 0 auto;
-  min-height: 0;
-}
-
-/* ── Sidebar ───────────────────────────────────────── */
-
-.sidebar {
-  width: var(--docs-sidebar-width);
-  padding: var(--docs-space-xl) var(--docs-space-l);
-  border-right: 1px solid var(--docs-color-border);
-  flex-shrink: 0;
-  position: sticky;
-  top: var(--docs-nav-height);
-  height: 100%;
-  overflow-y: auto;
-}
-
-/* ── Main content ──────────────────────────────────── */
-
-.main-content {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  overflow-y: auto;
-  padding: var(--docs-space-xl) var(--docs-space-2xl) var(--docs-space-3xl);
-}
-
-.doc-content,
-.page-nav,
-.main-content > .site-footer {
-  width: 100%;
-  max-width: var(--docs-content-max-width);
-  margin-inline: auto;
-}
-
-.mobile-page-context {
-  display: none;
 }
 
 /* ── Article typography ─────────────────────────────── */
@@ -510,7 +369,208 @@ body {
   background: var(--docs-color-bg-alt);
 }
 
-/* ── Page navigation ───────────────────────────────── */
+/* Admonitions */
+.tip {
+  border: 1px solid var(--docs-color-border);
+  padding: var(--docs-space-m);
+  margin-bottom: var(--docs-space-m);
+  background: var(--docs-color-brand-bg);
+  border-radius: var(--docs-radius-l);
+}
+
+.tip p {
+  margin-bottom: 0;
+}
+
+/* ── Heading anchors ───────────────────────────────── */
+
+.header-anchor {
+  opacity: 0;
+  text-decoration: none;
+  color: var(--docs-color-text-3);
+  font-weight: var(--docs-font-weight-normal);
+  margin-left: var(--docs-space-xs);
+  transition: opacity 0.15s;
+}
+
+h1:hover .header-anchor,
+h2:hover .header-anchor,
+h3:hover .header-anchor,
+h4:hover .header-anchor,
+.header-anchor:focus-visible {
+  opacity: 1;
+}
+
+.header-anchor:hover {
+  color: var(--docs-color-brand);
+}
+
+@media (hover: none) {
+  .header-anchor {
+    opacity: 0.7;
+  }
+}
+
+h1 code,
+h2 code,
+h3 code,
+h4 code,
+.doc-content h1 code,
+.doc-content h2 code,
+.doc-content h3 code,
+.doc-content h4 code {
+  font-size: inherit;
+}
+
+.press-content {
+  min-width: 0;
+  padding: var(--docs-space-m);
+}
+
+.press-content > .doc-content {
+  display: flow-root;
+  overflow-wrap: anywhere;
+}
+
+.press-content > .doc-content > :first-child {
+  margin-block-start: 0;
+}/* Copyright (c) Microsoft Corporation. */
+/* Licensed under the MIT license. */
+
+/* Only the complete site uses independent main/sidebar scrolling. */
+html {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.skip-link {
+  position: fixed;
+  top: var(--docs-space-s);
+  left: var(--docs-space-s);
+  z-index: 400;
+  padding: 10px var(--docs-space-m);
+  border-radius: var(--docs-radius-m);
+  background: var(--docs-btn-brand-bg);
+  color: var(--docs-btn-brand-text);
+  font-weight: var(--docs-font-weight-semibold);
+  text-decoration: none;
+  transform: translateY(calc(-100% - var(--docs-space-l)));
+  transition: transform 0.15s ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+.sidebar,
+.main-content {
+  scrollbar-color: var(--docs-scrollbar-thumb) var(--docs-scrollbar-track);
+}
+
+.main-content:focus {
+  outline: none;
+}
+
+.sidebar::-webkit-scrollbar,
+.main-content::-webkit-scrollbar {
+  width: 12px;
+}
+
+.sidebar::-webkit-scrollbar-track,
+.main-content::-webkit-scrollbar-track {
+  background: var(--docs-scrollbar-track);
+}
+
+.sidebar::-webkit-scrollbar-thumb,
+.main-content::-webkit-scrollbar-thumb {
+  background: var(--docs-scrollbar-thumb);
+  border: 3px solid var(--docs-scrollbar-track);
+  border-radius: 999px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover,
+.main-content::-webkit-scrollbar-thumb:hover {
+  background: var(--docs-scrollbar-thumb-hover);
+}
+
+.nav-bar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--docs-space-l);
+  height: var(--docs-nav-height);
+  flex: 0 0 var(--docs-nav-height);
+  border-bottom: 1px solid var(--docs-color-border);
+  background: var(--docs-nav-bg);
+  backdrop-filter: var(--docs-nav-backdrop);
+  -webkit-backdrop-filter: var(--docs-nav-backdrop);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: var(--docs-space-s);
+  text-decoration: none;
+  color: var(--docs-color-text);
+  font-weight: var(--docs-font-weight-semibold);
+  font-size: var(--docs-font-size-base);
+}
+
+.logo img {
+  height: 28px;
+  width: 28px;
+}
+
+.layout {
+  display: flex;
+  flex: 1;
+  width: 100%;
+  max-width: var(--docs-max-width);
+  margin: 0 auto;
+  min-height: 0;
+}
+
+.sidebar {
+  width: var(--docs-sidebar-width);
+  padding: var(--docs-space-xl) var(--docs-space-l);
+  border-right: 1px solid var(--docs-color-border);
+  flex-shrink: 0;
+  position: sticky;
+  top: var(--docs-nav-height);
+  height: 100%;
+  overflow-y: auto;
+}
+
+.main-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--docs-space-xl) var(--docs-space-2xl) var(--docs-space-3xl);
+}
+
+.doc-content,
+.page-nav,
+.main-content > .site-footer {
+  width: 100%;
+  max-width: var(--docs-content-max-width);
+  margin-inline: auto;
+}
+
+.mobile-page-context {
+  display: none;
+}
 
 .page-nav {
   display: flex;
@@ -538,8 +598,6 @@ body {
   border-color: var(--docs-color-brand);
   background: var(--docs-color-brand-bg);
 }
-
-/* ── Homepage ───────────────────────────────────────── */
 
 .home-container {
   max-width: 1152px;
@@ -684,8 +742,6 @@ body {
   line-height: 1.6;
 }
 
-/* ── Responsive ─────────────────────────────────────── */
-
 @media (max-width: 768px) {
   .sidebar {
     display: none;
@@ -749,7 +805,6 @@ body {
   .logo span {
     display: none;
   }
-
 }
 
 @media (min-width: 769px) and (max-width: 1024px) {
@@ -758,21 +813,6 @@ body {
     column-gap: var(--docs-space-xl);
   }
 }
-
-/* Admonitions */
-.tip {
-  border: 1px solid var(--docs-color-border);
-  padding: var(--docs-space-m);
-  margin-bottom: var(--docs-space-m);
-  background: var(--docs-color-brand-bg);
-  border-radius: var(--docs-radius-l);
-}
-
-.tip p {
-  margin-bottom: 0;
-}
-
-/* ── Footer ────────────────────────────────────────── */
 
 .site-footer {
   border-top: 1px solid var(--docs-color-border);
@@ -791,17 +831,8 @@ body {
   color: var(--docs-color-brand);
 }
 
-/* ── Full layout ─────────────────────────────────────
-   Default layout is "doc" (sidebar + main content + footer).
-   "full" hides the chrome and lets the page content occupy the
-   entire viewport below the nav bar. Tailored for single-component
-   apps (e.g. the playground) — every doc-content child is stretched
-   to fill the viewport, page scrolling is disabled.
-   "page" is the same minus the viewport-fill: wide markdown without
-   sidebar/footer/page-nav, normal scroll behavior.
-   Shadow components can react to the same attribute via
-   `:host-context([data-layout="full"])`. */
-
+/* Full layout fills the viewport below navigation; page layout is wide
+   markdown with ordinary main-content scrolling. */
 body[data-layout="full"] {
   overflow: hidden;
 }
@@ -855,44 +886,4 @@ body[data-layout="page"] .doc-content,
 body[data-layout="page"] .page-nav,
 body[data-layout="page"] .main-content > .site-footer {
   max-width: none;
-}
-
-/* ── Heading anchors ───────────────────────────────── */
-
-.header-anchor {
-  opacity: 0;
-  text-decoration: none;
-  color: var(--docs-color-text-3);
-  font-weight: var(--docs-font-weight-normal);
-  margin-left: var(--docs-space-xs);
-  transition: opacity 0.15s;
-}
-
-h1:hover .header-anchor,
-h2:hover .header-anchor,
-h3:hover .header-anchor,
-h4:hover .header-anchor,
-.header-anchor:focus-visible {
-  opacity: 1;
-}
-
-.header-anchor:hover {
-  color: var(--docs-color-brand);
-}
-
-@media (hover: none) {
-  .header-anchor {
-    opacity: 0.7;
-  }
-}
-
-h1 code,
-h2 code,
-h3 code,
-h4 code,
-.doc-content h1 code,
-.doc-content h2 code,
-.doc-content h3 code,
-.doc-content h4 code {
-  font-size: inherit;
 }
