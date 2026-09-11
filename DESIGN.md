@@ -1945,7 +1945,7 @@ metadata, and owns cache invalidation. The selected discovery plugin maps that
 validated root to normalized `DiscoveredComponent` values:
 
 `plugin/mod.rs` owns the discovery contract and default filename-based behavior.
-`plugin/fast.rs` contains FAST's special naming, manifest, and style rules.
+`plugin/fast/mod.rs` contains FAST's special naming, manifest, and style rules.
 
 ```rust
 pub trait DiscoveryPlugin {

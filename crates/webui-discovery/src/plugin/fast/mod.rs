@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
-//! FAST manifest naming and generated template/style layouts.
+//! FAST manifest naming and converted template/style layouts.
 
 use super::DiscoveryPlugin;
 use crate::npm::{
