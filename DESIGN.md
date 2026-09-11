@@ -1104,11 +1104,28 @@ The `webui::streaming` module provides:
   `write` returns a typed error (`HandlerError::ClientDisconnected` /
   `HandlerError::StreamTimeout`) so the handler aborts the render
   rather than waste CPU producing bytes that have nowhere to go.
+  The coalescing target is not a byte cap: writes are appended whole before
+  checking the target, so a large write can produce a larger chunk. The channel
+  bounds chunk count, not payload bytes or total in-flight memory.
 
 - **`ChunkPool`** — lock-free shared pool of chunk buffers. Used via
   `StreamingWriter::new_pooled` to recycle the per-flush `Vec<u8>`
-  across requests, eliminating per-flush heap allocation in
-  steady-state high-RPS workloads.
+  across requests. Returned buffers are cleared and retained only if their
+  capacity is at most the configured `chunk_size` and the pool has space.
+  Oversized buffers are dropped, not shrunk. Summed idle `Vec` capacity is
+  bounded by `max_pool.max(1) × chunk_size`; allocator, queue, and owner
+  metadata are excluded. Active producer buffers, pending sends, queued chunks,
+  and consumer-held references are additional. A chunk becomes eligible for
+  return only after its final `Bytes` reference (including clones and slices)
+  drops, on whichever thread owns that reference. `Bytes::from_owner` still
+  allocates owner metadata per chunk; pooling avoids buffer allocations on
+  suitably sized hits, not all per-flush heap allocations.
+  Acquired buffers are empty with capacity at least `chunk_size`; any smaller
+  returned buffer is reserved relative to its cleared length, not its capacity.
+  Default writer pools remain sized at `StreamingWriter::CHUNK_TARGET + 1024`
+  (5 KiB), including the writer's existing 1 KiB headroom. Custom targets need
+  the same headroom. Mismatched sizes and recurring oversized writes can trade
+  extra allocations for bounded idle retention.
 
 ### Progressive Response API
 

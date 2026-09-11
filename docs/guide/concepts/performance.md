@@ -153,6 +153,17 @@ Node, Bun, Deno, Python, and other bindings remain useful when integration
 cost matters more than the last increment of throughput. Measure with the
 deployment host you intend to run.
 
+## Bound idle streaming buffers
+
+For Rust transport streaming, a shared `ChunkPool` reuses eligible chunk buffers.
+Its summed idle `Vec` capacity is bounded by `max_pool.max(1) * chunk_size`;
+oversized returns are dropped rather than shrunk. Active and consumer-held
+buffers, allocator/queue metadata, and the owner metadata allocated by
+`Bytes::from_owner` are additional. Repeated oversized writes can therefore
+trade extra allocations for bounded idle retention. Keep the default pool size
+at the 4 KiB coalescing target plus 1 KiB headroom; the target is not a hard
+chunk limit. See [Rust chunk pool sizing](/guide/integrations/rust#chunk-pool-sizing).
+
 ## Stream slow data, not already-fast pages
 
 Progressive boundaries help when data dependencies complete at different

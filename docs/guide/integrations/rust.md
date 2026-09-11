@@ -211,7 +211,7 @@ use webui::{WebUIHandler, RenderOptions, ResponseWriter};
 
 // One shared pool per server (constructed at startup, lives forever).
 let chunk_pool = Arc::new(ChunkPool::new(
-    256,                                       // ~1.25 MiB peak pool memory
+    256,                                       // at most 1.25 MiB idle buffer capacity
     StreamingWriter::CHUNK_TARGET + 1024,
 ));
 let render_permits = Arc::new(Semaphore::new(4));
@@ -251,6 +251,25 @@ HttpResponse::Ok()
     .content_type("text/html; charset=utf-8")
     .streaming(tokio_stream::wrappers::ReceiverStream::new(rx).map(Ok::<_, actix_web::Error>))
 ```
+
+### Chunk pool sizing
+
+`ChunkPool::new(max_pool, chunk_size)` retains at most `max_pool.max(1)` idle
+buffers whose summed `Vec` capacity is at most `max_pool.max(1) * chunk_size`.
+Oversized returned buffers are dropped, not shrunk. The example's 5 KiB size
+includes the default 4 KiB coalescing target plus 1 KiB of writer headroom;
+include the same headroom when selecting a custom target.
+
+This is an idle-capacity bound, not a total server-memory limit. Allocator,
+queue, and owner metadata are extra, as are active writer buffers, pending
+sends, queued chunks, and consumer-held buffers. A buffer is eligible for reuse
+only after the last `Bytes` reference (including clones and slices) drops.
+`Bytes::from_owner` still allocates owner metadata per chunk. Mismatched pool
+sizes or recurring oversized writes can cause repeated buffer allocations.
+
+The writer's coalescing target is not a byte cap: large writes remain whole
+and can produce larger chunks. The bounded channel limits chunk count, not
+queued payload bytes.
 
 ### Host-driven boundaries and state updates
 

@@ -16,11 +16,12 @@
 //!
 //! * [`StreamingWriter`] — coalesces small writes into ~4 KB chunks and
 //!   pushes them through a **bounded** [`tokio::sync::mpsc::Sender`]. The
-//!   bound (`DEFAULT_CHANNEL_CAPACITY = 4` chunks ≈ 16 KB) provides
+//!   bound (`DEFAULT_CHANNEL_CAPACITY = 4` chunks) provides
 //!   backpressure: when a slow client cannot keep up, the producer parks
 //!   on the channel until the receiver drains, instead of queuing the
-//!   entire response in memory. A configurable flush deadline (via
-//!   [`with_flush_timeout`](StreamingWriter::with_flush_timeout)) caps
+//!   entire response in memory. The coalescing target is not a byte cap:
+//!   a large write can produce a larger chunk. A configurable flush deadline
+//!   (via [`with_flush_timeout`](StreamingWriter::with_flush_timeout)) caps
 //!   the maximum time a producer thread can be parked, bounding the
 //!   slow-loris DoS surface to `timeout × concurrent_renders`. When the
 //!   receiver is dropped (client disconnect) or the deadline elapses,
@@ -29,8 +30,8 @@
 //!
 //! * [`ChunkPool`] — lock-free shared pool of chunk buffers. Used via
 //!   [`StreamingWriter::new_pooled`] to recycle the per-flush `Vec<u8>`
-//!   across requests, eliminating per-flush heap allocation in
-//!   steady-state high-RPS workloads.
+//!   across requests, avoiding chunk-buffer allocations on suitably sized
+//!   pool hits.
 //!
 //! Hot-path allocation profile:
 //!
@@ -39,9 +40,9 @@
 //!   when `len < cap`; when `len == cap`, `Bytes::from(Vec)` is still a
 //!   move via `into_boxed_slice`). Plus one small `Box<Shared>` for the
 //!   refcount metadata.
-//! * `StreamingWriter::new_pooled()`: zero per-flush heap allocation in
-//!   steady state — chunk buffers come from the pool and return on
-//!   `Bytes` drop. Single atomic CAS per acquire/release.
+//! * `StreamingWriter::new_pooled()`: eligible chunk buffers return to
+//!   the pool on the last `Bytes` drop. `Bytes::from_owner` still allocates
+//!   owner metadata per chunk; pooling does not eliminate all heap allocations.
 //!
 //! # Per-render HTML injection
 //!
@@ -71,41 +72,44 @@ use webui_handler::{FlushWriter, HandlerError, ResponseWriter, Result};
 /// allocations across `StreamingWriter` instances.
 ///
 /// Backed by a [`crossbeam_queue::ArrayQueue`] (MPMC, lock-free, fixed
-/// capacity). Acquiring a buffer is a single atomic CAS; releasing is
-/// the same. When the pool is empty, `acquire` allocates a fresh
-/// `Vec<u8>`. When the pool is full, `release` drops the buffer.
+/// capacity). Acquiring and releasing use atomic queue operations. When the
+/// pool is empty, a fresh `Vec<u8>` is allocated. When the pool is full or a
+/// returned buffer's capacity exceeds `chunk_size`, the buffer is dropped,
+/// not shrunk.
 ///
 /// # Lifetime model
 ///
 /// A buffer leaves the pool on `acquire`, gets handed to
-/// [`bytes::Bytes::from_owner`] wrapped in a [`PooledChunk`] owner,
-/// and is released back to the pool when **the last `Bytes` reference
-/// is dropped** — typically after the HTTP framework has flushed the
-/// chunk to the wire. Because `Bytes` may be dropped on any thread
-/// (the actix worker that wrote the chunk to the socket, not the
+/// [`bytes::Bytes::from_owner`] wrapped in an owner,
+/// and becomes eligible for reuse only when **the last `Bytes` reference
+/// is dropped**, including clones and slices - typically after the HTTP
+/// framework has flushed the chunk to the wire. Because `Bytes` may be dropped
+/// on any thread (the actix worker that wrote the chunk to the socket, not the
 /// `spawn_blocking` worker that produced it), the pool MUST be
 /// thread-safe — `ArrayQueue` is.
 ///
 /// # Sizing
 ///
 /// `max_pool` should match the expected concurrent in-flight chunk
-/// count: `concurrent_renders × channel_capacity` in the worst case.
-/// For the production setup (4-chunk channels, ~100 concurrent
-/// renders), `max_pool = 512` covers the working set; surplus buffers
-/// are dropped when full so memory cannot grow unboundedly.
+/// count, including queued chunks, producer buffers, pending sends, and
+/// consumer-held chunks, not just `concurrent_renders × channel_capacity`.
+/// Size the pool for the measured working set. This bounds idle retention,
+/// not active allocations.
 ///
-/// `chunk_size` should match `StreamingWriter::CHUNK_TARGET +
-/// BUF_HEADROOM`. When acquiring, the writer always grows the buffer
-/// if the pool returned a smaller one (host code that mixes pool
-/// sizes pays a one-time grow per buffer).
+/// For the default writer, use `StreamingWriter::CHUNK_TARGET + 1024`
+/// (5 KiB), including the writer's 1 KiB buffer headroom. For a custom
+/// coalescing target, include the same headroom. This is a sizing recommendation,
+/// not a hard chunk limit: large writes can grow active buffers. Capacities
+/// above `chunk_size` are rejected on return, so mismatched sizes or recurring
+/// oversized writes can cause repeated allocations.
 ///
 /// # Cost
 ///
-/// * `acquire`: 1 atomic CAS (~10 ns on x86) + an `unwrap_or_else`
-///   that allocates only on miss.
-/// * `release`: 1 atomic CAS + drop-on-overflow.
-/// * Pool storage: `max_pool * size_of::<AtomicCell<Vec<u8>>>` =
-///   ~32 bytes per slot, i.e. 512 slots = 16 KiB pool overhead.
+/// * Idle buffers: summed `Vec` capacity is at most
+///   `max_pool.max(1) × chunk_size`, excluding allocator overhead.
+/// * Queue storage and pool metadata are additional.
+/// * Active, queued, pending-send, and consumer-held buffers are additional.
+///   `Bytes::from_owner` still allocates owner metadata per chunk.
 ///
 /// # Example
 ///
@@ -114,7 +118,7 @@ use webui_handler::{FlushWriter, HandlerError, ResponseWriter, Result};
 /// use webui::streaming::{ChunkPool, StreamingWriter};
 ///
 /// // Construct ONE pool at server startup:
-/// let pool = Arc::new(ChunkPool::new(512, StreamingWriter::CHUNK_TARGET));
+/// let pool = Arc::new(ChunkPool::new(512, StreamingWriter::CHUNK_TARGET + 1024));
 ///
 /// // Each request:
 /// let (tx, rx) = tokio::sync::mpsc::channel(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
@@ -131,12 +135,15 @@ impl ChunkPool {
     /// chunk buffers.
     ///
     /// `max_pool` is the maximum number of buffers held idle at once.
-    /// Surplus buffers are dropped (returned to the allocator) — this
-    /// caps total pool memory at `max_pool × chunk_size`.
+    /// Zero is raised to one. Surplus or oversized buffers are dropped,
+    /// not shrunk, bounding summed idle `Vec` capacity to
+    /// `max_pool.max(1) × chunk_size`. Allocator, queue, and owner metadata,
+    /// as well as active and consumer-held buffers, are additional.
     ///
     /// `chunk_size` is the initial capacity used when allocating a
-    /// fresh buffer on a pool miss. Pre-sizing avoids a Vec-grow on
-    /// the hot path.
+    /// fresh buffer on a pool miss and the maximum capacity accepted on
+    /// return. For the default writer, use `StreamingWriter::CHUNK_TARGET + 1024`
+    /// to include its buffer headroom.
     #[must_use]
     pub fn new(max_pool: usize, chunk_size: usize) -> Self {
         Self {
@@ -146,15 +153,8 @@ impl ChunkPool {
         }
     }
 
-    /// Acquire a buffer from the pool, or allocate a fresh one if the
-    /// pool is empty. The returned `Vec` is empty (`len == 0`); its
-    /// capacity is at least `chunk_size` (may be larger if a previous
-    /// caller grew it).
-    ///
-    /// Trusts that callers (only [`PooledChunk::drop`] in this crate)
-    /// have already cleared the buffer before release. In debug builds
-    /// we assert the invariant; release builds skip the check to keep
-    /// `acquire` to a single CAS + capacity check.
+    // Acquired buffers are empty with capacity at least `chunk_size`.
+    // `release` clears returned buffers; assert rather than double-clear.
     fn acquire(&self) -> Vec<u8> {
         match self.queue.pop() {
             Some(mut buf) => {
@@ -163,7 +163,8 @@ impl ChunkPool {
                     "ChunkPool invariant violation: pool returned non-empty buffer"
                 );
                 if buf.capacity() < self.chunk_size {
-                    buf.reserve(self.chunk_size - buf.capacity());
+                    // Reserve is additional to len (zero), not capacity.
+                    buf.reserve_exact(self.chunk_size);
                 }
                 buf
             }
@@ -171,11 +172,12 @@ impl ChunkPool {
         }
     }
 
-    /// Release a buffer back to the pool. The buffer is `clear()`-ed
-    /// here (cheap — sets `len` to 0, no deallocation), so `acquire`
-    /// can trust the invariant and skip a defensive clear on the hot
-    /// path. Drops the buffer if the pool is full.
+    // Clear retained buffers so `acquire` can skip a defensive clear.
+    // Drop oversized returns rather than shrinking them.
     fn release(&self, mut buf: Vec<u8>) {
+        if buf.capacity() > self.chunk_size {
+            return;
+        }
         buf.clear();
         // ArrayQueue::push returns Err with the value if full; we
         // simply drop in that case.
@@ -189,7 +191,7 @@ impl ChunkPool {
         self.queue.len()
     }
 
-    /// Maximum buffers the pool can hold idle.
+    /// Maximum buffers the pool can hold idle (at least one).
     #[must_use]
     pub fn capacity(&self) -> usize {
         self.queue.capacity()
@@ -206,8 +208,7 @@ struct PooledChunk {
     /// `Option` so we can `take()` the `Vec` in `Drop` and return
     /// it to the pool — Drop receives `&mut self`, so we can't move
     /// out of the field directly. Using `Option` keeps the impl
-    /// safe (no `ManuallyDrop` / `unsafe`) at the cost of one
-    /// 8-byte tag per chunk-in-flight; negligible vs the chunk size.
+    /// safe (no `ManuallyDrop` / `unsafe`).
     buf: Option<Vec<u8>>,
     pool: Arc<ChunkPool>,
 }
@@ -254,7 +255,8 @@ impl Drop for PooledChunk {
 /// Streaming `ResponseWriter` backed by a **bounded** tokio mpsc channel
 /// of [`Bytes`].
 ///
-/// Coalesces small writes into ~4 KB chunks before flushing. The
+/// Coalesces small writes into ~4 KB chunks before flushing. This is a
+/// target, not a byte cap: a large write can produce a larger chunk. The
 /// underlying channel has a small bound
 /// ([`DEFAULT_CHANNEL_CAPACITY`](Self::DEFAULT_CHANNEL_CAPACITY)) so a
 /// slow consumer naturally backpressures the producer — the render
@@ -328,9 +330,9 @@ impl StreamingWriter {
     /// Tunable via [`with_chunk_size`](Self::with_chunk_size).
     pub const CHUNK_TARGET: usize = 4 * 1024;
 
-    /// Default bounded-channel capacity in chunks. With
-    /// `CHUNK_TARGET = 4 KB`, this caps in-flight memory at ~16 KB per
-    /// in-progress request.
+    /// Default bounded-channel capacity in chunks, not bytes.
+    /// Large writes can exceed `CHUNK_TARGET`, so this does not cap
+    /// queued payload bytes or total in-flight memory.
     pub const DEFAULT_CHANNEL_CAPACITY: usize = 4;
 
     /// Minimum allowed chunk size. Below this the per-flush channel
@@ -361,16 +363,17 @@ impl StreamingWriter {
     }
 
     /// Wrap a tokio mpsc sender, drawing chunk buffers from the
-    /// shared `pool`. Recycled buffers eliminate per-flush allocation
-    /// in steady-state high-RPS workloads. The pool is shared via
-    /// `Arc` and is safe to use from any number of concurrent
+    /// shared `pool`. Reusing suitably sized buffers avoids chunk-buffer
+    /// allocations; `Bytes::from_owner` still allocates owner metadata per flush.
+    /// The pool is shared via `Arc` and is safe to use from any number of concurrent
     /// `StreamingWriter` instances; release happens when the consumer
     /// drops the `Bytes`, on whichever thread held the last reference.
     ///
     /// `chunk_target` defaults to [`CHUNK_TARGET`](Self::CHUNK_TARGET);
     /// override with [`with_chunk_size`](Self::with_chunk_size). When
-    /// the pool's chunk size disagrees with the writer's target, the
-    /// writer grows the acquired buffer on first use (one-time cost).
+    /// sizing the pool, include the writer's 1 KiB headroom as well as
+    /// its target. Buffers grown beyond the pool's chunk size are dropped
+    /// on return, so mismatched sizes can cause repeated allocations.
     #[must_use]
     pub fn new_pooled(tx: Sender<Bytes>, pool: Arc<ChunkPool>) -> Self {
         let buf = pool.acquire();
@@ -666,6 +669,9 @@ impl FlushWriter for StreamingWriter {
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod pool_tests;
 
 #[cfg(test)]
 mod tests {
