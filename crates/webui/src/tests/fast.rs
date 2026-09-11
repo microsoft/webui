@@ -75,6 +75,64 @@ fn build_discovers_generated_local_template() {
 }
 
 #[test]
+fn fast_versions_discover_default_named_html_in_the_app_folder() {
+    let app = create_app_dir(&[
+        (
+            "index.html",
+            "<html><body><app-card>Slotted text</app-card></body></html>",
+        ),
+        (
+            "app-card.html",
+            "<div class=\"card\">{{message}}<slot></slot></div>",
+        ),
+        ("app-card.css", ".card { color: blue; }"),
+        ("app-card.ts", "export class AppCard {}"),
+        (
+            "package.json",
+            r#"{"customElements":"custom-elements.json"}"#,
+        ),
+        (
+            "custom-elements.json",
+            "App discovery must not read package CEM data",
+        ),
+    ]);
+    for (plugin, handler) in [
+        (
+            Plugin::FastV2,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v2::FastV2HydrationPlugin::new())
+            }),
+        ),
+        (
+            Plugin::FastV3,
+            WebUIHandler::with_plugin(|| {
+                Box::new(webui_handler::plugin::fast_v3::FastV3HydrationPlugin::new())
+            }),
+        ),
+    ] {
+        let mut options = default_options(app.path());
+        options.plugin = Some(plugin);
+        options.css = CssStrategy::Style;
+        let result = build(options).unwrap();
+        assert!(result.protocol.components["app-card"]
+            .template
+            .contains("color: blue"));
+        let mut writer = StringWriter { buf: String::new() };
+        handler
+            .render(
+                &Protocol::new(result.protocol),
+                &serde_json::json!({"message":"Plain app component"}),
+                &RenderOptions::new("index.html", "/"),
+                &mut writer,
+            )
+            .unwrap();
+        let ssr = writer.buf.split("<f-template").next().unwrap_or_default();
+        assert!(ssr.contains("Plain app component"));
+        assert!(ssr.contains("Slotted text"));
+    }
+}
+
+#[test]
 fn build_discovers_fast_npm_package_layout() {
     let project = TempDir::new().unwrap();
     let app = project.path().join("src");

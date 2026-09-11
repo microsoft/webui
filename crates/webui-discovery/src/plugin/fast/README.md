@@ -2,6 +2,9 @@
 
 FAST reads each package's `customElements` manifest as its component inventory
 and loads standard `*.template.html` files for those declarations.
+It explicitly opts into package metadata loading. Other discovery plugins do
+not incur this metadata work unless they independently opt in. Package-level
+script ownership analysis is performed only for FAST manifest declarations.
 
 ## Package assets
 
@@ -30,6 +33,8 @@ also works when the manifest is absent or contains no component declarations.
 Manifest declarations win name conflicts. Generated `.template.html` and
 `.template-webui.html` assets are not accidentally registered as default names.
 Malformed declared metadata still reports an error.
+Ordinary `<component-name>.html` files in the application folder remain supported
+under both FAST parser versions, including sibling CSS and authored scripts.
 
 See the [discovery crate README](../../../README.md) for shared package lookup
 and scope behavior.

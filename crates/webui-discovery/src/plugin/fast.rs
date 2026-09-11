@@ -5,8 +5,8 @@
 
 use super::DiscoveryPlugin;
 use crate::npm::{
-    package_component_declarations, package_export_path, read_optional_file, read_required_file,
-    ComponentDeclaration, PackageContext,
+    package_component_declarations, package_export_path, package_has_authored_script,
+    package_metadata, read_optional_file, read_required_file, ComponentDeclaration, PackageContext,
 };
 use crate::{has_sibling_script, DiscoveredComponent};
 use anyhow::{bail, Context, Result};
@@ -34,12 +34,16 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
         "fast"
     }
 
+    fn requires_package_metadata(&self) -> bool {
+        true
+    }
+
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>> {
         discover_local_templates(root, fast_local_tag)
     }
 
     fn supports_package(&self, package: PackageContext<'_>) -> Result<bool> {
-        if package.manifest.get("customElements").is_some() {
+        if package_metadata(package)?.get("customElements").is_some() {
             return Ok(true);
         }
         crate::catalog::has_templates_matching(&crate::catalog::root(package)?, ordinary_html)
@@ -55,7 +59,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
             crate::catalog::cache_files_matching(&crate::catalog::root(package)?, |path| {
                 fallback_html(path, &names)
             })?;
-        if package.manifest.get("customElements").is_some() {
+        if package_metadata(package)?.get("customElements").is_some() {
             files.push(crate::npm::custom_elements_manifest_path(package)?);
         }
         if declarations.is_empty() {
@@ -128,6 +132,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 
         let assets = exported_assets(package, declarations.len())?;
         components.reserve(declarations.len());
+        let is_client_owned = package_has_authored_script(package_metadata(package)?);
         let mut seen_templates = HashSet::with_capacity(declarations.len());
         for declaration in declarations {
             let template_path = match &assets.template {
@@ -152,7 +157,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
                 tag_name: declaration.tag_name,
                 html_content,
                 css_content,
-                is_client_owned: package.is_client_owned,
+                is_client_owned,
                 source: package.name.to_string(),
             });
         }
@@ -161,7 +166,7 @@ impl DiscoveryPlugin for FastDiscoveryPlugin {
 }
 
 fn declarations(package: PackageContext<'_>) -> Result<Vec<ComponentDeclaration>> {
-    if package.manifest.get("customElements").is_some() {
+    if package_metadata(package)?.get("customElements").is_some() {
         package_component_declarations(package)
     } else {
         Ok(Vec::new())

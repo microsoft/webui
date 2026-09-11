@@ -16,6 +16,15 @@ pub trait DiscoveryPlugin {
     /// Stable cache namespace for this discovery layout.
     fn cache_namespace(&self) -> &'static str;
 
+    /// Opt into reading, parsing, and cache-hashing `package.json` contents.
+    ///
+    /// Filename-only discovery does not need package metadata. Plugins that
+    /// interpret package fields must opt in before accessing `PackageContext::manifest`.
+    #[must_use]
+    fn requires_package_metadata(&self) -> bool {
+        false
+    }
+
     /// Discover components below a local source root.
     ///
     /// # Errors

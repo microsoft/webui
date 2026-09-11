@@ -243,46 +243,6 @@ consumers but do not rename or select default WebUI templates.
 FAST keeps its separate CEM-based naming and special template/style conventions;
 see [Plugins](/guide/concepts/plugins/).
 
-### FAST Package Assets
-
-The `fast-v2` and `fast-v3` plugins read each package's Custom Elements Manifest
-to identify declared components and use standard `*.template.html` files for
-their templates. A single-component
-package may declare its assets explicitly:
-
-```json
-{
-  "customElements": "./custom-elements.json",
-  "exports": {
-    "./template.html": "./dist/button.template.html",
-    "./styles.css": "./dist/button.styles.css"
-  }
-}
-```
-
-The manifest must declare one component for this package-level template export.
-Paths are relative to the resolved package root, so the JavaScript module can
-live elsewhere, such as `dist/esm/button.js`. Direct strings and conditional
-paths under `default`, `import`, or `require` are accepted. FAST does not select
-the `template-webui.html` variant.
-
-The CEM supplies the inventory and names; exports only provide optional asset
-locations. Without a package-level template export, FAST uses module-relative
-template/style conventions, virtual-module fallbacks, and parent directories
-within the package for split JS/HTML layouts. Multi-component libraries with a
-template beside each JavaScript module remain supported. Missing or malformed
-explicit assets fail discovery.
-FAST also discovers ordinary `<component-name>.html` files whose names are not
-declared in the manifest, using the default CSS and script-sibling rules.
-Missing or empty component metadata permits this fallback; malformed manifests
-or missing assets for declared components do not. Manifest declarations take
-precedence over ordinary files with the same name.
-
-Scoped searches such as `--components="@mai-ui/*"` read the separate manifest in
-each component package. A single package such as
-`--components="@fluentui/web-components/*"` uses its shared manifest.
-Token-only packages without component sources are skipped.
-
 ### Local Paths
 
 You can also point to directories outside your app folder:
@@ -297,9 +257,8 @@ and a sibling `.ts` or `.js` file marks that component as authored/interactive.
 
 ### Caching
 
-npm package discovery results are cached at `~/.webui/cache/components/`. The
-cache invalidates automatically when `package.json` or any template, stylesheet,
-or manifest used by the selected discovery plugin changes. Local path sources
-are always re-scanned.
+npm package discovery results are cached at `~/.webui/cache/components/` and
+updated automatically when the selected discovery plugin's source inputs change.
+Local path sources are always re-scanned.
 
 See the [CLI Reference](/guide/cli/) for full `--components` usage.

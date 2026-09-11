@@ -77,9 +77,15 @@ impl DiscoveryCache {
     }
 
     // Compute a version hash from every input affecting discovery.
-    pub(crate) fn fingerprint(package_json: &Path, dependencies: &[PathBuf]) -> Result<u64> {
+    pub(crate) fn fingerprint(
+        package_json: Option<&Path>,
+        dependencies: &[PathBuf],
+    ) -> Result<u64> {
         let mut hasher = DefaultHasher::new();
-        for path in std::iter::once(package_json).chain(dependencies.iter().map(PathBuf::as_path)) {
+        for path in package_json
+            .into_iter()
+            .chain(dependencies.iter().map(PathBuf::as_path))
+        {
             path.hash(&mut hasher);
             match fs::read(path) {
                 Ok(content) => {
@@ -209,7 +215,7 @@ mod tests {
             is_client_owned: false,
             source: "test-pkg".to_string(),
         }];
-        let fingerprint = DiscoveryCache::fingerprint(&pkg_json, &[]).unwrap();
+        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
 
         // Put
         cache
@@ -247,7 +253,7 @@ mod tests {
             is_client_owned: false,
             source: "test-pkg".to_string(),
         }];
-        let fingerprint = DiscoveryCache::fingerprint(&pkg_json, &[]).unwrap();
+        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
 
         cache
             .put(&lookup("test-pkg", &pkg_json, fingerprint), &components)
@@ -257,7 +263,7 @@ mod tests {
         fs::write(&pkg_json, r#"{"name":"test","version":"2.0.0"}"#).unwrap();
 
         // Cache should be invalidated
-        let changed_fingerprint = DiscoveryCache::fingerprint(&pkg_json, &[]).unwrap();
+        let changed_fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
         let cached = cache
             .get(&lookup("test-pkg", &pkg_json, changed_fingerprint))
             .unwrap();
@@ -272,7 +278,7 @@ mod tests {
         let pkg_json = tmp.path().join("package.json");
         fs::write(&pkg_json, r#"{"name":"unknown"}"#).unwrap();
 
-        let fingerprint = DiscoveryCache::fingerprint(&pkg_json, &[]).unwrap();
+        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
         let cached = cache
             .get(&lookup("unknown-pkg", &pkg_json, fingerprint))
             .unwrap();
@@ -293,7 +299,7 @@ mod tests {
         fs::write(&cache_file, "NOT VALID JSON!!!").unwrap();
 
         // Should gracefully return None, not error
-        let fingerprint = DiscoveryCache::fingerprint(&pkg_json, &[]).unwrap();
+        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &[]).unwrap();
         let cached = cache
             .get(&lookup("test-pkg", &pkg_json, fingerprint))
             .unwrap();
@@ -317,14 +323,15 @@ mod tests {
             source: "test-pkg".to_string(),
         }];
         let dependencies = vec![template, styles.clone()];
-        let fingerprint = DiscoveryCache::fingerprint(&pkg_json, &dependencies).unwrap();
+        let fingerprint = DiscoveryCache::fingerprint(Some(&pkg_json), &dependencies).unwrap();
         cache
             .put(&lookup("test-pkg", &pkg_json, fingerprint), &components)
             .unwrap();
 
         fs::write(&styles, "button { color: red; }").unwrap();
 
-        let changed_fingerprint = DiscoveryCache::fingerprint(&pkg_json, &dependencies).unwrap();
+        let changed_fingerprint =
+            DiscoveryCache::fingerprint(Some(&pkg_json), &dependencies).unwrap();
         let cached = cache
             .get(&lookup("test-pkg", &pkg_json, changed_fingerprint))
             .unwrap();

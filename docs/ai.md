@@ -1338,14 +1338,7 @@ Native `components` discovery derives names from `<component-name>.html`,
 scanning a package's `components/` directory when present or its root otherwise.
 Template/style exports and CEM names are not interpreted by default discovery;
 FAST's special metadata-based layouts remain separate.
-FAST loads standard `*.template.html` assets, not `template-webui.html` variants.
-Single-component packages can use `./template.html` and `./styles.css` exports
-relative to the package root; multi-component packages retain module-relative
-discovery. See [FAST package assets](/guide/concepts/components#fast-package-assets).
-FAST falls back to normal named `.html` files for components not declared by
-its manifest, including packages with no component manifest. WebUI/none never
-uses CEM naming. Npm collection spellings `@scope/*` and `@scope/package/*` are
-accepted.
+Npm collection spellings `@scope/*` and `@scope/package/*` are accepted.
 Import browser registrations through the package's module exports separately.
 Catalog script ownership follows matching `.ts`/`.js` siblings per component;
 package exports and `.spec.ts` files do not make unrelated scriptless tags

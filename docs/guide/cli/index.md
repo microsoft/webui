@@ -727,10 +727,6 @@ native templates, and no manifest is required.
 FAST retains its separate metadata-based discovery rules. See
 [External components](/guide/concepts/components#external-component-sources)
 for the native package layout and migration from legacy export-based discovery.
-For single-component FAST packages, `./template.html` and `./styles.css` exports
-can locate assets independently of the JavaScript module. See
-[FAST package assets](/guide/concepts/components#fast-package-assets).
-
 **Resolution:** The CLI searches ancestor `node_modules/` directories for the
 requested package or scope, not merely the nearest `node_modules/`. Symlinks
 (pnpm, npm workspaces) are resolved automatically. A bare scope searches its

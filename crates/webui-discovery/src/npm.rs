@@ -21,10 +21,9 @@ pub struct PackageContext<'a> {
     pub name: &'a str,
     /// Canonical package root.
     pub root: &'a Path,
-    /// Parsed `package.json`.
-    pub manifest: &'a serde_json::Value,
-    /// Whether package metadata exposes authored browser code.
-    pub is_client_owned: bool,
+    /// Parsed `package.json`, present only when the plugin opts into
+    /// [`DiscoveryPlugin::requires_package_metadata`].
+    pub manifest: Option<&'a serde_json::Value>,
 }
 
 pub(crate) struct ComponentDeclaration {
@@ -194,23 +193,26 @@ fn resolve_single(
         bail!("No package.json found at {}", pkg_json_path.display());
     }
 
-    // Read and parse package.json
-    let pkg_json_content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
-    let pkg_json: serde_json::Value = serde_json::from_str(&pkg_json_content)
-        .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?;
-
-    let is_client_owned = package_has_authored_script(&pkg_json);
+    let pkg_json = if plugin.requires_package_metadata() {
+        let content = read_to_string_limited(&pkg_json_path, MAX_MANIFEST_SIZE)?;
+        Some(
+            serde_json::from_str(&content)
+                .with_context(|| format!("Failed to parse {}", pkg_json_path.display()))?,
+        )
+    } else {
+        None
+    };
+    let metadata_path = pkg_json.as_ref().map(|_| pkg_json_path.as_path());
     let package = PackageContext {
         name,
         root: &pkg_dir,
-        manifest: &pkg_json,
-        is_client_owned,
+        manifest: pkg_json.as_ref(),
     };
     if scope_member && !plugin.supports_package(package)? {
         return Ok(Vec::new());
     }
     let cache_files = plugin.package_cache_files(package)?;
-    let fingerprint = DiscoveryCache::fingerprint(&pkg_json_path, &cache_files)?;
+    let fingerprint = DiscoveryCache::fingerprint(metadata_path, &cache_files)?;
     let cache_key = CacheKey {
         namespace: plugin.cache_namespace(),
         source: name,
@@ -223,7 +225,7 @@ fn resolve_single(
     let components = plugin.discover_package(package)?;
 
     // Do not persist a mixed snapshot if package files changed during discovery.
-    if DiscoveryCache::fingerprint(&pkg_json_path, &cache_files)? == fingerprint {
+    if DiscoveryCache::fingerprint(metadata_path, &cache_files)? == fingerprint {
         cache.put(&cache_key, &components)?;
     }
 
@@ -237,12 +239,20 @@ pub(crate) fn package_component_declarations(
     parse_custom_elements_manifest(&path)
 }
 
+pub(crate) fn package_metadata(package: PackageContext<'_>) -> Result<&serde_json::Value> {
+    package.manifest.with_context(|| {
+        format!(
+            "Discovery of '{}' needs package metadata. Opt in with requires_package_metadata().",
+            package.name
+        )
+    })
+}
+
 pub(crate) fn package_export_path(
     package: PackageContext<'_>,
     key: &str,
 ) -> Result<Option<PathBuf>> {
-    let Some(value) = package
-        .manifest
+    let Some(value) = package_metadata(package)?
         .get("exports")
         .and_then(|exports| exports.get(key))
     else {
@@ -268,8 +278,7 @@ pub(crate) fn package_export_path(
 
 pub(crate) fn custom_elements_manifest_path(package: PackageContext<'_>) -> Result<PathBuf> {
     let package_json = package.root.join("package.json");
-    let relative = package
-        .manifest
+    let relative = package_metadata(package)?
         .get("customElements")
         .and_then(serde_json::Value::as_str)
         .with_context(|| format!("No 'customElements' field in {}", package_json.display()))?;
@@ -289,7 +298,7 @@ pub(crate) fn read_optional_file(path: Option<&Path>, kind: &str) -> Result<Opti
     }
 }
 
-fn package_has_authored_script(pkg_json: &serde_json::Value) -> bool {
+pub(crate) fn package_has_authored_script(pkg_json: &serde_json::Value) -> bool {
     for field in SCRIPT_ENTRY_FIELDS {
         match pkg_json.get(*field) {
             Some(serde_json::Value::String(path)) if is_script_path(path) => return true,

@@ -108,9 +108,10 @@ fn invalid_nearest_package_does_not_fall_back_to_an_ancestor() -> TestResult {
         write_component(&package, "test-button")?;
         fs::write(package.join("package.json"), "{}")?;
     }
+    fs::remove_dir_all(site.join("node_modules/@fixture/catalog/components"))?;
     fs::write(
-        site.join("node_modules/@fixture/catalog/package.json"),
-        "{ invalid }",
+        site.join("node_modules/@fixture/catalog/components"),
+        "not a directory",
     )?;
     assert!(discover_source("@fixture/catalog", &site).is_err());
     Ok(())

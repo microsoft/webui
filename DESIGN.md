@@ -1553,8 +1553,8 @@ pub struct DiscoveredComponent {
    A trailing `/*` is a collection spelling: `@scope/*` resolves the scope and
    `@scope/package/*` resolves that package. It is normalized before npm lookup,
    not applied to local filesystem sources.
-3. Read `package.json` and delegate the canonical package root to the selected
-   discovery plugin.
+3. Delegate the canonical package root to the selected discovery plugin.
+   Only plugins opting into `requires_package_metadata()` load/parse package JSON.
 4. Default WebUI scans `components/` when present, otherwise the package root,
    deriving component names only from hyphenated `<component-name>.html` filenames.
    Matching CSS and TS/JS siblings provide styling and authored ownership.
@@ -1950,6 +1950,7 @@ validated root to normalized `DiscoveredComponent` values:
 ```rust
 pub trait DiscoveryPlugin {
     fn cache_namespace(&self) -> &'static str;
+    fn requires_package_metadata(&self) -> bool;
     fn discover_local(&self, root: &Path) -> Result<Vec<DiscoveredComponent>>;
     fn supports_package(&self, package: PackageContext<'_>) -> Result<bool>;
     fn package_cache_files(
@@ -1963,8 +1964,15 @@ pub trait DiscoveryPlugin {
 }
 ```
 
-`PackageContext` exposes the canonical package root, parsed `package.json`,
-package name, and metadata-derived client ownership. A discovery plugin may
+`PackageContext` exposes the canonical package root, package name, and an optional
+parsed `package.json`. `requires_package_metadata` defaults to false; opted-in
+plugins receive `Some(&Value)` while filename-only plugins receive `None`.
+Default/WebUI/none never reads, parses, or cache-hashes package metadata contents,
+nor performs FAST export/CEM/ownership analysis. The package path/presence and
+selected HTML/CSS/script inputs still participate in normal source resolution.
+FAST opts in and computes package-level authored ownership only for its manifest
+declarations. Custom metadata-based plugins must also opt in explicitly.
+A discovery plugin may
 interpret package files and Custom Elements Manifest module declarations, but
 it does not insert directly into parser state. Every returned component still
 passes through `ComponentRegistry::register_component`, which owns custom
@@ -1981,6 +1989,11 @@ clobbering one another.
 default discovery claims packages with named HTML templates; FAST claims packages
 with a `customElements` field or ordinary named HTML sources. Explicit package requests still diagnose missing
 component inputs rather than returning an empty success.
+
+App-folder discovery dispatches only to the selected plugin. FAST local discovery
+continues to admit ordinary `<component-name>.html` with matching CSS and script
+siblings, without loading app package metadata; FAST 2 and FAST 3 compile/render
+those ordinary app components using their selected parser and handler.
 
 `WebUIDiscoveryPlugin` uses hyphenated `<tag-name>.html` filenames for both local
 and npm sources. Native npm packages use `components/` as their source root when

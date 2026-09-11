@@ -148,7 +148,7 @@ mod tests {
                     namespace,
                     source: "fixture-catalog",
                     package_json: &package_json,
-                    fingerprint: DiscoveryCache::fingerprint(&package_json, &files)?,
+                    fingerprint: DiscoveryCache::fingerprint(Some(&package_json), &files)?,
                 },
                 &[DiscoveredComponent {
                     tag_name: "test-text".to_string(),
