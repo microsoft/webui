@@ -2307,8 +2307,16 @@ changed file and drops events whose bytes are unchanged, so a no-op save
 (repeated Ctrl+S that rewrites identical content) triggers no rebuild in the
 clean state. While a rebuild error is active, unchanged events are forwarded so a
 no-op save can retry transient failures without forcing a real content edit.
-Deletions and oversized files always count as changed. Each rebuild's terminal
-line names the triggering file (`↻ rebuilt app-shell.css …`, or `… (+N more)`).
+Deletions and oversized files always count as changed. Hashing reuses one
+8 KiB scratch buffer per watcher instead of allocating a whole-file content
+buffer. Regular-file metadata is checked before and after opening, and reads
+are bounded to 8 MiB plus one overflow-probe byte so growth after the metadata
+check cannot bypass the cap. Short reads preserve the whole-file digest;
+interrupted reads retry. Other read failures count as changes and never cache
+a partial digest.
+
+Each rebuild's terminal line names the triggering file
+(`↻ rebuilt app-shell.css …`, or `… (+N more)`).
 Incremental rebuild failures are retained in dev-server state. The rebuild
 worker reports the error to the terminal and live-reload SSE; subsequent browser
 refreshes, route renders, JSON partial requests, and component template requests

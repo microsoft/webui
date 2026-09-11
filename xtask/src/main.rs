@@ -333,6 +333,7 @@ const CRITERION_BENCHES: &[(&str, &str)] = &[
     ("microsoft-webui-expressions", "expressions_bench"),
     ("microsoft-webui-state", "state_bench"),
     ("microsoft-webui-ffi", "protocol_bench"),
+    ("microsoft-webui-dev-server", "watch_hash_bench"),
     ("microsoft-webui", "contact_book_bench"),
     ("microsoft-webui", "streaming_bench"),
     ("microsoft-webui", "component_assets_bench"),
@@ -1079,6 +1080,11 @@ mod tests {
             seen.len(),
             "CRITERION_BENCHES has duplicate entries"
         );
+    }
+
+    #[test]
+    fn criterion_bench_table_includes_watcher_hashing() {
+        assert!(CRITERION_BENCHES.contains(&("microsoft-webui-dev-server", "watch_hash_bench")));
     }
 
     #[test]

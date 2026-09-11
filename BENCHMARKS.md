@@ -17,9 +17,10 @@ WebUI itself.
 
 | Bench | Layer | Wall time | What it measures | Use when |
 |---|---|---|---|---|
-| `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
+| `cargo xtask bench all` | criterion micro | ~5 min | per-fn wall-clock for parser, handler, protocol, expressions, state, watcher hashing, webui (incl. streaming + contact-book) | full snapshot of every micro-bench |
 | `cargo xtask bench streaming` | criterion micro | ~60 s | writer-path wall-clock + first-chunk TTFB | inner-loop iteration on the streaming module |
 | `cargo xtask bench contact-book` | criterion micro | ~90 s | end-to-end render at 10/100/1000 contacts | inner-loop iteration on handler/state/expressions |
+| `cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench` | criterion micro | ~20 s | small/large file hashing and event bursts with reused scratch | watcher hashing CPU and I/O tradeoffs |
 | `cargo xtask bench node-addon` | Node/N-API | ~15 s after build | `Protocol` construction, buffered render, first callback, total stream time | changes to `webui-node` or the public Node wrapper |
 | `cargo xtask bench streaming-resource` | example | ~30 s | exact alloc count + bytes + getrusage CPU + RSS | proving zero-alloc claims; allocation regression hunting |
 | `cargo xtask bench streaming-e2e-ttfb` | example | ~10 s | HTTP-level TTFB / TTLB through actix | confirming wire-level streaming win |
@@ -126,6 +127,8 @@ Standard criterion harnesses. Each crate has its own `benches/` dir:
 * `crates/webui-state/benches/state_bench.rs`
 * `crates/webui/benches/contact_book_bench.rs`: end-to-end render
 * `crates/webui/benches/streaming_bench.rs`: writer-path wall-clock + TTFB
+* `crates/webui-dev-server/benches/watch_hash_bench.rs`: file hashing and
+  32-file bursts with one reusable scratch buffer
 * `crates/webui/benches/component_assets_bench.rs`: static asset graph rendering
 * `crates/webui/benches/server_request_bench.rs`: router-aware full HTML and
   JSON requests, including sparse projection from a large parsed state tree
@@ -135,6 +138,19 @@ These integrate with criterion's HTML reports
 (`--save-baseline NAME` / `--baseline NAME`). `cargo xtask bench`
 passes those flags through so you don't need to remember `cargo
 bench` invocation details.
+
+The watcher hashing benchmark includes opening and metadata, but creates its
+fixtures outside timing. Run the same harness against both implementations:
+
+```bash
+cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench -- --save-baseline before
+cargo bench -p microsoft-webui-dev-server --bench watch_hash_bench -- --baseline before
+```
+
+Report small-file bursts as well as large files: bounded reads can trade extra
+I/O calls for lower content-buffer allocation. Distinguish Criterion's printed
+time estimates from extracted median estimates, and source-derived buffer
+bounds from measured process RSS.
 
 ### `streaming-resource` (counting allocator + getrusage)
 

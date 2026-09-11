@@ -8,9 +8,7 @@
 //! background thread; **the handle must be kept alive** for the watcher
 //! to run.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
-use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +21,15 @@ use notify::{
 use notify_debouncer_mini::{
     new_debouncer_opt, Config as DebouncerConfig, DebounceEventResult, Debouncer,
 };
+
+#[path = "watch_hash.rs"]
+mod hash;
+
+#[cfg(test)]
+#[path = "watch_hash_tests.rs"]
+mod hash_tests;
+
+use hash::{hash_file, HASH_BUFFER_SIZE};
 
 /// Owns the watcher background thread. Drop to stop watching.
 ///
@@ -146,6 +153,7 @@ where
         .collect();
 
     let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
+    let mut hash_buffer = [0_u8; HASH_BUFFER_SIZE];
     let retry_unchanged_when = cfg.retry_unchanged_when.clone();
     let explicit_filter = explicit_files.clone();
     let notify_config = notify::Config::default().with_follow_symlinks(false);
@@ -183,8 +191,14 @@ where
                 let retry_unchanged = retry_unchanged_when
                     .as_ref()
                     .is_some_and(|predicate| predicate());
-                paths
-                    .retain(|path| should_forward_path(&mut content_hashes, path, retry_unchanged));
+                paths.retain(|path| {
+                    should_forward_path(
+                        &mut content_hashes,
+                        path,
+                        retry_unchanged,
+                        &mut hash_buffer,
+                    )
+                });
                 if !paths.is_empty() {
                     on_event(paths);
                 }
@@ -311,19 +325,17 @@ pub fn default_ignore_paths() -> Vec<PathBuf> {
     ]
 }
 
-/// Largest file the watcher will hash to detect a no-op change. Above this,
-/// an event is always treated as a change — hashing a huge file on every event
-/// would cost more than an occasional rebuild. Dev source files are tiny, so
-/// this only guards pathological inputs.
-const MAX_HASH_BYTES: u64 = 8 * 1024 * 1024;
-
 /// Whether `path`'s content changed since the previous event, updating `cache`.
 ///
 /// A path that cannot be read as a regular file within the size cap (deleted,
 /// a directory, a permissions error, or oversized) is treated as **changed** so
 /// deletions still trigger a rebuild and large files are never silently skipped.
-fn content_changed(cache: &mut HashMap<PathBuf, u64>, path: &Path) -> bool {
-    match hash_file(path) {
+fn content_changed(
+    cache: &mut HashMap<PathBuf, u64>,
+    path: &Path,
+    buffer: &mut [u8; HASH_BUFFER_SIZE],
+) -> bool {
+    match hash_file(path, buffer) {
         Some(hash) => match cache.insert(path.to_path_buf(), hash) {
             Some(previous) => previous != hash,
             None => true,
@@ -339,22 +351,9 @@ fn should_forward_path(
     cache: &mut HashMap<PathBuf, u64>,
     path: &Path,
     retry_unchanged: bool,
+    buffer: &mut [u8; HASH_BUFFER_SIZE],
 ) -> bool {
-    content_changed(cache, path) || retry_unchanged
-}
-
-/// Hash the full contents of `path`, or `None` if it is not a readable regular
-/// file within [`MAX_HASH_BYTES`]. Uses the standard hasher — collision
-/// resistance is irrelevant here; we only need "did these bytes change".
-fn hash_file(path: &Path) -> Option<u64> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_HASH_BYTES {
-        return None;
-    }
-    let bytes = std::fs::read(path).ok()?;
-    let mut hasher = DefaultHasher::new();
-    hasher.write(&bytes);
-    Some(hasher.finish())
+    content_changed(cache, path, buffer) || retry_unchanged
 }
 
 #[cfg(test)]
@@ -489,25 +488,26 @@ mod tests {
         let file = dir.path().join("a.css");
         std::fs::write(&file, "a { color: red; }").unwrap();
         let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
 
         // First sighting → changed (nothing cached yet).
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
         // Re-saving identical bytes (repeated Ctrl+S) → no change → no rebuild.
-        assert!(!content_changed(&mut cache, &file));
-        assert!(!content_changed(&mut cache, &file));
+        assert!(!content_changed(&mut cache, &file, &mut buffer));
+        assert!(!content_changed(&mut cache, &file, &mut buffer));
 
         // A real edit → changed.
         std::fs::write(&file, "a { color: blue; }").unwrap();
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
         // Identical again → unchanged.
-        assert!(!content_changed(&mut cache, &file));
+        assert!(!content_changed(&mut cache, &file, &mut buffer));
 
         // Deletion → changed, so a rebuild can clear stale output.
         std::fs::remove_file(&file).unwrap();
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
         // The cache forgot it, so a later recreation is a fresh change.
         std::fs::write(&file, "a { color: blue; }").unwrap();
-        assert!(content_changed(&mut cache, &file));
+        assert!(content_changed(&mut cache, &file, &mut buffer));
     }
 
     #[test]
@@ -516,9 +516,88 @@ mod tests {
         let file = dir.path().join("a.css");
         std::fs::write(&file, "a { color: red; }").unwrap();
         let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
 
-        assert!(should_forward_path(&mut cache, &file, false));
-        assert!(!should_forward_path(&mut cache, &file, false));
-        assert!(should_forward_path(&mut cache, &file, true));
+        assert!(should_forward_path(&mut cache, &file, false, &mut buffer));
+        assert!(!should_forward_path(&mut cache, &file, false, &mut buffer));
+        assert!(should_forward_path(&mut cache, &file, true, &mut buffer));
+        assert!(!should_forward_path(&mut cache, &file, false, &mut buffer));
+
+        std::fs::write(&file, "a { color: blue; }").unwrap();
+        assert!(should_forward_path(&mut cache, &file, true, &mut buffer));
+        assert!(!should_forward_path(&mut cache, &file, false, &mut buffer));
+    }
+
+    #[test]
+    fn unhashable_paths_forget_cached_content() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("a.css");
+        let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+
+        for replacement in ["deleted", "directory", "oversized"] {
+            std::fs::write(&file, "original")?;
+            assert!(content_changed(&mut cache, &file, &mut buffer));
+            assert!(!content_changed(&mut cache, &file, &mut buffer));
+
+            std::fs::remove_file(&file)?;
+            match replacement {
+                "directory" => std::fs::create_dir(&file)?,
+                "oversized" => std::fs::File::create(&file)?.set_len(8 * 1024 * 1024 + 1)?,
+                _ => {}
+            }
+            for _ in 0..2 {
+                assert!(content_changed(&mut cache, &file, &mut buffer));
+                assert!(!cache.contains_key(&file));
+            }
+            match replacement {
+                "directory" => std::fs::remove_dir(&file)?,
+                "oversized" => std::fs::remove_file(&file)?,
+                _ => {}
+            }
+        }
+        std::fs::write(&file, "original")?;
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        Ok(())
+    }
+
+    #[test]
+    fn hash_buffer_is_reused_across_files_and_event_batches() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let paths = [
+            dir.path().join("large.css"),
+            dir.path().join("empty.css"),
+            dir.path().join("small.css"),
+        ];
+        for (path, size) in paths.iter().zip([3 * HASH_BUFFER_SIZE + 1, 0, 7]) {
+            std::fs::write(path, vec![b'x'; size])?;
+        }
+        let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+        for changed in [true, false, false] {
+            for path in &paths {
+                assert_eq!(content_changed(&mut cache, path, &mut buffer), changed);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_symlink_loop_forgets_cached_content() -> std::io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("unreadable.css");
+        std::fs::write(&file, "original")?;
+        let mut cache = HashMap::new();
+        let mut buffer = [0_u8; HASH_BUFFER_SIZE];
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        std::fs::remove_file(&file)?;
+        std::os::unix::fs::symlink("unreadable.css", &file)?;
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        assert!(!cache.contains_key(&file));
+        std::fs::remove_file(&file)?;
+        std::fs::write(&file, "original")?;
+        assert!(content_changed(&mut cache, &file, &mut buffer));
+        Ok(())
     }
 }
