@@ -3856,7 +3856,7 @@ The version-2 control vocabulary mirrors the session:
 {"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
 ```
 
-`start` appears exactly once and drives `StreamingSession::start`. Every
+`start` appears exactly once and drives `StreamingResponse::start`. Every
 `resume.boundary` must match the currently returned descriptor by `owner`,
 `name`, and `key`; omit `key` only when the descriptor has none. An optional
 `declarationId` can tighten the match. The CLI passes the descriptor's
@@ -3871,8 +3871,14 @@ advance or end-control record.
 Resolved token CSS, `basePath`, and route parameters are injected into start
 and resume state. Update state receives no unrelated defaults. Each NDJSON
 record remains capped at 2,000,000 bytes and the initial bytes produced by
-`start` are staged up to 4,000,000 bytes before HTTP success. A capacity-one
-command channel and the bounded `StreamingWriter` preserve backpressure.
+`start` are staged up to 4,000,000 bytes before HTTP success. Async ingestion
+only frames and size-checks records. A capacity-one channel transfers owned
+record bytes to the response's existing blocking renderer, which deserializes,
+validates command order, and applies state defaults. Start and resume values
+move into the continuation instead of cloning a borrowed projection. Initial
+command failures remain HTTP 502 responses, while initial rendering failures
+remain HTTP 500 responses; neither commits a successful response. The command
+channel and bounded `StreamingWriter` preserve backpressure.
 Disconnect cancels backend ingestion. Unsupported versions, descriptor
 mismatches, invalid order, malformed state, renderer failure, or truncation
 close and log the response.
