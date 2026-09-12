@@ -283,7 +283,7 @@ occurrences as it renders:</p><code-block><template shadowrootmode="open"><link 
 
 <span class="hl-keyword">let</span> options <span class="hl-keyword">=</span> RenderOptions::new(<span class="hl-string">"</span><span class="hl-string">index.html</span><span class="hl-string">"</span>, <span class="hl-string">"</span><span class="hl-string">/</span><span class="hl-string">"</span>);
 <span class="hl-keyword">let</span> <span class="hl-keyword">mut</span> response <span class="hl-keyword">=</span> handler.stream_response(<span class="hl-keyword">&amp;</span>protocol, <span class="hl-keyword">&amp;</span>options, <span class="hl-keyword">&amp;</span><span class="hl-keyword">mut</span> writer)<span class="hl-keyword">?</span>;
-<span class="hl-keyword">let</span> <span class="hl-keyword">mut</span> step <span class="hl-keyword">=</span> response.start(<span class="hl-keyword">&amp;</span>initial_state)<span class="hl-keyword">?</span>;
+<span class="hl-keyword">let</span> <span class="hl-keyword">mut</span> step <span class="hl-keyword">=</span> response.start(initial_state)<span class="hl-keyword">?</span>;
 
 <span class="hl-keyword">while</span> <span class="hl-keyword">!</span>step.done &#123;
     step <span class="hl-keyword">=</span> <span class="hl-keyword">match</span> step.boundary.as_ref() &#123;
@@ -295,7 +295,7 @@ occurrences as it renders:</p><code-block><template shadowrootmode="open"><link 
             )<span class="hl-keyword">?</span>;
             response.resume(
                 boundary.instance_id,
-                <span class="hl-keyword">&amp;</span>state,
+                state,
                 BoundaryMode::Final,
             )<span class="hl-keyword">?</span>
         &#125;
@@ -316,7 +316,9 @@ and terminal.</p><p><code>WebUIHandler::render_streaming</code> uses one prepare
 one state value for the complete response. It preserves every checkpoint flush
 without cloning the state or rebuilding the context between boundaries. The
 lower-level <code>stream_response</code> API keeps the public <code>resume</code> overlay because
-hosts may supply newly resolved state for each occurrence. When no state
+hosts may supply newly resolved state for each occurrence. Move freshly loaded
+state into <code>start</code> and <code>resume</code> when the caller no longer needs it; pass <code>&amp;Value</code>
+only when retaining caller ownership. When no state
 changed, <code>resume_current</code> skips that overlay while retaining the checkpoint
 pause before <code>advance</code>.</p><p>Every descriptor contains <code>instance_id</code>, <code>declaration_id</code>, <code>owner</code>, <code>name</code>, and
 an optional string or numeric <code>key</code>. A component-owned declaration reached from
@@ -327,7 +329,7 @@ inside one boundary.</p><p>To send later state, resume the occurrence as <code>B
 its instance ID, then call:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code>response.update(search_instance, <span class="hl-keyword">&amp;</span>json!(&#123; <span class="hl-string">"</span><span class="hl-string">query</span><span class="hl-string">"</span>: <span class="hl-string">"</span><span class="hl-string">webui</span><span class="hl-string">"</span> &#125;))<span class="hl-keyword">?</span>;
 </code></pre></code-block><p><code>update</code> accepts an object patch, emits a projected markerless state record, and
 flushes immediately. It is valid between the occurrence's <code>resume</code> and
-<code>advance</code>, inserts no markup, and does not rerun hydration.</p><p>The session borrows each state value only for its call. It does not await,
+<code>advance</code>, inserts no markup, and does not rerun hydration.</p><p>The session accepts owned state or borrows state only for its call. It does not await,
 allocate a task, or synchronize concurrent callers. An async server should use a
 bounded command channel and one admitted blocking worker that owns the session
 and <code>StreamingWriter</code>; <code>examples/app/streaming</code> is the reference implementation.</p><p>The public writer contract is:</p><code-block><template shadowrootmode="open"><link rel="stylesheet" href="code-block.css" data-webui-resource="code-block" data-webui-strategy="link"><div class="wrapper"><button class="copy-btn" aria-label="Copy code">Copy</button><slot></slot></div></template><pre class="code-block"><code><span class="hl-keyword">pub</span> <span class="hl-keyword">trait</span> FlushWriter: ResponseWriter &#123;
