@@ -200,6 +200,19 @@ response completes, call the opt-in `WebUIHandler::render_streaming` API shown
 below. It commits every boundary as final. Use `stream_response` when backend
 readiness controls checkpoint timing or an island needs later server state.
 
+`with_chunk_size` sets a hard byte maximum, including individual writes larger
+than the limit. The default is 4 KiB; four channel slots hold at most 16 KiB of
+queued payload. Producer buffers, consumer-held chunks, state, and allocation
+metadata are additional memory. Chunks can split a UTF-8 character: forward
+bytes directly, or use an incremental decoder rather than decoding each chunk
+independently.
+
+Size `ChunkPool` buffers to match the writer's configured chunk size. The pool
+drops oversized buffers instead of retaining their peak capacity, and recycles
+a buffer only after its last consumer reference is released. Its idle buffer
+capacity is bounded by `max_pool.max(1) * chunk_size`; active allocations and
+pool metadata are separate.
+
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
@@ -211,8 +224,8 @@ use webui::{WebUIHandler, RenderOptions, ResponseWriter};
 
 // One shared pool per server (constructed at startup, lives forever).
 let chunk_pool = Arc::new(ChunkPool::new(
-    256,                                       // ~1.25 MiB peak pool memory
-    StreamingWriter::CHUNK_TARGET + 1024,
+    256,                                       // at most 1 MiB idle buffer capacity
+    StreamingWriter::CHUNK_TARGET,
 ));
 let render_permits = Arc::new(Semaphore::new(4));
 
@@ -262,7 +275,7 @@ use webui::{BoundaryMode, RenderOptions, WebUIHandler};
 
 let options = RenderOptions::new("index.html", "/");
 let mut response = handler.stream_response(&protocol, &options, &mut writer)?;
-let mut step = response.start(&initial_state)?;
+let mut step = response.start(initial_state)?;
 
 while !step.done {
     step = match step.boundary.as_ref() {
@@ -274,7 +287,7 @@ while !step.done {
             )?;
             response.resume(
                 boundary.instance_id,
-                &state,
+                state,
                 BoundaryMode::Final,
             )?
         }
@@ -301,7 +314,9 @@ and terminal.
 one state value for the complete response. It preserves every checkpoint flush
 without cloning the state or rebuilding the context between boundaries. The
 lower-level `stream_response` API keeps the public `resume` overlay because
-hosts may supply newly resolved state for each occurrence. When no state
+hosts may supply newly resolved state for each occurrence. Move freshly loaded
+state into `start` and `resume` when the caller no longer needs it; pass `&Value`
+only when retaining caller ownership. When no state
 changed, `resume_current` skips that overlay while retaining the checkpoint
 pause before `advance`.
 
@@ -323,7 +338,7 @@ response.update(search_instance, &json!({ "query": "webui" }))?;
 flushes immediately. It is valid between the occurrence's `resume` and
 `advance`, inserts no markup, and does not rerun hydration.
 
-The session borrows each state value only for its call. It does not await,
+The session accepts owned state or borrows state only for its call. It does not await,
 allocate a task, or synchronize concurrent callers. An async server should use a
 bounded command channel and one admitted blocking worker that owns the session
 and `StreamingWriter`; `examples/app/streaming` is the reference implementation.

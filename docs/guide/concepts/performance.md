@@ -162,6 +162,16 @@ Use `<boundary>` when early shell bytes or independently resolving regions
 improve user-visible completion. Keep ordinary pages buffered when one render
 already completes quickly.
 
+For Rust HTTP hosts, `StreamingWriter` limits each transport chunk to the
+configured size, including large individual values. The defaults allow at most
+four queued 4 KiB payloads; active producer buffers, state, serialization
+scratch, and HTTP transport buffers are additional memory. Bound concurrent
+renders as well as the channel, and set a flush timeout for slow consumers.
+
+Owned `StreamingSession` results contain a complete semantic step, not a
+fixed-size transport chunk. Await host backpressure between steps and size
+boundary content accordingly. See [Rust streaming SSR](/guide/integrations/rust#streaming-ssr).
+
 ## Measure the path you are optimizing
 
 Server and browser measurements answer different questions:

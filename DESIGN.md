@@ -1093,10 +1093,11 @@ Hosts that support HTTP response streaming can render directly into a
 network-bound channel instead of buffering the full HTML in memory.
 The `webui::streaming` module provides:
 
-- **`StreamingWriter`** — coalesces writes into ~4 KB chunks and pushes
+- **`StreamingWriter`** — coalesces writes into at most 4 KiB chunks and pushes
   them through a **bounded** `tokio::sync::mpsc::Sender<Bytes>`. The
   bound (`DEFAULT_CHANNEL_CAPACITY = 4` chunks) provides backpressure
-  via `blocking_send`: a slow client parks the render thread instead
+  via a nonblocking send followed by a blocking wait only when full:
+  a slow client parks the render thread instead
   of letting unbounded chunks accumulate. A configurable flush
   deadline (`with_flush_timeout`) caps the maximum time a producer
   thread can be parked, bounding the slow-loris DoS surface. When the
@@ -1104,11 +1105,22 @@ The `webui::streaming` module provides:
   `write` returns a typed error (`HandlerError::ClientDisconnected` /
   `HandlerError::StreamTimeout`) so the handler aborts the render
   rather than waste CPU producing bytes that have nowhere to go.
+  `with_chunk_size` changes the hard byte maximum (minimum 64 bytes),
+  including raw content and quoted/boolean attributes. Transport chunks
+  may split UTF-8 code points; semantic checkpoint flushes are unchanged.
+  Default queued payload is bounded by 16 KiB, excluding the active
+  producer buffer, a pending send, consumer-held chunks, spare capacity,
+  state, serialization scratch, and channel/ownership metadata.
 
 - **`ChunkPool`** — lock-free shared pool of chunk buffers. Used via
   `StreamingWriter::new_pooled` to recycle the per-flush `Vec<u8>`
-  across requests, eliminating per-flush heap allocation in
-  steady-state high-RPS workloads.
+  across requests. Returned buffers above the configured `chunk_size`
+  capacity are dropped, not shrunk or pooled, bounding idle buffer
+  capacity to `max_pool.max(1) * chunk_size`. Hosts match pool capacity
+  to the writer's chunk size rather than reserving overshoot headroom.
+  Pool hits avoid buffer allocation, but `Bytes::from_owner` still
+  allocates ownership metadata. The final consumer reference owns the
+  buffer's lifetime; only its release returns that buffer to the pool.
 
 ### Progressive Response API
 
@@ -3856,7 +3868,7 @@ The version-2 control vocabulary mirrors the session:
 {"type":"update","boundary":{"owner":"ntp-page","name":"search-ready"},"state":{"query":"webui"}}
 ```
 
-`start` appears exactly once and drives `StreamingSession::start`. Every
+`start` appears exactly once and drives `StreamingResponse::start`. Every
 `resume.boundary` must match the currently returned descriptor by `owner`,
 `name`, and `key`; omit `key` only when the descriptor has none. An optional
 `declarationId` can tighten the match. The CLI passes the descriptor's
@@ -3871,8 +3883,14 @@ advance or end-control record.
 Resolved token CSS, `basePath`, and route parameters are injected into start
 and resume state. Update state receives no unrelated defaults. Each NDJSON
 record remains capped at 2,000,000 bytes and the initial bytes produced by
-`start` are staged up to 4,000,000 bytes before HTTP success. A capacity-one
-command channel and the bounded `StreamingWriter` preserve backpressure.
+`start` are staged up to 4,000,000 bytes before HTTP success. Async ingestion
+only frames and size-checks records. A capacity-one channel transfers owned
+record bytes to the response's existing blocking renderer, which deserializes,
+validates command order, and applies state defaults. Start and resume values
+move into the continuation instead of cloning a borrowed projection. Initial
+command failures remain HTTP 502 responses, while initial rendering failures
+remain HTTP 500 responses; neither commits a successful response. The command
+channel and bounded `StreamingWriter` preserve backpressure.
 Disconnect cancels backend ingestion. Unsupported versions, descriptor
 mismatches, invalid order, malformed state, renderer failure, or truncation
 close and log the response.

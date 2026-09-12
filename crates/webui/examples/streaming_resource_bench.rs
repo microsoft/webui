@@ -35,6 +35,9 @@
 //! ```sh
 //! cargo run --release --example streaming_resource_bench -p microsoft-webui
 //! ```
+//!
+//! For bounded-channel transport experiments (including an untimed smoke mode),
+//! see `transport_matrix/README.md` next to this example.
 
 #![allow(missing_docs)]
 // SAFETY EXEMPTION: This is a benchmark example, not library code.
@@ -49,7 +52,7 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -57,17 +60,23 @@ use webui::streaming::{ChunkPool, StreamingWriter};
 use webui::{build, BuildOptions, CssStrategy, Protocol, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
 
+mod transport_matrix;
+
 // ── Counting allocator ────────────────────────────────────────────────
 
 struct CountingAlloc;
 
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+static COUNT_ENABLED: AtomicBool = AtomicBool::new(true);
 
+// SAFETY: every operation delegates to System with the caller's pointer/layout.
 unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        if COUNT_ENABLED.load(Ordering::Relaxed) {
+            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
         // SAFETY: forwarded with the same layout the caller produced.
         unsafe { System.alloc(layout) }
     }
@@ -78,8 +87,10 @@ unsafe impl GlobalAlloc for CountingAlloc {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
-        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        if COUNT_ENABLED.load(Ordering::Relaxed) {
+            ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+            ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
         // SAFETY: forwarded with the same layout the caller produced.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -87,7 +98,7 @@ unsafe impl GlobalAlloc for CountingAlloc {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // Realloc to a strictly larger size counts as one new allocation
         // for the size delta — matches what most heap profilers do.
-        if new_size > layout.size() {
+        if COUNT_ENABLED.load(Ordering::Relaxed) && new_size > layout.size() {
             ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
             ALLOC_BYTES.fetch_add(new_size - layout.size(), Ordering::Relaxed);
         }
@@ -809,6 +820,14 @@ fn parse_args() -> Mode {
 // ── Main ──────────────────────────────────────────────────────────────
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--transport") {
+        COUNT_ENABLED.store(false, Ordering::Relaxed);
+        if let Err(error) = transport_matrix::run(std::env::args().skip(2).collect()) {
+            eprintln!("transport experiment: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
     let mode = parse_args();
     let scales = [10usize, 100, 1000];
     let iters_per_scale = 2_000;
@@ -834,7 +853,7 @@ fn main() {
 
     // One pool shared across the whole bench — this is exactly how the
     // production server uses it (constructed at startup, lives forever).
-    let pool = Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET + 1024));
+    let pool = Arc::new(ChunkPool::new(256, StreamingWriter::CHUNK_TARGET));
 
     let paths: &[(&str, fn(&Protocol, &Value, usize) -> usize)] = &[
         (

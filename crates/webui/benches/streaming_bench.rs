@@ -3,7 +3,7 @@
 
 //! Benchmarks comparing buffered vs streaming render paths.
 //!
-//! Two benchmark groups against the real contact-book-manager protocol
+//! Render benchmark groups against the real contact-book-manager protocol
 //! at three contact scales (10/100/1000):
 //!
 //! ## `writer_paths` — total render throughput
@@ -31,6 +31,13 @@
 //! * **streaming_ttfb** — Streaming render: time until first 4 KB
 //!   chunk is available on the receiver.
 //!
+//! ## `transport` / `transport_tiny` — transport-only costs
+//!
+//! Large raw/attribute writes and repeated small writes use the default
+//! four-slot channel with a persistent concurrent consumer. Tiny writes
+//! drain on the producer thread to isolate the hot path from scheduling.
+//! Both groups compare pooled and unpooled buffers.
+//!
 //! Run with: `cargo bench -p microsoft-webui --bench streaming_bench`
 
 #![allow(missing_docs)]
@@ -43,7 +50,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use webui::streaming::StreamingWriter;
+use webui::streaming::{ChunkPool, StreamingWriter};
 use webui::{build, BuildOptions, CssStrategy, Protocol, ResponseWriter, WebUIHandler};
 use webui_handler::RenderOptions;
 
@@ -154,9 +161,7 @@ impl ResponseWriter for StringWriter {
 }
 
 /// Drain a tokio mpsc receiver synchronously, summing bytes received.
-/// Uses `try_recv` in a tight loop because the producer thread fills
-/// the channel before the bench iteration ends; no async runtime is
-/// involved in the measurement window.
+/// Uses `blocking_recv`; no async runtime is involved.
 fn drain_total(mut rx: mpsc::Receiver<Bytes>) -> usize {
     let mut total = 0;
     while let Some(chunk) = rx.blocking_recv() {
@@ -406,5 +411,139 @@ fn bench_ttfb(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_writers, bench_ttfb);
+// ── transport group: bounded channel and chunk-buffer costs ──────────
+
+#[derive(Clone, Copy)]
+enum TransportWrites<'a> {
+    Raw(&'a str),
+    Attribute(&'a str),
+    Small,
+}
+
+impl TransportWrites<'_> {
+    fn output_size(self) -> usize {
+        match self {
+            Self::Raw(content) => content.len(),
+            Self::Attribute(value) => value.len() + " data-value=\"\"".len(),
+            Self::Small => 1024 * 16,
+        }
+    }
+
+    fn write(self, writer: &mut StreamingWriter) {
+        match self {
+            Self::Raw(content) => writer.write(black_box(content)).unwrap(),
+            Self::Attribute(value) => writer
+                .write_attribute(black_box("data-value"), black_box(value))
+                .unwrap(),
+            Self::Small => {
+                for _ in 0..1024 {
+                    writer.write(black_box("0123456789abcdef")).unwrap();
+                }
+            }
+        }
+        writer.end().unwrap();
+    }
+}
+
+fn transport_writer(tx: mpsc::Sender<Bytes>, pool: &Option<Arc<ChunkPool>>) -> StreamingWriter {
+    match pool {
+        Some(pool) => StreamingWriter::new_pooled(tx, Arc::clone(pool)),
+        None => StreamingWriter::new(tx),
+    }
+}
+
+/// The persistent consumer drains the production four-slot channel and
+/// acknowledges each response. Thread creation is outside the timing window;
+/// channel backpressure, final consumption, and acknowledgement are measured.
+fn bench_transport(c: &mut Criterion) {
+    let large = "x".repeat(1024 * 1024);
+    let cases = [
+        ("raw_1m", TransportWrites::Raw(&large)),
+        ("attribute_1m", TransportWrites::Attribute(&large)),
+        ("small_16k", TransportWrites::Small),
+    ];
+    let mut group = c.benchmark_group("transport");
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(1));
+    group.sample_size(20);
+
+    for (name, writes) in cases {
+        group.throughput(Throughput::Bytes(writes.output_size() as u64));
+        for pooled in [false, true] {
+            let mode = if pooled { "pooled" } else { "unpooled" };
+            group.bench_function(BenchmarkId::new(name, mode), |b| {
+                let pool =
+                    pooled.then(|| Arc::new(ChunkPool::new(16, StreamingWriter::CHUNK_TARGET)));
+                let (tx, mut rx) =
+                    mpsc::channel::<Bytes>(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+                let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
+                let output_size = writes.output_size();
+                let consumer = std::thread::spawn(move || {
+                    let mut received = 0;
+                    while let Some(chunk) = rx.blocking_recv() {
+                        received += black_box(chunk.len());
+                        drop(chunk);
+                        if received == output_size {
+                            done_tx.send(()).unwrap();
+                            received = 0;
+                        }
+                    }
+                    assert_eq!(received, 0);
+                });
+                b.iter(|| {
+                    let mut writer = transport_writer(tx.clone(), &pool);
+                    writes.write(&mut writer);
+                    drop(writer);
+                    done_rx.recv().unwrap();
+                });
+                drop(tx);
+                consumer.join().unwrap();
+            });
+        }
+    }
+    group.finish();
+}
+
+/// Isolate the tiny-write fast path without cross-thread scheduling noise.
+fn bench_transport_tiny(c: &mut Criterion) {
+    let mut group = c.benchmark_group("transport_tiny");
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(1));
+    group.sample_size(20);
+    for attributes in [false, true] {
+        let name = if attributes { "attributes" } else { "raw" };
+        for pooled in [false, true] {
+            let mode = if pooled { "pooled" } else { "unpooled" };
+            let pool = pooled.then(|| Arc::new(ChunkPool::new(4, StreamingWriter::CHUNK_TARGET)));
+            group.bench_function(BenchmarkId::new(name, mode), |b| {
+                b.iter(|| {
+                    let (tx, rx) = mpsc::channel(StreamingWriter::DEFAULT_CHANNEL_CAPACITY);
+                    let mut writer = transport_writer(tx, &pool);
+                    for _ in 0..32 {
+                        if attributes {
+                            writer
+                                .write_attribute(black_box("id"), black_box("value"))
+                                .unwrap();
+                            writer.write_boolean_attribute(black_box("hidden")).unwrap();
+                        } else {
+                            writer.write(black_box("12345678")).unwrap();
+                        }
+                    }
+                    writer.end().unwrap();
+                    drop(writer);
+                    black_box(drain_total(rx));
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_writers,
+    bench_ttfb,
+    bench_transport,
+    bench_transport_tiny
+);
 criterion_main!(benches);

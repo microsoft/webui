@@ -1843,6 +1843,7 @@ dependencies = [
  "anyhow",
  "async-stream",
  "console",
+ "criterion",
  "futures-util",
  "mime_guess",
  "notify",
