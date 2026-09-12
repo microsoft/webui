@@ -27,4 +27,9 @@ console = { workspace = true }
 time = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tempfile = { workspace = true }
+
+[[bench]]
+name = "watch_hash_bench"
+harness = false
