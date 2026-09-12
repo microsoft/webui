@@ -1553,11 +1553,14 @@ fn compile_section(
                 }
             }
 
-            if remaining.starts_with("<if ") || remaining.starts_with("<if\n") {
+            let opening_name = parse_tag(remaining)
+                .filter(|tag| !tag.closing)
+                .map(|tag| tag.name);
+            if opening_name == Some("if") {
                 if let Some((cond, body, consumed)) = parse_if_block(remaining) {
                     let block_index = blocks.len();
                     blocks.push(TemplateSectionMeta::default());
-                    let block = compile_section(component, &body, blocks)?;
+                    let block = compile_section(component, body, blocks)?;
                     blocks[block_index] = block;
                     let idx = meta.conditionals.len();
                     meta.conditionals.push((cond, block_index));
@@ -1568,7 +1571,7 @@ fn compile_section(
             }
 
             // <for each="item in collection">...</for> → marker + repeat
-            if remaining.starts_with("<for ") || remaining.starts_with("<for\n") {
+            if opening_name == Some("for") {
                 if let Some(repeat) = parse_for_block(component, remaining)? {
                     let block_index = blocks.len();
                     blocks.push(TemplateSectionMeta::default());
@@ -2558,139 +2561,15 @@ fn shadow_template_body(html: &str) -> Option<&str> {
     (close_end == html.len()).then_some(&html[inner_start..inner_end])
 }
 
-fn find_next_block_token(input: &str, cursor: usize, token: &str) -> Option<usize> {
-    let bytes = input.as_bytes();
-    let token_bytes = token.as_bytes();
-    let mut index = cursor;
-    let mut in_tag = false;
-    let mut in_comment = false;
-    let mut quote: Option<u8> = None;
-
-    while index + token_bytes.len() <= bytes.len() {
-        if in_comment {
-            if bytes[index..].starts_with(b"-->") {
-                in_comment = false;
-                index += 3;
-                continue;
-            }
-            index += 1;
-            continue;
-        }
-
-        if let Some(active) = quote {
-            if bytes[index] == active {
-                quote = None;
-            }
-            index += 1;
-            continue;
-        }
-
-        if in_tag {
-            match bytes[index] {
-                b'"' | b'\'' => quote = Some(bytes[index]),
-                b'>' => in_tag = false,
-                _ => {}
-            }
-            index += 1;
-            continue;
-        }
-
-        if &bytes[index..index + token_bytes.len()] == token_bytes {
-            return Some(index);
-        }
-
-        if bytes[index] == b'<' {
-            if bytes[index..].starts_with(b"<!--") {
-                in_comment = true;
-                index += 4;
-                continue;
-            }
-            in_tag = true;
-        }
-
-        index += 1;
-    }
-
-    None
-}
-
-fn find_next_block_open(input: &str, cursor: usize, name: &str) -> Option<usize> {
-    let token = format!("<{name}");
-    let bytes = input.as_bytes();
-    let token_bytes = token.as_bytes();
-    let mut search = cursor;
-
-    while let Some(index) = find_next_block_token(input, search, &token) {
-        let next = bytes.get(index + token_bytes.len()).copied();
-        if match next {
-            None => true,
-            Some(byte) => byte == b'>' || byte.is_ascii_whitespace(),
-        } {
-            return Some(index);
-        }
-        search = index + 1;
-    }
-
-    None
-}
-
-fn find_next_block_close(input: &str, cursor: usize, name: &str) -> Option<usize> {
-    let token = format!("</{name}>");
-    find_next_block_token(input, cursor, &token)
-}
-
-fn find_matching_block_end(input: &str, name: &str) -> Option<usize> {
-    let open_token = format!("<{name}");
-    let close_token = format!("</{name}>");
-    if !input.starts_with(&open_token) {
-        return None;
-    }
-
-    let mut depth = 1usize;
-    let mut cursor = open_token.len();
-
-    while cursor < input.len() {
-        let next_open = find_next_block_open(input, cursor, name);
-        let next_close = find_next_block_close(input, cursor, name);
-
-        match (next_open, next_close) {
-            (_, None) => return None,
-            (Some(open_pos), Some(close_pos)) if open_pos < close_pos => {
-                depth += 1;
-                cursor = open_pos + open_token.len();
-            }
-            (_, Some(close_pos)) => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(close_pos);
-                }
-                cursor = close_pos + close_token.len();
-            }
-        }
-    }
-
-    None
-}
-
 /// Parse `<if condition="EXPR">BODY</if>` → `(condition, body, bytes_consumed)`.
 ///
-/// Only handles the outermost `<if>` — nested `<if>` blocks inside the body
-/// are left as raw HTML for the client runtime to process.
-fn parse_if_block(input: &str) -> Option<(ConditionExpr, String, usize)> {
-    let close_tag = "</if>";
-    let end_pos = find_matching_block_end(input, "if")?;
-    let tag_content = &input[..end_pos];
-
-    // Extract condition
-    let cond_start = tag_content.find("condition=\"")? + "condition=\"".len();
-    let cond_end = tag_content[cond_start..].find('"')? + cond_start;
-    let condition = compile_condition_expr(&tag_content[cond_start..cond_end]);
-
-    // Extract body (after the closing >)
-    let body_start = find_tag_close(tag_content)? + 1;
-    let body = tag_content[body_start..].trim().to_string();
-
-    Some((condition, body, end_pos + close_tag.len()))
+/// Nested blocks are compiled separately into their owning metadata sections.
+fn parse_if_block(input: &str) -> Option<(ConditionExpr, &str, usize)> {
+    let tag = parse_tag(input)?;
+    let condition = compile_condition_expr(tag.attr("condition")?);
+    let body_start = tag.close + 1;
+    let (body_end, close_end) = find_matching_end(input, tag.name, body_start)?;
+    Some((condition, input[body_start..body_end].trim(), close_end))
 }
 
 fn compile_condition_expr(input: &str) -> ConditionExpr {
@@ -2710,11 +2589,10 @@ fn compile_condition_expr(input: &str) -> ConditionExpr {
 /// The body template retains `{{expr}}` mustaches — they are resolved by the
 /// client runtime during reconciliation.
 fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock>> {
-    let close_tag = "</for>";
-    let Some(end_pos) = find_matching_block_end(input, "for") else {
+    let Some(tag) = parse_tag(input) else {
         return Ok(None);
     };
-    let Some(tag) = parse_tag(input) else {
+    let Some((body_end, close_end)) = find_matching_end(input, tag.name, tag.close + 1) else {
         return Ok(None);
     };
     if tag.has_attr("key") {
@@ -2730,7 +2608,7 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
     else {
         return Ok(None);
     };
-    let body_source = input[tag.close + 1..end_pos].trim();
+    let body_source = input[tag.close + 1..body_end].trim();
     let repeat_key = first_child_repeat_key(component, item_var, body_source)?;
     let (key_path, body) = if let Some(repeat_key) = repeat_key {
         let mut body = String::with_capacity(
@@ -2750,7 +2628,7 @@ fn parse_for_block(component: &str, input: &str) -> Result<Option<ParsedForBlock
         item_var: item_var.to_string(),
         key_path,
         body,
-        consumed: end_pos + close_tag.len(),
+        consumed: close_end,
     }))
 }
 
@@ -2812,7 +2690,7 @@ fn first_child_repeat_key(
         }
         if tag.name == "if" {
             let body_start = tag.close + 1;
-            let Some(body_end) = find_matching_block_end(remaining, "if") else {
+            let Some((body_end, _)) = find_matching_end(remaining, tag.name, body_start) else {
                 return Ok(None);
             };
             offset += body_start;
@@ -3485,6 +3363,9 @@ fn extract_root_events(component: &str, html: &str) -> Result<Vec<EventBinding>>
 }
 
 // ── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod whitespace_tests;
 
 #[cfg(test)]
 mod tests {

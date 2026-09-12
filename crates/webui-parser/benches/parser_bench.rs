@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use webui_parser::{CssStrategy, HtmlParser, ParserOptions};
 
@@ -612,6 +612,46 @@ fn parser_adversarial_bench(c: &mut Criterion) {
     group.finish();
 }
 
+fn client_template_directives_bench(c: &mut Criterion) {
+    let input = build_directive_heavy_template(3, 12);
+    c.bench_function("client_template_directives", |b| {
+        b.iter(|| {
+            webui_parser::plugin::webui::generate_compiled_template(
+                "bench-directives",
+                black_box(&input),
+            )
+            .unwrap_or_else(|error| panic!("client template compilation failed: {error}"))
+        });
+    });
+}
+
+fn parser_isolated_bench(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parser_isolated");
+    for (name, input) in [
+        ("attributes_150", build_attribute_heavy_template(150)),
+        ("directives_l3_n12", build_directive_heavy_template(3, 12)),
+    ] {
+        group.throughput(Throughput::Bytes(input.len() as u64));
+        group.bench_function(name, |b| {
+            // Repeated parses on one parser retain generated fragments, so each
+            // timed operation needs the same initial graph independent of sampling.
+            b.iter_batched(
+                parser_with_bench_components,
+                |mut parser| {
+                    parser
+                        .parse("index.html", black_box(&input))
+                        .unwrap_or_else(|error| {
+                            panic!("isolated parse failed for {name}: {error}")
+                        });
+                    black_box(parser)
+                },
+                BatchSize::SmallInput,
+            );
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     parser_parse_reuse_bench,
@@ -621,6 +661,8 @@ criterion_group!(
     parser_size_sweep_bench,
     parser_realistic_bench,
     parser_text_vs_directive_bench,
-    parser_adversarial_bench
+    parser_adversarial_bench,
+    client_template_directives_bench,
+    parser_isolated_bench
 );
 criterion_main!(benches);
