@@ -128,22 +128,11 @@ import type { MismatchContext } from './hydration-mismatch.js';
 // and Rollup/rolldown `define`, swc `globals.vars`). `webui-press` folds it to
 // `false` for `build` (production) and leaves it undefined for `serve` (dev).
 //
-// When it folds to `false`, `DEV` folds too: every `if (DEV)` / `if (!DEV)
-// return` branch below becomes dead code, and the *sole* dynamic `import()` of
-// `hydration-mismatch.ts` is DCE'd. Because that import is the only reference to
-// the module, dropping it orphans the chunk and the bundler removes the whole
-// diagnostic (comparators + message string) from the output — not just its
-// runtime cost. A static import would NOT strip: esbuild fixes module
-// reachability before constant-folding and never re-runs tree-shaking, so a
-// statically-imported module survives even when its only caller is folded away.
-//
-// The `typeof` guard keeps this safe when the flag is undefined (raw ESM, the
-// framework's own `tsc` output, unit tests, un-defined esbuild builds): `typeof`
-// on an undeclared identifier yields `"undefined"` instead of throwing a
-// ReferenceError, so `DEV` defaults to `true` (diagnostics on). Declared and
-// consumed module-locally on purpose — esbuild folds a module-local `const`
-// reliably, whereas an imported constant is not inlined across module
-// boundaries, which would defeat the stripping.
+// The dynamic import must be inside a positive, direct flag guard. esbuild can
+// retain a module reached through an alias/early-return guard even after its
+// callers become dead code. `DEV` is only for the ordinary tracking branches.
+// The `typeof` guard keeps diagnostics enabled when the flag is undefined,
+// including raw ESM, unbundled tsc output, and tests.
 declare const __WEBUI_DEV__: boolean;
 const DEV: boolean = typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__;
 
@@ -1683,14 +1672,8 @@ export class TemplateElement extends HTMLElement {
   // those reconcile to the server value and cannot disagree. In practice the
   // diagnostic only fires for observables omitted from the SSR state.
   //
-  // Production stripping: the comparators and message string live in
-  // `hydration-mismatch.ts`, reached only through the dynamic `import()` in
-  // `$checkHydrationMismatch`. When a bundler folds `__WEBUI_DEV__` to `false`,
-  // `DEV` becomes a constant, the `if (!DEV) return` empties this method, and
-  // the now-dead `import()` is DCE'd — orphaning the diagnostic chunk so the
-  // bundler drops it. The `if (!DEV) return` is load-bearing: class methods are
-  // never tree-shaken, so without it the method body (and its `import()`) would
-  // survive. See the `__WEBUI_DEV__` note near the top of this file.
+  // Class methods can survive caller elimination. The import itself therefore
+  // needs the direct flag guard below to exclude its module in production.
 
   private $recordPreReadyWrite(path: string): void {
     if (!this.$preReadyWrites) this.$preReadyWrites = new Set();
@@ -1698,29 +1681,25 @@ export class TemplateElement extends HTMLElement {
   }
 
   private $checkHydrationMismatch(): void {
-    if (!DEV) return;
-    const writes = this.$preReadyWrites;
-    this.$preReadyWrites = null;
-    if (!writes || writes.size === 0 || !this.$root) return;
-    if (!this.$pathIndex) this.$buildPathIndex();
-    const index = this.$pathIndex;
-    if (!index) return;
-    const ctx: MismatchContext = {
-      resolver: this.$conditionResolver(),
-      resolveParts: (parts, scope) => this.$resolveParts(parts, scope),
-      resolveValue: (path, scope) => this.$resolveValue(path, scope),
-    };
-    const tag = this.tagName.toLowerCase();
-    // Defer the read-only comparison to the dynamically-imported diagnostic
-    // module. `writes`, `index`, and `ctx` are captured synchronously here; the
-    // SSR DOM they compare against does not change between `$ready` and the
-    // microtask on which the import resolves, so the result is unaffected by the
-    // deferral. In production `DEV` folds to `false`, so this method's body — and
-    // therefore this sole `import()` — is eliminated, dropping the diagnostic
-    // module from the bundle (see the `__WEBUI_DEV__` note near the top).
-    void import('./hydration-mismatch.js').then((m) =>
-      m.reportHydrationMismatch(tag, writes, index, ctx),
-    );
+    if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__) {
+      const writes = this.$preReadyWrites;
+      this.$preReadyWrites = null;
+      if (!writes || writes.size === 0 || !this.$root) return;
+      if (!this.$pathIndex) this.$buildPathIndex();
+      const index = this.$pathIndex;
+      if (!index) return;
+      const ctx: MismatchContext = {
+        resolver: this.$conditionResolver(),
+        resolveParts: (parts, scope) => this.$resolveParts(parts, scope),
+        resolveValue: (path, scope) => this.$resolveValue(path, scope),
+      };
+      const tag = this.tagName.toLowerCase();
+      // Capture the comparison inputs synchronously before deferring the
+      // read-only diagnostic; the SSR DOM stays unchanged during this gap.
+      void import('./hydration-mismatch.js').then((m) =>
+        m.reportHydrationMismatch(tag, writes, index, ctx),
+      );
+    }
   }
 
   // ── DOM resolution: client-created path ───────────────────────

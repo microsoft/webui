@@ -81,6 +81,7 @@ pub(super) struct RenderConfig {
     pub(super) route_path: String,
     pub(super) plugin: Option<Plugin>,
     pub(super) body_inject: Option<Arc<str>>,
+    pub(super) nonce: Option<String>,
     pub(super) chunk_pool: Arc<ChunkPool>,
 }
 
@@ -648,6 +649,10 @@ fn run_renderer(
     };
     let handler = create_handler(config.plugin);
     let options = RenderOptions::new(&config.entry, &config.route_path);
+    let options = match config.nonce.as_deref() {
+        Some(nonce) => options.with_nonce(nonce),
+        None => options,
+    };
     let options = match config.body_inject.as_deref() {
         Some(body) => options.with_body_inject(body),
         None => options,
@@ -1035,6 +1040,7 @@ mod tests {
             route_path: "/".to_owned(),
             plugin: None,
             body_inject: None,
+            nonce: None,
             chunk_pool: Arc::new(ChunkPool::new(
                 StreamingWriter::DEFAULT_CHANNEL_CAPACITY,
                 StreamingWriter::CHUNK_TARGET + 1024,

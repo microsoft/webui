@@ -102,14 +102,13 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 **Enforced Trusted Types:** In a bootstrap entry, import `configureTrustedTypes`
 from `@microsoft/webui-framework/trusted-types.js`, call
 `configureTrustedTypes('app-compiled')`, then `await import('./app.js')`. Configure
-before component definitions and optional hydration runtimes. Allow exactly
+before component definitions/router/preloads/streaming. Allow exactly
 `trusted-types app-compiled` alongside `require-trusted-types-for 'script'` and
 the normal nonce CSP; let WebUI create the named policy, never a default policy.
 Names use ASCII letters/digits/`.`/`_`/`-` and cannot be `default`. The policy
 trusts only immutable native compiler output, not raw triple-brace state HTML,
-FAST templates or arbitrary scripts/URLs. Client-side router partial navigation
-is not yet supported under enforcement. See
-[Trusted Types](/guide/concepts/hydration#trusted-types).
+FAST templates or arbitrary scripts/URLs. Configured router fetches are
+same-origin only. See [Trusted Types](/guide/concepts/hydration#trusted-types).
 
 ```
 BUILD TIME          SERVER RENDER         CLIENT HYDRATION
@@ -1300,8 +1299,21 @@ Before emitting WebUI code, confirm:
 
 ## Build and run
 
+For the integrated development workflow, use
+[`webui dev`](/guide/cli/client-builder): warm esbuild, native rendering, and
+SSE live reload without a custom builder module. It defaults to `index.ts`,
+the `webui` plugin, and watching enabled; HTML references the emitted
+`/index.js`. Node.js and project-installed esbuild are required.
+Custom `--client-builder` hooks are an optional escape hatch. Do not add a
+second watcher, SSR server, or reload client. API state remains per-request. The
+[CLI reference](/guide/cli/) also documents generic response headers,
+nonce-aware `--csp`, and opt-in `--api-state-errors strict`.
+
 ```bash
-# Dev server with live reload
+# Integrated JS/TS builds, native rendering, and live reload
+webui dev ./src --state ./data/state.json
+
+# Native serving when client assets are managed separately
 webui serve ./src --state ./data/state.json --plugin=webui --watch
 
 # Production build

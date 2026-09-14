@@ -2302,8 +2302,9 @@ non-HTML/non-JSON asset requests.
 Literal dots in route segments, such as `/docs/v2.1`, are valid and do not block
 route matching or fallback.
 
-In `webui serve --watch`, the file watcher is **content-aware**: it hashes each
-changed file and drops events whose bytes are unchanged, so a no-op save
+In `webui serve --watch`, the file watcher is **content-aware**: it fingerprints
+existing inputs before watching, then hashes each changed file and drops events
+whose bytes are unchanged, so even a first no-op save
 (repeated Ctrl+S that rewrites identical content) triggers no rebuild in the
 clean state. While a rebuild error is active, unchanged events are forwarded so a
 no-op save can retry transient failures without forcing a real content edit.
@@ -2615,34 +2616,39 @@ It intentionally does **not** duplicate package tutorials or framework API docs.
 
 Native framework applications opt in with `configureTrustedTypes(policyName)`
 from the side-effect-free `@microsoft/webui-framework/trusted-types.js` entry,
-also re-exported by the root package, before importing component definitions or
-installing optional hydration runtimes. Names contain only ASCII
-letters/digits/`.`/`_`/`-`, are nonempty, and cannot be `default`. The application
-explicitly permits that exact name in CSP's `trusted-types` directive. A
-denied/already-created policy or attempt to change the name throws; repeating the
-same name is idempotent across split or duplicated module graphs in one document.
-Browsers without Trusted Types preserve the existing path. No default policy is
-created, and nonce-based script/style authorization remains a separate concern.
+also re-exported by the root package, before importing component definitions,
+starting routing/preloads or installing optional hydration runtimes. Names
+contain only ASCII letters/digits/`.`/`_`/`-`, are nonempty, and cannot be
+`default`. The application explicitly permits that exact name in CSP's
+`trusted-types` directive. A denied/already-created policy or attempt to change
+the name throws; repeating the same name is idempotent across split or duplicated
+module graphs in one document. Browsers without Trusted Types preserve the
+existing path. No default policy is created, and nonce-based script/style
+authorization remains a separate concern.
 
-The document owns one immutable `__webuiTrustedTemplates` bridge. The policy and
-its private invocation capability are never exposed: callbacks reject calls
-lacking that capability, and no generic public HTML/script conversion API or
-`createScriptURL` rule exists. Compiler normalization registers each block's
-immutable `h` in a weak map. A cache miss in `template-content.ts` requires that
-exact registered string before constructing TrustedHTML; the existing weak
-parsed-fragment cache and cloning remain unchanged. Without configuration there
-is no trust map or per-template entry. Registration (`registerTemplateData`, SSR
-metadata and trusted component asset modules) accepts compiler programs, never
-request state or user HTML. This is a provenance contract, not a sanitizer or
-signature check on compiler output.
+The document owns one immutable `__webuiTrustedTemplates` bridge so the router
+remains framework-independent. The policy and its private invocation capability
+are never exposed: callbacks reject calls lacking that capability, and no generic
+public HTML/script conversion API or `createScriptURL` rule exists. Compiler
+normalization registers each block's immutable `h` in a weak map. A cache miss
+in `template-content.ts` requires that exact registered string before constructing
+TrustedHTML; the existing weak parsed-fragment cache and cloning remain unchanged.
+Without configuration there is no trust map or per-template entry. Registration
+(`registerTemplateData`, SSR metadata, trusted component asset modules and
+router/streaming templates) accepts compiler programs, never request state or
+user HTML. This is a provenance contract, not a sanitizer or signature check on
+compiler output.
 
-The bridge can install compiler condition arrays through a fixed script wrapper,
-using TrustedScript and the supplied document nonce. Consumer/router wiring is
-separate from this framework boundary. CSS Module import maps are generated from
-serialized specifier/CSS data and receive TrustedScript while retaining their
-nonce. Native streamed boundary payloads are parsed from browser-created inert
-script nodes; deferred activation, lazy/component-asset mounts and reactive
-condition/repeat insertion all reuse registered compiler blocks.
+The router delegates compiler condition-array installation to the bridge, which
+constructs its fixed wrapper and applies the original document nonce before
+appending the TrustedScript. CSS Module import maps are generated from serialized
+specifier/CSS data and receive TrustedScript while retaining their nonce.
+Configured router partial, template and speculative preload fetches use
+`mode: 'same-origin'`, including redirects. Native streamed boundary payloads
+are parsed from browser-created inert script nodes; SSR executable checkpoints
+use the renderer's nonce and do not enter a client string sink. Deferred
+activation, lazy/component-asset mounts and reactive condition/repeat insertion
+all reuse registered compiler blocks.
 
 Runtime triple-brace strings are not compiler output and do not enter the policy:
 the native Range sink still rejects them under enforcement. Parsing precedes
@@ -2651,6 +2657,10 @@ propagate without leaving the scheduling gate latched: independently queued
 re-entrant writes and subsequent updates can run, while the rejected batch is not
 automatically retried. Dynamic attribute/property bindings are not promoted;
 parser restrictions and native Trusted Types enforcement remain applicable.
+FAST/string template payloads are rejected before registration when this native
+boundary is configured. Validation retains strict enforcement with an explicit
+allowlist, nonce CSP and `trustedTypes.defaultPolicy === null`, separately
+testing raw-string rejection.
 
 ### Metadata object format
 
@@ -5385,17 +5395,18 @@ WebUI Framework hydration assumes the SSR DOM, hydration markers, and compiled m
   on the hot path — the tracking `Set` stays `null` and the check early-returns.
   The diagnostic is **development-only**. Its comparators and message string live
   in `hydration-mismatch.ts` behind the `reportHydrationMismatch` entry point,
-  reached solely through a dynamic `import()` gated by the module-local `DEV`
-  constant — derived from the compile-time flag `__WEBUI_DEV__` as
-  `typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__`, so an **undefined** flag
-  defaults the diagnostic **on** (raw ESM, the framework's own `tsc` output, and
-  unit tests keep the warning without any bundler cooperation). When a bundler
-  folds `__WEBUI_DEV__` to `false`, `DEV` folds with it: `$checkHydrationMismatch`
-  empties and its lone `import()` is dead-code-eliminated, dropping the whole
-  diagnostic module — comparison code *and* strings — from the output. The dynamic
-  import is load-bearing: esbuild fixes static-import reachability before
-  constant-folding and never re-runs tree-shaking, so a static import would ship
-  even when its only caller folds away. `webui-press build` injects
+  reached solely through a dynamic `import()` inside a positive, direct
+  `if (typeof __WEBUI_DEV__ === 'undefined' || __WEBUI_DEV__)` guard. An
+  **undefined** flag defaults the diagnostic **on** (raw ESM, the framework's own
+  `tsc` output, and unit tests keep the warning without bundler cooperation).
+  Ordinary write-tracking branches use the equivalent module-local `DEV`
+  constant, but the import must not depend on that alias or an early return:
+  esbuild can retain diagnostic module bytes after eliminating their runtime
+  callers. The direct guard excludes the whole module, including comparison
+  code and messages, from production IIFE and split ESM outputs with or without
+  minification. Emitted-file regressions verify zero diagnostic-byte
+  contributions and no warning text or orphan diagnostic chunk for `false`,
+  while `true` and undefined flags retain the diagnostic. `webui-press build` injects
   `--define:__WEBUI_DEV__=false` automatically (and `serve` leaves it undefined);
   apps that bundle their own client define the flag as `false` for production.
 - Scriptless components receive compiled `template_json` with `th: 1` but no
@@ -5862,6 +5873,119 @@ function returns `NULL`, call `webui_last_error()` for a human-readable diagnost
 ## CLI Tool (webui-cli)
 
 The CLI specification and usage details are maintained in [crates/webui-cli/README.md](crates/webui-cli/README.md).
+
+### Persistent client builds
+
+`webui dev` is the first-class single-entry development command. It shares the
+server and client-build coordinator, selecting built-in warm esbuild unless a
+custom module is requested. Defaults are HTML `index.html`, client `index.ts`,
+the WebUI plugin, watching, and an isolated per-run directory beneath
+`node_modules/.cache/webui-dev`. Only managed per-run output is removed on
+orderly shutdown; explicit servedir directories are never removed. Separate
+processes cannot overwrite one another's default client output.
+`--no-watch` disables its watcher.
+Existing `serve` defaults are unchanged; `serve --client-entry` explicitly
+selects built-in bundling and requires an existing output directory.
+
+Built-in bundling resolves the project's esbuild from APP using Node package
+resolution and does not load the TypeScript compiler. It creates one ESM,
+source-mapped ES2022 context with development diagnostics enabled and normal
+tsconfig resolution. The emitted JS keeps its input basename; HTML authors
+reference that compiled URL. Native template/component CSS remains SDK-owned.
+The enclosing package directory is additionally watched so local project
+dependencies and configuration edits share the queue. Sources outside those
+roots are opt-in `--watch-path` inputs. Configuration beyond this preset uses
+the optional module, not another dev server. Production build contracts are
+unchanged.
+
+`webui serve --client-builder <module>` is an opt-in single-entry development
+integration requiring an existing `--servedir` and Node.js on PATH. Its public
+factory and awaited `rebuild`/`dispose` hooks are specified in
+[Client builds and live reload](docs/guide/cli/client-builder.md). No public
+generation protocol, extra HTTP control endpoint, or second browser reload
+client exists. Ordinary native serving remains independent of Node.js.
+
+The CLI owns one scheduling queue. Its source watcher observes app/component
+roots, configured external inputs, and the builder's static extra watch paths.
+Client-build mode uses one async HTTP worker rather than allocating an HTTP
+worker per logical CPU for a local development server.
+Relative ignored names apply beneath explicitly watched roots, not to their
+ancestors. Parent watches for explicit files must not forward unrelated siblings.
+The entire output subtree is excluded, including generated state/theme/projection
+files and atomic-write temporary files. Initial fingerprints suppress unchanged
+metadata events. Builder mode debounces at 20 ms; the ordinary watcher retains
+its 50 ms default.
+
+The module is initialized once in a persistent child process. Its embedded
+worker uses a bounded private sequential transport, not a host API or npm worker
+dependency. The CLI invokes the hook serially, with at most one coalesced
+follow-up. Detected input changes close the app gate and supersede previous
+attempts. Publication and invalidation are serialized. Superseded results,
+including failures, neither publish nor reload. Current successful client and
+WebUI work yields one SSE reload; current failures require a subsequent
+successful rebuild. A worker/runtime failure is fatal even when its attempt was
+superseded. Editing the configured module requires a restart.
+
+After client success, content fingerprints may reuse the last successfully
+published WebUI result. Filename-only standard discovery can ignore existing
+script contents but must retain script identity and presence. HTML, CSS,
+configured theme/state/projection inputs, and discovery-sensitive metadata
+remain relevant. Unknown or unbounded inputs disable reuse, never imply an
+unchanged snapshot. FAST/projection inputs are conservative. A full native
+build rechecks its input snapshot before publication. This is a safe
+JS-only fast path, not an incremental HTML compiler.
+
+Changed theme and state outputs are loaded through SDK helpers before SSR.
+Generated configured inputs can be absent before the initial hook succeeds.
+Protocols, initial state, token CSS, and generated component assets are captured
+consistently per request; request API state is always acquired per request.
+Output metafiles remain staged until publication. No request-state lock spans
+a compiler run or backend await. Already-started requests can finish with their
+captured snapshot; output publication is not a production asset transaction.
+
+Pending app-dependent requests return 503/no-store; build failures return
+500/no-store. SSE and `/api/*` forwarding remain live. Without watching, there
+is one initial build and no reload script; initial failure exits nonzero.
+`WEBUI_NO_WATCH` is honored. Ctrl+C or piped stdin EOF requests orderly shutdown;
+stdin carries no commands. The listener and watcher stop before awaited disposal.
+On Windows, the pipe-only Node worker starts with `CREATE_NO_WINDOW`, so it and
+esbuild do not receive the CLI console's Ctrl+C broadcast before the disposal
+handshake. The CLI remains attached and owns orderly shutdown; real disposal
+errors and missing stop acknowledgements remain failures.
+Initialization, unexpected worker exit (including while idle), transport errors,
+timeouts, and failed disposal produce explicit failure and child cleanup.
+`--client-build-timeout-ms` bounds external operations, not idle lifetime.
+The native owner retains the child across asynchronous initialization and
+always runs bounded shutdown; dropping an initialization/rebuild future must
+not bypass available disposal hooks. Interrupted shutdown drains pending
+private output while awaiting EOF cleanup, avoiding pipe-backpressure deadlocks.
+Diagnostic-only `--format json` remains supported; removal of the public stdio
+protocol removes its former output-format conflict.
+
+### CLI response policies
+
+Repeatable `--header` values are parsed and validated once and applied across
+all HTTP handlers. Duplicates and transport/content/cache-owned overrides are
+rejected. `--csp` requires `{nonce}` substitution and is mutually exclusive
+with a generic Content-Security-Policy header. The CLI generates at least 128
+bits of OS randomness per HTML document; failure to obtain entropy fails the
+response. The header and all SDK-rendered scripts/styles share that document
+nonce through `RenderOptions`, including progressive checkpoints and the
+live-reload/error script. CSP mode bypasses shared rendered-document caching,
+not protocol caching. JSON partials retain the original document's client nonce.
+Application-authored markup and allowed-source policy remain author-owned.
+Nonce propagation is separate from the
+[compiled-template Trusted Types boundary](#compiled-template-trusted-types-boundary).
+CLI response policies do not register that policy or promote arbitrary HTML.
+
+`--api-state-errors strict` is opt-in; `fallback` is unchanged by default.
+HTML and partial state acquisition reject non-2xx responses, transport/body
+errors, malformed JSON and non-object state with 502/no-store, never falling
+back to file/empty/cached state. Strict mode does not follow backend redirects and
+bounds buffered body acquisition to five seconds. Object-valued `state` envelopes and bare objects
+remain valid. Raw request targets and root alias normalization are unchanged.
+This policy does not alter `/api/*` forwarding, progressive precommit command
+502/render 500 classification, or committed-response truncation semantics.
 
 ## Example Workflow
 

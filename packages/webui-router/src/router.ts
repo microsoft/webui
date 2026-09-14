@@ -630,7 +630,11 @@ export class WebUIRouter {
     let hasDeferredReader = false;
 
     try {
-      const resp = await fetch(fullPath, { headers, signal: requestSignal });
+      const resp = await fetch(fullPath, {
+        headers,
+        signal: requestSignal,
+        mode: window.__webuiTrustedTemplates ? 'same-origin' : undefined,
+      });
       const result = await this.readPartialResponse(
         resp,
         requestPath,

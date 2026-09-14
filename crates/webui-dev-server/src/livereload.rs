@@ -89,6 +89,31 @@ impl LiveReload {
         &self.client_script
     }
 
+    /// The same client script with an HTML-escaped CSP nonce attribute.
+    ///
+    /// Use the document's nonce here and in its Content-Security-Policy header.
+    /// The cached nonce-free script and its shared references are unchanged.
+    #[must_use]
+    pub fn client_script_with_nonce(&self, nonce: &str) -> String {
+        const PREFIX: &str = "<script";
+        let mut script = String::with_capacity(self.client_script.len() + nonce.len() + 9);
+        script.push_str(PREFIX);
+        script.push_str(" nonce=\"");
+        for ch in nonce.chars() {
+            match ch {
+                '&' => script.push_str("&amp;"),
+                '"' => script.push_str("&quot;"),
+                '\'' => script.push_str("&#39;"),
+                '<' => script.push_str("&lt;"),
+                '>' => script.push_str("&gt;"),
+                _ => script.push(ch),
+            }
+        }
+        script.push('"');
+        script.push_str(&self.client_script[PREFIX.len()..]);
+        script
+    }
+
     /// Cheap-cloneable reference to the client script.
     ///
     /// Use this when the script needs to be moved into a per-request
@@ -238,6 +263,36 @@ mod tests {
         assert!(lr.client_script().contains("/__webui/livereload"));
         assert!(lr.client_script().contains("EventSource"));
         assert!(lr.client_script().contains("reload"));
+    }
+
+    #[test]
+    fn nonce_client_preserves_javascript_and_cached_script() {
+        let lr = LiveReload::new("/custom/live?value=\"quoted\"");
+        let cached = lr.client_script_arc();
+        let script = lr.client_script_with_nonce("0123456789abcdef");
+        assert_eq!(
+            script,
+            format!(
+                "<script nonce=\"0123456789abcdef\"{}",
+                &cached["<script".len()..]
+            )
+        );
+        assert!(Arc::ptr_eq(&cached, &lr.client_script_arc()));
+        assert_eq!(lr.client_script(), &*cached);
+        assert!(!cached.contains("nonce="));
+        assert_ne!(script, lr.client_script_with_nonce("fresh-document"));
+    }
+
+    #[test]
+    fn nonce_client_escapes_attribute_without_touching_javascript() {
+        let lr = LiveReload::new("/reload");
+        let script = lr.client_script_with_nonce("\"><script>&'é");
+        assert!(script.starts_with("<script nonce=\"&quot;&gt;&lt;script&gt;&amp;&#39;é\">"));
+        assert_eq!(script.matches("<script").count(), 1);
+        assert!(script.ends_with(&lr.client_script()["<script>".len()..]));
+        assert!(lr
+            .client_script_with_nonce("")
+            .starts_with("<script nonce=\"\">"));
     }
 
     #[test]
