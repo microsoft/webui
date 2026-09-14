@@ -97,6 +97,21 @@ test.describe('component lazy hydration', () => {
   });
 
   test('completes startup when every lazy root is offscreen', async ({ page }) => {
+    const lazyRootIds = [
+      'visible',
+      'near',
+      'offscreen',
+      'scrolled',
+      'nested',
+      'reconnect',
+      'list-root',
+      'early-image',
+      'early-image-error',
+      'streamed',
+      'barrier-parent',
+      'streamed-nested',
+    ];
+    await page.mouse.move(1, 1);
     await installControllableObserver(page);
     await page.addInitScript(() => {
       const observed = window as unknown as {
@@ -107,7 +122,25 @@ test.describe('component lazy hydration', () => {
           (observed.__allOffscreenCompleteCount ?? 0) + 1;
       });
     });
+    await page.route(`**${FIXTURE}`, async (route) => {
+      const response = await route.fetch();
+      const html = await response.text();
+      expect(html).toContain('<body>');
+      await route.fulfill({
+        response,
+        body: html.replace('<body>', '<body style="transform: translateY(10000px)">'),
+      });
+    });
     await page.goto(FIXTURE);
+    const notOffscreen = await page.evaluate((ids) =>
+      ids.filter((id) => {
+        const element = document.getElementById(id);
+        return !element ||
+          element.getBoundingClientRect().top <= window.innerHeight + 200;
+      }), lazyRootIds);
+    expect(notOffscreen).toEqual([]);
+    // An initial pointer movement must not wake roots in an all-offscreen fixture.
+    await page.mouse.move(50, 35);
     await page.evaluate(() => {
       (
         window as unknown as {
@@ -131,20 +164,7 @@ test.describe('component lazy hydration', () => {
     const unexpectedlyHydrated = await page.evaluate((ids) =>
       ids.filter((id) =>
         document.getElementById(id)?.hasAttribute('data-hydrated'),
-      ), [
-        'visible',
-        'near',
-        'offscreen',
-        'scrolled',
-        'nested',
-        'reconnect',
-        'list-root',
-        'early-image',
-        'early-image-error',
-        'streamed',
-        'barrier-parent',
-        'streamed-nested',
-      ]);
+      ), lazyRootIds);
     expect(unexpectedlyHydrated).toEqual([]);
   });
 
