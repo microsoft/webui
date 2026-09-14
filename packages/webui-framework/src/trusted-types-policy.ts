@@ -21,35 +21,37 @@ interface BrowserTrustedTypes {
   }): BrowserPolicy;
 }
 
-declare global {
-  interface WebUITrustedTemplates {
-    readonly policyName: string;
-    registerBlock(meta: { h: string }): void;
-    setTemplateContent(target: HTMLTemplateElement, meta: { h: string }): void;
-    setImportMap(script: HTMLScriptElement, specifier: string, css: string): void;
-    installTemplateFunctions(functions: Record<string, string>, nonce: string): void;
-  }
+interface CompilerPolicy {
+  readonly policyName: string;
+  registerBlock(meta: TemplateBlockMeta): void;
+  setTemplateContent(target: HTMLTemplateElement, meta: TemplateBlockMeta): void;
+  setImportMap(script: HTMLScriptElement, json: string): void;
+}
 
+let documentPolicies: WeakMap<Window, CompilerPolicy> | undefined;
+
+declare global {
   interface Window {
-    __webuiTrustedTemplates?: WebUITrustedTemplates;
+    readonly __webuiTrustedTypesPolicyName?: string;
   }
 }
 
 /**
  * Opt in to Trusted Types for WebUI compiler output in this document.
  *
- * Call before importing/defining components or starting the router/streaming
+ * Call before importing/defining components or starting an optional hydration
  * runtime. Allow this exact, non-default policy name in CSP's `trusted-types`
- * directive. Repeating the same name is idempotent across entry bundles.
+ * directive. Repeating the same name is idempotent when entry bundles share one
+ * framework module instance; independently bundled copies are rejected.
  *
- * This is not a sanitizer: only trusted compiler metadata, condition closures,
- * and generated CSS import maps enter this policy. State/raw HTML, FAST string
+ * This is not a sanitizer: only trusted compiler metadata and generated CSS
+ * import maps enter this policy. State/raw HTML, FAST string
  * templates, script URLs and arbitrary application scripts are not authorized.
  * Browsers without Trusted Types retain their existing behavior.
  */
 export function configureTrustedTypes(policyName: string): void {
   validatePolicyName(policyName);
-  const existing = window.__webuiTrustedTemplates;
+  const existing = getDocumentPolicy(window);
   if (existing) {
     if (existing.policyName !== policyName) {
       throw new Error(`[WebUI] Trusted Types already configured as "${existing.policyName}"; configure one name before loading the application.`);
@@ -75,45 +77,37 @@ export function configureTrustedTypes(policyName: string): void {
     throw new Error(`[WebUI] Cannot create Trusted Types policy "${policyName}". Allow that exact name in CSP and let configureTrustedTypes() create it before loading the application.`, { cause });
   }
   const blocks = new WeakMap<object, string>();
-  const boundary: WebUITrustedTemplates = {
+  const boundary: CompilerPolicy = {
     policyName,
     registerBlock(meta) {
       if (!blocks.has(meta)) blocks.set(meta, meta.h);
     },
     setTemplateContent(target, meta) {
-      if (!blocks.has(meta) || blocks.get(meta) !== meta.h) {
+      const html = meta.h;
+      if (!blocks.has(meta) || blocks.get(meta) !== html) {
         throw new Error('[WebUI] Unregistered or modified compiled template. Configure Trusted Types before importing components; register only immutable compiler output.');
       }
       // A type assertion only bridges the incomplete DOM declaration. The
       // runtime value remains TrustedHTML, and the native setter enforces it.
-      target.innerHTML = policy.createHTML(meta.h, capability) as string & TrustedValue;
+      target.innerHTML = policy.createHTML(html, capability) as string & TrustedValue;
     },
-    setImportMap(script, specifier, css) {
-      const json = JSON.stringify({
-        imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
-      });
+    setImportMap(script, json) {
       script.textContent = policy.createScript(json, capability) as string & TrustedValue;
     },
-    installTemplateFunctions(functions, nonce) {
-      const tags = Object.keys(functions);
-      if (tags.length === 0) return;
-      let body = '(function(){var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
-      for (let i = 0; i < tags.length; i++) {
-        const tag = tags[i];
-        const source = functions[tag];
-        if (!source) continue;
-        body += `f[${JSON.stringify(tag)}]=${source};`;
-      }
-      body += '})();';
-      const script = document.createElement('script');
-      if (nonce) script.nonce = nonce;
-      script.textContent = policy.createScript(body, capability) as string & TrustedValue;
-      document.head.appendChild(script);
-      script.remove();
-    },
   };
-  // One boundary per document also serves split/duplicated module entrypoints.
-  Object.defineProperty(window, '__webuiTrustedTemplates', { value: Object.freeze(boundary) });
+  // Only inert idempotency metadata crosses module boundaries, never a policy
+  // or a callable closure that could supply its private capability.
+  Object.defineProperty(window, '__webuiTrustedTypesPolicyName', { value: policyName });
+  (documentPolicies ??= new WeakMap()).set(window, boundary);
+}
+
+function getDocumentPolicy(view: Window | null): CompilerPolicy | undefined {
+  if (!view) return undefined;
+  const policy = documentPolicies?.get(view);
+  if (!policy && view.__webuiTrustedTypesPolicyName !== undefined) {
+    throw new Error('[WebUI] Trusted Types was configured by another framework module instance. Share one framework module across bootstrap and component bundles instead of bundling independent copies.');
+  }
+  return policy;
 }
 
 function validatePolicyName(name: string): void {
@@ -132,5 +126,30 @@ function validatePolicyName(name: string): void {
 
 /** Record immutable compiler HTML during template normalization, never state updates. */
 export function registerTrustedTemplateBlock(meta: TemplateBlockMeta): void {
-  window.__webuiTrustedTemplates?.registerBlock(meta);
+  getDocumentPolicy(window)?.registerBlock(meta);
+}
+
+/** @internal Parse registered compiler HTML without exposing a trusted value. */
+export function setTemplateContent(target: HTMLTemplateElement, meta: TemplateBlockMeta): void {
+  const policy = getDocumentPolicy(window);
+  if (policy) policy.setTemplateContent(target, meta);
+  else target.innerHTML = meta.h;
+}
+
+/** @internal Serialize CSS data into an inert import map, never executable source. */
+export function setImportMapContent(
+  script: HTMLScriptElement,
+  specifier: string,
+  css: string,
+  view: Window | null,
+): void {
+  if (script.type !== 'importmap') {
+    throw new TypeError('[WebUI] CSS import map content requires a script with type="importmap".');
+  }
+  const json = JSON.stringify({
+    imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
+  });
+  const policy = getDocumentPolicy(view);
+  if (policy) policy.setImportMap(script, json);
+  else script.textContent = json;
 }

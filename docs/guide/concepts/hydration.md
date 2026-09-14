@@ -387,10 +387,13 @@ Nonces and Trusted Types solve different problems. WebUI does not create a
 
 Names must be nonempty ASCII letters, digits, `.`, `_`, or `-`; `default` is
 forbidden. Let WebUI create the policy: do not pre-create a same-named policy.
-Repeated configuration with the same name is idempotent across bundles in one
-document; a different name or a CSP-denied/already-created policy throws an
-actionable error. Configure each new document separately. On browsers without
-Trusted Types, configuration leaves the existing rendering behavior unchanged.
+Repeated configuration with the same name is idempotent when bootstrap and
+component entries share one framework module instance, for example through a
+shared bundler chunk. Independently bundled framework copies are not supported;
+WebUI reports an error asking you to share the runtime rather than exposing the
+policy globally. A different name or a CSP-denied/already-created policy also
+throws an actionable error. Configure each new document separately. On browsers
+without Trusted Types, configuration leaves the existing rendering behavior unchanged.
 
 The policy covers native compiled templates (including condition/repeat blocks)
 and generated CSS import maps. Client-side router partial navigation is not yet

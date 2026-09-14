@@ -2620,15 +2620,19 @@ installing optional hydration runtimes. Names contain only ASCII
 letters/digits/`.`/`_`/`-`, are nonempty, and cannot be `default`. The application
 explicitly permits that exact name in CSP's `trusted-types` directive. A
 denied/already-created policy or attempt to change the name throws; repeating the
-same name is idempotent across split or duplicated module graphs in one document.
+same name is idempotent across entries sharing one framework module instance.
+Independently bundled framework copies are rejected with guidance to share the
+runtime: native policies cannot be recovered by another module without exposing
+trust-producing capabilities.
 Browsers without Trusted Types preserve the existing path. No default policy is
 created, and nonce-based script/style authorization remains a separate concern.
 
-The document owns one immutable `__webuiTrustedTemplates` bridge. The policy and
-its private invocation capability are never exposed: callbacks reject calls
-lacking that capability, and no generic public HTML/script conversion API or
-`createScriptURL` rule exists. Compiler normalization registers each block's
-immutable `h` in a weak map. A cache miss in `template-content.ts` requires that
+The document exposes only an immutable `__webuiTrustedTypesPolicyName` string.
+The policy, invocation capability, and trust-producing operations remain private
+to the framework module; there is no globally callable trust bridge. Callbacks
+reject calls lacking the private capability, and no generic public HTML/script
+conversion API or `createScriptURL` rule exists. Compiler normalization registers
+each block's immutable `h` in a weak map. A cache miss in `template-content.ts` requires that
 exact registered string before constructing TrustedHTML; the existing weak
 parsed-fragment cache and cloning remain unchanged. Without configuration there
 is no trust map or per-template entry. Registration (`registerTemplateData`, SSR
@@ -2636,21 +2640,21 @@ metadata and trusted component asset modules) accepts compiler programs, never
 request state or user HTML. This is a provenance contract, not a sanitizer or
 signature check on compiler output.
 
-The bridge can install compiler condition arrays through a fixed script wrapper,
-using TrustedScript and the supplied document nonce. Consumer/router wiring is
-separate from this framework boundary. CSS Module import maps are generated from
-serialized specifier/CSS data and receive TrustedScript while retaining their
-nonce. Native streamed boundary payloads are parsed from browser-created inert
-script nodes; deferred activation, lazy/component-asset mounts and reactive
+No API accepts compiler condition source strings for execution; router integration
+is separate from this framework boundary. CSS Module import maps are generated
+from serialized specifier/CSS data and receive TrustedScript only on import-map
+nodes, retaining their nonce. Native streamed boundary payloads are parsed from
+browser-created inert script nodes; deferred activation, lazy/component-asset mounts and reactive
 condition/repeat insertion all reuse registered compiler blocks.
 
 Runtime triple-brace strings are not compiler output and do not enter the policy:
 the native Range sink still rejects them under enforcement. Parsing precedes
 deletion, so rejection leaves the existing raw range intact. Flush errors
-propagate without leaving the scheduling gate latched: independently queued
-re-entrant writes and subsequent updates can run, while the rejected batch is not
-automatically retried. Dynamic attribute/property bindings are not promoted;
-parser restrictions and native Trusted Types enforcement remain applicable.
+propagate without leaving the scheduling gate latched: unprocessed paths in the
+current batch are requeued alongside independently queued re-entrant writes.
+Already processed paths and the rejected path are not automatically retried.
+Subsequent updates can still run. Dynamic attribute/property bindings are not
+promoted; parser restrictions and native Trusted Types enforcement remain applicable.
 
 ### Metadata object format
 

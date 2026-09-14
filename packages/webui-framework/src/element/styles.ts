@@ -2,6 +2,7 @@
 // Licensed under the MIT license.
 
 import { installComponentLinkStyles } from './link-styles.js';
+import { setImportMapContent } from '../trusted-types-policy.js';
 
 // `__WEBUI_DEV__` is a compile-time constant a bundler folds to a literal, so
 // the `if (DEV)` diagnostics below become dead code in production builds. See
@@ -568,13 +569,7 @@ function installModuleImportMap(
   script.type = 'importmap';
   const nonce = readNonce(target);
   if (nonce) script.nonce = nonce;
-  const trust = owner.defaultView?.__webuiTrustedTemplates;
-  if (trust) trust.setImportMap(script, specifier, css);
-  else {
-    script.textContent = JSON.stringify({
-      imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
-    });
-  }
+  setImportMapContent(script, specifier, css, owner.defaultView);
   owner.head.appendChild(script);
   installedSpecifiers.add(specifier);
 }

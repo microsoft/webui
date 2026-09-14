@@ -102,7 +102,8 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 **Enforced Trusted Types:** In a bootstrap entry, import `configureTrustedTypes`
 from `@microsoft/webui-framework/trusted-types.js`, call
 `configureTrustedTypes('app-compiled')`, then `await import('./app.js')`. Configure
-before component definitions and optional hydration runtimes. Allow exactly
+before component definitions and optional hydration runtimes. Use one shared
+framework module instance across bootstrap and component bundles. Allow exactly
 `trusted-types app-compiled` alongside `require-trusted-types-for 'script'` and
 the normal nonce CSP; let WebUI create the named policy, never a default policy.
 Names use ASCII letters/digits/`.`/`_`/`-` and cannot be `default`. The policy

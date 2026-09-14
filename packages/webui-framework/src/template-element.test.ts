@@ -168,6 +168,86 @@ test('a rejected binding releases the flush gate and preserves re-entrant update
   }
 });
 
+for (const paths of [
+  ['raw', 'count'],
+  ['before', 'raw', 'count'],
+  ['raw', 'otherRaw', 'count'],
+]) {
+  test(`a rejected binding preserves the remaining queued paths: ${paths.join(', ')}`, () => {
+    const originalQueue = globalThis.queueMicrotask;
+    const queued: VoidFunction[] = [];
+    globalThis.queueMicrotask = callback => { queued.push(callback); };
+    const element = new TemplateElement();
+    const applied: string[] = [];
+    const failures: string[] = [];
+    const failure = new TypeError('TrustedHTML required');
+    Object.defineProperties(element, {
+      $ready: { value: true },
+      $root: { value: {} },
+      $pathIndex: { value: new Map([...paths, 'reentrant'].map(path =>
+        [path, { texts: [path], attrs: [], conds: [], repeats: [] }])) },
+      $updateBindings: { value([path]: string[]) {
+        if (path === 'raw' || path === 'otherRaw') {
+          failures.push(path);
+          element.$update('count');
+          element.$update('reentrant');
+          throw failure;
+        }
+        applied.push(path);
+      } },
+    });
+    try {
+      for (const path of paths) element.$update(path);
+      assert.equal(queued.length, 1);
+      assert.throws(() => queued.shift()!(), failure);
+      if (paths.includes('otherRaw')) {
+        assert.equal(queued.length, 1);
+        assert.throws(() => queued.shift()!(), failure);
+      }
+      assert.equal(queued.length, 1);
+      queued.shift()!();
+      assert.deepEqual(failures, paths.filter(path => path.toLowerCase().includes('raw')));
+      assert.deepEqual(applied.filter(path => path === 'before'), paths.filter(path => path === 'before'));
+      assert.ok(applied.includes('count'));
+      assert.ok(applied.includes('reentrant'));
+      assert.equal(queued.length, 0);
+    } finally {
+      globalThis.queueMicrotask = originalQueue;
+    }
+  });
+}
+
+test('a rejected binding does not drop a later path queued before the flush', () => {
+  const originalQueue = globalThis.queueMicrotask;
+  const queued: VoidFunction[] = [];
+  globalThis.queueMicrotask = callback => { queued.push(callback); };
+  const element = new TemplateElement();
+  const applied: string[] = [];
+  const failure = new TypeError('TrustedHTML required');
+  Object.defineProperties(element, {
+    $ready: { value: true },
+    $root: { value: {} },
+    $pathIndex: { value: new Map(['raw', 'count'].map(path =>
+      [path, { texts: [path], attrs: [], conds: [], repeats: [] }])) },
+    $updateBindings: { value([path]: string[]) {
+      if (path === 'raw') throw failure;
+      applied.push(path);
+    } },
+  });
+  try {
+    element.$update('raw');
+    element.$update('count');
+    assert.equal(queued.length, 1);
+    assert.throws(() => queued.shift()!(), failure);
+    assert.equal(queued.length, 1);
+    queued.shift()!();
+    assert.deepEqual(applied, ['count']);
+    assert.equal(queued.length, 0);
+  } finally {
+    globalThis.queueMicrotask = originalQueue;
+  }
+});
+
 describe('TemplateElement complex-property delivery', () => {
   test('queues an unresolved WebUI child without creating an own property', () => {
     const tag = 'test-pending-property';
