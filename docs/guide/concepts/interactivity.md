@@ -7,6 +7,10 @@ components intentionally participate in the owning CSS tree's global cascade.
 Only components that need interactivity ship JavaScript - everything else stays
 as static server-rendered HTML.
 
+For applications enforcing Trusted Types, configure the
+[named compiler-output policy](./hydration#trusted-types) before importing
+component definitions. This preserves enforcement without trusting raw state HTML.
+
 ## Component Files
 
 Every interactive component consists of three separate files. Templates are declarative - no JavaScript mixing.

@@ -1622,43 +1622,51 @@ export class TemplateElement extends HTMLElement {
       this.$pendingFlush = false;
       return;
     }
-    if (!this.$pathIndex) this.$buildPathIndex();
-    if (!this.$pathIndex) return;
+    try {
+      if (!this.$pathIndex) this.$buildPathIndex();
+      if (!this.$pathIndex) return;
 
-    while (this.$dirtyPaths && this.$dirtyPaths.size > 0) {
-      // Snapshot and clear so re-entrant setters get a fresh set.
-      const dirty = this.$dirtyPaths;
-      this.$dirtyPaths = null;
+      while (this.$dirtyPaths && this.$dirtyPaths.size > 0) {
+        // Snapshot and clear so re-entrant setters get a fresh set.
+        const dirty = this.$dirtyPaths;
+        this.$dirtyPaths = null;
 
-      for (const path of dirty) {
+        for (const path of dirty) {
+          if (!this.$pathIndex) this.$buildPathIndex();
+          const entry = this.$pathIndex?.get(path);
+          if (entry) {
+            this.$updateBindings(
+              entry.texts,
+              entry.attrs,
+              entry.conds,
+              entry.repeats,
+              requireKnownState,
+            );
+          }
+        }
+        // Update wildcard bindings once per flush (not per dirty path)
         if (!this.$pathIndex) this.$buildPathIndex();
-        const entry = this.$pathIndex?.get(path);
-        if (entry) {
+        if (this.$wildcardBindings) {
+          const wc = this.$wildcardBindings;
           this.$updateBindings(
-            entry.texts,
-            entry.attrs,
-            entry.conds,
-            entry.repeats,
+            wc.texts,
+            wc.attrs,
+            wc.conds,
+            wc.repeats,
             requireKnownState,
           );
         }
+        if (!this.$pathIndex) this.$buildPathIndex();
       }
-      // Update wildcard bindings once per flush (not per dirty path)
-      if (!this.$pathIndex) this.$buildPathIndex();
-      if (this.$wildcardBindings) {
-        const wc = this.$wildcardBindings;
-        this.$updateBindings(
-          wc.texts,
-          wc.attrs,
-          wc.conds,
-          wc.repeats,
-          requireKnownState,
-        );
+    } finally {
+      // A rejected sink still propagates its error. Release scheduling and keep
+      // independently queued re-entrant writes, without retrying the failed batch.
+      this.$pendingFlush = false;
+      if (this.$dirtyPaths?.size) {
+        this.$pendingFlush = true;
+        queueMicrotask(() => this.$flush());
       }
-      if (!this.$pathIndex) this.$buildPathIndex();
     }
-
-    this.$pendingFlush = false;
   }
 
   // ── Hydration mismatch diagnostic (#379) ──────────────────────
@@ -2713,11 +2721,13 @@ export class TemplateElement extends HTMLElement {
       const range = document.createRange();
       range.setStartAfter(b.node);
       range.setEndBefore(b.rawEnd);
+      // Raw state is not compiler output. Let the browser enforce Trusted Types
+      // before removing the existing DOM; never promote it through our policy.
+      const fragment = val !== '' ? range.createContextualFragment(val) : undefined;
       range.deleteContents();
       let rawNodes: Node[] | undefined;
       const rawOwner = b.rawOwner;
-      if (val !== '') {
-        const fragment = range.createContextualFragment(val);
+      if (fragment) {
         if (rawOwner && b.node.parentNode === rawOwner.container) {
           rawNodes = childNodesArray(fragment);
         }

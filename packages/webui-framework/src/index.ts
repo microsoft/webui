@@ -46,3 +46,4 @@ export type {
   ComponentStyles,
 } from './element/styles.js';
 export { hydrationStart, hydrationEnd } from './lifecycle.js';
+export { configureTrustedTypes } from './trusted-types.js';

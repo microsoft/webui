@@ -82,7 +82,9 @@ function getTemplateContent(
   if (cached) return cached;
 
   const template = document.createElement('template');
-  template.innerHTML = meta.h;
+  const trust = window.__webuiTrustedTemplates;
+  if (trust) trust.setTemplateContent(template, meta);
+  else template.innerHTML = meta.h;
   const fragment = template.content;
   const stylesheets = (mayContainLink ?? templateHtmlMayContainLink(meta.h))
     ? collectStylesheetDescriptors(fragment)

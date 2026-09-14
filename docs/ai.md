@@ -99,6 +99,18 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 
 ## Mental model
 
+**Enforced Trusted Types:** In a bootstrap entry, import `configureTrustedTypes`
+from `@microsoft/webui-framework/trusted-types.js`, call
+`configureTrustedTypes('app-compiled')`, then `await import('./app.js')`. Configure
+before component definitions and optional hydration runtimes. Allow exactly
+`trusted-types app-compiled` alongside `require-trusted-types-for 'script'` and
+the normal nonce CSP; let WebUI create the named policy, never a default policy.
+Names use ASCII letters/digits/`.`/`_`/`-` and cannot be `default`. The policy
+trusts only immutable native compiler output, not raw triple-brace state HTML,
+FAST templates or arbitrary scripts/URLs. Client-side router partial navigation
+is not yet supported under enforcement. See
+[Trusted Types](/guide/concepts/hydration#trusted-types).
+
 ```
 BUILD TIME          SERVER RENDER         CLIENT HYDRATION
 ---------------     ---------------       -----------------
