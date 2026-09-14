@@ -13,6 +13,7 @@ import {
   type StreamingContext,
 } from './streaming.js';
 import {
+  fetchComponentTemplates,
   registerTemplatesAndStyles,
   waitForTemplateReadiness,
 } from './templates.js';
@@ -407,4 +408,66 @@ test('template registration remains immediate without a runtime listener', () =>
     ),
     undefined,
   );
+});
+
+test('configured compiler boundary receives closures before metadata, preserving the nonce', () => {
+  const original = window.__webuiTrustedTemplates;
+  const registry = window as Window & { __webui?: { templates?: Record<string, unknown> } };
+  const functions = { 'trusted-card': '[function(){return true}]' };
+  let called = false;
+  const boundary = {
+    policyName: 'test-compiled',
+    registerBlock() {},
+    setTemplateContent() {},
+    setImportMap() {},
+    installTemplateFunctions(value: Record<string, string>, nonce: string) {
+      assert.equal(value, functions);
+      assert.equal(nonce, 'page-nonce');
+      assert.equal(registry.__webui?.templates?.['trusted-card'], undefined);
+      called = true;
+    },
+  };
+  window.__webuiTrustedTemplates = boundary;
+  try {
+    registerTemplatesAndStyles({
+      templates: { 'trusted-card': { h: '<p>Trusted</p>' } },
+      templateFunctions: functions,
+    }, 'page-nonce', () => {});
+    assert.equal(called, true);
+    called = false;
+    assert.throws(() => registerTemplatesAndStyles({
+      templates: { 'fast-card': '<f-template>Not native</f-template>' },
+      templateFunctions: functions,
+    }, 'page-nonce', () => {}), /not FAST\/string templates/);
+    assert.equal(called, false);
+  } finally {
+    window.__webuiTrustedTemplates = original;
+    delete registry.__webui?.templates?.['trusted-card'];
+  }
+});
+
+test('configured template fetch forbids cross-origin requests and redirects', async () => {
+  const original = window.__webuiTrustedTemplates;
+  const originalFetch = globalThis.fetch;
+  const modes: (RequestMode | undefined)[] = [];
+  globalThis.fetch = async (_url, options) => {
+    modes.push(options?.mode);
+    return new Response('{}', { headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    await fetchComponentTemplates(['test-card'], '', '/_webui/templates', '', () => {});
+    const boundary = {
+      policyName: 'test-compiled',
+      registerBlock() {},
+      setTemplateContent() {},
+      setImportMap() {},
+      installTemplateFunctions() {},
+    };
+    window.__webuiTrustedTemplates = boundary;
+    await fetchComponentTemplates(['test-card'], '', '/_webui/templates', '', () => {});
+    assert.deepEqual(modes, [undefined, 'same-origin']);
+  } finally {
+    globalThis.fetch = originalFetch;
+    window.__webuiTrustedTemplates = original;
+  }
 });

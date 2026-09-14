@@ -9,7 +9,7 @@ use commands::Commands;
 use utils::output::OutputFormat;
 
 #[derive(Parser)]
-#[command(name = "webui", about = "WebUI build tool")]
+#[command(name = "webui", about = "WebUI development and build tools")]
 struct Cli {
     /// Output format: `human` (colorized terminal, default) or `json`
     /// (machine-readable diagnostics on stdout for editors, CI, and tools).
@@ -31,6 +31,7 @@ fn main() {
 
     let result = match command {
         Commands::Build(args) => commands::build::execute(args),
+        Commands::Dev(args) => commands::dev::execute(args),
         Commands::Inspect(args) => commands::inspect::execute(args),
         Commands::Serve(args) => commands::serve::execute(args),
     };

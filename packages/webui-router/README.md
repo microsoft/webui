@@ -18,6 +18,11 @@ components also navigate without a full page reload when the application loads
 `@microsoft/webui-framework`, which mounts the templates published by the
 router.
 
+Native WebUI applications with enforced Trusted Types must configure the
+framework's named compiler policy before starting routing or preloading. See
+[Trusted Types setup](https://microsoft.github.io/webui/guide/concepts/hydration#trusted-types).
+The router uses that optional boundary without importing the framework.
+
 ## Installation
 
 ```bash

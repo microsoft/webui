@@ -17,6 +17,11 @@ npm install @microsoft/webui-router
 
 Only needed when your app has client-side navigation. Server-only apps with full page loads don't need it.
 
+When enforcing Trusted Types with native WebUI, configure the framework's
+[named compiler-output policy](./hydration#trusted-types) before routing or
+preloading starts. Configured partial/template requests remain same-origin, and
+the original document nonce still authorizes generated condition scripts.
+
 ## Quick Start
 
 **1. Declare routes in `index.html`:**

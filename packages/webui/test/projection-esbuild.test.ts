@@ -127,6 +127,58 @@ export const used = padding.length;
   );
 }
 
+describe("framework production bundles", () => {
+  for (const splitting of [false, true]) {
+    for (const minify of [false, true]) {
+      for (const dev of [false, true, undefined]) {
+        const format = splitting ? "esm" : "iife";
+        test(`${format}, minify=${minify}, __WEBUI_DEV__=${dev}`, async (t) => {
+          const root = await fixtureRoot();
+          t.after(() => rm(root, { recursive: true, force: true }));
+          const define: Record<string, string> = {
+            "process.env.NODE_ENV": '"production"',
+          };
+          if (dev !== undefined) define.__WEBUI_DEV__ = String(dev);
+          const result = await esbuild.build({
+            absWorkingDir: root,
+            entryPoints: [FRAMEWORK_ENTRY],
+            outdir: "dist",
+            bundle: true,
+            format,
+            splitting,
+            minify,
+            define,
+            write: true,
+            metafile: true,
+          });
+          let diagnosticBytes = 0;
+          let warningEmitted = false;
+          let diagnosticChunkEmitted = false;
+          for (const [filename, output] of Object.entries(result.metafile.outputs)) {
+            const code = await readFile(path.resolve(root, filename), "utf8");
+            warningEmitted ||= code.includes("Hydration mismatch on");
+            diagnosticChunkEmitted ||= path.basename(filename).startsWith("hydration-mismatch-");
+            for (const [input, contribution] of Object.entries(output.inputs)) {
+              if (path.basename(input) === "hydration-mismatch.ts") {
+                diagnosticBytes += contribution.bytesInOutput;
+              }
+            }
+          }
+          t.diagnostic(`emitted hydration diagnostic bytes: ${diagnosticBytes}`);
+          if (dev === false) {
+            assert.equal(diagnosticBytes, 0, "production output contains diagnostic code");
+            assert.equal(warningEmitted, false, "production output contains diagnostic messages");
+            assert.equal(diagnosticChunkEmitted, false, "production output contains a diagnostic chunk");
+          } else {
+            assert.ok(diagnosticBytes > 0, "development diagnostics must remain available");
+            assert.equal(warningEmitted, true);
+          }
+        });
+      }
+    }
+  }
+});
+
 describe("esbuildProjection", () => {
   test("bounds projection I/O concurrency and preserves order", async () => {
     const moduleUrl = new URL(

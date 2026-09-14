@@ -80,7 +80,10 @@ export function registerTemplatesAndStyles(
   //    that compiled the protocol. The CSP nonce gates script execution.
   //    If the server endpoint is compromised, this is an XSS vector —
   //    same risk as the existing fetchPartial pipeline.
-  if (data.templateFunctions) {
+  const trust = window.__webuiTrustedTemplates;
+  if (data.templateFunctions && trust) {
+    trust.installTemplateFunctions(data.templateFunctions, nonce);
+  } else if (data.templateFunctions) {
     const tags = Object.keys(data.templateFunctions);
     if (tags.length > 0) {
       executableTemplateBody += 'var w=(window.__webui||(window.__webui={}));var f=w.templateFns||(w.templateFns={});';
@@ -240,6 +243,9 @@ function validateTemplatePayload(
   if (!templates) return;
   for (const tag of Object.keys(templates)) {
     const template = templates[tag];
+    if (typeof template === 'string' && window.__webuiTrustedTemplates) {
+      throw new Error('[Router] The WebUI Trusted Types policy accepts native compiled metadata, not FAST/string templates. Use the native WebUI plugin.');
+    }
     if (typeof template === 'string' && !template.startsWith('<')) {
       throw new Error(`[Router] Unsupported executable template payload for ${tag}.`);
     }
@@ -304,7 +310,9 @@ export async function fetchComponentTemplates(
   maybeUpdateInventory?: (inv: string) => void,
 ): Promise<void> {
   const url = `${templateEndpoint}?t=${tags.join(',')}&inv=${encodeURIComponent(inventoryHex)}`;
-  const resp = await fetch(url);
+  const resp = await fetch(url, {
+    mode: window.__webuiTrustedTemplates ? 'same-origin' : undefined,
+  });
   if (!resp.ok) {
     throw new Error(`[Router] ensureLoaded failed: ${resp.status} ${resp.statusText}`);
   }

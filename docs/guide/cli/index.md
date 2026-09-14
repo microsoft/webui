@@ -341,12 +341,37 @@ webui inspect dist/protocol.bin | jq '.fragments["index.html"]'
 webui inspect dist/protocol.bin | jq '.fragments | keys | length'
 ```
 
+### `webui dev`
+
+Develop a WebUI application with built-in warm esbuild, native SSR, and SSE
+live reload. No separate client watcher or custom builder module is required.
+
+```text
+webui dev ./src --state ./data/state.json --port 4000
+```
+
+Defaults: HTML entry `index.html`, client entry `index.ts`, the `webui` plugin,
+watching enabled, and isolated, automatically managed output beneath
+`node_modules/.cache/webui-dev`. The HTML references the emitted JS module,
+such as `/index.js`. Node.js and project-installed esbuild are required.
+
+Use `--client-entry <FILE>` for a different app-relative JS/TS input,
+`--watch-path <PATH>` for additional source dependencies outside the app/project
+roots, `--servedir <DIR>` for another output directory, and `--no-watch` to
+build once without live reload. Other rendering, state, theme, API, and response
+policy flags are shared with `serve`.
+
+`--client-builder <MODULE>` replaces the built-in builder for advanced
+integrations; it is not required for ordinary development. See
+[Client builds and live reload](./client-builder) for bundling defaults,
+dependency resolution, and lifecycle.
+
 ### `webui serve`
 
 Start a development server that builds, renders, and serves a WebUI application. Enable live reload with `--watch`.
 
 ```bash
-webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>]
+webui serve [APP] [--state <FILE>] [--servedir <DIR>] [--watch] [--port <PORT>] [--entry <FILE>] [--css <MODE>] [--dom <MODE>] [--css-bundle] [--plugin <NAME>] [--components <SOURCE>]... [--projection-manifest <PATH>]... [--api-port <PORT>] [--emit-component-assets <TAGS>] [--metafile <PATH>] [--theme <VALUE>] [--asset-file-name-template <TEMPLATE>] [--css-public-base <BASE>] [--legal-comments <MODE>] [--client-builder <MODULE>] [--client-entry <FILE>] [--watch-path <PATH>]... [--client-build-timeout-ms <MS>] [--header <HEADER>]... [--csp <POLICY>] [--api-state-errors <MODE>]
 ```
 
 **Arguments:**
@@ -354,9 +379,9 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `APP` | Path to the template/component directory | `.` (current directory) |
-| `--state <FILE>` | Path to JSON state file for rendering | *(required)* |
+| `--state <FILE>` | Path to JSON state file for rendering | *(optional; empty state without an API backend)* |
 | `--servedir <DIR>` | Directory served at `/*` | *(optional)* |
-| `--watch` | Enable file watching + HMR | `false` |
+| `--watch` | Enable file watching and SSE live reload | `false` |
 | `--port <PORT>` | Port to bind the development server | `3000` |
 | `--entry <FILE>` | Entry HTML file name | `index.html` |
 | `--css <MODE>` | CSS delivery strategy: `link`, `style`, or `module` | `link` |
@@ -375,14 +400,52 @@ webui serve [APP] --state <FILE> [--servedir <DIR>] [--watch] [--port <PORT>] [-
 
 The `APP` directory should contain your entry HTML and component files.
 
+Additional development-server options:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--client-builder <MODULE>` | ES module creating persistent `rebuild`/`dispose` hooks. Requires `--servedir` and Node.js. See [Client builds and live reload](./client-builder). | *(off)* |
+| `--client-entry <FILE>` | App-relative JS/TS entry for built-in warm esbuild. Requires `--servedir`; cannot be combined with `--client-builder`. | *(off)* |
+| `--watch-path <PATH>` | Additional app-relative client input file/directory. Repeatable; requires client builds. | *(none)* |
+| `--client-build-timeout-ms <MS>` | Positive timeout for client builder startup, rebuild, and disposal. | `120000` |
+| `--header "Name: value"` | Repeatable generic response headers. Invalid, duplicate, and server-owned framing/content/cache headers are rejected. | *(none)* |
+| `--csp <POLICY>` | HTML CSP containing a `{nonce}` placeholder, replaced with a fresh nonce propagated to SDK scripts and styles. | *(off)* |
+| `--api-state-errors <MODE>` | `fallback` or `strict`. Requires `--api-port` when explicitly supplied. | `fallback` |
+
+### Response policy
+
+`--header` applies validated headers to HTML, static assets, JSON, SSE, API
+forwarding, and error responses without overriding the server's transport or
+cache controls. `--csp` provides a per-document nonce through the existing
+rendering API, including SDK bootstrap scripts, streaming checkpoints, template
+functions, importmaps, and live-reload/error scripts. Nonce-bearing documents
+are rendered per request rather than reusing a cached nonce.
+
+For example, a script policy is
+`--csp "script-src 'self' 'nonce-{nonce}'; connect-src 'self'"`.
+Add the application-specific style/resource directives your application needs.
+A literal CSP supplied through `--header` does not enable nonce propagation.
+Do not combine it with `--csp` or put `{nonce}` in a generic header.
+
+The policy still needs to allow application-authored resources. WebUI does not
+authorize arbitrary inline markup, add `unsafe-inline`/`unsafe-eval`, or rewrite
+authored scripts. Router partials use the original document nonce for
+subsequently injected SDK scripts; a JSON response does not replace it.
+
+Nonce propagation does not create Trusted Types policies. For native WebUI under
+`require-trusted-types-for 'script'`, configure the framework's explicitly
+allowlisted [named compiled-template policy](../concepts/hydration#trusted-types)
+before loading the application. The CLI does not configure browser policy names
+or authorize raw state HTML.
+
 **What it does:**
 
 1. Builds the protocol from your `APP` directory (no separate `webui build` step needed)
 2. Renders the entry template with state data
 3. Serves the rendered HTML with an injected live-reload script
-4. If `--watch` is enabled, watches app, state, asset, and explicit projection manifest files for changes
+4. If `--watch` is enabled, watches app, state, local component, and explicit projection manifest inputs for changes; servedir output is not watched
 5. If `--watch` is enabled, automatically rebuilds and re-renders when files change
-6. If `--watch` is enabled, connected browsers reload automatically via the polling HMR backend
+6. If `--watch` is enabled, connected browsers reload automatically via SSE
 
 When `--api-port` is set, backend state requests and `/api/*` forwarding use
 the encoded path and query exactly as received except for the entry route alias.
@@ -434,13 +497,22 @@ cap concurrent streams. Returning JSON retains ordinary buffered behavior. See
 [`<boundary>`](/guide/concepts/directives/boundary) and
 `examples/app/streaming`.
 
-If the backend is unreachable, returns state the server cannot parse, or answers
+By default, if the backend is unreachable, returns state the server cannot parse, or answers
 a stream request with a non-success status such as `503` from its concurrency
 cap, `webui serve` logs one warning and still renders the page from fallback
 state. A refused request never started a stream, so it degrades the same way an
 unreachable backend does instead of replacing your app with the upstream error
 body. A failure that occurs *after* the stream is live still fails the response,
 because bytes already sent to the browser cannot be rewound.
+
+Use `--api-state-errors strict` when failed state acquisition must fail the
+request. Both full HTML and JSON partials return 502/no-store for non-2xx backend
+status, transport/body errors, invalid JSON, or non-object state, before
+successful rendering. Successful JSON may be a bare object or an envelope with
+an object-valued `state`. Strict mode never substitutes file, empty, or cached
+state, does not follow redirects, and limits buffered response-body acquisition
+to five seconds. It does not change `/api/*` status forwarding or the progressive
+stream's existing precommit command/render and postcommit error semantics.
 
 After generated assets and `--servedir` files miss, route fallback is based on
 the `Accept` header. Requests that explicitly accept `text/html` or
