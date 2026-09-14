@@ -127,6 +127,47 @@ interface PendingParentStateConsumer {
   $applyPendingParentState(replayAfterHydration: boolean): void;
 }
 
+test('a rejected binding releases the flush gate and preserves re-entrant updates', () => {
+  const originalQueue = globalThis.queueMicrotask;
+  const queued: VoidFunction[] = [];
+  globalThis.queueMicrotask = callback => { queued.push(callback); };
+  const element = new TemplateElement();
+  const rejected: unknown[] = [];
+  const valid: unknown[] = [];
+  const entry = (texts: unknown[]) => ({ texts, attrs: [], conds: [], repeats: [] });
+  let updates = 0;
+  const failure = new TypeError('TrustedHTML required');
+  Object.defineProperties(element, {
+    $ready: { value: true },
+    $root: { value: {} },
+    $pathIndex: { value: new Map([['raw', entry(rejected)], ['count', entry(valid)]]) },
+    $updateBindings: { value(texts: unknown[]) {
+      if (texts === rejected) {
+        element.$update('count');
+        throw failure;
+      }
+      assert.equal(texts, valid);
+      updates++;
+    } },
+  });
+  try {
+    element.$update('raw');
+    assert.equal(queued.length, 1);
+    assert.throws(() => queued.shift()!(), failure);
+    assert.equal(queued.length, 1);
+    queued.shift()!();
+    assert.equal(updates, 1);
+    assert.equal(queued.length, 0);
+    element.$update('count');
+    assert.equal(queued.length, 1);
+    queued.shift()!();
+    assert.equal(updates, 2);
+    assert.equal(queued.length, 0);
+  } finally {
+    globalThis.queueMicrotask = originalQueue;
+  }
+});
+
 describe('TemplateElement complex-property delivery', () => {
   test('queues an unresolved WebUI child without creating an own property', () => {
     const tag = 'test-pending-property';

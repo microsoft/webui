@@ -16,6 +16,10 @@ If you are building WebUI apps in this repo, this is the component model used by
 
 ## Install
 
+For enforced Trusted Types, configure the named compiler policy before loading
+components. See the [Trusted Types setup](https://microsoft.github.io/webui/guide/concepts/hydration#trusted-types)
+for `configureTrustedTypes`, CSP allowlisting, bootstrap order and raw-HTML limits.
+
 In this workspace:
 
 ```json

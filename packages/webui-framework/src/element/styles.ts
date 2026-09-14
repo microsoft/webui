@@ -568,9 +568,13 @@ function installModuleImportMap(
   script.type = 'importmap';
   const nonce = readNonce(target);
   if (nonce) script.nonce = nonce;
-  script.textContent = JSON.stringify({
-    imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
-  });
+  const trust = owner.defaultView?.__webuiTrustedTemplates;
+  if (trust) trust.setImportMap(script, specifier, css);
+  else {
+    script.textContent = JSON.stringify({
+      imports: { [specifier]: `data:text/css,${encodeURIComponent(css)}` },
+    });
+  }
   owner.head.appendChild(script);
   installedSpecifiers.add(specifier);
 }

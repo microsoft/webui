@@ -356,6 +356,58 @@ projected state through normal reactivity. It never inserts or replaces markup
 and never reruns hydration. If the class or parent barrier is still pending,
 WebUI queues one shallow patch and applies it after successful activation.
 
+## Trusted Types
+
+Native WebUI hydration supports enforced Trusted Types through an explicit,
+named compiler-output policy. Configure it in a small bootstrap module **before**
+loading component definitions or optional hydration runtimes:
+
+```ts
+// bootstrap.ts -- bundle this as the browser entry.
+import { configureTrustedTypes } from '@microsoft/webui-framework/trusted-types.js';
+
+configureTrustedTypes('app-compiled');
+await import('./app.js');
+```
+
+The dedicated subpath has no hydration side effects. A static `import './app.js'`
+would evaluate the app before the configuration call; use the dynamic import
+shown above. The root framework entry also exports `configureTrustedTypes`.
+
+Allow the **exact same name** in the response's `trusted-types` directive:
+
+```text
+require-trusted-types-for 'script'; trusted-types app-compiled
+```
+
+These directives supplement, not replace, your nonce-based `script-src` and
+`style-src` policy. Pass the fresh response nonce to WebUI's renderer.
+Nonces and Trusted Types solve different problems. WebUI does not create a
+`default` policy or require `'unsafe-eval'`.
+
+Names must be nonempty ASCII letters, digits, `.`, `_`, or `-`; `default` is
+forbidden. Let WebUI create the policy: do not pre-create a same-named policy.
+Repeated configuration with the same name is idempotent across bundles in one
+document; a different name or a CSP-denied/already-created policy throws an
+actionable error. Configure each new document separately. On browsers without
+Trusted Types, configuration leaves the existing rendering behavior unchanged.
+
+The policy covers native compiled templates (including condition/repeat blocks)
+and generated CSS import maps. Client-side router partial navigation is not yet
+supported with enforced Trusted Types.
+
+**This policy is not an HTML sanitizer.** Treat compiled template metadata and
+component asset modules as executable application code; never populate them from
+user HTML or request state. `registerTemplateData` is a trusted compiler-output
+registration API, and registered HTML must remain immutable. Keep untrusted data
+in normal escaped bindings.
+
+Raw triple-brace state HTML is **not** promoted through the compiler policy.
+Client raw-HTML updates with strings remain blocked under enforcement; a rejected
+update leaves its previous DOM intact. FAST/string templates, arbitrary scripts,
+event-handler attributes, and script URLs are not authorized by this API.
+Trusted Types also does not sanitize HTML already delivered by the server.
+
 ## Build-Time State Projection
 
 Exact state projection is opt-in. Rust does not inspect JavaScript or
