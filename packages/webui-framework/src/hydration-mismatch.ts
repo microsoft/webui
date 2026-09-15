@@ -68,7 +68,7 @@ export interface PathBindings {
  * diverged, emits the hydration-mismatch warning once. Routing the element
  * through this function keeps every comparator and the message string in this
  * module, reached only via that dynamic import — so a production bundler drops
- * the whole module when `__WEBUI_DEV__` folds `DEV` to `false` (see
+ * the whole module when its direct `__WEBUI_DEV__` guard folds to `false` (see
  * `template-element.ts`). The comparison is read-only; it never mutates the DOM.
  */
 export function reportHydrationMismatch(

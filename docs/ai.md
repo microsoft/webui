@@ -105,7 +105,8 @@ needed. To enforce Trusted Types, use `require-trusted-types-for 'script'; trust
 alongside the normal nonce CSP. Share one framework module across bundles; do not
 pre-create its policy. Raw triple-brace state HTML, FAST strings and arbitrary
 scripts/URLs are not promoted. Client-side router partial navigation is not yet
-supported under enforcement. See
+supported under enforcement; use full document navigation. Partial, preload and
+template requests are same-origin only, including redirects. See
 [Trusted Types](/guide/concepts/hydration#trusted-types).
 
 ```
@@ -1297,8 +1298,21 @@ Before emitting WebUI code, confirm:
 
 ## Build and run
 
+For the integrated development workflow, use
+[`webui dev`](/guide/cli/client-builder): warm esbuild, native rendering, and
+SSE live reload without a custom builder module. It defaults to `index.ts`,
+the `webui` plugin, and watching enabled; HTML references the emitted
+`/index.js`. Node.js and project-installed esbuild are required.
+Custom `--client-builder` hooks are an optional escape hatch. Do not add a
+second watcher, SSR server, or reload client. API state remains per-request. The
+[CLI reference](/guide/cli/) also documents generic response headers,
+nonce-aware `--csp`, and opt-in `--api-state-errors strict`.
+
 ```bash
-# Dev server with live reload
+# Integrated JS/TS builds, native rendering, and live reload
+webui dev ./src --state ./data/state.json
+
+# Native serving when client assets are managed separately
 webui serve ./src --state ./data/state.json --plugin=webui --watch
 
 # Production build

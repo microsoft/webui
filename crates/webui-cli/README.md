@@ -67,11 +67,31 @@ Features:
 - Renders HTML at `/` and all route paths
 - Serves static files from `--servedir`
 - JSON partials for client-side navigation (`Accept: application/json`)
-- HMR polling at `/hmr` when `--watch` is enabled
+- SSE live reload at `/__webui/livereload` when `--watch` is enabled
 - API proxy when `--api-port` is set. Backends may return JSON state or a
   versioned, newline-delimited `application/x-webui-stream` control response;
   the CLI retains the Rust renderer, caps precommit output staging at 4,000,000
   bytes, and cancels the backend when the browser disconnects.
+
+For the integrated development workflow, run `webui dev ./src`. It defaults
+to client entry `index.ts`, the `webui` plugin, watching enabled, and an
+automatically managed, isolated output beneath `node_modules/.cache/webui-dev`.
+Node.js and project-installed esbuild are required. Existing `serve` defaults
+remain native-only. Use `--client-entry` to change the input, `--watch-path`
+for additional dependencies, or `--no-watch` for a one-time development build.
+
+Custom `--client-builder ./dev-builder.mjs` modules are an optional escape hatch
+with awaited `rebuild`/`dispose` hooks and additional `watchPaths`. WebUI still
+owns scheduling and SSE reload; never add another watcher or server. See
+[client builds and live reload](https://microsoft.github.io/webui/guide/cli/client-builder)
+for the factory interface, generated inputs, errors, and lifecycle.
+
+Additional opt-in policies are repeatable `--header "Name: value"`,
+`--csp "script-src 'self' 'nonce-{nonce}'"` for fresh per-document SDK nonces,
+and `--api-state-errors strict` to reject state-backend failures instead of
+rendering with fallback state. Existing defaults remain unchanged. The
+[CLI reference](https://microsoft.github.io/webui/guide/cli/) specifies header
+validation, policy ownership, and strict-state response semantics.
 
 The control response uses version 2 and exactly three command types:
 

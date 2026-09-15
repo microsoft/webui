@@ -60,6 +60,8 @@ jobs:
       - uses: ./.github/actions/build
         with:
           shared-cache-key: ubuntu-build
+      - name: Test native development builder lifecycle
+        run: cargo test -p microsoft-webui-cli --test build_control
 
   build-macos:
     name: Build (macOS)
@@ -68,6 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+      - name: Test native development builder lifecycle
+        run: cargo test -p microsoft-webui-cli --test build_control
 
   build-windows:
     name: Build (Windows)
@@ -76,6 +80,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/build
+      - name: Test native development builder lifecycle
+        run: cargo test -p microsoft-webui-cli --test build_control
 
   # ── Phase 3: E2E (Ubuntu, after Linux build) ───────────────────────
   e2e:

@@ -1834,6 +1834,7 @@ dependencies = [
  "clap",
  "console",
  "expand-tilde",
+ "getrandom 0.4.3",
  "log",
  "memchr",
  "microsoft-webui",

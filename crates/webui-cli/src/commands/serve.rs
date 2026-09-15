@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+mod api_state;
+mod client_builder;
 mod metafile;
+mod response_policy;
 mod streaming_api;
 
 use actix_web::{web, App, HttpRequest, HttpResponse, HttpServer};
@@ -34,10 +37,11 @@ use crate::utils::output;
 #[cfg(test)]
 use metafile::temp_directory as metafile_temp_directory;
 use metafile::write_atomic;
+use response_policy::ResponsePolicy;
 
 webui_handler::define_string_response_writer!(MemoryWriter, buf);
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 pub struct ServeArgs {
     #[command(flatten)]
     pub app_args: AppArgs,
@@ -54,7 +58,7 @@ pub struct ServeArgs {
     #[arg(long)]
     pub servedir: Option<PathBuf>,
 
-    /// Enable file watching + HMR (disabled by default)
+    /// Enable file watching and SSE live reload (disabled by default)
     #[arg(long)]
     pub watch: bool,
 
@@ -89,6 +93,34 @@ pub struct ServeArgs {
     /// app can be served behind a reverse proxy under a sub-path.
     #[arg(long)]
     pub base_path: Option<String>,
+
+    /// ES module creating a persistent client builder (rebuild/dispose hooks).
+    #[arg(long, value_name = "MODULE")]
+    pub client_builder: Option<PathBuf>,
+
+    /// Client JS/TS entry, relative to APP, for built-in warm esbuild.
+    #[arg(long, value_name = "FILE", conflicts_with = "client_builder")]
+    pub client_entry: Option<PathBuf>,
+
+    /// Additional client input files or directories, relative to APP (repeatable).
+    #[arg(long = "watch-path", value_name = "PATH")]
+    pub watch_paths: Vec<PathBuf>,
+
+    /// Maximum time for client builder startup, rebuild, or shutdown.
+    #[arg(long, default_value_t = 120_000, value_parser = clap::value_parser!(u64).range(1..))]
+    pub client_build_timeout_ms: u64,
+
+    /// Add a response header (repeatable), formatted as "Name: value".
+    #[arg(long = "header", value_name = "HEADER")]
+    pub headers: Vec<String>,
+
+    /// HTML Content-Security-Policy containing a per-document {nonce} placeholder.
+    #[arg(long, value_name = "POLICY")]
+    pub csp: Option<String>,
+
+    /// Whether state-backend failures may fall back to file or empty state.
+    #[arg(long, value_enum, requires = "api_port")]
+    api_state_errors: Option<api_state::ApiStateErrors>,
 }
 
 /// Resolved paths for `webui serve`.
@@ -120,14 +152,17 @@ impl ServePaths {
                     })?
                     .into_owned();
 
-                let canonical =
+                let canonical = if args.client_builder.is_some() || args.client_entry.is_some() {
+                    client_builder::input_path(&state_input)?
+                } else {
                     state_input
                         .canonicalize()
                         .map_err(|_| CliError::StateFileNotFound {
                             path: state_path.display().to_string(),
-                        })?;
+                        })?
+                };
 
-                if !canonical.is_file() {
+                if canonical.exists() && !canonical.is_file() {
                     return Err(anyhow::anyhow!(
                         "State path must be a file: {}",
                         canonical.display()
@@ -173,6 +208,20 @@ impl ServePaths {
                 "App path must be a directory: {}",
                 app_dir.display()
             ));
+        }
+
+        if args.client_builder.is_some() || args.client_entry.is_some() {
+            let output = serve_dir
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Client builds require --servedir"))?;
+            if app_dir.starts_with(output) {
+                anyhow::bail!("--servedir must not contain the app directory");
+            }
+            if let Some(state) = &state_file {
+                if !state.exists() && !state.starts_with(output) {
+                    anyhow::bail!("a generated --state file must be beneath --servedir");
+                }
+            }
         }
 
         let metafile = args
@@ -225,9 +274,10 @@ struct SharedState {
     /// `--emit-component-assets`, served from memory like generated CSS.
     component_assets: HashMap<String, String>,
     protocol: Option<Arc<Protocol>>,
-    state_data: Option<Value>,
-    token_css: Option<HashMap<String, String>>,
+    state_data: Option<Arc<Value>>,
+    token_css: Option<Arc<HashMap<String, String>>>,
     rebuild_error: Option<String>,
+    rebuild_pending: bool,
     /// Entry fragment ID used for rendering (e.g., "index.html").
     entry: String,
 }
@@ -261,6 +311,14 @@ pub fn execute(args: &ServeArgs) -> Result<()> {
 }
 
 fn run(args: &ServeArgs) -> Result<()> {
+    let policy = Arc::new(ResponsePolicy::new(&args.headers, args.csp.as_deref())?);
+    if args.client_builder.is_some() || args.client_entry.is_some() {
+        return client_builder::serve(args, policy);
+    }
+    anyhow::ensure!(
+        args.watch_paths.is_empty(),
+        "--watch-path requires client builds; use webui dev, --client-entry, or --client-builder"
+    );
     let paths = ServePaths::from_args(args)?;
     // Allow E2E / CI runs to suppress watch mode without editing the
     // package.json `start:server` script that devs share.
@@ -338,9 +396,10 @@ fn run(args: &ServeArgs) -> Result<()> {
         css_files: initial_result.css_files,
         component_assets: initial_result.component_assets,
         protocol: Some(initial_result.protocol),
-        state_data: Some(initial_result.state_data),
-        token_css: initial_result.token_css,
+        state_data: Some(Arc::new(initial_result.state_data)),
+        token_css: initial_result.token_css.map(Arc::new),
         rebuild_error: None,
+        rebuild_pending: false,
         entry: args.app_args.entry.clone(),
     }));
 
@@ -387,6 +446,8 @@ fn run(args: &ServeArgs) -> Result<()> {
         api_port: args.api_port,
         plugin: args.app_args.plugin,
         base_path: args.base_path.clone(),
+        response_policy: policy,
+        api_state_errors: args.api_state_errors.unwrap_or_default(),
         // Pool sized for typical concurrent renders × channel capacity.
         // 256 buffers × 5 KiB ≈ 1.25 MiB peak pool memory — bounded.
         chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
@@ -402,28 +463,13 @@ fn run(args: &ServeArgs) -> Result<()> {
         .block_on(async move {
             HttpServer::new(move || {
                 let mut app = App::new()
+                    .wrap(server_context.response_policy.default_headers())
                     .app_data(server_context.clone())
-                    .route("/", web::get().to(handle_index))
-                    .route("/index.html", web::get().to(handle_index));
+                    .configure(|cfg| configure_routes(cfg, has_api_proxy, lr_data.is_some()));
 
                 if let Some(lr) = &lr_data {
-                    app = app
-                        .app_data(lr.clone())
-                        .route(HMR_ENDPOINT, web::get().to(sse_handler));
+                    app = app.app_data(lr.clone());
                 }
-
-                if has_api_proxy {
-                    app = app.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
-                }
-
-                app = app
-                    .route(
-                        "/_webui/templates",
-                        web::get().to(handle_component_templates),
-                    )
-                    .route("/{tail:.*}", web::get().to(handle_asset))
-                    .default_service(web::route().to(handle_not_found));
-
                 app
             })
             .bind(&bind_addr)
@@ -435,6 +481,23 @@ fn run(args: &ServeArgs) -> Result<()> {
         .with_context(|| format!("Failed to start actix-web server on {addr}"))?;
 
     Ok(())
+}
+
+fn configure_routes(cfg: &mut web::ServiceConfig, api_proxy: bool, watch: bool) {
+    cfg.route("/", web::get().to(handle_index))
+        .route("/index.html", web::get().to(handle_index));
+    if watch {
+        cfg.route(HMR_ENDPOINT, web::get().to(sse_handler));
+    }
+    if api_proxy {
+        cfg.route("/api/{tail:.*}", web::route().to(handle_api_proxy));
+    }
+    cfg.route(
+        "/_webui/templates",
+        web::get().to(handle_component_templates),
+    )
+    .route("/{tail:.*}", web::get().to(handle_asset))
+    .default_service(web::route().to(handle_not_found));
 }
 
 fn ensure_local_port_available(port: u16) -> Result<()> {
@@ -482,10 +545,30 @@ struct BuildRenderResult {
     /// Non-fatal build advisories (warning-severity diagnostics) to frame under
     /// the rebuild line.
     warnings: Vec<Diagnostic>,
+    metafile: Option<String>,
 }
 
 /// Build the protocol from app templates and render with explicit state data.
 fn build_and_render(
+    config: &RenderConfig,
+    livereload: Option<&LiveReload>,
+) -> Result<BuildRenderResult> {
+    let result = prepare_build(config, livereload)?;
+    publish_metafile(config, &result)?;
+    Ok(result)
+}
+
+fn publish_metafile(config: &RenderConfig, result: &BuildRenderResult) -> Result<()> {
+    if let Some(path) = &config.metafile {
+        let content = result.metafile.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("component asset metafile was requested but not generated")
+        })?;
+        write_atomic(path, content)?;
+    }
+    Ok(())
+}
+
+fn prepare_build(
     config: &RenderConfig,
     livereload: Option<&LiveReload>,
 ) -> Result<BuildRenderResult> {
@@ -548,13 +631,6 @@ fn build_and_render(
         None => output,
     };
 
-    if let Some(path) = &config.metafile {
-        let metafile = build_result.metafile.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("component asset metafile was requested but not generated")
-        })?;
-        write_atomic(path, metafile)?;
-    }
-
     let css_map: HashMap<String, String> = build_result.css_files.into_iter().collect();
     let component_assets: HashMap<String, String> = build_result
         .component_asset_files
@@ -570,6 +646,7 @@ fn build_and_render(
         state_data: state,
         token_css,
         warnings: build_result.warnings,
+        metafile: build_result.metafile,
     })
 }
 
@@ -647,10 +724,110 @@ struct ServerContext {
     plugin: Option<Plugin>,
     /// Base path for sub-path deployment.
     base_path: Option<String>,
+    response_policy: Arc<ResponsePolicy>,
+    api_state_errors: api_state::ApiStateErrors,
     /// Shared chunk-buffer pool. One pool per server; recycled across
     /// every streaming render so steady-state RPS does not allocate
     /// fresh chunk buffers per flush.
     chunk_pool: Arc<webui::streaming::ChunkPool>,
+}
+
+struct RenderSnapshot {
+    protocol: Arc<Protocol>,
+    entry: String,
+    state_data: Option<Arc<Value>>,
+    token_css: Option<Arc<HashMap<String, String>>>,
+}
+
+fn document_error(context: &ServerContext, message: &str, pending: bool) -> HttpResponse {
+    let nonce = match context.response_policy.nonce() {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            log::error!("cannot create document nonce: {error}");
+            return HttpResponse::InternalServerError().body("Cannot create document nonce");
+        }
+    };
+    let mut response = rebuild_error_response(message, None);
+    if let Some(lr) = &context.livereload {
+        let script = match nonce.as_deref() {
+            Some(value) => lr.client_script_with_nonce(value),
+            None => lr.client_script().to_owned(),
+        };
+        response = HttpResponse::InternalServerError()
+            .content_type("text/html; charset=utf-8")
+            .body(format!(
+                "<!doctype html><html><head><title>WebUI build</title></head><body><pre>{}</pre>{script}</body></html>",
+                encode_safe(message)
+            ));
+    }
+    if pending {
+        *response.status_mut() = actix_web::http::StatusCode::SERVICE_UNAVAILABLE;
+    }
+    response.headers_mut().insert(
+        actix_web::http::header::CACHE_CONTROL,
+        actix_web::http::header::HeaderValue::from_static("no-store"),
+    );
+    if let Err(error) = context
+        .response_policy
+        .apply_document(&mut response, nonce.as_deref())
+    {
+        log::error!("cannot apply document policy: {error}");
+        return HttpResponse::InternalServerError().body("Cannot apply document policy");
+    }
+    response
+}
+
+fn build_gate(context: &ServerContext, json: bool) -> Option<HttpResponse> {
+    let (pending, message) = match context.state.lock() {
+        Ok(state) => (state.rebuild_pending, state.rebuild_error.clone()),
+        Err(_) => return Some(HttpResponse::InternalServerError().body("Internal Server Error")),
+    };
+    if !pending && message.is_none() {
+        return None;
+    }
+    let message = message
+        .as_deref()
+        .unwrap_or("Waiting for the current client build");
+    if !json {
+        return Some(document_error(context, message, pending));
+    }
+    let mut response = rebuild_error_json_response(message);
+    if pending {
+        *response.status_mut() = actix_web::http::StatusCode::SERVICE_UNAVAILABLE;
+    }
+    response.headers_mut().insert(
+        actix_web::http::header::CACHE_CONTROL,
+        actix_web::http::header::HeaderValue::from_static("no-store"),
+    );
+    Some(response)
+}
+
+fn render_snapshot(context: &ServerContext) -> Result<RenderSnapshot, Box<HttpResponse>> {
+    let state = context
+        .state
+        .lock()
+        .map_err(|_| Box::new(HttpResponse::InternalServerError().body("Internal Server Error")))?;
+    if state.rebuild_pending || state.rebuild_error.is_some() {
+        let status = if state.rebuild_pending {
+            actix_web::http::StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR
+        };
+        return Err(Box::new(
+            HttpResponse::build(status)
+                .insert_header(("Cache-Control", "no-store"))
+                .body("Build changed before rendering; retry the request"),
+        ));
+    }
+    let protocol = state.protocol.clone().ok_or_else(|| {
+        Box::new(HttpResponse::InternalServerError().body("Protocol not available"))
+    })?;
+    Ok(RenderSnapshot {
+        protocol,
+        entry: state.entry.clone(),
+        state_data: state.state_data.clone(),
+        token_css: state.token_css.clone(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -707,61 +884,38 @@ fn request_paths(req: &HttpRequest) -> RequestPaths {
 }
 
 /// Fetch state from the user's API server for a given request path, including query parameters.
+#[cfg(test)]
 async fn fetch_api_state(api_port: u16, path: &str) -> Result<Value, String> {
-    let client = awc::Client::new();
-    let url = format!("http://127.0.0.1:{api_port}{path}");
-    let mut resp = client
-        .get(&url)
-        .insert_header(("Accept", "application/json"))
-        .send()
+    api_state::fetch(api_state::ApiStateErrors::Fallback, api_port, path)
         .await
-        .map_err(|e| format!("API proxy error: {e}"))?;
-    let body = resp
-        .body()
-        .await
-        .map_err(|e| format!("API body error: {e}"))?;
-    let json: Value = serde_json::from_slice(&body).map_err(|e| format!("API JSON error: {e}"))?;
-    // Expect { "state": { ... } }, fall back to entire response
-    Ok(extract_api_state(json))
+        .map_err(|error| error.to_string())
 }
 
 /// Resolve state for a request: try API proxy first, then fall back to file state.
-async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
-    let (mut state, token_css) = if let Some(api_port) = context.api_port {
-        match fetch_api_state(api_port, request_path).await {
-            Ok(state) => {
-                let token_css = context.state.lock().ok().and_then(|s| s.token_css.clone());
-                (state, token_css)
+async fn resolve_state(
+    context: &ServerContext,
+    snapshot: &RenderSnapshot,
+    request_path: &str,
+) -> Result<Value, String> {
+    let mut state = if let Some(api_port) = context.api_port {
+        match api_state::fetch(context.api_state_errors, api_port, request_path).await {
+            Ok(state) => state,
+            Err(error) if context.api_state_errors == api_state::ApiStateErrors::Strict => {
+                return Err(error.to_string());
             }
-            Err(e) => {
-                eprintln!("  {} {e}", console::style("\u{26a0}").yellow());
-                match context.state.lock() {
-                    Ok(s) => (
-                        s.state_data
-                            .clone()
-                            .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
-                        s.token_css.clone(),
-                    ),
-                    Err(_) => (Value::Object(serde_json::Map::new()), None),
-                }
+            Err(error) => {
+                log_api_state_warning(&error.to_string());
+                fallback_state(snapshot)
             }
         }
     } else {
-        match context.state.lock() {
-            Ok(s) => (
-                s.state_data
-                    .clone()
-                    .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
-                s.token_css.clone(),
-            ),
-            Err(_) => (Value::Object(serde_json::Map::new()), None),
-        }
+        fallback_state(snapshot)
     };
 
     // Inject resolved token CSS into state so signals like
     // /*{{{tokens.light}}}*/ resolve at render time, regardless of
     // whether state came from a static file or the API server.
-    if let Some(ref token_css) = token_css {
+    if let Some(ref token_css) = snapshot.token_css {
         webui_tokens::inject_token_css(&mut state, token_css);
     }
 
@@ -771,7 +925,7 @@ async fn resolve_state(context: &ServerContext, request_path: &str) -> Value {
         map.insert("basePath".into(), Value::String(bp));
     }
 
-    state
+    Ok(state)
 }
 
 /// Render a full HTML page using route matching from `route_path` and state lookup from
@@ -786,142 +940,161 @@ async fn render_page_response(
     route_path: &str,
     request_path: &str,
 ) -> HttpResponse {
-    // One lock acquisition for a consistent snapshot of the rebuild status and
-    // the protocol/entry it produced. Reading these separately could mix a
-    // "no error" check with a protocol from a different rebuild generation.
-    let (rebuild_error, protocol, entry) = match context.state.lock() {
-        Ok(s) => (s.rebuild_error.clone(), s.protocol.clone(), s.entry.clone()),
-        Err(_) => return HttpResponse::InternalServerError().body("Internal Server Error"),
-    };
-
-    if let Some(error) = rebuild_error.as_deref() {
-        return rebuild_error_response(error, context.livereload.as_ref());
+    // Capture protocol and defaults together before awaiting request state.
+    if let Some(response) = build_gate(context, false) {
+        return response;
     }
-
-    let Some(proto) = protocol else {
-        return HttpResponse::InternalServerError().body("Protocol not available");
+    let snapshot = match render_snapshot(context) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return *response,
     };
-    let plugin = context.plugin;
-    let livereload_script: Option<Arc<str>> =
-        context.livereload.as_ref().map(|lr| lr.client_script_arc());
-    let route_params =
-        webui_handler::route_handler::collect_nested_route_params(&proto, &entry, route_path);
-
-    let mut state = if let Some(api_port) = context.api_port {
-        let client = awc::Client::new();
-        let url = format!("http://127.0.0.1:{api_port}{request_path}");
-        match client
-            .get(&url)
-            .insert_header(("Accept", streaming_api::ACCEPT))
-            .send()
-            .await
-        {
-            Ok(response) if streaming_api::is_stream(response.headers()) => {
-                let status = response.status();
-                if !status.is_success() {
-                    // The upstream refused before writing a single record, so no
-                    // boundary has reached the browser and rule 19's "never
-                    // degrade a live stream to buffering" does not apply. Treat
-                    // it like any other pre-stream acquisition failure and
-                    // render the page from fallback state, rather than handing
-                    // the browser a raw upstream error body in place of the app.
-                    log_api_state_warning(&format!(
-                        "API stream unavailable (HTTP {status}); rendering with fallback state"
-                    ));
-                    fallback_state(context)
-                } else {
-                    let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
-                    let defaults = streaming_state_defaults(context, route_params);
-                    return streaming_api::render(
-                        backend,
-                        streaming_api::RenderConfig {
-                            protocol: proto,
-                            entry,
-                            route_path: route_path.to_owned(),
-                            plugin,
-                            body_inject: livereload_script,
-                            chunk_pool: Arc::clone(&context.chunk_pool),
-                        },
-                        defaults,
-                    )
-                    .await;
-                }
-            }
-            Ok(mut response) => match response.body().await {
-                Ok(body) => match parse_api_state(&body) {
-                    Ok(state) => state,
-                    Err(error) => {
-                        log_api_state_warning(&error);
-                        fallback_state(context)
-                    }
-                },
-                Err(error) => {
-                    log_api_state_warning(&format!("API body error: {error}"));
-                    fallback_state(context)
-                }
-            },
-            Err(error) => {
-                log_api_state_warning(&format!("API proxy error: {error}"));
-                fallback_state(context)
-            }
+    let nonce = match context.response_policy.nonce() {
+        Ok(nonce) => nonce,
+        Err(error) => {
+            log::error!("cannot create document nonce: {error}");
+            return HttpResponse::InternalServerError().body("Cannot create document nonce");
         }
-    } else {
-        fallback_state(context)
     };
+    let livereload_script: Option<Arc<str>> = context.livereload.as_ref().map(|lr| {
+        nonce.as_deref().map_or_else(
+            || lr.client_script_arc(),
+            |value| Arc::from(lr.client_script_with_nonce(value)),
+        )
+    });
+    let route_params = webui_handler::route_handler::collect_nested_route_params(
+        &snapshot.protocol,
+        &snapshot.entry,
+        route_path,
+    );
+    let defaults = streaming_state_defaults(context, &snapshot, route_params);
+    let config = streaming_api::RenderConfig {
+        protocol: Arc::clone(&snapshot.protocol),
+        entry: snapshot.entry.clone(),
+        route_path: route_path.to_owned(),
+        plugin: context.plugin,
+        body_inject: livereload_script,
+        nonce: nonce.clone(),
+        chunk_pool: Arc::clone(&context.chunk_pool),
+    };
+    let response = render_request_page(context, &snapshot, config, defaults, request_path).await;
+    finish_document(context, response, nonce.as_deref())
+}
 
-    let defaults = streaming_state_defaults(context, route_params);
+async fn render_request_page(
+    context: &ServerContext,
+    snapshot: &RenderSnapshot,
+    config: streaming_api::RenderConfig,
+    defaults: streaming_api::StateDefaults,
+    request_path: &str,
+) -> HttpResponse {
+    let Some(api_port) = context.api_port else {
+        return render_fallback_page(snapshot, config, defaults);
+    };
+    let client = api_state::client(context.api_state_errors);
+    let url = format!("http://127.0.0.1:{api_port}{request_path}");
+    let mut response = match client
+        .get(&url)
+        .insert_header(("Accept", streaming_api::ACCEPT))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) if context.api_state_errors == api_state::ApiStateErrors::Strict => {
+            return state_error_response(&error.to_string());
+        }
+        Err(error) => {
+            log_api_state_warning(&format!("API proxy error: {error}"));
+            return render_fallback_page(snapshot, config, defaults);
+        }
+    };
+    if let Err(error) = api_state::validate_status(context.api_state_errors, response.status()) {
+        return state_error_response(&error.to_string());
+    }
+    if streaming_api::is_stream(response.headers()) {
+        if !response.status().is_success() {
+            // Preserve the default pre-stream fallback; no stream has committed.
+            log_api_state_warning(&format!(
+                "API stream unavailable (HTTP {})",
+                response.status()
+            ));
+            return render_fallback_page(snapshot, config, defaults);
+        }
+        let backend = response.map(|chunk| chunk.map_err(|error| error.to_string()));
+        return streaming_api::render(backend, config, defaults).await;
+    }
+    if context.api_state_errors == api_state::ApiStateErrors::Strict {
+        response = response.timeout(api_state::BODY_TIMEOUT);
+    }
+    let state = response
+        .body()
+        .await
+        .map_err(|error| format!("API body error: {error}"))
+        .and_then(|body| {
+            api_state::parse(context.api_state_errors, &body).map_err(|error| error.to_string())
+        });
+    let mut state = match state {
+        Ok(state) => state,
+        Err(error) if context.api_state_errors == api_state::ApiStateErrors::Strict => {
+            return state_error_response(&error);
+        }
+        Err(error) => {
+            log_api_state_warning(&error);
+            return render_fallback_page(snapshot, config, defaults);
+        }
+    };
     defaults.apply(&mut state);
-    render_buffered_page(
-        streaming_api::RenderConfig {
-            protocol: proto,
-            entry,
-            route_path: route_path.to_owned(),
-            plugin,
-            body_inject: livereload_script,
-            chunk_pool: Arc::clone(&context.chunk_pool),
-        },
-        state,
-    )
+    render_buffered_page(config, state)
 }
 
-fn parse_api_state(body: &[u8]) -> Result<Value, String> {
-    let json: Value =
-        serde_json::from_slice(body).map_err(|error| format!("API JSON error: {error}"))?;
-    Ok(extract_api_state(json))
+fn render_fallback_page(
+    snapshot: &RenderSnapshot,
+    config: streaming_api::RenderConfig,
+    defaults: streaming_api::StateDefaults,
+) -> HttpResponse {
+    let mut state = fallback_state(snapshot);
+    defaults.apply(&mut state);
+    render_buffered_page(config, state)
 }
 
-fn extract_api_state(mut json: Value) -> Value {
-    if let Value::Object(object) = &mut json {
-        if let Some(state) = object.remove("state") {
-            return state;
-        }
-    }
-    json
-}
-
-fn fallback_state(context: &ServerContext) -> Value {
-    context
-        .state
-        .lock()
-        .ok()
-        .and_then(|state| state.state_data.clone())
+fn fallback_state(snapshot: &RenderSnapshot) -> Value {
+    snapshot
+        .state_data
+        .as_deref()
+        .cloned()
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
 }
 
 fn streaming_state_defaults(
     context: &ServerContext,
+    snapshot: &RenderSnapshot,
     route_params: HashMap<String, String>,
 ) -> streaming_api::StateDefaults {
-    let token_css = context
-        .state
-        .lock()
-        .ok()
-        .and_then(|state| state.token_css.clone());
     streaming_api::StateDefaults::new(
-        token_css,
+        snapshot.token_css.as_deref().cloned(),
         context.base_path.as_deref().unwrap_or("/").to_owned(),
         route_params,
     )
+}
+
+fn state_error_response(message: &str) -> HttpResponse {
+    log_api_state_warning(message);
+    let mut response = HttpResponse::BadGateway();
+    response.insert_header(("Cache-Control", "no-store"));
+    let mut error = serde_json::Map::new();
+    error.insert("error".into(), Value::String(message.to_owned()));
+    response.json(error)
+}
+
+fn finish_document(
+    context: &ServerContext,
+    mut response: HttpResponse,
+    nonce: Option<&str>,
+) -> HttpResponse {
+    if let Err(error) = context.response_policy.apply_document(&mut response, nonce) {
+        log::error!("cannot apply document policy: {error}");
+        return HttpResponse::InternalServerError().body("Cannot apply document policy");
+    }
+    response
 }
 
 fn log_api_state_warning(message: &str) {
@@ -949,6 +1122,10 @@ fn render_buffered_page(config: streaming_api::RenderConfig, state: Value) -> Ht
         // no risk of false-marker mis-firing on `</body>` literals
         // appearing inside HTML comments / srcdoc / inline scripts.
         let opts_owner = RenderOptions::new(&config.entry, &config.route_path);
+        let opts_owner = match config.nonce.as_deref() {
+            Some(nonce) => opts_owner.with_nonce(nonce),
+            None => opts_owner,
+        };
         let opts = match config.body_inject.as_deref() {
             Some(script) => opts_owner.with_body_inject(script),
             None => opts_owner,
@@ -980,6 +1157,9 @@ fn render_buffered_page(config: streaming_api::RenderConfig, state: Value) -> Ht
 }
 
 async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> HttpResponse {
+    if let Some(response) = build_gate(&context, wants_json(&req)) {
+        return response;
+    }
     // JSON partial render for client-side navigation
     if wants_json(&req) {
         let paths = build_request_paths("", req.query_string());
@@ -987,7 +1167,7 @@ async fn handle_index(req: HttpRequest, context: web::Data<ServerContext>) -> Ht
     }
 
     // With API proxy, render on-the-fly with fresh state
-    if context.api_port.is_some() {
+    if context.api_port.is_some() || context.response_policy.is_csp_enabled() {
         let paths = build_request_paths("", req.query_string());
         return render_page_response(&context, &paths.route_path, &paths.request_path).await;
     }
@@ -1012,6 +1192,9 @@ async fn handle_component_templates(
     req: HttpRequest,
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
+    if let Some(response) = build_gate(&context, true) {
+        return response;
+    }
     let qs = req.query_string();
     let mut tags: Vec<&str> = Vec::new();
     let mut inv = String::new();
@@ -1060,6 +1243,9 @@ async fn handle_asset(
     path: web::Path<String>,
     context: web::Data<ServerContext>,
 ) -> HttpResponse {
+    if let Some(response) = build_gate(&context, wants_json(&req)) {
+        return response;
+    }
     let relative = path.into_inner();
 
     // Check in-memory generated files first (CSS and static component assets,
@@ -1108,9 +1294,19 @@ async fn handle_asset(
 
     let content_type = from_path(&canonical).first_or_octet_stream();
 
-    HttpResponse::Ok()
+    let response = HttpResponse::Ok()
         .content_type(content_type.as_ref())
-        .body(body)
+        .body(body);
+    if content_type.essence_str() != "text/html" {
+        return response;
+    }
+    match context.response_policy.nonce() {
+        Ok(nonce) => finish_document(&context, response, nonce.as_deref()),
+        Err(error) => {
+            log::error!("cannot create document nonce: {error}");
+            HttpResponse::InternalServerError().body("Cannot create document nonce")
+        }
+    }
 }
 
 fn accept_media_q(params: &str) -> f32 {
@@ -1211,32 +1407,28 @@ async fn handle_json_partial(
     context: &web::Data<ServerContext>,
     paths: RequestPaths,
 ) -> HttpResponse {
-    // Clone protocol from shared state (release lock quickly)
-    let (protocol, entry) = match context.state.lock() {
-        Ok(s) => {
-            if let Some(error) = s.rebuild_error.as_deref() {
-                return rebuild_error_json_response(error);
-            }
-            (s.protocol.clone(), s.entry.clone())
-        }
-        Err(_) => {
-            return HttpResponse::InternalServerError().body(r#"{"error":"Internal server error"}"#)
-        }
+    if let Some(response) = build_gate(context, true) {
+        return response;
+    }
+    let snapshot = match render_snapshot(context) {
+        Ok(snapshot) => snapshot,
+        Err(response) => return *response,
     };
 
-    let mut state_data = resolve_state(context, &paths.request_path).await;
+    let mut state_data = match resolve_state(context, &snapshot, &paths.request_path).await {
+        Ok(state) => state,
+        Err(error) => return state_error_response(&error),
+    };
 
     // Inject route params into state from walking the fragment graph.
     if let Value::Object(ref mut map) = state_data {
-        if let Some(proto) = &protocol {
-            let nested_params = webui_handler::route_handler::collect_nested_route_params(
-                proto,
-                &entry,
-                &paths.route_path,
-            );
-            for (key, value) in nested_params {
-                map.insert(key, Value::String(value));
-            }
+        let nested_params = webui_handler::route_handler::collect_nested_route_params(
+            &snapshot.protocol,
+            &snapshot.entry,
+            &paths.route_path,
+        );
+        for (key, value) in nested_params {
+            map.insert(key, Value::String(value));
         }
     }
 
@@ -1249,17 +1441,18 @@ async fn handle_json_partial(
         .to_string();
 
     // Build the complete partial response (componentStyles, templates, inventory, path, chain)
-    let partial = if let Some(proto) = &protocol {
-        match proto.render_partial(state_data, &entry, &paths.route_path, &client_inv_hex) {
-            Ok(value) => value,
-            Err(e) => {
-                return HttpResponse::InternalServerError()
-                    .content_type("application/json")
-                    .body(format!(r#"{{"error":"{}"}}"#, e));
-            }
+    let partial = match snapshot.protocol.render_partial(
+        state_data,
+        &snapshot.entry,
+        &paths.route_path,
+        &client_inv_hex,
+    ) {
+        Ok(value) => value,
+        Err(e) => {
+            return HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .body(format!(r#"{{"error":"{}"}}"#, e));
         }
-    } else {
-        "{}".to_string()
     };
 
     HttpResponse::Ok()
@@ -1468,8 +1661,8 @@ fn rebuild_and_update_state(
                 s.css_files = result.css_files;
                 s.component_assets = result.component_assets;
                 s.protocol = Some(result.protocol);
-                s.state_data = Some(result.state_data);
-                s.token_css = result.token_css;
+                s.state_data = Some(Arc::new(result.state_data));
+                s.token_css = result.token_css.map(Arc::new);
                 s.rebuild_error = None;
                 // The rebuild worker prints these under the "rebuilt" line.
                 Ok(result.warnings)
@@ -1516,10 +1709,19 @@ mod tests {
                 rendered_html: "<html><body>ok</body></html>".to_string(),
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
-                protocol: None,
+                protocol: Some(Arc::new(Protocol::new(WebUIProtocol::new(HashMap::from(
+                    [(
+                        "index.html".to_owned(),
+                        FragmentList {
+                            fragments: vec![WebUIFragment::raw("<html><body>ok</body></html>")],
+                            contains_boundary: false,
+                        },
+                    )],
+                ))))),
                 state_data: None,
                 token_css: None,
                 rebuild_error: None,
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: None,
@@ -1527,6 +1729,8 @@ mod tests {
             api_port: Some(api_port),
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -1541,9 +1745,10 @@ mod tests {
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
                 protocol: Some(protocol),
-                state_data: Some(Value::Object(serde_json::Map::new())),
+                state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
                 rebuild_error: None,
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: None,
@@ -1551,11 +1756,74 @@ mod tests {
             api_port: None,
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
             )),
         })
+    }
+
+    #[test]
+    fn snapshot_rechecks_pending_and_failed_status_after_initial_gate() {
+        let context = test_server_context(0);
+        assert!(build_gate(&context, false).is_none());
+        for (pending, expected) in [
+            (true, StatusCode::SERVICE_UNAVAILABLE),
+            (false, StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            {
+                let mut state = context.state.lock().unwrap();
+                state.rebuild_pending = pending;
+                state.rebuild_error = (!pending).then(|| "failed generation".to_owned());
+            }
+            let response = render_snapshot(&context).err().unwrap();
+            assert!(
+                std::mem::size_of_val(&response) <= std::mem::size_of::<usize>(),
+                "snapshot errors must stay pointer-sized"
+            );
+            assert_eq!(response.status(), expected);
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+        }
+    }
+
+    #[actix_web::test]
+    async fn static_html_uses_fresh_document_policies_without_rewriting_authored_scripts() {
+        let html = "<html><body><script>window.authored = true</script></body></html>";
+        let assets = create_app_dir(&[("static.html", html)]);
+        let mut inner = test_server_context(0).into_inner();
+        let context = Arc::get_mut(&mut inner).unwrap();
+        context.assets_dir = Some(assets.path().canonicalize().unwrap());
+        context.response_policy =
+            Arc::new(ResponsePolicy::new(&[], Some("script-src 'nonce-{nonce}'")).unwrap());
+        let context = web::Data::from(inner);
+        let mut policies = Vec::new();
+        for _ in 0..2 {
+            let response = handle_asset(
+                actix_test::TestRequest::get()
+                    .uri("/static.html")
+                    .to_http_request(),
+                web::Path::from("static.html".to_owned()),
+                context.clone(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            policies.push(
+                response
+                    .headers()
+                    .get("content-security-policy")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+            assert_eq!(
+                to_bytes(response.into_body()).await.unwrap().as_ref(),
+                html.as_bytes()
+            );
+        }
+        assert_ne!(policies[0], policies[1]);
     }
 
     fn dotted_route_protocol() -> Arc<Protocol> {
@@ -2126,9 +2394,10 @@ mod tests {
                 css_files: HashMap::new(),
                 component_assets: HashMap::new(),
                 protocol: Some(protocol),
-                state_data: Some(Value::Object(serde_json::Map::new())),
+                state_data: Some(Arc::new(Value::Object(serde_json::Map::new()))),
                 token_css: None,
                 rebuild_error: None,
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: None,
@@ -2136,6 +2405,8 @@ mod tests {
             api_port: Some(api_port),
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2171,6 +2442,110 @@ mod tests {
             );
             handle.stop(true).await;
         }
+    }
+
+    #[actix_web::test]
+    async fn strict_state_rejects_backend_failures_for_documents_and_partials() {
+        for (status, content_type, body) in [
+            (StatusCode::FOUND, "application/json", "{}"),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "application/json",
+                r#"{"state":{}}"#,
+            ),
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application/x-webui-stream",
+                "unavailable",
+            ),
+            (StatusCode::OK, "application/json", "not json"),
+            (StatusCode::OK, "application/json", "[]"),
+            (StatusCode::OK, "application/json", r#"{"state":null}"#),
+        ] {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = HttpServer::new(move || {
+                App::new()
+                    .route(
+                        "/redirected",
+                        web::get().to(|| async { HttpResponse::Ok().body(r#"{"state":{}}"#) }),
+                    )
+                    .default_service(web::to(move || async move {
+                        HttpResponse::build(status)
+                            .insert_header(("Location", "/redirected"))
+                            .content_type(content_type)
+                            .body(body)
+                    }))
+            })
+            .listen(listener)
+            .unwrap()
+            .run();
+            let handle = server.handle();
+            actix_web::rt::spawn(server);
+            assert_strict_page_failures(port).await;
+            handle.stop(true).await;
+        }
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let unreachable_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert_strict_page_failures(unreachable_port).await;
+    }
+
+    async fn assert_strict_page_failures(port: u16) {
+        let mut inner = streaming_fallback_context(port).into_inner();
+        Arc::get_mut(&mut inner).unwrap().api_state_errors = api_state::ApiStateErrors::Strict;
+        let context = web::Data::from(inner);
+        let app = actix_test::init_service(
+            App::new()
+                .app_data(context)
+                .configure(|cfg| configure_routes(cfg, true, false)),
+        )
+        .await;
+        for accept in ["text/html", "application/json"] {
+            let response = actix_test::call_service(
+                &app,
+                actix_test::TestRequest::get()
+                    .uri("/?raw=%2F+a&raw=%252F")
+                    .insert_header(("Accept", accept))
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{accept}");
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+            let body = actix_test::read_body(response).await;
+            let error: Value = serde_json::from_slice(&body).unwrap();
+            assert!(error["error"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty()));
+        }
+    }
+
+    #[actix_web::test]
+    async fn strict_state_bounds_buffered_body_wait_for_documents_and_partials() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = HttpServer::new(|| {
+            App::new().default_service(web::to(|| async {
+                let body =
+                    tokio_stream::once(Ok::<_, std::io::Error>(bytes::Bytes::from_static(b"{")))
+                        .chain(tokio_stream::pending());
+                HttpResponse::Ok()
+                    .content_type("application/json")
+                    .streaming(body)
+            }))
+        })
+        .listen(listener)
+        .unwrap()
+        .run();
+        let handle = server.handle();
+        actix_web::rt::spawn(server);
+        let result = tokio::time::timeout(
+            api_state::BODY_TIMEOUT * 3,
+            assert_strict_page_failures(port),
+        )
+        .await;
+        handle.stop(false).await;
+        result.expect("strict body acquisition must have a deadline");
     }
 
     fn fallback_kind_for_accept(accept: &str) -> SpaFallbackKind {
@@ -2434,6 +2809,7 @@ mod tests {
                 state_data: None,
                 token_css: None,
                 rebuild_error: None,
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: Some(livereload.clone()),
@@ -2441,6 +2817,8 @@ mod tests {
             api_port: None,
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2508,6 +2886,7 @@ mod tests {
                 rebuild_error: Some(
                     "missing theme token [missing-theme-token]\n    --token-c".to_string(),
                 ),
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: Some(livereload),
@@ -2515,6 +2894,8 @@ mod tests {
             api_port: None,
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2576,6 +2957,7 @@ mod tests {
                 rebuild_error: Some(
                     "missing theme token [missing-theme-token]\n    --token-c".to_string(),
                 ),
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: None,
@@ -2583,6 +2965,8 @@ mod tests {
             api_port: Some(port),
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2649,6 +3033,7 @@ mod tests {
                 rebuild_error: Some(
                     "missing theme token [missing-theme-token]\n    --token-c".to_string(),
                 ),
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: None,
@@ -2656,6 +3041,8 @@ mod tests {
             api_port: Some(port),
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,
@@ -2724,6 +3111,7 @@ mod tests {
             state_data: None,
             token_css: None,
             rebuild_error: None,
+            rebuild_pending: false,
             entry: "index.html".to_string(),
         }));
         let livereload = LiveReload::new(HMR_ENDPOINT);
@@ -2794,6 +3182,7 @@ mod tests {
             state_data: None,
             token_css: None,
             rebuild_error: None,
+            rebuild_pending: false,
             entry: "index.html".to_string(),
         }));
         let livereload = LiveReload::new(HMR_ENDPOINT);
@@ -3044,6 +3433,7 @@ mod tests {
                 state_data: None,
                 token_css: None,
                 rebuild_error: None,
+                rebuild_pending: false,
                 entry: "index.html".to_string(),
             })),
             livereload: None,
@@ -3051,6 +3441,8 @@ mod tests {
             api_port: None,
             plugin: None,
             base_path: None,
+            response_policy: Arc::new(ResponsePolicy::default()),
+            api_state_errors: api_state::ApiStateErrors::default(),
             chunk_pool: Arc::new(webui::streaming::ChunkPool::new(
                 4,
                 StreamingWriter::CHUNK_TARGET + 1024,

@@ -3,6 +3,7 @@
 
 pub mod build;
 pub mod common;
+pub mod dev;
 pub mod inspect;
 pub mod serve;
 
@@ -12,8 +13,10 @@ use clap::Subcommand;
 pub enum Commands {
     /// Build a WebUI application from an app folder
     Build(build::BuildArgs),
+    /// Develop a WebUI app with warm JS/TS builds, native SSR, and live reload
+    Dev(dev::DevArgs),
     /// Inspect a protocol.bin file and output JSON to stdout
     Inspect(inspect::InspectArgs),
-    /// Start a development server with live reload
+    /// Serve templates with native rendering and optional live reload
     Serve(serve::ServeArgs),
 }

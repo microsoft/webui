@@ -66,6 +66,25 @@ test('deduplicates one link intent and hands off raw bytes once', async () => {
   prepared.destroy();
 });
 
+test('speculative preload uses same-origin mode without configuration', async () => {
+  const modes: (RequestMode | undefined)[] = [];
+  globalThis.fetch = async (_input, init) => {
+    modes.push(init?.mode);
+    return jsonResponse({ path: '/next', chain: [] });
+  };
+  const prepared = prepareRoutePreload();
+  try {
+    pointerMove?.(pointerEvent('/next'));
+    assert.ok(await prepared.take('/next', '0a'));
+    prepared.release('/next');
+    pointerMove?.(pointerEvent('/next'));
+    assert.ok(await prepared.take('/next', '0a'));
+    assert.deepEqual(modes, ['same-origin', 'same-origin']);
+  } finally {
+    prepared.destroy();
+  }
+});
+
 test('hands off NDJSON after chunk one without waiting for EOF', async () => {
   let fetchSignal: AbortSignal | undefined;
   globalThis.fetch = async (_input, init) => {

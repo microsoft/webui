@@ -25,6 +25,9 @@ use notify_debouncer_mini::{
 #[path = "watch_hash.rs"]
 mod hash;
 
+#[path = "watch_snapshot.rs"]
+mod snapshot;
+
 #[cfg(test)]
 #[path = "watch_hash_tests.rs"]
 mod hash_tests;
@@ -99,8 +102,9 @@ pub struct WatchConfig {
     /// underneath any entry here. Typical values: the build's `out_dir`,
     /// `node_modules`, `.git`, `target`.
     ///
-    /// Each entry is canonicalized at registration time so symlink and
-    /// path-form differences (`./dist` vs `dist`) compare correctly.
+    /// Bare relative names match subtrees beneath each watched root, not its
+    /// ancestors. Existing explicit paths are canonicalized at registration;
+    /// use absolute paths for output locations that may be created later.
     pub ignore: Vec<PathBuf>,
     /// Debounce window — events arriving within this window are
     /// coalesced into a single callback invocation.
@@ -138,13 +142,21 @@ pub fn spawn_watcher<F>(cfg: WatchConfig, on_event: F) -> Result<WatcherHandle>
 where
     F: Fn(Vec<PathBuf>) + Send + 'static,
 {
-    // Canonicalize ignore paths once, up front. Non-existent ignore
-    // entries are kept as-is so they still match if the path appears
-    // mid-session (e.g. a fresh `dist/` created by the first build).
+    // Bare relative names are subtree filters, even when a matching directory
+    // exists in cwd. Explicit paths identify one output location.
     let ignore: Vec<PathBuf> = cfg
         .ignore
         .iter()
-        .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()))
+        .map(|p| {
+            if p.is_relative()
+                && p.components().count() == 1
+                && matches!(p.components().next(), Some(std::path::Component::Normal(_)))
+            {
+                p.clone()
+            } else {
+                std::fs::canonicalize(p).unwrap_or_else(|_| p.clone())
+            }
+        })
         .collect();
     let explicit_files: Vec<PathBuf> = cfg
         .explicit_files
@@ -152,10 +164,20 @@ where
         .filter_map(|path| normalize_explicit_file(path))
         .collect();
 
-    let mut content_hashes: HashMap<PathBuf, u64> = HashMap::new();
+    let roots = cfg
+        .paths
+        .iter()
+        .filter(|path| path.exists())
+        .map(|path| {
+            std::fs::canonicalize(path)
+                .with_context(|| format!("Cannot resolve watched root {}", path.display()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mut content_hashes = snapshot::initial_hashes(&roots, &ignore, &explicit_files)?;
     let mut hash_buffer = [0_u8; HASH_BUFFER_SIZE];
     let retry_unchanged_when = cfg.retry_unchanged_when.clone();
     let explicit_filter = explicit_files.clone();
+    let event_roots = roots.clone();
     let notify_config = notify::Config::default().with_follow_symlinks(false);
     let debouncer_config = DebouncerConfig::default()
         .with_timeout(cfg.debounce)
@@ -169,7 +191,7 @@ where
                 let mut paths: Vec<PathBuf> = Vec::with_capacity(events.len());
                 let mut seen: HashSet<PathBuf> = HashSet::with_capacity(events.len());
                 for e in events {
-                    if should_ignore_event(&e.path, &ignore, &explicit_filter) {
+                    if should_ignore_event(&e.path, &ignore, &explicit_filter, &event_roots) {
                         continue;
                     }
                     if seen.insert(e.path.clone()) {
@@ -210,19 +232,15 @@ where
     )
     .context("Cannot start file watcher")?;
 
-    let mut watched_roots = Vec::with_capacity(cfg.paths.len());
-    for p in &cfg.paths {
-        if p.exists() {
-            watched_roots.push(std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()));
-            debouncer
-                .watcher()
-                .watch(p, RecursiveMode::Recursive)
-                .with_context(|| format!("Cannot watch {}", p.display()))?;
-        }
+    for root in &roots {
+        debouncer
+            .watcher()
+            .watch(root, RecursiveMode::Recursive)
+            .with_context(|| format!("Cannot watch {}", root.display()))?;
     }
     let mut explicit_parents = HashSet::new();
     for file in &explicit_files {
-        if watched_roots.iter().any(|root| file.starts_with(root)) {
+        if roots.iter().any(|root| file.starts_with(root)) {
             continue;
         }
         let Some(parent) = file.parent() else {
@@ -258,23 +276,32 @@ fn is_explicit_file(event_path: &Path, explicit_files: &[PathBuf]) -> bool {
     explicit_files.iter().any(|path| path == &normalized)
 }
 
-fn should_ignore_event(event_path: &Path, ignore: &[PathBuf], explicit_files: &[PathBuf]) -> bool {
-    is_ignored(event_path, ignore) && !is_explicit_file(event_path, explicit_files)
+fn should_ignore_event(
+    event_path: &Path,
+    ignore: &[PathBuf],
+    explicit_files: &[PathBuf],
+    roots: &[PathBuf],
+) -> bool {
+    if is_explicit_file(event_path, explicit_files) {
+        return false;
+    }
+    if !roots.iter().any(|root| event_path.starts_with(root)) {
+        return true;
+    }
+    is_ignored_within(event_path, ignore, roots)
 }
 
 /// Returns true when `event_path` lives under any ignored root.
 ///
 /// Matching uses two strategies:
 /// 1. **Absolute roots** (e.g. canonicalized `dist/`): the event path
-///    must literally start with the root. Handles "ignore this exact
+///    or its resolved target must start with the root. Handles "ignore this exact
 ///    output directory" cases.
 /// 2. **Single-component relative roots** (e.g. `node_modules`,
 ///    `.git`, `target`): match if any component of the event path
-///    equals that name. This is what makes `default_ignore_paths()`
-///    work universally — `target` matches `/repo/target/...`,
-///    `/repo/sub/target/...`, etc., regardless of where the watcher
-///    cwd was when the path was registered.
-fn is_ignored(event_path: &Path, ignore: &[PathBuf]) -> bool {
+///    equals that name beneath the most specific watched root. Explicit roots
+///    remain watchable even when an ancestor is named `target` or `node_modules`.
+fn is_ignored_within(event_path: &Path, ignore: &[PathBuf], roots: &[PathBuf]) -> bool {
     if ignore.is_empty() {
         return false;
     }
@@ -283,7 +310,7 @@ fn is_ignored(event_path: &Path, ignore: &[PathBuf]) -> bool {
 
     for root in ignore {
         if root.is_absolute() {
-            if candidate.starts_with(root) {
+            if event_path.starts_with(root) || candidate.starts_with(root) {
                 return true;
             }
             continue;
@@ -299,8 +326,12 @@ fn is_ignored(event_path: &Path, ignore: &[PathBuf]) -> bool {
             // Check the lexical event path before its canonical form. pnpm
             // dependencies are symlinks, so canonicalization removes the
             // `node_modules` component that identifies the ignored subtree.
-            if event_path.components().any(|c| c.as_os_str() == name)
-                || candidate.components().any(|c| c.as_os_str() == name)
+            if relative_to_root(event_path, roots)
+                .components()
+                .any(|c| c.as_os_str() == name)
+                || relative_to_root(candidate, roots)
+                    .components()
+                    .any(|c| c.as_os_str() == name)
             {
                 return true;
             }
@@ -310,6 +341,19 @@ fn is_ignored(event_path: &Path, ignore: &[PathBuf]) -> bool {
         }
     }
     false
+}
+
+fn relative_to_root<'a>(path: &'a Path, roots: &[PathBuf]) -> &'a Path {
+    roots
+        .iter()
+        .filter_map(|root| path.strip_prefix(root).ok())
+        .min_by_key(|relative| relative.components().count())
+        .unwrap_or(path)
+}
+
+#[cfg(test)]
+fn is_ignored(path: &Path, ignore: &[PathBuf]) -> bool {
+    is_ignored_within(path, ignore, &[])
 }
 
 /// Default ignore subtrees common to dev servers. Includes the universal
@@ -386,8 +430,80 @@ mod tests {
 
         let ignore = vec![std::fs::canonicalize(&dist).unwrap()];
         let explicit = vec![std::fs::canonicalize(&manifest).unwrap()];
-        assert!(!should_ignore_event(&manifest, &ignore, &explicit));
-        assert!(should_ignore_event(&bundle, &ignore, &explicit));
+        assert!(!should_ignore_event(&manifest, &ignore, &explicit, &[]));
+        assert!(should_ignore_event(&bundle, &ignore, &explicit, &[]));
+    }
+
+    #[test]
+    fn explicitly_watched_root_is_not_ignored_because_of_its_ancestors() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("target").join("app");
+        std::fs::create_dir_all(app.join("target")).unwrap();
+        std::fs::write(app.join("index.ts"), "source").unwrap();
+        std::fs::write(app.join("target").join("generated.ts"), "output").unwrap();
+        let app = app.canonicalize().unwrap();
+        let roots = vec![app.clone()];
+        let ignore = default_ignore_paths();
+        assert!(!should_ignore_event(
+            &app.join("index.ts"),
+            &ignore,
+            &[],
+            &roots
+        ));
+        assert!(should_ignore_event(
+            &app.join("target").join("generated.ts"),
+            &ignore,
+            &[],
+            &roots
+        ));
+    }
+
+    #[test]
+    fn watching_an_external_file_does_not_forward_its_unrelated_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("app");
+        std::fs::create_dir(&app).unwrap();
+        let state = dir.path().join("state.json");
+        let unrelated = dir.path().join("unrelated.json");
+        std::fs::write(&state, "{}").unwrap();
+        std::fs::write(&unrelated, "{}").unwrap();
+        let roots = vec![app.canonicalize().unwrap()];
+        let files = vec![state.canonicalize().unwrap()];
+        assert!(!should_ignore_event(&state, &[], &files, &roots));
+        assert!(should_ignore_event(&unrelated, &[], &files, &roots));
+    }
+
+    #[test]
+    fn relative_roots_and_ignore_names_work_through_the_actual_watcher() {
+        let directory = tempfile::Builder::new()
+            .prefix("watch-root-")
+            .tempdir_in(".")
+            .unwrap();
+        let name = PathBuf::from(directory.path().file_name().unwrap());
+        let file = directory.path().join("index.ts");
+        let ignored = directory.path().join(&name).join("ignored.ts");
+        std::fs::create_dir(ignored.parent().unwrap()).unwrap();
+        std::fs::write(&file, "before").unwrap();
+        std::fs::write(&ignored, "before").unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let _watcher = spawn_watcher(
+            WatchConfig {
+                paths: vec![directory.path().to_path_buf()],
+                explicit_files: Vec::new(),
+                ignore: vec![name],
+                debounce: Duration::from_millis(10),
+                retry_unchanged_when: None,
+            },
+            move |paths| {
+                let _ = sender.send(paths);
+            },
+        )
+        .unwrap();
+        std::fs::write(&ignored, "ignored").unwrap();
+        assert!(receiver.recv_timeout(Duration::from_millis(100)).is_err());
+        std::fs::write(&file, "after").unwrap();
+        let changed = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(changed.contains(&file.canonicalize().unwrap()));
     }
 
     #[test]

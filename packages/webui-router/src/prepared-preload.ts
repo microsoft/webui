@@ -223,7 +223,11 @@ async function fetchRawPartial(
       Accept: 'application/x-ndjson, application/json',
     };
     if (inventory) headers['X-WebUI-Inventory'] = inventory;
-    const response = await fetch(path, { headers, signal });
+    const response = await fetch(path, {
+      headers,
+      signal,
+      mode: 'same-origin',
+    });
     const contentType = response.headers.get('content-type') ?? '';
     if (
       !response.ok

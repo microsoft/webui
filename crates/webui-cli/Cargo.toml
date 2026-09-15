@@ -24,6 +24,7 @@ microsoft-webui-tokens = { path = "../webui-tokens", version = "0.0.28" }
 microsoft-webui-dev-server = { path = "../webui-dev-server", version = "0.0.28" }
 clap = { workspace = true }
 anyhow = { workspace = true }
+getrandom = { workspace = true }
 thiserror = { workspace = true }
 console = { workspace = true }
 serde = { workspace = true }

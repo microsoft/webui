@@ -18,6 +18,15 @@ components also navigate without a full page reload when the application loads
 `@microsoft/webui-framework`, which mounts the templates published by the
 router.
 
+Native WebUI uses its private compiler policy automatically, without a setup call
+or special import order. See
+[Trusted Types](https://microsoft.github.io/webui/guide/concepts/hydration#trusted-types).
+Client-side partial navigation is not yet supported under enforcement; use full
+document navigation. Partial, preload and template requests (including custom
+template endpoints and redirects) are same-origin only. A document nonce does
+not authorize fetched condition-source strings under enforcement. Browser support
+alone does not disable their existing registration without enforcement.
+
 ## Installation
 
 ```bash

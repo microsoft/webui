@@ -23,6 +23,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 thiserror = "2.0.18"
 anyhow = "1.0.104"
+getrandom = "0.4.3"
 log = "0.4.34"
 env_logger = "0.11.11"
 tokio = { version = "1.53.1", features = ["full"] }
