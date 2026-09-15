@@ -2613,32 +2613,26 @@ It intentionally does **not** duplicate package tutorials or framework API docs.
 
 ### Compiled-template Trusted Types boundary
 
-Native framework applications opt in with `configureTrustedTypes(policyName)`
-from the side-effect-free `@microsoft/webui-framework/trusted-types.js` entry,
-also re-exported by the root package, before importing component definitions or
-installing optional hydration runtimes. Names contain only ASCII
-letters/digits/`.`/`_`/`-`, are nonempty, and cannot be `default`. The application
-explicitly permits that exact name in CSP's `trusted-types` directive. A
-denied/already-created policy or attempt to change the name throws; repeating the
-same name is idempotent across entries sharing one framework module instance.
-Independently bundled framework copies are rejected with guidance to share the
-runtime: native policies cannot be recovered by another module without exposing
-trust-producing capabilities.
-Browsers without Trusted Types preserve the existing path. No default policy is
-created, and nonce-based script/style authorization remains a separate concern.
+Native framework sinks use Trusted Types automatically when the browser supports
+them, independently of CSP enforcement. No configuration API, setup entry point
+or special import order exists. The first compiler HTML or CSS import-map sink
+creates the fixed-name `webui` policy, cached privately by document window.
+Ordinary module imports and metadata registration do not create a policy.
+Policy denial, including browser rejection of a pre-created or duplicated name,
+throws actionable CSP/shared-module guidance without falling back to strings.
+Browsers without Trusted Types preserve the string path. No default policy is
+created; nonce-based script/style authorization remains separate.
 
-The document exposes only an immutable `__webuiTrustedTypesPolicyName` string.
-The policy, invocation capability, and trust-producing operations remain private
-to the framework module; there is no globally callable trust bridge. Callbacks
-reject calls lacking the private capability, and no generic public HTML/script
-conversion API or `createScriptURL` rule exists. Compiler normalization registers
-each block's immutable `h` in a weak map. A cache miss in `template-content.ts` requires that
-exact registered string before constructing TrustedHTML; the existing weak
-parsed-fragment cache and cloning remain unchanged. Without configuration there
-is no trust map or per-template entry. Registration (`registerTemplateData`, SSR
-metadata and trusted component asset modules) accepts compiler programs, never
-request state or user HTML. This is a provenance contract, not a sanitizer or
-signature check on compiler output.
+No policy, capability, callable trust bridge, or policy-name marker is placed on
+`window`. Policy callbacks reject calls lacking the private capability; there is
+no public HTML/script conversion API or `createScriptURL` rule. On browsers with
+Trusted Types, compiler normalization records each block's immutable `h` in a
+module-private weak map. A template-cache miss checks that exact registered
+string before constructing TrustedHTML; parsed-fragment caching and cloning are
+unchanged. Unsupported browsers allocate no trust maps. Registration
+(`registerTemplateData`, SSR metadata and trusted component asset modules) accepts
+compiler programs, never request state or user HTML. This is a provenance
+contract, not a sanitizer or signature check on compiler output.
 
 No API accepts compiler condition source strings for execution; router integration
 is separate from this framework boundary. CSS Module import maps are generated

@@ -358,26 +358,14 @@ WebUI queues one shallow patch and applies it after successful activation.
 
 ## Trusted Types
 
-Native WebUI hydration supports enforced Trusted Types through an explicit,
-named compiler-output policy. Configure it in a small bootstrap module **before**
-loading component definitions or optional hydration runtimes:
+WebUI automatically uses Trusted Types for native compiled templates and generated
+CSS import maps when the browser supports them. There is no setup call or special
+import order. WebUI creates its private policy, named **`webui`**, on first use.
 
-```ts
-// bootstrap.ts -- bundle this as the browser entry.
-import { configureTrustedTypes } from '@microsoft/webui-framework/trusted-types.js';
-
-configureTrustedTypes('app-compiled');
-await import('./app.js');
-```
-
-The dedicated subpath has no hydration side effects. A static `import './app.js'`
-would evaluate the app before the configuration call; use the dynamic import
-shown above. The root framework entry also exports `configureTrustedTypes`.
-
-Allow the **exact same name** in the response's `trusted-types` directive:
+The application decides whether to enforce Trusted Types through its response CSP:
 
 ```text
-require-trusted-types-for 'script'; trusted-types app-compiled
+require-trusted-types-for 'script'; trusted-types webui
 ```
 
 These directives supplement, not replace, your nonce-based `script-src` and
@@ -385,19 +373,11 @@ These directives supplement, not replace, your nonce-based `script-src` and
 Nonces and Trusted Types solve different problems. WebUI does not create a
 `default` policy or require `'unsafe-eval'`.
 
-Names must be nonempty ASCII letters, digits, `.`, `_`, or `-`; `default` is
-forbidden. Let WebUI create the policy: do not pre-create a same-named policy.
-Repeated configuration with the same name is idempotent when bootstrap and
-component entries share one framework module instance, for example through a
-shared bundler chunk. Independently bundled framework copies are not supported;
-WebUI reports an error asking you to share the runtime rather than exposing the
-policy globally. A different name or a CSP-denied/already-created policy also
-throws an actionable error. Configure each new document separately. On browsers
-without Trusted Types, configuration leaves the existing rendering behavior unchanged.
-
-The policy covers native compiled templates (including condition/repeat blocks)
-and generated CSS import maps. Client-side router partial navigation is not yet
-supported with enforced Trusted Types.
+If CSP restricts policy names, it must allow `webui`, even when sink enforcement is
+not enabled. Let WebUI create that policy and share one framework module across
+bundles to avoid duplicate-policy rejection. Policy creation errors are reported,
+not bypassed with strings. Browsers without Trusted Types keep normal rendering.
+Client-side router partial navigation is not yet supported with enforced Trusted Types.
 
 **This policy is not an HTML sanitizer.** Treat compiled template metadata and
 component asset modules as executable application code; never populate them from
@@ -408,7 +388,7 @@ in normal escaped bindings.
 Raw triple-brace state HTML is **not** promoted through the compiler policy.
 Client raw-HTML updates with strings remain blocked under enforcement; a rejected
 update leaves its previous DOM intact. FAST/string templates, arbitrary scripts,
-event-handler attributes, and script URLs are not authorized by this API.
+event-handler attributes, and script URLs are not authorized by the compiler policy.
 Trusted Types also does not sanitize HTML already delivered by the server.
 
 ## Build-Time State Projection

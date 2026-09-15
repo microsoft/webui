@@ -99,17 +99,13 @@ Prefer a built-in HTML element or modern CSS feature over a hand-built one.
 
 ## Mental model
 
-**Enforced Trusted Types:** In a bootstrap entry, import `configureTrustedTypes`
-from `@microsoft/webui-framework/trusted-types.js`, call
-`configureTrustedTypes('app-compiled')`, then `await import('./app.js')`. Configure
-before component definitions and optional hydration runtimes. Use one shared
-framework module instance across bootstrap and component bundles. Allow exactly
-`trusted-types app-compiled` alongside `require-trusted-types-for 'script'` and
-the normal nonce CSP; let WebUI create the named policy, never a default policy.
-Names use ASCII letters/digits/`.`/`_`/`-` and cannot be `default`. The policy
-trusts only immutable native compiler output, not raw triple-brace state HTML,
-FAST templates or arbitrary scripts/URLs. Client-side router partial navigation
-is not yet supported under enforcement. See
+**Trusted Types:** WebUI automatically uses its private `webui` policy for compiled
+templates and generated CSS import maps. No setup call or special import order is
+needed. To enforce Trusted Types, use `require-trusted-types-for 'script'; trusted-types webui`
+alongside the normal nonce CSP. Share one framework module across bundles; do not
+pre-create its policy. Raw triple-brace state HTML, FAST strings and arbitrary
+scripts/URLs are not promoted. Client-side router partial navigation is not yet
+supported under enforcement. See
 [Trusted Types](/guide/concepts/hydration#trusted-types).
 
 ```
